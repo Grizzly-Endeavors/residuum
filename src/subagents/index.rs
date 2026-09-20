@@ -14,8 +14,7 @@ const GENERAL_PURPOSE_NAME: &str = "general-purpose";
 const GENERAL_PURPOSE_DESCRIPTION: &str = "General-purpose subagent for self-contained tasks";
 const GENERAL_PURPOSE_BODY: &str = "\
 You are a general-purpose background worker. Complete the task described \
-in your prompt. Use the available tools as needed. If you activate a \
-project, deactivate it with a session log before finishing.";
+in your prompt. Use the available tools as needed.";
 
 /// In-memory index of discovered subagent presets.
 #[derive(Debug, Clone, Default)]

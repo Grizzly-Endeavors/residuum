@@ -162,11 +162,6 @@ impl Agent {
         self.recent_messages.clear();
     }
 
-    /// Clear gated tool permissions (used during idle project deactivation).
-    pub async fn clear_tool_filter(&self) {
-        self.tool_filter.write().await.clear_enabled();
-    }
-
     /// Rotate messages after an observation cycle.
     ///
     /// Extracts the last 3 text exchanges, clears the buffer, then prepends
@@ -484,12 +479,11 @@ mod tests {
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy, ToolFilter};
     use async_trait::async_trait;
-    use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn no_filter() -> SharedToolFilter {
-        ToolFilter::new_shared(HashSet::new())
+        ToolFilter::new_shared()
     }
 
     fn empty_mcp() -> SharedMcpRegistry {
@@ -583,10 +577,7 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(vec![
             ModelResponse::new(
@@ -640,10 +631,7 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -711,10 +699,7 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -1117,10 +1102,7 @@ mod tests {
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
 
@@ -1195,10 +1177,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
 

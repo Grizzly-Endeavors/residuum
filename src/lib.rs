@@ -12,7 +12,6 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod notify;
-pub mod projects;
 pub mod pulse;
 pub mod skills;
 pub mod subagents;

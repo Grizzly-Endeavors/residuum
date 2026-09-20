@@ -39,11 +39,6 @@ pub(in crate::agent) fn compute_context_breakdown(
         identity_tokens,
         memory_pipeline_tokens,
         subagents_index_tokens: prompt_ctx.subagents.index.map_or(0, estimate_tokens),
-        projects_index_tokens: prompt_ctx.projects.index.map_or(0, estimate_tokens),
-        active_project_tokens: prompt_ctx
-            .projects
-            .active_context
-            .map_or(0, estimate_tokens),
         skills_index_tokens: prompt_ctx.skills.index.map_or(0, estimate_tokens),
         active_skills_tokens: prompt_ctx
             .skills
@@ -73,7 +68,6 @@ pub(in crate::agent) fn assemble_system_prompt(
     let system_content = build_system_content(
         identity,
         memory_ctx,
-        &prompt_ctx.projects,
         &prompt_ctx.skills,
         &prompt_ctx.subagents,
     );
@@ -107,7 +101,7 @@ mod tests {
     use chrono::NaiveDateTime;
 
     use super::*;
-    use crate::agent::context::types::{ProjectsContext, SkillsContext, SubagentsContext};
+    use crate::agent::context::types::{SkillsContext, SubagentsContext};
     use crate::models::Role;
 
     fn no_memory() -> MemoryContext<'static> {
@@ -455,10 +449,6 @@ mod tests {
         let recent = RecentMessages::new();
 
         let prompt_ctx = PromptContext {
-            projects: ProjectsContext {
-                index: Some("| Name | Status |"),
-                active_context: Some("active project content here"),
-            },
             skills: SkillsContext {
                 index: Some("<available_skills/>"),
                 active_instructions: Some("<active_skill>instructions</active_skill>"),
@@ -469,14 +459,6 @@ mod tests {
         };
 
         let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0, 0);
-        assert!(
-            bd.projects_index_tokens > 0,
-            "projects index should produce nonzero tokens"
-        );
-        assert!(
-            bd.active_project_tokens > 0,
-            "active project should produce nonzero tokens"
-        );
         assert!(
             bd.skills_index_tokens > 0,
             "skills index should produce nonzero tokens"

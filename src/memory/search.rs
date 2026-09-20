@@ -34,8 +34,6 @@ pub struct SearchResult {
     pub episode_id: String,
     /// Date string (YYYY-MM-DD).
     pub date: String,
-    /// Project context tag.
-    pub context: String,
     /// Line range start in the episode transcript (chunks only).
     pub line_start: Option<usize>,
     /// Line range end in the episode transcript (chunks only).
@@ -56,8 +54,6 @@ pub struct SearchFilters {
     pub date_from: Option<String>,
     /// Filter results on or before this date (YYYY-MM-DD, inclusive).
     pub date_to: Option<String>,
-    /// Filter by project context (exact match).
-    pub project_context: Option<String>,
     /// Filter to results from these episode IDs.
     pub episode_ids: Option<Vec<String>>,
 }
@@ -94,7 +90,6 @@ pub struct MemoryIndex {
     source_type_field: Field,
     episode_id_field: Field,
     date_field: Field,
-    ctx_field: Field,
     content_field: Field,
     line_start_field: Field,
     line_end_field: Field,
@@ -109,7 +104,6 @@ struct SearchSchema {
     source_type_field: Field,
     episode_id_field: Field,
     date_field: Field,
-    ctx_field: Field,
     content_field: Field,
     line_start_field: Field,
     line_end_field: Field,
@@ -122,7 +116,6 @@ fn build_schema() -> (Schema, SearchSchema) {
     let source_type_field = builder.add_text_field("source_type", STRING | STORED);
     let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
     let date_field = builder.add_text_field("date", STRING | STORED);
-    let ctx_field = builder.add_text_field("context", STRING | STORED);
     let content_field = builder.add_text_field("content", TEXT | STORED);
     let line_start_field = builder.add_u64_field("line_start", FAST | STORED);
     let line_end_field = builder.add_u64_field("line_end", FAST | STORED);
@@ -134,7 +127,6 @@ fn build_schema() -> (Schema, SearchSchema) {
             source_type_field,
             episode_id_field,
             date_field,
-            ctx_field,
             content_field,
             line_start_field,
             line_end_field,
@@ -156,7 +148,6 @@ impl MemoryIndex {
             source_type_field: s.source_type_field,
             episode_id_field: s.episode_id_field,
             date_field: s.date_field,
-            ctx_field: s.ctx_field,
             content_field: s.content_field,
             line_start_field: s.line_start_field,
             line_end_field: s.line_end_field,
@@ -166,7 +157,8 @@ impl MemoryIndex {
     /// Open or create a tantivy index at the given directory.
     ///
     /// # Errors
-    /// Returns an error if the directory is inaccessible or the index is corrupt.
+    /// Returns an error if the directory is inaccessible, the index is corrupt,
+    /// or an index already exists whose stored schema differs from this build's.
     pub fn open_or_create(index_dir: &Path) -> anyhow::Result<Self> {
         std::fs::create_dir_all(index_dir).with_context(|| {
             format!(
@@ -217,14 +209,7 @@ impl MemoryIndex {
 
         for (i, obs) in observations.iter().enumerate() {
             let doc_id = format!("{episode_id}-o{i}");
-            self.add_obs_document(
-                &mut writer,
-                &doc_id,
-                episode_id,
-                date,
-                &obs.project_context,
-                &obs.content,
-            )?;
+            self.add_obs_document(&mut writer, &doc_id, episode_id, date, &obs.content)?;
             doc_ids.push(doc_id);
         }
 
@@ -308,7 +293,6 @@ impl MemoryIndex {
         // Fetch extra candidates to account for post-retrieval filtering
         let has_post_filters = filters.date_from.is_some()
             || filters.date_to.is_some()
-            || filters.project_context.is_some()
             || filters.episode_ids.is_some();
         let fetch_limit = if has_post_filters {
             limit.max(1) * 4
@@ -331,7 +315,6 @@ impl MemoryIndex {
                 .context("failed to fetch document")?;
 
             let date = get_text(&doc, self.date_field);
-            let ctx = get_text(&doc, self.ctx_field);
             let ep_id = get_text(&doc, self.episode_id_field);
 
             // Post-retrieval filters
@@ -342,11 +325,6 @@ impl MemoryIndex {
             }
             if let Some(ref to) = filters.date_to
                 && date.as_str() > to.as_str()
-            {
-                continue;
-            }
-            if let Some(ref pc) = filters.project_context
-                && ctx != *pc
             {
                 continue;
             }
@@ -375,7 +353,6 @@ impl MemoryIndex {
                 source_type,
                 episode_id: ep_id,
                 date,
-                context: ctx,
                 line_start,
                 line_end,
                 snippet,
@@ -551,14 +528,7 @@ impl MemoryIndex {
             let (episode_id, date, observations) = parse_obs_file(abs_path)?;
             for (i, obs) in observations.iter().enumerate() {
                 let doc_id = format!("{episode_id}-o{i}");
-                self.add_obs_document(
-                    writer,
-                    &doc_id,
-                    &episode_id,
-                    &date,
-                    &obs.project_context,
-                    &obs.content,
-                )?;
+                self.add_obs_document(writer, &doc_id, &episode_id, &date, &obs.content)?;
                 doc_ids.push(doc_id);
             }
         } else if rel_path.ends_with(".idx.jsonl") {
@@ -578,7 +548,6 @@ impl MemoryIndex {
         doc_id: &str,
         episode_id: &str,
         date: &str,
-        ctx: &str,
         content: &str,
     ) -> anyhow::Result<()> {
         let mut doc = TantivyDocument::default();
@@ -586,7 +555,6 @@ impl MemoryIndex {
         doc.add_text(self.source_type_field, DocSource::Observation.as_str());
         doc.add_text(self.episode_id_field, episode_id);
         doc.add_text(self.date_field, date);
-        doc.add_text(self.ctx_field, ctx);
         doc.add_text(self.content_field, content);
         doc.add_u64(self.line_start_field, u64::MAX);
         doc.add_u64(self.line_end_field, u64::MAX);
@@ -607,7 +575,6 @@ impl MemoryIndex {
         doc.add_text(self.source_type_field, DocSource::Chunk.as_str());
         doc.add_text(self.episode_id_field, &chunk.episode_id);
         doc.add_text(self.date_field, &chunk.date);
-        doc.add_text(self.ctx_field, &chunk.context);
         doc.add_text(self.content_field, &chunk.content);
         doc.add_u64(self.line_start_field, chunk.line_start as u64);
         doc.add_u64(self.line_end_field, chunk.line_end as u64);
@@ -876,7 +843,6 @@ impl HybridSearcher {
         let vec_filters = VectorSearchFilters {
             date_from: filters.date_from.clone(),
             date_to: filters.date_to.clone(),
-            project_context: filters.project_context.clone(),
             episode_ids: filters.episode_ids.clone(),
         };
         let vec_limit = candidates;
@@ -1021,7 +987,6 @@ fn merge_hybrid_results(
                 source_type: vec_r.source_type,
                 episode_id: vec_r.episode_id.clone(),
                 date: vec_r.date.clone(),
-                context: vec_r.context.clone(),
                 line_start: vec_r.line_start,
                 line_end: vec_r.line_end,
                 snippet,
@@ -1099,7 +1064,6 @@ mod tests {
     fn sample_observation(text: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: text.to_string(),
@@ -1113,6 +1077,34 @@ mod tests {
     #[test]
     fn open_or_create_index() {
         let (_dir, _index) = create_test_index();
+    }
+
+    /// The startup path relies on a schema mismatch being a hard open failure,
+    /// so it can discard the index and rebuild from episode transcripts. If
+    /// tantivy ever starts tolerating a mismatch, that recovery goes unused.
+    #[test]
+    fn open_rejects_index_whose_stored_schema_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join(".index");
+        std::fs::create_dir_all(&index_dir).unwrap();
+
+        let mut builder = Schema::builder();
+        builder.add_text_field("some_other_field", TEXT | STORED);
+        let foreign = builder.build();
+        let mmap_dir = MmapDirectory::open(&index_dir).unwrap();
+        Index::open_or_create(mmap_dir, foreign).unwrap();
+
+        let Err(err) = MemoryIndex::open_or_create(&index_dir) else {
+            panic!("an index with a different stored schema must not open");
+        };
+        assert!(
+            format!("{err:#}").contains("failed to open search index"),
+            "error should identify the index that failed to open, got: {err:#}"
+        );
+
+        std::fs::remove_dir_all(&index_dir).unwrap();
+        MemoryIndex::open_or_create(&index_dir)
+            .expect("clearing the index directory should allow a fresh index to be created");
     }
 
     #[test]
@@ -1144,7 +1136,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: how does the observer work?\nassistant: it monitors token counts"
@@ -1175,7 +1166,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: tell me about rust memory safety\nassistant: rust uses ownership"
@@ -1245,39 +1235,6 @@ mod tests {
         assert!(
             filtered.iter().all(|r| r.date.as_str() >= "2026-02-18"),
             "all results should be on or after date_from"
-        );
-    }
-
-    #[test]
-    fn filter_by_project_context() {
-        let (_dir, index) = create_test_index();
-
-        let obs1 = vec![sample_observation("residuum observation about testing")];
-        index
-            .index_observations("ep-001", "2026-02-19", &obs1)
-            .unwrap();
-
-        let obs2 = vec![Observation {
-            project_context: "devops".to_string(),
-            ..sample_observation("devops observation about testing")
-        }];
-        index
-            .index_observations("ep-002", "2026-02-19", &obs2)
-            .unwrap();
-
-        let filtered = index
-            .search(
-                "testing",
-                10,
-                &SearchFilters {
-                    project_context: Some("residuum".to_string()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert!(
-            filtered.iter().all(|r| r.context == "residuum"),
-            "all results should have residuum context"
         );
     }
 
@@ -1402,7 +1359,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: describe the layout\nassistant: it is flat".to_string(),
@@ -1441,7 +1397,7 @@ mod tests {
         // not break the rebuild, and simply stays absent from the index.
         std::fs::write(
             day_dir.join("ep-002.jsonl"),
-            "{\"type\":\"meta\",\"id\":\"ep-002\",\"date\":\"2026-02-19\",\"context\":\"general\"}\n",
+            "{\"type\":\"meta\",\"id\":\"ep-002\",\"date\":\"2026-02-19\"}\n",
         )
         .unwrap();
 
@@ -1614,7 +1570,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 5,
             line_end: 8,
             content: "user: question about line ranges\nassistant: answer about ranges".to_string(),
@@ -1675,21 +1630,12 @@ mod tests {
             .index_observations("ep-002", "2026-02-20", &obs2)
             .unwrap();
 
-        let obs3 = vec![Observation {
-            project_context: "devops".to_string(),
-            ..sample_observation("devops observation about search")
-        }];
-        index
-            .index_observations("ep-003", "2026-02-20", &obs3)
-            .unwrap();
-
-        // Filter: residuum + after 2026-02-18
+        // Filter: after 2026-02-18
         let results = index
             .search(
                 "search",
                 10,
                 &SearchFilters {
-                    project_context: Some("residuum".to_string()),
                     date_from: Some("2026-02-18".to_string()),
                     ..Default::default()
                 },
@@ -1780,7 +1726,6 @@ mod tests {
             source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: None,
             line_end: None,
             snippet: format!("bm25 content for {id}"),
@@ -1794,7 +1739,6 @@ mod tests {
             source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             content: format!("vec content for {id}"),
             line_start: None,
             line_end: None,
@@ -1914,7 +1858,6 @@ mod tests {
             source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
             date: date.to_string(),
-            context: "test".to_string(),
             line_start: None,
             line_end: None,
             snippet: "test snippet".to_string(),

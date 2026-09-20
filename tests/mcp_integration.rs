@@ -17,8 +17,7 @@
 mod mcp_integration {
     use std::collections::HashMap;
 
-    use residuum::mcp::{McpRegistry, McpStatus};
-    use residuum::projects::types::{McpServerEntry, McpTransport};
+    use residuum::mcp::{McpRegistry, McpServerEntry, McpStatus, McpTransport};
 
     fn echo_server_entry() -> McpServerEntry {
         McpServerEntry {

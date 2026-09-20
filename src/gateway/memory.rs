@@ -32,7 +32,6 @@ fn episode_date_dir(date: &str) -> Option<String> {
 /// `ObserveAction` based on current token levels.
 pub(super) async fn persist_and_check_thresholds(
     new_messages: &[crate::models::Message],
-    project_context: &str,
     visibility: Visibility,
     observer: &Observer,
     layout: &WorkspaceLayout,
@@ -42,14 +41,8 @@ pub(super) async fn persist_and_check_thresholds(
         return ObserveAction::None;
     }
 
-    if let Err(e) = append_recent_messages(
-        &layout.recent_messages_json(),
-        new_messages,
-        project_context,
-        visibility,
-        tz,
-    )
-    .await
+    if let Err(e) =
+        append_recent_messages(&layout.recent_messages_json(), new_messages, visibility, tz).await
     {
         tracing::warn!(error = %e, "failed to persist recent messages");
         return ObserveAction::None;

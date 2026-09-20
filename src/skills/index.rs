@@ -15,7 +15,7 @@ pub struct SkillIndex {
 }
 
 impl SkillIndex {
-    /// Scan configured directories and an optional project skills directory.
+    /// Scan configured directories.
     ///
     /// For each subdirectory containing a `SKILL.md`, parses the frontmatter
     /// and builds an index entry. Invalid or missing files are warned and
@@ -32,22 +32,11 @@ impl SkillIndex {
     /// Returns an error if a directory cannot be read (except `NotFound`,
     /// which is silently skipped).
     #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
-    pub async fn scan(dirs: &[PathBuf], project_skills_dir: Option<&Path>) -> anyhow::Result<Self> {
+    pub async fn scan(dirs: &[PathBuf]) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
 
-        // Project skills have highest priority — scan first
-        if let Some(project_dir) = project_skills_dir {
-            scan_skill_directory(
-                project_dir,
-                SkillSource::Project,
-                &mut entries,
-                &mut seen_names,
-            )
-            .await?;
-        }
-
-        // Then workspace and user-global (workspace is dirs[0], user-global are the rest)
+        // Workspace is dirs[0], user-global are the rest
         for (i, dir) in dirs.iter().enumerate() {
             let source = if i == 0 {
                 SkillSource::Workspace
@@ -226,9 +215,7 @@ mod tests {
     #[tokio::test]
     async fn scan_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         assert!(
             index.entries().is_empty(),
             "empty dir should have no skills"
@@ -237,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_nonexistent_dir() {
-        let index = SkillIndex::scan(&[PathBuf::from("/tmp/nonexistent-skills-dir")], None)
+        let index = SkillIndex::scan(&[PathBuf::from("/tmp/nonexistent-skills-dir")])
             .await
             .unwrap();
         assert!(
@@ -258,9 +245,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         assert_eq!(index.entries().len(), 1, "should find one skill");
         assert_eq!(index.entries().first().unwrap().name, "my-skill");
         assert_eq!(
@@ -290,16 +275,14 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         assert_eq!(index.entries().len(), 1, "should only find valid skill");
     }
 
     #[tokio::test]
-    async fn scan_with_project_skills() {
+    async fn scan_with_user_global_skills() {
         let ws_dir = tempfile::tempdir().unwrap();
-        let proj_dir = tempfile::tempdir().unwrap();
+        let user_dir = tempfile::tempdir().unwrap();
 
         // Workspace skill
         let ws_skill = ws_dir.path().join("ws-skill");
@@ -311,23 +294,23 @@ mod tests {
         .await
         .unwrap();
 
-        // Project skill
-        let proj_skill = proj_dir.path().join("proj-skill");
-        tokio::fs::create_dir(&proj_skill).await.unwrap();
+        // User-global skill
+        let user_skill = user_dir.path().join("user-skill");
+        tokio::fs::create_dir(&user_skill).await.unwrap();
         tokio::fs::write(
-            proj_skill.join("SKILL.md"),
-            "---\nname: proj-skill\ndescription: \"Project skill\"\n---\n",
+            user_skill.join("SKILL.md"),
+            "---\nname: user-skill\ndescription: \"User-global skill\"\n---\n",
         )
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf()], Some(proj_dir.path()))
+        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf(), user_dir.path().to_path_buf()])
             .await
             .unwrap();
         assert_eq!(index.entries().len(), 2, "should find both skills");
 
-        let proj_entry = index.find_by_name("proj-skill").unwrap();
-        assert_eq!(proj_entry.source, SkillSource::Project);
+        let user_entry = index.find_by_name("user-skill").unwrap();
+        assert_eq!(user_entry.source, SkillSource::UserGlobal);
         assert_eq!(
             index.find_by_name("ws-skill").unwrap().source,
             SkillSource::Workspace
@@ -335,9 +318,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_skill_shadows_workspace_on_name_collision() {
+    async fn workspace_skill_shadows_user_global_on_name_collision() {
         let ws_dir = tempfile::tempdir().unwrap();
-        let proj_dir = tempfile::tempdir().unwrap();
+        let user_dir = tempfile::tempdir().unwrap();
 
         // Workspace skill named "shared"
         let ws_skill = ws_dir.path().join("shared");
@@ -349,27 +332,27 @@ mod tests {
         .await
         .unwrap();
 
-        // Project skill with same name "shared"
-        let proj_skill = proj_dir.path().join("shared");
-        tokio::fs::create_dir(&proj_skill).await.unwrap();
+        // User-global skill with same name "shared"
+        let user_skill = user_dir.path().join("shared");
+        tokio::fs::create_dir(&user_skill).await.unwrap();
         tokio::fs::write(
-            proj_skill.join("SKILL.md"),
-            "---\nname: shared\ndescription: \"Project version\"\n---\n",
+            user_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: \"User-global version\"\n---\n",
         )
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf()], Some(proj_dir.path()))
+        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf(), user_dir.path().to_path_buf()])
             .await
             .unwrap();
         assert_eq!(index.entries().len(), 1, "should deduplicate by name");
 
         let entry = index.find_by_name("shared").unwrap();
         assert_eq!(
-            entry.description, "Project version",
-            "project skill should shadow workspace skill"
+            entry.description, "Workspace version",
+            "workspace skill should shadow user-global skill"
         );
-        assert_eq!(entry.source, SkillSource::Project);
+        assert_eq!(entry.source, SkillSource::Workspace);
     }
 
     #[tokio::test]
@@ -396,12 +379,9 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(
-            &[dir1.path().to_path_buf(), dir2.path().to_path_buf()],
-            None,
-        )
-        .await
-        .unwrap();
+        let index = SkillIndex::scan(&[dir1.path().to_path_buf(), dir2.path().to_path_buf()])
+            .await
+            .unwrap();
         assert_eq!(index.entries().len(), 1, "should deduplicate");
         assert_eq!(
             index.entries().first().unwrap().description,
@@ -437,9 +417,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
 
         assert_eq!(
             index.entries().len(),

@@ -17,8 +17,8 @@ use crate::models::Message;
 /// A persisted message with observation metadata.
 ///
 /// Wraps a [`Message`] with the context needed for the observer to derive
-/// observation metadata (project context, visibility) without requiring the
-/// agent to re-examine the conversation on startup.
+/// observation metadata (visibility) without requiring the agent to
+/// re-examine the conversation on startup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentMessage {
     /// The underlying conversation message.
@@ -27,9 +27,6 @@ pub struct RecentMessage {
     /// When this message was recorded.
     #[serde(with = "crate::time::minute_format")]
     pub timestamp: NaiveDateTime,
-    /// Workspace context at the time this message was recorded.
-    #[serde(default)]
-    pub project_context: String,
     /// Whether this message came from a user-visible or background turn.
     #[serde(default)]
     pub visibility: Visibility,
@@ -110,7 +107,6 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
 pub async fn append_recent_messages(
     path: &Path,
     new_messages: &[Message],
-    project_context: &str,
     visibility: Visibility,
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<()> {
@@ -122,7 +118,6 @@ pub async fn append_recent_messages(
     existing.extend(new_messages.iter().map(|msg| RecentMessage {
         message: msg.clone(),
         timestamp: now,
-        project_context: project_context.to_string(),
         visibility: visibility.clone(),
     }));
     save_recent_messages(path, &existing).await
@@ -158,15 +153,9 @@ mod tests {
         let path = dir.path().join("recent_messages.json");
 
         let msgs = vec![sample_message("hello"), sample_message("world")];
-        append_recent_messages(
-            &path,
-            &msgs,
-            "test/project",
-            Visibility::User,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
+        append_recent_messages(&path, &msgs, Visibility::User, chrono_tz::UTC)
+            .await
+            .unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
         assert_eq!(loaded.len(), 2, "should load two messages");
@@ -174,11 +163,6 @@ mod tests {
             loaded.first().map(|m| m.message.content.as_str()),
             Some("hello"),
             "first message content should match"
-        );
-        assert_eq!(
-            loaded.first().map(|m| m.project_context.as_str()),
-            Some("test/project"),
-            "project_context should be preserved"
         );
         assert_eq!(
             loaded.first().map(|m| &m.visibility),
@@ -195,7 +179,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("first")],
-            "ctx",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -214,7 +197,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("first")],
-            "ctx",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -223,7 +205,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("second")],
-            "ctx",
             Visibility::Background,
             chrono_tz::UTC,
         )
@@ -247,7 +228,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("first")],
-            "ctx",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -264,7 +244,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[], "ctx", Visibility::User, chrono_tz::UTC)
+        append_recent_messages(&path, &[], Visibility::User, chrono_tz::UTC)
             .await
             .unwrap();
         assert!(
@@ -291,7 +271,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("hello")],
-            "ctx",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -319,7 +298,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("system event")],
-            "pulse",
             Visibility::Background,
             chrono_tz::UTC,
         )
@@ -343,7 +321,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("real user msg")],
-            "ctx",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -354,7 +331,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("heartbeat prompt")],
-            "pulse",
             Visibility::Background,
             chrono_tz::UTC,
         )
@@ -381,7 +357,6 @@ mod tests {
         append_recent_messages(
             &path,
             &[sample_message("background event")],
-            "pulse",
             Visibility::Background,
             chrono_tz::UTC,
         )

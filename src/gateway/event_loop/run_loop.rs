@@ -232,7 +232,6 @@ async fn spawn_bus_infrastructure(
     let registry = crate::subagents::SubagentRegistry::new(
         Arc::clone(&parts.background_spawner),
         Arc::clone(&parts.spawn_context),
-        Arc::clone(&parts.project_state),
         Arc::clone(&parts.skill_state),
         Arc::clone(&parts.mcp_registry),
         parts.layout.subagents_dir(),
@@ -279,7 +278,6 @@ async fn build_runtime(
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
         tools_path: parts.tools_path,
-        project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
         notify_handles: infra.notify_handles,

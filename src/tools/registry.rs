@@ -7,17 +7,14 @@ use tokio::sync::{Mutex, Notify};
 use crate::actions::store::ActionStore;
 use crate::background::BackgroundTaskSpawner;
 use crate::bus::EndpointRegistry;
-use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
 use crate::models::ToolDefinition;
-use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolFilter, SharedToolsPath, Tool, ToolError,
-    ToolFilter, ToolResult, actions, background, edit, exec, file_bug_report, inbox, memory_get,
-    memory_search, ollama_web_search, projects, read, send_message, skills, submit_feedback,
-    web_fetch, write,
+    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolFilter, ToolResult,
+    actions, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
+    ollama_web_search, read, send_message, skills, submit_feedback, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -96,9 +93,7 @@ impl ToolRegistry {
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
 
         if !filter.is_available(name) {
-            return Ok(ToolResult::error(format!(
-                "tool '{name}' is not available — activate a project that includes it"
-            )));
+            return Ok(ToolResult::error(format!("tool '{name}' is not available")));
         }
 
         tracing::debug!("tool invocation");
@@ -126,42 +121,6 @@ impl ToolRegistry {
     /// Register the `memory_get` tool for episode transcript retrieval.
     pub fn register_memory_get_tool(&mut self, episodes_dir: PathBuf) {
         self.register(Box::new(memory_get::MemoryGetTool::new(episodes_dir)));
-    }
-
-    /// Register project management tools.
-    pub fn register_project_tools(
-        &mut self,
-        state: SharedProjectState,
-        path_policy: SharedPathPolicy,
-        tool_filter: SharedToolFilter,
-        mcp_registry: SharedMcpRegistry,
-        skill_state: SharedSkillState,
-        tz: chrono_tz::Tz,
-    ) {
-        self.register(Box::new(projects::ProjectActivateTool::new(
-            Arc::clone(&state),
-            Arc::clone(&path_policy),
-            Arc::clone(&tool_filter),
-            Arc::clone(&mcp_registry),
-            Arc::clone(&skill_state),
-        )));
-        self.register(Box::new(projects::ProjectDeactivateTool::new(
-            Arc::clone(&state),
-            path_policy,
-            tool_filter,
-            mcp_registry,
-            skill_state,
-            tz,
-        )));
-        self.register(Box::new(projects::ProjectCreateTool::new(
-            Arc::clone(&state),
-            tz,
-        )));
-        self.register(Box::new(projects::ProjectArchiveTool::new(
-            Arc::clone(&state),
-            tz,
-        )));
-        self.register(Box::new(projects::ProjectListTool::new(state)));
     }
 
     /// Register skill management tools (`skill_activate`, `skill_deactivate`).
@@ -242,8 +201,8 @@ impl ToolRegistry {
     /// Build a tool registry for a background sub-agent.
     ///
     /// Includes all tools available to the main agent except `switch_endpoint`
-    /// and `subagent_spawn`. Sub-agents get their own isolated project/skill
-    /// state but share the same endpoint registry, action store, etc.
+    /// and `subagent_spawn`. Sub-agents get their own isolated skill state but
+    /// share the same endpoint registry, action store, etc.
     #[expect(
         clippy::too_many_arguments,
         reason = "sub-agent registry needs all tool dependencies"
@@ -252,9 +211,6 @@ impl ToolRegistry {
     pub fn build_subagent_registry(
         tracker: SharedFileTracker,
         path_policy: SharedPathPolicy,
-        project_state: SharedProjectState,
-        tool_filter: SharedToolFilter,
-        mcp_registry: SharedMcpRegistry,
         skill_state: SharedSkillState,
         tz: chrono_tz::Tz,
         hybrid_searcher: Arc<HybridSearcher>,
@@ -271,17 +227,7 @@ impl ToolRegistry {
         let mut registry = Self::new();
 
         // Core I/O tools
-        registry.register_defaults(tracker, Arc::clone(&path_policy));
-
-        // Full project tools (activate, deactivate, create, archive, list)
-        registry.register_project_tools(
-            project_state,
-            path_policy,
-            tool_filter,
-            mcp_registry,
-            Arc::clone(&skill_state),
-            tz,
-        );
+        registry.register_defaults(tracker, path_policy);
 
         // Skill tools: activate, deactivate
         registry.register_skill_tools(skill_state);
@@ -366,7 +312,7 @@ mod tests {
     use crate::tools::{FileTracker, PathPolicy};
 
     fn no_filter() -> ToolFilter {
-        ToolFilter::new(HashSet::new())
+        ToolFilter::new()
     }
 
     #[tokio::test]
@@ -394,7 +340,7 @@ mod tests {
     #[test]
     fn registry_with_defaults() {
         let mut registry = ToolRegistry::new();
-        let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
+        let policy = PathPolicy::new_shared();
         registry.register_defaults(FileTracker::new_shared(), policy);
         let defs = registry.definitions(&no_filter());
         assert!(
@@ -415,39 +361,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tool_filter_definitions_filtered() {
+    #[tokio::test]
+    async fn tool_filter_definitions_filtered() {
         let mut registry = ToolRegistry::new();
-        let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
+        let policy = PathPolicy::new_shared();
         registry.register_defaults(FileTracker::new_shared(), policy);
 
-        // Gate exec artificially to test filtering logic
-        let filter_with_gate = ToolFilter::new(HashSet::from(["exec"]));
-        let defs = registry.definitions(&filter_with_gate);
-        assert_eq!(defs.len(), 3, "gated tool should be filtered out");
+        // Block exec via preset denial to test filtering logic
+        let filter_with_denial =
+            ToolFilter::new_shared_with_denied(HashSet::from(["exec".to_string()]));
+        let defs = registry.definitions(&*filter_with_denial.read().await);
+        assert_eq!(defs.len(), 3, "denied tool should be filtered out");
         assert!(
             defs.iter().all(|d| d.name != "exec"),
-            "gated tool should not appear in definitions"
+            "denied tool should not appear in definitions"
         );
     }
 
     #[tokio::test]
     async fn tool_filter_blocks_execution() {
         let mut registry = ToolRegistry::new();
-        let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
+        let policy = PathPolicy::new_shared();
         registry.register_defaults(FileTracker::new_shared(), policy);
 
-        // Gate exec artificially to test blocking logic
-        let filter_with_gate = ToolFilter::new(HashSet::from(["exec"]));
+        // Block exec via preset denial to test blocking logic
+        let filter_with_denial =
+            ToolFilter::new_shared_with_denied(HashSet::from(["exec".to_string()]));
         let result = registry
             .execute(
                 "exec",
                 serde_json::json!({"command": "echo test"}),
-                &filter_with_gate,
+                &*filter_with_denial.read().await,
             )
             .await
             .unwrap();
-        assert!(result.is_error, "gated tool should return error");
+        assert!(result.is_error, "denied tool should return error");
         assert!(
             result.output.contains("not available"),
             "error should mention unavailability"

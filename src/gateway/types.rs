@@ -16,7 +16,6 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::{HybridSearcher, MemoryIndex};
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient};
-use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -187,7 +186,6 @@ pub(crate) struct GatewayRuntime {
     pub mcp_registry: SharedMcpRegistry,
     /// Shared, reloadable effective `PATH` for spawned children (exec + MCP stdio).
     pub tools_path: crate::tools::SharedToolsPath,
-    pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,

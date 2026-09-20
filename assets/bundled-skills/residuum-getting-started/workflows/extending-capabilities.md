@@ -12,13 +12,11 @@ Show the user the skill concept by referencing the built-in skills:
 - `residuum-system` -- technical reference for workspace configuration files
 - `residuum-getting-started` -- the skill currently active (this one)
 
-Explain that the user can ask you to create custom skills for recurring types of tasks. For example: "Create a skill for Ansible playbook review" and you will set it up. Skills can be workspace-wide or scoped to a specific project.
+Explain that the user can ask you to create custom skills for recurring types of tasks. For example: "Create a skill for Ansible playbook review" and you will set it up.
 
 Give an example of what a skill looks like so they understand the concept, but frame it as something you create for them:
 
 "If you asked me to create an Ansible helper skill, I would set up something like this -- a name, a description, and instructions I follow when the skill is active."
-
-Skills can also live inside a project's `skills/` subdirectory, making them available only when that project is active.
 
 ## Step 2: MCP Server Setup
 
@@ -31,7 +29,7 @@ Ask what external services the user wants to connect to. Common examples:
 - GitHub operations beyond what `gh` CLI provides
 - Smart home APIs, calendar services, email
 
-You configure MCP servers in a project's `PROJECT.md` frontmatter, or the user can add them globally in `config.toml`. When a project with MCP servers is activated, the servers start automatically. When the project deactivates, they stop.
+You configure MCP servers in `config/mcp.json`, using the same `mcpServers` map format Claude Code and Claude Desktop use. Servers listed there start automatically and stay running; editing the file and saving is enough for the change to take effect, no restart needed.
 
 Help the user set up one MCP server for a real use case if they have one. If not, explain that they can ask you to set one up later when the need arises.
 
@@ -46,7 +44,7 @@ Key tools:
 
 Demonstrate by spawning a simple sub-agent:
 ```
-subagent_spawn with task: "List the files in the current workspace's projects directory and summarize what projects exist."
+subagent_spawn with task: "List the files in the current workspace and summarize what's there."
 ```
 
 You can run sub-agents in the foreground (wait for the result inline) or in the background (results delivered via notification channels). Demonstrate both.
