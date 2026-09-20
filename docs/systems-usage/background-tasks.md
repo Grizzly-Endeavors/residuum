@@ -109,7 +109,7 @@ Four built-in presets exist. A user-created file with the same name overrides th
 
 ## Result Routing
 
-All background task results flow through the pub/sub bus to the LLM notification router, which decides where each result goes based on content analysis and the `ALERTS.md` policy file. Agent-spawned task results are also relayed back to the main agent as an interrupt (Layer 1 programmatic rule).
+All background task results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the producing agent declared. Agent-spawned task results are relayed back to the main agent instead.
 
 See [notifications.md](notifications.md) for the full routing model.
 

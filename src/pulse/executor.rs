@@ -1,7 +1,6 @@
 //! Pulse task builder: converts a pulse definition into a spawn request or main wake turn.
 
-use crate::bus::EventTrigger;
-use crate::bus::SpawnRequestEvent;
+use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, SpawnRequestEvent};
 
 use super::types::PulseDef;
 
@@ -82,11 +81,15 @@ fn build_pulse_prompt(pulse: &PulseDef) -> String {
         parts.push(format!("### {}\n{}", task.name, task.prompt));
     }
 
-    parts.push(
+    parts.push(format!(
         "Complete all tasks above. If nothing noteworthy was found across all tasks, \
-         respond with exactly: HEARTBEAT_OK"
-            .to_string(),
-    );
+         respond with exactly: {HEARTBEAT_OK}\n\n\
+         Otherwise report what you found. Your report is filed for review. If — and \
+         only if — it needs attention before the user would next check in, end your \
+         report with {HEARTBEAT_URGENT} on its own line; that also pushes it to every \
+         notification channel the user has configured. Judge this from what you \
+         actually found, not from the topic you were asked to watch."
+    ));
 
     parts.join("\n\n")
 }
@@ -167,6 +170,19 @@ mod tests {
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }
+    }
+
+    #[test]
+    fn prompt_teaches_both_sentinels() {
+        let prompt = build_pulse_prompt(&sample_pulse());
+        assert!(
+            prompt.contains(HEARTBEAT_OK),
+            "sub-agent must be told how to exit silently"
+        );
+        assert!(
+            prompt.contains(HEARTBEAT_URGENT),
+            "sub-agent must be told how to escalate"
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ The agent inbox is a queue for the agent itself to triage — it's where the `in
 
 ## How Items Arrive
 
-- **Agent inbox**: the LLM notification router delivers results here when a pulse/task's `channels` list includes `inbox`, per `ALERTS.md` policy.
+- **Agent inbox**: the notification router files every substantive background result here.
 - **User inbox**: the agent calls `user_inbox_add`; nothing else writes here.
 
 ## Item Format

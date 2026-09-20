@@ -51,16 +51,32 @@ impl fmt::Display for EventTrigger {
 }
 
 // ---------------------------------------------------------------------------
-// HeartbeatStatus
+// ResultDisposition
 // ---------------------------------------------------------------------------
 
-/// Whether a background task's periodic heartbeat carried content.
+/// Sentinel an agent puts in its summary to signal nothing needs surfacing.
+pub const HEARTBEAT_OK: &str = "HEARTBEAT_OK";
+
+/// Sentinel an agent puts in its summary to signal the result cannot wait.
+///
+/// Deliberately distinct from the word "urgent" so that a summary *about*
+/// something urgent does not escalate itself by accident.
+pub const HEARTBEAT_URGENT: &str = "HEARTBEAT_URGENT";
+
+/// What the producing agent signalled should happen with its result.
+///
+/// The agent that ran the task is the only participant with the full
+/// transcript and the task's intent, so it makes this call itself via
+/// sentinel strings in its summary rather than deferring to a downstream
+/// classifier working from a summary alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeartbeatStatus {
-    /// Heartbeat with no meaningful content.
-    Ok,
-    /// Heartbeat that produced user-visible output.
-    Substantive,
+pub enum ResultDisposition {
+    /// Nothing worth surfacing; discard without delivering anywhere.
+    Silent,
+    /// Ordinary result; file it for review.
+    Normal,
+    /// Needs attention now; push it as well as filing it.
+    Urgent,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +148,8 @@ pub struct NotificationEvent {
     pub content: String,
     /// What produced this notification.
     pub source: EventTrigger,
+    /// Whether this needs attention now. Drives platform interruption level.
+    pub urgent: bool,
     /// Local timestamp.
     pub timestamp: NaiveDateTime,
 }
@@ -184,8 +202,8 @@ pub struct AgentResultEvent {
     pub agent_preset: PresetName,
     /// What triggered this task.
     pub source: EventTrigger,
-    /// Whether the last heartbeat was substantive.
-    pub heartbeat_status: HeartbeatStatus,
+    /// What the producing agent signalled should happen with this result.
+    pub disposition: ResultDisposition,
     /// Terminal status.
     pub status: AgentResultStatus,
     /// Human-readable summary of the result.
@@ -311,7 +329,7 @@ mod tests {
             source_label: "pulse:check".into(),
             agent_preset: PresetName::from("default"),
             source: EventTrigger::Pulse,
-            heartbeat_status: HeartbeatStatus::Ok,
+            disposition: ResultDisposition::Silent,
             status: AgentResultStatus::Completed,
             summary: summary.into(),
             transcript_path: transcript.map(std::path::PathBuf::from),

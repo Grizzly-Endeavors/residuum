@@ -111,6 +111,6 @@ In this example, the 8-hour window divided by 3 gives ~2h40m spacing. The `sched
 
 ## Result Routing
 
-Pulse results flow through the pub/sub bus to the LLM notification router, which decides where each result goes based on content analysis and the `ALERTS.md` policy file. `HEARTBEAT_OK` results are discarded before reaching the router (Layer 1 programmatic rule).
+Pulse results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the sub-agent declared. A summary containing `HEARTBEAT_OK` is discarded; one containing `HEARTBEAT_URGENT` is pushed to every configured notification channel as well as filed to the inbox; anything else goes to the inbox alone.
 
 See [notifications.md](notifications.md) for the full routing model.

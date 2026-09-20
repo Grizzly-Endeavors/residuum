@@ -1,38 +1,30 @@
-//! LLM-powered notification router: subscribes to `TopicId::BackgroundResult`
-//! and makes content-aware routing decisions using ALERTS.md as policy.
+//! Notification router: subscribes to `TopicId::BackgroundResult` and delivers
+//! each result according to the disposition its producing agent declared.
 //!
-//! Two-layer routing:
-//! - **Layer 1 (programmatic)**: heartbeat-ok → discard; agent-spawned → relay to main
-//! - **Layer 2 (LLM)**: everything else → call small model with ALERTS.md policy
-
-use std::path::PathBuf;
+//! Routing is a match on `ResultDisposition`, decided upstream by the agent that
+//! ran the task:
+//! - `Silent` → discard
+//! - agent-spawned → relay to the main agent
+//! - `Normal` → inbox
+//! - `Urgent` → inbox and every configured notification channel
 
 use tokio::task::JoinHandle;
 
-use crate::background::spawn_context::SpawnContext;
 use crate::bus::{
-    AgentResultEvent, BusHandle, EndpointRegistry, EventTrigger, HeartbeatStatus,
-    NotificationEvent, Publisher, Subscriber, topics,
+    AgentResultEvent, BusHandle, EndpointRegistry, EventTrigger, NotificationEvent, Publisher,
+    ResultDisposition, Subscriber, topics,
 };
-use crate::config::BackgroundModelTier;
-use crate::models::factory::build_provider_chain;
-use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 
-const INBOX_TARGET: &str = "inbox";
-
-/// Spawn the LLM notification router as a bus subscriber.
+/// Spawn the notification router as a bus subscriber.
 ///
 /// Subscribes to `TopicId::BackgroundResult` and routes each `AgentResultEvent`
-/// through two layers: programmatic rules first, then LLM-based routing for
-/// everything else.
+/// by its declared disposition.
 ///
 /// Returns `None` if subscription fails.
 pub(crate) async fn spawn_notification_router(
     bus_handle: &BusHandle,
-    spawn_context: &SpawnContext,
     endpoint_registry: EndpointRegistry,
     publisher: Publisher,
-    alerts_path: PathBuf,
 ) -> Option<JoinHandle<()>> {
     let subscriber = match bus_handle.subscribe(topics::Background).await {
         Ok(s) => s,
@@ -42,31 +34,9 @@ pub(crate) async fn spawn_notification_router(
         }
     };
 
-    // Build a small-tier provider for LLM routing decisions
-    let specs = spawn_context.background_config.models.resolve_tier(
-        &BackgroundModelTier::Small,
-        &spawn_context.main_provider_specs,
-    );
-
-    let provider = match build_provider_chain(
-        &specs,
-        spawn_context.max_tokens,
-        spawn_context.http_client.clone(),
-        spawn_context.retry_config.clone(),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to build provider for notification router, falling back to inbox-only routing");
-            // Fall back to a simple inbox router if we can't build the LLM provider
-            return Some(tokio::spawn(fallback_router_loop(subscriber, publisher)));
-        }
-    };
-
     let router = NotificationRouter {
-        provider,
         endpoint_registry,
         publisher,
-        alerts_path,
     };
 
     Some(tokio::spawn(router_loop(subscriber, router)))
@@ -74,10 +44,8 @@ pub(crate) async fn spawn_notification_router(
 
 /// The notification router state.
 struct NotificationRouter {
-    provider: Box<dyn ModelProvider>,
     endpoint_registry: EndpointRegistry,
     publisher: Publisher,
-    alerts_path: PathBuf,
 }
 
 /// Main loop: receive agent results and route them.
@@ -95,210 +63,51 @@ async fn router_loop(mut subscriber: Subscriber<AgentResultEvent>, router: Notif
     tracing::info!("notification router shutting down");
 }
 
-/// Fallback loop when LLM provider is unavailable: routes everything to inbox.
-async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publisher: Publisher) {
-    loop {
-        match subscriber.recv().await {
-            Ok(Some(agent_result)) => {
-                if agent_result.heartbeat_status == HeartbeatStatus::Ok {
-                    tracing::trace!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
-                    continue;
-                }
-
-                if matches!(agent_result.source, EventTrigger::Agent) {
-                    tracing::debug!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
-                    publish_to_agent_main(&agent_result, &publisher).await;
-                    continue;
-                }
-
-                tracing::debug!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
-                publish_to_targets(&agent_result, &[INBOX_TARGET.to_string()], &publisher).await;
-            }
-            Ok(None) => break,
-            Err(e) => {
-                tracing::error!(error = %e, "fallback router subscriber error, shutting down");
-                break;
-            }
-        }
-    }
-    tracing::info!("fallback notification router shutting down");
-}
-
-/// Route a single `AgentResultEvent` through the two-layer system.
+/// Route a single `AgentResultEvent` by its declared disposition.
 #[tracing::instrument(skip_all, fields(source_label = %event.source_label, task_id = %event.task_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
-    // Heartbeat-ok pulses are the majority of traffic through this path and are a
-    // silent discard by design, so check for them before logging anything at info —
+    // Silent results are the majority of traffic through this path and are a
+    // discard by design, so check for them before logging anything at info —
     // otherwise routine health-check pulses would spam the info log.
-    if event.heartbeat_status == HeartbeatStatus::Ok {
-        tracing::trace!("pulse check: HEARTBEAT_OK");
+    if event.disposition == ResultDisposition::Silent {
+        tracing::trace!("pulse check: nothing to report");
         return;
     }
 
     tracing::info!(
         source = %event.source,
+        disposition = ?event.disposition,
         "notification router received result"
     );
 
-    // Layer 1: Agent-spawned results → relay to main agent
+    // Agent-spawned results are relayed to the agent that asked for them.
     if matches!(event.source, EventTrigger::Agent) {
         tracing::info!("routing agent-spawned result to main agent");
         publish_to_agent_main(event, &router.publisher).await;
         return;
     }
 
-    // Layer 2: LLM-based routing
-    let targets = llm_route(event, router).await;
-    tracing::info!(
-        targets = ?targets,
-        "LLM routing decision"
-    );
-    publish_to_targets(event, &targets, &router.publisher).await;
+    let urgent = event.disposition == ResultDisposition::Urgent;
+    let targets = delivery_targets(&router.endpoint_registry, urgent);
+    tracing::info!(targets = ?targets, urgent, "delivering result");
+    publish_to_targets(event, &targets, urgent, &router.publisher).await;
 }
 
-/// Call the LLM to decide routing targets based on ALERTS.md policy.
-async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec<String> {
-    // Load ALERTS.md (reload each time for live policy updates)
-    let alerts_content = match tokio::fs::read_to_string(&router.alerts_path).await {
-        Ok(content) => content,
-        Err(e) => {
-            tracing::warn!(error = %e, path = %router.alerts_path.display(), "failed to read ALERTS.md, using empty policy");
-            String::new()
-        }
-    };
-
-    // Enumerate available notification endpoints
-    let notify_endpoints = router.endpoint_registry.notify();
-    let mut available_targets: Vec<&str> = vec![INBOX_TARGET];
-    available_targets.extend(notify_endpoints.iter().map(|e| e.id.as_ref()));
-
-    tracing::debug!(
-        source_label = %event.source_label,
-        available_targets = ?available_targets,
-        has_alerts_policy = !alerts_content.is_empty(),
-        "LLM routing: building prompt"
-    );
-
-    // Build the routing prompt
-    let prompt = build_routing_prompt(event, &available_targets, &alerts_content);
-
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "targets": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "notification channel names to route this result to"
-            }
-        },
-        "required": ["targets"],
-        "additionalProperties": false
-    });
-
-    let options = CompletionOptions {
-        max_tokens: Some(256),
-        response_format: ResponseFormat::JsonSchema {
-            name: "routing_decision".to_string(),
-            schema,
-        },
-        ..CompletionOptions::default()
-    };
-
-    let messages = vec![Message::user(prompt)];
-
-    match router.provider.complete(&messages, &[], &options).await {
-        Ok(response) => {
-            tracing::trace!(
-                source_label = %event.source_label,
-                raw_response = %response.content,
-                "LLM routing response"
-            );
-            parse_routing_response(&response.content, &available_targets)
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                source_label = %event.source_label,
-                "LLM routing failed, falling back to inbox"
-            );
-            vec![INBOX_TARGET.to_string()]
-        }
+/// Inbox always; every configured notification channel as well when urgent.
+fn delivery_targets(registry: &EndpointRegistry, urgent: bool) -> Vec<String> {
+    let mut targets = vec![INBOX_TARGET.to_string()];
+    if urgent {
+        targets.extend(
+            registry
+                .notify()
+                .into_iter()
+                .map(|e| e.id.as_ref().to_string()),
+        );
     }
+    targets
 }
 
-/// Build the LLM prompt for routing decisions.
-fn build_routing_prompt(
-    event: &AgentResultEvent,
-    available_targets: &[&str],
-    alerts_content: &str,
-) -> String {
-    let source_display = event.source.to_string();
-    let status = match &event.status {
-        crate::bus::AgentResultStatus::Completed => "completed",
-        crate::bus::AgentResultStatus::Cancelled => "cancelled",
-        crate::bus::AgentResultStatus::Failed { .. } => "failed",
-    };
-
-    let targets_list = available_targets.join(", ");
-
-    format!(
-        "You are a notification routing system. Decide where to deliver a background task result.\n\n\
-         ## Result\n\
-         - Source: {source_display}\n\
-         - Label: {label}\n\
-         - Preset: {preset}\n\
-         - Status: {status}\n\
-         - Summary: {summary}\n\n\
-         ## Available Targets\n\
-         {targets_list}\n\n\
-         ## Routing Policy (ALERTS.md)\n\
-         {alerts}\n\n\
-         Based on the result content and the routing policy, respond with a JSON object \
-         containing a \"targets\" array of channel names to deliver this result to. \
-         Only use channel names from the available targets list.",
-        label = event.source_label,
-        preset = event.agent_preset.as_ref(),
-        summary = event.summary,
-        alerts = if alerts_content.is_empty() {
-            "No policy configured. Default: route to inbox."
-        } else {
-            &alerts_content
-        },
-    )
-}
-
-/// Parse the LLM response and validate targets against known endpoints.
-fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String> {
-    let parsed: Result<serde_json::Value, _> = serde_json::from_str(response);
-
-    let targets = match parsed {
-        Ok(val) => val
-            .get("targets")
-            .and_then(|t| t.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
-        Err(e) => {
-            tracing::warn!(error = %e, raw_response = %response, "failed to parse LLM routing response, falling back to inbox");
-            return vec![INBOX_TARGET.to_string()];
-        }
-    };
-
-    // Filter to only valid targets
-    let validated: Vec<String> = targets
-        .into_iter()
-        .filter(|t| valid_targets.contains(&t.as_str()))
-        .collect();
-
-    if validated.is_empty() {
-        vec![INBOX_TARGET.to_string()]
-    } else {
-        validated
-    }
-}
+const INBOX_TARGET: &str = "inbox";
 
 /// Publish a result as a `MessageEvent` to the `UserMessage` topic.
 async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) {
@@ -351,11 +160,17 @@ fn format_agent_result_message(event: &AgentResultEvent) -> String {
 }
 
 /// Publish notifications to the specified targets.
-async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publisher: &Publisher) {
+async fn publish_to_targets(
+    event: &AgentResultEvent,
+    targets: &[String],
+    urgent: bool,
+    publisher: &Publisher,
+) {
     let notification = NotificationEvent {
         title: event.source_label.clone(),
         content: event.summary.clone(),
         source: event.source.clone(),
+        urgent,
         timestamp: event.timestamp,
     };
 
@@ -386,7 +201,9 @@ async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publis
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{AgentResultStatus, PresetName};
+    use crate::bus::{
+        AgentResultStatus, EndpointCapabilities, EndpointEntry, NotifyName, PresetName, TopicId,
+    };
     use chrono::NaiveDate;
 
     fn sample_timestamp() -> chrono::NaiveDateTime {
@@ -396,13 +213,13 @@ mod tests {
             .unwrap()
     }
 
-    fn sample_event() -> AgentResultEvent {
+    fn sample_event(disposition: ResultDisposition) -> AgentResultEvent {
         AgentResultEvent {
             task_id: "t1".into(),
             source_label: "pulse:email_check".into(),
             agent_preset: PresetName::from("general-purpose"),
             source: EventTrigger::Pulse,
-            heartbeat_status: HeartbeatStatus::Substantive,
+            disposition,
             status: AgentResultStatus::Completed,
             summary: "3 new emails found".into(),
             transcript_path: None,
@@ -410,72 +227,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_routing_response_valid() {
-        let response = r#"{"targets": ["inbox", "ntfy_phone"]}"#;
-        let valid = vec!["inbox", "ntfy_phone", "ntfy_desktop"];
-        let result = parse_routing_response(response, &valid);
-        assert_eq!(result, vec!["inbox", "ntfy_phone"]);
+    fn registry_with_channels(names: &[&str]) -> EndpointRegistry {
+        let reg = EndpointRegistry::new();
+        for name in names {
+            reg.register(EndpointEntry {
+                id: crate::bus::EndpointId::from(*name),
+                topic: TopicId::Notification(NotifyName::from(*name)),
+                capabilities: EndpointCapabilities::NOTIFY_ONLY,
+                display_name: (*name).to_string(),
+            });
+        }
+        reg
     }
 
     #[test]
-    fn parse_routing_response_filters_unknown() {
-        let response = r#"{"targets": ["inbox", "unknown_channel"]}"#;
-        let valid = vec!["inbox", "ntfy_phone"];
-        let result = parse_routing_response(response, &valid);
-        assert_eq!(result, vec!["inbox"]);
+    fn normal_result_goes_to_inbox_only() {
+        let reg = registry_with_channels(&["ntfy_phone", "ops_hook"]);
+        let targets = delivery_targets(&reg, false);
+        assert_eq!(targets, vec!["inbox"]);
     }
 
     #[test]
-    fn parse_routing_response_empty_falls_back_to_inbox() {
-        let response = r#"{"targets": []}"#;
-        let valid = vec!["inbox", "ntfy_phone"];
-        let result = parse_routing_response(response, &valid);
-        assert_eq!(result, vec!["inbox"]);
+    fn urgent_result_fans_out_to_every_channel() {
+        let reg = registry_with_channels(&["ntfy_phone", "ops_hook"]);
+        let mut targets = delivery_targets(&reg, true);
+        targets.sort();
+        assert_eq!(targets, vec!["inbox", "ntfy_phone", "ops_hook"]);
     }
 
     #[test]
-    fn parse_routing_response_invalid_json_falls_back() {
-        let response = "not json";
-        let valid = vec!["inbox"];
-        let result = parse_routing_response(response, &valid);
-        assert_eq!(result, vec!["inbox"]);
+    fn urgent_with_no_channels_configured_still_reaches_inbox() {
+        let reg = registry_with_channels(&[]);
+        let targets = delivery_targets(&reg, true);
+        assert_eq!(
+            targets,
+            vec!["inbox"],
+            "an urgent result must never be dropped for want of a push channel"
+        );
     }
 
     #[test]
-    fn parse_routing_response_all_unknown_falls_back() {
-        let response = r#"{"targets": ["fake1", "fake2"]}"#;
-        let valid = vec!["inbox"];
-        let result = parse_routing_response(response, &valid);
-        assert_eq!(result, vec!["inbox"]);
-    }
+    fn interactive_endpoints_are_never_delivery_targets() {
+        let reg = registry_with_channels(&["ntfy_phone"]);
+        reg.register(EndpointEntry {
+            id: crate::bus::EndpointId::from("websocket"),
+            topic: TopicId::Notification(NotifyName::from("websocket")),
+            capabilities: EndpointCapabilities::INTERACTIVE,
+            display_name: "websocket".to_string(),
+        });
 
-    #[test]
-    fn build_routing_prompt_contains_event_details() {
-        let event = sample_event();
-        let targets = vec!["inbox", "ntfy_phone"];
-        let alerts = "Route errors to ntfy.";
-
-        let prompt = build_routing_prompt(&event, &targets, alerts);
-        assert!(prompt.contains("pulse:email_check"));
-        assert!(prompt.contains("3 new emails found"));
-        assert!(prompt.contains("inbox, ntfy_phone"));
-        assert!(prompt.contains("Route errors to ntfy."));
-        assert!(prompt.contains("completed"));
-    }
-
-    #[test]
-    fn build_routing_prompt_empty_alerts() {
-        let event = sample_event();
-        let targets = vec!["inbox"];
-
-        let prompt = build_routing_prompt(&event, &targets, "");
-        assert!(prompt.contains("No policy configured"));
+        let targets = delivery_targets(&reg, true);
+        assert!(
+            !targets.iter().any(|t| t == "websocket"),
+            "interactive endpoints are reachable only via send_message"
+        );
     }
 
     #[test]
     fn format_agent_result_message_completed() {
-        let event = sample_event();
+        let event = sample_event(ResultDisposition::Normal);
         let msg = format_agent_result_message(&event);
         assert!(msg.contains("[Background Task Result]"));
         assert!(msg.contains("pulse:email_check"));
@@ -485,7 +295,7 @@ mod tests {
 
     #[test]
     fn format_agent_result_message_failed() {
-        let mut event = sample_event();
+        let mut event = sample_event(ResultDisposition::Normal);
         event.status = AgentResultStatus::Failed {
             error: "connection refused".into(),
         };
@@ -501,7 +311,7 @@ mod tests {
 
     #[test]
     fn format_agent_result_message_cancelled() {
-        let mut event = sample_event();
+        let mut event = sample_event(ResultDisposition::Normal);
         event.status = AgentResultStatus::Cancelled;
         event.summary = String::new();
 
@@ -512,11 +322,101 @@ mod tests {
 
     #[test]
     fn format_agent_result_message_with_transcript() {
-        let mut event = sample_event();
+        let mut event = sample_event(ResultDisposition::Normal);
         event.transcript_path = Some(std::path::PathBuf::from("/var/log/residuum/t1.transcript"));
 
         let msg = format_agent_result_message(&event);
         assert!(msg.contains("Transcript:"));
         assert!(msg.contains("t1.transcript"));
+    }
+
+    #[tokio::test]
+    async fn silent_result_is_delivered_nowhere() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        route_agent_result(&sample_event(ResultDisposition::Silent), &router).await;
+
+        let got = tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
+            .await
+            .ok();
+        assert!(got.is_none(), "silent results must not reach the inbox");
+    }
+
+    #[tokio::test]
+    async fn urgent_result_reaches_inbox_and_channel() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let mut ntfy_sub: Subscriber<NotificationEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        route_agent_result(&sample_event(ResultDisposition::Urgent), &router).await;
+
+        let inbox_item =
+            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert!(inbox_item.urgent, "urgency must survive to the channel");
+
+        let pushed = tokio::time::timeout(std::time::Duration::from_millis(200), ntfy_sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(pushed.title, "pulse:email_check");
+        assert!(pushed.urgent);
+    }
+
+    #[tokio::test]
+    async fn normal_result_does_not_reach_a_channel() {
+        let handle = crate::bus::spawn_broker();
+        let mut ntfy_sub: Subscriber<NotificationEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        route_agent_result(&sample_event(ResultDisposition::Normal), &router).await;
+
+        let got = tokio::time::timeout(std::time::Duration::from_millis(100), ntfy_sub.recv())
+            .await
+            .ok();
+        assert!(got.is_none(), "only urgent results should push");
+    }
+
+    #[tokio::test]
+    async fn agent_spawned_result_relays_to_the_main_agent() {
+        let handle = crate::bus::spawn_broker();
+        let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Agent;
+        route_agent_result(&event, &router).await;
+
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(200), user_sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(msg.content.contains("[Background Task Result]"));
     }
 }

@@ -17,10 +17,10 @@ mod types;
 pub use broker::{BusHandle, spawn_broker};
 pub use endpoint::EndpointCapabilities;
 pub use events::{
-    AgentResultEvent, AgentResultStatus, ErrorEvent, EventTrigger, HeartbeatStatus,
+    AgentResultEvent, AgentResultStatus, ErrorEvent, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent,
-    ResponseEvent, SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
-    TurnLifecycleEvent,
+    ResponseEvent, ResultDisposition, SpawnRequestEvent, ToolActivityEvent, ToolCallEvent,
+    ToolResultEvent, TurnLifecycleEvent,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

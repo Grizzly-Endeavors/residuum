@@ -71,18 +71,39 @@ Explain the `HEARTBEAT_OK` convention: when a sub-agent returns this exact strin
 
 ## Step 3: Notification Routing
 
-Results are routed automatically. A small model reads each result and decides where it goes, following the policy in `ALERTS.md`. There is no per-pulse routing field -- do not add a `channels:` key to a pulse, it is not real and will be silently ignored.
+Results are filed to the inbox automatically. A check that finds nothing replies `HEARTBEAT_OK` and is discarded; a check that finds something that cannot wait ends its report with `HEARTBEAT_URGENT` and is also pushed to every configured notification channel.
 
-Explain the routing strategy in terms the user can act on:
-- By default everything substantive lands in the **inbox**, and nothing is lost.
-- To make a class of result reach them faster, add a rule to `ALERTS.md` naming a notification channel.
-- To make a pulse talk to them directly in conversation rather than filing to the inbox, set `agent: main` on that pulse. Use it sparingly -- it interrupts.
+There is no per-pulse routing field -- do not add a `channels:` key to a pulse, it is not real and will be silently ignored.
 
-For this setup, email is the reasonable candidate for `agent: main` or an ntfy rule, since new mail may need a prompt response. Calendar and GitHub checks fit the inbox.
+The sub-agent decides urgency, so steer it in the prompt. Revise the pulses from Step 2 to say what counts as urgent for each:
 
-Edit `ALERTS.md` in the workspace root to express that:
+```yaml
+pulses:
+  - name: email_check
+    schedule: "30m"
+    active_hours: "08:00-22:00"
+    tasks:
+      - name: check_inbox
+        prompt: "Check for unread emails. Summarize any that need attention. Anything genuinely time-sensitive -- a same-day deadline, something from my manager, an account security notice -- is urgent. Report HEARTBEAT_OK if nothing new."
 
-```markdown
+  - name: github_activity
+    schedule: "2h"
+    active_hours: "09:00-18:00"
+    tasks:
+      - name: check_prs
+        prompt: "Check for open PRs that need my review or PRs I authored that have new comments. This is informational -- it is never urgent. Report HEARTBEAT_OK if nothing needs attention."
+```
+
+Note the second one explicitly rules urgency out. Telling a check what is *not* urgent is as useful as telling it what is.
+
+If the user wants phone notifications for the urgent cases, help set up an ntfy channel in `config/channels.toml`:
+```toml
+[channels.phone]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "my-residuum"
+```
+
 ## Rules
 - Anything from email_check that looks time-sensitive -> ntfy + inbox
 - Calendar and GitHub findings -> inbox only

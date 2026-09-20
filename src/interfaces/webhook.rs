@@ -116,6 +116,7 @@ pub async fn webhook_handler(
         title: format!("webhook:{name}"),
         content,
         source: crate::bus::EventTrigger::Webhook(name.clone()),
+        urgent: false,
         timestamp: crate::time::now_local(chrono_tz::UTC),
     };
 

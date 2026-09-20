@@ -159,11 +159,12 @@ port = 7700
 # format = "raw"
 
 # ── Notification routing ────────────────────────────────────────────────────
-# Background task results (pulses, actions, subagents) are routed by an LLM
-# notification router. Routing policy is defined in ALERTS.md at the workspace
-# root (~/.residuum/workspace/ALERTS.md). A default is created at bootstrap.
-# Edit ALERTS.md to control which results go to notification channels, inbox,
-# or interactive endpoints. Changes take effect immediately.
+# Background task results (pulses, actions, subagents) are filed to the agent
+# inbox. A sub-agent that ends its summary with HEARTBEAT_URGENT also pushes to
+# every notification channel defined in config/channels.toml. A pulse whose
+# summary contains HEARTBEAT_OK is discarded without delivery.
+# Urgency is decided by the sub-agent that ran the task, so it is steered by
+# how a pulse's prompt is worded rather than by configuration here.
 
 # ── Agent ability gates (optional) ───────────────────────────────────────────
 # Controls what the agent can modify at runtime.

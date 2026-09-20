@@ -40,6 +40,7 @@ mod background_integration {
             title: "test_script".to_string(),
             content: "found 5 items".to_string(),
             source: EventTrigger::Agent,
+            urgent: false,
             timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
                 .unwrap()
                 .and_hms_opt(12, 0, 0)

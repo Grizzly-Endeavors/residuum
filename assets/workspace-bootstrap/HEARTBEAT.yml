@@ -1,7 +1,8 @@
 # HEARTBEAT.yml — Pulse monitoring configuration
 #
 # Define ambient checks the agent performs on a schedule.
-# Results route through the notification router based on ALERTS.md policy.
+# Results are filed to the inbox. End a summary with HEARTBEAT_URGENT to also
+# push it to every configured notification channel.
 #
 # Fields:
 #   schedule: duration string — "30m", "2h", "24h"

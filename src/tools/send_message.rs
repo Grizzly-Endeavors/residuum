@@ -203,6 +203,7 @@ impl Tool for SendMessageTool {
                 ),
                 content: content.clone(),
                 source: EventTrigger::Agent,
+                urgent: false,
                 timestamp: now,
             };
             let topic = topics::Notification(NotifyName::from(endpoint_name));
