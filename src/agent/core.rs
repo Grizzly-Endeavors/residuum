@@ -194,25 +194,41 @@ impl Agent {
         self.recent_messages.push(Message::user(content));
     }
 
-    fn memory_ctx(&self) -> MemoryContext<'_> {
+    /// Build a [`MemoryContext`] from borrowed observation/narrative fields.
+    ///
+    /// Takes explicit field references rather than `&self` so callers that
+    /// also need a simultaneous `&mut self.recent_messages` (e.g. turns that
+    /// push a message into the buffer) aren't blocked by a whole-struct
+    /// immutable borrow.
+    fn memory_ctx<'a>(
+        observations: Option<&'a str>,
+        recent_context: Option<&'a str>,
+    ) -> MemoryContext<'a> {
         MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
+            observations,
+            recent_context,
         }
     }
 
+    /// Build a [`TurnResources`] from borrowed component fields.
+    ///
+    /// Takes explicit field references rather than `&self` for the same
+    /// reason as [`Agent::memory_ctx`].
     fn turn_resources<'a>(
-        &'a self,
         provider: &'a dyn ModelProvider,
+        tools: &'a ToolRegistry,
+        tool_filter: &'a SharedToolFilter,
+        mcp_registry: &'a SharedMcpRegistry,
         identity: &'a IdentityFiles,
+        options: &'a CompletionOptions,
     ) -> TurnResources<'a> {
         TurnResources {
             provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
+            tools,
+            tool_filter,
+            mcp_registry,
             identity,
-            options: &self.options,
+            options,
         }
     }
 
@@ -249,18 +265,16 @@ impl Agent {
             "[Background results require your attention. Review and take action.]",
         ));
 
-        let memory_ctx = MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
-        };
-        let resources = TurnResources {
-            provider: &*self.provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
-            identity: &self.identity,
-            options: &self.options,
-        };
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
+        let resources = Self::turn_resources(
+            &*self.provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &self.identity,
+            &self.options,
+        );
         let events = EventContext {
             publisher,
             output_endpoint,
@@ -325,18 +339,16 @@ impl Agent {
                 .push(Message::user_with_images(user_input, images.to_vec()));
         }
 
-        let memory_ctx = MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
-        };
-        let resources = TurnResources {
-            provider: &*self.provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
-            identity: &self.identity,
-            options: &self.options,
-        };
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
+        let resources = Self::turn_resources(
+            &*self.provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &self.identity,
+            &self.options,
+        );
         let events = EventContext {
             publisher,
             output_endpoint,
@@ -386,12 +398,20 @@ impl Agent {
         // snapshot for this turn only.
         let identity = self.load_identity_snapshot().await;
 
-        let memory_ctx = self.memory_ctx();
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
 
         // System turns don't participate in interrupts — use a dead-end channel
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
-        let resources = self.turn_resources(provider, &identity);
+        let resources = Self::turn_resources(
+            provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &identity,
+            &self.options,
+        );
 
         let events = EventContext {
             publisher,
@@ -431,7 +451,8 @@ impl Agent {
         // Reload identity so `/context` reflects on-disk edits, not the snapshot
         // from the last turn.
         let identity = self.load_identity_snapshot().await;
-        let memory_ctx = self.memory_ctx();
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
 
         let filter = self.tool_filter.read().await;
         let builtin_defs = self.tools.definitions(&filter);
