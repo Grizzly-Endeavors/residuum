@@ -14,6 +14,14 @@ pub enum Interrupt {
     BackgroundResult(AgentResultEvent),
     /// The subconscious classifier found a course correction to inject.
     Subconscious(String),
+    /// The user asked to stop the current turn.
+    ///
+    /// Observed at the tool loop's checkpoint (between iterations) so a stop
+    /// that lands while a tool is running still lets that tool finish before
+    /// the turn ends. An in-flight model call is cancelled separately and
+    /// immediately via the turn's `CancellationToken` — this variant only
+    /// carries the "record that it happened" half of a stop.
+    Stopped,
 }
 
 /// Create a dead-end receiver that will never receive any messages.

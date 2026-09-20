@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{PromptContext, SkillsContext, build_subagent_system_content};
 use crate::agent::interrupt::dead_interrupt_rx;
@@ -195,12 +196,17 @@ pub(crate) async fn execute_subagent(
 
     let prompt_ctx = PromptContext { skills: skills_ctx };
 
+    // Sub-agent turns are stopped by the spawner cancelling the whole task
+    // future (see `BackgroundTaskSpawner::cancel`), not by this token — it
+    // is never triggered.
+    let stop_token = CancellationToken::new();
     let turn_resources = TurnResources {
         provider: &*resources.provider,
         tools: &resources.tools,
         mcp_registry: &resources.mcp_registry,
         identity: &resources.identity,
         options: &resources.options,
+        stop_token: &stop_token,
     };
 
     let events = EventContext {
