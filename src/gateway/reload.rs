@@ -532,7 +532,7 @@ fn reload_background_config(rt: &mut GatewayRuntime, new_cfg: &Config) {
 /// Rescan skill directories.
 async fn reload_skills(rt: &mut GatewayRuntime) {
     let mut skill_guard = rt.skill_state.lock().await;
-    if let Err(err) = skill_guard.rescan(None).await {
+    if let Err(err) = skill_guard.rescan().await {
         tracing::warn!(error = %err, "skill rescan failed during reload");
     } else {
         tracing::info!("skills rescanned");

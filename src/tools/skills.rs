@@ -180,9 +180,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let state = Arc::new(tokio::sync::Mutex::new(SkillState::new(
             index,
             vec![dir.path().to_path_buf()],

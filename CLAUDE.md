@@ -4,11 +4,10 @@
 
 - [Design Philosophy](./docs/design-philosophy.md)
 - [Residuum Design](./docs/residuum-design.md)
-- [Projects Context](./docs/projects-context-design.md)
 - [Personal Agent](./docs/personal-agent-design.md)
 - [Background Tasks](./docs/background-tasks-design.md)
 - [Memory Search](./docs/memory-search-design.md)
-- [Notification Routing](./docs/notification-routing-design.md)
+- [Notification Routing](./docs/archive/notification-routing-design.md)
 - [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
 
 The design docs above are historical records and may not reflect current behavior — `docs/systems-usage/` is the authoritative reference for how systems work today.

@@ -55,7 +55,6 @@ function createState(): MockState {
         { name: "CHANNELS.yml", entry_type: "file", size: 392 },
         { name: "memory", entry_type: "directory", size: null },
         { name: "skills", entry_type: "directory", size: null },
-        { name: "projects", entry_type: "directory", size: null },
         { name: "config", entry_type: "directory", size: null },
         { name: "inbox", entry_type: "directory", size: null },
         { name: "subagents", entry_type: "directory", size: null },
@@ -71,12 +70,6 @@ function createState(): MockState {
       ],
       "skills/code-review": [
         { name: "SKILL.md", entry_type: "file", size: 478 },
-      ],
-      "projects": [
-        { name: "residuum", entry_type: "directory", size: null },
-      ],
-      "projects/residuum": [
-        { name: "context.md", entry_type: "file", size: 2340 },
       ],
       "config": [
         { name: "mcp.json", entry_type: "file", size: 1567 },
@@ -102,7 +95,6 @@ function createState(): MockState {
       "skills/research/SKILL.md": "# Research Skill\n\n## Purpose\nConduct thorough research on topics using available tools and memory.\n\n## Triggers\n- User asks to \"research\" or \"look into\" a topic\n- User asks for comprehensive analysis\n\n## Process\n1. Search memory for existing knowledge\n2. Use web search if available\n3. Synthesize findings\n4. Store key observations\n",
       "skills/research/prompt.md": "You are conducting research on the following topic: {{topic}}\n\n## Guidelines\n- Search memory first for existing knowledge\n- Use web search tools if available\n- Cross-reference multiple sources\n- Note confidence levels for each finding\n- Store important observations for future reference\n\n## Output Format\n- Summary (2-3 sentences)\n- Key findings (bulleted list)\n- Sources and confidence levels\n- Suggested follow-up questions\n",
       "skills/code-review/SKILL.md": "# Code Review Skill\n\n## Purpose\nReview code changes for quality, correctness, and style.\n\n## Triggers\n- User asks for code review\n- PR review requests\n\n## Checklist\n- [ ] Logic correctness\n- [ ] Error handling\n- [ ] Style consistency\n- [ ] Test coverage\n- [ ] Security considerations\n",
-      "projects/residuum/context.md": "# Residuum Project Context\n\n## Overview\nPersonal agent framework written in Rust with a web UI.\n\n## Current Focus\n- Workspace file browser implementation\n- Memory search optimization\n- Notification routing system\n\n## Architecture\n- Backend: Rust + Axum\n- Frontend: Svelte 5 + TypeScript\n- Storage: SQLite + file-based workspace\n- LLM: Multi-provider support (Anthropic, OpenAI, Gemini, Ollama)\n",
       "config/mcp.json": '{\n  "servers": {\n    "filesystem": {\n      "command": "mcp-filesystem",\n      "args": ["--root", "/home/user/projects"]\n    }\n  }\n}',
       "config/channels.toml": '[web]\nenabled = true\nport = 3001\n\n[discord]\nenabled = false\ntoken_ref = "secret:discord_token"\n\n[telegram]\nenabled = true\ntoken_ref = "secret:telegram_token"\nchat_id = "123456789"\n',
       "memory/observations.jsonl": '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
@@ -374,7 +366,7 @@ const cannedResponses = [
     "- **Discord** — Real-time alerts via bot DM\n" +
     "- **Telegram** — Daily digest summaries\n" +
     "- **Webhook** — Custom HTTP POST for external integrations\n\n" +
-    "Each channel can be configured independently per project context. " +
+    "Each channel can be configured independently. " +
     "The priority routing rules determine which channel receives which notifications.\n\n" +
     "> **Tip**: Use `secret:discord_token` syntax in your config to reference encrypted secrets.",
 

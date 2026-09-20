@@ -7,8 +7,7 @@ mod types;
 
 // Re-export all public types at the `context` module level to preserve existing import paths.
 pub use types::{
-    ContextBreakdown, MemoryContext, ProjectsContext, PromptContext, SkillsContext, StatusLine,
-    SubagentsContext,
+    ContextBreakdown, MemoryContext, PromptContext, SkillsContext, StatusLine, SubagentsContext,
 };
 
 // Re-export assembly functions for use within the agent crate.

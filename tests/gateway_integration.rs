@@ -79,7 +79,7 @@ mod gateway_integration {
         Agent::new(
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
-            ToolFilter::new_shared(std::collections::HashSet::new()),
+            ToolFilter::new_shared(),
             residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             residuum::agent::AgentConfig {

@@ -8,23 +8,10 @@ use chrono::Utc;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use super::subagent::{
-    SubAgentOutput, SubAgentResources, execute_subagent, force_deactivate_project,
-};
+use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
 use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, truncate_prompt_preview};
 use crate::bus::AgentResultStatus;
-use crate::mcp::SharedMcpRegistry;
 use crate::models::Message;
-use crate::projects::activation::SharedProjectState;
-use crate::tools::SharedToolFilter;
-use crate::tools::path_policy::SharedPathPolicy;
-
-struct CleanupHandles {
-    project_state: SharedProjectState,
-    mcp_registry: SharedMcpRegistry,
-    path_policy: SharedPathPolicy,
-    tool_filter: SharedToolFilter,
-}
 
 /// Spawns and manages background tasks with bounded concurrency.
 pub struct BackgroundTaskSpawner {
@@ -100,18 +87,10 @@ impl BackgroundTaskSpawner {
                 }
             };
 
-            // Extract Arc clones for cancellation cleanup (cheap; no data copied)
-            let cleanup_handles = resources.as_ref().map(|r| CleanupHandles {
-                project_state: Arc::clone(&r.project_state),
-                mcp_registry: Arc::clone(&r.mcp_registry),
-                path_policy: Arc::clone(&r.path_policy),
-                tool_filter: Arc::clone(&r.tool_filter),
-            });
-
             let result = tokio::select! {
                 biased;
                 () = child_token.cancelled() => {
-                    build_cancelled_result(&task, &spawn_task_id, cleanup_handles).await
+                    build_cancelled_result(&task, &spawn_task_id)
                 }
                 outcome = async {
                     let res = resources.as_ref().ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
@@ -175,30 +154,9 @@ impl BackgroundTaskSpawner {
     }
 }
 
-/// Build a `BackgroundResult` for a cancelled task, cleaning up any active project.
-async fn build_cancelled_result(
-    task: &BackgroundTask,
-    spawn_task_id: &str,
-    cleanup_handles: Option<CleanupHandles>,
-) -> BackgroundResult {
+/// Build a `BackgroundResult` for a cancelled task.
+fn build_cancelled_result(task: &BackgroundTask, spawn_task_id: &str) -> BackgroundResult {
     tracing::info!(task_id = %spawn_task_id, "background task cancelled");
-    if let Some(handles) = cleanup_handles {
-        let active_name = handles
-            .project_state
-            .lock()
-            .await
-            .active_project_name()
-            .map(str::to_string);
-        if let Some(name) = active_name {
-            force_deactivate_project(
-                &name,
-                &handles.mcp_registry,
-                &handles.path_policy,
-                &handles.tool_filter,
-            )
-            .await;
-        }
-    }
 
     BackgroundResult {
         id: task.id.clone(),
@@ -458,16 +416,10 @@ mod tests {
         use crate::models::{
             CompletionOptions, Message, ModelError, ModelResponse, ToolDefinition,
         };
-        use crate::projects::activation::ProjectState;
-        use crate::projects::scanner::ProjectIndex;
         use crate::skills::{SkillIndex, SkillState};
-        use crate::tools::path_policy::PathPolicy;
         use crate::tools::{ToolFilter, ToolRegistry};
         use crate::workspace::identity::IdentityFiles;
-        use crate::workspace::layout::WorkspaceLayout;
         use async_trait::async_trait;
-        use std::collections::HashSet;
-        use std::path::PathBuf;
 
         struct BlockingProvider;
 
@@ -488,25 +440,17 @@ mod tests {
             }
         }
 
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let path_policy = PathPolicy::new_shared(PathBuf::from("/tmp"));
-        let tool_filter = ToolFilter::new_shared(HashSet::new());
+        let tool_filter = ToolFilter::new_shared();
         let mcp_registry = McpRegistry::new_shared();
         let resources = SubAgentResources {
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             tool_filter,
             mcp_registry,
-            project_state,
             skill_state,
-            path_policy,
             identity: IdentityFiles::default(),
             options: CompletionOptions::default(),
-            projects_ctx_index: None,
             skills_index: None,
             preset_instructions: None,
             include_identity: false,

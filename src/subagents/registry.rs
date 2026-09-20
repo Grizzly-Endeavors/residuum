@@ -20,7 +20,6 @@ use crate::background::types::{BackgroundTask, SubAgentConfig};
 use crate::bus::{BusHandle, PresetName, SpawnRequestEvent, Subscriber, topics};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
-use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
 
@@ -28,7 +27,6 @@ use crate::subagents::SubagentPresetIndex;
 pub struct SubagentRegistry {
     spawner: Arc<BackgroundTaskSpawner>,
     spawn_context: Arc<SpawnContext>,
-    project_state: SharedProjectState,
     skill_state: SharedSkillState,
     mcp_registry: SharedMcpRegistry,
     subagents_dir: PathBuf,
@@ -40,7 +38,6 @@ impl SubagentRegistry {
     pub(crate) fn new(
         spawner: Arc<BackgroundTaskSpawner>,
         spawn_context: Arc<SpawnContext>,
-        project_state: SharedProjectState,
         skill_state: SharedSkillState,
         mcp_registry: SharedMcpRegistry,
         subagents_dir: PathBuf,
@@ -48,7 +45,6 @@ impl SubagentRegistry {
         Self {
             spawner,
             spawn_context,
-            project_state,
             skill_state,
             mcp_registry,
             subagents_dir,
@@ -152,7 +148,6 @@ async fn handle_spawn_request(
     let resources = build_spawn_resources(
         &registry.spawn_context,
         &final_tier,
-        &registry.project_state,
         &registry.skill_state,
         Arc::clone(&registry.mcp_registry),
         Some((&preset_fm, preset_body)),

@@ -35,7 +35,7 @@ pub(crate) struct BackgroundTask {
 pub struct SubAgentConfig {
     /// The prompt/instructions for the sub-agent.
     pub prompt: String,
-    /// Additional context to prepend (e.g. project context).
+    /// Additional context to prepend to the sub-agent's prompt.
     pub context: Option<String>,
     /// Which model tier to use.
     pub model_tier: BackgroundModelTier,
@@ -111,8 +111,6 @@ pub enum PresetToolRestriction {
 
 /// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
 pub struct SubAgentBuildConfig {
-    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
-    pub gated_tools: HashSet<&'static str>,
     /// Optional preset-level tool restriction (denied or allowed-only).
     pub preset_tool_restriction: Option<PresetToolRestriction>,
     /// Workspace layout (used to set the path policy root).
@@ -121,7 +119,7 @@ pub struct SubAgentBuildConfig {
     pub identity: IdentityFiles,
     /// LLM completion options for the sub-agent turn.
     pub options: CompletionOptions,
-    /// Timezone used by project management tools.
+    /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
     /// Preset-specific instructions to inject into the subagent system prompt.
     pub preset_instructions: Option<String>,

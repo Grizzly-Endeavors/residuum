@@ -1,10 +1,9 @@
-//! Context loading: reads observations, recent context, project/skill/subagent data from disk or shared state.
+//! Context loading: reads observations, recent context, skill/subagent data from disk or shared state.
 
 use std::path::Path;
 
 use anyhow::Context;
 
-use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
 
@@ -55,19 +54,6 @@ pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result
         tracing::debug!(len = narrative.len(), "loaded recent context narrative");
     }
     Ok(result)
-}
-
-/// Build formatted strings for project context from shared project state.
-///
-/// Returns `(index_text, active_context_text)` — each `Option<String>`.
-pub(crate) async fn build_project_context_strings(
-    project_state: &SharedProjectState,
-) -> (Option<String>, Option<String>) {
-    let state = project_state.lock().await;
-    let formatted = state.format_index_for_prompt();
-    let index_text = (!formatted.is_empty()).then_some(formatted);
-    let active_text = state.format_active_context_for_prompt();
-    (index_text, active_text)
 }
 
 /// Build formatted strings for skills context from shared skill state.

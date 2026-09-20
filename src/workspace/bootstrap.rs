@@ -65,8 +65,6 @@ const DEFAULT_SUBCONSCIOUS: &str = include_str!("../../assets/workspace-bootstra
 const SYSTEM_SKILL_MD: &str = include_str!("../../assets/bundled-skills/residuum-system/SKILL.md");
 const SYSTEM_REF_MEMORY: &str =
     include_str!("../../assets/bundled-skills/residuum-system/references/memory-system.md");
-const SYSTEM_REF_PROJECTS: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/projects.md");
 const SYSTEM_REF_HEARTBEATS: &str =
     include_str!("../../assets/bundled-skills/residuum-system/references/heartbeats.md");
 const SYSTEM_REF_INBOX: &str =
@@ -259,7 +257,6 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
 
     write_if_missing(&system_dir.join("SKILL.md"), SYSTEM_SKILL_MD).await?;
     write_if_missing(&system_refs.join("memory-system.md"), SYSTEM_REF_MEMORY).await?;
-    write_if_missing(&system_refs.join("projects.md"), SYSTEM_REF_PROJECTS).await?;
     write_if_missing(&system_refs.join("heartbeats.md"), SYSTEM_REF_HEARTBEATS).await?;
     write_if_missing(&system_refs.join("inbox.md"), SYSTEM_REF_INBOX).await?;
     write_if_missing(
@@ -373,8 +370,6 @@ mod tests {
         assert!(layout.memory_dir().exists(), "memory dir should exist");
         assert!(layout.episodes_dir().exists(), "episodes dir should exist");
         assert!(layout.skills_dir().exists(), "skills dir should exist");
-        assert!(layout.projects_dir().exists(), "projects dir should exist");
-        assert!(layout.archive_dir().exists(), "archive dir should exist");
         assert!(layout.soul_md().exists(), "SOUL.md should exist");
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
@@ -486,10 +481,6 @@ mod tests {
         assert!(
             system_dir.join("references/memory-system.md").exists(),
             "memory-system.md"
-        );
-        assert!(
-            system_dir.join("references/projects.md").exists(),
-            "projects.md"
         );
         assert!(
             system_dir.join("references/heartbeats.md").exists(),
