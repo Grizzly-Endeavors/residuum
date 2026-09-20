@@ -117,16 +117,15 @@ async fn deliver_individual(
         subtitle: notif.title.replace('_', " "),
         body: truncate_body(&notif.content, 200),
     };
-    let category = config.default_category;
 
     if let Err(e) = bridge
         .post_notification(
             &id,
             text,
-            category.as_category_id(),
+            super::categories::NOTIFICATION_CATEGORY_ID,
             interruption_level_for(notif.urgent, config),
             config.sound,
-            category.as_category_id(),
+            super::categories::NOTIFICATION_CATEGORY_ID,
         )
         .await
     {

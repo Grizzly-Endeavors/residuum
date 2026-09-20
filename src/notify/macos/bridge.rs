@@ -6,7 +6,9 @@
 )]
 
 use super::MacosChannelConfig;
-use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
+use super::categories::{
+    MacosInterruptionLevel, MacosNotificationAction, NOTIFICATION_CATEGORY_ID,
+};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
@@ -62,7 +64,7 @@ impl MacosBridge {
             let center = UNUserNotificationCenter::currentNotificationCenter();
             let mut category_set: Vec<Retained<UNNotificationCategory>> = Vec::new();
 
-            for cat in MacosCategory::all() {
+            {
                 let actions = MacosNotificationAction::default_actions();
                 let mut ns_actions: Vec<Retained<objc2_user_notifications::UNNotificationAction>> =
                     Vec::new();
@@ -79,7 +81,7 @@ impl MacosBridge {
                     ns_actions.push(ns_action);
                 }
 
-                let cat_id = NSString::from_str(cat.as_category_id());
+                let cat_id = NSString::from_str(NOTIFICATION_CATEGORY_ID);
                 let actions_array = objc2_foundation::NSArray::from_retained_slice(&ns_actions);
                 let empty_intents: Retained<objc2_foundation::NSArray<NSString>> =
                     objc2_foundation::NSArray::from_retained_slice(&[]);

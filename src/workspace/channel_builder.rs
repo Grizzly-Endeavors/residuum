@@ -72,10 +72,9 @@ async fn build_macos_channel(
     kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
     use crate::notify::macos::MacosChannelConfig;
-    use crate::notify::macos::categories::{MacosCategory, MacosInterruptionLevel};
+    use crate::notify::macos::categories::MacosInterruptionLevel;
 
     let ExternalChannelKind::Macos {
-        default_category,
         default_priority,
         throttle_window_secs,
         sound,
@@ -87,16 +86,6 @@ async fn build_macos_channel(
     };
 
     let mut config = MacosChannelConfig::default();
-
-    if let Some(cat) = default_category {
-        match cat.parse::<MacosCategory>() {
-            Ok(c) => config.default_category = c,
-            Err(e) => {
-                tracing::warn!(channel = %name, error = %e, "invalid macOS channel config, skipping");
-                return None;
-            }
-        }
-    }
 
     if let Some(pri) = default_priority {
         match pri.parse::<MacosInterruptionLevel>() {
@@ -156,11 +145,8 @@ async fn build_windows_channel(
     kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
     use crate::notify::windows::WindowsChannelConfig;
-    use crate::notify::windows::categories::{WindowsCategory, WindowsScenario};
 
     let ExternalChannelKind::Windows {
-        default_category,
-        default_scenario,
         throttle_window_secs,
         sound,
         app_name,
@@ -171,26 +157,6 @@ async fn build_windows_channel(
     };
 
     let mut config = WindowsChannelConfig::default();
-
-    if let Some(cat) = default_category {
-        match cat.parse::<WindowsCategory>() {
-            Ok(c) => config.default_category = c,
-            Err(e) => {
-                tracing::warn!(channel = %name, error = %e, "invalid Windows channel config, skipping");
-                return None;
-            }
-        }
-    }
-
-    if let Some(scn) = default_scenario {
-        match scn.parse::<WindowsScenario>() {
-            Ok(s) => config.default_scenario = s,
-            Err(e) => {
-                tracing::warn!(channel = %name, error = %e, "invalid Windows channel config, skipping");
-                return None;
-            }
-        }
-    }
 
     if let Some(secs) = throttle_window_secs {
         config.throttle_window_secs = *secs;

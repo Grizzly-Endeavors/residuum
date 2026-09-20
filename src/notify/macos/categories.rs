@@ -4,57 +4,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Notification category mapped to macOS `UNNotificationCategory` identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum MacosCategory {
-    BackgroundResults,
-    Reminders,
-    InboxItems,
-    Alerts,
-}
-
-impl MacosCategory {
-    #[must_use]
-    pub fn as_category_id(&self) -> &'static str {
-        match self {
-            Self::BackgroundResults => "background-results",
-            Self::Reminders => "reminders",
-            Self::InboxItems => "inbox-items",
-            Self::Alerts => "alerts",
-        }
-    }
-
-    #[must_use]
-    pub fn all() -> &'static [Self] {
-        &[
-            Self::BackgroundResults,
-            Self::Reminders,
-            Self::InboxItems,
-            Self::Alerts,
-        ]
-    }
-}
-
-impl fmt::Display for MacosCategory {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_category_id())
-    }
-}
-
-impl std::str::FromStr for MacosCategory {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "background-results" => Ok(Self::BackgroundResults),
-            "reminders" => Ok(Self::Reminders),
-            "inbox-items" => Ok(Self::InboxItems),
-            "alerts" => Ok(Self::Alerts),
-            _ => anyhow::bail!("unknown macOS notification category: {s}"),
-        }
-    }
-}
+/// The single `UNNotificationCategory` Residuum registers.
+///
+/// macOS silently drops action buttons for notifications whose category is not
+/// registered, so the identifier used when posting must match the one
+/// registered at startup. One category is enough: every Residuum notification
+/// carries the same Open/Dismiss actions.
+pub const NOTIFICATION_CATEGORY_ID: &str = "background-results";
 
 /// Maps to macOS `UNNotificationInterruptionLevel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,88 +89,6 @@ impl MacosNotificationAction {
 )]
 mod tests {
     use super::*;
-
-    // ── MacosCategory tests ─────────────────────────────────────────────
-
-    #[test]
-    fn category_serde_roundtrip() {
-        for cat in MacosCategory::all() {
-            let json =
-                serde_json::to_string(cat).unwrap_or_else(|_| String::from("serialize failed"));
-            let parsed: MacosCategory =
-                serde_json::from_str(&json).unwrap_or(MacosCategory::BackgroundResults);
-            assert_eq!(*cat, parsed, "roundtrip failed for {cat}");
-        }
-    }
-
-    #[test]
-    fn category_kebab_case_serialization() {
-        assert_eq!(
-            serde_json::to_string(&MacosCategory::BackgroundResults).unwrap_or_default(),
-            "\"background-results\""
-        );
-        assert_eq!(
-            serde_json::to_string(&MacosCategory::InboxItems).unwrap_or_default(),
-            "\"inbox-items\""
-        );
-    }
-
-    #[test]
-    fn category_display() {
-        assert_eq!(
-            MacosCategory::BackgroundResults.to_string(),
-            "background-results"
-        );
-        assert_eq!(MacosCategory::Reminders.to_string(), "reminders");
-        assert_eq!(MacosCategory::InboxItems.to_string(), "inbox-items");
-        assert_eq!(MacosCategory::Alerts.to_string(), "alerts");
-    }
-
-    #[test]
-    fn category_id_matches_display() {
-        for cat in MacosCategory::all() {
-            assert_eq!(
-                cat.as_category_id(),
-                cat.to_string(),
-                "category_id and display should match for {cat}"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_category_valid() {
-        assert_eq!(
-            "background-results"
-                .parse::<MacosCategory>()
-                .unwrap_or(MacosCategory::Alerts),
-            MacosCategory::BackgroundResults
-        );
-        assert_eq!(
-            "reminders"
-                .parse::<MacosCategory>()
-                .unwrap_or(MacosCategory::Alerts),
-            MacosCategory::Reminders
-        );
-        assert_eq!(
-            "inbox-items"
-                .parse::<MacosCategory>()
-                .unwrap_or(MacosCategory::Alerts),
-            MacosCategory::InboxItems
-        );
-        assert_eq!(
-            "alerts"
-                .parse::<MacosCategory>()
-                .unwrap_or(MacosCategory::BackgroundResults),
-            MacosCategory::Alerts
-        );
-    }
-
-    #[test]
-    fn parse_category_invalid() {
-        assert!("unknown".parse::<MacosCategory>().is_err());
-        assert!("".parse::<MacosCategory>().is_err());
-        assert!("ALERTS".parse::<MacosCategory>().is_err());
-    }
 
     // ── MacosInterruptionLevel tests ────────────────────────────────────
 

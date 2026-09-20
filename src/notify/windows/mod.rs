@@ -1,6 +1,5 @@
 //! Native Windows notification channel via Toast notifications.
 
-pub mod categories;
 pub mod throttle;
 
 use async_trait::async_trait;
@@ -13,8 +12,6 @@ use super::channels::NotificationChannel;
 
 #[derive(Debug, Clone)]
 pub struct WindowsChannelConfig {
-    pub default_category: categories::WindowsCategory,
-    pub default_scenario: categories::WindowsScenario,
     pub throttle_window_secs: u64,
     pub sound: bool,
     pub app_name: String,
@@ -39,8 +36,6 @@ impl WindowsChannelConfig {
 impl Default for WindowsChannelConfig {
     fn default() -> Self {
         Self {
-            default_category: categories::WindowsCategory::BackgroundResults,
-            default_scenario: categories::WindowsScenario::Default,
             throttle_window_secs: 30,
             sound: true,
             app_name: "Residuum".to_string(),
@@ -111,11 +106,6 @@ mod tests {
         assert!(cfg.sound);
         assert_eq!(cfg.app_name, "Residuum");
         assert_eq!(cfg.app_id, "GrizzlyEndeavors.Residuum");
-        assert_eq!(
-            cfg.default_category,
-            categories::WindowsCategory::BackgroundResults
-        );
-        assert_eq!(cfg.default_scenario, categories::WindowsScenario::Default);
     }
 
     #[test]

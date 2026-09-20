@@ -15,7 +15,6 @@ use super::channels::NotificationChannel;
 
 #[derive(Debug, Clone)]
 pub struct MacosChannelConfig {
-    pub default_category: categories::MacosCategory,
     pub default_priority: categories::MacosInterruptionLevel,
     pub throttle_window_secs: u64,
     pub sound: bool,
@@ -41,7 +40,6 @@ impl MacosChannelConfig {
 impl Default for MacosChannelConfig {
     fn default() -> Self {
         Self {
-            default_category: categories::MacosCategory::BackgroundResults,
             default_priority: categories::MacosInterruptionLevel::Active,
             throttle_window_secs: 30,
             sound: true,
@@ -116,10 +114,6 @@ mod tests {
         assert!(cfg.sound);
         assert_eq!(cfg.app_name, "Residuum");
         assert!(cfg.web_url.is_none());
-        assert_eq!(
-            cfg.default_category,
-            categories::MacosCategory::BackgroundResults
-        );
         assert_eq!(
             cfg.default_priority,
             categories::MacosInterruptionLevel::Active
