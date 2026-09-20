@@ -18,7 +18,6 @@ use super::constants::{
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
     DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
     DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
-    DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
 use super::provider::ProviderSpec;
 
@@ -365,8 +364,6 @@ impl Default for LearningConfig {
 pub struct BackgroundConfig {
     /// Maximum number of concurrent background tasks.
     pub max_concurrent: usize,
-    /// Number of days to retain background task transcripts.
-    pub transcript_retention_days: u64,
     /// Model tier assignments for background tasks.
     pub models: BackgroundModelsConfig,
 }
@@ -375,7 +372,6 @@ impl Default for BackgroundConfig {
     fn default() -> Self {
         Self {
             max_concurrent: DEFAULT_MAX_CONCURRENT_BACKGROUND,
-            transcript_retention_days: DEFAULT_TRANSCRIPT_RETENTION_DAYS,
             models: BackgroundModelsConfig::default(),
         }
     }

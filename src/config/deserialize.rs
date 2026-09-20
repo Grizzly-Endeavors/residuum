@@ -357,8 +357,6 @@ pub(super) struct IdleConfigFile {
 pub(super) struct BackgroundConfigFile {
     /// Maximum number of concurrent background tasks.
     pub(super) max_concurrent: Option<usize>,
-    /// Number of days to retain background task transcripts.
-    pub(super) transcript_retention_days: Option<u64>,
 }
 
 /// Raw TOML `[cloud]` section.
