@@ -11,12 +11,12 @@
 
 use std::time::{Duration, Instant};
 
-use crate::bus::{EventTrigger, PresetName, SpawnRequestEvent};
+use crate::bus::{EventTrigger, SkillName, SpawnRequestEvent};
 
 use super::LearnSignal;
 
 /// Preset name of the learner sub-agent.
-const LEARNER_PRESET: &str = "learner";
+const LEARNER_SKILL: &str = "learner";
 
 /// In-memory state for the learning loop.
 ///
@@ -144,16 +144,17 @@ fn build_nudge_spawn() -> SpawnRequestEvent {
 
 /// Assemble a learner `SpawnRequestEvent`.
 ///
-/// No `model_tier_override` is set, so the `learner` preset's own `model_tier`
-/// frontmatter resolves at spawn time.
+/// The learner reasons about the user from the live transcript, so it runs on
+/// the large tier with the agent's own identity in its prompt.
 fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
     SpawnRequestEvent {
-        preset: PresetName::from(LEARNER_PRESET),
+        skill: Some(SkillName::from(LEARNER_SKILL)),
         source_label: source_label.to_string(),
         prompt,
         context: None,
         source: EventTrigger::Agent,
-        model_tier_override: None,
+        model_tier: crate::config::BackgroundModelTier::Large,
+        include_identity: true,
     }
 }
 
@@ -182,12 +183,16 @@ mod tests {
 
         // First call fires and batches both summaries into one prompt.
         let spawn = state.on_learn_signals(&signals, COOLDOWN, now).unwrap();
-        assert_eq!(spawn.preset.as_ref(), "learner");
+        assert_eq!(spawn.skill.as_ref().map(AsRef::as_ref), Some("learner"));
         assert_eq!(spawn.source_label, "learning:subconscious");
         assert!(spawn.prompt.contains("User prefers bullets."));
         assert!(spawn.prompt.contains("Worked around a 502."));
         assert!(spawn.prompt.contains("recent_messages.json"));
-        assert!(spawn.model_tier_override.is_none());
+        assert!(matches!(
+            spawn.model_tier,
+            crate::config::BackgroundModelTier::Large
+        ));
+        assert!(spawn.include_identity);
 
         // A second call inside the window is suppressed.
         assert!(

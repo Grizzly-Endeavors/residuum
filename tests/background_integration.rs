@@ -17,7 +17,7 @@ mod background_integration {
     use residuum::background::BackgroundTaskSpawner;
     use residuum::background::types::{BackgroundResult, format_background_result};
     use residuum::bus::AgentResultStatus;
-    use residuum::bus::{EventTrigger, NotificationEvent, PresetName, spawn_broker, topics};
+    use residuum::bus::{EventTrigger, NotificationEvent, spawn_broker, topics};
     use residuum::notify::channels::InboxChannel;
     use residuum::notify::subscriber::run_notify_subscriber;
 
@@ -90,7 +90,7 @@ mod background_integration {
             status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         // Transcript path was set (would have been written by spawner)
@@ -122,7 +122,7 @@ mod background_integration {
             status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let formatted = format_background_result(&result);
@@ -151,7 +151,7 @@ mod background_integration {
             status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         spawner.send_result(result).await.unwrap();
@@ -177,6 +177,8 @@ mod background_integration {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
+            model_tier: None,
+            include_identity: false,
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),
@@ -185,7 +187,7 @@ mod background_integration {
 
         match build_pulse_execution(&pulse) {
             PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
+                assert_eq!(spawn_event.skill, None);
                 assert_eq!(spawn_event.source_label, "pulse:status_check");
                 assert!(spawn_event.prompt.contains("status_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));

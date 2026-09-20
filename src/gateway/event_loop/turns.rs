@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
-use crate::agent::context::{PromptContext, SkillsContext, SubagentsContext};
+use crate::agent::context::{PromptContext, SkillsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
     EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MessageEvent, NotifyName,
@@ -17,9 +17,8 @@ use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::models::ImageData;
 use crate::skills::SharedSkillState;
-use crate::workspace::layout::WorkspaceLayout;
 
-use crate::agent::context::loading::{build_skill_context_strings, build_subagents_context_string};
+use crate::agent::context::loading::build_skill_context_strings;
 use crate::gateway::memory::MemorySubsystems;
 
 /// Raw prompt context strings for constructing a `PromptContext`.
@@ -28,7 +27,6 @@ use crate::gateway::memory::MemorySubsystems;
 pub struct PromptContextStrings {
     pub skill_index: Option<String>,
     pub skill_active: Option<String>,
-    pub subagents_index: Option<String>,
 }
 
 impl PromptContextStrings {
@@ -39,24 +37,16 @@ impl PromptContextStrings {
                 index: self.skill_index.as_deref(),
                 active_instructions: self.skill_active.as_deref(),
             },
-            subagents: SubagentsContext {
-                index: self.subagents_index.as_deref(),
-            },
         }
     }
 }
 
-/// Load prompt context strings from skill and subagent state.
-pub async fn load_prompt_context_strings(
-    skill_state: &SharedSkillState,
-    layout: &WorkspaceLayout,
-) -> PromptContextStrings {
+/// Load prompt context strings from skill state.
+pub async fn load_prompt_context_strings(skill_state: &SharedSkillState) -> PromptContextStrings {
     let (skill_index, skill_active) = build_skill_context_strings(skill_state).await;
-    let subagents_index = build_subagents_context_string(&layout.subagents_dir()).await;
     PromptContextStrings {
         skill_index,
         skill_active,
-        subagents_index,
     }
 }
 
@@ -379,7 +369,7 @@ pub async fn handle_inbound_message(
 
     let before = rt.agent.message_count();
 
-    let ctx_strings = load_prompt_context_strings(&rt.skill_state, &rt.layout).await;
+    let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let (turn_result, leftover_interrupts, subconscious_scratch) = run_agent_turn_with_interrupts(

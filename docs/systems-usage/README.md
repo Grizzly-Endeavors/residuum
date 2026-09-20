@@ -59,7 +59,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json` |
 | [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `switch_endpoint`, `send_message` | `config/channels.toml` |
 | [Idle](idle.md) | Deactivates skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
-| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, `subagents/` presets |
+| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, role skills in `skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 
 ## What This Is Not

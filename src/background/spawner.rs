@@ -166,7 +166,7 @@ fn build_cancelled_result(task: &BackgroundTask, spawn_task_id: &str) -> Backgro
         transcript_path: None,
         status: AgentResultStatus::Cancelled,
         timestamp: Utc::now(),
-        agent_preset: task.agent_preset.clone(),
+        agent_skill: task.agent_skill.clone(),
     }
 }
 
@@ -220,7 +220,7 @@ async fn build_completed_result(
         transcript_path,
         status,
         timestamp: Utc::now(),
-        agent_preset: task.agent_preset.clone(),
+        agent_skill: task.agent_skill.clone(),
     }
 }
 
@@ -274,7 +274,7 @@ async fn write_transcript(
 mod tests {
     use super::*;
     use crate::background::types::SubAgentConfig;
-    use crate::bus::{EventTrigger, PresetName};
+    use crate::bus::EventTrigger;
     use crate::config::BackgroundModelTier;
 
     #[tokio::test]
@@ -292,7 +292,7 @@ mod tests {
             status: super::AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         spawner.send_result(result).await.unwrap();
@@ -321,7 +321,7 @@ mod tests {
                 model_tier: BackgroundModelTier::Medium,
             },
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         spawner.spawn(task, None).await.unwrap();
@@ -367,7 +367,7 @@ mod tests {
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
             },
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let task_id = spawner.spawn(task, None).await.unwrap();
@@ -398,7 +398,7 @@ mod tests {
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
             },
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         spawner.spawn(task, None).await.unwrap();
@@ -452,7 +452,6 @@ mod tests {
             identity: IdentityFiles::default(),
             options: CompletionOptions::default(),
             skills_index: None,
-            preset_instructions: None,
             include_identity: false,
         };
 
@@ -469,7 +468,7 @@ mod tests {
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
             },
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let task_id = spawner.spawn(task, Some(resources)).await.unwrap();

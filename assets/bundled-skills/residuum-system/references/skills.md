@@ -68,4 +68,4 @@ Detailed instructions, workflows, and reference material.
 - Bundled skills (`residuum-system`, `residuum-getting-started`, `skill-authoring`) are written to `skills/` during workspace creation and follow the same format.
 - Skill names must be unique across all sources. Workspace skills override user-global skills of the same name.
 
-When a pattern keeps recurring across conversations, the agent is expected to author a new workspace skill (or subagent preset) itself rather than re-explaining the same instructions every time. Before authoring or editing a skill, activate the bundled **`skill-authoring`** skill — it holds the full doctrine (create-vs-patch decision, class-level shape, what not to capture, description-length limits) and is not repeated here.
+When a pattern keeps recurring across conversations, the agent is expected to author a new workspace skill itself rather than re-explaining the same instructions every time. Before authoring or editing a skill, activate the bundled **`skill-authoring`** skill — it holds the full doctrine (create-vs-patch decision, class-level shape, what not to capture, description-length limits) and is not repeated here.

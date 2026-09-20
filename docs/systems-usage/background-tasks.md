@@ -21,7 +21,7 @@ An ephemeral LLM turn loop with its own context. Sub-agents are lightweight work
 - `MEMORY.md`
 - Recent conversation messages
 
-A preset can opt back into identity context with `include_identity: true` in its frontmatter — this adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt alongside the usual `ENVIRONMENT.md`/`USER.md`. The bundled `introspection` preset (used by the built-in `reflection` and `memory_tending` pulses) sets this, since it needs full identity context to judge what belongs in memory.
+The spawn caller can opt back into identity context with `include_identity: true` — this adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt alongside the usual `ENVIRONMENT.md`/`USER.md`. The built-in `reflection` and `memory_tending` pulses set it, since the `introspection` skill needs full identity context to judge what belongs in memory.
 
 **Tools excluded from sub-agents:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `stop_agent` (no sub-to-sub delegation, no action scheduling from background).
 
@@ -36,8 +36,8 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
 | `task` | string | yes | The prompt/instructions for the sub-agent. Must not be empty. |
-| `agent_name` | string | no | Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected — you cannot spawn main as a sub-agent. |
-| `model_override` | string enum | no | `"small"`, `"medium"`, `"large"`. Overrides the preset's tier. |
+| `skill` | string | no | Name of a skill to activate as the sub-agent's role. Omit to run on the task prompt alone. `"main"` is rejected — you cannot spawn main as a sub-agent. |
+| `model` | string enum | no | `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
 A sub-agent's final result is a **self-report** — it describes what the sub-agent believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
 
@@ -61,46 +61,39 @@ No parameters. Lists all currently active background tasks.
 
 Model tiers are configured in `[background]` config section (`models.small`, `models.medium`, `models.large`).
 
-## Subagent Presets
+## Sub-Agent Roles
 
-Presets are markdown files in the workspace `subagents/` directory, these presets are used to populate the subagent registry. Filenames should be kebab-case matching the preset name (e.g., `memory-agent.md` for a preset named `memory-agent`).
+A sub-agent is an agent loop running off the main thread. The only thing that distinguishes one sub-agent from another is what the caller passes at spawn time: a prompt, a model tier, whether identity files are included, and optionally a **skill** whose body becomes the sub-agent's role instructions.
+
+There is no separate preset format. A role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn by the main agent or handed to a sub-agent as its brief.
 
 ```yaml
 ---
-name: memory-agent
-description: Lightweight agent with only memory tools
-model_tier: small
-denied_tools:
-  - exec
-  - write_file
-allowed_tools:
-  - memory_search
-  - memory_get
-  - read_file
+name: memory-analyst
+description: Answers synthesized questions about the user and past history from episodic memory.
 ---
 
-(Optional body — additional system prompt content for this preset)
+(Body — the instructions this sub-agent runs with.)
 ```
 
-### Preset Frontmatter
+Spawn configuration lives at the call site, not in the file:
 
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `name` | string | yes | Must match the filename (kebab-case) |
-| `description` | string | yes | Shown when listing available presets |
-| `model_tier` | string | no | `"small"`, `"medium"`, `"large"`. Default: inherited from spawn call or `"medium"`. Also determines the effective model tier when a heartbeat pulse names this preset via `agent:`. |
-| `denied_tools` | string[] | no | Tools this preset cannot use. |
-| `allowed_tools` | string[] | no | If set, only these tools are available (allowlist). |
-| `include_identity` | boolean | no | Default `false`. When `true`, adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt in addition to the default `ENVIRONMENT.md`/`USER.md`. |
+| Caller | Where the config lives |
+|--------|------------------------|
+| `subagent_spawn` | The tool's `skill` and `model` parameters. |
+| Heartbeat pulses | `agent`, `model_tier`, and `include_identity` on the pulse in `HEARTBEAT.yml`. |
+| Scheduled actions | `agent` and `model_tier` on the action. |
+| Subconscious `learner` | Fixed in code: the `learner` skill, `large` tier, identity included. |
 
-Four built-in presets exist. A user-created file with the same name overrides the built-in.
+A spawn naming a skill that does not resolve fails loudly rather than running a sub-agent without the instructions that define its job.
 
-| Preset | Tier | `include_identity` | Spawned by |
-|--------|------|---------------------|------------|
-| `general-purpose` | — | `false` | Default for `subagent_spawn` when `agent_name` is omitted. |
-| `introspection` | `large` | `true` | The built-in `reflection`/`memory_tending` pulses. |
-| `learner` | `large` | `true` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, promotes it to `USER.md` once at least two supporting observations exist (annotating the evidence count); single sightings go to `MEMORY.md` as provisional. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
-| `memory-analyst` | `medium` | `true` | The main agent, when it needs a synthesized answer about the user or past history rather than raw search results. Read-only (`write_file`/`edit_file` denied); uses multiple search phrasings for enumeration questions, surfaces contradictions with dates instead of silently picking one, abstains rather than fabricating when the record is silent, and cites episode IDs. |
+### Bundled Role Skills
+
+| Skill | Spawned by |
+|-------|------------|
+| `introspection` | The built-in `reflection`/`memory_tending` pulses, at `large` with identity included. |
+| `learner` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, promotes it to `USER.md` once at least two supporting observations exist (annotating the evidence count); single sightings go to `MEMORY.md` as provisional. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
+| `memory-analyst` | The main agent, when it needs a synthesized answer about the user or past history rather than raw search results. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates instead of silently picking one, abstains rather than fabricating when the record is silent, and cites episode IDs. |
 
 ## Concurrency
 

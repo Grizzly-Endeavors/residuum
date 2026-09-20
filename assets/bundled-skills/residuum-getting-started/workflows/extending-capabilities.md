@@ -1,6 +1,6 @@
 # Workflow: Extending Capabilities
 
-Walk the user through skills, MCP servers, background tasks, and subagent presets. By the end, the user should understand how to ask you to expand your capabilities.
+Walk the user through skills, MCP servers, and background tasks. By the end, the user should understand how to ask you to expand your capabilities.
 
 **Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
 
@@ -49,13 +49,13 @@ subagent_spawn with task: "List the files in the current workspace and summarize
 
 You can run sub-agents in the foreground (wait for the result inline) or in the background (results delivered via notification channels). Demonstrate both.
 
-Sub-agents use presets that you manage. The default is `general-purpose`, but you can create specialized presets for recurring types of work.
+A sub-agent can take a skill as its role. By default it runs on the task prompt alone, but you can write a skill for a recurring type of work and hand it to the sub-agent.
 
 ## Step 4: Creating a Subagent Preset
 
-If the user has a recurring type of delegated task, offer to create a preset for it. For example: "If you want me to always review code a certain way, I can create a code-reviewer preset that I will use whenever you ask for a review."
+If the user has a recurring type of delegated task, offer to write a skill for it. For example: "If you want me to always review code a certain way, I can write a code-reviewer skill and run a sub-agent with it whenever you ask for a review."
 
-Create the preset on their behalf. You decide the appropriate system prompt, model tier, delivery channels, and tool access based on the task. Explain what you created and why. The user does not need to know the file format — just that the preset exists and what it does.
+Write the skill on their behalf, and pick the model tier when you spawn it. Explain what you created and why. The user does not need to know the file format — just that the skill exists and what it does.
 
 After creating it, show them how it works: "Now when you want a code review, I can spin up my code-reviewer to handle it in the background."
 

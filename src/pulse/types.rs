@@ -21,9 +21,16 @@ pub struct PulseDef {
     pub enabled: bool,
     pub schedule: String,
     pub active_hours: Option<String>,
-    /// Optional agent routing: `"main"` for a full wake turn, or a preset name.
+    /// Optional agent routing: `"main"` for a full wake turn, or a skill name
+    /// to run a sub-agent with that skill activated.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Model tier for the sub-agent. Defaults to `small`.
+    #[serde(default)]
+    pub model_tier: Option<String>,
+    /// Render SOUL.md, AGENTS.md, and MEMORY.md into the sub-agent's prompt.
+    #[serde(default)]
+    pub include_identity: bool,
     #[serde(default)]
     pub tasks: Vec<PulseTask>,
 }
@@ -464,7 +471,7 @@ pulses:
     }
 
     #[test]
-    fn pulse_def_agent_field_preset_name() {
+    fn pulse_def_agent_field_skill_name() {
         let yaml = r#"
 pulses:
   - name: email_triage
