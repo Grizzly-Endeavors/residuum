@@ -349,7 +349,6 @@ pub(super) enum ChatHistorySegment {
     Episode {
         episode_id: String,
         date: NaiveDate,
-        context: String,
         messages: Vec<RecentMessage>,
         next_cursor: Option<String>,
     },
@@ -417,7 +416,7 @@ pub(super) async fn api_chat_history(
             let timestamp = meta.date.and_hms_opt(0, 0, 0).unwrap_or_default();
             let messages = raw_messages
                 .into_iter()
-                .map(|message| wrap_episode_message(message, timestamp, meta.context.clone()))
+                .map(|message| wrap_episode_message(message, timestamp))
                 .collect();
 
             let next_cursor =
@@ -436,7 +435,6 @@ pub(super) async fn api_chat_history(
             Ok(Json(ChatHistorySegment::Episode {
                 episode_id: meta.id,
                 date: meta.date,
-                context: meta.context,
                 messages,
                 next_cursor,
             }))
@@ -447,18 +445,12 @@ pub(super) async fn api_chat_history(
 /// Synthesize a `RecentMessage` wrapper around a raw episode `Message`.
 ///
 /// Episode JSONL stores only raw `Message` values, so we fabricate metadata
-/// using the episode's date (at 00:00) and context. Visibility is always
-/// `User` because the original per-message visibility was not recorded in
-/// the transcript.
-fn wrap_episode_message(
-    message: Message,
-    timestamp: chrono::NaiveDateTime,
-    project_context: String,
-) -> RecentMessage {
+/// using the episode's date (at 00:00). Visibility is always `User` because
+/// the original per-message visibility was not recorded in the transcript.
+fn wrap_episode_message(message: Message, timestamp: chrono::NaiveDateTime) -> RecentMessage {
     RecentMessage {
         message,
         timestamp,
-        project_context,
         visibility: Visibility::User,
     }
 }

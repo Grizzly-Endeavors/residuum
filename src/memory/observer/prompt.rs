@@ -30,7 +30,6 @@ pub(super) const EXTRACTION_FORMAT_SPEC: &str = r#"For each observation:
 - "content": a complete, self-contained observation sentence
 - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
 - "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
-- "project_context": the project tag from the most relevant message (copy from the "(project: ...)" header)
 
 "narrative": a 2-4 sentence summary of what was being discussed and where things left off,
 written as if briefing someone who needs to continue the conversation. Include the current
@@ -53,10 +52,9 @@ pub(super) fn observer_response_schema() -> serde_json::Value {
                     "properties": {
                         "content": { "type": "string" },
                         "timestamp": { "type": "string" },
-                        "visibility": { "type": "string", "enum": ["user", "background"] },
-                        "project_context": { "type": "string" }
+                        "visibility": { "type": "string", "enum": ["user", "background"] }
                     },
-                    "required": ["content", "timestamp", "visibility", "project_context"],
+                    "required": ["content", "timestamp", "visibility"],
                     "additionalProperties": false
                 }
             },
@@ -69,8 +67,8 @@ pub(super) fn observer_response_schema() -> serde_json::Value {
 
 /// Format a single `RecentMessage` for the extraction prompt transcript.
 ///
-/// Includes timestamp, role, project context, visibility, content, and any
-/// tool calls or tool call IDs, so the observer LLM has full context.
+/// Includes timestamp, role, visibility, content, and any tool calls or
+/// tool call IDs, so the observer LLM has full context.
 pub(super) fn format_recent_message(rm: &RecentMessage) -> String {
     let role = rm.message.role.as_str();
     let timestamp = rm.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -84,10 +82,7 @@ pub(super) fn format_recent_message(rm: &RecentMessage) -> String {
         .as_deref()
         .map_or_else(String::new, |id| format!(" (call: {id})"));
 
-    let header = format!(
-        "[{timestamp}] [{role}]{tool_call_id_part} (project: {}, visibility: {visibility}):",
-        rm.project_context
-    );
+    let header = format!("[{timestamp}] [{role}]{tool_call_id_part} (visibility: {visibility}):");
 
     let mut parts = vec![header];
 

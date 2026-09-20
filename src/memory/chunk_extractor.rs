@@ -19,9 +19,6 @@ use crate::models::Role;
 /// messages (empty/whitespace text content) are skipped. System and tool
 /// messages are also skipped.
 ///
-/// Each chunk inherits `project_context` from the user `RecentMessage` that
-/// started the pair.
-///
 /// `line_offset` is the transcript line number of the first message (typically 2,
 /// since line 1 is the meta object in JSONL transcripts).
 #[must_use]
@@ -32,8 +29,8 @@ pub(crate) fn extract_chunks(
     line_offset: usize,
 ) -> Vec<IndexChunk> {
     let mut chunks = Vec::new();
-    // (line_number, content, project_context)
-    let mut pending_user: Option<(usize, &str, &str)> = None;
+    // (line_number, content)
+    let mut pending_user: Option<(usize, &str)> = None;
 
     for (i, rm) in recent_messages.iter().enumerate() {
         let msg = &rm.message;
@@ -41,7 +38,7 @@ pub(crate) fn extract_chunks(
         match msg.role {
             Role::User => {
                 // New user message — set (or replace) pending
-                pending_user = Some((line_num, &msg.content, &rm.project_context));
+                pending_user = Some((line_num, &msg.content));
             }
             Role::Assistant => {
                 let text = msg.content.trim();
@@ -49,13 +46,12 @@ pub(crate) fn extract_chunks(
                     // Tool-call-only assistant message — skip, keep pending user
                     continue;
                 }
-                if let Some((user_line, user_content, user_ctx)) = pending_user.take() {
+                if let Some((user_line, user_content)) = pending_user.take() {
                     let chunk_id = format!("{episode_id}-c{}", chunks.len());
                     chunks.push(IndexChunk {
                         chunk_id,
                         episode_id: episode_id.to_string(),
                         date: date.to_string(),
-                        context: user_ctx.to_string(),
                         line_start: user_line,
                         line_end: line_num,
                         content: format!("user: {user_content}\nassistant: {text}"),
@@ -144,7 +140,6 @@ mod tests {
         RecentMessage {
             message: Message::user(text),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -153,7 +148,6 @@ mod tests {
         RecentMessage {
             message: Message::assistant(text.to_string(), None),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -169,7 +163,6 @@ mod tests {
                 }]),
             ),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -178,7 +171,6 @@ mod tests {
         RecentMessage {
             message: Message::tool("file contents here", "call_1"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -187,7 +179,6 @@ mod tests {
         RecentMessage {
             message: Message::system("you are a helpful assistant"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -246,7 +237,6 @@ mod tests {
             RecentMessage {
                 message: Message::assistant("   ".to_string(), None),
                 timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "residuum".to_string(),
                 visibility: Visibility::User,
             },
         ];
@@ -306,30 +296,6 @@ mod tests {
         assert_eq!(chunks[2].chunk_id, "ep-001-c2");
     }
 
-    #[test]
-    fn per_chunk_project_context() {
-        let msgs = vec![
-            RecentMessage {
-                message: Message::user("how is residuum?"),
-                timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "residuum".to_string(),
-                visibility: Visibility::User,
-            },
-            recent_assistant("it's great"),
-            RecentMessage {
-                message: Message::user("how about devops?"),
-                timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "devops".to_string(),
-                visibility: Visibility::User,
-            },
-            recent_assistant("also good"),
-        ];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].context, "residuum");
-        assert_eq!(chunks[1].context, "devops");
-    }
-
     #[tokio::test]
     async fn write_and_read_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -340,7 +306,6 @@ mod tests {
                 chunk_id: "ep-001-c0".to_string(),
                 episode_id: "ep-001".to_string(),
                 date: "2026-02-19".to_string(),
-                context: "residuum".to_string(),
                 line_start: 2,
                 line_end: 3,
                 content: "user: hello\nassistant: hi".to_string(),
@@ -349,7 +314,6 @@ mod tests {
                 chunk_id: "ep-001-c1".to_string(),
                 episode_id: "ep-001".to_string(),
                 date: "2026-02-19".to_string(),
-                context: "residuum".to_string(),
                 line_start: 4,
                 line_end: 5,
                 content: "user: what\nassistant: that".to_string(),
@@ -363,7 +327,6 @@ mod tests {
         assert_eq!(loaded[0].chunk_id, "ep-001-c0");
         assert_eq!(loaded[0].episode_id, "ep-001");
         assert_eq!(loaded[0].date, "2026-02-19");
-        assert_eq!(loaded[0].context, "residuum");
         assert_eq!(loaded[0].line_start, 2);
         assert_eq!(loaded[0].line_end, 3);
         assert_eq!(loaded[0].content, "user: hello\nassistant: hi");
@@ -388,7 +351,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: hello\nassistant: hi".to_string(),

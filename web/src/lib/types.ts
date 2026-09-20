@@ -31,7 +31,6 @@ export interface RecentMessage {
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
   timestamp: string;
-  project_context: string;
   visibility: "user" | "background";
 }
 
@@ -47,7 +46,6 @@ export interface EpisodeHistorySegment {
   kind: "episode";
   episode_id: string;
   date: string; // YYYY-MM-DD
-  context: string;
   messages: RecentMessage[];
   next_cursor: string | null;
 }

@@ -21,10 +21,10 @@ Skills are discovered from multiple locations, scanned in priority order:
 
 | Source | Directory | Priority |
 |--------|-----------|----------|
-| Project | `projects/<name>/skills/` (only when project active) | Highest |
 | Workspace | `skills/` | High |
 | User Global | Extra dirs from `[skills]` config section | Middle |
-| Bundled | Shipped with the binary | Lowest |
+
+Skills shipped with the binary are written into `skills/` during workspace creation, so they are scanned as workspace skills.
 
 If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
 
@@ -66,7 +66,3 @@ Skills are the primary way to extend the agent's capabilities without changing c
 - Behavioral modes (different interaction styles for different contexts)
 
 The agent should activate skills when it recognizes a task that matches, and deactivate them when the task is complete to keep context clean.
-
-## Project Skills
-
-Project-scoped skills are only visible while that project is active. Deactivating the project removes them from the skill index. This is useful for project-specific workflows that shouldn't clutter the global skill list.

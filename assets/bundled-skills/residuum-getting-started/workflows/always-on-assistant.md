@@ -17,23 +17,20 @@ Ask the user what external services they interact with daily. Common categories:
 - **Cloud infrastructure** -- AWS, GCP, monitoring dashboards
 - **Files and documents** -- local or cloud file systems
 
-For each service the user wants, help them find or configure an MCP server. Set these up in a project so they are organized:
-
-Create a project for the integration work:
-```
-project_create with name: "Personal Integrations" and description: "MCP servers and automation for daily services"
-```
-
-Then activate it with `project_activate` and configure MCP servers in the project's `PROJECT.md`:
-```yaml
-mcp_servers:
-  - name: filesystem
-    command: "mcp-server-filesystem"
-    args: ["/home/user/documents"]
-  - name: github
-    command: "mcp-server-github"
-    env:
-      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+For each service the user wants, help them find or configure an MCP server. Server definitions live together in `config/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
+    },
+    "github": {
+      "command": "mcp-server-github",
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  }
+}
 ```
 
 Help the user install any MCP server binaries they need. Common ones are available via npm (`npx @modelcontextprotocol/server-*`) or as standalone binaries.
@@ -135,25 +132,6 @@ Using `agent_name: "main"` makes the action run as a full agent turn with conver
 
 Tell the user they can ask you to list or cancel scheduled actions at any time. Mention that actions fire once and are removed. For recurring tasks, heartbeats are the right tool.
 
-## Step 5: Projects for Ongoing Automation
-
-Help the user create projects for their major ongoing areas. Each project scopes the agent's knowledge and tools to what is relevant.
-
-Suggest project structure based on what was set up:
-- A project for each major area of their life (work, personal, homelab, etc.)
-- The "Personal Integrations" project already created holds cross-cutting automation config
-- Topic-specific projects hold domain knowledge (notes, references, decisions)
-
-Example for someone with a homelab:
-```
-project_create with:
-  name: "Homelab"
-  description: "Home server infrastructure, Docker services, networking"
-  tools: ["exec", "read", "write"]
-```
-
-Explain that when they mention "homelab" in conversation, you will recognize it and activate the project context, loading the relevant knowledge and tools automatically.
-
 ## Wrap Up
 
 Summarize the complete setup:
@@ -161,7 +139,6 @@ Summarize the complete setup:
 - Heartbeat pulses monitoring those services on a schedule
 - Notification routing delivering results through appropriate channels
 - Scheduled actions for time-based tasks
-- Projects organizing ongoing work areas
 
 This is a living system. Explain that:
 - "I will evolve monitoring based on what works. If you consistently ignore a notification, I will suggest moving it to inbox or removing it."

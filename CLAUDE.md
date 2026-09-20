@@ -4,11 +4,10 @@
 
 - [Design Philosophy](./docs/design-philosophy.md)
 - [Residuum Design](./docs/residuum-design.md)
-- [Projects Context](./docs/projects-context-design.md)
 - [Personal Agent](./docs/personal-agent-design.md)
 - [Background Tasks](./docs/background-tasks-design.md)
 - [Memory Search](./docs/memory-search-design.md)
-- [Notification Routing](./docs/notification-routing-design.md)
+- [Notification Routing](./docs/archive/notification-routing-design.md)
 - [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
 
 The design docs above are historical records and may not reflect current behavior — `docs/systems-usage/` is the authoritative reference for how systems work today.
@@ -128,7 +127,7 @@ Testing is a first-class operation — NEVER skip test implementation.
 - `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
 - `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
 - `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
-- `residuum bug-report -m "description"` — send trace dump to developer (currently no-op until collection endpoint deployed)
+- `residuum bug-report -m "description"` — send a sanitized trace dump to the developer via the feedback-ingest service
 - `RUST_LOG` env var overrides the configured log level when set
 
 ## Git Workflow

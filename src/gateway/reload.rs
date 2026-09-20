@@ -9,6 +9,8 @@ use crate::background::spawn_context::SpawnContext;
 use crate::config::Config;
 use crate::gateway::startup;
 use crate::models::CompletionOptions;
+use crate::models::ModelError;
+use crate::models::SharedHttpClient;
 
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::GatewayState;
@@ -25,134 +27,132 @@ pub(super) enum IdleAction {
 }
 
 /// Which subsystems differ between two `Config` snapshots.
+///
+/// Only operations that are expensive or user-visibly disruptive get a
+/// dedicated flag: rebinding the gateway HTTP listener, restarting the
+/// Discord/Telegram adapters, and restarting the cloud tunnel. Idle
+/// timeout/channel changes also get a dedicated flag because they control
+/// which `IdleAction` variant `handle_root_reload` returns, not a rebuild.
+///
+/// Every other subsystem (provider chains, memory thresholds, subconscious,
+/// background config, skills, tool PATH, agent ability gates, tracing, the
+/// pulse toggle, HTTP client timeout) is cheap to rebuild and
+/// `handle_root_reload` rebuilds all of them unconditionally whenever
+/// `changed` is true, in one fixed order — see `rebuild_cheap_components`.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "diff struct deliberately uses bool flags for each subsystem"
+    reason = "diff struct deliberately uses bool flags for each subsystem that needs gating"
 )]
-#[derive(PartialEq, Default)]
 pub(super) struct ConfigDiff {
-    /// Provider chains changed (main, observer, reflector, pulse, embedding, retry, `max_tokens`, temperature, thinking).
-    pub providers_changed: bool,
-    /// Memory thresholds changed (observer/reflector thresholds, search config).
-    pub memory_changed: bool,
-    /// Gateway bind/port changed.
+    /// True if anything at all differs between old and new config.
+    pub changed: bool,
+    /// Gateway bind/port changed — rebinding the HTTP listener is disruptive.
     pub gateway_changed: bool,
-    /// Discord token added/removed/changed.
+    /// Discord token added/removed/changed — restarting the adapter is user-visible.
     pub discord_changed: bool,
-    /// Telegram token added/removed/changed.
+    /// Telegram token added/removed/changed — restarting the adapter is user-visible.
     pub telegram_changed: bool,
-    /// Pulse enabled/disabled toggle changed.
-    pub pulse_changed: bool,
-    /// Subconscious settings or provider chain changed.
-    pub subconscious_changed: bool,
-    /// Background task config changed (`max_concurrent`, models).
-    pub background_changed: bool,
-    /// Agent ability gates changed.
-    pub agent_changed: bool,
-    /// Skill directories changed.
-    pub skills_changed: bool,
-    /// Tool PATH directories changed.
-    pub tools_changed: bool,
-    /// Idle system config changed (timeout or `idle_channel`).
-    pub idle_changed: bool,
-    /// Cloud tunnel config changed (added/removed/changed).
+    /// Cloud tunnel config changed — restarting the tunnel is disruptive.
     pub cloud_changed: bool,
-    /// Tracing config changed (log level, endpoints, sanitization, error reporting).
-    pub tracing_changed: bool,
-    /// HTTP request timeout (`timeout_secs`) changed.
-    pub http_timeout_changed: bool,
+    /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
+    pub idle_changed: bool,
+    /// Human-readable summary of every subsystem that changed, for the reload log line.
+    summary: String,
 }
 
 impl ConfigDiff {
-    /// Returns `true` if nothing changed between old and new config.
-    fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    /// Build a human-readable summary of what changed.
-    fn summary(&self) -> String {
-        let mut parts = Vec::new();
-        if self.providers_changed {
-            parts.push("providers");
-        }
-        if self.memory_changed {
-            parts.push("memory thresholds");
-        }
-        if self.gateway_changed {
-            parts.push("gateway bind/port");
-        }
-        if self.discord_changed {
-            parts.push("discord");
-        }
-        if self.telegram_changed {
-            parts.push("telegram");
-        }
-        if self.pulse_changed {
-            parts.push("pulse");
-        }
-        if self.subconscious_changed {
-            parts.push("subconscious");
-        }
-        if self.background_changed {
-            parts.push("background");
-        }
-        if self.agent_changed {
-            parts.push("agent abilities");
-        }
-        if self.skills_changed {
-            parts.push("skills");
-        }
-        if self.tools_changed {
-            parts.push("tool path");
-        }
-        if self.idle_changed {
-            parts.push("idle");
-        }
-        if self.cloud_changed {
-            parts.push("cloud");
-        }
-        if self.tracing_changed {
-            parts.push("tracing");
-        }
-        if self.http_timeout_changed {
-            parts.push("http timeout");
-        }
-        if parts.is_empty() {
-            "no changes detected".to_string()
-        } else {
-            parts.join(", ")
-        }
+    /// Human-readable summary of what changed between old and new config.
+    fn summary(&self) -> &str {
+        &self.summary
     }
 }
 
 /// Compare two configs and return which subsystems differ.
+///
+/// The granular per-subsystem comparisons below build `summary` for
+/// operator-facing logging; only the fields documented on `ConfigDiff`
+/// itself are used to gate any actual reload work.
 pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
+    let gateway_changed = old.gateway != new.gateway;
+    let discord_changed = old.discord != new.discord;
+    let telegram_changed = old.telegram != new.telegram;
+    let cloud_changed = old.cloud != new.cloud;
+    let idle_changed = old.idle != new.idle;
+
+    let mut parts = Vec::new();
+    if old.main != new.main
+        || old.observer != new.observer
+        || old.reflector != new.reflector
+        || old.pulse != new.pulse
+        || old.embedding != new.embedding
+        || old.retry != new.retry
+        || old.max_tokens != new.max_tokens
+        || old.temperature != new.temperature
+        || old.thinking != new.thinking
+        || old.role_overrides != new.role_overrides
+    {
+        parts.push("providers");
+    }
+    if old.memory != new.memory {
+        parts.push("memory thresholds");
+    }
+    if gateway_changed {
+        parts.push("gateway bind/port");
+    }
+    if discord_changed {
+        parts.push("discord");
+    }
+    if telegram_changed {
+        parts.push("telegram");
+    }
+    if old.pulse_enabled != new.pulse_enabled {
+        parts.push("pulse");
+    }
+    if old.subconscious != new.subconscious
+        || old.subconscious_settings != new.subconscious_settings
+    {
+        parts.push("subconscious");
+    }
+    if old.background != new.background {
+        parts.push("background");
+    }
+    if old.agent != new.agent {
+        parts.push("agent abilities");
+    }
+    if old.skills != new.skills {
+        parts.push("skills");
+    }
+    if old.tools != new.tools {
+        parts.push("tool path");
+    }
+    if idle_changed {
+        parts.push("idle");
+    }
+    if cloud_changed {
+        parts.push("cloud");
+    }
+    if old.tracing != new.tracing {
+        parts.push("tracing");
+    }
+    if old.timeout_secs != new.timeout_secs {
+        parts.push("http timeout");
+    }
+
+    let changed = !parts.is_empty();
+    let summary = if changed {
+        parts.join(", ")
+    } else {
+        "no changes detected".to_string()
+    };
+
     ConfigDiff {
-        providers_changed: old.main != new.main
-            || old.observer != new.observer
-            || old.reflector != new.reflector
-            || old.pulse != new.pulse
-            || old.embedding != new.embedding
-            || old.retry != new.retry
-            || old.max_tokens != new.max_tokens
-            || old.temperature != new.temperature
-            || old.thinking != new.thinking
-            || old.role_overrides != new.role_overrides,
-        memory_changed: old.memory != new.memory,
-        gateway_changed: old.gateway != new.gateway,
-        discord_changed: old.discord != new.discord,
-        telegram_changed: old.telegram != new.telegram,
-        pulse_changed: old.pulse_enabled != new.pulse_enabled,
-        subconscious_changed: old.subconscious != new.subconscious
-            || old.subconscious_settings != new.subconscious_settings,
-        background_changed: old.background != new.background,
-        agent_changed: old.agent != new.agent,
-        skills_changed: old.skills != new.skills,
-        tools_changed: old.tools != new.tools,
-        idle_changed: old.idle != new.idle,
-        cloud_changed: old.cloud != new.cloud,
-        tracing_changed: old.tracing != new.tracing,
-        http_timeout_changed: old.timeout_secs != new.timeout_secs,
+        changed,
+        gateway_changed,
+        discord_changed,
+        telegram_changed,
+        cloud_changed,
+        idle_changed,
+        summary,
     }
 }
 
@@ -246,7 +246,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 
     let diff = diff_config(&rt.cfg, &new_cfg);
 
-    if diff.is_empty() {
+    if !diff.changed {
         publish_notice(
             &rt.publisher,
             "configuration reloaded: no changes detected".to_string(),
@@ -256,24 +256,14 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         return IdleAction::None;
     }
 
-    let summary = diff.summary();
+    let summary = diff.summary().to_string();
 
-    // Rebuild the shared HTTP client first, before anything that clones it —
-    // `SharedHttpClient::clone` shares the old `Arc<reqwest::Client>`, so a
-    // provider chain, the subconscious classifier, or the spawn context built
-    // before this point would silently keep the stale timeout forever.
-    let http_client_rebuilt = if diff.http_timeout_changed {
-        reload_http_client(rt, &new_cfg).await
-    } else {
-        false
-    };
+    // Cheap, stateless subsystems are rebuilt unconditionally, in one fixed
+    // order, regardless of which of them actually changed — see
+    // `rebuild_cheap_components`. Only the genuinely disruptive operations
+    // below stay flag-gated so they don't fire spuriously.
+    rebuild_cheap_components(rt, &new_cfg).await;
 
-    if diff.providers_changed || http_client_rebuilt {
-        reload_providers(rt, &new_cfg).await;
-    }
-    if diff.memory_changed {
-        reload_memory_thresholds(rt, &new_cfg);
-    }
     if diff.gateway_changed {
         reload_gateway(rt, &new_cfg).await;
     }
@@ -285,49 +275,6 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
     if diff.cloud_changed {
         reload_tunnel(rt, &new_cfg).await;
-    }
-    if diff.pulse_changed {
-        rt.pulse_enabled = new_cfg.pulse_enabled;
-        tracing::info!(enabled = new_cfg.pulse_enabled, "pulse toggle updated");
-    }
-    if diff.subconscious_changed || diff.providers_changed || http_client_rebuilt {
-        // Full rebuild: in-flight evaluations keep the old Arc, new turns get
-        // the new instance. Provider changes are included because the
-        // subconscious chain may fall back to main; an HTTP client rebuild is
-        // included so the subconscious classifier doesn't keep the stale
-        // timeout via its old client clone.
-        rt.subconscious =
-            crate::subconscious::Subconscious::build(&new_cfg, &rt.layout, rt.http_client.clone());
-        tracing::info!(
-            enabled = rt.subconscious.enabled(),
-            "subconscious rebuilt from new config"
-        );
-    }
-    if diff.background_changed && !diff.providers_changed && !http_client_rebuilt {
-        // Otherwise `reload_providers` above already rebuilt `spawn_context`
-        // with the current http client.
-        reload_background_config(rt, &new_cfg);
-    }
-    if diff.skills_changed {
-        reload_skills(rt).await;
-    }
-    if diff.tools_changed {
-        reload_tools_path(rt, &new_cfg).await;
-    }
-    if diff.agent_changed {
-        reload_agent_abilities(rt, &new_cfg).await;
-    }
-    if diff.tracing_changed {
-        rt.tracing_service
-            .update_config(new_cfg.tracing.clone())
-            .await;
-        // Update the log filter if the level changed
-        if let Some(handle) = crate::util::tracing_init::global_filter_handle()
-            && let Err(e) = handle.set_filter(new_cfg.tracing.log_level)
-        {
-            tracing::warn!(error = %e, "failed to update log filter on tracing config reload");
-        }
-        tracing::info!(level = %new_cfg.tracing.log_level, "tracing config updated");
     }
 
     // ── Store new config ────────────────────────────────────────────────
@@ -349,12 +296,70 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
 }
 
+/// Build a fresh HTTP client for the given request timeout.
+///
+/// Pure aside from the `reqwest::Client` construction: no `GatewayRuntime`
+/// access, so it can be tested directly and so its only output — the new
+/// client — is what callers thread into everything downstream.
+fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, ModelError> {
+    let client_config = crate::models::HttpClientConfig::with_timeout(timeout_secs);
+    SharedHttpClient::new(&client_config)
+}
+
+/// Rebuild every cheap, stateless subsystem from `new_cfg`, in the one fixed
+/// order that keeps dependencies correct.
+///
+/// The HTTP client is rebuilt first and threaded explicitly into everything
+/// that needs it (providers, the subconscious classifier, the spawn
+/// context) as a function parameter rather than read back off `rt` —
+/// `SharedHttpClient::clone` shares the underlying `Arc<reqwest::Client>`,
+/// so anything built from a stale client would keep the old `timeout_secs`
+/// forever. Passing the freshly built client by value makes that ordering
+/// structural: there is no `rt.http_client` to accidentally read from until
+/// this function assigns it.
+async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    let http_client = match rebuild_http_client(new_cfg.timeout_secs) {
+        Ok(client) => {
+            tracing::debug!(timeout_secs = new_cfg.timeout_secs, "http client rebuilt");
+            client
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "http client rebuild failed, keeping current client");
+            publish_notice(
+                &rt.publisher,
+                format!("timeout_secs change failed to apply (keeping current timeout): {err}"),
+            )
+            .await;
+            rt.http_client.clone()
+        }
+    };
+    rt.http_client = http_client.clone();
+
+    reload_providers(rt, new_cfg, http_client.clone()).await;
+    rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
+    reload_memory_thresholds(rt, new_cfg);
+    rt.pulse_enabled = new_cfg.pulse_enabled;
+    rt.subconscious = crate::subconscious::Subconscious::build(new_cfg, &rt.layout, http_client);
+    tracing::debug!(
+        enabled = rt.subconscious.enabled(),
+        "subconscious rebuilt from new config"
+    );
+    reload_skills(rt).await;
+    reload_tools_path(rt, new_cfg).await;
+    reload_agent_abilities(rt, new_cfg).await;
+    reload_tracing(rt, new_cfg).await;
+}
+
 /// Build a new `SpawnContext` from the current runtime and new config.
-fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContext> {
+fn build_spawn_context(
+    rt: &GatewayRuntime,
+    new_cfg: &Config,
+    http_client: SharedHttpClient,
+) -> Arc<SpawnContext> {
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
         main_provider_specs: new_cfg.main.clone(),
-        http_client: rt.http_client.clone(),
+        http_client,
         max_tokens: new_cfg.max_tokens,
         retry_config: new_cfg.retry.clone(),
         options: CompletionOptions {
@@ -375,49 +380,24 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
     })
 }
 
-/// Rebuild the shared HTTP client with the new `timeout_secs`.
-///
-/// Returns `true` if the client was rebuilt and swapped in, so callers can
-/// force-refresh anything holding a stale clone (providers, subconscious,
-/// spawn context). On failure the current client is kept and the timeout
-/// change silently does not take effect — this is surfaced to the user via
-/// `publish_notice` rather than failing loudly, matching how the neighboring
-/// reload steps in this module degrade (e.g. `reload_providers`,
-/// `reload_gateway`).
-async fn reload_http_client(rt: &mut GatewayRuntime, new_cfg: &Config) -> bool {
-    let client_config = crate::models::HttpClientConfig::with_timeout(new_cfg.timeout_secs);
-    match crate::models::SharedHttpClient::new(&client_config) {
-        Ok(client) => {
-            rt.http_client = client;
-            tracing::info!(
-                timeout_secs = new_cfg.timeout_secs,
-                "http client rebuilt with new timeout"
-            );
-            true
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "http client rebuild failed, keeping current timeout");
-            publish_notice(
-                &rt.publisher,
-                format!("timeout_secs change failed to apply (keeping current timeout): {err}"),
-            )
-            .await;
-            false
-        }
-    }
-}
-
 /// Rebuild providers and swap them into the runtime.
-async fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    match startup::init_providers(new_cfg, rt.tz, rt.http_client.clone()) {
+///
+/// `http_client` must be the already-rebuilt client (see
+/// `rebuild_cheap_components`), not `rt.http_client` read fresh here, so a
+/// timeout change can't be silently dropped by construction order.
+async fn reload_providers(
+    rt: &mut GatewayRuntime,
+    new_cfg: &Config,
+    http_client: SharedHttpClient,
+) {
+    match startup::init_providers(new_cfg, rt.tz, http_client) {
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
             rt.observer = components.observer;
             rt.reflector = components.reflector;
             rt.embedding_provider = components.embedding_provider;
-            rt.spawn_context = build_spawn_context(rt, new_cfg);
-            tracing::info!("providers swapped successfully");
+            tracing::debug!("providers swapped successfully");
         }
         Err(err) => {
             tracing::warn!(error = %err, "provider rebuild failed, keeping current providers");
@@ -449,7 +429,7 @@ fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
         role_overrides: new_cfg.role_overrides.get("reflector").cloned(),
     });
 
-    tracing::info!("memory thresholds updated");
+    tracing::debug!("memory thresholds updated");
 }
 
 /// Rebind the gateway HTTP server to a new address.
@@ -523,19 +503,13 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
     }
 }
 
-/// Rebuild `SpawnContext` when only background config changed (providers unchanged).
-fn reload_background_config(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    rt.spawn_context = build_spawn_context(rt, new_cfg);
-    tracing::info!("background config updated");
-}
-
 /// Rescan skill directories.
 async fn reload_skills(rt: &mut GatewayRuntime) {
     let mut skill_guard = rt.skill_state.lock().await;
-    if let Err(err) = skill_guard.rescan(None).await {
+    if let Err(err) = skill_guard.rescan().await {
         tracing::warn!(error = %err, "skill rescan failed during reload");
     } else {
-        tracing::info!("skills rescanned");
+        tracing::debug!("skills rescanned");
     }
 }
 
@@ -547,7 +521,7 @@ async fn reload_skills(rt: &mut GatewayRuntime) {
 /// (re)connect — their environment is fixed at spawn.
 async fn reload_tools_path(rt: &GatewayRuntime, new_cfg: &Config) {
     *rt.tools_path.write().await = new_cfg.tools.effective_path();
-    tracing::info!("tool PATH updated from new config");
+    tracing::debug!("tool PATH updated from new config");
 }
 
 /// Update path policy with new agent ability gates.
@@ -568,11 +542,24 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .write()
         .await
         .set_blocked_paths(blocked.into_iter().collect());
-    tracing::info!(
+    tracing::debug!(
         modify_mcp = new_cfg.agent.modify_mcp,
         modify_channels = new_cfg.agent.modify_channels,
         "agent ability gates updated"
     );
+}
+
+/// Update the tracing service and global log filter from the new config.
+async fn reload_tracing(rt: &GatewayRuntime, new_cfg: &Config) {
+    rt.tracing_service
+        .update_config(new_cfg.tracing.clone())
+        .await;
+    if let Some(handle) = crate::util::tracing_init::global_filter_handle()
+        && let Err(e) = handle.set_filter(new_cfg.tracing.log_level)
+    {
+        tracing::warn!(error = %e, "failed to update log filter on tracing config reload");
+    }
+    tracing::debug!(level = %new_cfg.tracing.log_level, "tracing config updated");
 }
 
 /// Shut down an adapter and optionally start a replacement using the provided build closure.
@@ -738,21 +725,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn diff_config_subconscious_settings_changed() {
-        let old = test_config();
-        let mut new = test_config();
-        new.subconscious_settings.enabled = true;
-
-        let diff = diff_config(&old, &new);
-        assert!(
-            diff.subconscious_changed,
-            "enabled toggle should be detected"
-        );
-        assert!(
-            !diff.providers_changed,
-            "settings change alone should not flag providers"
-        );
+    /// A disruptive-flags-all-false assertion helper: confirms a change didn't
+    /// spuriously trip gateway rebind, adapter restart, or tunnel restart.
+    fn assert_no_disruptive_flags(diff: &ConfigDiff) {
+        assert!(!diff.gateway_changed, "should not flag gateway rebind");
+        assert!(!diff.discord_changed, "should not flag discord restart");
+        assert!(!diff.telegram_changed, "should not flag telegram restart");
+        assert!(!diff.cloud_changed, "should not flag tunnel restart");
     }
 
     #[test]
@@ -760,19 +739,10 @@ mod tests {
         let cfg = test_config();
         let diff = diff_config(&cfg, &cfg);
 
-        assert!(!diff.providers_changed);
-        assert!(!diff.subconscious_changed);
-        assert!(!diff.memory_changed);
-        assert!(!diff.gateway_changed);
-        assert!(!diff.discord_changed);
-        assert!(!diff.telegram_changed);
-        assert!(!diff.pulse_changed);
-        assert!(!diff.background_changed);
-        assert!(!diff.agent_changed);
-        assert!(!diff.skills_changed);
+        assert!(!diff.changed);
+        assert_no_disruptive_flags(&diff);
         assert!(!diff.idle_changed);
-        assert!(!diff.http_timeout_changed);
-        assert!(diff.is_empty());
+        assert_eq!(diff.summary(), "no changes detected");
     }
 
     #[test]
@@ -782,8 +752,12 @@ mod tests {
         new.max_tokens = 8192;
 
         let diff = diff_config(&old, &new);
-        assert!(diff.providers_changed);
-        assert!(!diff.memory_changed);
+        assert!(
+            diff.changed,
+            "cheap provider change should still set changed"
+        );
+        assert!(diff.summary().contains("providers"));
+        assert_no_disruptive_flags(&diff);
     }
 
     #[test]
@@ -793,8 +767,28 @@ mod tests {
         new.memory.observer_threshold_tokens = 999;
 
         let diff = diff_config(&old, &new);
-        assert!(diff.memory_changed);
-        assert!(!diff.providers_changed);
+        assert!(diff.changed);
+        assert!(diff.summary().contains("memory"));
+        assert!(!diff.summary().contains("providers"));
+        assert_no_disruptive_flags(&diff);
+    }
+
+    #[test]
+    fn diff_config_subconscious_settings_changed() {
+        let old = test_config();
+        let mut new = test_config();
+        new.subconscious_settings.enabled = true;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.changed);
+        assert!(
+            diff.summary().contains("subconscious"),
+            "enabled toggle should be detected"
+        );
+        assert!(
+            !diff.summary().contains("providers"),
+            "settings change alone should not flag providers"
+        );
     }
 
     #[test]
@@ -804,57 +798,12 @@ mod tests {
         new.gateway.port = 9999;
 
         let diff = diff_config(&old, &new);
+        assert!(diff.changed);
         assert!(diff.gateway_changed);
-        assert!(!diff.providers_changed);
-    }
-
-    #[test]
-    fn diff_config_multiple_changes() {
-        let old = test_config();
-        let mut new = old.clone();
-        new.max_tokens = 8192;
-        new.memory.observer_threshold_tokens = 999;
-        new.pulse_enabled = true;
-        new.discord = Some(DiscordConfig {
-            token: "new-token".to_string(),
-        });
-        new.telegram = Some(TelegramConfig {
-            token: "tg-token".to_string(),
-        });
-        new.skills.dirs = vec![std::path::PathBuf::from("/new/skills")];
-        new.agent.modify_mcp = false;
-        new.background.max_concurrent = 10;
-        new.cloud = Some(CloudConfig {
-            relay_url: "wss://example.com".to_string(),
-            token: "tok".to_string(),
-            local_port: 7700,
-        });
-        new.idle.timeout = std::time::Duration::from_mins(5);
-
-        let diff = diff_config(&old, &new);
-        assert!(diff.providers_changed);
-        assert!(diff.memory_changed);
-        assert!(diff.pulse_changed);
-        assert!(diff.discord_changed);
-        assert!(diff.telegram_changed);
-        assert!(diff.skills_changed);
-        assert!(diff.agent_changed);
-        assert!(diff.background_changed);
-        assert!(diff.cloud_changed);
-        assert!(diff.idle_changed);
-        assert!(!diff.gateway_changed);
-
-        let summary = diff.summary();
-        assert!(summary.contains("providers"));
-        assert!(summary.contains("memory"));
-        assert!(summary.contains("pulse"));
-        assert!(summary.contains("discord"));
-        assert!(summary.contains("telegram"));
-        assert!(summary.contains("skills"));
-        assert!(summary.contains("agent"));
-        assert!(summary.contains("background"));
-        assert!(summary.contains("cloud"));
-        assert!(summary.contains("idle"));
+        assert!(!diff.discord_changed);
+        assert!(!diff.telegram_changed);
+        assert!(!diff.cloud_changed);
+        assert!(diff.summary().contains("gateway"));
     }
 
     #[test]
@@ -868,6 +817,8 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(diff.discord_changed);
         assert!(!diff.telegram_changed);
+        assert!(!diff.gateway_changed);
+        assert!(!diff.cloud_changed);
     }
 
     #[test]
@@ -907,7 +858,7 @@ mod tests {
 
         let diff = diff_config(&old, &new);
         assert!(diff.idle_changed);
-        assert!(!diff.providers_changed);
+        assert_no_disruptive_flags(&diff);
     }
 
     #[test]
@@ -918,7 +869,7 @@ mod tests {
 
         let diff = diff_config(&old, &new);
         assert!(diff.idle_changed);
-        assert!(!diff.providers_changed);
+        assert_no_disruptive_flags(&diff);
     }
 
     #[test]
@@ -935,22 +886,102 @@ mod tests {
         new.timeout_secs = 90;
 
         let diff = diff_config(&old, &new);
+        assert!(diff.changed, "timeout_secs change should be detected");
+        assert!(diff.summary().contains("http timeout"));
         assert!(
-            diff.http_timeout_changed,
-            "timeout_secs change should be detected"
-        );
-        assert!(
-            !diff.providers_changed,
+            !diff.summary().contains("providers"),
             "timeout_secs alone should not flag providers"
         );
-        assert!(diff.summary().contains("http timeout"));
+        assert_no_disruptive_flags(&diff);
     }
 
     #[test]
-    fn diff_config_no_http_timeout_change() {
-        let cfg = test_config();
-        let diff = diff_config(&cfg, &cfg);
-        assert!(!diff.http_timeout_changed);
+    fn diff_config_multiple_cheap_changes() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.max_tokens = 8192;
+        new.memory.observer_threshold_tokens = 999;
+        new.pulse_enabled = true;
+        new.skills.dirs = vec![std::path::PathBuf::from("/new/skills")];
+        new.agent.modify_mcp = false;
+        new.background.max_concurrent = 10;
+        new.idle.timeout = std::time::Duration::from_mins(5);
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.changed);
+        assert!(diff.idle_changed);
+        assert_no_disruptive_flags(&diff);
+
+        let summary = diff.summary();
+        assert!(summary.contains("providers"));
+        assert!(summary.contains("memory"));
+        assert!(summary.contains("pulse"));
+        assert!(summary.contains("skills"));
+        assert!(summary.contains("agent"));
+        assert!(summary.contains("background"));
+        assert!(summary.contains("idle"));
+        assert!(!summary.contains("discord"));
+        assert!(!summary.contains("telegram"));
+        assert!(!summary.contains("cloud"));
+    }
+
+    #[test]
+    fn diff_config_detects_cloud_change() {
+        let mut old = test_config();
+        old.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "old-token".to_string(),
+            local_port: 7700,
+        });
+        let mut new = old.clone();
+        new.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "new-token".to_string(),
+            local_port: 7700,
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.cloud_changed);
+        assert!(!diff.discord_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_cloud_addition() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 7700,
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.cloud_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_cloud_removal() {
+        let mut old = test_config();
+        old.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 7700,
+        });
+        let mut new = old.clone();
+        new.cloud = None;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.cloud_changed);
+    }
+
+    #[test]
+    fn rebuild_http_client_uses_new_timeout() {
+        let client = rebuild_http_client(90).expect("client build should succeed");
+        assert_eq!(
+            client.timeout_secs(),
+            90,
+            "rebuilt client should carry the requested timeout, not a stale default"
+        );
     }
 
     #[test]
@@ -1023,55 +1054,6 @@ mod tests {
             !dir.path().join("config.toml.bak").exists(),
             "no backup should be created when source is missing"
         );
-    }
-
-    #[test]
-    fn diff_config_detects_cloud_change() {
-        let mut old = test_config();
-        old.cloud = Some(CloudConfig {
-            relay_url: "wss://example.com".to_string(),
-            token: "old-token".to_string(),
-            local_port: 7700,
-        });
-        let mut new = old.clone();
-        new.cloud = Some(CloudConfig {
-            relay_url: "wss://example.com".to_string(),
-            token: "new-token".to_string(),
-            local_port: 7700,
-        });
-
-        let diff = diff_config(&old, &new);
-        assert!(diff.cloud_changed);
-        assert!(!diff.discord_changed);
-    }
-
-    #[test]
-    fn diff_config_detects_cloud_addition() {
-        let old = test_config();
-        let mut new = old.clone();
-        new.cloud = Some(CloudConfig {
-            relay_url: "wss://example.com".to_string(),
-            token: "tok".to_string(),
-            local_port: 7700,
-        });
-
-        let diff = diff_config(&old, &new);
-        assert!(diff.cloud_changed);
-    }
-
-    #[test]
-    fn diff_config_detects_cloud_removal() {
-        let mut old = test_config();
-        old.cloud = Some(CloudConfig {
-            relay_url: "wss://example.com".to_string(),
-            token: "tok".to_string(),
-            local_port: 7700,
-        });
-        let mut new = old.clone();
-        new.cloud = None;
-
-        let diff = diff_config(&old, &new);
-        assert!(diff.cloud_changed);
     }
 
     #[test]

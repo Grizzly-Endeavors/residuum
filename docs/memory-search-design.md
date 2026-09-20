@@ -328,12 +328,16 @@ Chunk results include `lines X-Y` so the agent can immediately call `memory_get`
 ### Configuration
 
 ```toml
-[memory.search]
-# Embedding provider for vector search (optional — BM25-only if omitted)
-provider = "openai"               # "openai" | "ollama" | "gemini"
-model = "text-embedding-3-small"
+# providers.toml — embedding provider for vector search (optional — BM25-only if omitted)
+[models]
+embedding = "openai/text-embedding-3-small"
+```
 
-# Hybrid scoring weights (must sum to 1.0)
+```toml
+# config.toml
+[memory.search]
+# Hybrid scoring weights (not validated against each other — set them so
+# combined scores land in a useful range for your min_score threshold)
 vector_weight = 0.7
 text_weight = 0.3
 

@@ -10,7 +10,6 @@ An ephemeral LLM turn loop with its own context. Sub-agents are lightweight work
 - Task prompt
 - `USER.md`
 - `ENVIRONMENT.md`
-- Projects index
 - Active skills
 - Full tool set (with exceptions below)
 - Optional inline context and file references
@@ -122,13 +121,5 @@ Transcripts contain the full turn history: tool calls, tool results, intermediat
 ## Task Lifecycle
 
 Spawn → Acquire semaphore permit → Execute → Complete → Route result → Cleanup
-
-### Project Interaction
-
-- No locking on project activation — multiple sub-agents can have the same project active simultaneously
-- Last-write-wins for files
-- MCP servers use reference counting per project (no premature teardown)
-- If a sub-agent ends with a project still active, the gateway force-deactivates with an auto-generated log entry
-- Cancellation also triggers force-deactivation
 
 All spawns are asynchronous — `subagent_spawn` returns immediately with a task ID. Results are routed through the notification system when the sub-agent completes.

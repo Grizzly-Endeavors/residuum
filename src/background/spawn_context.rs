@@ -15,7 +15,6 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
 use crate::models::retry::RetryConfig;
 use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
-use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
 use crate::subagents::types::SubagentPresetFrontmatter;
@@ -58,7 +57,6 @@ pub(crate) struct SpawnContext {
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
-    project_state: &SharedProjectState,
     skill_state: &SharedSkillState,
     mcp_registry: SharedMcpRegistry,
     preset: Option<(&SubagentPresetFrontmatter, String)>,
@@ -131,14 +129,7 @@ pub(crate) async fn build_spawn_resources(
         hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
     };
 
-    Ok(build_subagent_resources(
-        provider,
-        project_state,
-        skill_state,
-        mcp_registry,
-        build_config,
-    )
-    .await)
+    Ok(build_subagent_resources(provider, skill_state, mcp_registry, build_config).await)
 }
 
 /// Resolve a sub-agent preset's frontmatter, body, and effective model tier

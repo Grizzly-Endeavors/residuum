@@ -1,6 +1,6 @@
 # Idle
 
-After a configurable period of user inactivity, the gateway runs an idle transition: it deactivates the active project and any explicitly-activated skills, fires the observer and clears the in-memory message buffer, optionally switches where subsequent output is routed, and injects a continuity message into the agent's history. There is no polling — a single deadline in the event loop's `select!` loop (`idle_deadline`, alongside `observe_deadline`) fires once and is cleared.
+After a configurable period of user inactivity, the gateway runs an idle transition: it deactivates any explicitly-activated skills, fires the observer and clears the in-memory message buffer, optionally switches where subsequent output is routed, and injects a continuity message into the agent's history. There is no polling — a single deadline in the event loop's `select!` loop (`idle_deadline`, alongside `observe_deadline`) fires once and is cleared.
 
 ## Trigger
 
@@ -12,15 +12,10 @@ Only inbound user messages reset the idle deadline (`handle_inbound_message` in 
 
 `execute_idle_transition` runs these steps in order:
 
-1. **Deactivate the active project, if any** (`deactivate_project_if_active`). Generates an LLM session log, calls `ProjectState::deactivate` with it, clears the path policy's active project, clears the agent's tool filter, deactivates the project's MCP server refs (`McpRegistry::deactivate_project`), and rescans skills to drop any that were project-scoped. Counts skills removed by the rescan for the summary message. No-op if no project is active.
-2. **Deactivate remaining explicitly-activated skills** (`deactivate_remaining_skills`) — whatever wasn't already removed by the project rescan in step 1.
-3. **Fire the observer, then clear the in-memory message buffer.** Runs the normal `execute_observation` path so the episode gets a proper summary, then calls `rt.agent.clear_messages()` so the agent doesn't see stale mid-conversation context on the next turn. Also clears `observe_deadline`.
-4. **Switch the notification interface**, if `idle.idle_channel` is configured (see below).
-5. **Inject a continuity system message** built by `format_idle_summary`, e.g. `[Idle] Transitioned to idle after 30m of inactivity. Deactivated project "aerohive-setup" and 2 skills. Session log written.`
-
-### Session log generation
-
-`generate_deactivation_log` builds a one-shot prompt (project name + description, recent messages from `recent_messages.json`) and sends it to the `small` background model tier — no tool access, no multi-turn loop. On success, the log is `"[idle] {llm summary}"`. On any failure (provider build error, completion error, or an empty response), `build_fallback_log` writes the raw recent-message slice to `notes/log/YYYY-MM/idle-raw-DD-HHMMSS.json` and uses a structured fallback string naming that path, so the context isn't lost even when the LLM call fails.
+1. **Deactivate explicitly-activated skills** (`deactivate_remaining_skills`).
+2. **Fire the observer, then clear the in-memory message buffer.** Runs the normal `execute_observation` path so the episode gets a proper summary, then calls `rt.agent.clear_messages()` so the agent doesn't see stale mid-conversation context on the next turn. Also clears `observe_deadline`.
+3. **Switch the notification interface**, if `idle.idle_channel` is configured (see below).
+4. **Inject a continuity system message** built by `format_idle_summary`, e.g. `[Idle] Transitioned to idle after 30m of inactivity. Deactivated 2 skills.`
 
 ## Switching the notification interface
 
@@ -48,13 +43,11 @@ A config reload that changes `[idle]` is detected via `ConfigDiff::idle_changed`
 
 ## Reactivation
 
-There is none, automatic or otherwise. The next user message is processed normally, the idle deadline resets, and the agent sees the injected `[Idle]` system message in its history — whether it reactivates the previous project or skills is left entirely to its own judgment based on the conversation that follows.
+There is none, automatic or otherwise. The next user message is processed normally, the idle deadline resets, and the agent sees the injected `[Idle]` system message in its history — whether it reactivates the previous skills is left entirely to its own judgment based on the conversation that follows.
 
 ## Interaction with Other Systems
 
-- **Projects**: deactivation goes through the standard `ProjectState::deactivate` contract with a non-empty log, same as an agent-initiated `project_deactivate`. See [projects.md](projects.md).
-- **Skills**: project-scoped skills are removed via the rescan in step 1; any skills activated outside a project are swept in step 2. See [skills.md](skills.md).
-- **MCP**: project MCP server refs are released via `McpRegistry::deactivate_project`, the same ref-counted path used by explicit `project_deactivate` calls. See [mcp.md](mcp.md).
+- **Skills**: explicitly-activated skills are swept in step 1. See [skills.md](skills.md).
 - **Memory**: the observer fires before the message buffer is cleared, so the idle boundary is captured in the episode record rather than lost. See [memory.md](memory.md).
 - **Notifications**: switching `last_output_endpoint` affects where wake-turn and relayed background-task output surfaces after the user goes idle. See [notifications.md](notifications.md).
 - **Background Tasks**: unaffected by idle — background tasks, pulses, and scheduled actions keep running regardless of user activity; only user messages drive the idle timer. See [background-tasks.md](background-tasks.md).

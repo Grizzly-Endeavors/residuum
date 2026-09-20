@@ -88,15 +88,38 @@ pub(super) async fn init_memory(
         tracing::warn!(error = %migration_err, "failed to clear old search index for schema migration");
     }
 
-    let search_index = match MemoryIndex::open_or_create(&layout.search_index_dir()) {
-        Ok(idx) => Arc::new(idx),
+    // A tantivy index stores its own schema, so one written by a build whose
+    // schema differs is unreadable. Episode transcripts are the source of
+    // truth, so discard the index and rebuild rather than serving an empty one.
+    let (search_index, index_was_discarded) = match MemoryIndex::open_or_create(
+        &layout.search_index_dir(),
+    ) {
+        Ok(idx) => (Arc::new(idx), false),
         Err(err) => {
-            tracing::warn!(error = %err, "search index degraded: using empty in-memory index");
-            Arc::new(MemoryIndex::empty()?)
+            tracing::warn!(error = %err, "search index unreadable, rebuilding from episode transcripts");
+            if let Err(clear_err) = std::fs::remove_dir_all(layout.search_index_dir()) {
+                tracing::warn!(error = %clear_err, "failed to clear unreadable search index");
+            }
+            match MemoryIndex::open_or_create(&layout.search_index_dir()) {
+                Ok(idx) => (Arc::new(idx), true),
+                Err(recreate_err) => {
+                    tracing::error!(
+                        error = %recreate_err,
+                        "search index could not be recreated: memory search degraded to an empty in-memory index"
+                    );
+                    (Arc::new(MemoryIndex::empty()?), true)
+                }
+            }
         }
     };
 
-    sync_search_index(&search_index, &manifest, layout, &manifest_path).await;
+    // A discarded index has no indexed files left, whatever the manifest says.
+    let sync_manifest = if index_was_discarded {
+        IndexManifest::default()
+    } else {
+        manifest.clone()
+    };
+    sync_search_index(&search_index, &sync_manifest, layout, &manifest_path).await;
 
     // Vector store (only if embedding provider is configured)
     let vector_store: Option<Arc<VectorStore>> = if let Some(ep) = embedding_provider {
