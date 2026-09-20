@@ -21,7 +21,7 @@ mod proactivity_integration {
     use residuum::pulse::executor::{PulseExecution, build_pulse_execution};
     use residuum::pulse::scheduler::PulseScheduler;
     use residuum::pulse::types::{PulseDef, PulseTask};
-    use residuum::tools::{ToolFilter, ToolRegistry};
+    use residuum::tools::ToolRegistry;
     use residuum::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
@@ -65,7 +65,6 @@ mod proactivity_integration {
         Agent::new(
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
-            ToolFilter::new_shared(),
             residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             residuum::agent::AgentConfig {

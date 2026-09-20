@@ -402,7 +402,7 @@ pub(crate) async fn initialize(
         tracing_service: &tracing_service,
         tracing_client_context: &tracing_client_context,
     };
-    let (tools, tool_filter, path_policy_for_runtime, output_topic_override_tx) =
+    let (tools, path_policy_for_runtime, output_topic_override_tx) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
 
     // Reserve the built-in tool namespace so any MCP tool (workspace or web
@@ -418,7 +418,6 @@ pub(crate) async fn initialize(
             provider: providers.provider,
             options: providers.options,
             tools,
-            tool_filter,
             identity,
         },
         &mcp_registry,

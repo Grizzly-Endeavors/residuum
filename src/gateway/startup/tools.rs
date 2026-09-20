@@ -35,7 +35,6 @@ pub(super) struct CreateAgentArgs {
     pub provider: Box<dyn crate::models::ModelProvider>,
     pub options: crate::models::CompletionOptions,
     pub tools: ToolRegistry,
-    pub tool_filter: crate::tools::SharedToolFilter,
     pub identity: IdentityFiles,
 }
 
@@ -48,7 +47,6 @@ pub(super) fn init_tool_registry(
     deps: &ToolRegistryDeps<'_>,
 ) -> (
     ToolRegistry,
-    crate::tools::SharedToolFilter,
     crate::tools::SharedPathPolicy,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
@@ -68,7 +66,6 @@ pub(super) fn init_tool_registry(
         blocked_paths.into_iter().collect();
     tracing::debug!(blocked_paths = ?blocked, "path policy configured");
     let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(blocked);
-    let tool_filter = crate::tools::ToolFilter::new_shared();
     let mut tools = ToolRegistry::new();
     tools.set_tools_path(Arc::clone(deps.tools_path));
     let file_tracker = crate::tools::FileTracker::new_shared();
@@ -121,12 +118,7 @@ pub(super) fn init_tool_registry(
         tracing::info!("registered ollama_web_search tool");
     }
 
-    (
-        tools,
-        tool_filter,
-        path_policy_for_runtime,
-        override_tx_for_runtime,
-    )
+    (tools, path_policy_for_runtime, override_tx_for_runtime)
 }
 
 /// Create the agent, load observations, recent context, and restore messages.
@@ -139,7 +131,6 @@ pub(super) async fn create_agent(
     let mut agent = Agent::new(
         args.provider,
         args.tools,
-        args.tool_filter,
         Arc::clone(mcp_registry),
         args.identity,
         AgentConfig {

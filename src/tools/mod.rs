@@ -26,7 +26,6 @@ pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
 pub use registry::ToolRegistry;
 
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::sync::Arc;
 
@@ -103,65 +102,6 @@ impl ToolResult {
     }
 }
 
-/// Shared tool filter, consulted by `ToolRegistry` to gate tools.
-pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
-
-/// Controls which tools are visible and executable.
-///
-/// Supports a deny list (permanently blocked) or an allow list (only listed
-/// tools are available, overriding all other logic).
-#[derive(Clone, Default)]
-pub struct ToolFilter {
-    /// Tools permanently blocked for this agent.
-    blocked: HashSet<String>,
-    /// If set, ONLY these tools are available.
-    allowed_only: Option<HashSet<String>>,
-}
-
-impl ToolFilter {
-    /// Create a new tool filter with no restrictions.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create a new shared tool filter.
-    #[must_use]
-    pub fn new_shared() -> SharedToolFilter {
-        Arc::new(RwLock::new(Self::new()))
-    }
-
-    /// Create a new shared tool filter with a deny list.
-    #[must_use]
-    pub fn new_shared_with_denied(denied: HashSet<String>) -> SharedToolFilter {
-        Arc::new(RwLock::new(Self {
-            blocked: denied,
-            allowed_only: None,
-        }))
-    }
-
-    /// Create a new shared tool filter that only permits the listed tools.
-    #[must_use]
-    pub fn new_shared_allowed_only(allowed: HashSet<String>) -> SharedToolFilter {
-        Arc::new(RwLock::new(Self {
-            blocked: HashSet::new(),
-            allowed_only: Some(allowed),
-        }))
-    }
-
-    /// Check whether a tool is available.
-    ///
-    /// With an allow list set, only listed tools are available.
-    /// Otherwise, blocked tools are never available; all others are.
-    #[must_use]
-    pub fn is_available(&self, name: &str) -> bool {
-        if let Some(allowed) = &self.allowed_only {
-            return allowed.contains(name);
-        }
-        !self.blocked.contains(name)
-    }
-}
-
 pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
     args.get(field)
         .and_then(Value::as_str)
@@ -200,61 +140,5 @@ mod tests {
         let result = ToolResult::error("failed");
         assert!(result.is_error, "error result should be error");
         assert_eq!(result.output, "failed", "output should match");
-    }
-
-    #[test]
-    fn tool_filter_no_restrictions() {
-        let filter = ToolFilter::new();
-        assert!(
-            filter.is_available("read_file"),
-            "tools should be available by default"
-        );
-        assert!(
-            filter.is_available("exec"),
-            "exec should always be available"
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_filter_preset_denied() {
-        let filter = ToolFilter::new_shared_with_denied(HashSet::from(["write_file".to_string()]));
-        let f = filter.read().await;
-        assert!(
-            !f.is_available("write_file"),
-            "preset-denied tool should be unavailable"
-        );
-        assert!(
-            f.is_available("exec"),
-            "exec should be available (not gated)"
-        );
-        assert!(
-            f.is_available("read_file"),
-            "non-denied ungated tool should be available"
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_filter_allowed_only() {
-        let filter = ToolFilter::new_shared_allowed_only(HashSet::from([
-            "read_file".to_string(),
-            "write_file".to_string(),
-        ]));
-        let f = filter.read().await;
-        assert!(
-            f.is_available("read_file"),
-            "listed tool should be available"
-        );
-        assert!(
-            f.is_available("write_file"),
-            "listed tool should be available"
-        );
-        assert!(
-            !f.is_available("exec"),
-            "unlisted tool should be unavailable"
-        );
-        assert!(
-            !f.is_available("edit_file"),
-            "unlisted tool should be unavailable"
-        );
     }
 }
