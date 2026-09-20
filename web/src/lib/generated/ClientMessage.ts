@@ -32,4 +32,11 @@ args: string | null, } | { "type": "inbox_add",
 /**
  * The message body to add.
  */
-body: string, };
+body: string, } | { "type": "cancel", 
+/**
+ * Correlation ID of the turn to stop (matches the `id` sent with
+ * the original `SendMessage`, and the `reply_to` on its
+ * `TurnStarted`/`TurnEnded`). A stop for a turn that has already
+ * ended is silently ignored.
+ */
+reply_to: string, };

@@ -293,7 +293,7 @@ pub(super) struct TelegramConfigFile {
 pub(super) struct WebhookEntryFile {
     /// Optional bearer token for authentication.
     pub(super) secret: Option<String>,
-    /// Routing target (`"inbox"` or `"agent:<preset>"`).
+    /// Routing target (`"inbox"` or `"agent:<skill>"`).
     pub(super) routing: Option<String>,
     /// Payload format (`"parsed"` or `"raw"`).
     pub(super) format: Option<String>,
@@ -347,7 +347,7 @@ pub(super) struct AgentConfigFile {
 pub(super) struct IdleConfigFile {
     /// Inactivity timeout in minutes (0 = disabled).
     pub(super) timeout_minutes: Option<u64>,
-    /// Interface to switch to when idle (Phase 2, parsed but not used).
+    /// Interface to switch notifications to when idle.
     pub(super) idle_channel: Option<String>,
 }
 
@@ -357,8 +357,6 @@ pub(super) struct IdleConfigFile {
 pub(super) struct BackgroundConfigFile {
     /// Maximum number of concurrent background tasks.
     pub(super) max_concurrent: Option<usize>,
-    /// Number of days to retain background task transcripts.
-    pub(super) transcript_retention_days: Option<u64>,
 }
 
 /// Raw TOML `[cloud]` section.

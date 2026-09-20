@@ -1,4 +1,4 @@
-//! Serenity event handler, slash command registration, and presence watcher.
+//! Serenity event handler and slash command registration.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,46 +12,34 @@ use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
-use super::presence::{load_presence, to_activity, to_online_status};
 use crate::bus::{BusHandle, EndpointName, Publisher};
-use crate::gateway::types::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
-use crate::interfaces::cli::commands::{
+use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
 
-/// Interval for polling PRESENCE.toml changes (seconds).
-const PRESENCE_POLL_SECS: u64 = 30;
-
-/// Serenity event handler that filters for DMs, manages presence,
-/// registers slash commands, and handles attachments.
+/// Serenity event handler that filters for DMs, registers slash commands,
+/// and handles attachments.
 pub(super) struct DiscordHandler {
     pub(super) publisher: Publisher,
     pub(super) bus_handle: BusHandle,
     pub(super) channel_id: Arc<tokio::sync::Mutex<Option<serenity::model::id::ChannelId>>>,
-    pub(super) presence_path: PathBuf,
     pub(super) inbox_dir: PathBuf,
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
+    pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     pub(super) tz: chrono_tz::Tz,
-    pub(super) shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 #[async_trait]
 impl EventHandler for DiscordHandler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::info!(bot_name = %ready.user.name, "discord bot connected");
-
-        // Apply initial presence from PRESENCE.toml
-        let pf = load_presence(&self.presence_path);
-        let activity = to_activity(&pf);
-        let status = to_online_status(&pf);
-        ctx.set_presence(Some(activity), status);
-        tracing::info!("discord presence applied from PRESENCE.toml");
 
         // Register global slash commands
         if let Err(e) = register_commands(&ctx).await {
@@ -74,14 +62,6 @@ impl EventHandler for DiscordHandler {
                 tracing::warn!(error = %e, "failed to subscribe to discord bus topics");
             }
         }
-
-        // Spawn presence watcher background task
-        let presence_path = self.presence_path.clone();
-        let shard = ctx.shard.clone();
-        let shutdown_rx = self.shutdown_rx.clone();
-        tokio::spawn(async move {
-            presence_watcher(presence_path, shard, shutdown_rx).await;
-        });
     }
 
     async fn message(&self, _ctx: Context, msg: Message) {
@@ -191,9 +171,9 @@ impl EventHandler for DiscordHandler {
                 )
                 .await
             }
-            Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) => {
-                // Not applicable to Discord
-                result.response
+            Some(CommandSideEffect::Stop) => {
+                crate::interfaces::dispatch_stop_request(&self.stop_tx, "discord slash command")
+                    .await
             }
             None => result.response,
         };
@@ -262,9 +242,8 @@ async fn process_discord_attachments(
 /// Register global slash commands with Discord from the shared command registry.
 ///
 /// Commands that take arguments (like `/inbox`) get a `text` string option.
-/// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
 async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
-    for info in all_commands().filter(|c| !c.cli_only) {
+    for info in all_commands() {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
         if info.takes_arg {
             cmd = cmd.add_option(
@@ -284,37 +263,4 @@ async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
 
     tracing::info!("discord slash commands registered");
     Ok(())
-}
-
-/// Background task that polls PRESENCE.toml for changes and updates presence.
-async fn presence_watcher(
-    presence_path: PathBuf,
-    shard: serenity::gateway::ShardMessenger,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) {
-    let mut last_mtime = file_mtime(&presence_path);
-
-    loop {
-        tokio::select! {
-            () = tokio::time::sleep(tokio::time::Duration::from_secs(PRESENCE_POLL_SECS)) => {}
-            _ = shutdown_rx.changed() => return,
-        }
-
-        let current_mtime = file_mtime(&presence_path);
-        if current_mtime != last_mtime {
-            last_mtime = current_mtime;
-
-            let pf = load_presence(&presence_path);
-            let activity = to_activity(&pf);
-            let status = to_online_status(&pf);
-
-            shard.set_presence(Some(activity), status);
-            tracing::info!(status = ?status, activity_type = ?pf.activity_type, "discord presence updated from PRESENCE.toml");
-        }
-    }
-}
-
-/// Get the modification time of a file, or `None` if it can't be read.
-fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }

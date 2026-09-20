@@ -1,23 +1,22 @@
-//! End-to-end integration tests for the background task subsystem (Phase 2 + 4).
+//! End-to-end integration tests for the background task subsystem.
 //!
 //! Tests sub-agent execution, spawner concurrency, result routing through the
-//! notification system, and Phase 4 isolated project/skill state for sub-agents.
+//! notification system, and isolated skill state for sub-agents.
 
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod background_integration {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
     use residuum::background::BackgroundTaskSpawner;
-    use residuum::background::types::{BackgroundResult, format_background_result};
+    use residuum::background::types::BackgroundResult;
     use residuum::bus::AgentResultStatus;
-    use residuum::bus::{EventTrigger, NotificationEvent, PresetName, spawn_broker, topics};
+    use residuum::bus::{EventTrigger, NotificationEvent, spawn_broker, topics};
     use residuum::notify::channels::InboxChannel;
     use residuum::notify::subscriber::run_notify_subscriber;
 
@@ -90,7 +89,7 @@ mod background_integration {
             status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         // Transcript path was set (would have been written by spawner)
@@ -108,100 +107,6 @@ mod background_integration {
         let not_found = spawner.cancel("does-not-exist").await;
         assert!(!not_found, "cancel should return false for unknown task");
     }
-
-    // ── Phase 4: MCP ref counting ──────────────────────────────────────
-
-    #[tokio::test]
-    async fn mcp_ref_counting_two_activations_one_deactivation_keeps_servers() {
-        use residuum::mcp::McpRegistry;
-        use residuum::projects::types::{McpServerEntry, McpTransport};
-
-        let mut registry = McpRegistry::new();
-        let entry = McpServerEntry {
-            name: "shared-svc".to_string(),
-            // Nonexistent binary: connection fails but ref count is still tracked
-            command: "/nonexistent/mcp-shared-svc".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-            transport: McpTransport::default(),
-            headers: std::collections::HashMap::new(),
-        };
-
-        // First activation: starts (fails) the server but records ref count = 1
-        let report1 = registry
-            .activate_project("proj-x", std::slice::from_ref(&entry))
-            .await;
-        assert_eq!(
-            report1.failures.len(),
-            1,
-            "server connect fails (no binary)"
-        );
-        // Manually mark running to simulate a real running server for the test
-        registry.mark_running("shared-svc");
-
-        // Second activation: count increments to 2, empty report returned
-        let report2 = registry
-            .activate_project("proj-x", std::slice::from_ref(&entry))
-            .await;
-        assert_eq!(report2.started, 0, "second activation returns empty report");
-        assert_eq!(
-            report2.failures.len(),
-            0,
-            "no failures on second activation"
-        );
-
-        // First deactivation: count 2 → 1, no servers stopped
-        let first_deactivation = registry.deactivate_project("proj-x").await;
-        assert!(
-            first_deactivation.is_empty(),
-            "deactivation at count > 0 should not stop servers"
-        );
-        // Server should still be tracked
-        let states_after_first = registry.servers();
-        assert!(
-            states_after_first.iter().any(|s| s.name == "shared-svc"),
-            "server should still be running after partial deactivation"
-        );
-
-        // Second deactivation: count 1 → 0, server disconnected
-        let second_deactivation = registry.deactivate_project("proj-x").await;
-        assert_eq!(
-            second_deactivation,
-            vec!["shared-svc"],
-            "server stopped at count 0"
-        );
-        let states_after_second = registry.servers();
-        assert!(
-            !states_after_second.iter().any(|s| s.name == "shared-svc"),
-            "server should be gone after full deactivation"
-        );
-    }
-
-    // ── Format result ──────────────────────────────────────────────────
-
-    #[test]
-    fn format_result_contains_all_fields() {
-        let result = BackgroundResult {
-            id: "fmt-1".to_string(),
-            source_label: "action:my_task".to_string(),
-            source: EventTrigger::Action,
-            summary: "task completed successfully".to_string(),
-            transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
-            status: AgentResultStatus::Completed,
-            timestamp: chrono::Utc::now(),
-
-            agent_preset: PresetName::from("general-purpose"),
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(formatted.contains("action:my_task"));
-        assert!(formatted.contains("fmt-1"));
-        assert!(formatted.contains("action"));
-        assert!(formatted.contains("completed"));
-        assert!(formatted.contains("task completed successfully"));
-        assert!(formatted.contains("/tmp/bg-fmt-1.log"));
-    }
-
     // ── Phase 5: Pulse/actions via background spawner ───────────────────
 
     #[tokio::test]
@@ -219,7 +124,7 @@ mod background_integration {
             status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         spawner.send_result(result).await.unwrap();
@@ -245,7 +150,8 @@ mod background_integration {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
-            trigger_count: None,
+            model_tier: None,
+            include_identity: false,
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),
@@ -254,7 +160,7 @@ mod background_integration {
 
         match build_pulse_execution(&pulse) {
             PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
+                assert_eq!(spawn_event.skill, None);
                 assert_eq!(spawn_event.source_label, "pulse:status_check");
                 assert!(spawn_event.prompt.contains("status_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));

@@ -1,13 +1,14 @@
 //! Turn execution: the tool loop that drives the agent.
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
     EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
-use crate::tools::{SharedToolFilter, ToolError, ToolFilter, ToolRegistry};
+use crate::tools::{ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
@@ -46,11 +47,20 @@ const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 pub(crate) struct TurnResources<'a> {
     pub provider: &'a dyn ModelProvider,
     pub tools: &'a ToolRegistry,
-    pub tool_filter: &'a SharedToolFilter,
     pub mcp_registry: &'a SharedMcpRegistry,
     pub identity: &'a IdentityFiles,
     pub options: &'a CompletionOptions,
+    /// Cancelled when the user asks to stop this turn. Raced directly
+    /// against the in-flight model call so generation aborts immediately;
+    /// turns that don't support being stopped (system/wake turns) pass a
+    /// token nobody ever cancels.
+    pub stop_token: &'a CancellationToken,
 }
+
+/// System note injected into the conversation when a turn is stopped
+/// mid-flight, so the next turn knows the work above was cut short rather
+/// than completed or abandoned.
+const STOP_NOTE: &str = "[Stopped] the user stopped this turn before it finished; review what's already been done above before continuing or repeating any of it.";
 
 /// Execute the tool loop against the given message buffer.
 ///
@@ -87,13 +97,15 @@ pub(crate) async fn execute_turn(
     let turn_start = recent_messages.len().saturating_sub(1);
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
-        drain_interrupts(interrupt_rx, recent_messages);
+        if drain_interrupts(interrupt_rx, recent_messages) {
+            tracing::info!(
+                iterations = iteration,
+                "turn stopped by user before next model call"
+            );
+            return Ok(texts);
+        }
 
-        // Clone the filter each iteration so the guard is dropped before tool
-        // execution. Tools like project_activate need a write lock on the same
-        // RwLock, which would deadlock if we held a read guard across the call.
-        let filter = resources.tool_filter.read().await.clone();
-        let mut tool_definitions = resources.tools.definitions(&filter);
+        let mut tool_definitions = resources.tools.definitions();
 
         // Merge MCP tool definitions from all connected servers. The registry
         // has already dropped any MCP tool whose name collides with a built-in
@@ -103,9 +115,9 @@ pub(crate) async fn execute_turn(
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
 
-        // System prompt is reassembled each iteration to pick up tool-filter and
-        // MCP changes. Identity is a snapshot taken at turn entry (reloaded from
-        // disk each turn), so mid-turn identity-file edits apply on the next turn.
+        // System prompt is reassembled each iteration to pick up MCP changes.
+        // Identity is a snapshot taken at turn entry (reloaded from disk each
+        // turn), so mid-turn identity-file edits apply on the next turn.
         let messages = assemble_system_prompt(
             resources.identity,
             recent_messages,
@@ -114,11 +126,17 @@ pub(crate) async fn execute_turn(
             status_line,
         );
 
-        let mut response = resources
-            .provider
-            .complete(&messages, &tool_definitions, resources.options)
-            .await
-            .context("model completion failed")?;
+        let mut response = tokio::select! {
+            biased;
+            () = resources.stop_token.cancelled() => {
+                tracing::info!(iterations = iteration, "turn stopped by user during model call");
+                recent_messages.push(Message::system(STOP_NOTE));
+                return Ok(texts);
+            }
+            result = resources.provider.complete(&messages, &tool_definitions, resources.options) => {
+                result.context("model completion failed")?
+            }
+        };
 
         if let Some(ref thinking) = response.thinking {
             tracing::debug!(
@@ -186,7 +204,7 @@ pub(crate) async fn execute_turn(
         }
 
         for tool_call in &response.tool_calls {
-            execute_tool(tool_call, resources, &filter, recent_messages, events).await;
+            execute_tool(tool_call, resources, recent_messages, events).await;
         }
 
         log_usage(&response);
@@ -196,10 +214,16 @@ pub(crate) async fn execute_turn(
 }
 
 /// Drain any interrupt messages that arrived while tools were executing.
+///
+/// Returns `true` if a stop was observed among the drained interrupts, so
+/// the caller can end the turn gracefully at this checkpoint. Draining
+/// continues to the end of the buffered batch even after a stop is seen, so
+/// any interrupts queued just before it are still folded into history.
 fn drain_interrupts(
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
     recent_messages: &mut RecentMessages,
-) {
+) -> bool {
+    let mut stopped = false;
     while let Ok(interrupt) = interrupt_rx.try_recv() {
         match interrupt {
             Interrupt::UserMessage(msg) => {
@@ -218,8 +242,14 @@ fn drain_interrupts(
                 tracing::info!("injecting subconscious correction mid-turn");
                 recent_messages.push(Message::system(content));
             }
+            Interrupt::Stopped => {
+                tracing::info!("turn stopped by user, recording note for next turn");
+                recent_messages.push(Message::system(STOP_NOTE));
+                stopped = true;
+            }
         }
     }
+    stopped
 }
 
 /// Execute a single tool call, falling back to MCP servers.
@@ -227,7 +257,6 @@ fn drain_interrupts(
 async fn execute_tool(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
-    filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
 ) {
@@ -251,7 +280,7 @@ async fn execute_tool(
     let mut used_mcp = false;
     let result = match resources
         .tools
-        .execute(&tool_call.name, tool_call.arguments.clone(), filter)
+        .execute(&tool_call.name, tool_call.arguments.clone())
         .await
     {
         Err(ToolError::NotFound(_)) => {
@@ -335,8 +364,9 @@ mod tests {
             "[Subconscious] Save the preference.".to_string(),
         ))
         .ok();
-        drain_interrupts(&mut rx, &mut recent);
+        let stopped = drain_interrupts(&mut rx, &mut recent);
 
+        assert!(!stopped, "a subconscious correction is not a stop");
         assert_eq!(recent.len(), 1, "one message should be injected");
         let msg = recent.messages().first();
         assert_eq!(msg.map(|m| m.role), Some(Role::System));
@@ -345,5 +375,31 @@ mod tests {
             Some("[Subconscious] Save the preference."),
             "correction content should be preserved"
         );
+    }
+
+    #[test]
+    fn drain_reports_stop_and_injects_note() {
+        let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let mut recent = RecentMessages::new();
+
+        tx.try_send(Interrupt::Stopped).ok();
+        let stopped = drain_interrupts(&mut rx, &mut recent);
+
+        assert!(stopped, "a queued Stopped interrupt should report true");
+        assert_eq!(recent.len(), 1, "the stop note should be injected");
+        let msg = recent.messages().first();
+        assert_eq!(msg.map(|m| m.role), Some(Role::System));
+        assert_eq!(msg.map(|m| m.content.as_str()), Some(STOP_NOTE));
+    }
+
+    #[test]
+    fn drain_with_no_interrupts_reports_no_stop() {
+        let (_tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let mut recent = RecentMessages::new();
+
+        let stopped = drain_interrupts(&mut rx, &mut recent);
+
+        assert!(!stopped, "an empty channel should never report a stop");
+        assert_eq!(recent.len(), 0, "nothing should be injected");
     }
 }

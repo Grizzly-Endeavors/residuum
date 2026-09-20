@@ -21,7 +21,6 @@ struct ObservationItem {
     content: String,
     timestamp: String,
     visibility: Visibility,
-    project_context: String,
 }
 
 /// Intermediate extraction result from the observer LLM response.
@@ -29,7 +28,6 @@ pub(super) struct ObserverExtraction {
     pub(super) content: String,
     pub(super) timestamp: NaiveDateTime,
     pub(super) visibility: Visibility,
-    pub(super) project_context: String,
 }
 
 /// Combined parse result: extractions plus optional narrative.
@@ -132,7 +130,6 @@ fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<Observer
                 content: item.content.clone(),
                 timestamp,
                 visibility: item.visibility.clone(),
-                project_context: item.project_context.clone(),
             }
         })
         .collect()
@@ -178,18 +175,10 @@ pub(super) fn parse_extraction_items(
             .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
             .unwrap_or_default();
 
-        let project_context = item
-            .get("project_context")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("general")
-            .to_string();
-
         extractions.push(ObserverExtraction {
             content: obs_content.to_string(),
             timestamp,
             visibility,
-            project_context,
         });
     }
 

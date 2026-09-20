@@ -33,11 +33,10 @@ Walk through the context stack:
 2. **AGENTS.md** -- My behavioral rules and capabilities. Defines what I can do and how I should act.
 3. **USER.md** -- What I know about you. Your preferences, timezone, context about your work and life. I update this as I learn about you. You can also tell me things to remember about you and I will add them here.
 4. **Memory** -- Recent conversation context and narrative from past observations. Gives me continuity across sessions.
-5. **Projects** -- If a project is active, its overview, file manifest, and scoped tools are loaded. I read specific notes and references on demand as needed.
-6. **Skills** -- If any skills are activated, their instructions are included. Skills teach me how to handle specific types of tasks.
-7. **Tools** -- The list of tools available to me, including any from MCP servers or the active project.
+5. **Skills** -- If any skills are activated, their instructions are included. Skills teach me how to handle specific types of tasks.
+6. **Tools** -- The list of tools available to me, including any from MCP servers.
 
-This layered assembly means I see different context depending on what is active. Activating a project loads project-specific knowledge. Activating a skill loads task-specific instructions.
+This layered assembly means I see different context depending on what is active. Activating a skill loads task-specific instructions.
 
 ## Step 3: How You Experience Time
 
@@ -77,7 +76,6 @@ Be straightforward about your capabilities and limitations.
 - Read, write, and edit files in your workspace
 - Run shell commands via `exec`
 - Search past memories and conversation history
-- Manage projects with scoped context and tools
 - Run background tasks and sub-agents
 - Schedule one-off actions and recurring heartbeat checks
 - Connect to external services via MCP servers

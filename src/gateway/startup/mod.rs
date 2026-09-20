@@ -22,8 +22,6 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::{HybridSearcher, MemoryIndex};
 use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::notify::channels::InboxChannel;
-use crate::projects::activation::{ProjectState, SharedProjectState};
-use crate::projects::scanner::ProjectIndex;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
 use crate::tools::SharedToolsPath;
 use crate::util::FatalError;
@@ -49,7 +47,6 @@ pub(crate) struct GatewayComponents {
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
     pub tools_path: SharedToolsPath,
-    pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub hybrid_searcher: Arc<HybridSearcher>,
@@ -130,32 +127,16 @@ async fn init_action_store(
     (action_store, action_notify)
 }
 
-/// Scan for projects and skills and return their shared state handles.
-async fn init_project_and_skills(
-    cfg: &Config,
-    layout: &WorkspaceLayout,
-) -> (SharedProjectState, SharedSkillState) {
-    let project_index = match ProjectIndex::scan(layout).await {
-        Ok(idx) => idx,
-        Err(err) => {
-            tracing::warn!(error = %err, "project index degraded: starting empty");
-            ProjectIndex::default()
-        }
-    };
-    let project_state: SharedProjectState = Arc::new(tokio::sync::Mutex::new(ProjectState::new(
-        project_index,
-        layout.clone(),
-    )));
-    let skill_index = match SkillIndex::scan(&cfg.skills.dirs, None).await {
+/// Scan for skills and return the shared state handle.
+async fn init_skills(cfg: &Config) -> SharedSkillState {
+    let skill_index = match SkillIndex::scan(&cfg.skills.dirs).await {
         Ok(idx) => idx,
         Err(err) => {
             tracing::warn!(error = %err, "skill index degraded: starting empty");
             SkillIndex::default()
         }
     };
-    let skill_state: SharedSkillState =
-        SkillState::new_shared(skill_index, cfg.skills.dirs.clone());
-    (project_state, skill_state)
+    SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
 
 /// Create the background task spawner and its result channel.
@@ -211,7 +192,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
     };
 
     let entry = match backend.name.as_str() {
-        "brave" => crate::projects::types::McpServerEntry {
+        "brave" => crate::mcp::types::McpServerEntry {
             name: "brave_web_search".to_string(),
             command: "npx".to_string(),
             args: vec![
@@ -222,10 +203,10 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
                 "BRAVE_API_KEY".to_string(),
                 backend.api_key.clone(),
             )]),
-            transport: crate::projects::types::McpTransport::Stdio,
+            transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
         },
-        "tavily" => crate::projects::types::McpServerEntry {
+        "tavily" => crate::mcp::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
             command: "npx".to_string(),
             args: vec!["-y".to_string(), "tavily-mcp".to_string()],
@@ -233,7 +214,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
                 "TAVILY_API_KEY".to_string(),
                 backend.api_key.clone(),
             )]),
-            transport: crate::projects::types::McpTransport::Stdio,
+            transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
         },
         // Ollama uses a native tool, not MCP
@@ -371,7 +352,7 @@ pub(crate) async fn initialize(
     let subconscious = crate::subconscious::Subconscious::build(cfg, &layout, http.clone());
 
     let (action_store, action_notify) = init_action_store(&layout).await;
-    let (project_state, skill_state) = init_project_and_skills(cfg, &layout).await;
+    let skill_state = init_skills(cfg).await;
 
     let (bg_result_rx, background_spawner) = init_background_spawner(cfg, &layout);
 
@@ -404,6 +385,8 @@ pub(crate) async fn initialize(
         action_store: Arc::clone(&action_store),
         action_notify: Arc::clone(&action_notify),
         hybrid_searcher: Arc::clone(&mem.hybrid_searcher),
+        skill_state: Arc::clone(&skill_state),
+        mcp_registry: Arc::clone(&mcp_registry),
     });
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
@@ -411,9 +394,7 @@ pub(crate) async fn initialize(
     let tool_deps = ToolRegistryDeps {
         action_store: &action_store,
         action_notify: &action_notify,
-        project_state: &project_state,
         skill_state: &skill_state,
-        mcp_registry: &mcp_registry,
         tools_path: &tools_path,
         background_spawner: &background_spawner,
         endpoint_registry: &endpoint_registry,
@@ -421,12 +402,12 @@ pub(crate) async fn initialize(
         tracing_service: &tracing_service,
         tracing_client_context: &tracing_client_context,
     };
-    let (tools, tool_filter, path_policy_for_runtime, output_topic_override_tx) =
+    let (tools, path_policy_for_runtime, output_topic_override_tx) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
 
-    // Reserve the built-in tool namespace so any MCP tool (workspace, web
-    // search, or project-scoped) that reuses a built-in name is shadowed
-    // visibly instead of silently. See src/mcp/CLAUDE.md.
+    // Reserve the built-in tool namespace so any MCP tool (workspace or web
+    // search) that reuses a built-in name is shadowed visibly instead of
+    // silently. See src/mcp/CLAUDE.md.
     mcp_registry
         .write()
         .await
@@ -437,7 +418,6 @@ pub(crate) async fn initialize(
             provider: providers.provider,
             options: providers.options,
             tools,
-            tool_filter,
             identity,
         },
         &mcp_registry,
@@ -459,7 +439,6 @@ pub(crate) async fn initialize(
         action_notify,
         mcp_registry,
         tools_path,
-        project_state,
         skill_state,
         embedding_provider: providers.embedding_provider,
         hybrid_searcher: mem.hybrid_searcher,

@@ -22,13 +22,12 @@ Rules:
 pub(super) const REFLECTION_FORMAT_SPEC: &str = r#"For each observation:
 - "content" (string): the merged observation as a complete, self-contained sentence
 - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) — use the most recent timestamp from the source observations being merged
-- "project_context" (string): use the most relevant context from the source observations
 - "visibility" ("user" or "background"): use "background" only if all source observations were background"#;
 
 /// JSON schema for the reflector response, used with structured output mode.
 ///
 /// Returns a schema requiring `observations` (array of items with content, timestamp,
-/// `project_context`, visibility). Wrapped in an object because `OpenAI` structured output
+/// visibility). Wrapped in an object because `OpenAI` structured output
 /// doesn't support top-level arrays.
 #[must_use]
 pub(super) fn reflector_response_schema() -> serde_json::Value {
@@ -42,10 +41,9 @@ pub(super) fn reflector_response_schema() -> serde_json::Value {
                     "properties": {
                         "content": { "type": "string" },
                         "timestamp": { "type": "string" },
-                        "project_context": { "type": "string" },
                         "visibility": { "type": "string", "enum": ["user", "background"] }
                     },
-                    "required": ["content", "timestamp", "project_context", "visibility"],
+                    "required": ["content", "timestamp", "visibility"],
                     "additionalProperties": false
                 }
             }

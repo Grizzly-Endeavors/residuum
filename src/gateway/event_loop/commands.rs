@@ -31,17 +31,13 @@ pub async fn handle_server_command(
             run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.publisher).await;
         }
         "context" => {
-            let ctx_strings =
-                load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
+            let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
             let prompt_ctx = ctx_strings.as_prompt_context();
             let bd = rt.agent.context_breakdown(&prompt_ctx).await;
             let msg = format!(
-                "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  subagents index:   ~{} tokens\n  projects index:    ~{} tokens\n  active project:    ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  system tools:      ~{} tokens\n  mcp tools:         ~{} tokens\n  message history:   ~{} tokens ({} messages)",
+                "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  system tools:      ~{} tokens\n  mcp tools:         ~{} tokens\n  message history:   ~{} tokens ({} messages)",
                 bd.identity_tokens,
                 bd.memory_pipeline_tokens,
-                bd.subagents_index_tokens,
-                bd.projects_index_tokens,
-                bd.active_project_tokens,
                 bd.skills_index_tokens,
                 bd.active_skills_tokens,
                 bd.system_tool_tokens,

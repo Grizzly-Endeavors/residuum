@@ -404,7 +404,7 @@ mod tests {
 
     /// Create a permissive policy rooted at `/tmp` (allows all test writes).
     fn permissive_policy() -> SharedPathPolicy {
-        PathPolicy::new_shared(std::path::PathBuf::from("/tmp"))
+        PathPolicy::new_shared()
     }
 
     /// Create an `EditTool` with a pre-registered path in the tracker.

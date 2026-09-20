@@ -11,7 +11,7 @@ Every bootstrapped workspace ships `HEARTBEAT.yml` with two pulses enabled by de
 | `reflection` | `"7d"` | `introspection` | Reviews recent episodes/observations for recurring patterns, unfinished requests, and friction; delivers suggestions to the user inbox via `user_inbox_add`. |
 | `memory_tending` | `"24h"`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` Core Facts tier (capped ~15 entries, replace-don't-append). Promotion to Core Facts (or to a new Profile entry) requires at least two supporting observations, annotated with the evidence count; a single sighting stays provisional in `MEMORY.md`. See [memory.md](memory.md) for the full tier and promotion rule. |
 
-Both name the bundled `introspection` subagent preset (`subagents/introspection.md`), which runs at `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
+Both name the bundled `introspection` skill (`skills/introspection/SKILL.md`) and set `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
 
 Disabling either is a matter of setting `enabled: false` on the pulse — the user or agent can do this during onboarding if the user opts out of background self-maintenance. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) ships alongside the built-ins as optional, off-by-default add-ons.
 
@@ -42,7 +42,7 @@ pulses:
   - name: deploy_watch
     enabled: true
     schedule: "5m"
-    agent: deploy-watcher           # named preset from subagents/
+    agent: deploy-watcher           # named skill from skills/
     tasks:
       - name: check_status
         prompt: "Check deployment pipeline status. Report failures."
@@ -57,7 +57,6 @@ pulses:
 | `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"`, `"7d"` — any number plus `s`/`m`/`h`/`d` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
-| `trigger_count` | integer or null | no | Max firings per active period. When set, firings are spaced evenly across the `active_hours` window. Omit for unlimited. |
 | `tasks` | array of objects | yes | Each task has `name` (string) and `prompt` (string). |
 
 ### Agent Routing
@@ -66,7 +65,7 @@ pulses:
 |-------|-----------|------------|
 | `~` (null / omitted) | Sub-agent | Small |
 | `"main"` | Main agent wake turn | Main model |
-| `"<preset-name>"` | Sub-agent with named preset from `subagents/` | Preset's tier (default: small) |
+| `"<skill-name>"` | Sub-agent with that skill activated as its role | The pulse's `model_tier` (default: small) |
 
 **Use `"main"` sparingly** — it wakes the main agent and injects a full turn. Reserve for tasks that need conversation context or should produce a visible response.
 
@@ -82,32 +81,8 @@ Every pulse-triggered run — sub-agent or `agent: main` — is framed in its pr
 
 - The scheduler runs on a **60-second tick**, so precision is at best ~1 minute
 - HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway
-- Last-run timestamps and run counts are persisted to `pulse_state.json` in the workspace, so pulses resume their schedule across gateway restarts. Missing or corrupt state files are treated as empty state (logged at warn level).
+- Last-run timestamps are persisted to `pulse_state.json` in the workspace, so pulses resume their schedule across gateway restarts. Missing or corrupt state files are treated as empty state (logged at warn level).
 - Multiple due pulses all fire simultaneously (subject to `max_concurrent` from `[background]` config)
-
-## Trigger Count
-
-The `trigger_count` field limits how many times a pulse fires within its `active_hours` window. When set, the scheduler spaces firings evenly across the active period with ±15% jitter (deterministic per pulse name and date).
-
-```yaml
-pulses:
-  - name: standup_check
-    enabled: true
-    schedule: "10m"           # minimum interval between fires
-    active_hours: "09:00-17:00"
-    trigger_count: 3          # fire at most 3 times across the 8h window
-    tasks:
-      - name: check
-        prompt: "Any blockers or updates?"
-```
-
-In this example, the 8-hour window divided by 3 gives ~2h40m spacing. The `schedule` field acts as a floor — the effective interval is `max(schedule, spacing_with_jitter)`.
-
-**Behavior:**
-- Run counts are tracked per-pulse in `pulse_state.json` alongside last-run timestamps
-- Counts reset when the active period rolls over (new calendar day, or last run was outside the current window)
-- If `trigger_count` is set without `active_hours`, the active period defaults to 24 hours
-- Omitting `trigger_count` (or setting it to null) means the pulse fires on its `schedule` interval with no cap
 
 ## Result Routing
 

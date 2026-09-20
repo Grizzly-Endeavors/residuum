@@ -91,6 +91,7 @@ async fn spawn_server_and_adapters(
         bus_handle: core.bus_handle.clone(),
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
+        stop: core.stop_tx.clone(),
     };
     let telegram_senders = discord_senders.clone();
     let (tunnel_status_tx, tunnel_status_rx) =
@@ -102,6 +103,7 @@ async fn spawn_server_and_adapters(
     let state = GatewayState {
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
+        stop_tx: core.stop_tx.clone(),
         agent_inbox_dir: parts.layout.agent_inbox_dir(),
         tz: parts.tz,
         tunnel_status_rx: tunnel_status_rx.clone(),
@@ -229,15 +231,12 @@ async fn spawn_bus_infrastructure(
     {
         bus_infra_handles.push(h);
     }
-    let registry = crate::subagents::SubagentRegistry::new(
-        Arc::clone(&parts.background_spawner),
+    if let Some(h) = crate::background::listener::spawn_listener(
         Arc::clone(&parts.spawn_context),
-        Arc::clone(&parts.project_state),
-        Arc::clone(&parts.skill_state),
-        Arc::clone(&parts.mcp_registry),
-        parts.layout.subagents_dir(),
-    );
-    if let Some(h) = crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await {
+        &core.bus_handle,
+    )
+    .await
+    {
         bus_infra_handles.push(h);
     }
 
@@ -279,7 +278,6 @@ async fn build_runtime(
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
         tools_path: parts.tools_path,
-        project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
         notify_handles: infra.notify_handles,
@@ -295,6 +293,7 @@ async fn build_runtime(
         output_topic_override_tx: parts.output_topic_override_tx,
         reload_rx: receivers.reload,
         command_rx: receivers.command,
+        stop_rx: receivers.stop,
         server_handle: spawned.server_handle,
         pulse_scheduler: PulseScheduler::with_state_path(&pulse_state_path),
         sigterm: spawned.sigterm,
@@ -313,6 +312,7 @@ async fn build_runtime(
         watcher_handle: spawned.watcher_handle,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
+        stop_tx: core.stop_tx,
         file_registry: spawned.file_registry,
         path_policy: parts.path_policy,
         tracing_service: spawned.tracing_service,
@@ -607,6 +607,25 @@ async fn handle_bus_event(
     }
 }
 
+/// Handle a stop request that arrived while the event loop is idle.
+///
+/// A turn in progress blocks this whole select on the `agent_subscriber.recv()`
+/// arm, so a request only reaches this arm when there is genuinely nothing
+/// to stop — reply `false` immediately rather than leaving the caller to
+/// time out.
+fn handle_idle_stop_request(stop_req: Option<crate::gateway::types::StopRequest>) {
+    let Some(req) = stop_req else {
+        return;
+    };
+    tracing::debug!(
+        requested = ?req.reply_to,
+        "stop request received while idle, nothing to stop"
+    );
+    if let Some(tx) = req.result_tx {
+        tx.send(false).ok();
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -685,6 +704,14 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 if let Some(cmd) = cmd {
                     handle_server_command(cmd, &mut rt, &mut observe_deadline).await;
                 }
+            }
+
+            // Reached only between turns — a turn in progress blocks this
+            // whole select on the `agent_subscriber.recv()` arm above, so a
+            // stop request only lands here when there is genuinely nothing
+            // to stop.
+            stop_req = rt.stop_rx.recv() => {
+                handle_idle_stop_request(stop_req);
             }
 
             _ = update_check_tick.tick() => {

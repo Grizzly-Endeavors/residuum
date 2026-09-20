@@ -76,9 +76,6 @@ pub(super) const DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 /// Default maximum number of concurrent background tasks.
 pub(super) const DEFAULT_MAX_CONCURRENT_BACKGROUND: usize = 3;
 
-/// Default number of days to retain background task transcripts.
-pub(super) const DEFAULT_TRANSCRIPT_RETENTION_DAYS: u64 = 30;
-
 /// Whether the agent can modify MCP server configurations by default.
 pub(super) const DEFAULT_AGENT_MODIFY_MCP: bool = true;
 

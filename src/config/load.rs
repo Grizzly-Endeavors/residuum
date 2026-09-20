@@ -162,25 +162,12 @@ impl Config {
 
 /// Locate the `providers.toml` to load for the given config directory.
 ///
-/// Checks the config directory first. For agent-registry subdirectories,
-/// falls back to the global `~/.residuum/providers.toml`.
-///
 /// # Errors
 /// Returns `FatalError::Config` if no providers file can be found.
 fn find_providers_path(config_dir: &std::path::Path) -> Result<std::path::PathBuf, FatalError> {
     let providers_path = config_dir.join("providers.toml");
     if providers_path.exists() {
         return Ok(providers_path);
-    }
-
-    // Fall back to global ~/.residuum/providers.toml for named agents
-    // (their config dirs are under ~/.residuum/agent_registry/<name>/)
-    let global_dir = bootstrap::default_config_dir()?;
-    let global_path = global_dir.join("providers.toml");
-    let is_agent_subdir = config_dir.starts_with(global_dir.join("agent_registry"));
-    if is_agent_subdir && global_path.exists() {
-        tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
-        return Ok(global_path);
     }
 
     Err(FatalError::Config(format!(

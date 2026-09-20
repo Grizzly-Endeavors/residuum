@@ -1,10 +1,12 @@
 //! Agent struct, configuration, and turn dispatch.
 
+use tokio_util::sync::CancellationToken;
+
 use crate::bus::{EndpointName, Publisher};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
-use crate::tools::{SharedToolFilter, ToolRegistry};
+use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
@@ -37,7 +39,6 @@ pub struct AgentConfig {
 pub struct Agent {
     provider: Box<dyn ModelProvider>,
     tools: ToolRegistry,
-    tool_filter: SharedToolFilter,
     mcp_registry: SharedMcpRegistry,
     /// Last-known-good identity snapshot. Refreshed from disk at each turn entry
     /// via [`Agent::load_identity_snapshot`]; retained as the fallback when a
@@ -61,7 +62,6 @@ impl Agent {
     pub fn new(
         provider: Box<dyn ModelProvider>,
         tools: ToolRegistry,
-        tool_filter: SharedToolFilter,
         mcp_registry: SharedMcpRegistry,
         identity: IdentityFiles,
         config: AgentConfig,
@@ -69,7 +69,6 @@ impl Agent {
         Self {
             provider,
             tools,
-            tool_filter,
             mcp_registry,
             identity,
             recent_messages: RecentMessages::new(),
@@ -162,11 +161,6 @@ impl Agent {
         self.recent_messages.clear();
     }
 
-    /// Clear gated tool permissions (used during idle project deactivation).
-    pub async fn clear_tool_filter(&self) {
-        self.tool_filter.write().await.clear_enabled();
-    }
-
     /// Rotate messages after an observation cycle.
     ///
     /// Extracts the last 3 text exchanges, clears the buffer, then prepends
@@ -217,18 +211,18 @@ impl Agent {
     fn turn_resources<'a>(
         provider: &'a dyn ModelProvider,
         tools: &'a ToolRegistry,
-        tool_filter: &'a SharedToolFilter,
         mcp_registry: &'a SharedMcpRegistry,
         identity: &'a IdentityFiles,
         options: &'a CompletionOptions,
+        stop_token: &'a CancellationToken,
     ) -> TurnResources<'a> {
         TurnResources {
             provider,
             tools,
-            tool_filter,
             mcp_registry,
             identity,
             options,
+            stop_token,
         }
     }
 
@@ -267,13 +261,16 @@ impl Agent {
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
+        // Wake turns are background-initiated, not user-facing — nothing can
+        // stop them, so the token is never cancelled.
+        let stop_token = CancellationToken::new();
         let resources = Self::turn_resources(
             &*self.provider,
             &self.tools,
-            &self.tool_filter,
             &self.mcp_registry,
             &self.identity,
             &self.options,
+            &stop_token,
         );
         let events = EventContext {
             publisher,
@@ -321,6 +318,7 @@ impl Agent {
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
         images: &[crate::models::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
+        stop_token: &CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
         self.identity = self.load_identity_snapshot().await;
@@ -344,10 +342,10 @@ impl Agent {
         let resources = Self::turn_resources(
             &*self.provider,
             &self.tools,
-            &self.tool_filter,
             &self.mcp_registry,
             &self.identity,
             &self.options,
+            stop_token,
         );
         let events = EventContext {
             publisher,
@@ -403,14 +401,16 @@ impl Agent {
 
         // System turns don't participate in interrupts — use a dead-end channel
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
+        // Nothing external can reach a system turn to stop it.
+        let stop_token = CancellationToken::new();
 
         let resources = Self::turn_resources(
             provider,
             &self.tools,
-            &self.tool_filter,
             &self.mcp_registry,
             &identity,
             &self.options,
+            &stop_token,
         );
 
         let events = EventContext {
@@ -454,9 +454,7 @@ impl Agent {
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
 
-        let filter = self.tool_filter.read().await;
-        let builtin_defs = self.tools.definitions(&filter);
-        drop(filter);
+        let builtin_defs = self.tools.definitions();
 
         let mcp_defs = self.mcp_registry.read().await.tool_definitions();
 
@@ -503,15 +501,10 @@ mod tests {
     use crate::bus;
     use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
-    use crate::tools::{FileTracker, PathPolicy, ToolFilter};
+    use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
-    use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn no_filter() -> SharedToolFilter {
-        ToolFilter::new_shared(HashSet::new())
-    }
 
     fn empty_mcp() -> SharedMcpRegistry {
         McpRegistry::new_shared()
@@ -571,7 +564,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -595,6 +587,7 @@ mod tests {
                 &mut irx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -604,10 +597,7 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(vec![
             ModelResponse::new(
@@ -624,7 +614,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -648,6 +637,7 @@ mod tests {
                 &mut irx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -661,10 +651,7 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -682,7 +669,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -706,6 +692,7 @@ mod tests {
                 &mut irx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -732,16 +719,12 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -765,6 +748,7 @@ mod tests {
                 &mut irx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await;
         assert!(result.is_err(), "should error after max iterations");
@@ -778,7 +762,6 @@ mod tests {
         let agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -817,7 +800,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -852,7 +834,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -912,7 +893,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -942,7 +922,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -981,7 +960,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1031,7 +1009,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1138,10 +1115,7 @@ mod tests {
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
 
@@ -1173,7 +1147,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1196,6 +1169,7 @@ mod tests {
                 &mut interrupt_rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1216,10 +1190,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
 
@@ -1249,7 +1220,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1272,6 +1242,7 @@ mod tests {
                 &mut interrupt_rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1313,7 +1284,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1336,6 +1306,7 @@ mod tests {
                 &mut interrupt_rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1350,6 +1321,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_token_cancelled_before_call_aborts_without_invoking_provider() {
+        // A pre-cancelled token means `tokio::select!`'s biased cancellation
+        // arm wins before the provider is ever polled — this isolates the
+        // "abort the in-flight model call" path from the tool-loop
+        // checkpoint path (covered by the drain_interrupts tests in turn.rs
+        // and by `stopped_interrupt_ends_turn_after_tool_completes` below).
+        let provider =
+            MockProvider::new(vec![ModelResponse::new("never seen".to_string(), vec![])]);
+        let call_count = Arc::clone(&provider.call_count);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+        );
+
+        let (publisher, ep) = test_bus();
+        let mut irx = interrupt::dead_interrupt_rx();
+        let stop_token = CancellationToken::new();
+        stop_token.cancel();
+
+        let result = agent
+            .process_message(
+                "hello",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut irx,
+                &[],
+                None,
+                &stop_token,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Vec::<String>::new(),
+            "a stopped turn returns no text"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "the model should never be called once the turn is stopped"
+        );
+        assert!(
+            agent
+                .messages_since(0)
+                .iter()
+                .any(|m| m.content.contains("[Stopped]")),
+            "a stop note should be recorded in history"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_interrupt_ends_turn_after_tool_completes() {
+        // The tool call in response 0 must run to completion before the
+        // Interrupt::Stopped queued alongside it is observed — proving a
+        // stop mid-tool-execution doesn't sever the tool, only stops the
+        // loop at its next checkpoint.
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let provider = CapturingProvider::new(
+            vec![
+                ModelResponse::new(
+                    String::new(),
+                    vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "exec".to_string(),
+                        arguments: serde_json::json!({"command": "echo test"}),
+                    }],
+                ),
+                // A second response exists only to fail the test loudly if
+                // the loop wrongly calls the model again after the stop.
+                ModelResponse::new("should never be reached".to_string(), vec![]),
+            ],
+            interrupt_tx,
+        );
+        provider.schedule_interrupt(0, vec![interrupt::Interrupt::Stopped]);
+        let call_count = Arc::clone(&provider.call_count);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+        );
+
+        let (publisher, ep) = test_bus();
+        let result = agent
+            .process_message(
+                "hello",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut interrupt_rx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            Vec::<String>::new(),
+            "a stopped turn returns no text"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "the tool's model call runs, but the model is never called again after the stop"
+        );
+        let messages = agent.messages_since(0);
+        assert!(
+            messages.iter().any(|m| m.role == crate::models::Role::Tool),
+            "the in-flight tool call should still have run to completion"
+        );
+        assert!(
+            messages.iter().any(|m| m.content.contains("[Stopped]")),
+            "a stop note should be recorded in history"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_response_returns_error() {
         let provider = MockProvider::new(vec![
             ModelResponse::new(String::new(), vec![]),
@@ -1360,7 +1475,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1384,6 +1498,7 @@ mod tests {
                 &mut irx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await;
         assert!(result.is_err(), "empty response should return error");
@@ -1400,7 +1515,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1435,7 +1549,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1490,7 +1603,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(NamedMockProvider { name: "model-a" }),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1515,7 +1627,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(NamedMockProvider { name: "model-a" }),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1569,7 +1680,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1592,6 +1702,7 @@ mod tests {
                 &mut rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1612,6 +1723,7 @@ mod tests {
                 &mut rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1655,7 +1767,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1678,6 +1789,7 @@ mod tests {
                 &mut rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1696,6 +1808,7 @@ mod tests {
                 &mut rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1735,7 +1848,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             cached,
             AgentConfig {
@@ -1758,6 +1870,7 @@ mod tests {
                 &mut rx,
                 &[],
                 None,
+                &CancellationToken::new(),
             )
             .await
             .unwrap();

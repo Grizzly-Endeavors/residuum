@@ -13,7 +13,7 @@ Two tiers, different rules:
 - **Core Facts** — durable identity/standing preferences, hard-capped at ~15 entries, replace-don't-append.
 - **Profile** — longer-form, evolving model of the user. Normal churn.
 
-**Promotion rule**: don't write to Core Facts (or add a new Profile entry) on a single sighting. Need ≥2 supporting observations, and annotate the evidence count ("seen 3x") when you do. One sighting alone goes to MEMORY.md as provisional. Both the `introspection` and `learner` presets apply this rule when tending USER.md.
+**Promotion rule**: don't write to Core Facts (or add a new Profile entry) on a single sighting. Need ≥2 supporting observations, and annotate the evidence count ("seen 3x") when you do. One sighting alone goes to MEMORY.md as provisional. Both the `introspection` and `learner` skills apply this rule when tending USER.md.
 
 ## Observer
 
@@ -32,7 +32,7 @@ The observer calls an LLM to extract a structured `Episode` from recent messages
 
 After extraction, observations are appended to `memory/observations.json` and recent messages are cleared from `memory/recent_messages.json`. The narrative context is saved to `memory/recent_context.json`. If an embedding provider is configured, `.obs` and `.idx` files are embedded for vector retrieval.
 
-The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/pushback, process preferences, frustration and its cause, praise and what earned it — as declarative facts about what happened, never as instructions. This is the evidence the `learner` preset corroborates against for a `preference` signal.
+The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/pushback, process preferences, frustration and its cause, praise and what earned it — as declarative facts about what happened, never as instructions. This is the evidence the `learner` skill corroborates against for a `preference` signal.
 
 Customize extraction guidance by editing `memory/OBSERVER.md`.
 
@@ -56,7 +56,6 @@ Use `memory_search` to query past observations and episode chunks. When an embed
 | `source` | string | `"observations"`, `"episodes"`, or `"both"` (default: `"both"`). |
 | `date_from` | string | ISO date lower bound (inclusive). |
 | `date_to` | string | ISO date upper bound (inclusive). |
-| `project_context` | string | Filter to observations/chunks from a specific project. |
 | `episode_ids` | array | Filter to specific episode IDs. |
 
 Use `memory_get` to retrieve the full transcript of a specific episode by ID.

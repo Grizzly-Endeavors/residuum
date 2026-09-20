@@ -13,11 +13,15 @@
 
   let {
     onSend,
+    onStop,
     onOpenFeedback,
+    isProcessing = false,
     disabled = false,
   }: {
     onSend: (text: string, images?: ImageAttachment[]) => void;
+    onStop: () => void;
     onOpenFeedback: () => void;
+    isProcessing?: boolean;
     disabled?: boolean;
   } = $props();
   let value = $state("");
@@ -47,6 +51,10 @@
     if (menuFromButton && !menuQuery) return COMMAND_REGISTRY;
     return filterCommands(menuQuery);
   });
+
+  // While a turn is running with nothing typed, the send button becomes a
+  // stop button — start typing a steering message and send comes back.
+  let showStop = $derived(isProcessing && !value.trim() && !pendingImages.length);
 
   function autoResize() {
     if (!textarea) return;
@@ -276,11 +284,17 @@
           oninput={handleInput}
           onpaste={handlePaste}
         ></textarea>
-        <button
-          class="send-btn"
-          onclick={submit}
-          disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button
-        >
+        {#if showStop}
+          <button class="stop-btn" onclick={onStop} aria-label="Stop the agent">
+            <Icon name="stop" size={14} />
+          </button>
+        {:else}
+          <button
+            class="send-btn"
+            onclick={submit}
+            disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button
+          >
+        {/if}
       </div>
       <input
         bind:this={fileInput}
@@ -323,11 +337,17 @@
         <div class="chat-toolbar-right">
           <ModelSelector {disabled} />
           <ThinkingSelector {disabled} />
-          <button
-            class="send-btn-toolbar"
-            onclick={submit}
-            disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button
-          >
+          {#if showStop}
+            <button class="stop-btn-toolbar" onclick={onStop} aria-label="Stop the agent">
+              <Icon name="stop" size={12} />
+            </button>
+          {:else}
+            <button
+              class="send-btn-toolbar"
+              onclick={submit}
+              disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button
+            >
+          {/if}
         </div>
       </div>
     </div>

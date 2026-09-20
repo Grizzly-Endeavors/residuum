@@ -3,73 +3,51 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
-use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
+use crate::agent::context::{PromptContext, SkillsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
     EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MessageEvent, NotifyName,
     Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
 };
 
-use crate::gateway::types::{GatewayRuntime, ReloadSignal};
+use crate::gateway::types::{GatewayRuntime, ReloadSignal, StopRequest};
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::models::ImageData;
-use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
-use crate::workspace::layout::WorkspaceLayout;
 
-use crate::agent::context::loading::{
-    build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
-};
+use crate::agent::context::loading::build_skill_context_strings;
 use crate::gateway::memory::MemorySubsystems;
 
 /// Raw prompt context strings for constructing a `PromptContext`.
 ///
 /// Held as owned `Option<String>` so that `PromptContext` can borrow via `as_deref()`.
 pub struct PromptContextStrings {
-    pub proj_index: Option<String>,
-    pub proj_active: Option<String>,
     pub skill_index: Option<String>,
     pub skill_active: Option<String>,
-    pub subagents_index: Option<String>,
 }
 
 impl PromptContextStrings {
     /// Build a borrowed `PromptContext` from these owned strings.
     pub(super) fn as_prompt_context(&self) -> PromptContext<'_> {
         PromptContext {
-            projects: ProjectsContext {
-                index: self.proj_index.as_deref(),
-                active_context: self.proj_active.as_deref(),
-            },
             skills: SkillsContext {
                 index: self.skill_index.as_deref(),
                 active_instructions: self.skill_active.as_deref(),
-            },
-            subagents: SubagentsContext {
-                index: self.subagents_index.as_deref(),
             },
         }
     }
 }
 
-/// Load prompt context strings from project, skill, and subagent state.
-pub async fn load_prompt_context_strings(
-    project_state: &SharedProjectState,
-    skill_state: &SharedSkillState,
-    layout: &WorkspaceLayout,
-) -> PromptContextStrings {
-    let (proj_index, proj_active) = build_project_context_strings(project_state).await;
+/// Load prompt context strings from skill state.
+pub async fn load_prompt_context_strings(skill_state: &SharedSkillState) -> PromptContextStrings {
     let (skill_index, skill_active) = build_skill_context_strings(skill_state).await;
-    let subagents_index = build_subagents_context_string(&layout.subagents_dir()).await;
     PromptContextStrings {
-        proj_index,
-        proj_active,
         skill_index,
         skill_active,
-        subagents_index,
     }
 }
 
@@ -88,6 +66,13 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
             Interrupt::Subconscious(content) => {
                 // A late mid-turn finding degrades to a note for the next turn.
                 rt.agent.inject_system_message(content);
+            }
+            Interrupt::Stopped => {
+                // The turn already ended by the time this was drained — the
+                // stop note was injected where it was actually observed
+                // (mid-generation cancellation or the tool-loop checkpoint
+                // inside `execute_turn`). Nothing left to do here.
+                tracing::debug!("leftover stop marker drained after turn already ended");
             }
         }
     }
@@ -109,19 +94,11 @@ pub async fn persist_and_maybe_observe(
     visibility: Visibility,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
-    use crate::gateway::helpers::project_context_label;
     use crate::gateway::memory::{execute_observation, persist_and_check_thresholds};
 
-    let project_ctx = project_context_label(&rt.project_state, &rt.layout).await;
-    let action = persist_and_check_thresholds(
-        new_messages,
-        &project_ctx,
-        visibility,
-        &rt.observer,
-        &rt.layout,
-        rt.tz,
-    )
-    .await;
+    let action =
+        persist_and_check_thresholds(new_messages, visibility, &rt.observer, &rt.layout, rt.tz)
+            .await;
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
         let mem = MemorySubsystems {
             observer: &rt.observer,
@@ -175,6 +152,7 @@ async fn run_agent_turn_with_interrupts(
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
+    stop_rx: &mut mpsc::Receiver<StopRequest>,
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
 ) -> (
     anyhow::Result<Vec<String>>,
@@ -184,6 +162,10 @@ async fn run_agent_turn_with_interrupts(
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
     let watch =
         subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
+    // Cancelled to abort an in-flight model call immediately; a stop that
+    // lands between calls is instead observed via `Interrupt::Stopped` at
+    // the tool loop's checkpoint (see `execute_turn`).
+    let stop_token = CancellationToken::new();
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,
@@ -196,6 +178,7 @@ async fn run_agent_turn_with_interrupts(
             &mut interrupt_rx,
             images,
             watch.as_ref(),
+            &stop_token,
         ));
         loop {
             tokio::select! {
@@ -224,6 +207,29 @@ async fn run_agent_turn_with_interrupts(
                 }
                 _ = reload_rx.changed() => {
                     tracing::info!("reload signal received during active turn, deferring");
+                }
+                stop_req = stop_rx.recv() => {
+                    let Some(req) = stop_req else {
+                        tracing::debug!("stop request channel closed during turn");
+                        continue;
+                    };
+                    let matches = req.reply_to.as_deref().is_none_or(|id| id == correlation_id);
+                    if matches {
+                        tracing::info!(correlation_id = %correlation_id, "stopping active turn");
+                        stop_token.cancel();
+                        if interrupt_tx.try_send(Interrupt::Stopped).is_err() {
+                            tracing::warn!("interrupt channel full, stop marker dropped (model-call cancellation still applies)");
+                        }
+                    } else {
+                        tracing::debug!(
+                            requested = ?req.reply_to,
+                            active = %correlation_id,
+                            "ignoring stop request for a different or already-finished turn"
+                        );
+                    }
+                    if let Some(tx) = req.result_tx {
+                        tx.send(matches).ok();
+                    }
                 }
             }
         }
@@ -400,8 +406,7 @@ pub async fn handle_inbound_message(
 
     let before = rt.agent.message_count();
 
-    let ctx_strings =
-        load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
+    let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let (turn_result, leftover_interrupts, subconscious_scratch) = run_agent_turn_with_interrupts(
@@ -416,6 +421,7 @@ pub async fn handle_inbound_message(
         &message.images,
         &mut rt.agent_subscriber,
         &mut rt.reload_rx,
+        &mut rt.stop_rx,
         (!is_background && rt.subconscious.mid_turn_enabled())
             .then(|| Arc::clone(&rt.subconscious)),
     )

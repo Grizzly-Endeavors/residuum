@@ -19,8 +19,6 @@ pub struct EpisodeMeta {
     pub id: String,
     /// Date of the episode.
     pub date: chrono::NaiveDate,
-    /// Project or topic context tag.
-    pub context: String,
 }
 
 /// Write an episode transcript file to the episodes directory.
@@ -50,7 +48,6 @@ pub(crate) async fn write_episode_transcript(
         "type": "meta",
         "id": episode.id,
         "date": episode.date.to_string(),
-        "context": episode.context,
     });
 
     let mut lines = Vec::with_capacity(messages.len() + 1);
@@ -331,10 +328,7 @@ pub(crate) async fn read_episode_lines(
     let mut parts: Vec<String> = Vec::new();
 
     // Header
-    parts.push(format!(
-        "Episode: {} | {} | {}",
-        meta.id, meta.date, meta.context
-    ));
+    parts.push(format!("Episode: {} | {}", meta.id, meta.date));
     parts.push(String::new());
 
     // Message lines
@@ -504,9 +498,7 @@ mod tests {
         Episode {
             id: "ep-001".to_string(),
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            context: "general".to_string(),
             observations: vec!["user prefers concise output".to_string()],
-            source_episodes: vec![],
         }
     }
 
@@ -561,7 +553,6 @@ mod tests {
         let (meta, loaded_messages) = read_episode_jsonl(&path).await.unwrap();
 
         assert_eq!(meta.id, "ep-001", "meta ID should round-trip");
-        assert_eq!(meta.context, "general", "meta context should round-trip");
         assert_eq!(loaded_messages.len(), 2, "should have 2 messages");
         assert_eq!(
             loaded_messages.first().map(|m| m.content.as_str()),
@@ -833,7 +824,8 @@ mod tests {
     async fn read_episode_jsonl_malformed_message_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ep-001.jsonl");
-        let content = "{\"type\":\"meta\",\"id\":\"ep-001\",\"date\":\"2026-02-19\",\"context\":\"general\"}\nnot valid json\n";
+        let content =
+            "{\"type\":\"meta\",\"id\":\"ep-001\",\"date\":\"2026-02-19\"}\nnot valid json\n";
         tokio::fs::write(&path, content).await.unwrap();
         let result = read_episode_jsonl(&path).await;
         assert!(result.is_err(), "malformed message line should return Err");

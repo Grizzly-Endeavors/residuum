@@ -1,6 +1,5 @@
 pub mod actions;
 pub mod agent;
-pub mod agent_registry;
 pub mod background;
 pub mod bus;
 pub mod config;
@@ -12,10 +11,8 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod notify;
-pub mod projects;
 pub mod pulse;
 pub mod skills;
-pub mod subagents;
 pub mod subconscious;
 pub mod time;
 pub mod tools;

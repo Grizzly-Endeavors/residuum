@@ -122,15 +122,6 @@
           placeholder="Default: 3"
         />
       </div>
-      <div class="settings-field">
-        <label for="rt-bg-transcript-retention">Transcript Retention (days)</label>
-        <input
-          id="rt-bg-transcript-retention"
-          type="number"
-          bind:value={fields.bg_transcript_retention_days}
-          placeholder="Default: 7"
-        />
-      </div>
     </div>
 
     <div class="settings-group">

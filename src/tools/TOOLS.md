@@ -56,7 +56,7 @@ On error (returned as `is_error = true`):
 On success: `"wrote {N} bytes to {path}"`
 
 On error:
-- `PathPolicy` rejects the write path (path is outside the active project root, or targets a protected config file)
+- `PathPolicy` rejects the write path (targets a protected config file)
 - File already exists but has not been read via `read_file` first
 - Directory creation fails
 - Write fails
@@ -95,7 +95,7 @@ On error:
 On success: `"edited {path}: {description}"` where description is e.g. `"replaced line(s) 5"` or `"deleted line(s) 2-4"`.
 
 On error:
-- `PathPolicy` rejects the path (outside active project root, or targets a protected config file)
+- `PathPolicy` rejects the path (targets a protected config file)
 - File does not exist
 - File has not been read via `read_file` first
 - Hash mismatch on `start_line` or `end_line` (file changed since last read)
@@ -143,10 +143,10 @@ Commands are resolved against the configured tool `PATH`: the directories in
 **Source:** `memory_search.rs` · `MemorySearchTool`
 
 **Description sent to LLM (vector enabled):**
-> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
 
 **Description sent to LLM (BM25 only):**
-> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
 
 ### Input
 
@@ -157,7 +157,6 @@ Commands are resolved against the configured tool `PATH`: the directories in
 | `source`          | string          | no       | Filter by source: `"observations"` or `"episodes"`. Omit to search both. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
-| `project_context` | string          | no       | Filter by project context (exact match)                      |
 | `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs                     |
 
 ### Output
@@ -166,7 +165,7 @@ On success with results:
 ```
 Found {N} result(s):
 
-1. [{source_type}] {id} | {date} | {context} | lines {s}-{e} (score: {score})
+1. [{source_type}] {id} | {date} | lines {s}-{e} (score: {score})
    {snippet}
 ```
 
@@ -201,128 +200,6 @@ On error:
 - Episode not found
 - `episode_id` is empty or contains invalid characters
 - Failed to read transcript file
-
----
-
-## `project_activate`
-
-**Source:** `projects.rs` · `ProjectActivateTool`
-
-**Description sent to LLM:**
-> Activate a project context. Loads the project's overview, manifest, and configuration into the agent's context.
-
-### Input
-
-| Parameter | Type   | Required | Description                                         |
-|-----------|--------|----------|-----------------------------------------------------|
-| `name`    | string | yes      | Name of the project to activate (case-insensitive)  |
-
-### Output
-
-On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`, followed by one `warning: ...` line per non-fatal failure (MCP server reference resolution, MCP server start, or skill rescan) if any occurred.
-
-On error: project not found or activation failure message.
-
-**Side effects:** Updates `PathPolicy` to scope writes to the project root; resolves MCP server name references from `mcp.json` files (project-local `mcp.json` alongside `PROJECT.md` takes precedence over global `workspace/config/mcp.json`) and activates them with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
-
----
-
-## `project_deactivate`
-
-**Source:** `projects.rs` · `ProjectDeactivateTool`
-
-**Description sent to LLM:**
-> Deactivate the current project context. Requires a non-empty session summary log entry.
-
-### Input
-
-| Parameter | Type   | Required | Description                                           |
-|-----------|--------|----------|-------------------------------------------------------|
-| `log`     | string | yes      | Session summary log entry (required, must not be empty) |
-
-### Output
-
-On success: `"Deactivated project '{name}'. Log entry recorded."`, followed by a `warning: skill rescan failed: {error}` line if the post-deactivation skill rescan failed.
-
-On error: no active project, or empty `log`.
-
-**Side effects:** Resets `PathPolicy` to no active project; decrements MCP server reference count (servers are only disconnected when the last agent deactivates — see `project_activate`); rescans skills without project dir.
-
----
-
-## `project_create`
-
-**Source:** `projects.rs` · `ProjectCreateTool`
-
-**Description sent to LLM:**
-> Create a new project with the standard directory structure and PROJECT.md.
-
-### Input
-
-| Parameter     | Type            | Required | Description                                               |
-|---------------|-----------------|----------|-----------------------------------------------------------|
-| `name`        | string          | yes      | Human-readable project name                               |
-| `description` | string          | yes      | Brief summary of what this project covers                 |
-| `tools`       | array\<string\> | no       | Optional list of tool names to associate with this project |
-
-### Output
-
-On success: `"Created project '{name}' at {path}"`
-
-On error: creation failure message (e.g. name conflict, filesystem error).
-
-**Side effect:** Triggers a project index rescan after successful creation.
-
----
-
-## `project_archive`
-
-**Source:** `projects.rs` · `ProjectArchiveTool`
-
-**Description sent to LLM:**
-> Archive a completed project. Updates frontmatter to archived status and moves it to the archive directory.
-
-### Input
-
-| Parameter | Type   | Required | Description                       |
-|-----------|--------|----------|-----------------------------------|
-| `name`    | string | yes      | Name of the project to archive    |
-
-### Output
-
-On success: `"Archived project '{name}'. Moved to archive/."`
-
-On error:
-- Project not found in index
-- Project is currently active (must deactivate first)
-- Filesystem error
-
-**Side effect:** Triggers a project index rescan after successful archival.
-
----
-
-## `project_list`
-
-**Source:** `projects.rs` · `ProjectListTool`
-
-**Description sent to LLM:**
-> List all projects and their status.
-
-### Input
-
-| Parameter          | Type    | Required | Description                                       |
-|--------------------|---------|----------|---------------------------------------------------|
-| `include_archived` | boolean | no       | Include archived projects in the list (default false) |
-
-### Output
-
-On success: count header followed by one line per project:
-```
-{N} project(s):
-  [{status}] {name}[ACTIVE] — {description}
-```
-
-When no projects exist: `"No projects found."`
 
 ---
 
@@ -386,7 +263,7 @@ On error: skill is not currently active.
 | `name`       | string          | yes      | Human-readable name for this action                                                                                                                               |
 | `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
-| `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
+| `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a skill name (e.g. `"memory-analyst"`) spawns a sub-agent with that skill as its role. Omit to spawn a sub-agent with no skill. |
 | `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
 
 ### Output
@@ -418,7 +295,7 @@ On success: count header followed by one entry per action (fire times displayed 
   {name} ({id}) — fires: {datetime} [agent info]
 ```
 
-The agent label shows `[main turn]` for main-turn actions, `[preset: {name}]` for preset-routed actions, or nothing for default sub-agent actions.
+The agent label shows `[main turn]` for main-turn actions, `[skill: {name}]` for skill-routed actions, or nothing for plain sub-agent actions.
 
 When no actions exist: `"No pending scheduled actions."`
 
@@ -537,20 +414,24 @@ On total failure: error with failure details.
 
 ### Input
 
-| Parameter | Type   | Required | Description                        |
-|-----------|--------|----------|-------------------------------------|
-| `title`   | string | yes      | A short summary of the item        |
-| `body`    | string | yes      | The detailed content of the item   |
+| Parameter     | Type             | Required | Description                        |
+|---------------|------------------|----------|-------------------------------------|
+| `title`       | string           | yes      | A short summary of the item        |
+| `body`        | string           | yes      | The detailed content of the item   |
+| `attachments` | array\<string\>  | no       | Paths to files already written to disk to attach to this item. Each file is copied into the item's own storage, so it's safe even if the source is later moved or deleted. |
 
 ### Output
 
-On success: `"Added item to user inbox with ID: {filename stem}"`
+On success, no `attachments` given: `"Added item to user inbox with ID: {filename stem}"`
+
+On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`
 
 On error:
 - Missing `title` or `body`
+- An attachment path doesn't exist, isn't readable, or exceeds the 25 MB size cap — the whole add fails and no item is created (see side effects below)
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated, copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. If any attachment in the batch fails, every file already copied for that item is removed and no item is saved — a partial attachment set is never left behind. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
 
 ---
 
@@ -702,51 +583,34 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
+> Spawn a background sub-agent to handle a task. Optionally name a skill to give the sub-agent a role — its instructions become the sub-agent's brief. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
 
 ### Input
 
 | Parameter        | Type            | Required | Description                                                          |
 |------------------|-----------------|----------|----------------------------------------------------------------------|
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
-| `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
-| `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
+| `skill`          | string          | no       | Name of a skill to activate as the sub-agent's role. Omit to run on the task prompt alone. Must match a known skill or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
+| `model`          | string          | no       | Model tier: `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
-### Subagent Presets
+### Sub-Agent Roles
 
-Presets are Markdown files in the `subagents/` directory at the workspace root (e.g., `subagents/researcher.md`). They configure sub-agent behaviour via YAML frontmatter:
+A sub-agent is an agent loop running off the main thread. Naming a `skill` activates that skill on the sub-agent's own skill state, so its body arrives as the sub-agent's role instructions through the normal active-skill path. Roles are ordinary skills in `skills/<name>/SKILL.md` — there is no separate preset format, and the same file can be activated in-turn by the main agent.
 
-```markdown
----
-name: researcher
-description: "Research specialist for gathering information"
-model_tier: small          # small / medium / large (optional, default: medium)
-denied_tools:              # permanently block these tools (mutually exclusive with allowed_tools)
-  - exec
----
-
-You are a research specialist. Focus on gathering and synthesising
-information. Always cite sources.
-```
-
-**Built-in preset:** `general-purpose` — no tool restrictions, medium tier. Always present even with no `subagents/` directory.
-
-**User-defined presets** with the same name as a built-in override the built-in.
-
-**Unknown preset names** return a `ToolResult::error` listing available presets — the call does not proceed.
+**Unknown skill names** return a `ToolResult::error` listing available skills — the call does not proceed. The check runs against the in-memory skill index, so it costs no disk I/O.
 
 ### Output
 
-On success: `"Subagent '{preset_name}' spawned with task delegated to registry."`
+On success: `"Sub-agent spawned with skill '{name}'."`, or `"Sub-agent spawned."` when no skill was named.
 
 The sub-agent runs in the background via the subagent registry. When it completes, the notification router relays the result back to the main agent.
 
 ### Errors
 
 - Missing or empty `task` → `InvalidArguments`
-- `agent_name` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
-- Invalid `model_override` value → `InvalidArguments`
-- Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
+- `skill` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
+- Invalid `model` value → `InvalidArguments`
+- Unknown `skill` (not in the skill index) → `is_error = true` with the available skill list
 - Bus publish failure → `Execution` error
 
 **Side effects:** Publishes a `SpawnRequest` to the bus, which the subagent registry picks up and spawns as a background task (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the bus notification system.

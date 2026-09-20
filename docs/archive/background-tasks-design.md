@@ -714,7 +714,6 @@ There is no direct coupling between background tasks and the observer. The obser
 ```toml
 [background]
 max_concurrent = 3                    # max simultaneous background tasks
-transcript_retention_days = 30        # auto-cleanup for background transcripts
 
 [background.models]
 small = "gemini/gemini-2.5-flash"

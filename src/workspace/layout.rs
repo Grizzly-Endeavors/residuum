@@ -111,30 +111,6 @@ impl WorkspaceLayout {
         self.root.join("BOOTSTRAP.md")
     }
 
-    /// Path to the subagent presets directory.
-    #[must_use]
-    pub fn subagents_dir(&self) -> PathBuf {
-        self.root.join("subagents")
-    }
-
-    /// Path to the projects directory for active project contexts.
-    #[must_use]
-    pub fn projects_dir(&self) -> PathBuf {
-        self.root.join("projects")
-    }
-
-    /// Path to the archive directory for completed project contexts.
-    #[must_use]
-    pub fn archive_dir(&self) -> PathBuf {
-        self.root.join("archive")
-    }
-
-    /// Path to PRESENCE.toml — hot-reloadable Discord presence configuration.
-    #[must_use]
-    pub fn presence_toml(&self) -> PathBuf {
-        self.root.join("PRESENCE.toml")
-    }
-
     /// Path to the agent inbox directory for background tasks and notifications.
     #[must_use]
     pub fn agent_inbox_dir(&self) -> PathBuf {
@@ -157,6 +133,20 @@ impl WorkspaceLayout {
     #[must_use]
     pub fn user_inbox_archive_dir(&self) -> PathBuf {
         self.root.join("archive/inbox/user")
+    }
+
+    /// Path to the directory holding copied attachment files for user inbox items,
+    /// one subdirectory per item ID.
+    #[must_use]
+    pub fn user_inbox_attachments_dir(&self) -> PathBuf {
+        self.root.join("inbox/user/attachments")
+    }
+
+    /// Path to the archived counterpart of `user_inbox_attachments_dir` — where an
+    /// item's attachment subdirectory moves to when the item itself is archived.
+    #[must_use]
+    pub fn user_inbox_archive_attachments_dir(&self) -> PathBuf {
+        self.root.join("archive/inbox/user/attachments")
     }
 
     /// Path to memory/OBSERVER.md -- observer extraction system prompt.
@@ -209,7 +199,7 @@ impl WorkspaceLayout {
         self.root.join("memory/background")
     }
 
-    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`, `run_counts`).
+    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).
     #[must_use]
     pub fn pulse_state_json(&self) -> PathBuf {
         self.root.join("pulse_state.json")
@@ -230,13 +220,11 @@ impl WorkspaceLayout {
             self.episodes_dir(),
             self.search_index_dir(),
             self.skills_dir(),
-            self.subagents_dir(),
-            self.projects_dir(),
-            self.archive_dir(),
             self.agent_inbox_dir(),
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),
             self.user_inbox_archive_dir(),
+            self.user_inbox_attachments_dir(),
             self.config_dir(),
         ]
     }
@@ -285,11 +273,6 @@ mod tests {
             "reflector_md path"
         );
         assert_eq!(
-            layout.presence_toml(),
-            PathBuf::from("/tmp/ws/PRESENCE.toml"),
-            "presence_toml path"
-        );
-        assert_eq!(
             layout.agent_inbox_dir(),
             PathBuf::from("/tmp/ws/inbox/agent"),
             "agent_inbox_dir path"
@@ -310,14 +293,19 @@ mod tests {
             "user_inbox_archive_dir path"
         );
         assert_eq!(
+            layout.user_inbox_attachments_dir(),
+            PathBuf::from("/tmp/ws/inbox/user/attachments"),
+            "user_inbox_attachments_dir path"
+        );
+        assert_eq!(
+            layout.user_inbox_archive_attachments_dir(),
+            PathBuf::from("/tmp/ws/archive/inbox/user/attachments"),
+            "user_inbox_archive_attachments_dir path"
+        );
+        assert_eq!(
             layout.vectors_db(),
             PathBuf::from("/tmp/ws/memory/vectors.db"),
             "vectors_db path"
-        );
-        assert_eq!(
-            layout.subagents_dir(),
-            PathBuf::from("/tmp/ws/subagents"),
-            "subagents_dir path"
         );
         assert_eq!(
             layout.bootstrap_md(),

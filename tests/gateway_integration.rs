@@ -26,6 +26,7 @@ mod gateway_integration {
     use futures_util::{SinkExt, StreamExt};
     use tokio::sync::{broadcast, mpsc};
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+    use tokio_util::sync::CancellationToken;
 
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
@@ -35,7 +36,7 @@ mod gateway_integration {
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
-    use residuum::tools::{ToolFilter, ToolRegistry};
+    use residuum::tools::ToolRegistry;
     use residuum::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
@@ -79,7 +80,6 @@ mod gateway_integration {
         Agent::new(
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
-            ToolFilter::new_shared(std::collections::HashSet::new()),
             residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             residuum::agent::AgentConfig {
@@ -104,7 +104,7 @@ mod gateway_integration {
         broadcast::Sender<ServerMessage>,
         String,
     ) {
-        let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<InboundMessage>(32);
         let (broadcast_tx, _) = broadcast::channel::<ServerMessage>(256);
 
         // Set up bus broker and wire the ws subscriber loop to forward
@@ -149,72 +149,89 @@ mod gateway_integration {
         let loop_broadcast_tx = broadcast_tx.clone();
         let loop_publisher = publisher.clone();
         let loop_ep = ep.clone();
-        tokio::spawn(async move {
-            let mut agent = agent;
-            while let Some(inbound) = inbound_rx.recv().await {
-                let reply_id = inbound.id.clone();
+        tokio::spawn(run_test_turn_loop(
+            agent,
+            inbound_rx,
+            loop_publisher,
+            loop_ep,
+            loop_broadcast_tx,
+        ));
 
-                // Publish TurnStarted (normally done by the event loop)
-                drop(
-                    loop_publisher
-                        .publish(
-                            topics::Endpoint(loop_ep.clone()),
-                            residuum::bus::TurnLifecycleEvent::Started {
-                                correlation_id: reply_id.clone(),
-                            },
-                        )
-                        .await,
-                );
+        (inbound_tx, broadcast_tx, addr)
+    }
 
-                let mut irx = interrupt::dead_interrupt_rx();
-                match agent
-                    .process_message(
-                        &inbound.content,
-                        &loop_publisher,
-                        Some(&loop_ep),
-                        None,
-                        "",
-                        None,
-                        &PromptContext::default(),
-                        &mut irx,
-                        &[],
-                        None,
+    /// Drive the test harness's turn loop: process each inbound message
+    /// through the agent and forward the outcome onto the bus/broadcast
+    /// channel, mirroring what the real event loop does per-turn.
+    async fn run_test_turn_loop(
+        mut agent: Agent,
+        mut inbound_rx: mpsc::Receiver<InboundMessage>,
+        publisher: residuum::bus::Publisher,
+        ep: EndpointName,
+        broadcast_tx: broadcast::Sender<ServerMessage>,
+    ) {
+        while let Some(inbound) = inbound_rx.recv().await {
+            let reply_id = inbound.id.clone();
+
+            // Publish TurnStarted (normally done by the event loop)
+            drop(
+                publisher
+                    .publish(
+                        topics::Endpoint(ep.clone()),
+                        residuum::bus::TurnLifecycleEvent::Started {
+                            correlation_id: reply_id.clone(),
+                        },
                     )
-                    .await
-                {
-                    Ok(texts) => {
-                        for text in &texts {
-                            drop(
-                                loop_publisher
-                                    .publish(
-                                        topics::Endpoint(loop_ep.clone()),
-                                        residuum::bus::ResponseEvent {
-                                            correlation_id: reply_id.clone(),
-                                            content: text.clone(),
-                                            timestamp: chrono::NaiveDateTime::default(),
-                                            attachment: None,
-                                        },
-                                    )
-                                    .await,
-                            );
-                        }
+                    .await,
+            );
+
+            let mut irx = interrupt::dead_interrupt_rx();
+            match agent
+                .process_message(
+                    &inbound.content,
+                    &publisher,
+                    Some(&ep),
+                    None,
+                    "",
+                    None,
+                    &PromptContext::default(),
+                    &mut irx,
+                    &[],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+            {
+                Ok(texts) => {
+                    for text in &texts {
+                        drop(
+                            publisher
+                                .publish(
+                                    topics::Endpoint(ep.clone()),
+                                    residuum::bus::ResponseEvent {
+                                        correlation_id: reply_id.clone(),
+                                        content: text.clone(),
+                                        timestamp: chrono::NaiveDateTime::default(),
+                                        attachment: None,
+                                    },
+                                )
+                                .await,
+                        );
                     }
-                    Err(e) => {
-                        if loop_broadcast_tx
-                            .send(ServerMessage::Error {
-                                reply_to: Some(reply_id),
-                                message: e.to_string(),
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
+                }
+                Err(e) => {
+                    if broadcast_tx
+                        .send(ServerMessage::Error {
+                            reply_to: Some(reply_id),
+                            message: e.to_string(),
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
                 }
             }
-        });
-
-        (inbound_tx, broadcast_tx, addr)
+        }
     }
 
     #[derive(Clone)]
@@ -289,12 +306,13 @@ mod gateway_integration {
                         break;
                     }
                 }
-                // SetVerbose (client-side), Reload, ServerCommand, InboxAdd
-                // not handled in test stub
+                // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
+                // Cancel not handled in test stub
                 ClientMessage::SetVerbose { .. }
                 | ClientMessage::Reload
                 | ClientMessage::ServerCommand { .. }
-                | ClientMessage::InboxAdd { .. } => {}
+                | ClientMessage::InboxAdd { .. }
+                | ClientMessage::Cancel { .. } => {}
             }
         }
 

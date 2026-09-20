@@ -3,7 +3,7 @@
 use crate::time::{format_display_datetime, format_relative_time};
 use crate::workspace::identity::IdentityFiles;
 
-use super::types::{MemoryContext, ProjectsContext, SkillsContext, StatusLine, SubagentsContext};
+use super::types::{MemoryContext, SkillsContext, StatusLine};
 
 fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
@@ -20,16 +20,15 @@ const HARNESS: &str = "You run on Residuum, a personal-agent harness. These syst
 - **Memory**: memory_search (keyword + semantic) and memory_get retrieve past conversations and observations — search before saying you don't know or don't remember. Background pulse runs are not captured in searchable memory. An automatic observer archives conversations into episodes; MEMORY.md is your own persistent scratchpad. Write memory entries as declarative facts about the user or world ('User prefers X'), never as instructions to yourself ('Always do X') — imperative phrasing re-reads as a directive later. Skip anything that will be stale within days (ticket numbers, in-progress states).
 - **Identity files**: SOUL.md, AGENTS.md, USER.md, MEMORY.md, ENVIRONMENT.md are yours to edit with file tools; edits take effect next turn. Persist durable facts and preferences as you learn them.
 - **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Two built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox) and memory_tending (daily MEMORY.md/USER.md upkeep). If they are missing from HEARTBEAT.yml, offer to restore them. When the user mentions a recurring need, propose a pulse for it.
-- **Inboxes**: two. Your agent inbox (inbox_list, inbox_read, inbox_archive) collects items for you to process. The user inbox (user_inbox_add) delivers items to the user's web UI — use it for background findings that should not interrupt conversation.
+- **Inboxes**: two. Your agent inbox (inbox_list, inbox_read, inbox_archive) collects items for you to process. The user inbox (user_inbox_add) delivers items to the user's web UI — use it for background findings that should not interrupt conversation; it can carry file attachments (paths to files already on disk) alongside the title and body.
 - **Scheduled actions**: one-off future tasks via the action tools; they fire once then auto-remove.
-- **Sub-agents**: spawn background work with subagent_spawn using presets from subagents/*.md. Author new presets yourself when a recurring delegation pattern appears (frontmatter: name, description, model_tier, tool allow/deny lists; body = the preset's instructions). A sub-agent's result is its self-report, not verified fact — when it matters, have it return concrete handles (paths, IDs, URLs) and verify them.
+- **Sub-agents**: spawn background work with subagent_spawn. A sub-agent is an agent loop running off the main thread; pass a skill name to give it a role, and its instructions become the sub-agent's brief. A sub-agent's result is its self-report, not verified fact — when it matters, have it return concrete handles (paths, IDs, URLs) and verify them.
 - **Skills**: loadable knowledge packs in skills/*/SKILL.md, activated with skill_activate. Author new skills yourself when you keep re-deriving the same procedure.
-- **Projects**: scoped workspaces with their own tools, skills, and context.
 - **Notifications**: background results are filed to the inbox; a sub-agent that ends its summary with `HEARTBEAT_URGENT` also pushes to every configured notification channel.
 
 The residuum-system skill is the authoritative reference for all of the above. Activate it before answering any question about what you can do, and whenever you are unsure whether the harness supports something.
 
-Extend, don't just operate: authoring pulses, presets, and skills for the user's recurring needs is part of your job.";
+Extend, don't just operate: authoring pulses and skills for the user's recurring needs is part of your job.";
 
 /// Build the `[Current Time: ...][Last Message: ...][Message Source: ...]` tag string.
 pub(super) fn build_status_line(ctx: &StatusLine) -> String {
@@ -53,41 +52,30 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 
 /// Build a minimal system prompt for background sub-agent turns.
 ///
-/// Includes optional preset instructions, ENVIRONMENT.md, USER.md, projects index,
-/// active project context, skills index, and active skill instructions.
+/// Includes ENVIRONMENT.md, USER.md, the skills index, and active skill
+/// instructions. A sub-agent spawned with a skill has that skill already
+/// active, so its body arrives through `ACTIVE_SKILLS`.
 ///
-/// Excludes SOUL, AGENTS, MEMORY, observations, recent context, and the subagents
-/// index (subagents cannot spawn other subagents) — unless `include_identity` is
-/// `true` (opt-in via preset frontmatter), in which case SOUL.md, AGENTS.md, and
-/// MEMORY.md are also rendered, for presets that need the agent's own identity
-/// (e.g. introspection).
+/// Excludes SOUL, AGENTS, MEMORY, observations, and recent context — unless
+/// `include_identity` is `true` (set by the spawn caller), in which case
+/// SOUL.md, AGENTS.md, and MEMORY.md are also rendered, for sub-agents that
+/// need the agent's own identity (e.g. introspection).
 ///
 /// Assembly order (matching main prompt structure for cache efficiency):
-/// 1. `AGENT_INSTRUCTIONS` (preset instructions, if any)
-/// 2. `SOUL.md` (only when `include_identity` is `true`)
-/// 3. `AGENTS.md` (only when `include_identity` is `true`)
-/// 4. `ENVIRONMENT.md`
-/// 5. `USER.md`
-/// 6. `MEMORY.md` (only when `include_identity` is `true`)
-/// 7. `PROJECTS_INDEX`
-/// 8. `SKILLS_INDEX`
-/// 9. `ACTIVE_PROJECT` (when a project is active)
-/// 10. `ACTIVE_SKILLS` (when skills are loaded)
+/// 1. `SOUL.md` (only when `include_identity` is `true`)
+/// 2. `AGENTS.md` (only when `include_identity` is `true`)
+/// 3. `ENVIRONMENT.md`
+/// 4. `USER.md`
+/// 5. `MEMORY.md` (only when `include_identity` is `true`)
+/// 6. `SKILLS_INDEX`
+/// 7. `ACTIVE_SKILLS` (when skills are loaded)
 #[must_use]
 pub(crate) fn build_subagent_system_content(
     identity: &IdentityFiles,
-    projects_ctx: &ProjectsContext<'_>,
     skills_ctx: &SkillsContext<'_>,
-    preset_instructions: Option<&str>,
     include_identity: bool,
 ) -> String {
     let mut parts = Vec::new();
-
-    if let Some(instructions) = preset_instructions
-        && !instructions.is_empty()
-    {
-        parts.push(section("AGENT_INSTRUCTIONS", instructions));
-    }
 
     if include_identity {
         if let Some(soul) = &identity.soul {
@@ -111,22 +99,10 @@ pub(crate) fn build_subagent_system_content(
         parts.push(section("MEMORY.md", memory));
     }
 
-    if let Some(idx) = projects_ctx.index
-        && !idx.is_empty()
-    {
-        parts.push(section("PROJECTS_INDEX", idx));
-    }
-
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
         parts.push(section("SKILLS_INDEX", idx));
-    }
-
-    if let Some(active) = projects_ctx.active_context
-        && !active.is_empty()
-    {
-        parts.push(section("ACTIVE_PROJECT", active));
     }
 
     if let Some(active) = skills_ctx.active_instructions
@@ -150,21 +126,16 @@ pub(crate) fn build_subagent_system_content(
 /// 7. `MEMORY.md`
 /// 8. `OBSERVATION_LOG` (if present)
 /// 9. `RECENT_CONTEXT` (if present)
-/// 10. `SUBAGENTS_INDEX` (available presets listing)
-/// 11. `PROJECTS_INDEX` (always present after bootstrap)
-/// 12. `SKILLS_INDEX` (available skills listing)
-/// 13. `ACTIVE_PROJECT` (when a project is active)
-/// 14. `ACTIVE_SKILLS` (when skills are loaded)
+/// 10. `SKILLS_INDEX` (available skills listing)
+/// 11. `ACTIVE_SKILLS` (when skills are loaded)
 ///
 /// Static sections (1-6) form a stable cache prefix shared across all conversations.
-/// Dynamic sections (7-9) update as memory changes. Indices (10-12) appear before
-/// active sections (13-14) to maximize cache reuse as projects/skills change.
+/// Dynamic sections (7-9) update as memory changes. The index (10) appears before
+/// the active section (11) to maximize cache reuse as skills change.
 pub(super) fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
-    projects_ctx: &ProjectsContext<'_>,
     skills_ctx: &SkillsContext<'_>,
-    subagents_ctx: &SubagentsContext<'_>,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -206,28 +177,10 @@ pub(super) fn build_system_content(
         parts.push(section("RECENT_CONTEXT", ctx));
     }
 
-    if let Some(idx) = subagents_ctx.index
-        && !idx.is_empty()
-    {
-        parts.push(section("SUBAGENTS_INDEX", idx));
-    }
-
-    if let Some(idx) = projects_ctx.index
-        && !idx.is_empty()
-    {
-        parts.push(section("PROJECTS_INDEX", idx));
-    }
-
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
         parts.push(section("SKILLS_INDEX", idx));
-    }
-
-    if let Some(active) = projects_ctx.active_context
-        && !active.is_empty()
-    {
-        parts.push(section("ACTIVE_PROJECT", active));
     }
 
     if let Some(active) = skills_ctx.active_instructions
@@ -268,13 +221,7 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -297,13 +244,7 @@ mod tests {
     fn system_content_includes_harness_even_with_empty_identity() {
         let identity = IdentityFiles::default();
 
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
 
         assert!(
             content.contains("<HARNESS>"),
@@ -323,13 +264,7 @@ mod tests {
             observations: Some("episode ep-001: user prefers concise output"),
             recent_context: None,
         };
-        let content = build_system_content(
-            &identity,
-            &mem,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -353,13 +288,7 @@ mod tests {
             observations: Some(""),
             recent_context: None,
         };
-        let content = build_system_content(
-            &identity,
-            &mem,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -370,13 +299,7 @@ mod tests {
     fn system_content_skips_none_observations() {
         let identity = IdentityFiles::default();
 
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
@@ -394,13 +317,7 @@ mod tests {
             observations: Some("some observation"),
             recent_context: None,
         };
-        let content = build_system_content(
-            &identity,
-            &mem,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -435,13 +352,7 @@ mod tests {
             observations: None,
             recent_context: Some("We were implementing a caching layer."),
         };
-        let content = build_system_content(
-            &identity,
-            &mem,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
 
         assert!(
             content.contains("<RECENT_CONTEXT>"),
@@ -460,13 +371,7 @@ mod tests {
             observations: None,
             recent_context: Some(""),
         };
-        let content = build_system_content(
-            &identity,
-            &mem,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
         assert!(
             !content.contains("RECENT_CONTEXT"),
             "empty recent context should be skipped"
@@ -480,13 +385,7 @@ mod tests {
             observations: Some("some observations"),
             recent_context: Some("narrative summary"),
         };
-        let content = build_system_content(
-            &identity,
-            &mem,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
 
         let obs_close = content.find("</OBSERVATION_LOG>");
         let ctx_open = content.find("<RECENT_CONTEXT>");
@@ -510,13 +409,7 @@ mod tests {
             environment: Some("env notes".to_string()),
             ..IdentityFiles::default()
         };
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
 
         assert!(
             content.contains("<BOOTSTRAP.md>\nfirst run guidance\n</BOOTSTRAP.md>"),
@@ -542,13 +435,7 @@ mod tests {
             agents: Some("agent rules".to_string()),
             ..IdentityFiles::default()
         };
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
 
         assert!(
             !content.contains("BOOTSTRAP.md"),
@@ -567,13 +454,7 @@ mod tests {
             ),
             active_instructions: None,
         };
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &skills,
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &skills);
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should have skills index section"
@@ -597,13 +478,7 @@ mod tests {
                 "<active_skill name=\"pdf\">\nUse this for PDFs.\n</active_skill>",
             ),
         };
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &skills,
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &skills);
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "should have active skills section"
@@ -615,72 +490,13 @@ mod tests {
     }
 
     #[test]
-    fn section_order_subagents_projects_skills_active() {
-        let identity = IdentityFiles::default();
-        let projects = ProjectsContext {
-            index: Some("| Name | Status |"),
-            active_context: Some("**Project:** test"),
-        };
-        let skills = SkillsContext {
-            index: Some("<available_skills/>"),
-            active_instructions: Some("<active_skill/>"),
-        };
-        let subagents = SubagentsContext {
-            index: Some("<presets/>"),
-        };
-        let content = build_system_content(&identity, &no_memory(), &projects, &skills, &subagents);
-
-        // Verify the order: SUBAGENTS_INDEX → PROJECTS_INDEX → SKILLS_INDEX → ACTIVE_PROJECT → ACTIVE_SKILLS
-        let subagents_open = content.find("<SUBAGENTS_INDEX>");
-        let projects_open = content.find("<PROJECTS_INDEX>");
-        let skills_open = content.find("<SKILLS_INDEX>");
-        let active_proj_open = content.find("<ACTIVE_PROJECT>");
-        let active_skills_open = content.find("<ACTIVE_SKILLS>");
-
-        assert!(
-            subagents_open.is_some()
-                && projects_open.is_some()
-                && skills_open.is_some()
-                && active_proj_open.is_some()
-                && active_skills_open.is_some(),
-            "all sections should exist"
-        );
-
-        let sub = subagents_open.unwrap();
-        let proj = projects_open.unwrap();
-        let skl = skills_open.unwrap();
-        let act_proj = active_proj_open.unwrap();
-        let act_skl = active_skills_open.unwrap();
-
-        assert!(
-            sub < proj,
-            "SUBAGENTS_INDEX should come before PROJECTS_INDEX"
-        );
-        assert!(proj < skl, "PROJECTS_INDEX should come before SKILLS_INDEX");
-        assert!(
-            skl < act_proj,
-            "SKILLS_INDEX should come before ACTIVE_PROJECT"
-        );
-        assert!(
-            act_proj < act_skl,
-            "ACTIVE_PROJECT should come before ACTIVE_SKILLS"
-        );
-    }
-
-    #[test]
     fn skills_empty_index_skipped() {
         let identity = IdentityFiles::default();
         let skills = SkillsContext {
             index: Some(""),
             active_instructions: None,
         };
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &skills,
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &skills);
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
@@ -690,13 +506,7 @@ mod tests {
     #[test]
     fn skills_none_skipped() {
         let identity = IdentityFiles::default();
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            &SubagentsContext::default(),
-        );
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
         assert!(
             !content.contains("SKILLS_INDEX"),
             "None skills index should be skipped"
@@ -710,23 +520,18 @@ mod tests {
     // ── build_subagent_system_content tests ──────────────────────────────────
 
     #[test]
-    fn subagent_system_content_includes_environment_user_projects_skills() {
+    fn subagent_system_content_includes_environment_user_skills() {
         let identity = IdentityFiles {
             soul: Some("SOUL content".to_string()),
             environment: Some("env notes".to_string()),
             user: Some("user prefs".to_string()),
             ..IdentityFiles::default()
         };
-        let projects_ctx = ProjectsContext {
-            index: Some("| proj | active |"),
-            active_context: None,
-        };
         let skills_ctx = SkillsContext {
             index: Some("<available_skills/>"),
             active_instructions: None,
         };
-        let content =
-            build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None, false);
+        let content = build_subagent_system_content(&identity, &skills_ctx, false);
 
         assert!(!content.contains("SOUL"), "should exclude SOUL.md");
         assert!(!content.contains("AGENTS.md"), "should exclude AGENTS.md");
@@ -749,10 +554,6 @@ mod tests {
         );
         assert!(content.contains("user prefs"), "should include USER.md");
         assert!(
-            content.contains("| proj | active |"),
-            "should include projects index"
-        );
-        assert!(
             content.contains("<SKILLS_INDEX>"),
             "should include skills index"
         );
@@ -767,13 +568,7 @@ mod tests {
             environment: Some("env notes".to_string()),
             ..IdentityFiles::default()
         };
-        let content = build_subagent_system_content(
-            &identity,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            None,
-            true,
-        );
+        let content = build_subagent_system_content(&identity, &SkillsContext::default(), true);
 
         assert!(
             content.contains("<SOUL.md>\nSOUL content\n</SOUL.md>"),
@@ -796,13 +591,7 @@ mod tests {
             index: Some("<available_skills/>"),
             active_instructions: Some("<active_skill>instructions</active_skill>"),
         };
-        let content = build_subagent_system_content(
-            &identity,
-            &ProjectsContext::default(),
-            &skills_ctx,
-            None,
-            false,
-        );
+        let content = build_subagent_system_content(&identity, &skills_ctx, false);
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "active skills section should appear in subagent system prompt"
@@ -820,40 +609,10 @@ mod tests {
             index: Some(""),
             active_instructions: None,
         };
-        let content = build_subagent_system_content(
-            &identity,
-            &ProjectsContext::default(),
-            &skills_ctx,
-            None,
-            false,
-        );
+        let content = build_subagent_system_content(&identity, &skills_ctx, false);
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
-        );
-    }
-
-    #[test]
-    fn subagent_system_content_includes_active_project() {
-        let identity = IdentityFiles::default();
-        let projects_ctx = ProjectsContext {
-            index: Some("| proj | status |"),
-            active_context: Some("**Current Project:** test-proj"),
-        };
-        let content = build_subagent_system_content(
-            &identity,
-            &projects_ctx,
-            &SkillsContext::default(),
-            None,
-            false,
-        );
-        assert!(
-            content.contains("<ACTIVE_PROJECT>"),
-            "active project section should appear in subagent system prompt"
-        );
-        assert!(
-            content.contains("test-proj"),
-            "active project context should appear in subagent system prompt"
         );
     }
 
@@ -864,63 +623,21 @@ mod tests {
             user: Some("user content".to_string()),
             ..IdentityFiles::default()
         };
-        let projects_ctx = ProjectsContext {
-            index: Some("projects"),
-            active_context: Some("active proj"),
-        };
         let skills_ctx = SkillsContext {
             index: Some("skills"),
             active_instructions: Some("active skills"),
         };
-        let content =
-            build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None, false);
+        let content = build_subagent_system_content(&identity, &skills_ctx, false);
 
-        // Verify order: ENVIRONMENT → USER → PROJECTS_INDEX → SKILLS_INDEX → ACTIVE_PROJECT → ACTIVE_SKILLS
+        // Verify order: ENVIRONMENT → USER → SKILLS_INDEX → ACTIVE_SKILLS
         let env_pos = content.find("env content").unwrap();
         let user_pos = content.find("user content").unwrap();
-        let proj_idx_pos = content.find("<PROJECTS_INDEX>").unwrap();
         let skl_idx_pos = content.find("<SKILLS_INDEX>").unwrap();
-        let active_proj_pos = content.find("<ACTIVE_PROJECT>").unwrap();
         let active_skl_pos = content.find("<ACTIVE_SKILLS>").unwrap();
 
         assert!(
-            env_pos < user_pos
-                && user_pos < proj_idx_pos
-                && proj_idx_pos < skl_idx_pos
-                && skl_idx_pos < active_proj_pos
-                && active_proj_pos < active_skl_pos,
-            "sections should appear in order: ENVIRONMENT, USER, PROJECTS_INDEX, SKILLS_INDEX, ACTIVE_PROJECT, ACTIVE_SKILLS"
-        );
-    }
-
-    #[test]
-    fn subagent_system_content_includes_preset_instructions() {
-        let identity = IdentityFiles {
-            environment: Some("env notes".to_string()),
-            ..IdentityFiles::default()
-        };
-        let content = build_subagent_system_content(
-            &identity,
-            &ProjectsContext::default(),
-            &SkillsContext::default(),
-            Some("Do this specific task"),
-            false,
-        );
-
-        assert!(
-            content.contains("<AGENT_INSTRUCTIONS>"),
-            "should wrap preset instructions in AGENT_INSTRUCTIONS tags"
-        );
-        assert!(
-            content.contains("Do this specific task"),
-            "should include preset instruction content"
-        );
-        // AGENT_INSTRUCTIONS must appear before ENVIRONMENT.md
-        let instructions_pos = content.find("<AGENT_INSTRUCTIONS>").unwrap();
-        let env_pos = content.find("<ENVIRONMENT.md>").unwrap();
-        assert!(
-            instructions_pos < env_pos,
-            "AGENT_INSTRUCTIONS should come before ENVIRONMENT.md"
+            env_pos < user_pos && user_pos < skl_idx_pos && skl_idx_pos < active_skl_pos,
+            "sections should appear in order: ENVIRONMENT, USER, SKILLS_INDEX, ACTIVE_SKILLS"
         );
     }
 

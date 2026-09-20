@@ -1,7 +1,7 @@
 //! Minimal XML-escaping for author-controlled text embedded in pseudo-XML system prompts.
 
 /// Escape `&`, `<`, and `>` so untrusted text (e.g. names/descriptions from
-/// preset or skill frontmatter) cannot break out of the surrounding pseudo-XML
+/// skill frontmatter) cannot break out of the surrounding pseudo-XML
 /// block when interpolated into a system prompt.
 ///
 /// `&` is replaced first so it doesn't double-escape the entities produced by

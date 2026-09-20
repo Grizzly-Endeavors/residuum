@@ -1,8 +1,7 @@
-//! End-to-end integration tests for the skills subsystem (Phase 6).
+//! End-to-end integration tests for the skills subsystem.
 //!
 //! Tests the full lifecycle: scan → verify index → activate → verify active →
-//! deactivate → verify removed. Also tests project-scoped skills and malformed
-//! SKILL.md handling.
+//! deactivate → verify removed. Also tests malformed SKILL.md handling.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
@@ -45,14 +44,12 @@ mod skills_integration {
     // ── Scanning ─────────────────────────────────────────────────────────────
 
     /// Number of bundled skills created by `ensure_workspace`.
-    const BUNDLED_SKILL_COUNT: usize = 3;
+    const BUNDLED_SKILL_COUNT: usize = 6;
 
     #[tokio::test]
     async fn scan_empty_workspace() {
         let (_dir, layout) = setup_workspace().await;
-        let index = SkillIndex::scan(&[layout.skills_dir()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
         assert_eq!(
             index.entries().len(),
             BUNDLED_SKILL_COUNT,
@@ -72,9 +69,7 @@ mod skills_integration {
         )
         .await;
 
-        let index = SkillIndex::scan(&[layout.skills_dir()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
         assert_eq!(index.entries().len(), BUNDLED_SKILL_COUNT + 1);
         assert!(
             index.find_by_name("code-review").is_some(),
@@ -117,9 +112,7 @@ mod skills_integration {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[layout.skills_dir()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
         assert_eq!(
             index.entries().len(),
             BUNDLED_SKILL_COUNT + 1,
@@ -143,9 +136,7 @@ mod skills_integration {
         )
         .await;
 
-        let index = SkillIndex::scan(&[layout.skills_dir()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
         let output = index.format_for_prompt();
         assert!(output.contains("<available_skills>"));
         assert!(output.contains("</available_skills>"));
@@ -168,7 +159,7 @@ mod skills_integration {
         .await;
 
         let dirs = vec![layout.skills_dir()];
-        let index = SkillIndex::scan(&dirs, None).await.unwrap();
+        let index = SkillIndex::scan(&dirs).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 
         // Verify index (bundled skills + test-skill)
@@ -232,7 +223,7 @@ mod skills_integration {
         .await;
 
         let dirs = vec![layout.skills_dir()];
-        let index = SkillIndex::scan(&dirs, None).await.unwrap();
+        let index = SkillIndex::scan(&dirs).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 
         let activate = SkillActivateTool::new(Arc::clone(&state));
@@ -275,7 +266,7 @@ mod skills_integration {
         .await;
 
         let dirs = vec![layout.skills_dir()];
-        let index = SkillIndex::scan(&dirs, None).await.unwrap();
+        let index = SkillIndex::scan(&dirs).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 
         let activate = SkillActivateTool::new(Arc::clone(&state));
@@ -293,101 +284,5 @@ mod skills_integration {
         let active_text = s.format_active_for_prompt().unwrap();
         assert!(active_text.contains("Body A."));
         assert!(active_text.contains("Body B."));
-    }
-
-    // ── Project-scoped skills ────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn project_scoped_skills_appear_on_rescan() {
-        let (_dir, layout) = setup_workspace().await;
-
-        // Create a workspace skill
-        create_skill(
-            &layout.skills_dir(),
-            "ws-skill",
-            "ws-skill",
-            "Workspace skill",
-            "WS body.",
-        )
-        .await;
-
-        // Create a project-like skills directory
-        let project_skills_dir = layout.projects_dir().join("my-project/skills");
-        tokio::fs::create_dir_all(&project_skills_dir)
-            .await
-            .unwrap();
-        create_skill(
-            &project_skills_dir,
-            "proj-skill",
-            "proj-skill",
-            "Project skill",
-            "Project body.",
-        )
-        .await;
-
-        let dirs = vec![layout.skills_dir()];
-        let index = SkillIndex::scan(&dirs, None).await.unwrap();
-        let mut state = SkillState::new(index, dirs);
-
-        // Before rescan: bundled skills + workspace skill
-        assert_eq!(state.index().entries().len(), BUNDLED_SKILL_COUNT + 1);
-
-        // Rescan with project skills dir
-        state.rescan(Some(&project_skills_dir)).await.unwrap();
-
-        // After rescan: bundled skills + workspace skill + project skill
-        assert_eq!(state.index().entries().len(), BUNDLED_SKILL_COUNT + 2);
-        assert!(state.index().find_by_name("proj-skill").is_some());
-        assert_eq!(
-            state.index().find_by_name("proj-skill").unwrap().source,
-            SkillSource::Project
-        );
-    }
-
-    #[tokio::test]
-    async fn project_skills_removed_on_rescan_without_project() {
-        let (_dir, layout) = setup_workspace().await;
-
-        create_skill(
-            &layout.skills_dir(),
-            "ws-skill",
-            "ws-skill",
-            "Workspace skill",
-            "WS body.",
-        )
-        .await;
-
-        let project_skills_dir = layout.projects_dir().join("my-project/skills");
-        tokio::fs::create_dir_all(&project_skills_dir)
-            .await
-            .unwrap();
-        create_skill(
-            &project_skills_dir,
-            "proj-skill",
-            "proj-skill",
-            "Project skill",
-            "Project body.",
-        )
-        .await;
-
-        let dirs = vec![layout.skills_dir()];
-        let index = SkillIndex::scan(&dirs, Some(&project_skills_dir))
-            .await
-            .unwrap();
-        let mut state = SkillState::new(index, dirs);
-
-        // Activate project skill
-        state.activate("proj-skill").await.unwrap();
-        assert_eq!(state.active_skill_names(), vec!["proj-skill"]);
-
-        // Rescan without project dir (simulates project deactivation)
-        state.rescan(None).await.unwrap();
-
-        // Project skill should be gone from index and active list
-        assert!(state.index().find_by_name("proj-skill").is_none());
-        assert!(
-            state.active_skill_names().is_empty(),
-            "stale active skill should be removed"
-        );
     }
 }

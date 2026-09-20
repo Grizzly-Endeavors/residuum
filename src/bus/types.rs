@@ -43,7 +43,7 @@ macro_rules! newtype_string {
 
 newtype_string!(EndpointId, "Unique identifier for a bus endpoint.");
 newtype_string!(EndpointName, "Interactive endpoint identifier.");
-newtype_string!(PresetName, "Subagent preset identifier.");
+newtype_string!(SkillName, "Skill identifier.");
 newtype_string!(NotifyName, "Notification channel identifier.");
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn newtype_from_string() {
-        let name = PresetName::from("summarizer".to_string());
+        let name = SkillName::from("summarizer".to_string());
         assert_eq!(name.as_ref(), "summarizer");
     }
 

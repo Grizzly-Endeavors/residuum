@@ -9,8 +9,9 @@ The inbox is a capture system for items the agent or background tasks want to sa
 | Populated by | Notification router (`inbox` channel target), background tasks | `user_inbox_add` tool |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none for the agent)* |
 | Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
+| Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/inbox/{id}/attachments/{index}` |
 
-The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` preset) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
+The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
 
 ## How Items Arrive
 
@@ -32,8 +33,21 @@ Each item is a JSON file. There is **no `id` field in the JSON body** — the ID
 }
 ```
 
-- Filenames are auto-generated from date and sanitized title; the filename stem *is* the ID used by `inbox_read`/`inbox_archive`.
-- `attachments` is supported in the schema but currently unused.
+A user inbox item created with `user_inbox_add`'s `attachments` parameter records each copied file's path under `inbox/user/attachments/{item id}/`, relative to the workspace root:
+
+```json
+{
+  "title": "Weekly export ready",
+  "body": "Attached the CSV export for this week.",
+  "source": "agent",
+  "timestamp": "2026-02-27T14:30",
+  "read": false,
+  "attachments": ["inbox/user/attachments/20260227_weekly_export_ready/export.csv"]
+}
+```
+
+- Filenames are auto-generated from date and sanitized title; the filename stem *is* the ID used by `inbox_read`/`inbox_archive`, and the directory attachments are copied into.
+- Only the final path component (the filename) of each `attachments` entry is meaningful — the directory portion can go stale once an item is archived, since archiving physically moves the item's attachment directory alongside its JSON file. Consumers (the web UI, the HTTP serving endpoint) resolve attachments by filename against the item's *current* location, not by trusting the stored path literally.
 - There is no unread-count surfaced anywhere in the agent's context or status line — the agent has to call `inbox_list` (with `unread_only: true`) to find out.
 
 ## Tools (Agent Inbox Only)
@@ -44,8 +58,18 @@ Each item is a JSON file. There is **no `id` field in the JSON body** — the ID
 | `inbox_read` | `id` (string — filename stem) | Reads item content, marks as read as a side effect. Cannot be unmarked. |
 | `inbox_archive` | `ids` (string[] — filename stems) | Moves items from `inbox/agent/` to `archive/inbox/agent/`. This is a move, not a copy. |
 
+## User Inbox Attachments
+
+`user_inbox_add` accepts an optional `attachments` parameter: an array of paths to files the agent has already written to disk (an export, a report, a screenshot). Each file is copied — not moved or linked — into the item's own directory, so the item keeps working even if the original file is later moved or deleted.
+
+- **Copy, not reference**: files land at `inbox/user/attachments/{item id}/{filename}`. Source filenames are reduced to their final path component before use, so a traversal-style source path can't place a copy outside the item's directory, and same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering.
+- **Size cap**: 25 MB per file, the same cap used for chat attachments elsewhere.
+- **All-or-nothing**: if any attachment in a call fails to copy (missing file, oversized, unreadable), no item is created and any files already copied for that item are removed. The failure is returned as a tool error and logged — there's no such thing as an item with a partial attachment set.
+- **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving.
+- **Serving**: the web UI fetches attachments from `GET /api/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
+
 ## Intended Usage
 
 The agent inbox is for **low-urgency items** that don't need immediate attention — background task results that are informational but not actionable should route here rather than to a push notification channel. The agent should periodically triage it — reading items, acting on anything that needs follow-up, and archiving items that are resolved. This should be driven by a heartbeat pulse.
 
-The user inbox is for findings the agent wants to hand to the user asynchronously, without interrupting a conversation — e.g. the built-in `reflection` and `memory_tending` pulses deliver their output there. Before adding a new item, check prior items (including the archive) so the same suggestion isn't repeated.
+The user inbox is for findings the agent wants to hand to the user asynchronously, without interrupting a conversation — e.g. the built-in `reflection` and `memory_tending` pulses deliver their output there. Attach a file with `user_inbox_add`'s `attachments` parameter when the finding is easier to review as a file than as inline text (an export, a screenshot, a generated report). Before adding a new item, check prior items (including the archive) so the same suggestion isn't repeated.

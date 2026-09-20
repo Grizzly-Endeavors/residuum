@@ -44,6 +44,7 @@
       verbose: ws.verbose,
       setVerbose: (enabled) => ws.setVerbose(enabled),
       pushInline: (content) => ws.store.pushLocalSystem(content),
+      activeTurnId: ws.store.activeTurnId,
     });
 
     if (result) {
@@ -61,5 +62,11 @@
 
 <div class="chat-view">
   <ChatFeed items={ws.store.feed} isProcessing={ws.store.isProcessing} verbose={ws.verbose} />
-  <ChatInput onSend={handleSend} {onOpenFeedback} disabled={ws.transport.status !== "connected"} />
+  <ChatInput
+    onSend={handleSend}
+    onStop={() => ws.stop()}
+    {onOpenFeedback}
+    isProcessing={ws.store.isProcessing}
+    disabled={ws.transport.status !== "connected"}
+  />
 </div>

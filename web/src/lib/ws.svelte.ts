@@ -96,6 +96,16 @@ class WsCoordinator {
     this.store.pushUserMessage(content, images);
   }
 
+  /**
+   * Stop the turn currently in flight, if any. A no-op when nothing is
+   * running — the server ignores a stop with no matching turn.
+   */
+  stop(): void {
+    const replyTo = this.store.activeTurnId;
+    if (!replyTo) return;
+    this.transport.send({ type: "cancel", reply_to: replyTo });
+  }
+
   setVerbose(enabled: boolean): void {
     this.verbose = enabled;
     try {

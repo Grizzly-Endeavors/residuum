@@ -23,15 +23,6 @@ pub struct MemoryContext<'a> {
     pub recent_context: Option<&'a str>,
 }
 
-/// Projects-related context injected into the system prompt.
-#[derive(Default)]
-pub struct ProjectsContext<'a> {
-    /// Formatted project index (always present after bootstrap).
-    pub index: Option<&'a str>,
-    /// Formatted active project context (only when a project is active).
-    pub active_context: Option<&'a str>,
-}
-
 /// Skills-related context injected into the system prompt.
 #[derive(Default)]
 pub struct SkillsContext<'a> {
@@ -41,22 +32,10 @@ pub struct SkillsContext<'a> {
     pub active_instructions: Option<&'a str>,
 }
 
-/// Subagent-preset-related context injected into the system prompt.
-#[derive(Default)]
-pub struct SubagentsContext<'a> {
-    /// Formatted subagent presets index XML (available presets listing).
-    pub index: Option<&'a str>,
-}
-
 /// Bundle of external context injected into the system prompt.
-///
-/// Groups projects, skills, and subagents context into a single struct to
-/// reduce argument count on functions that thread all three through.
 #[derive(Default)]
 pub struct PromptContext<'a> {
-    pub projects: ProjectsContext<'a>,
     pub skills: SkillsContext<'a>,
-    pub subagents: SubagentsContext<'a>,
 }
 
 /// A per-section breakdown of the agent's approximate token usage.
@@ -65,12 +44,6 @@ pub struct ContextBreakdown {
     pub identity_tokens: usize,
     /// Estimated tokens from the memory pipeline (observation log + recent context).
     pub memory_pipeline_tokens: usize,
-    /// Estimated tokens from the subagents preset index.
-    pub subagents_index_tokens: usize,
-    /// Estimated tokens from the projects index.
-    pub projects_index_tokens: usize,
-    /// Estimated tokens from the active project context (0 if none active).
-    pub active_project_tokens: usize,
     /// Estimated tokens from the skills index.
     pub skills_index_tokens: usize,
     /// Estimated tokens from active skill instructions (0 if none active).

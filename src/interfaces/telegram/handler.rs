@@ -10,8 +10,8 @@ use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::interfaces::cli::commands::{
+use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::MessageOrigin;
@@ -23,6 +23,7 @@ struct TelegramContext<'a> {
     inbox_dir: &'a Path,
     reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
+    stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
     tz: chrono_tz::Tz,
 }
 
@@ -53,6 +54,7 @@ pub(super) async fn run_telegram_polling(
     let bus_handle = senders.bus_handle;
     let reload_tx = senders.reload;
     let command_tx = senders.command;
+    let stop_tx = senders.stop;
     // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
@@ -150,6 +152,7 @@ pub(super) async fn run_telegram_polling(
                 inbox_dir: &inbox_dir,
                 reload_tx: &reload_tx,
                 command_tx: &command_tx,
+                stop_tx: &stop_tx,
                 tz,
             };
             dispatch_message(&bot, &msg, from, &ctx).await;
@@ -176,14 +179,12 @@ async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: 
 
 /// Register slash commands with the Telegram API so users see autocomplete.
 ///
-/// Mirrors the Discord `register_slash_commands` pattern. Client-only commands
-/// (quit, exit, verbose toggles) are skipped.
+/// Mirrors the Discord `register_slash_commands` pattern.
 ///
 /// # Errors
 /// Returns an error if the Telegram `setMyCommands` API call fails.
 async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
     let commands: Vec<BotCommand> = all_commands()
-        .filter(|info| !info.cli_only)
         .map(|info| BotCommand::new(info.name, info.help))
         .collect();
 
@@ -324,7 +325,10 @@ async fn handle_command(
             )
             .await
         }
-        Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) | None => result.response,
+        Some(CommandSideEffect::Stop) => {
+            crate::interfaces::dispatch_stop_request(ctx.stop_tx, "telegram command").await
+        }
+        None => result.response,
     };
 
     if let Err(e) = bot.send_message(chat_id, &response_text).await {

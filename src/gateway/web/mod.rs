@@ -93,6 +93,10 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/inbox", get(inbox::api_inbox_list))
         .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
         .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
+        .route(
+            "/api/inbox/{id}/attachments/{index}",
+            get(inbox::api_inbox_attachment),
+        )
         .with_state(state)
 }
 
@@ -277,9 +281,7 @@ mod tests {
             let episode = Episode {
                 id: id.to_string(),
                 date,
-                context: "general".to_string(),
                 observations: vec![],
-                source_episodes: vec![],
             };
             write_episode_transcript(
                 &episodes_dir,
@@ -347,9 +349,7 @@ mod tests {
             let episode = Episode {
                 id: id.to_string(),
                 date,
-                context: "general".to_string(),
                 observations: vec![],
-                source_episodes: vec![],
             };
             write_episode_transcript(
                 &episodes_dir,
@@ -381,13 +381,11 @@ mod tests {
         match segment {
             config::ChatHistorySegment::Episode {
                 episode_id,
-                context,
                 messages,
                 next_cursor,
                 ..
             } => {
                 assert_eq!(episode_id, "ep-002");
-                assert_eq!(context, "general");
                 assert_eq!(messages.len(), 1);
                 assert_eq!(messages[0].message.content, "middle");
                 assert_eq!(
@@ -445,7 +443,7 @@ mod tests {
 
         // Timestamp uses ISO seconds-precision, which minute_format rejects.
         // A single bad row here fails the whole file parse.
-        let malformed = r#"[{"role":"user","content":"hi","timestamp":"2026-04-12T15:00:30","project_context":"default","visibility":"user"}]"#;
+        let malformed = r#"[{"role":"user","content":"hi","timestamp":"2026-04-12T15:00:30","visibility":"user"}]"#;
         tokio::fs::write(memory_dir.join("recent_messages.json"), malformed)
             .await
             .unwrap();

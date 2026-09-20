@@ -1,6 +1,6 @@
 # Workflow: Extending Capabilities
 
-Walk the user through skills, MCP servers, background tasks, and subagent presets. By the end, the user should understand how to ask you to expand your capabilities.
+Walk the user through skills, MCP servers, and background tasks. By the end, the user should understand how to ask you to expand your capabilities.
 
 **Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
 
@@ -12,13 +12,11 @@ Show the user the skill concept by referencing the built-in skills:
 - `residuum-system` -- technical reference for workspace configuration files
 - `residuum-getting-started` -- the skill currently active (this one)
 
-Explain that the user can ask you to create custom skills for recurring types of tasks. For example: "Create a skill for Ansible playbook review" and you will set it up. Skills can be workspace-wide or scoped to a specific project.
+Explain that the user can ask you to create custom skills for recurring types of tasks. For example: "Create a skill for Ansible playbook review" and you will set it up.
 
 Give an example of what a skill looks like so they understand the concept, but frame it as something you create for them:
 
 "If you asked me to create an Ansible helper skill, I would set up something like this -- a name, a description, and instructions I follow when the skill is active."
-
-Skills can also live inside a project's `skills/` subdirectory, making them available only when that project is active.
 
 ## Step 2: MCP Server Setup
 
@@ -31,7 +29,7 @@ Ask what external services the user wants to connect to. Common examples:
 - GitHub operations beyond what `gh` CLI provides
 - Smart home APIs, calendar services, email
 
-You configure MCP servers in a project's `PROJECT.md` frontmatter, or the user can add them globally in `config.toml`. When a project with MCP servers is activated, the servers start automatically. When the project deactivates, they stop.
+You configure MCP servers in `config/mcp.json`, using the same `mcpServers` map format Claude Code and Claude Desktop use. Servers listed there start automatically and stay running; editing the file and saving is enough for the change to take effect, no restart needed.
 
 Help the user set up one MCP server for a real use case if they have one. If not, explain that they can ask you to set one up later when the need arises.
 
@@ -46,18 +44,18 @@ Key tools:
 
 Demonstrate by spawning a simple sub-agent:
 ```
-subagent_spawn with task: "List the files in the current workspace's projects directory and summarize what projects exist."
+subagent_spawn with task: "List the files in the current workspace and summarize what's there."
 ```
 
 You can run sub-agents in the foreground (wait for the result inline) or in the background (results delivered via notification channels). Demonstrate both.
 
-Sub-agents use presets that you manage. The default is `general-purpose`, but you can create specialized presets for recurring types of work.
+A sub-agent can take a skill as its role. By default it runs on the task prompt alone, but you can write a skill for a recurring type of work and hand it to the sub-agent.
 
 ## Step 4: Creating a Subagent Preset
 
-If the user has a recurring type of delegated task, offer to create a preset for it. For example: "If you want me to always review code a certain way, I can create a code-reviewer preset that I will use whenever you ask for a review."
+If the user has a recurring type of delegated task, offer to write a skill for it. For example: "If you want me to always review code a certain way, I can write a code-reviewer skill and run a sub-agent with it whenever you ask for a review."
 
-Create the preset on their behalf. You decide the appropriate system prompt, model tier, delivery channels, and tool access based on the task. Explain what you created and why. The user does not need to know the file format — just that the preset exists and what it does.
+Write the skill on their behalf, and pick the model tier when you spawn it. Explain what you created and why. The user does not need to know the file format — just that the skill exists and what it does.
 
 After creating it, show them how it works: "Now when you want a code review, I can spin up my code-reviewer to handle it in the background."
 

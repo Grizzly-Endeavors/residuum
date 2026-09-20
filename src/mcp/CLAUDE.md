@@ -1,7 +1,7 @@
 # MCP Module
 
-Lifecycle management for user-configured MCP servers (per-project `mcp_servers`
-in `PROJECT.md`, or global `mcp.json`) and the tools they expose to the agent.
+Lifecycle management for user-configured MCP servers (declared in the global
+`mcp.json`) and the tools they expose to the agent.
 
 ## Tool-name collision policy
 

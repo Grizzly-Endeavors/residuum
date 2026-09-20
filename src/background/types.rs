@@ -1,6 +1,5 @@
 //! Background task types: task definitions, execution configs, and results.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,7 +7,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, PresetName, Publisher};
+use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, Publisher, SkillName};
 use crate::config::BackgroundModelTier;
 use crate::memory::search::HybridSearcher;
 use crate::models::CompletionOptions;
@@ -26,8 +25,8 @@ pub(crate) struct BackgroundTask {
     pub source: EventTrigger,
     /// Configuration for the sub-agent that runs this task.
     pub subagent_config: SubAgentConfig,
-    /// The agent preset that will run this task.
-    pub agent_preset: PresetName,
+    /// Skill the sub-agent runs with, if any.
+    pub agent_skill: Option<SkillName>,
 }
 
 /// Configuration for a sub-agent background task.
@@ -35,7 +34,7 @@ pub(crate) struct BackgroundTask {
 pub struct SubAgentConfig {
     /// The prompt/instructions for the sub-agent.
     pub prompt: String,
-    /// Additional context to prepend (e.g. project context).
+    /// Additional context to prepend to the sub-agent's prompt.
     pub context: Option<String>,
     /// Which model tier to use.
     pub model_tier: BackgroundModelTier,
@@ -58,8 +57,8 @@ pub struct BackgroundResult {
     pub status: AgentResultStatus,
     /// When the task completed.
     pub timestamp: DateTime<Utc>,
-    /// The agent preset that ran this task.
-    pub agent_preset: PresetName,
+    /// Skill the sub-agent ran with, if any.
+    pub agent_skill: Option<SkillName>,
 }
 
 /// Metadata tracked for a currently-running background task.
@@ -80,53 +79,20 @@ pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
     prompt.chars().take(120).collect()
 }
 
-/// Format a `BackgroundResult` for injection into the agent message stream.
-#[must_use]
-pub fn format_background_result(result: &BackgroundResult) -> String {
-    let source_kind = result.source.as_str();
-
-    let mut parts = vec![format!(
-        "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
-        result.source_label, result.id, source_kind, result.status
-    )];
-
-    if !result.summary.is_empty() {
-        parts.push(format!("Output:\n{}", result.summary));
-    }
-
-    if let Some(path) = &result.transcript_path {
-        parts.push(format!("Transcript: {}", path.display()));
-    }
-
-    parts.join("\n")
-}
-
-/// Preset-derived tool restriction for a sub-agent.
-pub enum PresetToolRestriction {
-    /// Tools permanently blocked (from `denied_tools` frontmatter).
-    Denied(HashSet<String>),
-    /// Only listed tools are available (from `allowed_tools` frontmatter).
-    AllowedOnly(HashSet<String>),
-}
-
 /// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
 pub struct SubAgentBuildConfig {
-    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
-    pub gated_tools: HashSet<&'static str>,
-    /// Optional preset-level tool restriction (denied or allowed-only).
-    pub preset_tool_restriction: Option<PresetToolRestriction>,
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
     /// Identity files for the system prompt.
     pub identity: IdentityFiles,
     /// LLM completion options for the sub-agent turn.
     pub options: CompletionOptions,
-    /// Timezone used by project management tools.
+    /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
-    /// Preset-specific instructions to inject into the subagent system prompt.
-    pub preset_instructions: Option<String>,
-    /// Opt-in (from preset frontmatter) to render SOUL.md, AGENTS.md, and
-    /// MEMORY.md in the subagent's system prompt.
+    /// Skill to activate for this sub-agent, if any. Its body becomes the
+    /// sub-agent's role instructions through the normal active-skill path.
+    pub skill: Option<String>,
+    /// Render SOUL.md, AGENTS.md, and MEMORY.md in the subagent's system prompt.
     pub include_identity: bool,
     // ── Sub-agent tool dependencies ────────────────────────────────────
     /// Background task spawner for `stop_agent` / `list_agents` tools.
@@ -153,93 +119,6 @@ mod tests {
             BackgroundModelTier::default(),
             BackgroundModelTier::Medium,
             "default tier should be medium"
-        );
-    }
-
-    #[test]
-    fn format_background_result_completed() {
-        let result = BackgroundResult {
-            id: "bg-001".to_string(),
-            source_label: "action:email_check".to_string(),
-            source: EventTrigger::Action,
-            summary: "3 new emails found".to_string(),
-            transcript_path: None,
-            status: AgentResultStatus::Completed,
-            timestamp: Utc::now(),
-
-            agent_preset: PresetName::from("general-purpose"),
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(
-            formatted.contains("action:email_check"),
-            "should contain source label"
-        );
-        assert!(formatted.contains("bg-001"), "should contain task id");
-        assert!(formatted.contains("action"), "should contain source");
-        assert!(formatted.contains("completed"), "should contain status");
-        assert!(
-            formatted.contains("3 new emails found"),
-            "should contain summary"
-        );
-    }
-
-    #[test]
-    fn format_background_result_failed() {
-        let result = BackgroundResult {
-            id: "bg-002".to_string(),
-            source_label: "agent:deploy_check".to_string(),
-            source: EventTrigger::Agent,
-            summary: String::new(),
-            transcript_path: Some(PathBuf::from("/tmp/bg-002.log")),
-            status: AgentResultStatus::Failed {
-                error: "connection refused".to_string(),
-            },
-            timestamp: Utc::now(),
-
-            agent_preset: PresetName::from("general-purpose"),
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(formatted.contains("failed"), "should contain status");
-        assert!(
-            formatted.contains("connection refused"),
-            "should contain error"
-        );
-        assert!(
-            formatted.contains("/tmp/bg-002.log"),
-            "should contain transcript path"
-        );
-        assert!(
-            !formatted.contains("Output:"),
-            "failed result with empty summary should omit Output section"
-        );
-    }
-
-    #[test]
-    fn format_background_result_cancelled() {
-        let result = BackgroundResult {
-            id: "bg-003".to_string(),
-            source_label: "pulse:long_task".to_string(),
-            source: EventTrigger::Pulse,
-            summary: "partial output".to_string(),
-            transcript_path: None,
-            status: AgentResultStatus::Cancelled,
-            timestamp: Utc::now(),
-
-            agent_preset: PresetName::from("general-purpose"),
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(formatted.contains("cancelled"), "should contain status");
-        assert!(formatted.contains("pulse"), "should contain source");
-        assert!(
-            formatted.contains("partial output"),
-            "should include non-empty summary"
-        );
-        assert!(
-            !formatted.contains("Error:"),
-            "cancelled task should not include Error: line"
         );
     }
 

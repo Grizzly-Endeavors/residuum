@@ -57,7 +57,7 @@ impl Tool for ScheduleActionTool {
                     },
                     "agent_name": {
                         "type": "string",
-                        "description": "Agent routing: 'main' runs a full wake turn with conversation context; a preset name (e.g. 'memory-agent') spawns a sub-agent using that preset. Omit for default sub-agent behavior."
+                        "description": "Agent routing: 'main' runs a full wake turn with conversation context; a skill name (e.g. 'memory-analyst') spawns a sub-agent with that skill as its role. Omit to spawn a sub-agent with no skill."
                     },
                     "model_tier": {
                         "type": "string",
@@ -172,7 +172,7 @@ impl Tool for ListActionsTool {
                 .format("%Y-%m-%dT%H:%M:%S");
             let agent_label = match action.agent.as_deref() {
                 Some("main") => " [main turn]".to_string(),
-                Some(preset) => format!(" [preset: {preset}]"),
+                Some(skill) => format!(" [skill: {skill}]"),
                 None => String::new(),
             };
             lines.push(format!(

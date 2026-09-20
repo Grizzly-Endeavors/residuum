@@ -14,7 +14,6 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `USER.md` | Medium | Agent records user preferences, communication style, active interests. |
 | `ENVIRONMENT.md` | Low | Agent documents local environment details it discovers. |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
-| `PRESENCE.toml` | Low | Discord presence. Agent updates when context changes. |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
 | `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
 | `memory/OBSERVER.md` | Low | Observer extraction prompt. Agent can improve over time via self-analysis. |
@@ -51,17 +50,17 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | System | Doc | Primary tools | Config |
 |--------|-----|---------------|--------|
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
-| [Projects](projects.md) | Scoped workspaces for ongoing work | `project_create`, `project_activate`, `project_deactivate`, `project_archive`, `project_list` | per-project `PROJECT.md` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
-| [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* |
+| [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
 | [Tool PATH](tools.md) | Runtime-extensible PATH for spawned CLIs (exec + MCP stdio) | *(automatic — no tools)* | `[tools]` in `config.toml`, `~/.residuum/bin` |
-| [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json`, per-project `mcp_servers` |
+| [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json` |
 | [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `switch_endpoint`, `send_message` | `config/channels.toml` |
-| [Idle](idle.md) | Deactivates project/skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
-| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, `subagents/` presets |
+| [Idle](idle.md) | Deactivates skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
+| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, role skills in `skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
+| [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
 
 ## What This Is Not
 

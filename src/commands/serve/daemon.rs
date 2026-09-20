@@ -29,15 +29,14 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
     child_args
 }
 
-#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
+#[tracing::instrument(skip_all)]
 pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_process_running, read_pid_file};
 
     residuum::util::tracing_init::init_default_tracing();
 
-    let agent_name = args.agent.as_deref();
-    let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
-    let label = super::super::agent_label(agent_name);
+    let pid_path = residuum::config::Config::config_dir()?.join("residuum.pid");
+    let label = "gateway";
 
     // Check for an already-running instance via file lock (primary detection)
     if residuum::daemon::is_pid_locked(&pid_path)? {
@@ -55,13 +54,11 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     }
 
     // Resolve gateway address from config or defaults
-    let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
+    let config_dir = residuum::config::Config::config_dir()?;
     let gateway_addr = super::super::resolve_gateway_addr(&config_dir);
 
     // Detect whether the child will enter setup mode (no PID file until setup completes)
-    // Named agents never enter setup mode.
-    let needs_setup =
-        agent_name.is_none() && (args.setup || !config_dir.join("config.toml").exists());
+    let needs_setup = args.setup || !config_dir.join("config.toml").exists();
 
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
@@ -153,20 +150,20 @@ mod tests {
 
     #[test]
     fn build_child_args_with_serve_subcommand() {
-        let result = build_child_args(&args(&["residuum", "serve", "--agent", "foo"]));
+        let result = build_child_args(&args(&["residuum", "serve", "--extra", "foo"]));
         assert_eq!(
             result,
-            args(&["serve", "--foreground", "--agent", "foo"]),
+            args(&["serve", "--foreground", "--extra", "foo"]),
             "should prepend serve --foreground and forward remaining args"
         );
     }
 
     #[test]
     fn build_child_args_without_serve_subcommand() {
-        let result = build_child_args(&args(&["residuum", "--agent", "foo"]));
+        let result = build_child_args(&args(&["residuum", "--extra", "foo"]));
         assert_eq!(
             result,
-            args(&["serve", "--foreground", "--agent", "foo"]),
+            args(&["serve", "--foreground", "--extra", "foo"]),
             "should handle missing serve subcommand by skipping only argv[0]"
         );
     }
@@ -177,12 +174,12 @@ mod tests {
             "residuum",
             "serve",
             "--foreground",
-            "--agent",
+            "--extra",
             "foo",
         ]));
         assert_eq!(
             result,
-            args(&["serve", "--foreground", "--agent", "foo"]),
+            args(&["serve", "--foreground", "--extra", "foo"]),
             "should not duplicate --foreground when already present"
         );
     }
