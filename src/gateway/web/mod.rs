@@ -93,6 +93,10 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/inbox", get(inbox::api_inbox_list))
         .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
         .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
+        .route(
+            "/api/inbox/{id}/attachments/{index}",
+            get(inbox::api_inbox_attachment),
+        )
         .with_state(state)
 }
 
