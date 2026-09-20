@@ -417,7 +417,7 @@ mod tests {
             CompletionOptions, Message, ModelError, ModelResponse, ToolDefinition,
         };
         use crate::skills::{SkillIndex, SkillState};
-        use crate::tools::{ToolFilter, ToolRegistry};
+        use crate::tools::ToolRegistry;
         use crate::workspace::identity::IdentityFiles;
         use async_trait::async_trait;
 
@@ -441,12 +441,10 @@ mod tests {
         }
 
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let tool_filter = ToolFilter::new_shared();
         let mcp_registry = McpRegistry::new_shared();
         let resources = SubAgentResources {
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
-            tool_filter,
             mcp_registry,
             skill_state,
             identity: IdentityFiles::default(),

@@ -12,7 +12,7 @@ use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
-use crate::tools::{FileTracker, SharedToolFilter, ToolFilter, ToolRegistry};
+use crate::tools::{FileTracker, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 use super::types::{SubAgentBuildConfig, SubAgentConfig};
@@ -29,8 +29,6 @@ pub(crate) struct SubAgentOutput {
 pub struct SubAgentResources {
     pub(crate) provider: Box<dyn ModelProvider>,
     pub(crate) tools: ToolRegistry,
-    /// Sub-agent's own isolated tool filter (not shared with main agent).
-    pub(crate) tool_filter: SharedToolFilter,
     /// Shared MCP registry (ref-counted, not isolated).
     pub(crate) mcp_registry: SharedMcpRegistry,
     /// Sub-agent's own isolated skill state.
@@ -48,8 +46,8 @@ pub struct SubAgentResources {
 ///
 /// Clones the skill index so the sub-agent starts with the same view of
 /// available skills, but operates on its own independent copies of
-/// `SkillState`, `PathPolicy`, and `ToolFilter`. The `McpRegistry` is shared
-/// (ref-counted) so servers are not duplicated.
+/// `SkillState` and `PathPolicy`. The `McpRegistry` is shared (ref-counted)
+/// so servers are not duplicated.
 ///
 /// When `config.skill` is set, that skill is activated on the sub-agent's own
 /// skill state so its body arrives as the sub-agent's role instructions.
@@ -102,8 +100,6 @@ pub async fn build_subagent_resources(
     // Fresh isolated path policy
     let path_policy = PathPolicy::new_shared();
 
-    let tool_filter = ToolFilter::new_shared();
-
     // Fresh file tracker (tracks reads within this sub-agent turn only)
     let tracker = FileTracker::new_shared();
 
@@ -134,7 +130,6 @@ pub async fn build_subagent_resources(
     Ok(SubAgentResources {
         provider,
         tools,
-        tool_filter,
         mcp_registry,
         skill_state,
         identity,
@@ -203,7 +198,6 @@ pub(crate) async fn execute_subagent(
     let turn_resources = TurnResources {
         provider: &*resources.provider,
         tools: &resources.tools,
-        tool_filter: &resources.tool_filter,
         mcp_registry: &resources.mcp_registry,
         identity: &resources.identity,
         options: &resources.options,
@@ -242,7 +236,6 @@ mod tests {
     use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolDefinition};
     use crate::skills::{SkillIndex, SkillState};
-    use crate::tools::ToolFilter;
     use async_trait::async_trait;
 
     struct MockSubAgentProvider {
@@ -267,14 +260,12 @@ mod tests {
 
     fn make_resources(response: &str) -> SubAgentResources {
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let tool_filter = ToolFilter::new_shared();
         let mcp_registry = McpRegistry::new_shared();
         SubAgentResources {
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
             }),
             tools: ToolRegistry::new(),
-            tool_filter,
             mcp_registry,
             skill_state,
             identity: IdentityFiles::default(),

@@ -13,7 +13,7 @@ The background module decouples background work (pulse evaluation, scheduled act
 The module owns:
 - **Task lifecycle management:** spawning, concurrency control (semaphore), cancellation tokens, transcript persistence.
 - **SubAgent execution:** LLM-powered turn loop with isolated resources.
-- **Resource isolation:** each background task gets its own `SkillState`, `ToolFilter`, and `PathPolicy` so they don't interfere with each other or the main agent.
+- **Resource isolation:** each background task gets its own `SkillState` and `PathPolicy` so they don't interfere with each other or the main agent.
 - **Context assembly for SubAgents:** minimal system prompt (`ENVIRONMENT.md` + `USER.md` + skills index + the activated skill's instructions, plus `SOUL.md`/`AGENTS.md`/`MEMORY.md` when the spawn caller sets `include_identity`) followed by the task prompt, excluding observation logs.
 - **Result-to-event conversion:** the `bridge` submodule turns a completed `BackgroundResult` into an `AgentResultEvent`, computing its `ResultDisposition` from sentinel strings in the SubAgent's summary, and publishes it on the bus.
 
@@ -34,7 +34,7 @@ The module does **not** handle:
 - `subagent_config`: `SubAgentConfig` (prompt, context, model tier)
 - `agent_skill`: The skill the sub-agent runs with, if any (`Option<SkillName>`)
 
-**SubAgentConfig:** Drives a simplified agent turn loop with minimal context. The SubAgent gets an isolated clone of `SkillState` plus a fresh `ToolFilter` and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary, along with the full message transcript.
+**SubAgentConfig:** Drives a simplified agent turn loop with minimal context. The SubAgent gets an isolated clone of `SkillState` plus a fresh `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary, along with the full message transcript.
 
 **BackgroundTaskSpawner:** Manages all background task lifecycles:
 - Bounded concurrency: a semaphore (default: 3) caps concurrent tasks.
@@ -85,7 +85,6 @@ When `execute_subagent()` runs:
 2. **Create isolated resources** (`build_subagent_resources()`): cloned from main agent state but independent:
    - `SkillState`: clone of the skill index, no active skills
    - `PathPolicy`: fresh, with no blocked paths
-   - `ToolFilter`: fresh and unrestricted
    - `FileTracker`: fresh, tracks reads within this SubAgent turn only
    - `ToolRegistry`: built from the isolated state above
    - `McpRegistry`: shared with the main agent, not cloned
@@ -120,7 +119,6 @@ Each SubAgent gets its own copies of mutable state:
 | Resource | Shared? | Why |
 |----------|---------|-----|
 | `SkillState` | ❌ Cloned | Each SubAgent starts with no active skills |
-| `ToolFilter` | ❌ Fresh | Each SubAgent has its own tool restrictions |
 | `PathPolicy` | ❌ Fresh | Each SubAgent has its own blocked-path set (empty by default) |
 | `McpRegistry` | ✅ Shared (Arc) | MCP servers are started once at gateway startup; SubAgents read the same flat server list |
 | `ToolRegistry` | ❌ Fresh | Built from isolated state above |
@@ -149,7 +147,7 @@ This isolation ensures:
 
 **Decision: SubAgent isolation via resource cloning, not ref-counting locks.**
 
-**Why:** Each SubAgent gets its own clone of `SkillState`, plus a fresh `ToolFilter` and `PathPolicy`, because these represent mutable state (active skills, blocked paths). Sharing them behind locks would serialize tool execution across SubAgents and the main agent. Cloning them is cheap (the indices are small) and eliminates contention. MCP servers are shared because they're expensive, long-lived processes — the registry is just a flat, shared list, so there's nothing to ref-count.
+**Why:** Each SubAgent gets its own clone of `SkillState`, plus a fresh `PathPolicy`, because these represent mutable state (active skills, blocked paths). Sharing them behind locks would serialize tool execution across SubAgents and the main agent. Cloning them is cheap (the indices are small) and eliminates contention. MCP servers are shared because they're expensive, long-lived processes — the registry is just a flat, shared list, so there's nothing to ref-count.
 
 ---
 
@@ -193,7 +191,7 @@ This isolation ensures:
 
 - **`crate::skills`** — `SkillState`, `SharedSkillState`. Each SubAgent gets an isolated clone; used to manage active skills.
 
-- **`crate::tools`** — `ToolRegistry`, `ToolFilter`, `PathPolicy`, `FileTracker`. SubAgents get fresh isolated instances of tool-related state.
+- **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. SubAgents get fresh isolated instances of tool-related state.
 
 - **`crate::workspace`** — `IdentityFiles` (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, `ENVIRONMENT.md`), `WorkspaceLayout` (paths to directories). Used for context assembly.
 
@@ -254,8 +252,8 @@ graph TD
 
     D --> F["execute_subagent"]
 
-    F --> F1["Assemble minimal context<br/>ENVIRONMENT.md + USER.md<br/>+ preset instructions + skills"]
-    F1 --> F2["Build isolated resources<br/>SkillState, ToolFilter, PathPolicy"]
+    F --> F1["Assemble minimal context<br/>ENVIRONMENT.md + USER.md<br/>+ active skill instructions"]
+    F1 --> F2["Build isolated resources<br/>SkillState, PathPolicy"]
     F2 --> F3["Run execute_turn loop<br/>with isolated tools"]
     F3 --> F5["Return LLM final text<br/>as summary"]
 

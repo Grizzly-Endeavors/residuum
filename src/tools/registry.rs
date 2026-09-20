@@ -12,9 +12,9 @@ use crate::models::ToolDefinition;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolFilter, ToolResult,
-    actions, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
-    ollama_web_search, read, send_message, skills, submit_feedback, web_fetch, write,
+    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult, actions,
+    background, edit, exec, file_bug_report, inbox, memory_get, memory_search, ollama_web_search,
+    read, send_message, skills, submit_feedback, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -53,48 +53,33 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
-    /// Get tool definitions for sending to the model, filtered by the tool filter.
+    /// Get tool definitions for sending to the model.
     #[must_use]
-    pub fn definitions(&self, filter: &ToolFilter) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .filter(|t| filter.is_available(t.name()))
-            .map(|t| t.definition())
-            .collect()
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools.iter().map(|t| t.definition()).collect()
     }
 
-    /// Names of all registered tools, unfiltered.
+    /// Names of all registered tools.
     ///
     /// Used to reserve the built-in tool namespace in the MCP registry so a
-    /// colliding MCP tool is shadowed visibly rather than silently. The set is
-    /// unfiltered because a gated built-in still wins dispatch (it returns an
-    /// "unavailable" result rather than falling through to MCP).
+    /// colliding MCP tool is shadowed visibly rather than silently.
     #[must_use]
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }
 
-    /// Execute a tool by name with the given arguments, respecting the tool filter.
+    /// Execute a tool by name with the given arguments.
     ///
     /// # Errors
     /// Returns `ToolError::NotFound` if no tool with the given name exists,
     /// or propagates execution errors from the tool.
     #[tracing::instrument(skip_all, fields(tool.name = %name))]
-    pub async fn execute(
-        &self,
-        name: &str,
-        arguments: Value,
-        filter: &ToolFilter,
-    ) -> Result<ToolResult, ToolError> {
+    pub async fn execute(&self, name: &str, arguments: Value) -> Result<ToolResult, ToolError> {
         let tool = self
             .tools
             .iter()
             .find(|t| t.name() == name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-
-        if !filter.is_available(name) {
-            return Ok(ToolResult::error(format!("tool '{name}' is not available")));
-        }
 
         tracing::debug!("tool invocation");
         let result = tool.execute(arguments).await?;
@@ -306,21 +291,13 @@ impl ToolRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
     use crate::tools::{FileTracker, PathPolicy};
-
-    fn no_filter() -> ToolFilter {
-        ToolFilter::new()
-    }
 
     #[tokio::test]
     async fn registry_not_found() {
         let registry = ToolRegistry::new();
-        let result = registry
-            .execute("nonexistent", Value::Null, &no_filter())
-            .await;
+        let result = registry.execute("nonexistent", Value::Null).await;
         assert!(result.is_err(), "should error on unknown tool");
         assert!(
             matches!(result.unwrap_err(), ToolError::NotFound(_)),
@@ -332,7 +309,7 @@ mod tests {
     fn registry_definitions_empty() {
         let registry = ToolRegistry::new();
         assert!(
-            registry.definitions(&no_filter()).is_empty(),
+            registry.definitions().is_empty(),
             "empty registry should have no definitions"
         );
     }
@@ -342,7 +319,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         let policy = PathPolicy::new_shared();
         registry.register_defaults(FileTracker::new_shared(), policy);
-        let defs = registry.definitions(&no_filter());
+        let defs = registry.definitions();
         assert!(
             defs.iter().any(|d| d.name == "read_file"),
             "should have read_file tool"
@@ -358,47 +335,6 @@ mod tests {
         assert!(
             defs.iter().any(|d| d.name == "exec"),
             "should have exec tool"
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_filter_definitions_filtered() {
-        let mut registry = ToolRegistry::new();
-        let policy = PathPolicy::new_shared();
-        registry.register_defaults(FileTracker::new_shared(), policy);
-
-        // Block exec via a deny list to test filtering logic
-        let filter_with_denial =
-            ToolFilter::new_shared_with_denied(HashSet::from(["exec".to_string()]));
-        let defs = registry.definitions(&*filter_with_denial.read().await);
-        assert_eq!(defs.len(), 3, "denied tool should be filtered out");
-        assert!(
-            defs.iter().all(|d| d.name != "exec"),
-            "denied tool should not appear in definitions"
-        );
-    }
-
-    #[tokio::test]
-    async fn tool_filter_blocks_execution() {
-        let mut registry = ToolRegistry::new();
-        let policy = PathPolicy::new_shared();
-        registry.register_defaults(FileTracker::new_shared(), policy);
-
-        // Block exec via a deny list to test blocking logic
-        let filter_with_denial =
-            ToolFilter::new_shared_with_denied(HashSet::from(["exec".to_string()]));
-        let result = registry
-            .execute(
-                "exec",
-                serde_json::json!({"command": "echo test"}),
-                &*filter_with_denial.read().await,
-            )
-            .await
-            .unwrap();
-        assert!(result.is_error, "denied tool should return error");
-        assert!(
-            result.output.contains("not available"),
-            "error should mention unavailability"
         );
     }
 }

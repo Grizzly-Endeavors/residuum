@@ -4,7 +4,7 @@ use crate::bus::{EndpointName, Publisher};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
-use crate::tools::{SharedToolFilter, ToolRegistry};
+use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
@@ -37,7 +37,6 @@ pub struct AgentConfig {
 pub struct Agent {
     provider: Box<dyn ModelProvider>,
     tools: ToolRegistry,
-    tool_filter: SharedToolFilter,
     mcp_registry: SharedMcpRegistry,
     /// Last-known-good identity snapshot. Refreshed from disk at each turn entry
     /// via [`Agent::load_identity_snapshot`]; retained as the fallback when a
@@ -61,7 +60,6 @@ impl Agent {
     pub fn new(
         provider: Box<dyn ModelProvider>,
         tools: ToolRegistry,
-        tool_filter: SharedToolFilter,
         mcp_registry: SharedMcpRegistry,
         identity: IdentityFiles,
         config: AgentConfig,
@@ -69,7 +67,6 @@ impl Agent {
         Self {
             provider,
             tools,
-            tool_filter,
             mcp_registry,
             identity,
             recent_messages: RecentMessages::new(),
@@ -212,7 +209,6 @@ impl Agent {
     fn turn_resources<'a>(
         provider: &'a dyn ModelProvider,
         tools: &'a ToolRegistry,
-        tool_filter: &'a SharedToolFilter,
         mcp_registry: &'a SharedMcpRegistry,
         identity: &'a IdentityFiles,
         options: &'a CompletionOptions,
@@ -220,7 +216,6 @@ impl Agent {
         TurnResources {
             provider,
             tools,
-            tool_filter,
             mcp_registry,
             identity,
             options,
@@ -265,7 +260,6 @@ impl Agent {
         let resources = Self::turn_resources(
             &*self.provider,
             &self.tools,
-            &self.tool_filter,
             &self.mcp_registry,
             &self.identity,
             &self.options,
@@ -339,7 +333,6 @@ impl Agent {
         let resources = Self::turn_resources(
             &*self.provider,
             &self.tools,
-            &self.tool_filter,
             &self.mcp_registry,
             &self.identity,
             &self.options,
@@ -402,7 +395,6 @@ impl Agent {
         let resources = Self::turn_resources(
             provider,
             &self.tools,
-            &self.tool_filter,
             &self.mcp_registry,
             &identity,
             &self.options,
@@ -449,9 +441,7 @@ impl Agent {
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
 
-        let filter = self.tool_filter.read().await;
-        let builtin_defs = self.tools.definitions(&filter);
-        drop(filter);
+        let builtin_defs = self.tools.definitions();
 
         let mcp_defs = self.mcp_registry.read().await.tool_definitions();
 
@@ -498,14 +488,10 @@ mod tests {
     use crate::bus;
     use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
-    use crate::tools::{FileTracker, PathPolicy, ToolFilter};
+    use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn no_filter() -> SharedToolFilter {
-        ToolFilter::new_shared()
-    }
 
     fn empty_mcp() -> SharedMcpRegistry {
         McpRegistry::new_shared()
@@ -565,7 +551,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -615,7 +600,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -670,7 +654,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -726,7 +709,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -763,7 +745,6 @@ mod tests {
         let agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -802,7 +783,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -837,7 +817,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -897,7 +876,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -927,7 +905,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -966,7 +943,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1016,7 +992,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1155,7 +1130,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1228,7 +1202,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1292,7 +1265,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1339,7 +1311,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1379,7 +1350,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1414,7 +1384,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1469,7 +1438,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(NamedMockProvider { name: "model-a" }),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1494,7 +1462,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(NamedMockProvider { name: "model-a" }),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1548,7 +1515,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1634,7 +1600,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
             AgentConfig {
@@ -1714,7 +1679,6 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
-            no_filter(),
             empty_mcp(),
             cached,
             AgentConfig {

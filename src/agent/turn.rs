@@ -7,7 +7,7 @@ use crate::bus::{
 };
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
-use crate::tools::{SharedToolFilter, ToolError, ToolFilter, ToolRegistry};
+use crate::tools::{ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
@@ -46,7 +46,6 @@ const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 pub(crate) struct TurnResources<'a> {
     pub provider: &'a dyn ModelProvider,
     pub tools: &'a ToolRegistry,
-    pub tool_filter: &'a SharedToolFilter,
     pub mcp_registry: &'a SharedMcpRegistry,
     pub identity: &'a IdentityFiles,
     pub options: &'a CompletionOptions,
@@ -89,10 +88,7 @@ pub(crate) async fn execute_turn(
     for iteration in 0..MAX_TOOL_ITERATIONS {
         drain_interrupts(interrupt_rx, recent_messages);
 
-        // Clone the filter each iteration so the guard is dropped before tool
-        // execution, avoiding a held read guard across the call.
-        let filter = resources.tool_filter.read().await.clone();
-        let mut tool_definitions = resources.tools.definitions(&filter);
+        let mut tool_definitions = resources.tools.definitions();
 
         // Merge MCP tool definitions from all connected servers. The registry
         // has already dropped any MCP tool whose name collides with a built-in
@@ -102,9 +98,9 @@ pub(crate) async fn execute_turn(
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
 
-        // System prompt is reassembled each iteration to pick up tool-filter and
-        // MCP changes. Identity is a snapshot taken at turn entry (reloaded from
-        // disk each turn), so mid-turn identity-file edits apply on the next turn.
+        // System prompt is reassembled each iteration to pick up MCP changes.
+        // Identity is a snapshot taken at turn entry (reloaded from disk each
+        // turn), so mid-turn identity-file edits apply on the next turn.
         let messages = assemble_system_prompt(
             resources.identity,
             recent_messages,
@@ -185,7 +181,7 @@ pub(crate) async fn execute_turn(
         }
 
         for tool_call in &response.tool_calls {
-            execute_tool(tool_call, resources, &filter, recent_messages, events).await;
+            execute_tool(tool_call, resources, recent_messages, events).await;
         }
 
         log_usage(&response);
@@ -226,7 +222,6 @@ fn drain_interrupts(
 async fn execute_tool(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
-    filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
 ) {
@@ -250,7 +245,7 @@ async fn execute_tool(
     let mut used_mcp = false;
     let result = match resources
         .tools
-        .execute(&tool_call.name, tool_call.arguments.clone(), filter)
+        .execute(&tool_call.name, tool_call.arguments.clone())
         .await
     {
         Err(ToolError::NotFound(_)) => {
