@@ -9,16 +9,35 @@ The notification system routes results from background tasks (heartbeat pulses, 
 When a background task completes:
 
 1. **Layer 1 — Programmatic rules** (no LLM call):
-   - `HEARTBEAT_OK` results from pulses are silently discarded (logged only).
-   - Results from agent-spawned tasks are relayed back to the main agent as an interrupt.
+   - `HEARTBEAT_OK` results from pulses are silently discarded (logged at `trace` only).
+   - Results from agent-spawned tasks (`EventTrigger::Agent`) are relayed back to the main agent as a message on the `user:message` topic.
 
 2. **Layer 2 — LLM router** (everything not handled by Layer 1):
-   - A small model receives the result content, metadata, available endpoints, and the ALERTS.md policy.
-   - It decides which endpoints to deliver to: notification channels, inbox, interactive endpoints, or nothing.
+   - A small-tier model receives the result content, metadata, the available target list, and the ALERTS.md policy.
+   - It returns a list of delivery targets.
+
+### Router targets
+
+The router's target list is exactly `inbox` plus every endpoint registered with `NOTIFY_ONLY` capability — that is, the channels defined in `config/channels.toml`. Any target the model returns that is not on that list is discarded during validation, and if nothing valid remains the result falls back to `inbox`.
+
+The router cannot deliver to interactive endpoints (WebSocket, Discord, Telegram). Those are reachable only through the agent's `send_message` tool, or by being the agent's current output endpoint.
+
+### Failure behavior
+
+If the small-tier provider cannot be built at startup, the router runs in a fallback mode that applies the Layer 1 rules and sends everything else to `inbox`. If an individual routing call fails or returns unparseable output, that result goes to `inbox`.
 
 ### ALERTS.md
 
 `ALERTS.md` is the user-editable routing policy that the LLM router reads on every routing decision. Edits take effect immediately without restart. The agent can modify it at the user's request using standard file tools.
+
+## Getting results in front of the agent
+
+There is no notification target that injects into the agent's message feed. Two mechanisms do that job instead, and both are declared where the work is defined rather than chosen by the router:
+
+- **`agent: main` on a pulse** (in `HEARTBEAT.yml`) runs the pulse as a wake turn: the prompt is injected into the agent's context as a system message. This bypasses the router entirely.
+- **Agent-spawned sub-agents** have their results relayed back to the main agent automatically by Layer 1.
+
+Everything else reaches the agent through the inbox, which the agent reads with `inbox_list`.
 
 ## Endpoints
 
@@ -40,6 +59,7 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 | `ntfy` | Push notification via ntfy-compatible server. |
 | `webhook` | HTTP POST to a configured URL. |
 | `macos` | macOS native notification (when running on macOS). |
+| `windows` | Windows Toast notification (when running on Windows). |
 
 **Note**: The `webhook` external notification channel is separate from the `webhook` inbound channel (which receives messages *into* the agent via `POST /webhook`). They serve opposite directions.
 
@@ -51,15 +71,9 @@ Input-only. Items arrive from the LLM notification router, webhook routing, and 
 
 | Target | Behavior |
 |--------|----------|
-| `agent_wake` | Injects result into the agent's feed and starts a turn if the agent is idle. If the agent is already in a turn, the result is injected at the next interrupt checkpoint. |
-| `agent_feed` | Injects result into the agent's feed passively. If idle, queued for the next user interaction. Does **not** start a turn on its own. |
-| `inbox` | Creates an inbox item with the task result as body and task name as source. Never enters the message feed. Agent sees the unread count. |
+| `inbox` | Creates an inbox item with the task result as body and task name as source. Never enters the message feed. |
 
-### `agent_wake` vs `agent_feed`
-
-The key distinction: `agent_wake` can cause the agent to start talking unprompted. `agent_feed` waits for the next natural interaction. Use `agent_wake` only for things that genuinely need immediate attention.
-
-Results delivered to `agent_wake` or `agent_feed` are not dropped if the agent is already busy — they are injected at the next interrupt checkpoint.
+Every other valid target is a notification channel named in `config/channels.toml`.
 
 ## Tools
 

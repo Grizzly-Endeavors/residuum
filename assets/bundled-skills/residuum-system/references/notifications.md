@@ -14,7 +14,8 @@ When a background task (pulse, scheduled action, or agent-spawned subagent) comp
 
 2. **Layer 2 — LLM router** (everything not handled by Layer 1):
    - A small model receives the result content, metadata, available endpoints, and the ALERTS.md policy.
-   - It decides which endpoints to deliver to: notification channels, inbox, interactive endpoints, or nothing.
+   - It returns a list of delivery targets. The valid target list is exactly `inbox` plus the notification channels defined in `config/channels.toml`; anything else it returns is discarded, and if nothing valid remains the result goes to `inbox`.
+   - The router cannot deliver to interactive endpoints. Use `send_message` for those.
 
 ### ALERTS.md
 
@@ -47,13 +48,14 @@ Bidirectional channels (WebSocket, Discord, Telegram). The agent can:
 
 ### Notification endpoints
 
-Output-only channels for push delivery. Configured in `config.toml` under external channel settings.
+Output-only channels for push delivery. Configured in `config/channels.toml`.
 
 | Type | Description |
 |------|-------------|
 | `ntfy` | Push notification via ntfy-compatible server. |
 | `webhook` | HTTP POST to a configured URL. |
 | `macos` | macOS native notification (when running on macOS). |
+| `windows` | Windows Toast notification (when running on Windows). |
 
 ### Inbox
 

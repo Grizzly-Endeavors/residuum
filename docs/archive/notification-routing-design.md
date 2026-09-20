@@ -1,23 +1,10 @@
-# Notification Routing
+# Notification Routing (archived)
 
-> **Note (2026-03-16):** This document describes a CHANNELS.yml-based routing
-> design that was superseded by the I/O routing refactor. The actual
-> implementation uses a **pub/sub bus** with an **LLM-based notification
-> router** and **ALERTS.md** as the routing policy file. The architecture
-> details below are outdated — see `reference-mats/io-routing-refactor-plan.md`
-> for the current design. This document is kept for historical context and
-> will be rewritten.
+> **Archived.** This document describes a `CHANNELS.yml` design that was never the shipped architecture. It is retained for historical context only. The authoritative reference for how notifications work today is [`docs/systems-usage/notifications.md`](../systems-usage/notifications.md).
 >
-> **As-built correction (2026-07-20):** the single "inbox" described below is,
-> as implemented, the **agent** inbox (`inbox/agent/`) — the router's `inbox`
-> channel target writes there. There is a second, separate **user** inbox
-> (`inbox/user/`, written via the `user_inbox_add` tool, consumed through the
-> web UI) that this document does not describe. There is also no unread-count
-> surfaced in the agent's context/status line; the "You have 3 unread inbox
-> items" example below does not reflect current behavior. See
-> `docs/systems-usage/inbox.md` for the authoritative reference.
+> Two things in here are particularly misleading if read as current: the `agent_wake` and `agent_feed` routing targets do not exist in the codebase, and pulses have no `channels:` field.
 
-## Overview (outdated)
+## Overview
 
 This document describes how background task results get delivered to the user. It replaces the previous `Alerts.md` + `AlertLevel` system with a simpler, extensible model: a flat YAML file that maps notification channels to the task names they receive.
 

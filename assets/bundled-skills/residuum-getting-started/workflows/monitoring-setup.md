@@ -45,55 +45,63 @@ pulses:
 
 Explain what you configured in plain terms — what it checks, how often, and during what hours. The user does not need to know the file format or field names.
 
-## Step 3: Set Up Notification Routing
+## Step 3: Explain How Results Reach the User
 
-Explain: "When a heartbeat check finds something worth reporting, the result needs to go somewhere. I route results to different channels depending on urgency."
+Explain: "When a heartbeat check finds something worth reporting, the result is routed automatically. A small model reads the result and decides where it goes, following the policy in `ALERTS.md`."
 
-Add the `channels` field to the pulse you just created. Use `edit_file` or `write_file`.
+There is no per-pulse routing field. Do not add a `channels:` key to a pulse — it is not a real field and will be silently ignored.
 
-Example — add `channels` to the pulse:
+The destinations a result can reach:
+- `inbox` -- stores the result silently for the user to review later. This is the default and the fallback.
+- Any notification channel defined in `config/channels.toml` (for example an ntfy push to the user's phone).
+
+If the user wants a pulse to talk to them directly rather than filing to the inbox, set `agent: main` on the pulse. That runs the pulse as a wake turn instead of a background sub-agent, and its prompt is injected straight into the conversation:
+
 ```yaml
 pulses:
   - name: server_health
     schedule: "30m"
     active_hours: "08:00-22:00"
-    channels: [agent_feed, inbox]
+    agent: main
     tasks:
       - name: check_server
         prompt: "Run 'curl -s -o /dev/null -w \"%{http_code}\" https://example.com' and report if the status code is not 200."
 ```
 
-Explain the built-in channels:
-- `agent_wake` -- injects the result and starts a conversation turn immediately. Use for urgent things.
-- `agent_feed` -- injects the result passively, shown at the next natural interaction. Use for things you should know about.
-- `inbox` -- stores the result silently. The user sees an unread count. Use for things to review later.
+Use `agent: main` sparingly -- it interrupts. Most monitoring should stay a background sub-agent and land in the inbox.
 
-Help the user decide which channel fits their monitoring target. Urgent issues (server down) should go to `agent_wake`. Informational checks (new PRs) fit `agent_feed` or `inbox`.
+To change routing behavior, edit `ALERTS.md` in the workspace root. It is plain prose read on every routing decision, and edits take effect immediately:
+
+```markdown
+## Rules
+- Security alerts, errors, and failures -> notify channels (ntfy, etc.) + inbox
+- Routine findings and informational results -> inbox only
+```
 
 ## Step 4: External Notifications (Optional)
 
 Ask if the user wants results delivered outside the agent -- for example, push notifications to their phone.
 
-If yes, explain that external channels like `ntfy` need to be added to `config.toml` (the user's config file). Walk them through what to add:
+If yes, explain that external channels are defined in `config/channels.toml` in the workspace. Walk them through what to add:
 ```toml
-[notifications.channels.ntfy]
+[channels.phone]
 type = "ntfy"
 url = "https://ntfy.sh"
 topic = "my-residuum"
 ```
 
-After the user adds the channel to config.toml, update the pulse's routing to include it.
+Once the channel exists, it becomes an available target for the router automatically. If the user wants it used for a specific class of result, add a line saying so to `ALERTS.md`.
 
 If the user is not ready for external notifications, skip this step. They can ask you to set it up later.
 
 ## Step 5: Verify and Wrap Up
 
-Tell the user that heartbeat and channel configuration is hot-reloaded -- changes take effect without restarting the gateway.
+Tell the user that `HEARTBEAT.yml` and `ALERTS.md` are both re-read on every use -- changes take effect without restarting the gateway.
 
 Summarize what was configured:
 - Which pulse is running and how often
 - Where results are delivered
-- How to check results (inbox, or waiting for agent_feed/agent_wake)
+- How to check results (the inbox, or directly in conversation if the pulse uses `agent: main`)
 
 Suggest next steps:
 - "If you think of more things to monitor, just tell me and I will set up new pulses."

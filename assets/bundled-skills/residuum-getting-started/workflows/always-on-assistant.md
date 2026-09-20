@@ -71,49 +71,31 @@ Explain the `HEARTBEAT_OK` convention: when a sub-agent returns this exact strin
 
 ## Step 3: Notification Routing
 
-Configure each pulse's `channels` field in `HEARTBEAT.yml` so results reach the user appropriately. Tier the notifications by urgency:
+Results are routed automatically. A small model reads each result and decides where it goes, following the policy in `ALERTS.md`. There is no per-pulse routing field -- do not add a `channels:` key to a pulse, it is not real and will be silently ignored.
 
-```yaml
-pulses:
-  - name: email_check
-    schedule: "30m"
-    active_hours: "08:00-22:00"
-    channels: [agent_wake, inbox]
-    tasks:
-      - name: check_inbox
-        prompt: "Check for unread emails. Summarize any that need attention. Report HEARTBEAT_OK if nothing new."
+Explain the routing strategy in terms the user can act on:
+- By default everything substantive lands in the **inbox**, and nothing is lost.
+- To make a class of result reach them faster, add a rule to `ALERTS.md` naming a notification channel.
+- To make a pulse talk to them directly in conversation rather than filing to the inbox, set `agent: main` on that pulse. Use it sparingly -- it interrupts.
 
-  - name: calendar_review
-    schedule: "4h"
-    active_hours: "07:00-20:00"
-    channels: [agent_feed, inbox]
-    tasks:
-      - name: upcoming_events
-        prompt: "Review my calendar for the next 4 hours. Highlight any upcoming meetings or deadlines."
+For this setup, email is the reasonable candidate for `agent: main` or an ntfy rule, since new mail may need a prompt response. Calendar and GitHub checks fit the inbox.
 
-  - name: github_activity
-    schedule: "2h"
-    active_hours: "09:00-18:00"
-    channels: [agent_feed, inbox]
-    tasks:
-      - name: check_prs
-        prompt: "Check for open PRs that need my review or PRs I authored that have new comments. Report HEARTBEAT_OK if nothing needs attention."
+Edit `ALERTS.md` in the workspace root to express that:
+
+```markdown
+## Rules
+- Anything from email_check that looks time-sensitive -> ntfy + inbox
+- Calendar and GitHub findings -> inbox only
+- Errors and failures from any pulse -> ntfy + inbox
 ```
 
-Explain the routing strategy:
-- Email goes to `agent_wake` because new emails might need immediate response. Also goes to `inbox` as a backup record.
-- GitHub and calendar go to `agent_feed` -- you see them at the next interaction but do not interrupt.
-- Everything also goes to `inbox` so nothing is lost.
-
-If the user wants phone notifications, help set up an ntfy channel in `config.toml`:
+If the user wants phone notifications, help set up an ntfy channel in `config/channels.toml`:
 ```toml
-[notifications.channels.ntfy]
+[channels.phone]
 type = "ntfy"
 url = "https://ntfy.sh"
-topic = "my-assistant"
+topic = "my-residuum"
 ```
-
-Then update the most important pulses' routing to include the ntfy channel.
 
 ## Step 4: Scheduled Actions for Time-Based Tasks
 
