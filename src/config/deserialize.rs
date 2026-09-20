@@ -347,7 +347,7 @@ pub(super) struct AgentConfigFile {
 pub(super) struct IdleConfigFile {
     /// Inactivity timeout in minutes (0 = disabled).
     pub(super) timeout_minutes: Option<u64>,
-    /// Interface to switch to when idle (Phase 2, parsed but not used).
+    /// Interface to switch notifications to when idle.
     pub(super) idle_channel: Option<String>,
 }
 
