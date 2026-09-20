@@ -8,11 +8,11 @@ use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
-    ThinkingConfig, ToolCall, ToolDefinition,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    ResponseFormat, ThinkingConfig, ToolCall, ToolDefinition,
 };
 
-/// Ollama API client implementing the [`ModelProvider`] trait.
+/// Ollama API client implementing the [`InferenceProvider`] trait.
 #[derive(Clone)]
 pub(crate) struct OllamaClient {
     http: SharedHttpClient,
@@ -83,7 +83,7 @@ impl OllamaClient {
         url: &str,
         api_key: Option<&str>,
         request: &OllamaChatRequest<'_>,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let timeout_secs = http.timeout_secs();
 
         debug!(
@@ -113,7 +113,7 @@ impl OllamaClient {
             );
             let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
                 .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
-            return Err(ModelError::Api(error_msg));
+            return Err(InferenceError::Api(error_msg));
         }
 
         let body = response
@@ -121,7 +121,7 @@ impl OllamaClient {
             .await
             .map_err(|e| map_request_error(e, timeout_secs))?;
         let chat_response: OllamaChatResponse = serde_json::from_str(&body)
-            .map_err(|e| ModelError::Parse(format!("failed to parse ollama response: {e}")))?;
+            .map_err(|e| InferenceError::Parse(format!("failed to parse ollama response: {e}")))?;
 
         let content = chat_response.message.content.unwrap_or_default();
         let tool_calls = chat_response
@@ -137,7 +137,7 @@ impl OllamaClient {
             })
             .collect();
 
-        let mut resp = ModelResponse::new(content, tool_calls);
+        let mut resp = InferenceResponse::new(content, tool_calls);
         resp.thinking = chat_response.message.thinking;
         info!(
             model = %request.model,
@@ -150,14 +150,14 @@ impl OllamaClient {
 }
 
 #[async_trait]
-impl ModelProvider for OllamaClient {
+impl InferenceProvider for OllamaClient {
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let url = format!("{}/api/chat", self.base_url);
         let ollama_messages: Vec<OllamaMessage> = messages.iter().map(Into::into).collect();
         let ollama_tools: Vec<OllamaTool> = tools
@@ -386,7 +386,7 @@ impl OllamaEmbeddingClient {
 #[async_trait]
 impl EmbeddingProvider for OllamaEmbeddingClient {
     #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
-    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
         let url = format!("{}/api/embed", self.base_url);
         let model = self.model.clone();
         let api_key = self.api_key.clone();
@@ -431,7 +431,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                     );
                     let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
                         .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
-                    return Err(ModelError::Api(error_msg));
+                    return Err(InferenceError::Api(error_msg));
                 }
 
                 let body = response
@@ -440,7 +440,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                     .map_err(|e| map_request_error(e, timeout_secs))?;
                 let embed_response: OllamaEmbedResponse =
                     serde_json::from_str(&body).map_err(|e| {
-                        ModelError::Parse(format!("failed to parse ollama embed response: {e}"))
+                        InferenceError::Parse(format!("failed to parse ollama embed response: {e}"))
                     })?;
 
                 let dimensions =
@@ -449,7 +449,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                         .first()
                         .map(Vec::len)
                         .ok_or_else(|| {
-                            ModelError::Parse("embeddings response contained no data".to_string())
+                            InferenceError::Parse("embeddings response contained no data".to_string())
                         })?;
 
                 info!(model = %model, count = embed_response.embeddings.len(), dimensions, "ollama embeddings received");
@@ -630,7 +630,10 @@ mod tests {
 
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
-        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            matches!(err, InferenceError::Api(_)),
+            "should be an Api error"
+        );
         assert!(
             err.to_string().contains("not found"),
             "error should contain 'not found'"
@@ -701,7 +704,7 @@ mod tests {
 
         assert!(result.is_err(), "should return an error for 500");
         assert!(
-            matches!(result.unwrap_err(), ModelError::Api(_)),
+            matches!(result.unwrap_err(), InferenceError::Api(_)),
             "should be an Api error"
         );
     }
@@ -743,7 +746,7 @@ mod tests {
         assert!(result.is_err(), "should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Timeout(1)),
+            matches!(err, InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -1142,7 +1145,10 @@ mod tests {
 
         assert!(result.is_err(), "should return an error for 404");
         let err = result.unwrap_err();
-        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            matches!(err, InferenceError::Api(_)),
+            "should be an Api error"
+        );
         assert!(
             err.to_string().contains("model not found"),
             "error should contain 'model not found'"

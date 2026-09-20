@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, ImageData, Message, ModelError, ModelProvider, ModelResponse,
+    CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
     ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
@@ -235,7 +235,7 @@ impl AnthropicClient {
         endpoint: &str,
         api_key: &str,
         request: &AnthropicRequest,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         debug!(
             max_tokens = request.max_tokens,
             "sending anthropic completion request"
@@ -261,7 +261,7 @@ impl AnthropicClient {
         }
 
         let request_json = serde_json::to_string(request)
-            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
 
         let response = req_builder
             .body(request_json.clone())
@@ -294,7 +294,7 @@ impl AnthropicClient {
                 },
             );
 
-            return Err(ModelError::Api(error_msg));
+            return Err(InferenceError::Api(error_msg));
         }
 
         let body = response
@@ -302,8 +302,9 @@ impl AnthropicClient {
             .await
             .map_err(|e| map_request_error(e, timeout_secs))?;
 
-        let api_response: AnthropicResponse = serde_json::from_str(&body)
-            .map_err(|e| ModelError::Parse(format!("failed to parse anthropic response: {e}")))?;
+        let api_response: AnthropicResponse = serde_json::from_str(&body).map_err(|e| {
+            InferenceError::Parse(format!("failed to parse anthropic response: {e}"))
+        })?;
 
         let result = Self::parse_response(api_response);
 
@@ -317,8 +318,8 @@ impl AnthropicClient {
         Ok(result)
     }
 
-    /// Parse the API response into our generic `ModelResponse`.
-    fn parse_response(response: AnthropicResponse) -> ModelResponse {
+    /// Parse the API response into our generic `InferenceResponse`.
+    fn parse_response(response: AnthropicResponse) -> InferenceResponse {
         let mut text_parts: Vec<String> = Vec::new();
         let mut thinking_parts: Vec<String> = Vec::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -360,7 +361,7 @@ impl AnthropicClient {
             cache_read_tokens: u.cache_read_input_tokens,
         });
 
-        let mut resp = ModelResponse::new(content, tool_calls);
+        let mut resp = InferenceResponse::new(content, tool_calls);
         resp.usage = usage;
         resp.thinking = thinking_text;
         resp
@@ -368,20 +369,20 @@ impl AnthropicClient {
 }
 
 #[async_trait]
-impl ModelProvider for AnthropicClient {
+impl InferenceProvider for AnthropicClient {
     /// Send a completion request to the Anthropic Messages API.
     ///
     /// # Errors
-    /// Returns `ModelError::Timeout` if the request exceeds the configured timeout,
-    /// `ModelError::Api` if the API returns an error status, `ModelError::Parse` if
-    /// the response body is malformed, or `ModelError::Request` for network failures.
+    /// Returns `InferenceError::Timeout` if the request exceeds the configured timeout,
+    /// `InferenceError::Api` if the API returns an error status, `InferenceError::Parse` if
+    /// the response body is malformed, or `InferenceError::Request` for network failures.
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let (system, api_messages) = Self::convert_messages(messages);
         let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
         let has_web_search = options.web_search.is_some();
@@ -1065,7 +1066,7 @@ mod tests {
         assert!(result.is_err(), "request should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Timeout(_)),
+            matches!(err, InferenceError::Timeout(_)),
             "error should be Timeout variant, got: {err:?}"
         );
     }

@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use super::{EvalOutcome, Finding, FindingKind, LearnSignal, LearnSignalType, Severity};
-use crate::inference::ModelResponse;
+use crate::inference::InferenceResponse;
 
 /// Typed response from structured output mode.
 #[derive(Deserialize)]
@@ -42,7 +42,7 @@ struct LearnItem {
 /// Returns an error if the response is not parseable JSON or lacks a
 /// `findings` array.
 pub(super) fn parse_subconscious_response(
-    response: &ModelResponse,
+    response: &InferenceResponse,
     include_learnings: bool,
 ) -> anyhow::Result<EvalOutcome> {
     let content = response.content.trim();
@@ -195,15 +195,21 @@ mod tests {
 
     fn parse(content: &str) -> anyhow::Result<Vec<Finding>> {
         Ok(
-            parse_subconscious_response(&ModelResponse::new(content.to_string(), vec![]), true)?
-                .findings,
+            parse_subconscious_response(
+                &InferenceResponse::new(content.to_string(), vec![]),
+                true,
+            )?
+            .findings,
         )
     }
 
     fn parse_learnings(content: &str) -> anyhow::Result<Vec<LearnSignal>> {
         Ok(
-            parse_subconscious_response(&ModelResponse::new(content.to_string(), vec![]), true)?
-                .learnings,
+            parse_subconscious_response(
+                &InferenceResponse::new(content.to_string(), vec![]),
+                true,
+            )?
+            .learnings,
         )
     }
 
@@ -314,7 +320,7 @@ mod tests {
     #[test]
     fn learnings_dropped_when_not_requested() {
         let outcome = parse_subconscious_response(
-            &ModelResponse::new(
+            &InferenceResponse::new(
                 r#"{"findings": [], "learnings": [
                     {"summary": "User prefers bullet points.", "signal_type": "preference"}
                 ]}"#

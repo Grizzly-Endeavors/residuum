@@ -1,11 +1,11 @@
 //! Embedding provider trait and factory for vector embedding APIs.
 //!
-//! Separate from `ModelProvider` because embedding models use different
+//! Separate from `InferenceProvider` because embedding models use different
 //! endpoints, model names, and don't need `max_tokens` or chat semantics.
 
 use async_trait::async_trait;
 
-use super::ModelError;
+use super::InferenceError;
 use super::SharedHttpClient;
 use super::retry::RetryConfig;
 use crate::config::{ProviderKind, ProviderSpec};
@@ -19,8 +19,8 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Returns one embedding per input text, in the same order as `texts`.
     ///
     /// # Errors
-    /// Returns `ModelError` if the request fails, times out, or the response is malformed.
-    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError>;
+    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError>;
 
     /// Get the model identifier.
     fn model_name(&self) -> &str;

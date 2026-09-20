@@ -3,10 +3,11 @@
 use async_trait::async_trait;
 
 use crate::inference::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    ToolDefinition,
 };
 
-/// A mock [`ModelProvider`] that returns a fixed response for every `complete` call.
+/// A mock [`InferenceProvider`] that returns a fixed response for every `complete` call.
 ///
 /// Eliminates the near-identical `MockObserverProvider` / `MockReflectorProvider`
 /// structs that were duplicated in each test module.
@@ -23,14 +24,14 @@ impl MockMemoryProvider {
 }
 
 #[async_trait]
-impl ModelProvider for MockMemoryProvider {
+impl InferenceProvider for MockMemoryProvider {
     async fn complete(
         &self,
         _messages: &[Message],
         _tools: &[ToolDefinition],
         _options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
-        Ok(ModelResponse::new(self.response.clone(), vec![]))
+    ) -> Result<InferenceResponse, InferenceError> {
+        Ok(InferenceResponse::new(self.response.clone(), vec![]))
     }
 
     fn model_name(&self) -> &'static str {

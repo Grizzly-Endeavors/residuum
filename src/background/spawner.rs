@@ -413,7 +413,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_task_produces_cancelled_status() {
         use crate::inference::{
-            CompletionOptions, Message, ModelError, ModelResponse, ToolDefinition,
+            CompletionOptions, InferenceError, InferenceResponse, Message, ToolDefinition,
         };
         use crate::mcp::McpRegistry;
         use crate::skills::{SkillIndex, SkillState};
@@ -424,15 +424,15 @@ mod tests {
         struct BlockingProvider;
 
         #[async_trait]
-        impl crate::inference::ModelProvider for BlockingProvider {
+        impl crate::inference::InferenceProvider for BlockingProvider {
             async fn complete(
                 &self,
                 _messages: &[Message],
                 _tools: &[ToolDefinition],
                 _options: &CompletionOptions,
-            ) -> Result<ModelResponse, ModelError> {
+            ) -> Result<InferenceResponse, InferenceError> {
                 tokio::time::sleep(std::time::Duration::from_mins(1)).await;
-                Err(ModelError::Api("cancelled".into()))
+                Err(InferenceError::Api("cancelled".into()))
             }
 
             fn model_name(&self) -> &'static str {

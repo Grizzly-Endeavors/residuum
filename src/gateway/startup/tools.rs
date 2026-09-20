@@ -32,7 +32,7 @@ pub(super) struct ToolRegistryDeps<'a> {
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
 pub(super) struct CreateAgentArgs {
-    pub provider: Box<dyn crate::inference::ModelProvider>,
+    pub provider: Box<dyn crate::inference::InferenceProvider>,
     pub options: crate::inference::CompletionOptions,
     pub tools: ToolRegistry,
     pub identity: IdentityFiles,

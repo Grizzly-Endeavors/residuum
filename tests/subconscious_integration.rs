@@ -13,8 +13,8 @@ mod subconscious_integration {
 
     use residuum::config::Config;
     use residuum::inference::{
-        CompletionOptions, HttpClientConfig, Message, ModelError, ModelProvider, ModelResponse,
-        SharedHttpClient, ToolDefinition,
+        CompletionOptions, HttpClientConfig, InferenceError, InferenceProvider, InferenceResponse,
+        Message, SharedHttpClient, ToolDefinition,
     };
     use residuum::subconscious::{
         EvalPhase, FindingKind, Severity, Subconscious, SubconsciousConfig,
@@ -28,15 +28,15 @@ mod subconscious_integration {
     }
 
     #[async_trait]
-    impl ModelProvider for CountingProvider {
+    impl InferenceProvider for CountingProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
+        ) -> Result<InferenceResponse, InferenceError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(ModelResponse::new(self.response.clone(), vec![]))
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
         }
 
         fn model_name(&self) -> &'static str {

@@ -2,7 +2,10 @@
 
 use async_trait::async_trait;
 
-use super::{CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition};
+use super::{
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    ToolDefinition,
+};
 
 /// A placeholder provider that always returns an error.
 ///
@@ -11,14 +14,14 @@ use super::{CompletionOptions, Message, ModelError, ModelProvider, ModelResponse
 pub(crate) struct NullProvider;
 
 #[async_trait]
-impl ModelProvider for NullProvider {
+impl InferenceProvider for NullProvider {
     async fn complete(
         &self,
         _messages: &[Message],
         _tools: &[ToolDefinition],
         _options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
-        Err(ModelError::Api(
+    ) -> Result<InferenceResponse, InferenceError> {
+        Err(InferenceError::Api(
             "null provider: this provider is disabled and should never be called".to_string(),
         ))
     }

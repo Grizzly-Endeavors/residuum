@@ -34,7 +34,8 @@ mod gateway_integration {
     use residuum::bus::{EndpointName, spawn_broker, topics};
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
     use residuum::inference::{
-        CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
+        CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+        ToolDefinition,
     };
     use residuum::tools::ToolRegistry;
     use residuum::workspace::identity::IdentityFiles;
@@ -55,20 +56,20 @@ mod gateway_integration {
     }
 
     #[async_trait]
-    impl ModelProvider for MockProvider {
+    impl InferenceProvider for MockProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
+        ) -> Result<InferenceResponse, InferenceError> {
             let idx = self.call_idx.fetch_add(1, Ordering::SeqCst);
             let content = self
                 .responses
                 .get(idx)
                 .cloned()
                 .unwrap_or_else(|| self.responses.last().cloned().unwrap_or_default());
-            Ok(ModelResponse::new(content, vec![]))
+            Ok(InferenceResponse::new(content, vec![]))
         }
 
         fn model_name(&self) -> &'static str {

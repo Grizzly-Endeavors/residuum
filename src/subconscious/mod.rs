@@ -22,7 +22,7 @@ use crate::config::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
     DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
-use crate::inference::{CompletionOptions, Message, ModelProvider, ResponseFormat};
+use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
 use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_subconscious_response;
 use prompt::{
@@ -186,7 +186,7 @@ impl Default for SubconsciousConfig {
 
 /// The subconscious classifier: watches turn transcripts and reports drift.
 pub struct Subconscious {
-    provider: Box<dyn ModelProvider>,
+    provider: Box<dyn InferenceProvider>,
     config: SubconsciousConfig,
     layout: WorkspaceLayout,
 }
@@ -239,7 +239,7 @@ impl Subconscious {
     /// Create a new subconscious with the given provider and config.
     #[must_use]
     pub fn new(
-        provider: Box<dyn ModelProvider>,
+        provider: Box<dyn InferenceProvider>,
         config: SubconsciousConfig,
         layout: WorkspaceLayout,
     ) -> Self {

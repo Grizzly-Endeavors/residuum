@@ -6,7 +6,9 @@ use tokio_util::sync::CancellationToken;
 use crate::bus::{
     EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
-use crate::inference::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
+use crate::inference::{
+    CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
+};
 use crate::mcp::SharedMcpRegistry;
 use crate::tools::{ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
@@ -45,7 +47,7 @@ const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 
 /// Shared subsystem references needed for each turn iteration.
 pub(crate) struct TurnResources<'a> {
-    pub provider: &'a dyn ModelProvider,
+    pub provider: &'a dyn InferenceProvider,
     pub tools: &'a ToolRegistry,
     pub mcp_registry: &'a SharedMcpRegistry,
     pub identity: &'a IdentityFiles,
@@ -336,7 +338,7 @@ async fn execute_tool(
 }
 
 /// Log token usage from a model response at debug level.
-fn log_usage(response: &ModelResponse) {
+fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
         tracing::debug!(
             input_tokens = usage.input_tokens,

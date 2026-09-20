@@ -457,7 +457,7 @@ async fn backfill_idx_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::{EmbeddingResponse, ModelError};
+    use crate::inference::{EmbeddingResponse, InferenceError};
     use crate::memory::types::{Observation, Visibility};
     use async_trait::async_trait;
 
@@ -467,7 +467,7 @@ mod tests {
 
     #[async_trait]
     impl EmbeddingProvider for FakeEmbedder {
-        async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+        async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
             Ok(EmbeddingResponse {
                 embeddings: texts.iter().map(|_| vec![0.1, 0.2, 0.3, 0.4]).collect(),
                 dimensions: 4,

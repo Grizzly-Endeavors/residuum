@@ -9,7 +9,7 @@ use crate::background::spawn_context::SpawnContext;
 use crate::config::Config;
 use crate::gateway::startup;
 use crate::inference::CompletionOptions;
-use crate::inference::ModelError;
+use crate::inference::InferenceError;
 use crate::inference::SharedHttpClient;
 
 use crate::gateway::types::GatewayRuntime;
@@ -301,7 +301,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 /// Pure aside from the `reqwest::Client` construction: no `GatewayRuntime`
 /// access, so it can be tested directly and so its only output — the new
 /// client — is what callers thread into everything downstream.
-fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, ModelError> {
+fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, InferenceError> {
     let client_config = crate::inference::HttpClientConfig::with_timeout(timeout_secs);
     SharedHttpClient::new(&client_config)
 }

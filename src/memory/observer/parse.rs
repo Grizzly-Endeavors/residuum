@@ -4,7 +4,7 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::inference::ModelResponse;
+use crate::inference::InferenceResponse;
 use crate::memory::types::Visibility;
 use crate::time::now_local;
 
@@ -44,7 +44,7 @@ pub(super) struct ObserverParseResult {
 /// # Errors
 /// Returns an error if the response cannot be parsed or the observations are empty.
 pub(super) fn parse_observer_response(
-    response: &ModelResponse,
+    response: &InferenceResponse,
     tz: Tz,
 ) -> anyhow::Result<ObserverParseResult> {
     let content = response.content.trim();

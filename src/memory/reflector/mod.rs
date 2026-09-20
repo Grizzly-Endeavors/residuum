@@ -10,7 +10,7 @@ use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
-use crate::inference::{CompletionOptions, ModelProvider, ResponseFormat};
+use crate::inference::{CompletionOptions, InferenceProvider, ResponseFormat};
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
@@ -41,14 +41,14 @@ impl Default for ReflectorConfig {
 
 /// The reflector compresses observation logs via LLM-driven reorganization.
 pub struct Reflector {
-    provider: Box<dyn ModelProvider>,
+    provider: Box<dyn InferenceProvider>,
     config: ReflectorConfig,
 }
 
 impl Reflector {
     /// Create a new reflector with the given provider and config.
     #[must_use]
-    pub fn new(provider: Box<dyn ModelProvider>, config: ReflectorConfig) -> Self {
+    pub fn new(provider: Box<dyn InferenceProvider>, config: ReflectorConfig) -> Self {
         Self { provider, config }
     }
 
@@ -81,7 +81,7 @@ impl Reflector {
     }
 
     /// Replace the model provider (e.g. after a provider config change).
-    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
+    pub fn swap_provider(&mut self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping reflector model provider");
         self.provider = provider;
     }

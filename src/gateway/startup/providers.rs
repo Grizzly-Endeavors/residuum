@@ -13,7 +13,7 @@ use super::memory::build_memory_components;
 
 /// Model providers and memory pipeline observers built from config.
 pub struct ProviderComponents {
-    pub provider: Box<dyn crate::inference::ModelProvider>,
+    pub provider: Box<dyn crate::inference::InferenceProvider>,
     pub options: CompletionOptions,
     pub observer: Observer,
     pub reflector: Reflector,

@@ -24,7 +24,7 @@ use ts_rs::TS;
 
 /// Errors from model provider operations.
 #[derive(Error, Debug)]
-pub enum ModelError {
+pub enum InferenceError {
     /// HTTP request failed (network, DNS, TLS)
     #[error("HTTP request failed: {0}")]
     Request(#[from] reqwest::Error),
@@ -42,7 +42,7 @@ pub enum ModelError {
     Timeout(u64),
 }
 
-impl ModelError {
+impl InferenceError {
     /// Whether this error is likely to succeed on retry.
     ///
     /// - Request/Timeout: transient network failures
@@ -249,7 +249,7 @@ pub struct Usage {
 
 /// Response from a model provider.
 #[derive(Debug, Clone)]
-pub struct ModelResponse {
+pub struct InferenceResponse {
     /// The assistant's text response (may be empty if only tool calls).
     pub content: String,
     /// Tool calls the assistant wants to make.
@@ -260,7 +260,7 @@ pub struct ModelResponse {
     pub thinking: Option<String>,
 }
 
-impl ModelResponse {
+impl InferenceResponse {
     /// Create a new model response.
     #[must_use]
     pub fn new(content: String, tool_calls: Vec<ToolCall>) -> Self {
@@ -345,17 +345,17 @@ pub struct CompletionOptions {
 
 /// Trait for model provider implementations.
 #[async_trait]
-pub trait ModelProvider: Send + Sync {
+pub trait InferenceProvider: Send + Sync {
     /// Send a conversation to the model and get a response.
     ///
     /// # Errors
-    /// Returns `ModelError` if the request fails, times out, or the response is malformed.
+    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError>;
+    ) -> Result<InferenceResponse, InferenceError>;
 
     /// Get the model identifier.
     fn model_name(&self) -> &str;
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn model_error_display_parse() {
-        let err = ModelError::Parse("bad json".to_string());
+        let err = InferenceError::Parse("bad json".to_string());
         assert_eq!(
             err.to_string(),
             "failed to parse response: bad json",
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn model_error_display_timeout() {
-        let err = ModelError::Timeout(60);
+        let err = InferenceError::Timeout(60);
         assert_eq!(
             err.to_string(),
             "request timed out after 60 seconds",
@@ -388,22 +388,22 @@ mod tests {
     #[test]
     fn model_error_is_retryable_transient() {
         assert!(
-            ModelError::Timeout(60).is_retryable(),
+            InferenceError::Timeout(60).is_retryable(),
             "timeout should be retryable"
         );
 
         assert!(
-            ModelError::Api("rate limit exceeded".to_string()).is_retryable(),
+            InferenceError::Api("rate limit exceeded".to_string()).is_retryable(),
             "rate limit should be retryable"
         );
 
         assert!(
-            ModelError::Api("Error 429: too many requests".to_string()).is_retryable(),
+            InferenceError::Api("Error 429: too many requests".to_string()).is_retryable(),
             "429 should be retryable"
         );
 
         assert!(
-            ModelError::Api(
+            InferenceError::Api(
                 "anthropic api error 500 Internal Server Error: Internal server error".to_string()
             )
             .is_retryable(),
@@ -414,22 +414,22 @@ mod tests {
     #[test]
     fn model_error_is_retryable_permanent() {
         assert!(
-            !ModelError::Parse("invalid json".to_string()).is_retryable(),
+            !InferenceError::Parse("invalid json".to_string()).is_retryable(),
             "parse error should not be retryable"
         );
 
         assert!(
-            !ModelError::Api("invalid api key".to_string()).is_retryable(),
+            !InferenceError::Api("invalid api key".to_string()).is_retryable(),
             "auth error should not be retryable"
         );
     }
 
     #[test]
     fn model_response_is_complete() {
-        let complete = ModelResponse::new("hello".to_string(), vec![]);
+        let complete = InferenceResponse::new("hello".to_string(), vec![]);
         assert!(complete.is_complete(), "text-only response is complete");
 
-        let with_tools = ModelResponse::new(
+        let with_tools = InferenceResponse::new(
             String::new(),
             vec![ToolCall {
                 id: "1".to_string(),
@@ -442,7 +442,7 @@ mod tests {
             "response with tool calls is not complete"
         );
 
-        let empty = ModelResponse::new(String::new(), vec![]);
+        let empty = InferenceResponse::new(String::new(), vec![]);
         assert!(
             !empty.is_complete(),
             "empty response with no tools is not complete"

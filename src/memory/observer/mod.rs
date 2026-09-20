@@ -12,7 +12,7 @@ use chrono_tz::Tz;
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
-use crate::inference::{CompletionOptions, Message, ModelProvider, ResponseFormat};
+use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{
     episode_idx_path, episode_obs_path, next_episode_id, write_completion_marker,
@@ -82,14 +82,14 @@ impl Default for ObserverConfig {
 
 /// The observer extracts structured episodes from recent messages.
 pub struct Observer {
-    provider: Box<dyn ModelProvider>,
+    provider: Box<dyn InferenceProvider>,
     config: ObserverConfig,
 }
 
 impl Observer {
     /// Create a new observer with the given provider and config.
     #[must_use]
-    pub fn new(provider: Box<dyn ModelProvider>, config: ObserverConfig) -> Self {
+    pub fn new(provider: Box<dyn InferenceProvider>, config: ObserverConfig) -> Self {
         Self { provider, config }
     }
 
@@ -150,7 +150,7 @@ impl Observer {
     }
 
     /// Replace the model provider (e.g. after a provider config change).
-    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
+    pub fn swap_provider(&mut self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping observer model provider");
         self.provider = provider;
     }
@@ -324,7 +324,7 @@ async fn build_episode_and_persist(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::{ModelResponse, Role};
+    use crate::inference::{InferenceResponse, Role};
     use crate::memory::episode_store::episode_obs_path;
     use crate::memory::log_store::load_observation_log;
     use crate::memory::recent_messages::RecentMessage;
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn parse_observer_response_typed_object_format() {
-        let response = ModelResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
+        let response = InferenceResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 2, "should have 2 extractions");
@@ -382,7 +382,7 @@ mod tests {
             {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
             {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
         ]"#;
-        let response = ModelResponse::new(bare_array.to_string(), vec![]);
+        let response = InferenceResponse::new(bare_array.to_string(), vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 2, "should have 2 extractions");
@@ -400,7 +400,7 @@ mod tests {
             ],
             "narrative": "We were discussing language preferences."
         }"#;
-        let response = ModelResponse::new(json.to_string(), vec![]);
+        let response = InferenceResponse::new(json.to_string(), vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 1, "should have 1 extraction");
@@ -418,7 +418,7 @@ mod tests {
                 {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
             ]
         }"#;
-        let response = ModelResponse::new(json.to_string(), vec![]);
+        let response = InferenceResponse::new(json.to_string(), vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 1, "should have 1 extraction");
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn parse_observer_response_with_code_fences() {
         let fenced = format!("```json\n{SAMPLE_RESPONSE}\n```");
-        let response = ModelResponse::new(fenced, vec![]);
+        let response = InferenceResponse::new(fenced, vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 2, "should parse despite fences");
@@ -445,7 +445,7 @@ mod tests {
             ],
             "narrative": ""
         }"#;
-        let response = ModelResponse::new(json.to_string(), vec![]);
+        let response = InferenceResponse::new(json.to_string(), vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 1, "should have 1 extraction");
@@ -457,21 +457,21 @@ mod tests {
 
     #[test]
     fn parse_observer_response_invalid_json_errors() {
-        let response = ModelResponse::new("not json at all".to_string(), vec![]);
+        let response = InferenceResponse::new("not json at all".to_string(), vec![]);
         let result = parse_observer_response(&response, chrono_tz::UTC);
         assert!(result.is_err(), "invalid JSON should error");
     }
 
     #[test]
     fn parse_observer_response_empty_array_errors() {
-        let response = ModelResponse::new("[]".to_string(), vec![]);
+        let response = InferenceResponse::new("[]".to_string(), vec![]);
         let result = parse_observer_response(&response, chrono_tz::UTC);
         assert!(result.is_err(), "empty array should error");
     }
 
     #[test]
     fn parse_observer_response_timestamp_minute_precision() {
-        let response = ModelResponse::new(
+        let response = InferenceResponse::new(
             r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30", "visibility": "user"}]"#
                 .to_string(),
             vec![],
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn parse_observer_response_background_visibility() {
-        let response = ModelResponse::new(
+        let response = InferenceResponse::new(
             r#"[{"content": "cron job ran", "timestamp": "2026-02-21T03:00", "visibility": "background"}]"#
                 .to_string(),
             vec![],

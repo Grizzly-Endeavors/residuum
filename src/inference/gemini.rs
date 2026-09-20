@@ -13,8 +13,8 @@ use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
-    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// Client for the Google Gemini `generateContent` API.
@@ -57,14 +57,16 @@ impl GeminiClient {
         }
     }
 
-    /// Parse a successful Gemini response into our generic `ModelResponse`.
-    fn parse_response(gemini_response: GeminiResponse) -> Result<ModelResponse, ModelError> {
+    /// Parse a successful Gemini response into our generic `InferenceResponse`.
+    fn parse_response(
+        gemini_response: GeminiResponse,
+    ) -> Result<InferenceResponse, InferenceError> {
         let candidate = gemini_response
             .candidates
             .into_iter()
             .next()
             .ok_or_else(|| {
-                ModelError::Parse("Gemini API response contained no candidates".to_string())
+                InferenceError::Parse("Gemini API response contained no candidates".to_string())
             })?;
 
         let mut content_text = String::new();
@@ -105,7 +107,7 @@ impl GeminiClient {
             cache_read_tokens: u.cached_content_token_count,
         });
 
-        let mut model_response = ModelResponse::new(content_text, tool_calls);
+        let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
         Ok(model_response)
     }
@@ -241,10 +243,10 @@ impl GeminiClient {
         url: &str,
         model: &str,
         request: &GeminiRequest,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let timeout_secs = http.timeout_secs();
         let request_json = serde_json::to_string(request)
-            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
 
         debug!(
             max_output_tokens = request.generation_config.max_output_tokens,
@@ -273,17 +275,16 @@ impl GeminiClient {
             );
             let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(ModelError::Api(format!("{status}: {error_body}")));
+            return Err(InferenceError::Api(format!("{status}: {error_body}")));
         }
 
         let text = response
             .text()
             .await
             .map_err(|e| map_request_error(e, timeout_secs))?;
-        let result =
-            Self::parse_response(serde_json::from_str(&text).map_err(|e| {
-                ModelError::Parse(format!("failed to parse gemini response: {e}"))
-            })?)?;
+        let result = Self::parse_response(serde_json::from_str(&text).map_err(|e| {
+            InferenceError::Parse(format!("failed to parse gemini response: {e}"))
+        })?)?;
         info!(
             model = %model,
             content_len = result.content.len(),
@@ -295,14 +296,14 @@ impl GeminiClient {
 }
 
 #[async_trait]
-impl ModelProvider for GeminiClient {
+impl InferenceProvider for GeminiClient {
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let url = self.endpoint();
         let (system_instruction, contents) = Self::convert_messages(messages);
         let has_web_search = options.web_search.is_some();
@@ -626,7 +627,7 @@ impl GeminiEmbeddingClient {
         }
     }
 
-    async fn embed_single(&self, text: String) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed_single(&self, text: String) -> Result<EmbeddingResponse, InferenceError> {
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let model = self.model.clone();
@@ -664,7 +665,7 @@ impl GeminiEmbeddingClient {
                     .map_err(|e| map_request_error(e, timeout_secs))?;
                 let parsed: GeminiEmbedContentResponse =
                     serde_json::from_str(&resp_body).map_err(|e| {
-                        ModelError::Parse(format!("failed to parse gemini embed response: {e}"))
+                        InferenceError::Parse(format!("failed to parse gemini embed response: {e}"))
                     })?;
                 let dimensions = parsed.embedding.values.len();
                 info!(model = %model, dimensions, "gemini embedding received");
@@ -677,7 +678,10 @@ impl GeminiEmbeddingClient {
         .await
     }
 
-    async fn embed_batch(&self, owned_texts: Vec<String>) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed_batch(
+        &self,
+        owned_texts: Vec<String>,
+    ) -> Result<EmbeddingResponse, InferenceError> {
         let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let model = self.model.clone();
@@ -720,7 +724,7 @@ impl GeminiEmbeddingClient {
                     .map_err(|e| map_request_error(e, timeout_secs))?;
                 let parsed: GeminiBatchEmbedResponse =
                     serde_json::from_str(&resp_body).map_err(|e| {
-                        ModelError::Parse(format!(
+                        InferenceError::Parse(format!(
                             "failed to parse gemini batch embed response: {e}"
                         ))
                     })?;
@@ -741,7 +745,7 @@ impl GeminiEmbeddingClient {
 #[async_trait]
 impl EmbeddingProvider for GeminiEmbeddingClient {
     #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
-    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
         if texts.is_empty() {
             return Ok(EmbeddingResponse {
                 embeddings: Vec::new(),
@@ -762,13 +766,13 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
     }
 }
 
-/// Parse a Gemini error response into a `ModelError::Api`.
-async fn parse_gemini_embed_error(response: reqwest::Response) -> ModelError {
+/// Parse a Gemini error response into a `InferenceError::Api`.
+async fn parse_gemini_embed_error(response: reqwest::Response) -> InferenceError {
     let status = response.status();
     let raw_body = read_error_body(response).await;
     let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
         .map_or_else(|_| raw_body, |e| e.error.message);
-    ModelError::Api(format!("{status}: {error_body}"))
+    InferenceError::Api(format!("{status}: {error_body}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,7 +1014,10 @@ mod tests {
 
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
-        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            matches!(err, InferenceError::Api(_)),
+            "should be an Api error"
+        );
         assert!(
             err.to_string().contains("400"),
             "error should contain status code"
@@ -1041,7 +1048,7 @@ mod tests {
         assert!(result.is_err(), "empty candidates should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Parse(_)),
+            matches!(err, InferenceError::Parse(_)),
             "should be a Parse error"
         );
         assert!(
@@ -1076,7 +1083,7 @@ mod tests {
 
         assert!(result.is_err(), "timeout should return error");
         assert!(
-            matches!(result.unwrap_err(), ModelError::Timeout(1)),
+            matches!(result.unwrap_err(), InferenceError::Timeout(1)),
             "should be Timeout(1)"
         );
     }
@@ -1364,7 +1371,10 @@ mod tests {
 
         assert!(result.is_err(), "API error should return Err");
         let err = result.unwrap_err();
-        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            matches!(err, InferenceError::Api(_)),
+            "should be an Api error"
+        );
         assert!(
             err.to_string().contains("400"),
             "error should contain status code"
