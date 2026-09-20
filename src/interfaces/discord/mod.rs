@@ -4,8 +4,7 @@
 //! onto the bus for agent processing.
 //!
 //! Supports:
-//! - Hot-reloadable presence via `PRESENCE.toml`
-//! - Slash commands mirroring the CLI command set
+//! - Slash commands from the shared command registry
 //! - Attachment downloading to the workspace inbox
 
 mod handler;

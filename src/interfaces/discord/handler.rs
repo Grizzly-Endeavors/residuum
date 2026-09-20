@@ -191,10 +191,6 @@ impl EventHandler for DiscordHandler {
                 )
                 .await
             }
-            Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) => {
-                // Not applicable to Discord
-                result.response
-            }
             None => result.response,
         };
 
@@ -262,9 +258,8 @@ async fn process_discord_attachments(
 /// Register global slash commands with Discord from the shared command registry.
 ///
 /// Commands that take arguments (like `/inbox`) get a `text` string option.
-/// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
 async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
-    for info in all_commands().filter(|c| !c.cli_only) {
+    for info in all_commands() {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
         if info.takes_arg {
             cmd = cmd.add_option(

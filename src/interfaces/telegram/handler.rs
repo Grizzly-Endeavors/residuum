@@ -176,14 +176,12 @@ async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: 
 
 /// Register slash commands with the Telegram API so users see autocomplete.
 ///
-/// Mirrors the Discord `register_slash_commands` pattern. Client-only commands
-/// (quit, exit, verbose toggles) are skipped.
+/// Mirrors the Discord `register_slash_commands` pattern.
 ///
 /// # Errors
 /// Returns an error if the Telegram `setMyCommands` API call fails.
 async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
     let commands: Vec<BotCommand> = all_commands()
-        .filter(|info| !info.cli_only)
         .map(|info| BotCommand::new(info.name, info.help))
         .collect();
 
@@ -324,7 +322,7 @@ async fn handle_command(
             )
             .await
         }
-        Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) | None => result.response,
+        None => result.response,
     };
 
     if let Err(e) = bot.send_message(chat_id, &response_text).await {
