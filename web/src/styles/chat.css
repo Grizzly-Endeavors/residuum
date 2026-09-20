@@ -1001,6 +1001,78 @@
   cursor: not-allowed;
 }
 
+/* Stop button: swaps in for send while the agent is generating and the
+   composer is empty. Deliberately square (never pill/round like send) and
+   stone-toned rather than the blue vein, so it reads as a distinct control
+   rather than a variant of send — the warm tint on hover is the only nod
+   to "this halts something", kept quiet rather than alarm-red. */
+.stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-quick),
+    border-color var(--dur-quick),
+    color var(--dur-quick);
+}
+
+.stop-btn:hover {
+  color: var(--text);
+  background: var(--error-bg);
+  border-color: rgba(192, 57, 43, 0.35);
+}
+
+.stop-btn:active {
+  transform: scale(0.96);
+}
+
+.stop-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Mobile stop button in toolbar */
+.stop-btn-toolbar {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-quick),
+    border-color var(--dur-quick),
+    color var(--dur-quick);
+}
+
+.stop-btn-toolbar:hover {
+  color: var(--text);
+  background: var(--error-bg);
+  border-color: rgba(192, 57, 43, 0.35);
+}
+
+.stop-btn-toolbar:active {
+  transform: scale(0.96);
+}
+
+.stop-btn-toolbar:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 /* ── Chat toolbar ─────────────────────────────────────────────────────── */
 
 .chat-input-container {
@@ -1407,12 +1479,18 @@
     max-width: 90%;
   }
 
-  /* Mobile: hide desktop send button, show toolbar send button */
+  /* Mobile: hide desktop send/stop button, show toolbar versions */
   .chat-input-row .send-btn {
     display: none;
   }
   .send-btn-toolbar {
     display: block;
+  }
+  .chat-input-row .stop-btn {
+    display: none;
+  }
+  .stop-btn-toolbar {
+    display: flex;
   }
 
   /* Thinking: segments → dropdown on mobile */

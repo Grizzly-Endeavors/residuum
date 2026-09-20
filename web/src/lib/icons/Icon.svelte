@@ -11,7 +11,8 @@
     | "spark"
     | "copy"
     | "check"
-    | "inbox";
+    | "inbox"
+    | "stop";
 
   interface Props {
     name: IconName;
@@ -79,6 +80,9 @@
       <path d="M2 5l6 4 6-4" />
     {/if}
   </g>
+  {#if name === "stop"}
+    <rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="currentColor" />
+  {/if}
 </svg>
 
 <style>

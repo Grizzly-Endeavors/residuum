@@ -63,6 +63,14 @@ function dayLabel(iso: string): string {
 export class FeedStore {
   feed = $state<FeedItem[]>([]);
   isProcessing = $state(false);
+  /**
+   * Correlation id of the turn currently in flight, or `null` when idle.
+   * Set on `turn_started`, cleared on `turn_ended` — the only frame the
+   * protocol guarantees closes every turn — so a stop request always has
+   * the right id to target even if `isProcessing` cleared earlier via a
+   * `response`/`error` frame.
+   */
+  activeTurnId = $state<string | null>(null);
   oldestEpisodeCursor = $state<string | null>(null);
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
@@ -76,6 +84,7 @@ export class FeedStore {
     switch (msg.type) {
       case "turn_started":
         this.isProcessing = true;
+        this.activeTurnId = msg.reply_to;
         break;
 
       case "turn_ended":
@@ -83,6 +92,7 @@ export class FeedStore {
         // replies) — harmless no-op if isProcessing already cleared via
         // one of those paths.
         this.isProcessing = false;
+        this.activeTurnId = null;
         break;
 
       case "tool_call":
