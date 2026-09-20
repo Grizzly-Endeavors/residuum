@@ -14,7 +14,4 @@ pub(super) struct ServeArgs {
     /// Start the setup wizard before booting the gateway
     #[arg(long)]
     pub setup: bool,
-    /// Target a named agent instance
-    #[arg(long)]
-    pub agent: Option<String>,
 }

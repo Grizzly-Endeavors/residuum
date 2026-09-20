@@ -3,11 +3,7 @@
 use residuum::util::FatalError;
 
 #[derive(clap::Args)]
-pub(super) struct StopArgs {
-    /// Target a named agent instance
-    #[arg(long)]
-    pub agent: Option<String>,
-}
+pub(super) struct StopArgs;
 
 /// Stop a running gateway daemon.
 ///
@@ -19,13 +15,12 @@ pub(super) struct StopArgs {
 /// # Errors
 ///
 /// Returns `FatalError` if the process cannot be stopped.
-#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
-pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> {
+#[tracing::instrument(skip_all)]
+pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
 
-    let agent_name = args.agent.as_deref();
-    let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
-    let label = super::agent_label(agent_name);
+    let pid_path = residuum::config::Config::config_dir()?.join("residuum.pid");
+    let label = "gateway";
 
     // Layer 1: File lock check
     if !pid_path.exists() {
@@ -44,12 +39,12 @@ pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> 
     let pid = read_pid_file(&pid_path)?;
 
     // Layer 2: HTTP graceful shutdown
-    let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
+    let config_dir = residuum::config::Config::config_dir()?;
     let gateway_addr = super::resolve_gateway_addr(&config_dir);
 
     let http_ok = try_http_shutdown(&gateway_addr).await;
 
-    if http_ok && poll_for_exit(&pid_path, pid, &label).await? {
+    if http_ok && poll_for_exit(&pid_path, pid, label).await? {
         return Ok(());
     }
 
@@ -64,7 +59,7 @@ pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> 
     // Layer 3: terminate process (SIGTERM on Unix, TerminateProcess on Windows)
     send_sigterm(pid)?;
 
-    if poll_for_exit(&pid_path, pid, &label).await? {
+    if poll_for_exit(&pid_path, pid, label).await? {
         return Ok(());
     }
 
