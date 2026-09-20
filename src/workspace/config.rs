@@ -205,6 +205,7 @@ struct ChannelEntryRaw {
     method: Option<String>,
     headers: Option<HashMap<String, String>>,
     // macOS / Windows channel fields
+    /// Retired. Retained so a stale config warns rather than being silently ignored.
     default_category: Option<String>,
     default_priority: Option<String>,
     throttle_window_secs: Option<u64>,
@@ -212,6 +213,7 @@ struct ChannelEntryRaw {
     app_name: Option<String>,
     web_url: Option<String>,
     // Windows-specific fields
+    /// Retired. Retained so a stale config warns rather than being silently ignored.
     default_scenario: Option<String>,
     app_id: Option<String>,
 }
@@ -238,6 +240,20 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
         .channels
         .into_iter()
         .filter_map(|(name, raw)| {
+            for (key, present) in [
+                ("default_category", raw.default_category.is_some()),
+                ("default_scenario", raw.default_scenario.is_some()),
+            ] {
+                if present {
+                    tracing::warn!(
+                        channel = %name,
+                        key,
+                        "ignoring retired channel option; notification categories were removed \
+                         because nothing ever selected between them — delete this line"
+                    );
+                }
+            }
+
             let kind = match raw.type_.as_str() {
                 "ntfy" => {
                     let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
@@ -255,7 +271,6 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     }
                 }
                 "macos" => ExternalChannelKind::Macos {
-                    default_category: raw.default_category,
                     default_priority: raw.default_priority,
                     throttle_window_secs: raw.throttle_window_secs,
                     sound: raw.sound,
@@ -263,8 +278,6 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     web_url: raw.web_url,
                 },
                 "windows" => ExternalChannelKind::Windows {
-                    default_category: raw.default_category,
-                    default_scenario: raw.default_scenario,
                     throttle_window_secs: raw.throttle_window_secs,
                     sound: raw.sound,
                     app_name: raw.app_name,
@@ -955,7 +968,6 @@ type = "macos"
         let c = &configs[0];
         assert_eq!(c.name, "macos");
         let ExternalChannelKind::Macos {
-            default_category,
             default_priority,
             throttle_window_secs,
             sound,
@@ -965,7 +977,6 @@ type = "macos"
         else {
             unreachable!("expected Macos kind");
         };
-        assert!(default_category.is_none(), "minimal config has no category");
         assert!(default_priority.is_none(), "minimal config has no priority");
         assert!(
             throttle_window_secs.is_none(),
@@ -1000,7 +1011,6 @@ web_url = "http://localhost:3000"
         let c = &configs[0];
         assert_eq!(c.name, "macos_alerts");
         let ExternalChannelKind::Macos {
-            default_category,
             default_priority,
             throttle_window_secs,
             sound,
@@ -1010,7 +1020,6 @@ web_url = "http://localhost:3000"
         else {
             unreachable!("expected Macos kind");
         };
-        assert_eq!(default_category.as_deref(), Some("alerts"));
         assert_eq!(default_priority.as_deref(), Some("time_sensitive"));
         assert_eq!(*throttle_window_secs, Some(10));
         assert_eq!(*sound, Some(true));

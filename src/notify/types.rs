@@ -32,8 +32,6 @@ pub enum ExternalChannelKind {
     },
     /// Native macOS notification channel.
     Macos {
-        /// Default notification category.
-        default_category: Option<String>,
         /// Default interruption level.
         default_priority: Option<String>,
         /// Throttle window in seconds.
@@ -47,10 +45,6 @@ pub enum ExternalChannelKind {
     },
     /// Native Windows Toast notification channel.
     Windows {
-        /// Default notification category.
-        default_category: Option<String>,
-        /// Default Toast scenario (default, reminder, alarm).
-        default_scenario: Option<String>,
         /// Throttle window in seconds.
         throttle_window_secs: Option<u64>,
         /// Play notification sound.
