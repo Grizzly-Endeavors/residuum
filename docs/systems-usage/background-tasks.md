@@ -51,6 +51,8 @@ No parameters. Lists all currently active background tasks.
 |-----------|------|----------|-------|
 | `task_id` | string | yes | Cancels the task by ID. |
 
+Cancels a background sub-agent. To stop the main-agent turn itself — the conversation the user is having — see [Turn Control](turn-control.md) instead; that's a user-facing interface control, not a tool.
+
 ## Model Tiers
 
 | Tier | Default Use | Fallback Chain |
