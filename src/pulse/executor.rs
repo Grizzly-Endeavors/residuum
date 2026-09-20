@@ -106,7 +106,6 @@ mod tests {
             schedule: "30m".to_string(),
             active_hours: None,
             agent: None,
-            trigger_count: None,
             tasks: vec![
                 PulseTask {
                     name: "check_inbox".to_string(),
@@ -246,7 +245,6 @@ mod tests {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
-            trigger_count: None,
             tasks: vec![],
         };
         match build_pulse_execution(&pulse) {

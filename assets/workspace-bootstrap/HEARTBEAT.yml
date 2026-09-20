@@ -10,7 +10,6 @@
 #                 supports overnight windows (e.g. "22:00-06:00")
 #   agent: ~ (sub-agent, small) | "main" (wake turn) | "preset-name" (sub-agent,
 #          uses the preset's own model tier)
-#   trigger_count: optional — max firings per active period
 
 # ── Built-in pulses ─────────────────────────────────────────────
 # On by default. Comment out to disable; edit freely to tune.

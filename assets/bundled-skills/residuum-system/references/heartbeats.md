@@ -41,7 +41,6 @@ pulses:
     enabled: true
     schedule: 1h
     agent: deploy-watcher    # Any other string → SubAgent with named preset from subagents/, using the preset's own model_tier
-    trigger_count: 5         # Max 5 firings per active period
     tasks:
       - name: check_status
         prompt: "Check deployment status."
@@ -80,11 +79,10 @@ The `agent` field controls how the pulse executes:
 
 - The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart.
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
-- Last-run timestamps and run counts are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
+- Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
 - Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the SubAgent prompt.
 - SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
-- `trigger_count` limits how many times a pulse fires within its `active_hours` window. When set, firings are spaced evenly across the active period. Omit for unlimited.
 - Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses or schedule further background work itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
 
 ## Gotchas
