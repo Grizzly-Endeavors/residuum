@@ -169,7 +169,6 @@ fn is_identity_file(relative: &str) -> bool {
         "USER.md",
         "MEMORY.md",
         "ENVIRONMENT.md",
-        "PRESENCE.toml",
         "HEARTBEAT.yml",
     ];
 

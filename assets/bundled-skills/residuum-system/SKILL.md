@@ -33,7 +33,6 @@ workspace/
 ├── MEMORY.md                # Persistent scratchpad (agent-maintained)
 ├── ENVIRONMENT.md           # Local environment notes
 ├── BOOTSTRAP.md             # First-run guidance (deleted after first conversation)
-├── PRESENCE.toml            # Discord presence configuration
 ├── HEARTBEAT.yml            # Pulse scheduling
 ├── scheduled_actions.json   # Persisted one-off actions
 ├── memory/

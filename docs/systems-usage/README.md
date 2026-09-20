@@ -14,7 +14,6 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `USER.md` | Medium | Agent records user preferences, communication style, active interests. |
 | `ENVIRONMENT.md` | Low | Agent documents local environment details it discovers. |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
-| `PRESENCE.toml` | Low | Discord presence. Agent updates when context changes. |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
 | `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
 | `memory/OBSERVER.md` | Low | Observer extraction prompt. Agent can improve over time via self-analysis. |

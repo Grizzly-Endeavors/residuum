@@ -34,7 +34,6 @@ const DEFAULT_REFLECTOR_PROMPT: &str =
     include_str!("../../assets/workspace-bootstrap/memory/REFLECTOR.md");
 
 const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
-const DEFAULT_PRESENCE: &str = include_str!("../../assets/workspace-bootstrap/PRESENCE.toml");
 
 /// Built-in `introspection` subagent preset, used by the reflection and
 /// `memory_tending` pulses to review episode memory and tend identity files.
@@ -186,7 +185,6 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
-    write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
     write_if_missing(
         &layout.subagents_dir().join("introspection.md"),
@@ -393,10 +391,6 @@ mod tests {
         assert!(
             layout.subconscious_md().exists(),
             "SUBCONSCIOUS.md should exist"
-        );
-        assert!(
-            layout.presence_toml().exists(),
-            "PRESENCE.toml should exist"
         );
         assert!(layout.agent_inbox_dir().exists(), "inbox dir should exist");
         assert!(

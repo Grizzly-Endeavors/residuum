@@ -8,7 +8,6 @@
 //! - Attachment downloading to the workspace inbox
 
 mod handler;
-mod presence;
 pub(crate) mod subscriber;
 
 use std::path::PathBuf;
@@ -59,7 +58,6 @@ impl DiscordInterface {
     pub(crate) async fn start(self) -> Result<(), Box<serenity::Error>> {
         let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 
-        let presence_path = self.workspace_dir.join("PRESENCE.toml");
         let inbox_dir = self.workspace_dir.join("inbox");
 
         let channel_id = Arc::new(tokio::sync::Mutex::new(None));
@@ -68,12 +66,10 @@ impl DiscordInterface {
             publisher: self.senders.publisher,
             bus_handle: self.senders.bus_handle,
             channel_id,
-            presence_path,
             inbox_dir,
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             tz: self.tz,
-            shutdown_rx: self.shutdown_rx.clone(),
         };
 
         let mut client = Client::builder(&self.cfg.token, intents)

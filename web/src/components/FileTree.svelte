@@ -27,7 +27,6 @@
     "USER.md",
     "MEMORY.md",
     "ENVIRONMENT.md",
-    "PRESENCE.toml",
     "HEARTBEAT.yml",
     "CHANNELS.yml",
   ]);
