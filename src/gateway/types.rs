@@ -104,6 +104,25 @@ pub struct ServerCommand {
     pub reply_tx: Option<tokio::sync::oneshot::Sender<Result<String, String>>>,
 }
 
+/// A request to stop the currently running main-agent turn.
+///
+/// Delivered outside the `ServerCommand`/`command_tx` pipeline because that
+/// pipeline is only drained *between* turns (the event loop blocks on
+/// `handle_inbound_message` for the whole turn) — a stop needs to reach a
+/// turn while it is running, so it travels its own channel that the active
+/// turn's select loop watches directly.
+pub struct StopRequest {
+    /// Correlation id of the turn to stop, when the sender knows it (e.g. a
+    /// WebSocket client stopping the turn it's watching). `None` means "stop
+    /// whichever turn is currently running" — used by chat commands, which
+    /// don't track turn ids and only ever have at most one turn to stop.
+    pub reply_to: Option<String>,
+    /// Reports whether a running turn actually matched and was signalled to
+    /// stop, so the caller can tell a successful stop from "nothing was
+    /// running" without guessing from a timeout.
+    pub result_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+}
+
 /// Long-lived core that owns shared communication channels.
 ///
 /// Created once at startup and persists across configuration reloads.
@@ -111,6 +130,7 @@ pub struct ServerCommand {
 pub(crate) struct GatewayCore {
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
+    pub stop_tx: mpsc::Sender<StopRequest>,
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
     pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub config_dir: std::path::PathBuf,
@@ -122,6 +142,7 @@ pub(crate) struct GatewayCore {
 pub(crate) struct CoreReceivers {
     pub reload: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command: mpsc::Receiver<ServerCommand>,
+    pub stop: mpsc::Receiver<StopRequest>,
 }
 
 impl GatewayCore {
@@ -129,6 +150,7 @@ impl GatewayCore {
     pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
+        let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(8);
         let http_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
@@ -136,6 +158,7 @@ impl GatewayCore {
         let core = Self {
             reload_tx,
             command_tx,
+            stop_tx,
             http_shutdown_tx,
             config_dir,
             bus_handle,
@@ -144,6 +167,7 @@ impl GatewayCore {
         let receivers = CoreReceivers {
             reload: reload_rx,
             command: command_rx,
+            stop: stop_rx,
         };
         (core, receivers)
     }
@@ -154,6 +178,7 @@ impl GatewayCore {
 pub(crate) struct GatewayState {
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
+    pub stop_tx: mpsc::Sender<StopRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
     pub tz: chrono_tz::Tz,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
@@ -210,6 +235,10 @@ pub(crate) struct GatewayRuntime {
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<EndpointName>>,
     pub reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command_rx: mpsc::Receiver<ServerCommand>,
+    /// Stop requests for the currently running turn. Watched by the outer
+    /// event loop when idle (responds "nothing running") and by the active
+    /// turn's own select loop while a turn is in progress.
+    pub stop_rx: mpsc::Receiver<StopRequest>,
     /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
     pub server_handle: tokio::task::JoinHandle<()>,
     pub pulse_scheduler: PulseScheduler,
@@ -236,6 +265,7 @@ pub(crate) struct GatewayRuntime {
     /// Cloned core senders for rebuilding adapters on reload.
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
+    pub stop_tx: mpsc::Sender<StopRequest>,
     /// File registry for serving attachments to WebSocket clients.
     pub file_registry: crate::gateway::file_server::FileRegistry,
     /// Shared path policy for updating blocked paths on reload.

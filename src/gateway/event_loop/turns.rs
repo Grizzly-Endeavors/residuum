@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::agent::context::{PromptContext, SkillsContext};
@@ -12,7 +13,7 @@ use crate::bus::{
     Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
 };
 
-use crate::gateway::types::{GatewayRuntime, ReloadSignal};
+use crate::gateway::types::{GatewayRuntime, ReloadSignal, StopRequest};
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::models::ImageData;
@@ -65,6 +66,13 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
             Interrupt::Subconscious(content) => {
                 // A late mid-turn finding degrades to a note for the next turn.
                 rt.agent.inject_system_message(content);
+            }
+            Interrupt::Stopped => {
+                // The turn already ended by the time this was drained — the
+                // stop note was injected where it was actually observed
+                // (mid-generation cancellation or the tool-loop checkpoint
+                // inside `execute_turn`). Nothing left to do here.
+                tracing::debug!("leftover stop marker drained after turn already ended");
             }
         }
     }
@@ -144,6 +152,7 @@ async fn run_agent_turn_with_interrupts(
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
+    stop_rx: &mut mpsc::Receiver<StopRequest>,
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
 ) -> (
     anyhow::Result<Vec<String>>,
@@ -153,6 +162,10 @@ async fn run_agent_turn_with_interrupts(
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
     let watch =
         subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
+    // Cancelled to abort an in-flight model call immediately; a stop that
+    // lands between calls is instead observed via `Interrupt::Stopped` at
+    // the tool loop's checkpoint (see `execute_turn`).
+    let stop_token = CancellationToken::new();
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,
@@ -165,6 +178,7 @@ async fn run_agent_turn_with_interrupts(
             &mut interrupt_rx,
             images,
             watch.as_ref(),
+            &stop_token,
         ));
         loop {
             tokio::select! {
@@ -193,6 +207,29 @@ async fn run_agent_turn_with_interrupts(
                 }
                 _ = reload_rx.changed() => {
                     tracing::info!("reload signal received during active turn, deferring");
+                }
+                stop_req = stop_rx.recv() => {
+                    let Some(req) = stop_req else {
+                        tracing::debug!("stop request channel closed during turn");
+                        continue;
+                    };
+                    let matches = req.reply_to.as_deref().is_none_or(|id| id == correlation_id);
+                    if matches {
+                        tracing::info!(correlation_id = %correlation_id, "stopping active turn");
+                        stop_token.cancel();
+                        if interrupt_tx.try_send(Interrupt::Stopped).is_err() {
+                            tracing::warn!("interrupt channel full, stop marker dropped (model-call cancellation still applies)");
+                        }
+                    } else {
+                        tracing::debug!(
+                            requested = ?req.reply_to,
+                            active = %correlation_id,
+                            "ignoring stop request for a different or already-finished turn"
+                        );
+                    }
+                    if let Some(tx) = req.result_tx {
+                        tx.send(matches).ok();
+                    }
                 }
             }
         }
@@ -384,6 +421,7 @@ pub async fn handle_inbound_message(
         &message.images,
         &mut rt.agent_subscriber,
         &mut rt.reload_rx,
+        &mut rt.stop_rx,
         (!is_background && rt.subconscious.mid_turn_enabled())
             .then(|| Arc::clone(&rt.subconscious)),
     )

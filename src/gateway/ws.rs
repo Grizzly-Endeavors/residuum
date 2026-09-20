@@ -230,6 +230,19 @@ async fn handle_client_message(
                 }
             });
         }
+        ClientMessage::Cancel { reply_to } => {
+            tracing::info!(reply_to = %reply_to, "stop requested by client");
+            if state
+                .stop_tx
+                .try_send(crate::gateway::types::StopRequest {
+                    reply_to: Some(reply_to),
+                    result_tx: None,
+                })
+                .is_err()
+            {
+                tracing::warn!("failed to dispatch stop request: channel closed or full");
+            }
+        }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");
             let dir = state.agent_inbox_dir.clone();
