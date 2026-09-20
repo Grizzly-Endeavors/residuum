@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
-use crate::inference::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
+use crate::inference::http::{
+    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+};
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
@@ -789,7 +791,8 @@ mod tests {
 
     fn make_client(base_url: &str) -> GeminiClient {
         let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60)).unwrap();
+            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
+                .unwrap();
         GeminiClient::new(
             http,
             base_url,
@@ -803,7 +806,8 @@ mod tests {
     #[test]
     fn endpoint_includes_model_and_key() {
         let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60)).unwrap();
+            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
+                .unwrap();
         let client = GeminiClient::new(
             http,
             "https://generativelanguage.googleapis.com/v1beta",
@@ -1068,7 +1072,8 @@ mod tests {
             .await;
 
         let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1)).unwrap();
+            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(1))
+                .unwrap();
         let client = GeminiClient::new(
             http,
             mock_server.uri(),
@@ -1279,7 +1284,8 @@ mod tests {
 
     fn make_embedding_client(base_url: &str) -> GeminiEmbeddingClient {
         let http =
-            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60)).unwrap();
+            SharedHttpClient::new(&crate::inference::http::HttpClientConfig::with_timeout(60))
+                .unwrap();
         GeminiEmbeddingClient::new(
             http,
             base_url,

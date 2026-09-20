@@ -146,7 +146,7 @@ pub(crate) async fn execute_turn(
                 "structured thinking received"
             );
         }
-        response.content = crate::inference::think_tags::strip_think_tags(&response.content);
+        response.content = super::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
             log_usage(&response);

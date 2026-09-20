@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
-use crate::inference::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
+use crate::inference::http::{
+    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+};
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
