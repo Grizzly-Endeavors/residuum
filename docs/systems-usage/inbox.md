@@ -46,6 +46,6 @@ Each item is a JSON file. There is **no `id` field in the JSON body** — the ID
 
 ## Intended Usage
 
-The agent inbox is for **low-urgency items** that don't need immediate attention — background task results that are informational but not actionable should route here rather than to `agent_wake` or `agent_feed`. The agent should periodically triage it — reading items, acting on anything that needs follow-up, and archiving items that are resolved. This should be driven by a heartbeat pulse.
+The agent inbox is for **low-urgency items** that don't need immediate attention — background task results that are informational but not actionable should route here rather than to a push notification channel. The agent should periodically triage it — reading items, acting on anything that needs follow-up, and archiving items that are resolved. This should be driven by a heartbeat pulse.
 
 The user inbox is for findings the agent wants to hand to the user asynchronously, without interrupting a conversation — e.g. the built-in `reflection` and `memory_tending` pulses deliver their output there. Before adding a new item, check prior items (including the archive) so the same suggestion isn't repeated.

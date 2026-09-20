@@ -24,7 +24,7 @@ Only inbound user messages reset the idle deadline (`handle_inbound_message` in 
 
 ## Switching the notification interface
 
-`switch_idle_interface` looks up `idle.idle_channel` in `rt.endpoint_registry`. If the endpoint exists and has `EndpointCapabilities::INTERACTIVE`, `rt.last_output_endpoint` is set to it — the same field that already governs where background-turn responses (e.g. `agent_wake` results) get routed, so this reuses existing routing plumbing rather than a separate mechanism. If the endpoint is missing or not interactive, the switch is skipped with a `warn` log and the current output topic is left unchanged; this is a soft fallback, not a hard failure.
+`switch_idle_interface` looks up `idle.idle_channel` in `rt.endpoint_registry`. If the endpoint exists and has `EndpointCapabilities::INTERACTIVE`, `rt.last_output_endpoint` is set to it — the same field that already governs where background-turn responses get routed, so this reuses existing routing plumbing rather than a separate mechanism. If the endpoint is missing or not interactive, the switch is skipped with a `warn` log and the current output topic is left unchanged; this is a soft fallback, not a hard failure.
 
 ## Configuration
 
@@ -56,5 +56,5 @@ There is none, automatic or otherwise. The next user message is processed normal
 - **Skills**: project-scoped skills are removed via the rescan in step 1; any skills activated outside a project are swept in step 2. See [skills.md](skills.md).
 - **MCP**: project MCP server refs are released via `McpRegistry::deactivate_project`, the same ref-counted path used by explicit `project_deactivate` calls. See [mcp.md](mcp.md).
 - **Memory**: the observer fires before the message buffer is cleared, so the idle boundary is captured in the episode record rather than lost. See [memory.md](memory.md).
-- **Notifications**: switching `last_output_endpoint` affects where background-task results (`agent_wake`, etc.) surface after the user goes idle. See [notifications.md](notifications.md).
+- **Notifications**: switching `last_output_endpoint` affects where wake-turn and relayed background-task output surfaces after the user goes idle. See [notifications.md](notifications.md).
 - **Background Tasks**: unaffected by idle — background tasks, pulses, and scheduled actions keep running regardless of user activity; only user messages drive the idle timer. See [background-tasks.md](background-tasks.md).
