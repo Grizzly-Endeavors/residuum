@@ -84,6 +84,10 @@ pub struct SyncStats {
     pub removed: usize,
     /// Files that were unchanged and skipped.
     pub unchanged: usize,
+    /// Document IDs removed from the BM25 index — from files deleted off disk, plus
+    /// the pre-update IDs of files that were modified and reindexed. The vector
+    /// store needs these too, to stay consistent with the BM25 index.
+    pub pruned_doc_ids: Vec<String>,
 }
 
 /// BM25 full-text search index over memory observations and chunks.
@@ -453,6 +457,7 @@ impl MemoryIndex {
             updated: 0,
             removed: 0,
             unchanged: 0,
+            pruned_doc_ids: Vec::new(),
         };
         let mut new_manifest = manifest.clone();
 
@@ -478,6 +483,7 @@ impl MemoryIndex {
             if let Some(entry) = new_manifest.files.remove(key) {
                 self.delete_documents(&entry.doc_ids)?;
                 stats.removed += entry.doc_ids.len();
+                stats.pruned_doc_ids.extend(entry.doc_ids);
             }
         }
 
@@ -494,6 +500,9 @@ impl MemoryIndex {
                     let term = Term::from_field_text(self.id_field, id);
                     writer.delete_term(term);
                 }
+                stats
+                    .pruned_doc_ids
+                    .extend(existing.doc_ids.iter().cloned());
                 stats.updated += 1;
             } else {
                 stats.added += 1;
