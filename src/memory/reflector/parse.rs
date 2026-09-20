@@ -43,7 +43,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             log.observations.push(Observation {
                 timestamp,
                 project_context: item.project_context.clone(),
-                source_episodes: vec![],
+                source_episodes: None,
                 visibility: item.visibility.clone(),
                 content: item.content.clone(),
             });
@@ -99,7 +99,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
         log.observations.push(Observation {
             timestamp,
             project_context,
-            source_episodes: vec![],
+            source_episodes: None,
             visibility,
             content: obs_content.to_string(),
         });

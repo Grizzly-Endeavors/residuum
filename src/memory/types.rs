@@ -82,10 +82,38 @@ impl fmt::Display for DocSource {
     }
 }
 
+/// Accepts both the current plain-string form and the legacy on-disk array form
+/// (`["ep-001"]` or `[]`) for `Observation::source_episodes`, normalizing either to
+/// `Option<String>`. The field never holds more than one ID; a legacy array with
+/// extras keeps the first and drops the rest.
+fn deserialize_source_episode<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SourceEpisode {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<SourceEpisode>::deserialize(deserializer)? {
+        None => None,
+        Some(SourceEpisode::One(id)) => Some(id),
+        Some(SourceEpisode::Many(mut ids)) => {
+            if ids.is_empty() {
+                None
+            } else {
+                Some(ids.remove(0))
+            }
+        }
+    })
+}
+
 /// A single extracted observation with full metadata.
 ///
 /// Each observation is self-describing: it carries when it was created,
-/// what project it belongs to, which episode transcript(s) it came from,
+/// what project it belongs to, which episode transcript it came from,
 /// and whether it originated from a user-visible or background turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
@@ -94,9 +122,13 @@ pub struct Observation {
     pub timestamp: NaiveDateTime,
     /// Project or workspace context at the time of observation.
     pub project_context: String,
-    /// IDs of the episode transcript files that produced this observation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_episodes: Vec<String>,
+    /// ID of the episode transcript that produced this observation.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_source_episode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_episodes: Option<String>,
     /// Whether this observation came from a user-visible or background turn.
     pub visibility: Visibility,
     /// The observation content as a single concise sentence.
@@ -123,8 +155,8 @@ impl fmt::Display for Observation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}]", self.timestamp.format("%Y-%m-%dT%H:%M"))?;
 
-        if !self.source_episodes.is_empty() {
-            write!(f, " | [{}]", self.source_episodes.join(", "))?;
+        if let Some(source_episode) = &self.source_episodes {
+            write!(f, " | [{source_episode}]")?;
         }
 
         write!(
@@ -154,8 +186,7 @@ impl ObservationLog {
         }
 
         let mut lines = Vec::with_capacity(self.observations.len() + 1);
-        lines
-            .push("Format: [timestamp] | [source episodes] | [project] | [visibility]".to_string());
+        lines.push("Format: [timestamp] | [source episode] | [project] | [visibility]".to_string());
         for obs in &self.observations {
             lines.push(obs.to_string());
         }
@@ -259,7 +290,7 @@ mod tests {
                 .and_hms_opt(0, 0, 0)
                 .unwrap(),
             project_context: "residuum/memory".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "tantivy provides BM25 search without C dependencies".to_string(),
         }
@@ -281,7 +312,7 @@ mod tests {
         );
         assert_eq!(
             deserialized.source_episodes,
-            vec!["ep-001"],
+            Some("ep-001".to_string()),
             "source_episodes should round-trip"
         );
         assert_eq!(
@@ -292,15 +323,63 @@ mod tests {
     }
 
     #[test]
-    fn observation_source_episodes_skipped_when_empty() {
+    fn observation_deserializes_legacy_single_element_array() {
+        let json = r#"{
+            "timestamp": "2024-02-19T00:00",
+            "project_context": "residuum/memory",
+            "source_episodes": ["ep-001"],
+            "visibility": "user",
+            "content": "legacy on-disk format"
+        }"#;
+        let obs: Observation = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            obs.source_episodes,
+            Some("ep-001".to_string()),
+            "a legacy one-element array should deserialize to Some"
+        );
+    }
+
+    #[test]
+    fn observation_deserializes_legacy_empty_array() {
+        let json = r#"{
+            "timestamp": "2024-02-19T00:00",
+            "project_context": "residuum/memory",
+            "source_episodes": [],
+            "visibility": "user",
+            "content": "legacy on-disk format"
+        }"#;
+        let obs: Observation = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            obs.source_episodes, None,
+            "a legacy empty array should deserialize to None"
+        );
+    }
+
+    #[test]
+    fn observation_deserializes_missing_field_as_none() {
+        let json = r#"{
+            "timestamp": "2024-02-19T00:00",
+            "project_context": "residuum/memory",
+            "visibility": "user",
+            "content": "no source_episodes key at all"
+        }"#;
+        let obs: Observation = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            obs.source_episodes, None,
+            "a missing field should default to None"
+        );
+    }
+
+    #[test]
+    fn observation_source_episodes_skipped_when_none() {
         let obs = Observation {
-            source_episodes: vec![],
+            source_episodes: None,
             ..sample_observation()
         };
         let json = serde_json::to_string(&obs).unwrap();
         assert!(
             !json.contains("source_episodes"),
-            "empty source_episodes should be skipped in serialization"
+            "absent source_episodes should be skipped in serialization"
         );
     }
 
@@ -379,7 +458,7 @@ mod tests {
     #[test]
     fn observation_display_without_sources() {
         let obs = Observation {
-            source_episodes: vec![],
+            source_episodes: None,
             ..sample_observation()
         };
         let formatted = obs.to_string();

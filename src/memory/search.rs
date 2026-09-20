@@ -1109,7 +1109,7 @@ mod tests {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "residuum".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: text.to_string(),
         }

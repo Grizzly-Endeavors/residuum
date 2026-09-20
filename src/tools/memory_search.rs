@@ -193,7 +193,7 @@ mod tests {
         let obs = vec![Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "residuum".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "rust memory safety and ownership model".to_string(),
         }];

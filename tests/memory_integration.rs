@@ -233,8 +233,7 @@ mod memory_integration {
         assert_eq!(
             log.observations
                 .first()
-                .and_then(|o| o.source_episodes.first())
-                .map(String::as_str),
+                .and_then(|o| o.source_episodes.as_deref()),
             Some("ep-001"),
             "source_episodes should reference ep-001"
         );
@@ -357,13 +356,13 @@ mod memory_integration {
             "compressed log should have two observations"
         );
 
-        // Reflector observations have empty source_episodes
+        // Reflector observations have no source_episodes
         assert!(
             compressed
                 .observations
                 .first()
-                .is_some_and(|o| o.source_episodes.is_empty()),
-            "reflected observations should have empty source_episodes"
+                .is_some_and(|o| o.source_episodes.is_none()),
+            "reflected observations should have no source_episodes"
         );
     }
 
@@ -439,7 +438,7 @@ mod memory_integration {
         let obs = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "residuum".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "the agent uses SOUL.md for personality".to_string(),
         }];
@@ -652,7 +651,7 @@ mod memory_integration {
         let obs1 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "residuum".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "first observation about workspace".to_string(),
         }];
@@ -696,7 +695,7 @@ mod memory_integration {
         let obs2 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "residuum".to_string(),
-            source_episodes: vec!["ep-002".to_string()],
+            source_episodes: Some("ep-002".to_string()),
             visibility: Visibility::User,
             content: "second observation about testing".to_string(),
         }];
@@ -739,7 +738,7 @@ mod memory_integration {
         let obs1 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "residuum".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "residuum uses tantivy for search".to_string(),
         }];
@@ -753,7 +752,7 @@ mod memory_integration {
         let obs2 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "devops".to_string(),
-            source_episodes: vec!["ep-002".to_string()],
+            source_episodes: Some("ep-002".to_string()),
             visibility: Visibility::User,
             content: "devops uses kubernetes for search orchestration".to_string(),
         }];

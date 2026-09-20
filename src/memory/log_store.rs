@@ -85,7 +85,7 @@ mod tests {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
-            source_episodes: vec![episode_id.to_string()],
+            source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observed something from {episode_id}"),
         }
@@ -107,7 +107,7 @@ mod tests {
             loaded
                 .observations
                 .first()
-                .and_then(|o| o.source_episodes.first().map(String::as_str)),
+                .and_then(|o| o.source_episodes.as_deref()),
             Some("ep-001"),
             "source episode ID should match"
         );

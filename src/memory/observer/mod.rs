@@ -307,7 +307,7 @@ async fn build_episode_and_persist(
         .map(|e| Observation {
             timestamp: e.timestamp,
             project_context: e.project_context.clone(),
-            source_episodes: vec![episode.id.clone()],
+            source_episodes: Some(episode.id.clone()),
             visibility: e.visibility.clone(),
             content: e.content.clone(),
         })
