@@ -16,7 +16,6 @@ Files you own and should actively maintain:
 - `USER.md` — user preferences, communication style, interests
 - `ENVIRONMENT.md` — document local environment details you discover
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
-- `PRESENCE.toml` — Discord status configuration
 - `memory/OBSERVER.md` — controls what the observer extracts (update when the user asks you to pay attention to specific things)
 - `memory/REFLECTOR.md` — controls how the reflector compresses observations (update when the user asks to change compression behavior)
 - `scheduled_actions.json` — managed via tools, not direct editing

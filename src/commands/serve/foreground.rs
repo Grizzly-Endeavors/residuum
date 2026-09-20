@@ -13,10 +13,9 @@ use super::ServeArgs;
 /// # Errors
 ///
 /// Returns `FatalError` if initialization or the gateway loop fails.
-#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
+#[tracing::instrument(skip_all)]
 pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalError> {
-    let agent_name = args.agent.as_deref();
-    let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
+    let pid_path = residuum::config::Config::config_dir()?.join("residuum.pid");
 
     // Acquire exclusive lock on the PID file. This both:
     // 1. Prevents two instances from running simultaneously
@@ -80,14 +79,12 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
     // Clean up leftover .exe.old from a previous Windows self-update (no-op on Unix)
     residuum::update::cleanup_old_binary();
 
-    let agent_name = args.agent.as_deref();
-
     if args.setup {
         // Box::pin reduces stack frame size — this future is large
         return Box::pin(run_setup_mode()).await;
     }
 
-    let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
+    let config_dir = residuum::config::Config::config_dir()?;
     // Determine first-boot from disk state: if a backup exists, the gateway
     // has previously loaded a valid config, so this is a restart.
     let is_first_boot = !config_dir.join("config.toml.bak").exists();
@@ -98,7 +95,6 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
             Ok(mut cfg) => {
                 cfg.config_dir.clone_from(&config_dir);
                 tracing::info!(
-                    agent = agent_name.unwrap_or("(default)"),
                     model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
                     provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
                     workspace = %cfg.workspace_dir.display(),
@@ -135,15 +131,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
                 )));
             }
             Err(err) => {
-                if let Some(name) = agent_name {
-                    // Named agents don't get setup wizard — config must be ready
-                    return Err(FatalError::Config(format!(
-                        "config invalid for agent '{name}': {err}\n\n\
-                         edit {}/config.toml manually or recreate the agent",
-                        config_dir.display()
-                    )));
-                }
-                // First boot — setup wizard (default agent only)
+                // First boot — setup wizard
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
                 // Box::pin reduces stack frame size — this future is large
                 match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
@@ -203,7 +191,7 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
 
     tracing::info!(exe = %exe.display(), "re-execing with updated binary");
 
-    // Forward the original args so --foreground and --agent are preserved across re-exec
+    // Forward the original args so --foreground is preserved across re-exec
     let original_args: Vec<String> = std::env::args().skip(1).collect();
     let err = std::process::Command::new(&exe).args(&original_args).exec();
 

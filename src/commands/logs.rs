@@ -13,9 +13,6 @@ pub(super) struct LogsArgs {
     /// Tail the log file, polling for new lines
     #[arg(long, short)]
     pub watch: bool,
-    /// Target a named agent instance
-    #[arg(long)]
-    pub agent: Option<String>,
     /// Filter by module (e.g., `agent`, `mcp`, `gateway`, `residuum::mcp::client`)
     #[arg(long, short)]
     pub module: Option<String>,
@@ -101,10 +98,10 @@ impl LogFilter {
 /// Finds the most recent log file in the log directory, parses JSON lines,
 /// applies filters, and renders human-readable output. With `--watch`, polls
 /// for new lines every 500ms.
-#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
+#[tracing::instrument(skip_all)]
 pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> {
     let filter = LogFilter::from_args(args)?;
-    let log_dir = residuum::agent_registry::paths::resolve_log_dir(args.agent.as_deref())?;
+    let log_dir = residuum::config::Config::config_dir()?.join("logs");
 
     if !log_dir.exists() {
         println!(

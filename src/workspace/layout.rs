@@ -111,12 +111,6 @@ impl WorkspaceLayout {
         self.root.join("BOOTSTRAP.md")
     }
 
-    /// Path to PRESENCE.toml — hot-reloadable Discord presence configuration.
-    #[must_use]
-    pub fn presence_toml(&self) -> PathBuf {
-        self.root.join("PRESENCE.toml")
-    }
-
     /// Path to the agent inbox directory for background tasks and notifications.
     #[must_use]
     pub fn agent_inbox_dir(&self) -> PathBuf {
@@ -262,11 +256,6 @@ mod tests {
             layout.reflector_md(),
             PathBuf::from("/tmp/ws/memory/REFLECTOR.md"),
             "reflector_md path"
-        );
-        assert_eq!(
-            layout.presence_toml(),
-            PathBuf::from("/tmp/ws/PRESENCE.toml"),
-            "presence_toml path"
         );
         assert_eq!(
             layout.agent_inbox_dir(),

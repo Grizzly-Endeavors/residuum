@@ -63,9 +63,7 @@ prost = "0.14"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-rustyline = "15"
 owo-colors = { version = "4", features = ["supports-colors"] }
-termimad = "0.30"
 rpassword = "7"
 
 # WebSocket gateway + web UI
