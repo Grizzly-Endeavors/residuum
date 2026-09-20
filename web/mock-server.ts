@@ -128,7 +128,6 @@ function sampleRecentMessages() {
       role: "user",
       content: "Did the observer flag anything odd in last night's batch?",
       timestamp: daysAgoAt(2, 9, 12),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -138,14 +137,12 @@ function sampleRecentMessages() {
         "around 02:00 local time and logged two fresh reflections. Memory " +
         "utilization is holding at ~38% of the context window.",
       timestamp: daysAgoAt(2, 9, 13),
-      project_context: "default",
       visibility: "user",
     },
     {
       role: "user",
       content: "Can you check the current memory stats?",
       timestamp: daysAgoAt(1, 14, 20),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -159,7 +156,6 @@ function sampleRecentMessages() {
         },
       ],
       timestamp: daysAgoAt(1, 14, 20),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -171,7 +167,6 @@ function sampleRecentMessages() {
         "Last observer run: 3 minutes ago",
       tool_call_id: "tc_mock_stats",
       timestamp: daysAgoAt(1, 14, 21),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -185,14 +180,12 @@ function sampleRecentMessages() {
         "The context is well within limits. The observer will run again " +
         "once we cross the 30k token threshold.",
       timestamp: daysAgoAt(1, 14, 22),
-      project_context: "default",
       visibility: "user",
     },
     {
       role: "user",
       content: "Good. Let's keep iterating on the notification routing doc.",
       timestamp: daysAgoAt(0, 10, 5),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -203,7 +196,6 @@ function sampleRecentMessages() {
         "overrides drafted. Next up: the fallback behaviour when a channel " +
         "is unreachable. Want me to start there?",
       timestamp: daysAgoAt(0, 10, 6),
-      project_context: "default",
       visibility: "user",
     },
   ];
@@ -215,14 +207,12 @@ function sampleRecentMessages() {
 interface SampleEpisode {
   id: string;
   date: string; // YYYY-MM-DD
-  context: string;
   messages: Array<{
     role: string;
     content: string;
     tool_calls?: Array<{ id: string; name: string; arguments: string }>;
     tool_call_id?: string;
     timestamp: string;
-    project_context: string;
     visibility: string;
   }>;
 }
@@ -238,14 +228,12 @@ function sampleEpisodes(): SampleEpisode[] {
     {
       id: "ep-003",
       date: isoDateDaysAgo(3),
-      context: "default",
       messages: [
         {
           role: "user",
           content:
             "Walk me through what the observer actually stores vs. what it drops.",
           timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
@@ -258,7 +246,6 @@ function sampleEpisodes(): SampleEpisode[] {
             "What it drops is the _surface wording_ of the messages — it " +
             "remembers the substance but won't be able to quote verbatim.",
           timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
       ],
@@ -266,13 +253,11 @@ function sampleEpisodes(): SampleEpisode[] {
     {
       id: "ep-002",
       date: isoDateDaysAgo(5),
-      context: "default",
       messages: [
         {
           role: "user",
           content: "How do I direct you at a specific episode when we talk?",
           timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
@@ -282,14 +267,12 @@ function sampleEpisodes(): SampleEpisode[] {
             "pull the relevant observations from memory. You can also scope " +
             "by date, which is often easier if you don't remember the id.",
           timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
           role: "user",
           content: "That's perfect. Let's make it visible in the UI too.",
           timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
       ],
@@ -297,13 +280,11 @@ function sampleEpisodes(): SampleEpisode[] {
     {
       id: "ep-001",
       date: isoDateDaysAgo(8),
-      context: "default",
       messages: [
         {
           role: "user",
           content: "First conversation of the week — let's set goals.",
           timestamp: `${isoDateDaysAgo(8)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
@@ -315,7 +296,6 @@ function sampleEpisodes(): SampleEpisode[] {
             "- Revisit the observer thresholds once we have a week of data.\n\n" +
             "Anything missing?",
           timestamp: `${isoDateDaysAgo(8)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
       ],
@@ -346,7 +326,6 @@ function sampleChatHistorySegment(cursor: string | null) {
     kind: "episode",
     episode_id: ep.id,
     date: ep.date,
-    context: ep.context,
     messages: ep.messages,
     next_cursor: next,
   };

@@ -126,7 +126,7 @@ mod tests {
     async fn load_observations_valid_file_returns_some() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.json");
-        let json = r#"{"observations":[{"timestamp":"2024-02-19T00:00","project_context":"test","visibility":"user","content":"test observation"}]}"#;
+        let json = r#"{"observations":[{"timestamp":"2024-02-19T00:00","visibility":"user","content":"test observation"}]}"#;
         tokio::fs::write(&path, json).await.unwrap();
         let result = load_observations(&path).await.unwrap();
         assert!(result.is_some());

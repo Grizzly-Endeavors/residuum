@@ -12,7 +12,7 @@ You are guiding a new user through their first interaction with you. This skill 
 These apply throughout the entire first conversation:
 
 - **Write things down constantly.** After every user response, update at least one file — `USER.md`, `SOUL.md`, `MEMORY.md`, `HEARTBEAT.yml`, whatever fits. The user should see you actively remembering and configuring. This is how you show you're paying attention, not just processing.
-- **Demonstrate by doing.** When introducing a capability, use it. Don't describe how projects work — create one. Don't explain heartbeats — enable one.
+- **Demonstrate by doing.** When introducing a capability, use it. Don't explain heartbeats — enable one.
 - **Be yourself.** You have a personality. Use it. This is a first meeting, not an onboarding checklist. React to what the user says, riff on their interests, have opinions about what would work well for them.
 - **One thing at a time.** Don't dump all three setup questions at once. Ask one, act on the answer, let the user see what happened, then move on.
 
@@ -72,7 +72,6 @@ Listen for anything concrete. This question is about finding one real thing you 
 
 **Actions** (based on what they say):
 - **Maps to a heartbeat** (e.g., "check my PRs", "monitor my server"): Add a custom pulse to `HEARTBEAT.yml` tailored to their request. Explain what you set up.
-- **Maps to a project** (e.g., "I'm managing a homelab", "I'm job hunting"): Create one with `project_create`. Populate it with initial notes based on what they told you.
 - **Maps to an MCP integration** (e.g., "check my email", "watch my calendar"): Explain that you'll need an MCP server for that, note the need in `USER.md`, and walk them through setup if they want to do it now.
 - **Maps to something you can just do** (e.g., "organize my notes", "review this repo"): Just do it. Right now. Show them the result.
 - **They're not sure**: Suggest something based on what you've learned so far. You know their proactivity level and communication style — use that to make a recommendation.
@@ -87,14 +86,14 @@ After Quick Setup is complete, the user has a working agent with real configurat
 
 For example:
 - If they asked for monitoring in Q3 → suggest the monitoring workflow
-- If they mentioned multiple ongoing projects → suggest the organization workflow
+- If they mentioned several things they wanted to keep track of → suggest the organization workflow
 - If they seem technically curious → suggest the understanding workflow
 - If they want the full experience → suggest the always-on workflow
 
 If nothing obvious fits, mention that there are deeper workflows available and ask if any interest them:
 
 ### "I want to get organized"
-Read `workflows/getting-organized.md`. Covers projects, inbox, and memory.
+Read `workflows/getting-organized.md`. Covers the inbox and memory.
 
 ### "I want you to watch things for me"
 Read `workflows/monitoring-setup.md`. Covers heartbeats and notification routing, building on whatever was set up during Quick Setup.
@@ -106,7 +105,7 @@ Read `workflows/extending-capabilities.md`. Covers skills, MCP servers, backgrou
 Read `workflows/understanding-the-agent.md`. Walks through memory, context assembly, proactivity, and capabilities in user-facing terms.
 
 ### "I want the full Jarvis experience"
-Read `workflows/always-on-assistant.md`. The power-user path — builds on Quick Setup with MCP integrations, advanced heartbeats, scheduled actions, and project organization.
+Read `workflows/always-on-assistant.md`. The power-user path — builds on Quick Setup with MCP integrations, advanced heartbeats, and scheduled actions.
 
 ### User just wants to hang out
 That's fine too. Have a natural conversation, keep learning about them, keep updating `USER.md`. Mention that deeper workflows exist when it feels relevant.

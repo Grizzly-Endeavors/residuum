@@ -143,10 +143,10 @@ Commands are resolved against the configured tool `PATH`: the directories in
 **Source:** `memory_search.rs` · `MemorySearchTool`
 
 **Description sent to LLM (vector enabled):**
-> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
 
 **Description sent to LLM (BM25 only):**
-> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
 
 ### Input
 
@@ -157,7 +157,6 @@ Commands are resolved against the configured tool `PATH`: the directories in
 | `source`          | string          | no       | Filter by source: `"observations"` or `"episodes"`. Omit to search both. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
-| `project_context` | string          | no       | Filter by project context (exact match)                      |
 | `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs                     |
 
 ### Output
@@ -166,7 +165,7 @@ On success with results:
 ```
 Found {N} result(s):
 
-1. [{source_type}] {id} | {date} | {context} | lines {s}-{e} (score: {score})
+1. [{source_type}] {id} | {date} | lines {s}-{e} (score: {score})
    {snippet}
 ```
 

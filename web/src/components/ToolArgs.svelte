@@ -78,7 +78,6 @@
     ["Source", args["source"] as string | undefined],
     ["Since", args["date_from"] as string | undefined],
     ["Until", args["date_to"] as string | undefined],
-    ["Project", args["project_context"] as string | undefined],
     ["Limit", args["limit"] != null ? str("limit") : undefined],
   ])}
   <div class="tool-args">

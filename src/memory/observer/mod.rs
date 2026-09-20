@@ -6,8 +6,6 @@
 mod parse;
 mod prompt;
 
-use std::collections::HashMap;
-
 use anyhow::Context;
 use chrono_tz::Tz;
 
@@ -42,8 +40,6 @@ pub struct ObserveResult {
     pub chunks: Vec<IndexChunk>,
     /// Episode date in `YYYY-MM-DD` format.
     pub date: String,
-    /// Project context tag.
-    pub context: String,
 }
 
 /// What the observer thinks should happen after checking token thresholds.
@@ -209,7 +205,7 @@ impl Observer {
         };
 
         // Build extraction prompt using full RecentMessage metadata (timestamps,
-        // tool calls, project context) so the observer LLM has complete context.
+        // tool calls) so the observer LLM has complete context.
         let extraction_messages = build_extraction_prompt(recent_messages, &content_guidance);
 
         // Call the model with structured output, applying per-role overrides
@@ -244,23 +240,6 @@ fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
         .sum()
 }
 
-/// Pick the most common context from a list of context strings.
-///
-/// Falls back to `"general"` if the list is empty or all strings are empty.
-fn majority_context(contexts: &[String]) -> String {
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for ctx in contexts {
-        if !ctx.is_empty() {
-            *counts.entry(ctx.as_str()).or_insert(0) += 1;
-        }
-    }
-
-    counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .map_or_else(|| "general".to_string(), |(ctx, _)| ctx.to_string())
-}
-
 /// Build the episode from parsed extractions and persist all artifacts to disk.
 async fn build_episode_and_persist(
     parsed: ObserverParseResult,
@@ -275,18 +254,9 @@ async fn build_episode_and_persist(
         .map(|rm| rm.message.clone())
         .collect();
 
-    // Episode-level context via majority vote over per-extraction contexts.
-    let extraction_contexts: Vec<String> = parsed
-        .extractions
-        .iter()
-        .map(|e| e.project_context.clone())
-        .collect();
-    let episode_context = majority_context(&extraction_contexts);
-
     let episode = Episode {
         id: episode_id.clone(),
         date: now_local(tz).date(),
-        context: episode_context.clone(),
         observations: parsed
             .extractions
             .iter()
@@ -301,13 +271,12 @@ async fn build_episode_and_persist(
     write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
     tracing::debug!(episode_id = %episode.id, "episode transcript written");
 
-    // Convert episode observations → flat Observations with per-extraction context
+    // Convert episode observations → flat Observations
     let observations: Vec<Observation> = parsed
         .extractions
         .iter()
         .map(|e| Observation {
             timestamp: e.timestamp,
-            project_context: e.project_context.clone(),
             source_episodes: vec![episode.id.clone()],
             visibility: e.visibility.clone(),
             content: e.content.clone(),
@@ -350,7 +319,6 @@ async fn build_episode_and_persist(
         observations,
         chunks,
         date: date_str,
-        context: episode_context,
     })
 }
 
@@ -371,8 +339,8 @@ mod tests {
 
     const SAMPLE_RESPONSE: &str = r#"{
         "observations": [
-            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "residuum/workspace"},
-            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user", "project_context": "residuum/workspace"}
+            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
         ],
         "narrative": ""
     }"#;
@@ -385,7 +353,6 @@ mod tests {
                     "a".repeat(100)
                 )),
                 timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "residuum/workspace".to_string(),
                 visibility: Visibility::User,
             })
             .collect()
@@ -430,7 +397,7 @@ mod tests {
     fn parse_observer_response_new_format() {
         let json = r#"{
             "observations": [
-                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "residuum"}
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
             ],
             "narrative": "We were discussing language preferences."
         }"#;
@@ -475,7 +442,7 @@ mod tests {
     fn parse_observer_response_empty_narrative_is_none() {
         let json = r#"{
             "observations": [
-                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "residuum"}
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
             ],
             "narrative": ""
         }"#;
@@ -668,7 +635,6 @@ mod tests {
         let episode = crate::memory::types::Episode {
             id: result.id.clone(),
             date: chrono::Utc::now().naive_utc().date(),
-            context: String::new(),
             observations: vec![],
             source_episodes: vec![],
         };
@@ -693,7 +659,6 @@ mod tests {
         let recent_messages = vec![RecentMessage {
             message: Message::user("test content"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "test/project".to_string(),
             visibility: Visibility::User,
         }];
 
@@ -716,10 +681,6 @@ mod tests {
             user_content.contains("test content"),
             "should include message content"
         );
-        assert!(
-            user_content.contains("test/project"),
-            "should include project context"
-        );
     }
 
     #[test]
@@ -736,7 +697,6 @@ mod tests {
                 }]),
             ),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum/memory".to_string(),
             visibility: Visibility::User,
         };
 
@@ -757,7 +717,6 @@ mod tests {
         let rm = RecentMessage {
             message: Message::tool("file contents", "call_abc"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum/memory".to_string(),
             visibility: Visibility::User,
         };
 
@@ -769,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn format_recent_message_includes_timestamp_and_context() {
+    fn format_recent_message_includes_timestamp() {
         let timestamp = chrono::NaiveDate::from_ymd_opt(2026, 2, 21)
             .unwrap()
             .and_hms_opt(0, 0, 0)
@@ -777,7 +736,6 @@ mod tests {
         let rm = RecentMessage {
             message: Message::user("hello"),
             timestamp,
-            project_context: "residuum/memory".to_string(),
             visibility: Visibility::User,
         };
 
@@ -787,31 +745,9 @@ mod tests {
             "should include ISO date in timestamp"
         );
         assert!(
-            formatted.contains("residuum/memory"),
-            "should include project context"
-        );
-        assert!(
             formatted.contains("visibility: user"),
             "should include visibility"
         );
-    }
-
-    #[test]
-    fn majority_context_picks_most_common() {
-        let contexts = vec![
-            "residuum/memory".to_string(),
-            "residuum/memory".to_string(),
-            "devops/k8s".to_string(),
-        ];
-        let ctx = majority_context(&contexts);
-        assert_eq!(ctx, "residuum/memory", "should use most common context");
-    }
-
-    #[test]
-    fn majority_context_empty_falls_back() {
-        let contexts: Vec<String> = vec![];
-        let ctx = majority_context(&contexts);
-        assert_eq!(ctx, "general", "empty list should fall back to general");
     }
 
     #[test]
@@ -867,7 +803,7 @@ mod tests {
 
         let new_response = r#"{
             "observations": [
-                {"content": "new provider obs", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "test"}
+                {"content": "new provider obs", "timestamp": "2026-02-21T14:30", "visibility": "user"}
             ],
             "narrative": ""
         }"#;

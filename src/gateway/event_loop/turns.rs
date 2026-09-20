@@ -98,15 +98,9 @@ pub async fn persist_and_maybe_observe(
 ) {
     use crate::gateway::memory::{execute_observation, persist_and_check_thresholds};
 
-    let action = persist_and_check_thresholds(
-        new_messages,
-        "general",
-        visibility,
-        &rt.observer,
-        &rt.layout,
-        rt.tz,
-    )
-    .await;
+    let action =
+        persist_and_check_thresholds(new_messages, visibility, &rt.observer, &rt.layout, rt.tz)
+            .await;
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
         let mem = MemorySubsystems {
             observer: &rt.observer,

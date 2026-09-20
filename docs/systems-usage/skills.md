@@ -23,7 +23,8 @@ Skills are discovered from multiple locations, scanned in priority order:
 |--------|-----------|----------|
 | Workspace | `skills/` | High |
 | User Global | Extra dirs from `[skills]` config section | Middle |
-| Bundled | Shipped with the binary | Lowest |
+
+Skills shipped with the binary are written into `skills/` during workspace creation, so they are scanned as workspace skills.
 
 If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
 
