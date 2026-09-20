@@ -35,7 +35,6 @@ const DEFAULT_REFLECTOR_PROMPT: &str =
 
 const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
 const DEFAULT_PRESENCE: &str = include_str!("../../assets/workspace-bootstrap/PRESENCE.toml");
-const DEFAULT_ALERTS: &str = include_str!("../../assets/workspace-bootstrap/ALERTS.md");
 
 /// Built-in `introspection` subagent preset, used by the reflection and
 /// `memory_tending` pulses to review episode memory and tend identity files.
@@ -186,7 +185,6 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
-    write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
@@ -392,7 +390,6 @@ mod tests {
             layout.heartbeat_yml().exists(),
             "HEARTBEAT.yml should exist"
         );
-        assert!(layout.alerts_md().exists(), "ALERTS.md should exist");
         assert!(
             layout.subconscious_md().exists(),
             "SUBCONSCIOUS.md should exist"

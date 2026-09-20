@@ -180,6 +180,7 @@ mod tests {
             title: task_name.to_string(),
             content: format!("Summary for {task_name}"),
             source: crate::bus::EventTrigger::Pulse,
+            urgent: false,
             timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
                 .unwrap()
                 .and_hms_opt(12, 0, 0)

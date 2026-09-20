@@ -8,7 +8,7 @@ Scheduled actions are one-off future tasks. They fire once at a specified time a
 2. Action persisted to `scheduled_actions.json` (atomic write: temp file + rename)
 3. Gateway checks for due actions on a **30-second tick**
 4. When `run_at` has passed: action removed from persistence, background task spawned
-5. Results routed through the notification router based on content and ALERTS.md policy
+5. Results delivered by the notification router according to the disposition the agent declared
 
 If the gateway was offline when an action was due, it fires on next startup.
 
@@ -36,7 +36,7 @@ No parameters. Returns all pending actions.
 
 ## Routing
 
-Scheduled action results flow through the pub/sub bus to the LLM notification router, which decides where each result goes based on content analysis and the `ALERTS.md` policy file. Main-turn actions (`agent_name: "main"`) inject directly into the main agent conversation.
+Scheduled action results flow through the pub/sub bus to the notification router and are filed to the inbox, or pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`. Main-turn actions (`agent_name: "main"`) inject directly into the main agent conversation.
 
 See [notifications.md](notifications.md) for the full routing model.
 

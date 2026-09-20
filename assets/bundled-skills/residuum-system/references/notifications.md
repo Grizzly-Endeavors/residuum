@@ -1,40 +1,35 @@
 # Notifications
 
-The notification system routes background task results via a pub/sub bus. A dedicated LLM-based notification router subscribes to the `background:result` topic and decides where each result goes based on content analysis and the ALERTS.md policy file.
+The notification system routes background task results via a pub/sub bus. A notification router subscribes to the `background:result` topic and delivers each result according to the disposition its producing agent declared.
 
-## Routing Architecture
+## Routing
 
-### Two-layer routing
+Routing is a match on the disposition the producing agent declared. There is no classifier and no policy file — the agent that ran the task states what should happen with its own result, because it is the only participant that has the full transcript and the task's intent.
 
-When a background task (pulse, scheduled action, or agent-spawned subagent) completes:
+| Agent's summary contains | Disposition | Delivered to |
+|---|---|---|
+| `HEARTBEAT_OK` (pulses only) | `Silent` | nowhere; logged at `trace` |
+| `HEARTBEAT_URGENT` | `Urgent` | the inbox **and** every channel in `config/channels.toml` |
+| neither | `Normal` | the inbox |
 
-1. **Layer 1 — Programmatic rules** (no LLM call):
-   - `HEARTBEAT_OK` results from pulses are silently discarded (logged only).
-   - Results from agent-spawned tasks are relayed back to the main agent as an interrupt.
+Results from agent-spawned sub-agents are relayed back to the main agent instead, whatever their disposition — the agent that asked for the work gets the answer.
 
-2. **Layer 2 — LLM router** (everything not handled by Layer 1):
-   - A small model receives the result content, metadata, available endpoints, and the ALERTS.md policy.
-   - It returns a list of delivery targets. The valid target list is exactly `inbox` plus the notification channels defined in `config/channels.toml`; anything else it returns is discarded, and if nothing valid remains the result goes to `inbox`.
-   - The router cannot deliver to interactive endpoints. Use `send_message` for those.
+An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
-### ALERTS.md
+### Steering it
 
-`ALERTS.md` lives at `~/.residuum/workspace/ALERTS.md`. It is the user-editable routing policy that the LLM router reads on every routing decision. Edits take effect immediately without restart.
+Because urgency is the sub-agent's judgment, you steer it by wording the pulse's prompt, not by editing configuration. A pulse that says "report anything unusual" will escalate more than one that says "summarize today's activity". The pulse prompt tells the sub-agent that `HEARTBEAT_URGENT` means "this needs attention before the user would next check in".
 
-A default is created at bootstrap:
+The sentinel is deliberately distinctive so that a summary *about* something urgent does not escalate itself — the literal word "urgent" in a report has no effect.
 
-```markdown
-# Routing Policy
+### Getting results in front of the agent
 
-Route background task results based on content and urgency.
+No routing target injects into the agent's message feed. Two mechanisms do that job, and both are declared where the work is defined:
 
-## Rules
-- Security alerts, errors, and failures -> notify channels (ntfy, etc.) + inbox
-- Routine findings and informational results -> inbox only
-- Webhook-triggered results -> inbox (unless content indicates urgency)
-```
+- **`agent: main` on a pulse** (in `HEARTBEAT.yml`) runs the pulse as a wake turn: the prompt is injected into the agent's context as a system message. This bypasses the router entirely.
+- **Agent-spawned sub-agents** have their results relayed back to the main agent automatically.
 
-The agent can modify ALERTS.md at the user's request using standard file tools.
+Everything else reaches the agent through the inbox, which it reads with `inbox_list`.
 
 ## Endpoints
 
@@ -62,7 +57,7 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 Input-only. The agent cannot write to inbox. Items arrive from:
 - User adds via HTTP API/UI.
 - Webhook routing configured to `inbox`.
-- LLM notification router decisions.
+- Notification router deliveries.
 
 ## Tools
 
@@ -71,8 +66,8 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 | `list_endpoints` | Show available interactive and notification endpoints. |
 | `switch_endpoint` | Redirect subsequent responses to a different interactive endpoint. Auto-clears when the user sends a message. |
 | `send_message` | One-off message to any interactive or notification endpoint. Does not change where turn responses go. |
-| `subagent_spawn` | Spawn a background subagent. Results route through the notification router. |
-| `schedule_action` | Schedule a future action. Results route through the notification router. |
+| `subagent_spawn` | Spawn a background subagent. The result is relayed back to you. |
+| `schedule_action` | Schedule a future action. The result is filed to the inbox, or pushed too if marked urgent. |
 
 ## Gotchas
 

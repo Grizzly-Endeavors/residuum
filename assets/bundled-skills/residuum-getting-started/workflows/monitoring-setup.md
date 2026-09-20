@@ -47,15 +47,26 @@ Explain what you configured in plain terms — what it checks, how often, and du
 
 ## Step 3: Explain How Results Reach the User
 
-Explain: "When a heartbeat check finds something worth reporting, the result is routed automatically. A small model reads the result and decides where it goes, following the policy in `ALERTS.md`."
+Explain: "When a heartbeat check finds something worth reporting, the result is filed to your inbox. If the check decides it cannot wait, it also pushes to whatever notification channels you have set up."
 
 There is no per-pulse routing field. Do not add a `channels:` key to a pulse — it is not a real field and will be silently ignored.
 
-The destinations a result can reach:
-- `inbox` -- stores the result silently for the user to review later. This is the default and the fallback.
-- Any notification channel defined in `config/channels.toml` (for example an ntfy push to the user's phone).
+How a result is handled depends on what the sub-agent reports:
+- Nothing noteworthy -> it replies `HEARTBEAT_OK` and the result is discarded entirely. This is what keeps routine checks from becoming noise.
+- Something worth knowing -> filed to the inbox for the user to review.
+- Something that cannot wait -> the sub-agent ends its report with `HEARTBEAT_URGENT`, which also pushes to every configured notification channel.
 
-If the user wants a pulse to talk to them directly rather than filing to the inbox, set `agent: main` on the pulse. That runs the pulse as a wake turn instead of a background sub-agent, and its prompt is injected straight into the conversation:
+The sub-agent makes that urgency call itself, so **the way you word the pulse prompt is how you steer it**. Be concrete about what counts as urgent for this particular check. Compare:
+
+```yaml
+    tasks:
+      - name: check_server
+        prompt: "Run 'curl -s -o /dev/null -w \"%{http_code}\" https://example.com'. If the status code is not 200, that is urgent — the site is down. If it is 200, report HEARTBEAT_OK."
+```
+
+That tells the sub-agent exactly which outcome deserves to interrupt. A vague prompt gets vague judgment.
+
+If the user wants a pulse to talk to them directly in conversation rather than filing to the inbox, set `agent: main` on the pulse. That runs it as a wake turn and injects the prompt straight into the conversation:
 
 ```yaml
 pulses:
@@ -65,22 +76,14 @@ pulses:
     agent: main
     tasks:
       - name: check_server
-        prompt: "Run 'curl -s -o /dev/null -w \"%{http_code}\" https://example.com' and report if the status code is not 200."
+        prompt: "Check whether https://example.com returns 200."
 ```
 
-Use `agent: main` sparingly -- it interrupts. Most monitoring should stay a background sub-agent and land in the inbox.
-
-To change routing behavior, edit `ALERTS.md` in the workspace root. It is plain prose read on every routing decision, and edits take effect immediately:
-
-```markdown
-## Rules
-- Security alerts, errors, and failures -> notify channels (ntfy, etc.) + inbox
-- Routine findings and informational results -> inbox only
-```
+Use `agent: main` sparingly -- it interrupts every time it fires, whether or not there is anything to say. Most monitoring should stay a background sub-agent.
 
 ## Step 4: External Notifications (Optional)
 
-Ask if the user wants results delivered outside the agent -- for example, push notifications to their phone.
+Ask if the user wants urgent results delivered outside the agent -- for example, push notifications to their phone.
 
 If yes, explain that external channels are defined in `config/channels.toml` in the workspace. Walk them through what to add:
 ```toml
@@ -90,13 +93,13 @@ url = "https://ntfy.sh"
 topic = "my-residuum"
 ```
 
-Once the channel exists, it becomes an available target for the router automatically. If the user wants it used for a specific class of result, add a line saying so to `ALERTS.md`.
+Once the channel exists it receives every urgent result automatically -- there is nothing further to wire up. Non-urgent results stay in the inbox.
 
-If the user is not ready for external notifications, skip this step. They can ask you to set it up later.
+If the user is not ready for external notifications, skip this step. Urgent results still reach the inbox, and they can ask you to set up push later.
 
 ## Step 5: Verify and Wrap Up
 
-Tell the user that `HEARTBEAT.yml` and `ALERTS.md` are both re-read on every use -- changes take effect without restarting the gateway.
+Tell the user that `HEARTBEAT.yml` is re-read on every scheduler tick -- changes take effect without restarting the gateway.
 
 Summarize what was configured:
 - Which pulse is running and how often

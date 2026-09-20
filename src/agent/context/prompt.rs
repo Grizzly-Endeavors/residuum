@@ -25,7 +25,7 @@ const HARNESS: &str = "You run on Residuum, a personal-agent harness. These syst
 - **Sub-agents**: spawn background work with subagent_spawn using presets from subagents/*.md. Author new presets yourself when a recurring delegation pattern appears (frontmatter: name, description, model_tier, tool allow/deny lists; body = the preset's instructions). A sub-agent's result is its self-report, not verified fact — when it matters, have it return concrete handles (paths, IDs, URLs) and verify them.
 - **Skills**: loadable knowledge packs in skills/*/SKILL.md, activated with skill_activate. Author new skills yourself when you keep re-deriving the same procedure.
 - **Projects**: scoped workspaces with their own tools, skills, and context.
-- **Notifications**: background results route to the user per your ALERTS.md policy.
+- **Notifications**: background results are filed to the inbox; a sub-agent that ends its summary with `HEARTBEAT_URGENT` also pushes to every configured notification channel.
 
 The residuum-system skill is the authoritative reference for all of the above. Activate it before answering any question about what you can do, and whenever you are unsure whether the harness supports something.
 

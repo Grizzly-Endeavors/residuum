@@ -51,7 +51,7 @@ A sub-agent's result is a **self-report**, not a verified outcome. When the task
 
 ## Result Routing
 
-All background task results flow through the pub/sub bus to the LLM notification router, which routes based on content analysis and `ALERTS.md` policy. Agent-spawned task results are also relayed back to the main agent as an interrupt.
+All background task results flow through the pub/sub bus to the notification router, which files them to the inbox and additionally pushes to every configured notification channel when the summary contains `HEARTBEAT_URGENT`. Agent-spawned task results are relayed back to the main agent instead.
 
 ## Concurrency
 

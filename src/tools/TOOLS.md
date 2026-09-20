@@ -702,7 +702,7 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
+> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
 
 ### Input
 
@@ -739,7 +739,7 @@ information. Always cite sources.
 
 On success: `"Subagent '{preset_name}' spawned with task delegated to registry."`
 
-The sub-agent runs in the background via the subagent registry. When it completes, the result is routed by the LLM notification router based on content and the ALERTS.md routing policy.
+The sub-agent runs in the background via the subagent registry. When it completes, the notification router relays the result back to the main agent.
 
 ### Errors
 

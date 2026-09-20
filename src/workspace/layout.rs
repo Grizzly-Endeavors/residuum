@@ -177,12 +177,6 @@ impl WorkspaceLayout {
         self.root.join("HEARTBEAT.yml")
     }
 
-    /// Path to ALERTS.md -- notification routing policy for the LLM router.
-    #[must_use]
-    pub fn alerts_md(&self) -> PathBuf {
-        self.root.join("ALERTS.md")
-    }
-
     /// Path to SUBCONSCIOUS.md -- check policy for the subconscious classifier.
     #[must_use]
     pub fn subconscious_md(&self) -> PathBuf {
@@ -253,10 +247,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "test verifying all paths is naturally long"
-    )]
     fn layout_paths() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         assert_eq!(
@@ -348,11 +338,6 @@ mod tests {
             layout.channels_toml(),
             PathBuf::from("/tmp/ws/config/channels.toml"),
             "channels_toml path"
-        );
-        assert_eq!(
-            layout.alerts_md(),
-            PathBuf::from("/tmp/ws/ALERTS.md"),
-            "alerts_md path"
         );
         assert_eq!(
             layout.subconscious_md(),

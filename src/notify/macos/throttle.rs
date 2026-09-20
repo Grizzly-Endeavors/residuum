@@ -82,12 +82,17 @@ async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &Maco
             deliver_individual(bridge, notif, config).await;
         }
 
-        let summarized = count - 2;
+        let tail = &buffer[2..];
+        let summarized = tail.len();
         let summary_title = format!("{} \u{2014} {count} results", config.app_name);
-        let summary_body = build_summary_body(&buffer[2..]);
+        let summary_body = build_summary_body(tail);
 
         if let Err(e) = bridge
-            .post_summary(&summary_title, &summary_body, config.default_priority)
+            .post_summary(
+                &summary_title,
+                &summary_body,
+                interruption_level_for(tail.iter().any(|n| n.urgent), config),
+            )
             .await
         {
             tracing::warn!(error = %e, "failed to post summary notification");
@@ -119,7 +124,7 @@ async fn deliver_individual(
             &id,
             text,
             category.as_category_id(),
-            config.default_priority,
+            interruption_level_for(notif.urgent, config),
             config.sound,
             category.as_category_id(),
         )
@@ -130,6 +135,20 @@ async fn deliver_individual(
             error = %e,
             "failed to post individual notification"
         );
+    }
+}
+
+/// Urgent results break through Focus modes; everything else uses the
+/// configured default. This is the only thing that varies the interruption
+/// level, so a channel with no urgent traffic behaves exactly as configured.
+fn interruption_level_for(
+    urgent: bool,
+    config: &MacosChannelConfig,
+) -> super::categories::MacosInterruptionLevel {
+    if urgent {
+        super::categories::MacosInterruptionLevel::TimeSensitive
+    } else {
+        config.default_priority
     }
 }
 
@@ -161,6 +180,7 @@ mod tests {
             title: task_name.to_string(),
             content: format!("Summary for {task_name}"),
             source: crate::bus::EventTrigger::Pulse,
+            urgent: false,
             timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
                 .unwrap()
                 .and_hms_opt(12, 0, 0)

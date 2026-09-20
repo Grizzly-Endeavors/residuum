@@ -222,10 +222,8 @@ async fn spawn_bus_infrastructure(
     ));
     if let Some(h) = crate::notify::router::spawn_notification_router(
         &core.bus_handle,
-        &parts.spawn_context,
         parts.endpoint_registry.clone(),
         core.publisher.clone(),
-        parts.layout.alerts_md(),
     )
     .await
     {
