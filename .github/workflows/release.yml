@@ -9,8 +9,8 @@ permissions:
   packages: write
 
 jobs:
-  checks:
-    name: CI Checks
+  version:
+    name: Extract Version
     runs-on: lab-runners
 
     outputs:
@@ -32,61 +32,20 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Install web dependencies
-        run: cd web && npm ci
-
-      - name: Web format check
-        id: web_format
-        run: cd web && npm run format:check
-
-      - name: Web lint
-        id: web_lint
-        run: cd web && npm run lint
-
-      - name: Web type check
-        id: web_typecheck
-        run: cd web && npm run check
-
-      - name: Build web assets
-        run: cd web && npm run build
-
-      - name: Check formatting
-        id: fmt
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        id: clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Tests
-        id: test
-        run: cargo test --quiet
-
-      - name: Dependency audit
-        id: deny
-        run: cargo deny check
-
       - name: Build summary
-        if: always()
         run: |
-          echo '## CI Check Results' >> "$GITHUB_STEP_SUMMARY"
+          echo '## Release Version' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
           echo "**Tag:** ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '| Check | Status |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|-------|--------|' >> "$GITHUB_STEP_SUMMARY"
-          echo "| Web Format | ${{ steps.web_format.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Web Lint | ${{ steps.web_lint.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Web Types | ${{ steps.web_typecheck.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Format | ${{ steps.fmt.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Clippy | ${{ steps.clippy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Tests | ${{ steps.test.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Deny | ${{ steps.deny.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: Quality Checks
+    uses: ./.github/workflows/quality-checks.yml
 
   build:
     name: Build (${{ matrix.artifact }})
-    needs: checks
+    needs: [version, quality]
     strategy:
       fail-fast: false
       matrix:
@@ -165,7 +124,7 @@ jobs:
 
   mac-check:
     name: Check mac/ changes
-    needs: checks
+    needs: [version, quality]
     runs-on: lab-runners
 
     outputs:
@@ -197,7 +156,7 @@ jobs:
 
   mac-app:
     name: Build macOS Chat App
-    needs: [checks, mac-check]
+    needs: [version, quality, mac-check]
     if: needs.mac-check.outputs.changed == 'true'
     runs-on: macos-15
 
@@ -228,7 +187,7 @@ jobs:
 
   docker:
     name: Docker Image
-    needs: [checks, build]
+    needs: [version, quality, build]
     runs-on: lab-runners
 
     steps:
@@ -272,14 +231,14 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/grizzly-endeavors/residuum:${{ needs.checks.outputs.version }}
-            bearflinn/residuum:${{ needs.checks.outputs.version }}
-            ${{ !endsWith(needs.checks.outputs.tag, '-test') && 'ghcr.io/grizzly-endeavors/residuum:latest' || '' }}
-            ${{ !endsWith(needs.checks.outputs.tag, '-test') && 'bearflinn/residuum:latest' || '' }}
+            ghcr.io/grizzly-endeavors/residuum:${{ needs.version.outputs.version }}
+            bearflinn/residuum:${{ needs.version.outputs.version }}
+            ${{ !endsWith(needs.version.outputs.tag, '-test') && 'ghcr.io/grizzly-endeavors/residuum:latest' || '' }}
+            ${{ !endsWith(needs.version.outputs.tag, '-test') && 'bearflinn/residuum:latest' || '' }}
 
   release:
     name: Create Release
-    needs: [checks, build, mac-app]
+    needs: [version, quality, build, mac-app]
     if: always() && !failure() && !cancelled()
     runs-on: lab-runners
 
@@ -302,7 +261,7 @@ jobs:
           path: release-artifacts/ResiduumChat-macos
 
       - name: Create GitHub Release
-        if: "!endsWith(needs.checks.outputs.tag, '-test')"
+        if: "!endsWith(needs.version.outputs.tag, '-test')"
         run: |
           ASSETS=(
             release-artifacts/residuum-linux-x86_64/residuum-linux-x86_64
@@ -314,12 +273,12 @@ jobs:
           if [ -f "release-artifacts/ResiduumChat-macos/ResiduumChat-macos.zip" ]; then
             ASSETS+=("release-artifacts/ResiduumChat-macos/ResiduumChat-macos.zip")
           fi
-          gh release create "${{ needs.checks.outputs.tag }}" \
+          gh release create "${{ needs.version.outputs.tag }}" \
             --generate-notes \
             "${ASSETS[@]}"
 
       - name: Test tag summary
-        if: endsWith(needs.checks.outputs.tag, '-test')
+        if: endsWith(needs.version.outputs.tag, '-test')
         run: |
           echo "::notice::Test tag — skipping GitHub release creation"
           echo "Artifacts that would have been released:"
@@ -330,8 +289,8 @@ jobs:
         run: |
           echo '## Release Results' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** ${{ needs.checks.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${{ needs.checks.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Tag:** ${{ needs.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** ${{ needs.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
           echo '| Artifact | Status |' >> "$GITHUB_STEP_SUMMARY"
           echo '|----------|--------|' >> "$GITHUB_STEP_SUMMARY"
