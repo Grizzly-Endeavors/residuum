@@ -300,7 +300,6 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes into known-length vecs for clarity"

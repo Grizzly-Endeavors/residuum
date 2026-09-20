@@ -202,7 +202,6 @@ impl EndpointRegistry {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(clippy::indexing_slicing, reason = "test assertions")]
 #[expect(clippy::default_trait_access, reason = "test code")]
 mod tests {

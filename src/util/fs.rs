@@ -37,7 +37,6 @@ pub(crate) async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> anyhow:
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

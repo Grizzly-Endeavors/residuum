@@ -96,7 +96,6 @@ pub(super) fn validate_skill_description(description: &str) -> anyhow::Result<()
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::{parse_skill_md, validate_skill_description, validate_skill_name};
 

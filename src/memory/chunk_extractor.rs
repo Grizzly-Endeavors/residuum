@@ -131,7 +131,6 @@ pub(crate) fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes into known-length slices"

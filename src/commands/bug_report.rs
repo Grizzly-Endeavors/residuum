@@ -283,7 +283,6 @@ fn normalize_heading(s: &str) -> String {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes serde_json::Value by known-present keys"

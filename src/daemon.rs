@@ -310,7 +310,6 @@ pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

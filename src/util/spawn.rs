@@ -143,18 +143,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
     async fn monitored_normal_completion() {
         let handle = spawn_monitored("test-normal", async {});
         handle.await.unwrap();
     }
 
     #[tokio::test]
-    #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-    #[expect(
-        clippy::panic,
-        reason = "intentional panic to test that spawn_monitored catches it"
-    )]
     async fn monitored_panic_is_swallowed() {
         let handle = spawn_monitored("test-panic", async { panic!("intentional panic") });
         handle.await.unwrap();

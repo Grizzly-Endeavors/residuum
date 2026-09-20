@@ -3,7 +3,6 @@
 //! Cross-platform config tests run on all platforms.
 //! macOS-specific API tests are gated behind `cfg(target_os = "macos")`.
 
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code uses indexing for clarity"
@@ -12,7 +11,6 @@
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
-#[expect(clippy::panic, reason = "test code uses panic for assertions")]
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "test code uses wildcard for unreachable branches"

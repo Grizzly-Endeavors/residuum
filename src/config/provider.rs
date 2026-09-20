@@ -127,7 +127,6 @@ impl FromStr for ProviderKind {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::super::constants::{
         DEFAULT_ANTHROPIC_URL, DEFAULT_GEMINI_URL, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL,

@@ -20,8 +20,8 @@
   let expandedDirs = new SvelteSet<string>();
   let treeCache = $state<Record<string, WorkspaceEntry[]>>({});
   let mobileEditorOpen = $state(false);
-  let pendingFile = $state("");
-  let discardConfirmOpen = $state(false);
+  let switchConfirmOpen = $state(false);
+  let pendingFilePath = $state("");
 
   // Derived
   let dirty = $derived(editContent !== fileContent);
@@ -73,24 +73,25 @@
     }
   }
 
-  function handleSelectFile(path: string) {
+  async function handleSelectFile(path: string) {
     if (dirty) {
-      pendingFile = path;
-      discardConfirmOpen = true;
+      pendingFilePath = path;
+      switchConfirmOpen = true;
       return;
     }
-    void loadFile(path);
+    await loadFile(path);
   }
 
-  function confirmDiscardAndSelect() {
-    discardConfirmOpen = false;
-    void loadFile(pendingFile);
-    pendingFile = "";
+  function cancelSwitchFile() {
+    switchConfirmOpen = false;
+    pendingFilePath = "";
   }
 
-  function cancelDiscard() {
-    discardConfirmOpen = false;
-    pendingFile = "";
+  async function confirmSwitchFile() {
+    switchConfirmOpen = false;
+    const path = pendingFilePath;
+    pendingFilePath = "";
+    await loadFile(path);
   }
 
   async function loadFile(path: string) {
@@ -199,11 +200,11 @@
   </div>
 </div>
 
-<Modal open={discardConfirmOpen} title="Discard unsaved changes?" onClose={cancelDiscard}>
-  Switching files will discard your unsaved edits to "{fileName(selectedFile)}".
+<Modal open={switchConfirmOpen} title="Discard unsaved changes?" onClose={cancelSwitchFile}>
+  Switching files will discard your unsaved edits to {fileName(selectedFile)}.
 
   {#snippet actions()}
-    <button class="btn btn-secondary" onclick={cancelDiscard}>Cancel</button>
-    <button class="btn btn-danger" onclick={confirmDiscardAndSelect}>Discard and switch</button>
+    <button class="btn btn-secondary" onclick={cancelSwitchFile}>Cancel</button>
+    <button class="btn btn-danger" onclick={confirmSwitchFile}>Discard and switch</button>
   {/snippet}
 </Modal>

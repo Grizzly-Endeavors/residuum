@@ -81,8 +81,6 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test assertions")]
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "test assertions use wildcard for non-matching variants"

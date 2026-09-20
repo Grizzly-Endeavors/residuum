@@ -269,7 +269,7 @@
           bind:this={textarea}
           bind:value
           class="chat-input"
-          placeholder="Send a message..."
+          placeholder={disabled ? "Reconnecting…" : "Send a message..."}
           rows="1"
           {disabled}
           onkeydown={handleKeydown}

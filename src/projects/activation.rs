@@ -353,7 +353,6 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::workspace::bootstrap::ensure_workspace;

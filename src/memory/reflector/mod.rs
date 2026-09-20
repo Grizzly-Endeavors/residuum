@@ -183,7 +183,6 @@ impl Reflector {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::memory::log_store::save_observation_log;

@@ -276,7 +276,6 @@ fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> Result<String, F
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

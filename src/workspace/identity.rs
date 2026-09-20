@@ -111,7 +111,6 @@ async fn read_optional(path: &std::path::Path) -> Result<ReadResult, FatalError>
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::workspace::bootstrap::ensure_workspace;

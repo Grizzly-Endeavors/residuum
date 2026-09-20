@@ -3,7 +3,6 @@
 //! The binary will exit with an error (no config), which is expected.
 //! We only check stderr for panic indicators.
 
-#[expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"

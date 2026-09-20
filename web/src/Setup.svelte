@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import type { SetupWizardState, McpCatalogEntry, ProviderKey } from "./lib/types";
   import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
   import Welcome from "./components/setup/Welcome.svelte";
@@ -17,63 +17,124 @@
 
   const TOTAL_STEPS = 6;
   const stepIndices = Array.from({ length: TOTAL_STEPS }, (_, i) => i);
-  let step = $state(0);
-  let catalog = $state<McpCatalogEntry[]>([]);
-  let completed = false;
 
-  let wizardState = $state<SetupWizardState>({
-    userName: "",
-    timezone: "",
-    selectedProviders: ["anthropic"] as ProviderKey[],
-    providerConfigs: {
-      anthropic: { apiKey: "", model: "", url: "" },
-      openai: { apiKey: "", model: "", url: "" },
-      gemini: { apiKey: "", model: "", url: "" },
-      ollama: { apiKey: "", model: "", url: "" },
-    },
-    mainProvider: "anthropic",
-    roles: {
-      observer: { provider: "", url: "", model: "" },
-      reflector: { provider: "", url: "", model: "" },
-      pulse: { provider: "", url: "", model: "" },
-    },
-    embeddingModel: { provider: "", model: "" },
-    backgroundModels: {
-      small: { provider: "", model: "" },
-      medium: { provider: "", model: "" },
-      large: { provider: "", model: "" },
-    },
-    mcpServers: [],
-    integrations: { discordToken: "", telegramToken: "" },
-    secretRefs: {},
-  });
+  // ── Draft persistence ────────────────────────────────────────────────
+  // Setup is the highest-stakes form in the app (hand-typed API keys across
+  // up to 6 steps) with no undo — a refresh or crashed tab must not throw
+  // away everything the user just entered. We keep a draft in localStorage
+  // and restore it on mount, but never persist raw provider API keys or
+  // integration tokens (matching the convention in Review.svelte, which
+  // only ever sends those to the backend via storeSecret(), never stores
+  // them client-side as plain text).
+  const STORAGE_KEY = "residuum-setup-draft";
 
-  // Warn before an accidental reload/close discards in-progress setup input (provider
-  // selections, role assignments, MCP servers, integration tokens). Not persisted to
-  // storage on purpose: early steps hold raw API keys in memory before they're
-  // exchanged for `secret:` references in Review.svelte, and storage would leave
-  // plaintext keys sitting in the browser.
-  function handleBeforeUnload(event: BeforeUnloadEvent) {
-    if (step > 0 && !completed) {
-      event.preventDefault();
+  interface PersistedWizard {
+    step: number;
+    wizardState: SetupWizardState;
+  }
+
+  function defaultWizardState(): SetupWizardState {
+    return {
+      userName: "",
+      timezone: "",
+      selectedProviders: ["anthropic"] as ProviderKey[],
+      providerConfigs: {
+        anthropic: { apiKey: "", model: "", url: "" },
+        openai: { apiKey: "", model: "", url: "" },
+        gemini: { apiKey: "", model: "", url: "" },
+        ollama: { apiKey: "", model: "", url: "" },
+      },
+      mainProvider: "anthropic",
+      roles: {
+        observer: { provider: "", url: "", model: "" },
+        reflector: { provider: "", url: "", model: "" },
+        pulse: { provider: "", url: "", model: "" },
+      },
+      embeddingModel: { provider: "", model: "" },
+      backgroundModels: {
+        small: { provider: "", model: "" },
+        medium: { provider: "", model: "" },
+        large: { provider: "", model: "" },
+      },
+      mcpServers: [],
+      integrations: { discordToken: "", telegramToken: "" },
+      secretRefs: {},
+    };
+  }
+
+  function loadPersisted(): PersistedWizard | null {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<PersistedWizard>;
+      if (typeof parsed.step !== "number" || typeof parsed.wizardState !== "object") {
+        return null;
+      }
+      return { step: parsed.step, wizardState: parsed.wizardState };
+    } catch (err: unknown) {
+      // eslint-disable-next-line no-console -- draft is discarded before any UI mounts; console is the only channel
+      console.warn("discarding unreadable setup draft", err);
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
     }
   }
 
-  function handleComplete() {
-    completed = true;
-    onComplete();
+  // Strip fields that should never be written to localStorage in the
+  // clear, even transiently. These are exactly the fields Review.svelte
+  // exchanges for a secret reference before setup completes.
+  function sanitizeForStorage(state: SetupWizardState): SetupWizardState {
+    const clone = structuredClone(state);
+    for (const key of Object.keys(clone.providerConfigs) as ProviderKey[]) {
+      clone.providerConfigs[key] = { ...clone.providerConfigs[key], apiKey: "" };
+    }
+    clone.integrations = { discordToken: "", telegramToken: "" };
+    return clone;
   }
 
+  const persisted = loadPersisted();
+
+  let step = $state(Math.min(Math.max(persisted?.step ?? 0, 0), TOTAL_STEPS - 1));
+  let catalog = $state<McpCatalogEntry[]>([]);
+
+  let wizardState = $state<SetupWizardState>(persisted?.wizardState ?? defaultWizardState());
+
   onMount(async () => {
-    window.addEventListener("beforeunload", handleBeforeUnload);
     const [tz, cat] = await Promise.all([fetchTimezone(), fetchMcpCatalog()]);
-    wizardState.timezone = tz;
+    // Don't clobber a timezone the user already resolved in a prior session.
+    if (!wizardState.timezone) wizardState.timezone = tz;
     catalog = cat;
   });
 
-  onDestroy(() => {
-    window.removeEventListener("beforeunload", handleBeforeUnload);
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function schedulePersist() {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      try {
+        const sanitized = sanitizeForStorage($state.snapshot(wizardState));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ step, wizardState: sanitized }));
+      } catch (err: unknown) {
+        // eslint-disable-next-line no-console -- debounced autosave; a toast here would fire on every keystroke
+        console.warn("failed to persist setup draft", err);
+      }
+    }, 500);
+  }
+
+  $effect(() => {
+    $state.snapshot(wizardState);
+    step;
+    schedulePersist();
   });
+
+  function clearPersisted() {
+    if (persistTimer) clearTimeout(persistTimer);
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function handleComplete() {
+    clearPersisted();
+    onComplete();
+  }
 
   function next() {
     if (step < TOTAL_STEPS - 1) step++;

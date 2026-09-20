@@ -4,6 +4,7 @@
 .env
 .vscode/
 .claude/
+.agents/
 reference-mats/
 web/node_modules/
 web/dist/

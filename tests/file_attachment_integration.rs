@@ -4,12 +4,6 @@
 //! `ResponseEvent` with `FileAttachment` → WebSocket subscriber maps to
 //! `ServerMessage::FileAttachment` with a valid URL.
 
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::expect_used, reason = "test code uses expect for clarity")]
-#[expect(
-    clippy::panic,
-    reason = "test assertions use panic on unexpected variants"
-)]
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "test assertions use wildcard for non-matching variants"

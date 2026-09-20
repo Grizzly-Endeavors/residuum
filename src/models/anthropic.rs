@@ -714,7 +714,6 @@ struct AnthropicErrorDetail {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::get_unwrap,
     reason = "test code uses get().unwrap() for clarity"

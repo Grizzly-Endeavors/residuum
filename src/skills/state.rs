@@ -224,8 +224,6 @@ impl SkillState {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test code panics on unexpected match arm")]
 mod tests {
     use super::super::index::SkillIndex;
     use super::SkillState;

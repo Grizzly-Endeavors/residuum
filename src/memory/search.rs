@@ -16,7 +16,7 @@ use anyhow::Context;
 
 use crate::config::SearchConfig;
 use crate::memory::chunk_extractor::read_idx_jsonl;
-use crate::memory::types::{IndexChunk, IndexManifest, ManifestFileEntry, Observation};
+use crate::memory::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
 use crate::models::EmbeddingProvider;
 
@@ -28,8 +28,8 @@ const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
 pub struct SearchResult {
     /// Document identifier (obs or chunk ID).
     pub id: String,
-    /// Source type stored in the index: `"observation"` or `"chunk"` (internal values).
-    pub source_type: String,
+    /// Which kind of document this result came from.
+    pub source_type: DocSource,
     /// Parent episode identifier.
     pub episode_id: String,
     /// Date string (YYYY-MM-DD).
@@ -49,9 +49,9 @@ pub struct SearchResult {
 /// Filters for narrowing search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
-    /// Filter by internal source type value: `"observation"` or `"chunk"`.
+    /// Filter to a single document source. `None` searches both.
     /// The tool layer translates user-facing names before setting this.
-    pub source: Option<String>,
+    pub source: Option<DocSource>,
     /// Filter results on or after this date (YYYY-MM-DD, inclusive).
     pub date_from: Option<String>,
     /// Filter results on or before this date (YYYY-MM-DD, inclusive).
@@ -291,8 +291,8 @@ impl MemoryIndex {
         let (text_query, _errors) = query_parser.parse_query_lenient(query_str);
 
         // Apply source_type filter as a BooleanQuery for early reduction
-        let query: Box<dyn tantivy::query::Query> = if let Some(ref source) = filters.source {
-            let source_term = Term::from_field_text(self.source_type_field, source);
+        let query: Box<dyn tantivy::query::Query> = if let Some(source) = filters.source {
+            let source_term = Term::from_field_text(self.source_type_field, source.as_str());
             let source_query = tantivy::query::TermQuery::new(
                 source_term,
                 tantivy::schema::IndexRecordOption::Basic,
@@ -357,8 +357,16 @@ impl MemoryIndex {
             }
 
             let snippet = get_snippet(&doc, self.content_field);
-            let source_type = get_text(&doc, self.source_type_field);
             let id = get_text(&doc, self.id_field);
+            let source_type_raw = get_text(&doc, self.source_type_field);
+            let Some(source_type) = DocSource::from_index_value(&source_type_raw) else {
+                tracing::error!(
+                    source_type = %source_type_raw,
+                    id = %id,
+                    "memory index document has unrecognized source_type, skipping"
+                );
+                continue;
+            };
             let line_start = parse_line_num(&doc, self.line_start_field);
             let line_end = parse_line_num(&doc, self.line_end_field);
 
@@ -575,7 +583,7 @@ impl MemoryIndex {
     ) -> anyhow::Result<()> {
         let mut doc = TantivyDocument::default();
         doc.add_text(self.id_field, doc_id);
-        doc.add_text(self.source_type_field, "observation");
+        doc.add_text(self.source_type_field, DocSource::Observation.as_str());
         doc.add_text(self.episode_id_field, episode_id);
         doc.add_text(self.date_field, date);
         doc.add_text(self.ctx_field, ctx);
@@ -596,7 +604,7 @@ impl MemoryIndex {
     ) -> anyhow::Result<()> {
         let mut doc = TantivyDocument::default();
         doc.add_text(self.id_field, &chunk.chunk_id);
-        doc.add_text(self.source_type_field, "chunk");
+        doc.add_text(self.source_type_field, DocSource::Chunk.as_str());
         doc.add_text(self.episode_id_field, &chunk.episode_id);
         doc.add_text(self.date_field, &chunk.date);
         doc.add_text(self.ctx_field, &chunk.context);
@@ -1010,7 +1018,7 @@ fn merge_hybrid_results(
             let snippet = crate::memory::truncate_at_char_boundary(&vec_r.content, 200);
             SearchResult {
                 id: vec_r.id.clone(),
-                source_type: vec_r.source_type.clone(),
+                source_type: vec_r.source_type,
                 episode_id: vec_r.episode_id.clone(),
                 date: vec_r.date.clone(),
                 context: vec_r.context.clone(),
@@ -1073,7 +1081,6 @@ fn apply_temporal_decay(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes into known-length slices"
@@ -1125,7 +1132,7 @@ mod tests {
 
         let results = index.search("tantivy BM25", 5, &no_filters()).unwrap();
         assert!(!results.is_empty(), "should find matching observation");
-        assert_eq!(results[0].source_type, "observation");
+        assert_eq!(results[0].source_type, DocSource::Observation);
         assert_eq!(results[0].episode_id, "ep-001");
     }
 
@@ -1150,7 +1157,7 @@ mod tests {
 
         let results = index.search("observer token", 5, &no_filters()).unwrap();
         assert!(!results.is_empty(), "should find matching chunk");
-        assert_eq!(results[0].source_type, "chunk");
+        assert_eq!(results[0].source_type, DocSource::Chunk);
         assert_eq!(results[0].line_start, Some(2));
         assert_eq!(results[0].line_end, Some(3));
     }
@@ -1186,12 +1193,16 @@ mod tests {
                 "rust memory",
                 10,
                 &SearchFilters {
-                    source: Some("observation".to_string()),
+                    source: Some(DocSource::Observation),
                     ..Default::default()
                 },
             )
             .unwrap();
-        assert!(obs_only.iter().all(|r| r.source_type == "observation"));
+        assert!(
+            obs_only
+                .iter()
+                .all(|r| r.source_type == DocSource::Observation)
+        );
 
         // Chunks only
         let chunk_only = index
@@ -1199,12 +1210,12 @@ mod tests {
                 "rust memory",
                 10,
                 &SearchFilters {
-                    source: Some("chunk".to_string()),
+                    source: Some(DocSource::Chunk),
                     ..Default::default()
                 },
             )
             .unwrap();
-        assert!(chunk_only.iter().all(|r| r.source_type == "chunk"));
+        assert!(chunk_only.iter().all(|r| r.source_type == DocSource::Chunk));
     }
 
     #[test]
@@ -1615,7 +1626,7 @@ mod tests {
                 "line ranges",
                 10,
                 &SearchFilters {
-                    source: Some("observation".to_string()),
+                    source: Some(DocSource::Observation),
                     ..Default::default()
                 },
             )
@@ -1632,7 +1643,7 @@ mod tests {
                 "line ranges",
                 10,
                 &SearchFilters {
-                    source: Some("chunk".to_string()),
+                    source: Some(DocSource::Chunk),
                     ..Default::default()
                 },
             )
@@ -1766,7 +1777,7 @@ mod tests {
     fn make_bm25_result(id: &str, score: f32) -> SearchResult {
         SearchResult {
             id: id.to_string(),
-            source_type: "observation".to_string(),
+            source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
             context: "residuum".to_string(),
@@ -1780,7 +1791,7 @@ mod tests {
     fn make_vec_result(id: &str, distance: f64) -> crate::memory::vector_store::VectorSearchResult {
         crate::memory::vector_store::VectorSearchResult {
             id: id.to_string(),
-            source_type: "observation".to_string(),
+            source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
             context: "residuum".to_string(),
@@ -1892,7 +1903,7 @@ mod tests {
             .block_on(searcher.search("rust ownership", 5, &no_filters()))
             .unwrap();
         assert!(!results.is_empty(), "BM25 fallback should find results");
-        assert_eq!(results[0].source_type, "observation");
+        assert_eq!(results[0].source_type, DocSource::Observation);
     }
 
     // ── Temporal decay tests ─────────────────────────────────────────────
@@ -1900,7 +1911,7 @@ mod tests {
     fn make_result(id: &str, date: &str, score: f32) -> SearchResult {
         SearchResult {
             id: id.to_string(),
-            source_type: "observation".to_string(),
+            source_type: DocSource::Observation,
             episode_id: "ep-001".to_string(),
             date: date.to_string(),
             context: "test".to_string(),

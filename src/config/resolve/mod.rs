@@ -635,7 +635,16 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
             cfg.min_score = v;
         }
         if let Some(v) = s.candidate_multiplier {
-            cfg.candidate_multiplier = v;
+            if v == 0 {
+                tracing::warn!(
+                    section = "memory.search",
+                    value = v,
+                    default = cfg.candidate_multiplier,
+                    "candidate_multiplier must be positive; using default"
+                );
+            } else {
+                cfg.candidate_multiplier = v;
+            }
         }
         if let Some(v) = s.temporal_decay {
             cfg.temporal_decay = v;
@@ -886,7 +895,6 @@ fn resolve_bg_tier(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 pub(super) mod test_helpers {
     pub(super) use super::super::deserialize::{ConfigFile, ProvidersFile};
     pub(super) use super::super::secrets::SecretStore;
@@ -931,7 +939,6 @@ fn warn_deprecated_env_vars() {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(clippy::indexing_slicing, reason = "test assertions")]
 #[expect(
     unsafe_code,

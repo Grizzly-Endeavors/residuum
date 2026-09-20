@@ -189,7 +189,6 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use chrono::NaiveDate;
 

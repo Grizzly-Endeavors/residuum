@@ -50,8 +50,6 @@ pub(crate) enum TunnelFrame {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test code uses panic for clarity")]
 mod tests {
     use super::*;
 
