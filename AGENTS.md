@@ -1,0 +1,154 @@
+# AGENTS.md | Residuum - Personal Agent Framework
+
+## Key References
+
+- [Design Philosophy](./docs/design-philosophy.md)
+- [Residuum Design](./docs/residuum-design.md)
+- [Projects Context](./docs/projects-context-design.md)
+- [Personal Agent](./docs/personal-agent-design.md)
+- [Background Tasks](./docs/background-tasks-design.md)
+- [Memory Search](./docs/memory-search-design.md)
+- [Notification Routing](./docs/notification-routing-design.md)
+- [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
+
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/AGENTS.md` for details. **Do not confuse with `relay/web/`**, which is only a marketing landing page.
+
+## Build & Quality Gates
+
+### Pre-Commit Hooks
+
+Pre-commit hooks enforce quality gates:
+- **pre-commit**: auto-formats with `cargo fmt` (auto-stages changes), runs `cargo clippy`, runs `cargo test`
+- **commit-msg**: validates message format
+
+Bypass is **FORBIDDEN**.
+
+### Cross-Platform Targets
+
+Release builds target Linux x86_64, Linux aarch64, and macOS aarch64 (Apple Silicon). Keep platform differences in mind:
+- **`c_char`**: `i8` on x86_64, `u8` on aarch64-linux — always use `std::ffi::c_char` in FFI signatures, never hardcode `i8`/`u8`
+- **Path separators, endianness, pointer width**: use `std` abstractions, not platform-specific assumptions
+- **FFI code**: test against the aarch64 target when touching unsafe/FFI boundaries
+
+### Lint Rules
+
+Clippy pedantic is enabled with strict error handling:
+- `unsafe_code` - **denied** (not `forbid`, so a genuine FFI boundary can carry a scoped `#[expect(unsafe_code, reason = "...")]` at the item level; `forbid` cannot be overridden that way)
+- `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented` - **denied**
+- `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate` - warnings
+
+The root `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` for code inside `#[cfg(test)]` modules and `#[test]`-attributed functions, so test code may freely use unwrap/expect/panic/dbg for readability with no suppression header needed. Adding an `#[expect(clippy::unwrap_used, ...)]` (or `expect_used`/`panic`/`dbg_macro`) to a test file is an error, not belt-and-braces — the lint is already exempt there, so the expectation never fires and becomes an unfulfilled-expectation hard error under `-D warnings`. `clippy::tests_outside_test_module` is the one exception: it is not controllable from `clippy.toml` and stays denied project-wide, so integration tests under `tests/` (which live outside a `#[cfg(test)]` module) still need an explicit `#[expect(clippy::tests_outside_test_module, reason = "...")]`. Plain helper functions at the top level of a `tests/*.rs` file (not wrapped in `#[cfg(test)]` and not themselves `#[test]`-attributed) are also not covered by the `clippy.toml` exemption and still need their own suppression if they use unwrap/expect/panic/dbg.
+
+DO NOT, under any circumstance, change this config without explicit approval from the user.
+
+### Testing
+
+Testing is a first-class operation — NEVER skip test implementation.
+- Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
+- Unit tests: `#[cfg(test)] mod tests` at file bottom
+- Integration tests: `tests/` directory
+
+## Code Style
+
+### Naming
+- **Domain-specific names**: Prefer descriptive names that match the domain (`send_chat_completion` over generic `run`)
+- **Common abbreviations OK**: `cfg`, `dir`, `msg`, `ctx`, `cmd` are fine; avoid obscure ones
+- **Semantics matter**: Structs, enums, and functions should have names that make it abundantly clear what they do. Avoid vague names and catch-alls. If the logic doesn't match the semantics a refactor is needed.
+
+### Error Messages
+- Always include context: `"failed to parse config at {path}"` not just `"parse error"`
+- Lowercase, no trailing period (Unix style, chains well with `anyhow` context)
+
+### Comments
+- Explain **why**, never **what** — the code shows what, comments explain non-obvious reasoning
+- Doc comments: one-line `///` summary for public items; expand only for complex behavior
+
+### Module Organization
+- `mod.rs` files should primarily contain declarations and re-exports, but module-level coordination logic is fine when it belongs there.
+- Group related types in one file (e.g., `Message`, `Role`, `ToolCall` together in `llm/types.rs`)
+
+### Visibility
+- Private-first: start with no visibility modifier, add `pub(crate)` or `pub` only when needed
+- Treat `pub` as a commitment — once public, it's API
+
+### Function Signatures
+- **Strings**: `&str` for read-only, `impl Into<String>` when storing, owned `String` when caller must give up ownership
+- **Async**: async-first; only use sync for trivial or CPU-bound operations
+- **Generics**: default to concrete types, generify at public API boundaries when flexibility is needed
+
+### Construction
+- Prefer `new()` with required args + `Default` trait for optional configuration
+- Avoid builder pattern unless struct has many optional fields
+
+## Error Handling & Observability
+
+### No Silent Failures
+
+**Every failure must be visible.** This is non-negotiable.
+
+#### User-facing: clear, actionable messages
+- Assume users are non-technical — error messages must explain what went wrong and what to do next, not expose internals
+- Use plain language: `"Couldn't connect to the server. Check your internet connection and try again."` not `"TCP connection refused on port 443"`
+- Partial failures (e.g., syncing 2 of 3 items) must tell the user what succeeded, what failed, and whether they need to act
+- Never show raw error types, stack traces, or module paths to the user
+- If an operation fails silently with no user impact, it still needs a log (see below)
+
+#### Developer-facing: rich, structured diagnostics
+- Every error path must produce a log entry with enough context to diagnose without reproducing
+- Include structured fields: `error!(error = %e, path = %path, "failed to read config")` — not just the message
+- Chain error context with `anyhow`: `.context("failed to load user settings")` so logs show the full causal chain
+- Use appropriate log levels (error/warn/info/debug/trace per the logging guidelines below)
+- Transient failures (retries, timeouts) should log at `warn` with attempt count and backoff details
+
+#### Avoid log spam
+- Do not log every retry attempt individually — log once at `warn` when retries start, and once when they resolve or exhaust
+- Do not log routine successful operations ("connection still alive", "heartbeat ok") — absence of errors is the signal that things work
+- Periodic health-check style output belongs at `trace` level at most, never `info` or above
+- If a log line would fire on every loop iteration or timer tick under normal conditions, it's too noisy
+
+### Logging (tracing)
+- **error**: failures that stop an operation
+- **warn**: recoverable issues, degraded behavior
+- **info**: major operations (LLM calls, chunked processing)
+- **debug**: internal details, state transitions
+- **trace**: verbose diagnostics (full payloads, timing)
+- Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
+
+### Debugging & Tracing
+- Log level is configured in `config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
+- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time
+- `residuum tracing status` — show current tracing config and streaming state
+- `residuum tracing otel add <url>` — add an OTEL endpoint for trace export
+- `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
+- `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
+- `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
+- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
+- `residuum bug-report -m "description"` — send trace dump to developer (currently no-op until collection endpoint deployed)
+- `RUST_LOG` env var overrides the configured log level when set
+
+## Git Workflow
+
+Single-branch model: all work lands on `main`.
+
+### Day-to-Day Work
+
+1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
+2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests. Commit especially often during large multi-phase tasks.
+3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
+4. **Push the branch** and merge into `main`
+
+All changes must be committed before giving the user a completion summary. **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
+
+### Branch Naming
+
+Use prefixed branch names:
+- `feat/` — new features
+- `fix/` — bug fixes
+- `refactor/` — code restructuring without behavior changes
+- `docs/` — documentation only
+- `ci/` — CI/CD changes
+- `chore/` — maintenance, dependency updates
+
+### Releases
+
+Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs full CI checks before building artifacts.
