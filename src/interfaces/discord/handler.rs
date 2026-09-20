@@ -18,7 +18,7 @@ use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
-use crate::interfaces::cli::commands::{
+use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::MessageOrigin;

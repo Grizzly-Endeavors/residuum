@@ -11,7 +11,7 @@ use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::interfaces::cli::commands::{
+use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::MessageOrigin;

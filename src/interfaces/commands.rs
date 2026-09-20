@@ -1,7 +1,7 @@
-//! Data-driven slash command registry for the CLI client.
+//! Data-driven slash command registry shared across interfaces.
 //!
-//! Provides a shared command registry used by CLI, Discord, and any future interfaces.
-//! Each interface handles `CommandSideEffect` according to its own transport.
+//! Provides a shared command registry used by Discord, Telegram, and any future
+//! interfaces. Each interface handles `CommandSideEffect` according to its own transport.
 
 /// Internal representation of what a slash command produces.
 ///

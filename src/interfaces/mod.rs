@@ -2,7 +2,7 @@
 
 pub mod attachment;
 pub mod chunking;
-pub mod cli;
+pub mod commands;
 pub mod discord;
 pub mod telegram;
 pub mod types;
