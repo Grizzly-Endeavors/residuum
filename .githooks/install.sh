@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
-# Install git hooks for residuum
-# Run this once after cloning the repository
-
-set -e
+#
+# Symlink the tracked hooks into this repo's hooks directory.
+#
+# Symlinks rather than copies so an edit to a hook takes effect immediately and
+# stays under version control — a copied hook silently drifts from the one in
+# the repo, which is the worst of both worlds.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-# Inside a linked worktree, .git is a file (not a directory) pointing at the
-# worktree's private git dir, and hooks live in the common dir shared by all
-# worktrees — not under a nonexistent "$REPO_ROOT/.git/hooks".
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+
+# Ask git for the hooks directory rather than assuming `$REPO_ROOT/.git` is one.
+# Inside a linked worktree `.git` is a *file* pointing at the real gitdir, so the
+# assumption fails outright — and hooks live in the common dir shared by every
+# worktree regardless.
 GIT_COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
 HOOK_DIR="$GIT_COMMON_DIR/hooks"
+mkdir -p "$HOOK_DIR"
 
-echo "Symlinking .githooks into .git/hooks..."
-
-for hook in "$SCRIPT_DIR"/pre-commit "$SCRIPT_DIR"/commit-msg; do
-    name="$(basename "$hook")"
-    ln -sf "$hook" "$HOOK_DIR/$name"
-    echo "  $name -> .githooks/$name"
+for hook in pre-commit commit-msg post-commit; do
+    chmod +x "$SCRIPT_DIR/$hook"
+    ln -sf "$SCRIPT_DIR/$hook" "$HOOK_DIR/$hook"
+    echo "installed $hook"
 done
 
-# Clear core.hooksPath if set — symlinks make it unnecessary
+# core.hooksPath, if set, wins over .git/hooks and would make the symlinks above
+# dead weight. Clear it so there is exactly one place hooks come from.
 git -C "$REPO_ROOT" config --unset core.hooksPath 2>/dev/null || true
 
-echo ""
-echo "Git hooks installed successfully!"
+echo "Hooks installed. Bypassing them with --no-verify is forbidden."

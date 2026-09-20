@@ -105,7 +105,7 @@ pub(super) async fn forward(
     // buffering the entire response before checking.
     let response_body = match collect_response_body(response, &request_id, &method, &path).await {
         Ok(collected) => collected,
-        Err(frame) => return frame,
+        Err(frame) => return *frame,
     };
 
     debug!(
@@ -129,7 +129,7 @@ async fn collect_response_body(
     request_id: &str,
     method: &str,
     path: &str,
-) -> Result<Option<String>, TunnelFrame> {
+) -> Result<Option<String>, Box<TunnelFrame>> {
     let mut buf = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk_result) = stream.next().await {
@@ -144,18 +144,18 @@ async fn collect_response_body(
                         size = buf.len(),
                         "response body too large"
                     );
-                    return Err(error_response(
+                    return Err(Box::new(error_response(
                         request_id.to_string(),
                         "response body too large",
-                    ));
+                    )));
                 }
             }
             Err(e) => {
                 warn!(request_id, error = %e, "failed to read response body");
-                return Err(error_response(
+                return Err(Box::new(error_response(
                     request_id.to_string(),
                     &format!("failed to read response: {e}"),
-                ));
+                )));
             }
         }
     }

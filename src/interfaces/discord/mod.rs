@@ -57,7 +57,7 @@ impl DiscordInterface {
     ///
     /// # Errors
     /// Returns an error if the serenity client cannot be built or the connection fails.
-    pub(crate) async fn start(self) -> Result<(), serenity::Error> {
+    pub(crate) async fn start(self) -> Result<(), Box<serenity::Error>> {
         let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 
         let presence_path = self.workspace_dir.join("PRESENCE.toml");
@@ -79,7 +79,8 @@ impl DiscordInterface {
 
         let mut client = Client::builder(&self.cfg.token, intents)
             .event_handler(handler)
-            .await?;
+            .await
+            .map_err(Box::new)?;
 
         // Monitor shutdown signal and cleanly disconnect shards
         let shard_manager = Arc::clone(&client.shard_manager);
@@ -91,6 +92,6 @@ impl DiscordInterface {
             }
         });
 
-        client.start().await
+        client.start().await.map_err(Box::new)
     }
 }

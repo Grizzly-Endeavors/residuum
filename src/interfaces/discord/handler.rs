@@ -263,7 +263,7 @@ async fn process_discord_attachments(
 ///
 /// Commands that take arguments (like `/inbox`) get a `text` string option.
 /// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
-async fn register_commands(ctx: &Context) -> Result<(), serenity::Error> {
+async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
     for info in all_commands().filter(|c| !c.cli_only) {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
         if info.takes_arg {
@@ -277,7 +277,9 @@ async fn register_commands(ctx: &Context) -> Result<(), serenity::Error> {
             );
         }
 
-        serenity::model::application::Command::create_global_command(&ctx.http, cmd).await?;
+        serenity::model::application::Command::create_global_command(&ctx.http, cmd)
+            .await
+            .map_err(Box::new)?;
     }
 
     tracing::info!("discord slash commands registered");

@@ -2,6 +2,7 @@
 name = "residuum"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 # Async runtime
@@ -122,7 +123,7 @@ wiremock = "0.6"
 
 [lints.rust]
 # deny rather than forbid so sqlite-vec FFI registration can use a targeted
-# #[expect(unsafe_code)] — forbid cannot be overridden at the item level.
+# #[expect(unsafe_code, reason = "...")] — forbid cannot be overridden at the item level.
 unsafe_code = "deny"
 
 [lints.clippy]
@@ -138,6 +139,9 @@ panic = "deny"
 get_unwrap = "deny"
 map_err_ignore = "deny"
 let_underscore_must_use = "deny"
+# Domain errors are named for what failed, not `Error`. A type literally called
+# `Error` collides with every other crate's and reads as "the" error type.
+error_impl_error = "deny"
 
 # --- Panic prevention beyond unwrap/expect ---
 indexing_slicing = "deny"
@@ -175,7 +179,6 @@ print_stderr = "deny"
 format_push_string = "deny"
 redundant_type_annotations = "deny"
 needless_raw_strings = "deny"
-error_impl_error = "deny"
 tests_outside_test_module = "deny"
 empty_structs_with_brackets = "deny"
 rest_pat_in_fully_bound_structs = "deny"
