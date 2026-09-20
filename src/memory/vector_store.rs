@@ -45,6 +45,8 @@ pub struct VectorSearchFilters {
     pub date_to: Option<String>,
     /// Filter by project context (exact match).
     pub project_context: Option<String>,
+    /// Filter to results from these episode IDs.
+    pub episode_ids: Option<Vec<String>>,
 }
 
 /// `SQLite` + sqlite-vec backed vector store for memory embeddings.
@@ -564,6 +566,21 @@ fn build_filter_clauses(filters: &VectorSearchFilters) -> (String, Vec<String>) 
     if let Some(ref ctx) = filters.project_context {
         clauses.push(format!("AND context = ?{idx}"));
         params.push(ctx.clone());
+        idx += 1;
+    }
+    if let Some(ref episode_ids) = filters.episode_ids
+        && !episode_ids.is_empty()
+    {
+        let placeholders: Vec<String> = episode_ids
+            .iter()
+            .map(|_| {
+                let p = format!("?{idx}");
+                idx += 1;
+                p
+            })
+            .collect();
+        clauses.push(format!("AND episode_id IN ({})", placeholders.join(", ")));
+        params.extend(episode_ids.iter().cloned());
     }
 
     (clauses.join(" "), params)

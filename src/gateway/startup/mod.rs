@@ -424,6 +424,14 @@ pub(crate) async fn initialize(
     let (tools, tool_filter, path_policy_for_runtime, output_topic_override_tx) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
 
+    // Reserve the built-in tool namespace so any MCP tool (workspace, web
+    // search, or project-scoped) that reuses a built-in name is shadowed
+    // visibly instead of silently. See src/mcp/CLAUDE.md.
+    mcp_registry
+        .write()
+        .await
+        .set_reserved_tool_names(tools.tool_names());
+
     let agent = tools::create_agent(
         CreateAgentArgs {
             provider: providers.provider,

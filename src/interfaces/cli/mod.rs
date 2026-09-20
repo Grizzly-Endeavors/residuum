@@ -81,6 +81,7 @@ impl CliClient {
         println!("{}", self.theme.format_banner(&banner));
         let http_url = ws_url_to_http(&self.url);
         println!("  web UI: {http_url}");
+        println!("  Type /help to see available commands.");
     }
 
     /// Display a server message with appropriate formatting.
@@ -165,6 +166,11 @@ impl CliClient {
                     format!("[file: {filename}] {url} — {caption_text}")
                 };
                 println!("{}", self.theme.format_tool(&line));
+            }
+            ServerMessage::TurnEnded { .. } => {
+                // No text to render; this exists so turns with zero Response
+                // frames (interrupted or tool-only) still clear the indicator.
+                self.indicator.finish();
             }
             // Reloading is intercepted in run_connect before display() is called
             ServerMessage::Pong | ServerMessage::Reloading => {}
@@ -321,6 +327,22 @@ mod tests {
         assert!(
             !client.indicator.is_active(),
             "Response should deactivate indicator"
+        );
+    }
+
+    #[test]
+    fn display_turn_ended_clears_indicator() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        client.display(&ServerMessage::TurnStarted {
+            reply_to: "c1".into(),
+        });
+        assert!(client.indicator.is_active());
+        client.display(&ServerMessage::TurnEnded {
+            reply_to: "c1".into(),
+        });
+        assert!(
+            !client.indicator.is_active(),
+            "TurnEnded should deactivate indicator even with no response text"
         );
     }
 

@@ -276,11 +276,83 @@ async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
     }
 }
 
+/// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
+async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, correlation_id: &str) {
+    if let Err(e) = publisher
+        .publish(
+            topics::Endpoint(endpoint.clone()),
+            TurnLifecycleEvent::Ended {
+                correlation_id: correlation_id.to_string(),
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish turn ended event");
+    }
+}
+
+/// Translate a completed turn's result into the bus events clients observe.
+///
+/// On success, emits one `ResponseEvent` per reply text to the output endpoint,
+/// then closes the turn with `TurnLifecycleEvent::Ended`. When there is no output
+/// endpoint (e.g. a background turn with no prior user endpoint), success publishes
+/// nothing.
+///
+/// On failure, logs the error, broadcasts an `ErrorEvent` on the system
+/// notification channel regardless of output endpoint, and — if there is an output
+/// endpoint — still closes the turn with `Ended`.
+async fn publish_turn_outcome(
+    turn_result: anyhow::Result<Vec<String>>,
+    publisher: &Publisher,
+    output_endpoint: Option<&EndpointName>,
+    correlation_id: &str,
+    tz: chrono_tz::Tz,
+) {
+    match turn_result {
+        Ok(texts) => {
+            let Some(ep) = output_endpoint else {
+                return;
+            };
+            for text in &texts {
+                if let Err(e) = publisher
+                    .publish(
+                        topics::Endpoint(ep.clone()),
+                        ResponseEvent {
+                            correlation_id: correlation_id.to_string(),
+                            content: text.clone(),
+                            timestamp: crate::time::now_local(tz),
+                            attachment: None,
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to publish response event");
+                }
+            }
+            publish_turn_ended(publisher, ep, correlation_id).await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "agent processing error");
+            if let Err(pub_err) = publisher
+                .publish(
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    ErrorEvent {
+                        correlation_id: correlation_id.to_string(),
+                        message: e.to_string(),
+                    },
+                )
+                .await
+            {
+                tracing::warn!(error = %pub_err, "failed to publish agent error event");
+            }
+            if let Some(ep) = output_endpoint {
+                publish_turn_ended(publisher, ep, correlation_id).await;
+            }
+        }
+    }
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
-#[expect(
-    clippy::too_many_lines,
-    reason = "needs refactor — extract turn result publishing"
-)]
 #[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
     message: InboundMessage,
@@ -349,70 +421,14 @@ pub async fn handle_inbound_message(
     )
     .await;
 
-    match turn_result {
-        Ok(texts) => {
-            if let Some(ref ep) = output_endpoint {
-                for text in &texts {
-                    if let Err(e) = rt
-                        .publisher
-                        .publish(
-                            topics::Endpoint(ep.clone()),
-                            ResponseEvent {
-                                correlation_id: reply_id.clone(),
-                                content: text.clone(),
-                                timestamp: crate::time::now_local(rt.tz),
-                                attachment: None,
-                            },
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to publish response event");
-                    }
-                }
-                if let Err(e) = rt
-                    .publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        TurnLifecycleEvent::Ended {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to publish turn ended event");
-                }
-            }
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "agent processing error");
-            if let Err(pub_err) = rt
-                .publisher
-                .publish(
-                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    ErrorEvent {
-                        correlation_id: reply_id.clone(),
-                        message: e.to_string(),
-                    },
-                )
-                .await
-            {
-                tracing::warn!(error = %pub_err, "failed to publish agent error event");
-            }
-            if let Some(ref ep) = output_endpoint
-                && let Err(end_err) = rt
-                    .publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        TurnLifecycleEvent::Ended {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await
-            {
-                tracing::warn!(error = %end_err, "failed to publish turn ended event");
-            }
-        }
-    }
+    publish_turn_outcome(
+        turn_result,
+        &rt.publisher,
+        output_endpoint.as_ref(),
+        &reply_id,
+        rt.tz,
+    )
+    .await;
 
     let visibility = if is_background {
         Visibility::Background
@@ -442,5 +458,173 @@ pub async fn handle_inbound_message(
         let now = tokio::time::Instant::now();
         rt.last_user_message_instant = Some(now);
         *idle_deadline = Some(now + rt.cfg.idle.timeout);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::Subscriber;
+    use std::time::Duration;
+
+    const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
+
+    fn endpoint() -> EndpointName {
+        EndpointName::from("ws")
+    }
+
+    /// Assert a subscriber receives no event within a short window, proving the
+    /// unit published nothing on that topic/type.
+    async fn assert_no_event<E: Clone + Send + Sync + 'static>(sub: &mut Subscriber<E>) {
+        let recv = tokio::time::timeout(Duration::from_millis(50), sub.recv()).await;
+        assert!(recv.is_err(), "expected no event, but one was published");
+    }
+
+    #[tokio::test]
+    async fn ok_publishes_one_response_per_text_then_ends_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Ok(vec!["first".into(), "second".into()]),
+            &publisher,
+            Some(&endpoint()),
+            "corr-1",
+            TEST_TZ,
+        )
+        .await;
+
+        let first = responses.recv().await.unwrap().unwrap();
+        assert_eq!(first.content, "first");
+        assert_eq!(first.correlation_id, "corr-1");
+        assert!(first.attachment.is_none());
+        let second = responses.recv().await.unwrap().unwrap();
+        assert_eq!(second.content, "second");
+
+        let ended = lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn ok_with_no_texts_still_ends_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(Ok(vec![]), &publisher, Some(&endpoint()), "corr-2", TEST_TZ).await;
+
+        let ended = lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-2")
+        );
+        assert_no_event(&mut responses).await;
+    }
+
+    #[tokio::test]
+    async fn ok_without_output_endpoint_publishes_nothing() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Ok(vec!["ignored".into()]),
+            &publisher,
+            None,
+            "corr-3",
+            TEST_TZ,
+        )
+        .await;
+
+        assert_no_event(&mut responses).await;
+        assert_no_event(&mut lifecycle).await;
+    }
+
+    #[tokio::test]
+    async fn err_broadcasts_error_event_and_ends_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Err(anyhow::anyhow!("boom")),
+            &publisher,
+            Some(&endpoint()),
+            "corr-4",
+            TEST_TZ,
+        )
+        .await;
+
+        let error = errors.recv().await.unwrap().unwrap();
+        assert_eq!(error.correlation_id, "corr-4");
+        assert_eq!(error.message, "boom");
+
+        let ended = lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-4")
+        );
+        assert_no_event(&mut responses).await;
+    }
+
+    #[tokio::test]
+    async fn err_without_output_endpoint_still_broadcasts_error_without_ending_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Err(anyhow::anyhow!("kaboom")),
+            &publisher,
+            None,
+            "corr-5",
+            TEST_TZ,
+        )
+        .await;
+
+        let error = errors.recv().await.unwrap().unwrap();
+        assert_eq!(error.correlation_id, "corr-5");
+        assert_eq!(error.message, "kaboom");
+        assert_no_event(&mut lifecycle).await;
     }
 }

@@ -410,6 +410,7 @@ impl MemoryIndex {
         if episodes_dir.exists() {
             collect_indexable_files(&episodes_dir, memory_dir, &mut disk_files)?;
         }
+        report_interrupted_episodes(&episodes_dir);
 
         for (rel_path, mtime) in &disk_files {
             let abs_path = memory_dir.join(rel_path);
@@ -461,6 +462,7 @@ impl MemoryIndex {
         if episodes_dir.exists() {
             collect_indexable_files(&episodes_dir, memory_dir, &mut disk_files)?;
         }
+        report_interrupted_episodes(&episodes_dir);
 
         let disk_paths: std::collections::HashSet<&str> =
             disk_files.iter().map(|(p, _)| p.as_str()).collect();
@@ -689,7 +691,13 @@ fn extract_date_from_path(path: &Path) -> String {
         (Some(ym), Some(d)) if ym.len() == 7 && d.len() == 2 => {
             format!("{ym}-{d}")
         }
-        _ => String::new(),
+        _ => {
+            tracing::warn!(
+                path = %path.display(),
+                "failed to extract date from path, expected episodes/YYYY-MM/DD structure"
+            );
+            String::new()
+        }
     }
 }
 
@@ -741,6 +749,29 @@ fn collect_indexable_files(
     }
 
     Ok(())
+}
+
+/// Warn about any episode transcripts whose persistence was interrupted.
+///
+/// The index only covers `.obs.json` and `.idx.jsonl` files, so a transcript
+/// left without them (a write cut short after the transcript landed) is
+/// silently unsearchable. Surfacing it here — every time the index is built —
+/// gives an operator or agent a chance to notice and recover it, instead of the
+/// episode vanishing without a trace. Reconciliation is read-only and never
+/// blocks indexing.
+fn report_interrupted_episodes(episodes_dir: &Path) {
+    match crate::memory::episode_store::find_interrupted_episodes(episodes_dir) {
+        Ok(interrupted) if !interrupted.is_empty() => {
+            tracing::warn!(
+                count = interrupted.len(),
+                "memory index skipped episodes with interrupted persistence (transcript without completion marker or observation archive); they are not searchable"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to scan for interrupted episode persistence");
+        }
+    }
 }
 
 // ── Hybrid searcher ─────────────────────────────────────────────────────────
@@ -809,6 +840,22 @@ impl HybridSearcher {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
+            // Apply min_score the same way merge_hybrid_results does (on normalized
+            // scores), so the setting has consistent meaning whether or not vector
+            // search ran.
+            let scores: Vec<f32> = results.iter().map(|r| r.score).collect();
+            let normalized = normalize_scores(&scores);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
+            )]
+            let min_score = self.cfg.min_score as f32;
+            results = results
+                .into_iter()
+                .zip(normalized)
+                .filter(|(_, norm)| *norm >= min_score)
+                .map(|(r, _)| r)
+                .collect();
             results.truncate(limit);
             return Ok(results);
         };
@@ -830,6 +877,7 @@ impl HybridSearcher {
             date_from: filters.date_from.clone(),
             date_to: filters.date_to.clone(),
             project_context: filters.project_context.clone(),
+            episode_ids: filters.episode_ids.clone(),
         };
         let vec_limit = candidates;
         let vec_results = tokio::task::spawn_blocking(move || {
@@ -1372,6 +1420,47 @@ mod tests {
 
         let results = index.search("flat layout", 5, &no_filters()).unwrap();
         assert!(!results.is_empty(), "should find indexed content");
+    }
+
+    #[test]
+    fn rebuild_tolerates_interrupted_episode_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        let day_dir = memory_dir.join("episodes/2026-02/19");
+        std::fs::create_dir_all(&day_dir).unwrap();
+
+        // A healthy episode with an indexable obs archive.
+        let obs = vec![sample_observation("healthy searchable observation")];
+        std::fs::write(
+            day_dir.join("ep-001.obs.json"),
+            serde_json::to_string(&obs).unwrap(),
+        )
+        .unwrap();
+
+        // An interrupted episode: transcript only, no obs/idx/marker. It must
+        // not break the rebuild, and simply stays absent from the index.
+        std::fs::write(
+            day_dir.join("ep-002.jsonl"),
+            "{\"type\":\"meta\",\"id\":\"ep-002\",\"date\":\"2026-02-19\",\"context\":\"general\"}\n",
+        )
+        .unwrap();
+
+        let index_dir = memory_dir.join(".index");
+        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
+        let result = index.rebuild(&memory_dir).unwrap();
+
+        assert_eq!(
+            result.obs_count, 1,
+            "only the healthy episode's observation should be indexed"
+        );
+
+        let results = index
+            .search("healthy searchable", 5, &no_filters())
+            .unwrap();
+        assert!(
+            !results.is_empty(),
+            "healthy episode remains searchable despite the orphaned transcript"
+        );
     }
 
     #[test]

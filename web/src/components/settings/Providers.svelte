@@ -340,8 +340,8 @@
             <div class="provider-warning">
               <span class="provider-warning-icon">&#9888;</span>
               <span
-                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not
-                the provider's real models. Check the API key or URL and try again.</span
+                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
+                provider's real models. Check the API key or URL and try again.</span
               >
             </div>
           {/if}
@@ -455,8 +455,8 @@
             <div class="provider-warning">
               <span class="provider-warning-icon">&#9888;</span>
               <span
-                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not
-                the provider's real models. Check the API key or URL and try again.</span
+                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
+                provider's real models. Check the API key or URL and try again.</span
               >
             </div>
           {/if}
@@ -629,8 +629,8 @@
             <div class="provider-warning">
               <span class="provider-warning-icon">&#9888;</span>
               <span
-                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not
-                the provider's real models. Check the API key or URL and try again.</span
+                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
+                provider's real models. Check the API key or URL and try again.</span
               >
             </div>
           {/if}

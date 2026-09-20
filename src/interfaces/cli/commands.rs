@@ -86,7 +86,8 @@ struct CommandDef {
     help: &'static str,
     takes_arg: bool,
     cli_only: bool,
-    effect: fn(arg: Option<&str>, url: &str, verbose: bool) -> CommandEffect,
+    effect:
+        fn(arg: Option<&str>, url: &str, verbose: bool, include_cli_only: bool) -> CommandEffect,
 }
 
 static COMMANDS: &[CommandDef] = &[
@@ -95,35 +96,35 @@ static COMMANDS: &[CommandDef] = &[
         help: "show this help",
         takes_arg: false,
         cli_only: false,
-        effect: |_, _, _| CommandEffect::PrintLocal(help_text()),
+        effect: |_, _, _, include_cli_only| CommandEffect::PrintLocal(help_text(include_cli_only)),
     },
     CommandDef {
         names: &["status"],
         help: "show connection info",
         takes_arg: false,
         cli_only: false,
-        effect: |_, url, verbose| CommandEffect::PrintLocal(status_text(url, verbose)),
+        effect: |_, url, verbose, _| CommandEffect::PrintLocal(status_text(url, verbose)),
     },
     CommandDef {
         names: &["verbose", "v"],
         help: "toggle verbose mode (tool events)",
         takes_arg: false,
         cli_only: true,
-        effect: |_, _, _| CommandEffect::ToggleVerbose,
+        effect: |_, _, _, _| CommandEffect::ToggleVerbose,
     },
     CommandDef {
         names: &["reload", "r"],
         help: "reload server configuration",
         takes_arg: false,
         cli_only: false,
-        effect: |_, _, _| CommandEffect::Reload,
+        effect: |_, _, _, _| CommandEffect::Reload,
     },
     CommandDef {
         names: &["observe", "obs"],
         help: "force a memory observation cycle",
         takes_arg: false,
         cli_only: false,
-        effect: |_, _, _| CommandEffect::ServerCommand {
+        effect: |_, _, _, _| CommandEffect::ServerCommand {
             name: "observe",
             args: None,
         },
@@ -133,7 +134,7 @@ static COMMANDS: &[CommandDef] = &[
         help: "force a reflection cycle",
         takes_arg: false,
         cli_only: false,
-        effect: |_, _, _| CommandEffect::ServerCommand {
+        effect: |_, _, _, _| CommandEffect::ServerCommand {
             name: "reflect",
             args: None,
         },
@@ -143,7 +144,7 @@ static COMMANDS: &[CommandDef] = &[
         help: "show context token usage",
         takes_arg: false,
         cli_only: false,
-        effect: |_, _, _| CommandEffect::ServerCommand {
+        effect: |_, _, _, _| CommandEffect::ServerCommand {
             name: "context",
             args: None,
         },
@@ -153,7 +154,7 @@ static COMMANDS: &[CommandDef] = &[
         help: "add a message to the agent's inbox",
         takes_arg: true,
         cli_only: false,
-        effect: |arg, _, _| match arg {
+        effect: |arg, _, _, _| match arg {
             Some(body) if !body.is_empty() => CommandEffect::InboxAdd(body.to_string()),
             _ => CommandEffect::PrintLocal("usage: /inbox <text>".to_string()),
         },
@@ -163,7 +164,7 @@ static COMMANDS: &[CommandDef] = &[
         help: "disconnect and exit",
         takes_arg: false,
         cli_only: true,
-        effect: |_, _, _| CommandEffect::Quit,
+        effect: |_, _, _, _| CommandEffect::Quit,
     },
 ];
 
@@ -185,7 +186,8 @@ pub fn parse_command(input: &str, url: &str, verbose: bool) -> Option<CommandEff
             } else {
                 None
             };
-            return Some((def.effect)(arg, url, verbose));
+            // This is the CLI's own command loop, so CLI-only commands (e.g. /quit) are real here.
+            return Some((def.effect)(arg, url, verbose, true));
         }
     }
 
@@ -203,7 +205,9 @@ pub fn parse_command(input: &str, url: &str, verbose: bool) -> Option<CommandEff
 pub fn execute_command(name: &str, args: Option<&str>, ctx: &CommandContext<'_>) -> CommandResult {
     for def in COMMANDS {
         if def.names.contains(&name) {
-            let effect = (def.effect)(args, ctx.url, ctx.verbose);
+            // Only Discord and Telegram call this entry point, and neither wires up
+            // CLI-only side effects (Quit, ToggleVerbose), so /help must not advertise them.
+            let effect = (def.effect)(args, ctx.url, ctx.verbose, false);
             return effect_to_result(effect);
         }
     }
@@ -261,9 +265,18 @@ pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
     })
 }
 
-fn help_text() -> String {
+/// Build the `/help` response text.
+///
+/// `include_cli_only` gates commands like `/quit` and `/verbose` whose side
+/// effects only the CLI client applies (see `CommandSideEffect`); Discord and
+/// Telegram silently ignore those effects, so listing them there would be
+/// misleading.
+fn help_text(include_cli_only: bool) -> String {
     let mut lines = vec!["Available commands:".to_string()];
-    for def in COMMANDS {
+    for def in COMMANDS
+        .iter()
+        .filter(|def| include_cli_only || !def.cli_only)
+    {
         let aliases = def.names.join(", /");
         let arg_hint = if def.takes_arg { " <text>" } else { "" };
         lines.push(format!(
@@ -463,13 +476,35 @@ mod tests {
     }
 
     #[test]
-    fn help_text_contains_all_commands() {
-        let text = help_text();
+    fn help_text_contains_all_commands_when_cli_only_included() {
+        let text = help_text(true);
         for def in COMMANDS {
             for name in def.names {
                 assert!(text.contains(name), "help text should mention /{name}");
             }
         }
+    }
+
+    #[test]
+    fn help_text_excludes_cli_only_commands_when_not_included() {
+        let text = help_text(false);
+        for def in COMMANDS.iter().filter(|def| def.cli_only) {
+            for name in def.names {
+                assert!(
+                    !text.contains(&format!("/{name}")),
+                    "help text should not mention CLI-only /{name} on non-CLI surfaces"
+                );
+            }
+        }
+        // Non-CLI-only commands must still be listed.
+        assert!(
+            text.contains("help"),
+            "help text should still mention /help"
+        );
+        assert!(
+            text.contains("observe"),
+            "help text should still mention /observe"
+        );
     }
 
     // ── execute_command tests ─────────────────────────────────────────

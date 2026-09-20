@@ -1,11 +1,14 @@
 //! Terminal color theme with `NO_COLOR` support.
 
+use std::io::IsTerminal;
+
 use owo_colors::OwoColorize;
 
 /// Color theme for CLI output.
 ///
-/// Respects the `NO_COLOR` environment variable. When `NO_COLOR` is set,
-/// all formatting methods return plain unmodified text.
+/// Respects the `NO_COLOR` environment variable and disables color when
+/// stdout isn't a terminal. When either is true, all formatting methods
+/// return plain unmodified text.
 pub struct Theme {
     color_enabled: bool,
 }
@@ -13,10 +16,13 @@ pub struct Theme {
 impl Theme {
     /// Detect terminal color support.
     ///
-    /// Returns a theme with colors disabled if `NO_COLOR` is set.
+    /// Returns a theme with colors disabled if `NO_COLOR` is set, or if
+    /// stdout is not a terminal (e.g. piped into `jq` or redirected to a
+    /// file) — otherwise ANSI escape codes would corrupt piped output.
     #[must_use]
     pub fn detect() -> Self {
-        let color_enabled = std::env::var_os("NO_COLOR").is_none();
+        let no_color_requested = std::env::var_os("NO_COLOR").is_some();
+        let color_enabled = !no_color_requested && std::io::stdout().is_terminal();
         Self { color_enabled }
     }
 
@@ -217,9 +223,12 @@ mod tests {
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::remove_var("NO_COLOR") };
         let theme_without_no_color = Theme::detect();
-        assert!(
+        // Test runners capture stdout, so it's not a terminal here; detect()
+        // should track std::io::IsTerminal rather than force color on.
+        assert_eq!(
             theme_without_no_color.color_enabled(),
-            "detect() should enable color when NO_COLOR is absent"
+            std::io::stdout().is_terminal(),
+            "detect() should only enable color when NO_COLOR is absent and stdout is a terminal"
         );
     }
 }

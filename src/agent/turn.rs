@@ -58,7 +58,10 @@ pub(crate) struct TurnResources<'a> {
 /// executing any requested tools in between. Updates `recent_messages` in place.
 ///
 /// MCP tool definitions are merged into the built-in tool list, and tool calls
-/// fall back to MCP servers when no built-in tool matches.
+/// fall back to MCP servers when no built-in tool matches. Name collisions are
+/// resolved by the MCP registry before this merge: a built-in always wins and
+/// the colliding MCP tool is dropped from the union, so the model is never
+/// offered two definitions under one name. See `src/mcp/CLAUDE.md`.
 ///
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are sent via `reply` in real-time but not
@@ -92,7 +95,10 @@ pub(crate) async fn execute_turn(
         let filter = resources.tool_filter.read().await.clone();
         let mut tool_definitions = resources.tools.definitions(&filter);
 
-        // Merge MCP tool definitions from all connected servers
+        // Merge MCP tool definitions from all connected servers. The registry
+        // has already dropped any MCP tool whose name collides with a built-in
+        // or with an earlier server, so this union never carries a duplicate
+        // name (collision policy: src/mcp/CLAUDE.md).
         let mcp_guard = resources.mcp_registry.read().await;
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
@@ -237,7 +243,11 @@ async fn execute_tool(
         )
         .await;
 
-    // Try built-in tools first, fall back to MCP servers
+    // Try built-in tools first, fall back to MCP servers. This ordering is the
+    // dispatch half of the collision policy: a built-in always wins its name,
+    // and the registry has already hidden any shadowed MCP tool from the model
+    // (src/mcp/CLAUDE.md), so the fallback only ever reaches genuinely
+    // MCP-owned names.
     let mut used_mcp = false;
     let result = match resources
         .tools

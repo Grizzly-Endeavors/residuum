@@ -11,7 +11,9 @@
 - [Notification Routing](./docs/notification-routing-design.md)
 - [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
 
-**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, which is only a marketing landing page.
+The design docs above are historical records and may not reflect current behavior — `docs/systems-usage/` is the authoritative reference for how systems work today.
+
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the marketing landing page — it lives in a separate repository, not this one.
 
 ## Build & Quality Gates
 

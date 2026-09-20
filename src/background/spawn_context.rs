@@ -2,7 +2,6 @@
 //! for background tasks (pulse, actions, and on-demand sub-agents).
 
 use std::collections::HashSet;
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -19,6 +18,7 @@ use crate::models::retry::RetryConfig;
 use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
+use crate::subagents::SubagentPresetIndex;
 use crate::subagents::types::SubagentPresetFrontmatter;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
@@ -143,20 +143,22 @@ pub(crate) async fn build_spawn_resources(
     .await)
 }
 
-/// Load a sub-agent preset and resolve its model tier.
+/// Resolve a sub-agent preset's frontmatter, body, and effective model tier
+/// from an already-scanned preset index.
 ///
-/// Returns the resolved tier and the preset frontmatter+body.
-/// Used by pulse, scheduled actions, and on-demand spawning.
+/// Callers that need to look up more than one preset name against the same
+/// directory (e.g. a primary preset with a `general-purpose` fallback) should
+/// scan once via `SubagentPresetIndex::scan` and reuse that index across
+/// calls, rather than re-scanning per lookup.
 ///
 /// # Errors
-/// Returns an error if the preset index cannot be scanned or the preset cannot be loaded.
+/// Returns an error if the preset cannot be found or loaded from the index.
 #[tracing::instrument(skip_all, fields(preset = %preset_name))]
 pub(crate) async fn load_preset_for_spawn(
-    subagents_dir: &Path,
+    index: &SubagentPresetIndex,
     preset_name: &str,
     fallback_tier: BackgroundModelTier,
 ) -> Result<(BackgroundModelTier, SubagentPresetFrontmatter, String), anyhow::Error> {
-    let index = crate::subagents::SubagentPresetIndex::scan(subagents_dir).await?;
     let (fm, body) = index.load_preset(preset_name).await?;
 
     let tier: BackgroundModelTier = match fm.model_tier.as_deref() {

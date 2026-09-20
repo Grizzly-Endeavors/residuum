@@ -125,6 +125,10 @@ pub struct ProjectManifest {
     pub workspace: Vec<ManifestEntry>,
     /// Files under `skills/`.
     pub skills: Vec<ManifestEntry>,
+    /// Number of directory entries that could not be listed (e.g. broken
+    /// symlinks, permission-denied) and were therefore omitted above.
+    /// A non-zero count means the manifest may be incomplete.
+    pub skipped_count: usize,
 }
 
 /// A single file entry in the manifest.

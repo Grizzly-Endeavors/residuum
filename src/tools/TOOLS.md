@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
+> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1a3\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
 
 ### Input
 
@@ -78,7 +78,7 @@ On error:
 |--------------|--------|----------|-----------------------------------------------------------------------------|
 | `path`       | string | yes      | Path to the file to edit                                                    |
 | `operation`  | string | yes      | One of: `"replace"`, `"insert_after"`, `"delete"`                          |
-| `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3"`). Use `"0"` for insert at file start |
+| `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3b2"`). Use `"0"` for insert at file start |
 | `end_line`   | string | no*      | End line anchor `"N:hash"`. Required for `replace` (use same anchor as `start_line` for single-line). Optional for `delete`. Not used by `insert_after`. |
 | `content`    | string | no**     | New content. Required for `replace` and `insert_after`; omitted for `delete` |
 
@@ -219,7 +219,7 @@ On error:
 
 ### Output
 
-On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`
+On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`, followed by one `warning: ...` line per non-fatal failure (MCP server reference resolution, MCP server start, or skill rescan) if any occurred.
 
 On error: project not found or activation failure message.
 
@@ -242,7 +242,7 @@ On error: project not found or activation failure message.
 
 ### Output
 
-On success: `"Deactivated project '{name}'. Log entry recorded."`
+On success: `"Deactivated project '{name}'. Log entry recorded."`, followed by a `warning: skill rescan failed: {error}` line if the post-deactivation skill rescan failed.
 
 On error: no active project, or empty `log`.
 
@@ -537,18 +537,20 @@ On total failure: error with failure details.
 
 ### Input
 
-| Parameter | Type   | Required | Description                          |
-|-----------|--------|----------|---------------------------------------|
-| `title`   | string | yes      | A short summary of the item          |
-| `body`    | string | yes      | The detailed content of the item     |
+| Parameter | Type   | Required | Description                        |
+|-----------|--------|----------|-------------------------------------|
+| `title`   | string | yes      | A short summary of the item        |
+| `body`    | string | yes      | The detailed content of the item   |
 
 ### Output
 
-On success: `"Added item to user inbox with ID: {id}"`
+On success: `"Added item to user inbox with ID: {filename stem}"`
 
-On error: failure to write the item message.
+On error:
+- Missing `title` or `body`
+- Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` item to the user's inbox directory via `inbox::quick_add`, tagged with source `"agent"`.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI.
 
 ---
 
@@ -820,8 +822,6 @@ On execution error:
 - Response parse failure: `"failed to parse ollama web search response: {details}"`
 
 **No side effects.** Read-only tool with a 30-second timeout.
-
-**Not available to sub-agents:** `build_subagent_registry()` never calls `register_ollama_web_search_tool`.
 
 ---
 

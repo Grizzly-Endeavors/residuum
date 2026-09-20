@@ -70,8 +70,9 @@
       if (typeof parsed.step !== "number" || typeof parsed.wizardState !== "object") {
         return null;
       }
-      return { step: parsed.step, wizardState: parsed.wizardState as SetupWizardState };
+      return { step: parsed.step, wizardState: parsed.wizardState };
     } catch (err: unknown) {
+      // eslint-disable-next-line no-console -- draft is discarded before any UI mounts; console is the only channel
       console.warn("discarding unreadable setup draft", err);
       localStorage.removeItem(STORAGE_KEY);
       return null;
@@ -113,6 +114,7 @@
         const sanitized = sanitizeForStorage($state.snapshot(wizardState));
         localStorage.setItem(STORAGE_KEY, JSON.stringify({ step, wizardState: sanitized }));
       } catch (err: unknown) {
+        // eslint-disable-next-line no-console -- debounced autosave; a toast here would fire on every keystroke
         console.warn("failed to persist setup draft", err);
       }
     }, 500);
