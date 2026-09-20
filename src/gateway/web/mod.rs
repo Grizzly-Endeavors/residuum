@@ -279,7 +279,6 @@ mod tests {
                 date,
                 context: "general".to_string(),
                 observations: vec![],
-                source_episodes: vec![],
             };
             write_episode_transcript(
                 &episodes_dir,
@@ -349,7 +348,6 @@ mod tests {
                 date,
                 context: "general".to_string(),
                 observations: vec![],
-                source_episodes: vec![],
             };
             write_episode_transcript(
                 &episodes_dir,

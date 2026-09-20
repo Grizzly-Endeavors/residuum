@@ -23,9 +23,6 @@ pub(crate) struct Episode {
     pub(crate) context: String,
     /// Concise single-sentence observations extracted from the conversation.
     pub(crate) observations: Vec<String>,
-    /// IDs of episodes that were merged to create this one (for reflected episodes).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) source_episodes: Vec<String>,
 }
 
 /// Visibility of an observation relative to the conversation context.

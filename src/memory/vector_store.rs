@@ -113,12 +113,6 @@ impl VectorStore {
         })
     }
 
-    /// Embedding dimension this store was created with.
-    #[must_use]
-    pub fn dim(&self) -> usize {
-        self.dim
-    }
-
     /// Insert observation embeddings for a single episode.
     ///
     /// Each observation gets a doc ID of `"{episode_id}-o{index}"`.
@@ -355,18 +349,6 @@ impl VectorStore {
             .exists(rusqlite::params![chunk_id])
             .context("chunk existence check failed")?;
         Ok(exists)
-    }
-
-    /// Drop and recreate both tables, clearing all vector data.
-    ///
-    /// # Errors
-    /// Returns an error if the tables cannot be recreated.
-    pub fn clear(&self) -> anyhow::Result<()> {
-        let conn = self.lock_conn()?;
-        conn.execute_batch("DROP TABLE IF EXISTS obs_vectors; DROP TABLE IF EXISTS chunk_vectors;")
-            .context("failed to drop vector tables")?;
-        create_tables(&conn, self.dim)?;
-        Ok(())
     }
 
     /// Lock the connection mutex.
@@ -619,12 +601,6 @@ mod tests {
     }
 
     #[test]
-    fn open_or_create_succeeds() {
-        let (_dir, store) = create_test_store();
-        assert_eq!(store.dim(), TEST_DIM, "dimension should match");
-    }
-
-    #[test]
     fn insert_and_search_observations() {
         let (_dir, store) = create_test_store();
 
@@ -702,25 +678,6 @@ mod tests {
             .search(&query, 5, &VectorSearchFilters::default())
             .unwrap();
         assert!(after.is_empty(), "should be empty after delete");
-    }
-
-    #[test]
-    fn clear_removes_all() {
-        let (_dir, store) = create_test_store();
-
-        let obs = vec![sample_observation("test")];
-        let embeddings = vec![sample_embedding(0.1)];
-        store
-            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
-            .unwrap();
-
-        store.clear().unwrap();
-
-        let query = sample_embedding(0.1);
-        let results = store
-            .search(&query, 5, &VectorSearchFilters::default())
-            .unwrap();
-        assert!(results.is_empty(), "should be empty after clear");
     }
 
     #[test]

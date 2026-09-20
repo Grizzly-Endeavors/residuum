@@ -506,7 +506,6 @@ mod tests {
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
             context: "general".to_string(),
             observations: vec!["user prefers concise output".to_string()],
-            source_episodes: vec![],
         }
     }
 

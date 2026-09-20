@@ -292,7 +292,6 @@ async fn build_episode_and_persist(
             .iter()
             .map(|e| e.content.clone())
             .collect(),
-        source_episodes: vec![],
     };
 
     // Persist transcript
@@ -670,7 +669,6 @@ mod tests {
             date: chrono::Utc::now().naive_utc().date(),
             context: String::new(),
             observations: vec![],
-            source_episodes: vec![],
         };
         let obs_archive = episode_obs_path(&layout.episodes_dir(), &episode);
         assert!(
