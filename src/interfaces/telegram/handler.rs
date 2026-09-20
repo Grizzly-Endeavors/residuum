@@ -10,7 +10,7 @@ use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
@@ -23,6 +23,7 @@ struct TelegramContext<'a> {
     inbox_dir: &'a Path,
     reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
+    stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
     tz: chrono_tz::Tz,
 }
 
@@ -53,6 +54,7 @@ pub(super) async fn run_telegram_polling(
     let bus_handle = senders.bus_handle;
     let reload_tx = senders.reload;
     let command_tx = senders.command;
+    let stop_tx = senders.stop;
     // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
@@ -150,6 +152,7 @@ pub(super) async fn run_telegram_polling(
                 inbox_dir: &inbox_dir,
                 reload_tx: &reload_tx,
                 command_tx: &command_tx,
+                stop_tx: &stop_tx,
                 tz,
             };
             dispatch_message(&bot, &msg, from, &ctx).await;
@@ -321,6 +324,9 @@ async fn handle_command(
                 result.response,
             )
             .await
+        }
+        Some(CommandSideEffect::Stop) => {
+            crate::interfaces::dispatch_stop_request(ctx.stop_tx, "telegram command").await
         }
         None => result.response,
     };

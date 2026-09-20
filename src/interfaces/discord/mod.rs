@@ -69,6 +69,7 @@ impl DiscordInterface {
             inbox_dir,
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
+            stop_tx: self.senders.stop,
             tz: self.tz,
         };
 

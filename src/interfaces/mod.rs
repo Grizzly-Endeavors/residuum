@@ -94,3 +94,37 @@ pub(crate) async fn dispatch_server_command(
         }
     }
 }
+
+/// Dispatch a stop request for the currently running turn and wait for the outcome.
+///
+/// Unlike `dispatch_server_command`, this doesn't go through `command_tx` —
+/// that pipeline only drains between turns, too late to stop one in
+/// progress. `stop_tx` reaches the active turn's own select loop directly.
+#[tracing::instrument(skip_all, fields(source = %source))]
+pub(crate) async fn dispatch_stop_request(
+    stop_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    source: &str,
+) -> String {
+    use std::time::Duration;
+    tracing::info!(source = %source, "stop requested");
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    if let Err(e) = stop_tx.try_send(crate::gateway::types::StopRequest {
+        reply_to: None,
+        result_tx: Some(result_tx),
+    }) {
+        tracing::warn!(source = %source, error = %e, "failed to dispatch stop request");
+        return "couldn't reach the agent to stop it — try again in a moment.".to_string();
+    }
+    match tokio::time::timeout(Duration::from_secs(5), result_rx).await {
+        Ok(Ok(true)) => "stopped the current turn.".to_string(),
+        Ok(Ok(false)) => "nothing is running right now.".to_string(),
+        Ok(Err(_)) => {
+            tracing::warn!(source = %source, "stop reply channel closed before response");
+            "nothing is running right now.".to_string()
+        }
+        Err(_) => {
+            tracing::warn!(source = %source, "stop request timed out waiting for reply");
+            "couldn't confirm the stop in time — it may still have worked.".to_string()
+        }
+    }
+}

@@ -46,6 +46,12 @@ pub enum CommandSideEffect {
         /// Optional argument text.
         args: Option<String>,
     },
+    /// Stop the currently running agent turn, if any.
+    ///
+    /// Kept separate from `ServerCommand` because a stop must reach a turn
+    /// while it's running; `ServerCommand` only gets processed between
+    /// turns (see `dispatch_stop_request`).
+    Stop,
 }
 
 struct CommandDef {
@@ -109,6 +115,15 @@ static COMMANDS: &[CommandDef] = &[
         help: "show context token usage",
         takes_arg: false,
         effect: |_, _, _| server_command_result("context"),
+    },
+    CommandDef {
+        names: &["stop"],
+        help: "stop the current agent turn",
+        takes_arg: false,
+        effect: |_, _, _| CommandResult {
+            response: "stopping the current turn…".to_string(),
+            side_effect: Some(CommandSideEffect::Stop),
+        },
     },
     CommandDef {
         names: &["inbox"],
@@ -265,6 +280,12 @@ mod tests {
                 args: None
             })
         );
+    }
+
+    #[test]
+    fn execute_stop_returns_stop_side_effect() {
+        let result = execute_command("stop", None, &ctx());
+        assert_eq!(result.side_effect, Some(CommandSideEffect::Stop));
     }
 
     #[test]
