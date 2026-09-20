@@ -27,6 +27,12 @@
     void userInbox.archive(id);
   }
 
+  function formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   function relativeTime(isoString: string): string {
     const then = new Date(isoString);
     const now = new Date();
@@ -82,6 +88,24 @@
                   <div class="inbox-item-body">
                     {item.body}
                   </div>
+                  {#if item.attachments.length > 0}
+                    <div class="inbox-item-attachments">
+                      {#each item.attachments as attachment (attachment.url)}
+                        <a
+                          class="attachment-chip"
+                          href={attachment.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          download={attachment.filename}
+                          aria-label={`Download attachment ${attachment.filename}, ${formatSize(attachment.size)}`}
+                        >
+                          <Icon name="paperclip" size={11} />
+                          <span class="attachment-chip-name">{attachment.filename}</span>
+                          <span class="attachment-chip-size">{formatSize(attachment.size)}</span>
+                        </a>
+                      {/each}
+                    </div>
+                  {/if}
                 {:else}
                   <span class="inbox-item-hint">tap to read</span>
                 {/if}
@@ -414,6 +438,56 @@
     padding-top: var(--s-3);
     border-top: 1px solid var(--border-subtle);
     margin-top: var(--s-2);
+  }
+
+  .inbox-item-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+
+  .attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 3px var(--s-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    color: var(--text-dim);
+    text-decoration: none;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.02em;
+    transition:
+      color var(--dur-quick),
+      background-color var(--dur-quick),
+      border-color var(--dur-quick);
+  }
+
+  .attachment-chip:hover {
+    color: var(--vein);
+    background: var(--vein-faint);
+    border-color: var(--vein-dim);
+  }
+
+  .attachment-chip:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .attachment-chip-name {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .attachment-chip-size {
+    flex-shrink: 0;
+    opacity: 0.65;
   }
 
   .inbox-item-hint {
