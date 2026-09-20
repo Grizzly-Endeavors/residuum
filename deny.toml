@@ -1,19 +1,38 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
+#
+# Posture: block on known vulnerabilities and on supply-chain source problems.
+# Do NOT block on unmaintained or yanked crates.
+#
+# Why: a transitive crate whose maintainer walked away carries a RUSTSEC
+# *unmaintained* advisory with no upgrade path. You cannot fix it without
+# forking whichever framework pulls it in, so blocking on it just makes the
+# repo undeployable for a problem you have no lever on. Vulnerabilities are
+# actionable; abandonment usually isn't.
 
 [advisories]
-db-path = "~/.cargo/advisory-db"
+version = 2
 db-urls = ["https://github.com/rustsec/advisory-db"]
+unmaintained = "none"
+yanked = "warn"
+# One line per RUSTSEC id, each with a comment saying why it's tolerated and
+# what would let you drop it. An ignore with no justification is a silent
+# downgrade of the whole check.
 ignore = [
-    "RUSTSEC-2026-0049", # rustls-webpki CRL matching — transitive via serenity/tokio-tungstenite/rustls 0.22; no patched 0.102.x available
-    "RUSTSEC-2026-0098", # rustls-webpki name-constraints (URI) — same transitive TLS-stack surface as 0049, affecting 0.102.8 and 0.103.10; no patched versions available
-    "RUSTSEC-2026-0099", # rustls-webpki name-constraints (wildcards) — same transitive TLS-stack surface as 0049; no patched versions available
-    "RUSTSEC-2026-0104", # rustls-webpki reachable panic in CRL parsing — transitive via serenity/rustls 0.22; residuum does not use CRLs
-    "RUSTSEC-2026-0189", # rmcp DNS rebinding — affects the Streamable HTTP *server* transport; residuum only uses rmcp's client transports (transport-streamable-http-client-reqwest, transport-child-process), so it is not exposed. Fix requires rmcp 2.x (major bump).
-    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained — transitive, build-time-only proc-macro dependency; no patched version exists.
+    "RUSTSEC-2026-0049", # rustls-webpki CRL matching — transitive via serenity/tokio-tungstenite/rustls 0.22; no patched 0.102.x available. Drops when serenity moves off rustls 0.22.
+    "RUSTSEC-2026-0098", # rustls-webpki name-constraints (URI) — same transitive TLS-stack surface as 0049; only the 0.102.8 copy is still affected. Drops when serenity moves off rustls 0.22.
+    "RUSTSEC-2026-0099", # rustls-webpki name-constraints (wildcards) — same transitive TLS-stack surface as 0049; only the 0.102.8 copy is still affected. Drops when serenity moves off rustls 0.22.
+    "RUSTSEC-2026-0104", # rustls-webpki reachable panic in CRL parsing — transitive via serenity/rustls 0.22; residuum does not use CRLs. Drops with the rest of the 0.22 stack.
+    "RUSTSEC-2026-0189", # rmcp DNS rebinding — affects the Streamable HTTP *server* transport; residuum only uses rmcp's client transports (transport-streamable-http-client-reqwest, transport-child-process), so it is not exposed. Drops on rmcp 2.x (major bump).
 ]
 
 [licenses]
+version = 2
+# Don't fail when the allow list includes a license no dependency actually uses.
+unused-allowed-license = "allow"
+# There is no way to invert this into a deny-list — cargo-deny has no `deny`,
+# `copyleft`, or `allow-osi-fsf-free` field under [licenses]. Anything absent
+# here is denied by the tool's hardcoded default. GPL/AGPL/SSPL block by omission.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -22,16 +41,27 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Zlib",
+    "0BSD",
+    "CC0-1.0",
     "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "OpenSSL",
     "BSL-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
+[licenses.private]
+# Unpublished binaries don't need a license field of their own.
+ignore = true
+
 [bans]
+# Duplicate major versions are visible but not fatal — a transitive dep pinning
+# an older major is common and usually not worth a fork to resolve.
 multiple-versions = "warn"
-wildcards = "allow"
+# A `*` version requirement means "whatever resolves today", which is not a pin.
+wildcards = "deny"
 highlight = "all"
 
 [sources]
