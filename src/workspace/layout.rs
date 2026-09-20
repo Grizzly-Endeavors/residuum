@@ -197,7 +197,7 @@ impl WorkspaceLayout {
         self.root.join("memory/background")
     }
 
-    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`, `run_counts`).
+    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).
     #[must_use]
     pub fn pulse_state_json(&self) -> PathBuf {
         self.root.join("pulse_state.json")
