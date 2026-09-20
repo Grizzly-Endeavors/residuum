@@ -135,6 +135,20 @@ impl WorkspaceLayout {
         self.root.join("archive/inbox/user")
     }
 
+    /// Path to the directory holding copied attachment files for user inbox items,
+    /// one subdirectory per item ID.
+    #[must_use]
+    pub fn user_inbox_attachments_dir(&self) -> PathBuf {
+        self.root.join("inbox/user/attachments")
+    }
+
+    /// Path to the archived counterpart of `user_inbox_attachments_dir` — where an
+    /// item's attachment subdirectory moves to when the item itself is archived.
+    #[must_use]
+    pub fn user_inbox_archive_attachments_dir(&self) -> PathBuf {
+        self.root.join("archive/inbox/user/attachments")
+    }
+
     /// Path to memory/OBSERVER.md -- observer extraction system prompt.
     #[must_use]
     pub fn observer_md(&self) -> PathBuf {
@@ -210,6 +224,7 @@ impl WorkspaceLayout {
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),
             self.user_inbox_archive_dir(),
+            self.user_inbox_attachments_dir(),
             self.config_dir(),
         ]
     }
@@ -276,6 +291,16 @@ mod tests {
             layout.user_inbox_archive_dir(),
             PathBuf::from("/tmp/ws/archive/inbox/user"),
             "user_inbox_archive_dir path"
+        );
+        assert_eq!(
+            layout.user_inbox_attachments_dir(),
+            PathBuf::from("/tmp/ws/inbox/user/attachments"),
+            "user_inbox_attachments_dir path"
+        );
+        assert_eq!(
+            layout.user_inbox_archive_attachments_dir(),
+            PathBuf::from("/tmp/ws/archive/inbox/user/attachments"),
+            "user_inbox_archive_attachments_dir path"
         );
         assert_eq!(
             layout.vectors_db(),
