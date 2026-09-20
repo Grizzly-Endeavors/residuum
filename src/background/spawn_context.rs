@@ -16,13 +16,11 @@ use crate::memory::search::HybridSearcher;
 use crate::models::retry::RetryConfig;
 use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::skills::SharedSkillState;
-use crate::subagents::SubagentPresetIndex;
-use crate::subagents::types::SubagentPresetFrontmatter;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::subagent::{SubAgentResources, build_subagent_resources};
-use super::types::{PresetToolRestriction, SubAgentBuildConfig};
+use super::types::SubAgentBuildConfig;
 
 /// Everything needed to spawn background tasks from the gateway event loop.
 pub(crate) struct SpawnContext {
@@ -42,24 +40,28 @@ pub(crate) struct SpawnContext {
     pub(crate) action_store: Arc<Mutex<ActionStore>>,
     pub(crate) action_notify: Arc<Notify>,
     pub(crate) hybrid_searcher: Arc<HybridSearcher>,
+    /// Main agent skill state — cloned per spawn into isolated sub-agent state.
+    pub(crate) skill_state: SharedSkillState,
+    /// Shared MCP registry (ref-counted across sub-agents).
+    pub(crate) mcp_registry: SharedMcpRegistry,
 }
 
 /// Build isolated `SubAgentResources` for a background task at a given tier.
 ///
 /// Resolves the model tier to a concrete provider spec, constructs the provider,
-/// and calls `background::build_resources()` with fresh isolated state.
-///
-/// If `preset` is provided, its tool restrictions and instructions are applied.
+/// and builds fresh isolated state. When `skill` is set, that skill is activated
+/// on the sub-agent's own skill state so its body becomes the sub-agent's role
+/// instructions.
 ///
 /// # Errors
-/// Returns an error if provider construction fails (e.g. missing API key).
-#[tracing::instrument(skip_all, fields(tier = ?tier))]
+/// Returns an error if provider construction fails (e.g. missing API key), the
+/// identity files cannot be read, or `skill` names a skill that does not resolve.
+#[tracing::instrument(skip_all, fields(tier = ?tier, skill = skill.unwrap_or("none")))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
-    skill_state: &SharedSkillState,
-    mcp_registry: SharedMcpRegistry,
-    preset: Option<(&SubagentPresetFrontmatter, String)>,
+    skill: Option<&str>,
+    include_identity: bool,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let specs = ctx
         .background_config
@@ -73,23 +75,6 @@ pub(crate) async fn build_spawn_resources(
         ctx.retry_config.clone(),
     )
     .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
-
-    let (preset_tool_restriction, preset_instructions, include_identity) = match preset {
-        Some((fm, body)) => {
-            let restriction = match (&fm.allowed_tools, &fm.denied_tools) {
-                (Some(allowed), _) => Some(PresetToolRestriction::AllowedOnly(
-                    allowed.iter().cloned().collect(),
-                )),
-                (None, Some(denied)) => Some(PresetToolRestriction::Denied(
-                    denied.iter().cloned().collect(),
-                )),
-                (None, None) => None,
-            };
-            let instructions = if body.is_empty() { None } else { Some(body) };
-            (restriction, instructions, fm.include_identity)
-        }
-        None => (None, None, false),
-    };
 
     // Apply per-tier overrides over global options
     let tier_key = match tier {
@@ -114,12 +99,11 @@ pub(crate) async fn build_spawn_resources(
         .context("failed to load identity files for sub-agent spawn")?;
 
     let build_config = SubAgentBuildConfig {
-        preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
         identity,
         options,
         tz: ctx.tz,
-        preset_instructions,
+        skill: skill.map(str::to_string),
         include_identity,
         background_spawner: Arc::clone(&ctx.background_spawner),
         endpoint_registry: ctx.endpoint_registry.clone(),
@@ -129,34 +113,11 @@ pub(crate) async fn build_spawn_resources(
         hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
     };
 
-    Ok(build_subagent_resources(provider, skill_state, mcp_registry, build_config).await)
-}
-
-/// Resolve a sub-agent preset's frontmatter, body, and effective model tier
-/// from an already-scanned preset index.
-///
-/// Callers that need to look up more than one preset name against the same
-/// directory (e.g. a primary preset with a `general-purpose` fallback) should
-/// scan once via `SubagentPresetIndex::scan` and reuse that index across
-/// calls, rather than re-scanning per lookup.
-///
-/// # Errors
-/// Returns an error if the preset cannot be found or loaded from the index.
-#[tracing::instrument(skip_all, fields(preset = %preset_name))]
-pub(crate) async fn load_preset_for_spawn(
-    index: &SubagentPresetIndex,
-    preset_name: &str,
-    fallback_tier: BackgroundModelTier,
-) -> Result<(BackgroundModelTier, SubagentPresetFrontmatter, String), anyhow::Error> {
-    let (fm, body) = index.load_preset(preset_name).await?;
-
-    let tier: BackgroundModelTier = match fm.model_tier.as_deref() {
-        Some(s) => s.parse().unwrap_or_else(|_| {
-            tracing::warn!(model_tier = %s, "unknown model_tier, using fallback");
-            fallback_tier
-        }),
-        None => fallback_tier,
-    };
-
-    Ok((tier, fm, body))
+    build_subagent_resources(
+        provider,
+        &ctx.skill_state,
+        Arc::clone(&ctx.mcp_registry),
+        build_config,
+    )
+    .await
 }

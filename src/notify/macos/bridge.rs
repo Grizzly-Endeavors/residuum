@@ -9,6 +9,9 @@ use super::MacosChannelConfig;
 use super::categories::{
     MacosInterruptionLevel, MacosNotificationAction, NOTIFICATION_CATEGORY_ID,
 };
+use crate::bus::NotificationEvent;
+use crate::notify::batch_aggregator::{self, NotificationBridge};
+use async_trait::async_trait;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
@@ -198,6 +201,64 @@ impl MacosBridge {
     #[must_use]
     pub fn config(&self) -> &MacosChannelConfig {
         &self.config
+    }
+}
+
+/// Urgent results break through Focus modes; everything else uses the
+/// configured default. This is the only thing that varies the interruption
+/// level, so a channel with no urgent traffic behaves exactly as configured.
+fn interruption_level_for(urgent: bool, config: &MacosChannelConfig) -> MacosInterruptionLevel {
+    if urgent {
+        MacosInterruptionLevel::TimeSensitive
+    } else {
+        config.default_priority
+    }
+}
+
+#[async_trait]
+impl NotificationBridge for MacosBridge {
+    async fn deliver_individual(&self, notif: &NotificationEvent) {
+        let id = format!("residuum-{}", uuid::Uuid::new_v4());
+        let text = NotificationText {
+            title: self.config.app_name.clone(),
+            subtitle: notif.title.replace('_', " "),
+            body: batch_aggregator::truncate_body(&notif.content, 200),
+        };
+
+        if let Err(e) = self
+            .post_notification(
+                &id,
+                text,
+                NOTIFICATION_CATEGORY_ID,
+                interruption_level_for(notif.urgent, &self.config),
+                self.config.sound,
+                NOTIFICATION_CATEGORY_ID,
+            )
+            .await
+        {
+            tracing::warn!(
+                task = %notif.title,
+                error = %e,
+                "failed to post individual notification"
+            );
+        }
+    }
+
+    async fn deliver_summary(&self, title: &str, body: &str, urgent: bool) {
+        if let Err(e) = self
+            .post_summary(title, body, interruption_level_for(urgent, &self.config))
+            .await
+        {
+            tracing::warn!(error = %e, "failed to post summary notification");
+        }
+    }
+
+    fn app_name(&self) -> &str {
+        &self.config.app_name
+    }
+
+    fn platform_label(&self) -> &'static str {
+        "macOS"
     }
 }
 

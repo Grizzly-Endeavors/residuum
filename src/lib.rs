@@ -13,7 +13,6 @@ pub mod models;
 pub mod notify;
 pub mod pulse;
 pub mod skills;
-pub mod subagents;
 pub mod subconscious;
 pub mod time;
 pub mod tools;

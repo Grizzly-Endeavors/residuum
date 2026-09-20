@@ -26,5 +26,5 @@ pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};
 pub use topics::{Carries, Topic};
 pub use types::{
-    BusError, EndpointId, EndpointName, NotifyName, PresetName, SYSTEM_CHANNEL, TopicId,
+    BusError, EndpointId, EndpointName, NotifyName, SYSTEM_CHANNEL, SkillName, TopicId,
 };

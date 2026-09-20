@@ -201,9 +201,7 @@ async fn publish_to_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{
-        AgentResultStatus, EndpointCapabilities, EndpointEntry, NotifyName, PresetName, TopicId,
-    };
+    use crate::bus::{AgentResultStatus, EndpointCapabilities, EndpointEntry, NotifyName, TopicId};
     use chrono::NaiveDate;
 
     fn sample_timestamp() -> chrono::NaiveDateTime {
@@ -217,7 +215,7 @@ mod tests {
         AgentResultEvent {
             task_id: "t1".into(),
             source_label: "pulse:email_check".into(),
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
             source: EventTrigger::Pulse,
             disposition,
             status: AgentResultStatus::Completed,

@@ -141,7 +141,7 @@ port = 7700
 #
 # Options:
 #   secret         - Bearer token for auth (supports ${ENV_VAR} / secret:name)
-#   routing        - "inbox" (default) or "agent:<preset_name>"
+#   routing        - "inbox" (default) or "agent:<skill_name>"
 #   format         - "parsed" (default) or "raw"
 #   content_fields - JSON dot-paths to extract (parsed format only)
 #

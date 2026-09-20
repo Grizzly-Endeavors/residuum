@@ -45,8 +45,7 @@ workspace/
 │   ├── .index_manifest.json # Index file tracking
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── background/          # Background task transcripts (YYYY-MM/DD/)
-├── skills/                  # Workspace-level skills
-├── subagents/               # Subagent presets
+├── skills/                  # Workspace-level skills (also sub-agent roles)
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
 └── inbox/                   # Active inbox items

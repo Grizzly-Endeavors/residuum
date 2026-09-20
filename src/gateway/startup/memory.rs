@@ -119,7 +119,8 @@ pub(super) async fn init_memory(
     } else {
         manifest.clone()
     };
-    sync_search_index(&search_index, &sync_manifest, layout, &manifest_path).await;
+    let stale_vector_doc_ids =
+        sync_search_index(&search_index, &sync_manifest, layout, &manifest_path).await;
 
     // Vector store (only if embedding provider is configured)
     let vector_store: Option<Arc<VectorStore>> = if let Some(ep) = embedding_provider {
@@ -127,6 +128,13 @@ pub(super) async fn init_memory(
     } else {
         None
     };
+
+    // Prune vector rows for docs the BM25 sync above just dropped (deleted or
+    // modified episode files), keeping the vector store consistent with the
+    // search index. No-op when there is no vector store to prune.
+    if let Some(vs) = &vector_store {
+        prune_stale_vectors(vs, &stale_vector_doc_ids);
+    }
 
     // Backfill embeddings for any unembedded files
     if let (Some(vs), Some(ep)) = (&vector_store, embedding_provider) {
@@ -174,14 +182,20 @@ async fn do_full_rebuild(
 }
 
 /// Synchronize the search index (full rebuild or incremental sync).
+///
+/// Returns the doc IDs the sync dropped from the BM25 index (deleted or modified
+/// episode files) so the caller can prune the same rows from the vector store. A
+/// full rebuild returns no IDs — it only runs when the manifest is empty, so there
+/// is nothing prior to consider stale.
 async fn sync_search_index(
     search_index: &MemoryIndex,
     manifest: &IndexManifest,
     layout: &WorkspaceLayout,
     manifest_path: &Path,
-) {
+) -> Vec<String> {
     if manifest.files.is_empty() {
         do_full_rebuild(search_index, layout, manifest_path).await;
+        Vec::new()
     } else {
         match search_index.incremental_sync(&layout.memory_dir(), manifest) {
             Ok((synced_manifest, stats)) => {
@@ -195,11 +209,38 @@ async fn sync_search_index(
                 if let Err(save_err) = synced_manifest.save(manifest_path).await {
                     tracing::warn!(error = %save_err, "failed to save index manifest after sync");
                 }
+                stats.pruned_doc_ids
             }
             Err(sync_err) => {
                 tracing::warn!(error = %sync_err, "incremental sync failed, falling back to full rebuild");
                 do_full_rebuild(search_index, layout, manifest_path).await;
+                Vec::new()
             }
+        }
+    }
+}
+
+/// Remove vector rows for docs that the BM25 sync just dropped, keeping the
+/// vector store consistent with the search index.
+///
+/// A failed prune is logged and never blocks startup — BM25 pruning has already
+/// completed independently by the time this runs, so the worst outcome is a few
+/// orphaned rows left for the next sync to catch.
+fn prune_stale_vectors(vs: &VectorStore, doc_ids: &[String]) {
+    if doc_ids.is_empty() {
+        return;
+    }
+
+    match vs.delete_by_doc_ids(doc_ids) {
+        Ok(()) => {
+            tracing::info!(count = doc_ids.len(), "pruned stale vector store entries");
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                count = doc_ids.len(),
+                "failed to prune stale vector store entries"
+            );
         }
     }
 }
@@ -411,4 +452,90 @@ async fn backfill_idx_file(
     let embeddings = response.embeddings;
     vs.insert_chunks(&chunks, &embeddings)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::types::{Observation, Visibility};
+    use crate::models::{EmbeddingResponse, ModelError};
+    use async_trait::async_trait;
+
+    /// Embedding provider that returns a fixed-dimension vector for every text,
+    /// so tests can exercise the vector store without a real API call.
+    struct FakeEmbedder;
+
+    #[async_trait]
+    impl EmbeddingProvider for FakeEmbedder {
+        async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+            Ok(EmbeddingResponse {
+                embeddings: texts.iter().map(|_| vec![0.1, 0.2, 0.3, 0.4]).collect(),
+                dimensions: 4,
+            })
+        }
+
+        fn model_name(&self) -> &'static str {
+            "fake-embedder"
+        }
+    }
+
+    fn write_obs_file(path: &Path, content: &str) {
+        let obs = vec![Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: content.to_string(),
+        }];
+        std::fs::create_dir_all(path.parent().expect("obs path should have a parent"))
+            .expect("failed to create episode directory");
+        std::fs::write(
+            path,
+            serde_json::to_string(&obs).expect("obs should serialize"),
+        )
+        .expect("failed to write obs file");
+    }
+
+    #[tokio::test]
+    async fn deleted_episode_prunes_its_vector_rows_on_resync() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let manifest_path = layout.index_manifest_json();
+        let ep = FakeEmbedder;
+
+        let obs_path = layout.episodes_dir().join("2026-02/19/ep-001.obs.json");
+        write_obs_file(&obs_path, "vector store prune regression coverage");
+
+        let search_index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
+
+        // First startup: index the episode, then build and backfill the vector store.
+        let manifest = IndexManifest::load(&manifest_path).await.unwrap();
+        sync_search_index(&search_index, &manifest, &layout, &manifest_path).await;
+        let vs = build_vector_store(&ep, &layout, &manifest, &manifest_path)
+            .await
+            .expect("vector store should build with a working embedding provider");
+        backfill_embeddings(&vs, &ep, &layout, &manifest_path).await;
+
+        assert!(
+            vs.has_observation("ep-001-o0").unwrap(),
+            "vector row should exist after the episode is indexed and embedded"
+        );
+
+        // Simulate the episode file being deleted, then a second startup's sync.
+        std::fs::remove_file(&obs_path).unwrap();
+        let manifest2 = IndexManifest::load(&manifest_path).await.unwrap();
+        let pruned_doc_ids =
+            sync_search_index(&search_index, &manifest2, &layout, &manifest_path).await;
+        assert_eq!(
+            pruned_doc_ids,
+            vec!["ep-001-o0".to_string()],
+            "sync should report the deleted episode's doc IDs as pruned"
+        );
+
+        prune_stale_vectors(&vs, &pruned_doc_ids);
+
+        assert!(
+            !vs.has_observation("ep-001-o0").unwrap(),
+            "vector row should be pruned once its episode file is gone"
+        );
+    }
 }

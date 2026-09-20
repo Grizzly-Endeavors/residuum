@@ -35,22 +35,21 @@ const DEFAULT_REFLECTOR_PROMPT: &str =
 
 const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
 
-/// Built-in `introspection` subagent preset, used by the reflection and
-/// `memory_tending` pulses to review episode memory and tend identity files.
-const DEFAULT_INTROSPECTION_PRESET: &str =
-    include_str!("../../assets/workspace-bootstrap/subagents/introspection.md");
+/// Built-in `introspection` skill, used by the reflection and `memory_tending`
+/// pulses to review episode memory and tend identity files.
+const INTROSPECTION_SKILL_MD: &str =
+    include_str!("../../assets/bundled-skills/introspection/SKILL.md");
 
-/// Built-in `learner` subagent preset, spawned by the subconscious when a single
-/// learnable signal is detected in the live conversation. Corroborates the signal
-/// and makes it durable (preference promotion or a queued recovery fix).
-const DEFAULT_LEARNER_PRESET: &str =
-    include_str!("../../assets/workspace-bootstrap/subagents/learner.md");
+/// Built-in `learner` skill, spawned by the subconscious when a single learnable
+/// signal is detected in the live conversation. Corroborates the signal and makes
+/// it durable (preference promotion or a queued recovery fix).
+const LEARNER_SKILL_MD: &str = include_str!("../../assets/bundled-skills/learner/SKILL.md");
 
-/// Built-in `memory-analyst` subagent preset, used to answer synthesized questions
-/// about the user or past history so the main agent gets grounded conclusions
-/// instead of raw search excerpts.
-const DEFAULT_MEMORY_ANALYST_PRESET: &str =
-    include_str!("../../assets/workspace-bootstrap/subagents/memory-analyst.md");
+/// Built-in `memory-analyst` skill, used to answer synthesized questions about the
+/// user or past history so the main agent gets grounded conclusions instead of raw
+/// search excerpts.
+const MEMORY_ANALYST_SKILL_MD: &str =
+    include_str!("../../assets/bundled-skills/memory-analyst/SKILL.md");
 
 /// Default subconscious check policy written to SUBCONSCIOUS.md.
 ///
@@ -184,22 +183,6 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
 
-    write_if_missing(
-        &layout.subagents_dir().join("introspection.md"),
-        DEFAULT_INTROSPECTION_PRESET,
-    )
-    .await?;
-    write_if_missing(
-        &layout.subagents_dir().join("learner.md"),
-        DEFAULT_LEARNER_PRESET,
-    )
-    .await?;
-    write_if_missing(
-        &layout.subagents_dir().join("memory-analyst.md"),
-        DEFAULT_MEMORY_ANALYST_PRESET,
-    )
-    .await?;
-
     // Write bundled skills
     write_bundled_skills(layout).await?;
 
@@ -273,6 +256,23 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
         SYSTEM_REF_BACKGROUND,
     )
     .await?;
+
+    // Role skills — spawned as sub-agents by pulses, the subconscious, and the
+    // main agent. They carry no references, so each is a lone SKILL.md.
+    for (name, body) in [
+        ("introspection", INTROSPECTION_SKILL_MD),
+        ("learner", LEARNER_SKILL_MD),
+        ("memory-analyst", MEMORY_ANALYST_SKILL_MD),
+    ] {
+        let dir = layout.skills_dir().join(name);
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+            FatalError::Workspace(format!(
+                "failed to create skill directory {}: {e}",
+                dir.display()
+            ))
+        })?;
+        write_if_missing(&dir.join("SKILL.md"), body).await?;
+    }
 
     // residuum-getting-started skill
     let started_dir = layout.skills_dir().join("residuum-getting-started");
@@ -400,65 +400,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_creates_introspection_preset() {
+    async fn bootstrap_creates_role_skills() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        let preset_path = layout.subagents_dir().join("introspection.md");
-        assert!(preset_path.exists(), "introspection.md should be created");
+        for name in ["introspection", "learner", "memory-analyst"] {
+            let skill_path = layout.skills_dir().join(name).join("SKILL.md");
+            assert!(skill_path.exists(), "{name}/SKILL.md should be created");
 
-        let content = tokio::fs::read_to_string(&preset_path).await.unwrap();
-        assert!(
-            content.contains("name: introspection"),
-            "introspection.md should contain its preset frontmatter"
-        );
+            let content = tokio::fs::read_to_string(&skill_path).await.unwrap();
+            assert!(
+                content.contains(&format!("name: {name}")),
+                "{name}/SKILL.md should carry its own frontmatter name"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn bootstrap_creates_learner_and_memory_analyst_presets() {
+    async fn bootstrap_does_not_overwrite_existing_role_skill() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        let learner_path = layout.subagents_dir().join("learner.md");
-        assert!(learner_path.exists(), "learner.md should be created");
-        let learner = tokio::fs::read_to_string(&learner_path).await.unwrap();
-        assert!(
-            learner.contains("name: learner"),
-            "learner.md should contain its preset frontmatter"
-        );
-
-        let analyst_path = layout.subagents_dir().join("memory-analyst.md");
-        assert!(analyst_path.exists(), "memory-analyst.md should be created");
-        let analyst = tokio::fs::read_to_string(&analyst_path).await.unwrap();
-        assert!(
-            analyst.contains("name: memory-analyst"),
-            "memory-analyst.md should contain its preset frontmatter"
-        );
-    }
-
-    #[tokio::test]
-    async fn bootstrap_does_not_overwrite_existing_introspection_preset() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-
-        ensure_workspace(&layout, None, None).await.unwrap();
-
-        let preset_path = layout.subagents_dir().join("introspection.md");
-        tokio::fs::write(&preset_path, "user-edited preset")
+        let skill_path = layout.skills_dir().join("introspection").join("SKILL.md");
+        tokio::fs::write(&skill_path, "user-edited skill")
             .await
             .unwrap();
 
-        // Run bootstrap again; the user's edit should be preserved.
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        let content = tokio::fs::read_to_string(&preset_path).await.unwrap();
+        let content = tokio::fs::read_to_string(&skill_path).await.unwrap();
         assert_eq!(
-            content, "user-edited preset",
-            "existing introspection.md should not be overwritten"
+            content, "user-edited skill",
+            "a second bootstrap must not clobber a user-edited skill"
         );
     }
 

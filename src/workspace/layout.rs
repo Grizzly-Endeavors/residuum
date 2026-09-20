@@ -111,12 +111,6 @@ impl WorkspaceLayout {
         self.root.join("BOOTSTRAP.md")
     }
 
-    /// Path to the subagent presets directory.
-    #[must_use]
-    pub fn subagents_dir(&self) -> PathBuf {
-        self.root.join("subagents")
-    }
-
     /// Path to the agent inbox directory for background tasks and notifications.
     #[must_use]
     pub fn agent_inbox_dir(&self) -> PathBuf {
@@ -212,7 +206,6 @@ impl WorkspaceLayout {
             self.episodes_dir(),
             self.search_index_dir(),
             self.skills_dir(),
-            self.subagents_dir(),
             self.agent_inbox_dir(),
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),
@@ -288,11 +281,6 @@ mod tests {
             layout.vectors_db(),
             PathBuf::from("/tmp/ws/memory/vectors.db"),
             "vectors_db path"
-        );
-        assert_eq!(
-            layout.subagents_dir(),
-            PathBuf::from("/tmp/ws/subagents"),
-            "subagents_dir path"
         );
         assert_eq!(
             layout.bootstrap_md(),

@@ -385,6 +385,8 @@ pub(crate) async fn initialize(
         action_store: Arc::clone(&action_store),
         action_notify: Arc::clone(&action_notify),
         hybrid_searcher: Arc::clone(&mem.hybrid_searcher),
+        skill_state: Arc::clone(&skill_state),
+        mcp_registry: Arc::clone(&mcp_registry),
     });
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);

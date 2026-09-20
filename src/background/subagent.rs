@@ -1,10 +1,9 @@
 //! Sub-agent execution for background tasks.
 
+use anyhow::Context as _;
 use std::sync::Arc;
 
-use crate::agent::context::{
-    PromptContext, SkillsContext, SubagentsContext, build_subagent_system_content,
-};
+use crate::agent::context::{PromptContext, SkillsContext, build_subagent_system_content};
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
@@ -16,7 +15,7 @@ use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, SharedToolFilter, ToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
-use super::types::{PresetToolRestriction, SubAgentBuildConfig, SubAgentConfig};
+use super::types::{SubAgentBuildConfig, SubAgentConfig};
 
 /// Output from a completed sub-agent execution.
 pub(crate) struct SubAgentOutput {
@@ -40,8 +39,6 @@ pub struct SubAgentResources {
     pub(crate) options: CompletionOptions,
     /// Formatted skill index for the system prompt (built at spawn time).
     pub(crate) skills_index: Option<String>,
-    /// Preset-specific instructions to prepend to the subagent system prompt.
-    pub(crate) preset_instructions: Option<String>,
     /// Opt-in (from preset frontmatter) to render SOUL.md, AGENTS.md, and
     /// MEMORY.md in the subagent's system prompt.
     pub(crate) include_identity: bool,
@@ -53,20 +50,27 @@ pub struct SubAgentResources {
 /// available skills, but operates on its own independent copies of
 /// `SkillState`, `PathPolicy`, and `ToolFilter`. The `McpRegistry` is shared
 /// (ref-counted) so servers are not duplicated.
+///
+/// When `config.skill` is set, that skill is activated on the sub-agent's own
+/// skill state so its body arrives as the sub-agent's role instructions.
+///
+/// # Errors
+/// Returns an error if `config.skill` names a skill that cannot be resolved or
+/// read — a sub-agent without the instructions that define its job is not worth
+/// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
 pub async fn build_subagent_resources(
     provider: Box<dyn ModelProvider>,
     main_skill_state: &SharedSkillState,
     mcp_registry: SharedMcpRegistry,
     config: SubAgentBuildConfig,
-) -> SubAgentResources {
+) -> anyhow::Result<SubAgentResources> {
     let SubAgentBuildConfig {
-        preset_tool_restriction,
         workspace_layout,
         identity,
         options,
         tz,
-        preset_instructions,
+        skill,
         include_identity,
         background_spawner,
         endpoint_registry,
@@ -83,17 +87,22 @@ pub async fn build_subagent_resources(
     };
     let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
 
+    // Activate the requested skill up front so its body renders as this
+    // sub-agent's role instructions through the normal active-skill path.
+    // A name that doesn't resolve fails the spawn rather than silently
+    // running a sub-agent without the instructions that define its job.
+    if let Some(name) = &skill {
+        let mut guard = skill_state.lock().await;
+        guard
+            .activate(name)
+            .await
+            .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
+    }
+
     // Fresh isolated path policy
     let path_policy = PathPolicy::new_shared();
 
-    // Fresh isolated tool filter — apply preset restrictions if any
-    let tool_filter = match preset_tool_restriction {
-        Some(PresetToolRestriction::AllowedOnly(allowed)) => {
-            ToolFilter::new_shared_allowed_only(allowed)
-        }
-        Some(PresetToolRestriction::Denied(denied)) => ToolFilter::new_shared_with_denied(denied),
-        None => ToolFilter::new_shared(),
-    };
+    let tool_filter = ToolFilter::new_shared();
 
     // Fresh file tracker (tracks reads within this sub-agent turn only)
     let tracker = FileTracker::new_shared();
@@ -122,7 +131,7 @@ pub async fn build_subagent_resources(
         action_notify,
     );
 
-    SubAgentResources {
+    Ok(SubAgentResources {
         provider,
         tools,
         tool_filter,
@@ -131,9 +140,8 @@ pub async fn build_subagent_resources(
         identity,
         options,
         skills_index,
-        preset_instructions,
         include_identity,
-    }
+    })
 }
 
 /// Execute a sub-agent background task.
@@ -159,12 +167,8 @@ pub(crate) async fn execute_subagent(
         active_instructions: active_instructions.as_deref(),
     };
 
-    let system_content = build_subagent_system_content(
-        &resources.identity,
-        &skills_ctx,
-        resources.preset_instructions.as_deref(),
-        resources.include_identity,
-    );
+    let system_content =
+        build_subagent_system_content(&resources.identity, &skills_ctx, resources.include_identity);
 
     // Build user message: system content + context files + prompt
     let mut user_parts = Vec::new();
@@ -194,10 +198,7 @@ pub(crate) async fn execute_subagent(
         recent_context: None,
     };
 
-    let prompt_ctx = PromptContext {
-        skills: skills_ctx,
-        subagents: SubagentsContext::default(),
-    };
+    let prompt_ctx = PromptContext { skills: skills_ctx };
 
     let turn_resources = TurnResources {
         provider: &*resources.provider,
@@ -279,7 +280,6 @@ mod tests {
             identity: IdentityFiles::default(),
             options: CompletionOptions::default(),
             skills_index: None,
-            preset_instructions: None,
             include_identity: false,
         }
     }
@@ -309,8 +309,7 @@ mod tests {
             environment: Some("You have access to exec tool.".to_string()),
             ..IdentityFiles::default()
         };
-        let content =
-            build_subagent_system_content(&identity, &SkillsContext::default(), None, false);
+        let content = build_subagent_system_content(&identity, &SkillsContext::default(), false);
         assert!(
             content.contains("You have access to exec tool."),
             "should include ENVIRONMENT.md content"
@@ -326,8 +325,7 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content =
-            build_subagent_system_content(&identity, &SkillsContext::default(), None, false);
+        let content = build_subagent_system_content(&identity, &SkillsContext::default(), false);
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
         assert!(
@@ -350,7 +348,7 @@ mod tests {
             index: Some("<available_skills><skill>pdf</skill></available_skills>"),
             active_instructions: None,
         };
-        let content = build_subagent_system_content(&identity, &skills_ctx, None, false);
+        let content = build_subagent_system_content(&identity, &skills_ctx, false);
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should include skills index section"
@@ -369,7 +367,7 @@ mod tests {
             index: None,
             active_instructions: Some("<active_skill name=\"pdf\">Do PDFs.</active_skill>"),
         };
-        let content = build_subagent_system_content(&identity, &skills_ctx, None, false);
+        let content = build_subagent_system_content(&identity, &skills_ctx, false);
         assert!(
             content.contains("Do PDFs"),
             "active skill instructions should appear in subagent system prompt"

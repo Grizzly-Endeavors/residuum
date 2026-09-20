@@ -11,7 +11,7 @@ Every bootstrapped workspace ships `HEARTBEAT.yml` with two pulses enabled by de
 | `reflection` | `"7d"` | `introspection` | Reviews recent episodes/observations for recurring patterns, unfinished requests, and friction; delivers suggestions to the user inbox via `user_inbox_add`. |
 | `memory_tending` | `"24h"`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` Core Facts tier (capped ~15 entries, replace-don't-append). Promotion to Core Facts (or to a new Profile entry) requires at least two supporting observations, annotated with the evidence count; a single sighting stays provisional in `MEMORY.md`. See [memory.md](memory.md) for the full tier and promotion rule. |
 
-Both name the bundled `introspection` subagent preset (`subagents/introspection.md`), which runs at `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
+Both name the bundled `introspection` skill (`skills/introspection/SKILL.md`) and set `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
 
 Disabling either is a matter of setting `enabled: false` on the pulse — the user or agent can do this during onboarding if the user opts out of background self-maintenance. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) ships alongside the built-ins as optional, off-by-default add-ons.
 
@@ -42,7 +42,7 @@ pulses:
   - name: deploy_watch
     enabled: true
     schedule: "5m"
-    agent: deploy-watcher           # named preset from subagents/
+    agent: deploy-watcher           # named skill from skills/
     tasks:
       - name: check_status
         prompt: "Check deployment pipeline status. Report failures."
@@ -65,7 +65,7 @@ pulses:
 |-------|-----------|------------|
 | `~` (null / omitted) | Sub-agent | Small |
 | `"main"` | Main agent wake turn | Main model |
-| `"<preset-name>"` | Sub-agent with named preset from `subagents/` | Preset's tier (default: small) |
+| `"<skill-name>"` | Sub-agent with that skill activated as its role | The pulse's `model_tier` (default: small) |
 
 **Use `"main"` sparingly** — it wakes the main agent and injects a full turn. Reserve for tasks that need conversation context or should produce a visible response.
 

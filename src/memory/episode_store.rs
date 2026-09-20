@@ -499,7 +499,6 @@ mod tests {
             id: "ep-001".to_string(),
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
             observations: vec!["user prefers concise output".to_string()],
-            source_episodes: vec![],
         }
     }
 

@@ -190,11 +190,11 @@ impl ToolRegistry {
     pub(crate) fn register_spawn_tool(
         &mut self,
         publisher: crate::bus::Publisher,
-        subagents_dir: std::path::PathBuf,
+        skill_state: crate::skills::SharedSkillState,
     ) {
         self.register(Box::new(background::SubagentSpawnTool::new(
             publisher,
-            subagents_dir,
+            skill_state,
         )));
     }
 
@@ -367,7 +367,7 @@ mod tests {
         let policy = PathPolicy::new_shared();
         registry.register_defaults(FileTracker::new_shared(), policy);
 
-        // Block exec via preset denial to test filtering logic
+        // Block exec via a deny list to test filtering logic
         let filter_with_denial =
             ToolFilter::new_shared_with_denied(HashSet::from(["exec".to_string()]));
         let defs = registry.definitions(&*filter_with_denial.read().await);
@@ -384,7 +384,7 @@ mod tests {
         let policy = PathPolicy::new_shared();
         registry.register_defaults(FileTracker::new_shared(), policy);
 
-        // Block exec via preset denial to test blocking logic
+        // Block exec via a deny list to test blocking logic
         let filter_with_denial =
             ToolFilter::new_shared_with_denied(HashSet::from(["exec".to_string()]));
         let result = registry

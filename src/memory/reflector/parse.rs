@@ -41,7 +41,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
             log.observations.push(Observation {
                 timestamp,
-                source_episodes: vec![],
+                source_episodes: None,
                 visibility: item.visibility.clone(),
                 content: item.content.clone(),
             });
@@ -90,7 +90,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
 
         log.observations.push(Observation {
             timestamp,
-            source_episodes: vec![],
+            source_episodes: None,
             visibility,
             content: obs_content.to_string(),
         });
