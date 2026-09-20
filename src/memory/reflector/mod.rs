@@ -59,7 +59,7 @@ impl Reflector {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Box::new(crate::inference::null::NullProvider),
+            provider: Box::new(crate::inference::providers::null::NullProvider),
             config: ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 tz,

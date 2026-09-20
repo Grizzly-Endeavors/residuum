@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
 
-use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
-use super::retry::{RetryConfig, with_retry};
-use super::{
+use crate::inference::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
+use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
     ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
@@ -177,7 +177,7 @@ impl AnthropicClient {
     /// a server-side `web_search_20250305` entry is appended.
     fn convert_tools(
         tools: &[ToolDefinition],
-        web_search: Option<&super::WebSearchNativeConfig>,
+        web_search: Option<&crate::inference::WebSearchNativeConfig>,
     ) -> Vec<AnthropicToolEntry> {
         let mut entries: Vec<AnthropicToolEntry> = tools
             .iter()

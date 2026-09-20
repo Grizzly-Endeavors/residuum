@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use super::{
+use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ToolDefinition,
 };

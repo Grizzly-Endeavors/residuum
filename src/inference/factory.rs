@@ -3,11 +3,11 @@
 use crate::config::{ProviderKind, ProviderSpec};
 use crate::util::FatalError;
 
-use super::anthropic::AnthropicClient;
 use super::failover::FailoverProvider;
-use super::gemini::GeminiClient;
-use super::ollama::OllamaClient;
-use super::openai::OpenAiClient;
+use super::providers::anthropic::AnthropicClient;
+use super::providers::gemini::GeminiClient;
+use super::providers::ollama::OllamaClient;
+use super::providers::openai::OpenAiClient;
 use super::retry::RetryConfig;
 use super::{InferenceProvider, SharedHttpClient};
 

@@ -1,14 +1,10 @@
 //! Model provider abstraction and shared LLM types.
 
-pub(crate) mod anthropic;
 pub(crate) mod embedding;
 pub(crate) mod factory;
 pub(crate) mod failover;
-pub(crate) mod gemini;
 mod http;
-pub(crate) mod null;
-pub(crate) mod ollama;
-pub(crate) mod openai;
+pub(crate) mod providers;
 pub(crate) mod retry;
 pub(crate) mod think_tags;
 

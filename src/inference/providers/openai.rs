@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
-use super::retry::{RetryConfig, with_retry};
-use super::{
+use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
+use crate::inference::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
+use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
     ResponseFormat, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };

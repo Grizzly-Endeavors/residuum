@@ -54,7 +54,7 @@ pub(crate) fn build_embedding_provider(
         )),
         ProviderKind::OpenAi => {
             let client = if let Some(ref key) = spec.api_key {
-                super::openai::OpenAiEmbeddingClient::with_http_client_and_api_key(
+                super::providers::openai::OpenAiEmbeddingClient::with_http_client_and_api_key(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -62,7 +62,7 @@ pub(crate) fn build_embedding_provider(
                     retry,
                 )
             } else {
-                super::openai::OpenAiEmbeddingClient::with_http_client(
+                super::providers::openai::OpenAiEmbeddingClient::with_http_client(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -73,7 +73,7 @@ pub(crate) fn build_embedding_provider(
         }
         ProviderKind::Ollama => {
             let client = if let Some(ref key) = spec.api_key {
-                super::ollama::OllamaEmbeddingClient::with_http_client_and_api_key(
+                super::providers::ollama::OllamaEmbeddingClient::with_http_client_and_api_key(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -82,7 +82,7 @@ pub(crate) fn build_embedding_provider(
                     retry,
                 )
             } else {
-                super::ollama::OllamaEmbeddingClient::with_http_client(
+                super::providers::ollama::OllamaEmbeddingClient::with_http_client(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -100,7 +100,7 @@ pub(crate) fn build_embedding_provider(
                         .to_string(),
                 )
             })?;
-            let client = super::gemini::GeminiEmbeddingClient::new(
+            let client = super::providers::gemini::GeminiEmbeddingClient::new(
                 http,
                 &spec.provider_url,
                 key,
