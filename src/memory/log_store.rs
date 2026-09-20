@@ -84,7 +84,6 @@ mod tests {
     fn sample_observation(episode_id: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "test".to_string(),
             source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observed something from {episode_id}"),

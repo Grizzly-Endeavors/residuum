@@ -27,21 +27,6 @@ Same `mcpServers` map format used by Claude Code/Desktop. `${VAR}` /
 `env`. A bad entry (missing `command`/`url`, unrecognized transport) drops
 just that server — never a hard failure.
 
-## Projects
-
-Project frontmatter references servers by name rather than embedding them:
-
-```yaml
-mcp_servers:
-  - filesystem
-  - git
-```
-
-Names resolve against a project-local `mcp.json` first, then the workspace
-one. Servers are reference-counted across sub-agents sharing a project, so
-multiple agents with the same project active reuse one running server
-instead of starting duplicates.
-
 ## Tools
 
 No dedicated tools — once a server is running, its tools are merged directly

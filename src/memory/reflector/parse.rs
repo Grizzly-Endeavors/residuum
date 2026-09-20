@@ -17,7 +17,6 @@ struct ReflectorJsonResponse {
 struct ReflectorItem {
     content: String,
     timestamp: String,
-    project_context: String,
     visibility: Visibility,
 }
 
@@ -42,7 +41,6 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
             log.observations.push(Observation {
                 timestamp,
-                project_context: item.project_context.clone(),
                 source_episodes: None,
                 visibility: item.visibility.clone(),
                 content: item.content.clone(),
@@ -85,12 +83,6 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
                 |ts| crate::memory::parse_minute_timestamp(ts, tz),
             );
 
-        let project_context = item
-            .get("project_context")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("general")
-            .to_string();
-
         let visibility = item
             .get("visibility")
             .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
@@ -98,7 +90,6 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
 
         log.observations.push(Observation {
             timestamp,
-            project_context,
             source_episodes: None,
             visibility,
             content: obs_content.to_string(),

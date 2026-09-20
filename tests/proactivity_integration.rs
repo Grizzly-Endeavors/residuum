@@ -65,7 +65,7 @@ mod proactivity_integration {
         Agent::new(
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
-            ToolFilter::new_shared(std::collections::HashSet::new()),
+            ToolFilter::new_shared(),
             residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             residuum::agent::AgentConfig {
@@ -83,7 +83,6 @@ mod proactivity_integration {
             schedule: "30m".to_string(),
             active_hours: None,
             agent: None,
-            trigger_count: None,
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -140,7 +139,6 @@ mod proactivity_integration {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
-            trigger_count: None,
             tasks: vec![],
         };
 

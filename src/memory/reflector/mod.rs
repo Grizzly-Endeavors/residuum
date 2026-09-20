@@ -1,7 +1,7 @@
 //! Reflector: compresses the observation log when it exceeds a token threshold.
 //!
 //! Sends the full observation log to an LLM which reorganizes and merges
-//! observations while preserving chronology and context tags.
+//! observations while preserving chronology.
 
 mod parse;
 mod prompt;
@@ -128,7 +128,7 @@ impl Reflector {
         };
 
         // Serialize the flat observations for the LLM prompt — keep full objects
-        // so the model has project_context and timestamp info for intelligent merging.
+        // so the model has timestamp info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
             .context("failed to serialize observations")?;
 
@@ -190,10 +190,9 @@ mod tests {
     use crate::memory::types::{Observation, Visibility};
     use parse::parse_reflection_response;
 
-    fn sample_observation(episode_id: &str, ctx: &str) -> Observation {
+    fn sample_observation(episode_id: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: ctx.to_string(),
             source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observation from {episode_id}"),
@@ -202,8 +201,8 @@ mod tests {
 
     const COMPRESSED_RESPONSE: &str = r#"{
         "observations": [
-            {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "project_context": "residuum/workspace", "visibility": "user"},
-            {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "project_context": "residuum/workspace", "visibility": "user"}
+            {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+            {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
         ]
     }"#;
 
@@ -219,7 +218,7 @@ mod tests {
         );
 
         let mut log = ObservationLog::new();
-        log.observations.push(sample_observation("ep-001", "test"));
+        log.observations.push(sample_observation("ep-001"));
 
         assert!(
             !reflector.should_reflect(&log),
@@ -239,7 +238,7 @@ mod tests {
         );
 
         let mut log = ObservationLog::new();
-        log.observations.push(sample_observation("ep-001", "test"));
+        log.observations.push(sample_observation("ep-001"));
 
         assert!(
             reflector.should_reflect(&log),
@@ -257,11 +256,6 @@ mod tests {
             log.observations.first().map(|o| o.content.as_str()),
             Some("workspace uses flat layout"),
             "first observation content should match"
-        );
-        assert_eq!(
-            log.observations.first().map(|o| o.project_context.as_str()),
-            Some("residuum/workspace"),
-            "project_context should be preserved from JSON"
         );
         // Reflector observations have no source_episodes
         assert!(
@@ -284,31 +278,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_reflection_preserves_project_context() {
-        let response = r#"[
-            {"content": "obs from residuum", "timestamp": "2026-02-21T14:30", "project_context": "residuum/memory", "visibility": "user"},
-            {"content": "obs from devops", "timestamp": "2026-02-21T14:31", "project_context": "devops/k8s", "visibility": "user"}
-        ]"#;
-        let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
-
-        assert_eq!(log.observations.len(), 2, "should have two observations");
-        assert_eq!(
-            log.observations.first().map(|o| o.project_context.as_str()),
-            Some("residuum/memory"),
-            "first project_context should round-trip"
-        );
-        assert_eq!(
-            log.observations.get(1).map(|o| o.project_context.as_str()),
-            Some("devops/k8s"),
-            "second project_context should round-trip"
-        );
-    }
-
-    #[test]
     fn parse_reflection_preserves_visibility() {
         let response = r#"[
-            {"content": "background obs", "timestamp": "2026-02-21T03:00", "project_context": "pulse", "visibility": "background"},
-            {"content": "user obs", "timestamp": "2026-02-21T14:30", "project_context": "general", "visibility": "user"}
+            {"content": "background obs", "timestamp": "2026-02-21T03:00", "visibility": "background"},
+            {"content": "user obs", "timestamp": "2026-02-21T14:30", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
 
@@ -328,7 +301,7 @@ mod tests {
     #[test]
     fn parse_reflection_preserves_timestamp() {
         let response = r#"[
-            {"content": "an observation", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
+            {"content": "an observation", "timestamp": "2026-02-21T14:30", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
         let ts = log.observations.first().map(|o| o.timestamp).unwrap();
@@ -338,7 +311,7 @@ mod tests {
     #[test]
     fn parse_reflection_missing_timestamp_falls_back() {
         let response = r#"[
-            {"content": "an observation", "project_context": "test", "visibility": "user"}
+            {"content": "an observation", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
         // Should succeed with now_local() fallback — just verify observation was parsed
@@ -360,12 +333,8 @@ mod tests {
 
         // Write initial log with 2 observations
         let mut initial_log = ObservationLog::new();
-        initial_log
-            .observations
-            .push(sample_observation("ep-001", "residuum/workspace"));
-        initial_log
-            .observations
-            .push(sample_observation("ep-002", "residuum/workspace"));
+        initial_log.observations.push(sample_observation("ep-001"));
+        initial_log.observations.push(sample_observation("ep-002"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -442,7 +411,7 @@ mod tests {
     #[test]
     fn parse_reflection_bare_array_fallback() {
         let bare_array = r#"[
-            {"content": "obs from bare array", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
+            {"content": "obs from bare array", "timestamp": "2026-02-21T14:30", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(bare_array, chrono_tz::UTC).unwrap();
         assert_eq!(
@@ -467,12 +436,8 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log
-            .observations
-            .push(sample_observation("ep-001", "residuum/workspace"));
-        initial_log
-            .observations
-            .push(sample_observation("ep-002", "residuum/workspace"));
+        initial_log.observations.push(sample_observation("ep-001"));
+        initial_log.observations.push(sample_observation("ep-002"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -512,9 +477,7 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log
-            .observations
-            .push(sample_observation("ep-001", "test"));
+        initial_log.observations.push(sample_observation("ep-001"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -556,7 +519,7 @@ mod tests {
 
         // Small log should NOT trigger at threshold=1000
         let mut log = ObservationLog::new();
-        log.observations.push(sample_observation("ep-001", "test"));
+        log.observations.push(sample_observation("ep-001"));
         assert!(!reflector.should_reflect(&log));
 
         // Lower the threshold
@@ -579,9 +542,7 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log
-            .observations
-            .push(sample_observation("ep-001", "test"));
+        initial_log.observations.push(sample_observation("ep-001"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -596,7 +557,7 @@ mod tests {
 
         let new_response = r#"{
             "observations": [
-                {"content": "from new provider", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
+                {"content": "from new provider", "timestamp": "2026-02-21T14:30", "visibility": "user"}
             ]
         }"#;
         reflector.swap_provider(Box::new(MockMemoryProvider::new(new_response)));

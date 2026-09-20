@@ -6,7 +6,7 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 
 ## Sub-Agents
 
-An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, the project index, and active skills. By default it **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small — a preset can opt back in with `include_identity: true` (see below).
+An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, and active skills. By default it **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small — a preset can opt back in with `include_identity: true` (see below).
 
 Sub-agents share the MCP registry with the main agent.
 
@@ -70,6 +70,5 @@ The directory is created on-demand when the first transcript is written.
 ## Gotchas
 
 - Sub-agents have a **minimal system prompt** — they do not have access to the main agent's full identity or memory context.
-- If a project is active in a sub-agent when it exits, the gateway force-deactivates with an auto-generated log entry.
 - Tools excluded from sub-agents: `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `stop_agent` (no sub-to-sub delegation, no action scheduling from background).
 - The `memory/background/` directory is not created at bootstrap — it appears only after the first background task runs.

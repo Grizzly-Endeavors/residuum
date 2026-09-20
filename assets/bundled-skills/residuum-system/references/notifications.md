@@ -52,7 +52,7 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 | `macos` | macOS native notification (when running on macOS). |
 | `windows` | Windows Toast notification (when running on Windows). |
 
-On macOS an urgent result posts at the `time_sensitive` interruption level so it breaks through Focus modes. Windows Toasts do not yet vary by urgency.
+On macOS an urgent result posts at the `time_sensitive` interruption level so it breaks through Focus modes. Windows Toasts do not vary by urgency.
 
 ### Inbox
 

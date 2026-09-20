@@ -7,8 +7,8 @@ use serde::Deserialize;
 
 use anyhow::Context;
 
+use crate::mcp::types::{McpServerEntry, McpTransport};
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
-use crate::projects::types::{McpServerEntry, McpTransport};
 
 pub use super::channel_builder::build_external_channels;
 
@@ -143,45 +143,6 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpSe
 /// Returns an error if the file exists but cannot be read or parsed.
 pub fn load_mcp_servers(path: &Path) -> anyhow::Result<Vec<McpServerEntry>> {
     Ok(load_mcp_servers_map(path)?.into_values().collect())
-}
-
-/// Resolve MCP server name references against project-local and global `mcp.json` files.
-///
-/// For each reference, the project-local map is checked first, then the global map.
-/// Project-local entries override same-name global entries.
-///
-/// Returns an empty vec if `references` is empty (without loading any files).
-///
-/// # Errors
-/// Returns an error if any reference cannot be found in either map.
-#[tracing::instrument(skip_all, fields(project = %project_name, count = references.len()))]
-pub fn resolve_mcp_references(
-    references: &[String],
-    project_mcp_json: &Path,
-    global_mcp_json: &Path,
-    project_name: &str,
-) -> anyhow::Result<Vec<McpServerEntry>> {
-    if references.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let local_map = load_mcp_servers_map(project_mcp_json)?;
-    let global_map = load_mcp_servers_map(global_mcp_json)?;
-
-    let mut resolved = Vec::with_capacity(references.len());
-    for name in references {
-        if let Some(entry) = local_map.get(name) {
-            resolved.push(entry.clone());
-        } else if let Some(entry) = global_map.get(name) {
-            resolved.push(entry.clone());
-        } else {
-            anyhow::bail!(
-                "mcp server '{name}' referenced in project '{project_name}' not found in project-local or global mcp.json"
-            );
-        }
-    }
-
-    Ok(resolved)
 }
 
 // ── Channel loader ───────────────────────────────────────────────────────────
@@ -1055,115 +1016,5 @@ web_url = "http://localhost:3000"
         assert!(map.contains_key("filesystem"));
         assert!(map.contains_key("git"));
         assert_eq!(map["filesystem"].command, "mcp-server-filesystem");
-    }
-
-    #[test]
-    fn resolve_references_from_global_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global-mcp.json");
-        std::fs::write(
-            &global,
-            r#"{ "mcpServers": { "fs": { "command": "mcp-fs" } } }"#,
-        )
-        .unwrap();
-
-        let project_local = dir.path().join("nonexistent-mcp.json");
-        let refs = vec!["fs".to_string()];
-        let resolved = resolve_mcp_references(&refs, &project_local, &global, "test-proj").unwrap();
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].name, "fs");
-        assert_eq!(resolved[0].command, "mcp-fs");
-    }
-
-    #[test]
-    fn resolve_references_project_overrides_global() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let global = dir.path().join("global-mcp.json");
-        std::fs::write(
-            &global,
-            r#"{ "mcpServers": { "fs": { "command": "global-fs" } } }"#,
-        )
-        .unwrap();
-
-        let local = dir.path().join("local-mcp.json");
-        std::fs::write(
-            &local,
-            r#"{ "mcpServers": { "fs": { "command": "local-fs" } } }"#,
-        )
-        .unwrap();
-
-        let refs = vec!["fs".to_string()];
-        let resolved = resolve_mcp_references(&refs, &local, &global, "test-proj").unwrap();
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(
-            resolved[0].command, "local-fs",
-            "project-local should override global"
-        );
-    }
-
-    #[test]
-    fn resolve_references_mixed_sources() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let global = dir.path().join("global-mcp.json");
-        std::fs::write(
-            &global,
-            r#"{ "mcpServers": { "git": { "command": "mcp-git" } } }"#,
-        )
-        .unwrap();
-
-        let local = dir.path().join("local-mcp.json");
-        std::fs::write(
-            &local,
-            r#"{ "mcpServers": { "fs": { "command": "mcp-fs" } } }"#,
-        )
-        .unwrap();
-
-        let refs = vec!["fs".to_string(), "git".to_string()];
-        let resolved = resolve_mcp_references(&refs, &local, &global, "test-proj").unwrap();
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0].name, "fs", "first should come from local");
-        assert_eq!(resolved[1].name, "git", "second should come from global");
-    }
-
-    #[test]
-    fn resolve_references_not_found_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let global = dir.path().join("global-mcp.json");
-        std::fs::write(&global, r#"{ "mcpServers": {} }"#).unwrap();
-
-        let local = dir.path().join("nonexistent.json");
-        let refs = vec!["missing-server".to_string()];
-        let result = resolve_mcp_references(&refs, &local, &global, "my-project");
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("missing-server"),
-            "error should name the server: {err}"
-        );
-        assert!(
-            err.contains("my-project"),
-            "error should name the project: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_references_empty_list() {
-        let nonexistent = Path::new("/tmp/does-not-exist/mcp.json");
-        let resolved = resolve_mcp_references(&[], nonexistent, nonexistent, "test-proj").unwrap();
-        assert!(
-            resolved.is_empty(),
-            "empty references should return empty vec"
-        );
-    }
-
-    #[test]
-    fn resolve_references_missing_both_files() {
-        let local = Path::new("/tmp/no-local/mcp.json");
-        let global = Path::new("/tmp/no-global/mcp.json");
-        let refs = vec!["some-server".to_string()];
-        let result = resolve_mcp_references(&refs, local, global, "test-proj");
-        assert!(result.is_err(), "should error when server not found");
     }
 }

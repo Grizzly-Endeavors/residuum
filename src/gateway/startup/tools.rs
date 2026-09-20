@@ -10,7 +10,6 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
 
 use crate::bus::EndpointRegistry;
-use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
@@ -22,9 +21,7 @@ use super::memory::MemoryComponents;
 pub(super) struct ToolRegistryDeps<'a> {
     pub action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: &'a Arc<tokio::sync::Notify>,
-    pub project_state: &'a SharedProjectState,
     pub skill_state: &'a SharedSkillState,
-    pub mcp_registry: &'a SharedMcpRegistry,
     pub tools_path: &'a crate::tools::SharedToolsPath,
     pub background_spawner: &'a Arc<BackgroundTaskSpawner>,
     pub endpoint_registry: &'a EndpointRegistry,
@@ -70,9 +67,8 @@ pub(super) fn init_tool_registry(
     let blocked: std::collections::HashSet<std::path::PathBuf> =
         blocked_paths.into_iter().collect();
     tracing::debug!(blocked_paths = ?blocked, "path policy configured");
-    let path_policy =
-        crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
-    let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
+    let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(blocked);
+    let tool_filter = crate::tools::ToolFilter::new_shared();
     let mut tools = ToolRegistry::new();
     tools.set_tools_path(Arc::clone(deps.tools_path));
     let file_tracker = crate::tools::FileTracker::new_shared();
@@ -85,14 +81,6 @@ pub(super) fn init_tool_registry(
         tz,
     );
     let path_policy_for_runtime = Arc::clone(&path_policy);
-    tools.register_project_tools(
-        Arc::clone(deps.project_state),
-        path_policy,
-        Arc::clone(&tool_filter),
-        Arc::clone(deps.mcp_registry),
-        Arc::clone(deps.skill_state),
-        tz,
-    );
     tools.register_skill_tools(Arc::clone(deps.skill_state));
     tools.register_inbox_tools(
         layout.agent_inbox_dir(),

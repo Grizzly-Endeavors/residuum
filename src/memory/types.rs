@@ -19,8 +19,6 @@ pub(crate) struct Episode {
     pub(crate) id: String,
     /// Date of the episode.
     pub(crate) date: chrono::NaiveDate,
-    /// The project or topic context tag.
-    pub(crate) context: String,
     /// Concise single-sentence observations extracted from the conversation.
     pub(crate) observations: Vec<String>,
 }
@@ -113,15 +111,13 @@ where
 /// A single extracted observation with full metadata.
 ///
 /// Each observation is self-describing: it carries when it was created,
-/// what project it belongs to, which episode transcript it came from,
-/// and whether it originated from a user-visible or background turn.
+/// which episode transcript it came from, and whether it originated from
+/// a user-visible or background turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     /// When this observation was created.
     #[serde(with = "crate::time::minute_format")]
     pub timestamp: NaiveDateTime,
-    /// Project or workspace context at the time of observation.
-    pub project_context: String,
     /// ID of the episode transcript that produced this observation.
     #[serde(
         default,
@@ -159,11 +155,7 @@ impl fmt::Display for Observation {
             write!(f, " | [{source_episode}]")?;
         }
 
-        write!(
-            f,
-            " | {} | {}\n  {}",
-            self.project_context, self.visibility, self.content
-        )
+        write!(f, " | {}\n  {}", self.visibility, self.content)
     }
 }
 
@@ -186,7 +178,7 @@ impl ObservationLog {
         }
 
         let mut lines = Vec::with_capacity(self.observations.len() + 1);
-        lines.push("Format: [timestamp] | [source episode] | [project] | [visibility]".to_string());
+        lines.push("Format: [timestamp] | [source episode] | [visibility]".to_string());
         for obs in &self.observations {
             lines.push(obs.to_string());
         }
@@ -203,8 +195,6 @@ pub struct IndexChunk {
     pub episode_id: String,
     /// Date string in `YYYY-MM-DD` format.
     pub date: String,
-    /// Project context tag.
-    pub context: String,
     /// Line number of the first message in this chunk (in the transcript).
     pub line_start: usize,
     /// Line number of the last message in this chunk (in the transcript).
@@ -289,7 +279,6 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(0, 0, 0)
                 .unwrap(),
-            project_context: "residuum/memory".to_string(),
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "tantivy provides BM25 search without C dependencies".to_string(),
@@ -307,10 +296,6 @@ mod tests {
             "content should round-trip"
         );
         assert_eq!(
-            deserialized.project_context, "residuum/memory",
-            "project_context should round-trip"
-        );
-        assert_eq!(
             deserialized.source_episodes,
             Some("ep-001".to_string()),
             "source_episodes should round-trip"
@@ -326,7 +311,6 @@ mod tests {
     fn observation_deserializes_legacy_single_element_array() {
         let json = r#"{
             "timestamp": "2024-02-19T00:00",
-            "project_context": "residuum/memory",
             "source_episodes": ["ep-001"],
             "visibility": "user",
             "content": "legacy on-disk format"
@@ -343,7 +327,6 @@ mod tests {
     fn observation_deserializes_legacy_empty_array() {
         let json = r#"{
             "timestamp": "2024-02-19T00:00",
-            "project_context": "residuum/memory",
             "source_episodes": [],
             "visibility": "user",
             "content": "legacy on-disk format"
@@ -359,7 +342,6 @@ mod tests {
     fn observation_deserializes_missing_field_as_none() {
         let json = r#"{
             "timestamp": "2024-02-19T00:00",
-            "project_context": "residuum/memory",
             "visibility": "user",
             "content": "no source_episodes key at all"
         }"#;
@@ -451,7 +433,7 @@ mod tests {
         let formatted = obs.to_string();
         assert_eq!(
             formatted,
-            "[2024-02-19T00:00] | [ep-001] | residuum/memory | user\n  tantivy provides BM25 search without C dependencies"
+            "[2024-02-19T00:00] | [ep-001] | user\n  tantivy provides BM25 search without C dependencies"
         );
     }
 
@@ -464,7 +446,7 @@ mod tests {
         let formatted = obs.to_string();
         assert_eq!(
             formatted,
-            "[2024-02-19T00:00] | residuum/memory | user\n  tantivy provides BM25 search without C dependencies"
+            "[2024-02-19T00:00] | user\n  tantivy provides BM25 search without C dependencies"
         );
     }
 
@@ -520,7 +502,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: hello\nassistant: hi there".to_string(),

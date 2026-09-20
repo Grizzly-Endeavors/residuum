@@ -1,4 +1,4 @@
-use anyhow::Context;
+use crate::util::{parse_frontmatter_md, validate_kebab_name};
 
 use super::types::SkillFrontmatter;
 
@@ -23,23 +23,11 @@ pub(super) const MAX_DESCRIPTION_LEN: usize = 280;
 /// Returns an error if the frontmatter is missing, invalid YAML, or the
 /// name or description fails validation.
 pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter, String)> {
-    let trimmed = content.trim_start();
-
-    let after_open = trimmed
-        .strip_prefix("---")
-        .ok_or_else(|| anyhow::anyhow!("SKILL.md missing frontmatter delimiter '---'"))?;
-
-    let (yaml_str, after_close) = after_open
-        .split_once("\n---")
-        .ok_or_else(|| anyhow::anyhow!("SKILL.md missing closing frontmatter delimiter '---'"))?;
-
-    let frontmatter: SkillFrontmatter =
-        serde_yaml_ng::from_str(yaml_str).context("failed to parse SKILL.md frontmatter")?;
+    let (frontmatter, body): (SkillFrontmatter, String) =
+        parse_frontmatter_md(content, "SKILL.md")?;
 
     validate_skill_name(&frontmatter.name)?;
     validate_skill_description(&frontmatter.description)?;
-
-    let body = after_close.trim().to_string();
 
     Ok((frontmatter, body))
 }
@@ -47,31 +35,7 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
 /// Validate a skill name: 1-64 chars, lowercase alphanumeric + hyphens,
 /// no leading/trailing/consecutive hyphens.
 pub(super) fn validate_skill_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty() || name.len() > 64 {
-        anyhow::bail!(
-            "skill name must be 1-64 characters, got {len}",
-            len = name.len()
-        );
-    }
-
-    if name.starts_with('-') || name.ends_with('-') {
-        anyhow::bail!("skill name '{name}' must not start or end with a hyphen");
-    }
-
-    if name.contains("--") {
-        anyhow::bail!("skill name '{name}' must not contain consecutive hyphens");
-    }
-
-    for ch in name.chars() {
-        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
-            anyhow::bail!(
-                "skill name '{name}' contains invalid character '{ch}' \
-                 (only lowercase alphanumeric and hyphens allowed)"
-            );
-        }
-    }
-
-    Ok(())
+    validate_kebab_name(name, "skill name")
 }
 
 /// Validate a skill description: non-empty and no longer than

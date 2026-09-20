@@ -55,7 +55,6 @@ function createState(): MockState {
         { name: "CHANNELS.yml", entry_type: "file", size: 392 },
         { name: "memory", entry_type: "directory", size: null },
         { name: "skills", entry_type: "directory", size: null },
-        { name: "projects", entry_type: "directory", size: null },
         { name: "config", entry_type: "directory", size: null },
         { name: "inbox", entry_type: "directory", size: null },
         { name: "subagents", entry_type: "directory", size: null },
@@ -71,12 +70,6 @@ function createState(): MockState {
       ],
       "skills/code-review": [
         { name: "SKILL.md", entry_type: "file", size: 478 },
-      ],
-      "projects": [
-        { name: "residuum", entry_type: "directory", size: null },
-      ],
-      "projects/residuum": [
-        { name: "context.md", entry_type: "file", size: 2340 },
       ],
       "config": [
         { name: "mcp.json", entry_type: "file", size: 1567 },
@@ -102,7 +95,6 @@ function createState(): MockState {
       "skills/research/SKILL.md": "# Research Skill\n\n## Purpose\nConduct thorough research on topics using available tools and memory.\n\n## Triggers\n- User asks to \"research\" or \"look into\" a topic\n- User asks for comprehensive analysis\n\n## Process\n1. Search memory for existing knowledge\n2. Use web search if available\n3. Synthesize findings\n4. Store key observations\n",
       "skills/research/prompt.md": "You are conducting research on the following topic: {{topic}}\n\n## Guidelines\n- Search memory first for existing knowledge\n- Use web search tools if available\n- Cross-reference multiple sources\n- Note confidence levels for each finding\n- Store important observations for future reference\n\n## Output Format\n- Summary (2-3 sentences)\n- Key findings (bulleted list)\n- Sources and confidence levels\n- Suggested follow-up questions\n",
       "skills/code-review/SKILL.md": "# Code Review Skill\n\n## Purpose\nReview code changes for quality, correctness, and style.\n\n## Triggers\n- User asks for code review\n- PR review requests\n\n## Checklist\n- [ ] Logic correctness\n- [ ] Error handling\n- [ ] Style consistency\n- [ ] Test coverage\n- [ ] Security considerations\n",
-      "projects/residuum/context.md": "# Residuum Project Context\n\n## Overview\nPersonal agent framework written in Rust with a web UI.\n\n## Current Focus\n- Workspace file browser implementation\n- Memory search optimization\n- Notification routing system\n\n## Architecture\n- Backend: Rust + Axum\n- Frontend: Svelte 5 + TypeScript\n- Storage: SQLite + file-based workspace\n- LLM: Multi-provider support (Anthropic, OpenAI, Gemini, Ollama)\n",
       "config/mcp.json": '{\n  "servers": {\n    "filesystem": {\n      "command": "mcp-filesystem",\n      "args": ["--root", "/home/user/projects"]\n    }\n  }\n}',
       "config/channels.toml": '[web]\nenabled = true\nport = 3001\n\n[discord]\nenabled = false\ntoken_ref = "secret:discord_token"\n\n[telegram]\nenabled = true\ntoken_ref = "secret:telegram_token"\nchat_id = "123456789"\n',
       "memory/observations.jsonl": '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
@@ -136,7 +128,6 @@ function sampleRecentMessages() {
       role: "user",
       content: "Did the observer flag anything odd in last night's batch?",
       timestamp: daysAgoAt(2, 9, 12),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -146,14 +137,12 @@ function sampleRecentMessages() {
         "around 02:00 local time and logged two fresh reflections. Memory " +
         "utilization is holding at ~38% of the context window.",
       timestamp: daysAgoAt(2, 9, 13),
-      project_context: "default",
       visibility: "user",
     },
     {
       role: "user",
       content: "Can you check the current memory stats?",
       timestamp: daysAgoAt(1, 14, 20),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -167,7 +156,6 @@ function sampleRecentMessages() {
         },
       ],
       timestamp: daysAgoAt(1, 14, 20),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -179,7 +167,6 @@ function sampleRecentMessages() {
         "Last observer run: 3 minutes ago",
       tool_call_id: "tc_mock_stats",
       timestamp: daysAgoAt(1, 14, 21),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -193,14 +180,12 @@ function sampleRecentMessages() {
         "The context is well within limits. The observer will run again " +
         "once we cross the 30k token threshold.",
       timestamp: daysAgoAt(1, 14, 22),
-      project_context: "default",
       visibility: "user",
     },
     {
       role: "user",
       content: "Good. Let's keep iterating on the notification routing doc.",
       timestamp: daysAgoAt(0, 10, 5),
-      project_context: "default",
       visibility: "user",
     },
     {
@@ -211,7 +196,6 @@ function sampleRecentMessages() {
         "overrides drafted. Next up: the fallback behaviour when a channel " +
         "is unreachable. Want me to start there?",
       timestamp: daysAgoAt(0, 10, 6),
-      project_context: "default",
       visibility: "user",
     },
   ];
@@ -223,14 +207,12 @@ function sampleRecentMessages() {
 interface SampleEpisode {
   id: string;
   date: string; // YYYY-MM-DD
-  context: string;
   messages: Array<{
     role: string;
     content: string;
     tool_calls?: Array<{ id: string; name: string; arguments: string }>;
     tool_call_id?: string;
     timestamp: string;
-    project_context: string;
     visibility: string;
   }>;
 }
@@ -246,14 +228,12 @@ function sampleEpisodes(): SampleEpisode[] {
     {
       id: "ep-003",
       date: isoDateDaysAgo(3),
-      context: "default",
       messages: [
         {
           role: "user",
           content:
             "Walk me through what the observer actually stores vs. what it drops.",
           timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
@@ -266,7 +246,6 @@ function sampleEpisodes(): SampleEpisode[] {
             "What it drops is the _surface wording_ of the messages — it " +
             "remembers the substance but won't be able to quote verbatim.",
           timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
       ],
@@ -274,13 +253,11 @@ function sampleEpisodes(): SampleEpisode[] {
     {
       id: "ep-002",
       date: isoDateDaysAgo(5),
-      context: "default",
       messages: [
         {
           role: "user",
           content: "How do I direct you at a specific episode when we talk?",
           timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
@@ -290,14 +267,12 @@ function sampleEpisodes(): SampleEpisode[] {
             "pull the relevant observations from memory. You can also scope " +
             "by date, which is often easier if you don't remember the id.",
           timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
           role: "user",
           content: "That's perfect. Let's make it visible in the UI too.",
           timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
       ],
@@ -305,13 +280,11 @@ function sampleEpisodes(): SampleEpisode[] {
     {
       id: "ep-001",
       date: isoDateDaysAgo(8),
-      context: "default",
       messages: [
         {
           role: "user",
           content: "First conversation of the week — let's set goals.",
           timestamp: `${isoDateDaysAgo(8)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
         {
@@ -323,7 +296,6 @@ function sampleEpisodes(): SampleEpisode[] {
             "- Revisit the observer thresholds once we have a week of data.\n\n" +
             "Anything missing?",
           timestamp: `${isoDateDaysAgo(8)}T00:00:00.000Z`,
-          project_context: "default",
           visibility: "user",
         },
       ],
@@ -354,7 +326,6 @@ function sampleChatHistorySegment(cursor: string | null) {
     kind: "episode",
     episode_id: ep.id,
     date: ep.date,
-    context: ep.context,
     messages: ep.messages,
     next_cursor: next,
   };
@@ -374,7 +345,7 @@ const cannedResponses = [
     "- **Discord** — Real-time alerts via bot DM\n" +
     "- **Telegram** — Daily digest summaries\n" +
     "- **Webhook** — Custom HTTP POST for external integrations\n\n" +
-    "Each channel can be configured independently per project context. " +
+    "Each channel can be configured independently. " +
     "The priority routing rules determine which channel receives which notifications.\n\n" +
     "> **Tip**: Use `secret:discord_token` syntax in your config to reference encrypted secrets.",
 

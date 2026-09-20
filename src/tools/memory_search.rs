@@ -34,12 +34,12 @@ impl Tool for MemorySearchTool {
             "Search past conversation observations and interaction chunks using \
              hybrid BM25 + vector similarity search. Returns matching results with \
              relevance scores and snippets. Supports filtering by source type, date \
-             range, project context, and episode IDs."
+             range, and episode IDs."
         } else {
             "Search past conversation observations and interaction chunks using \
              BM25 full-text search. Returns matching results with relevance scores \
-             and snippets. Supports filtering by source type, date range, project \
-             context, and episode IDs."
+             and snippets. Supports filtering by source type, date range, and \
+             episode IDs."
         };
         ToolDefinition {
             name: self.name().to_string(),
@@ -67,10 +67,6 @@ impl Tool for MemorySearchTool {
                     "date_to": {
                         "type": "string",
                         "description": "Filter results on or before this date (YYYY-MM-DD, inclusive)"
-                    },
-                    "project_context": {
-                        "type": "string",
-                        "description": "Filter by project context (exact match)"
                     },
                     "episode_ids": {
                         "type": "array",
@@ -124,10 +120,6 @@ impl Tool for MemorySearchTool {
                 .get("date_to")
                 .and_then(Value::as_str)
                 .map(String::from),
-            project_context: arguments
-                .get("project_context")
-                .and_then(Value::as_str)
-                .map(String::from),
             episode_ids: arguments.get("episode_ids").and_then(|v| {
                 v.as_array().map(|arr| {
                     arr.iter()
@@ -150,12 +142,11 @@ impl Tool for MemorySearchTool {
                             _ => String::new(),
                         };
                         format!(
-                            "{}. [{}] {} | {} | {}{} (score: {:.2})\n   {}",
+                            "{}. [{}] {} | {}{} (score: {:.2})\n   {}",
                             i + 1,
                             r.source_type,
                             r.id,
                             r.date,
-                            r.context,
                             line_info,
                             r.score,
                             r.snippet
@@ -192,7 +183,6 @@ mod tests {
 
         let obs = vec![Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "rust memory safety and ownership model".to_string(),

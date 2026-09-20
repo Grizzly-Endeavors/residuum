@@ -56,7 +56,6 @@ Use `memory_search` to query past observations and episode chunks. When an embed
 | `source` | string | `"observations"`, `"episodes"`, or `"both"` (default: `"both"`). |
 | `date_from` | string | ISO date lower bound (inclusive). |
 | `date_to` | string | ISO date upper bound (inclusive). |
-| `project_context` | string | Filter to observations/chunks from a specific project. |
 | `episode_ids` | array | Filter to specific episode IDs. |
 
 Use `memory_get` to retrieve the full transcript of a specific episode by ID.

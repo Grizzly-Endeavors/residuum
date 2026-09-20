@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 
 use super::{index::SkillIndex, parser::parse_skill_md, types::ActiveSkill};
 
-/// Shared skill state, following the `SharedProjectState` pattern.
+/// Shared skill state, guarded by a mutex for concurrent access.
 pub type SharedSkillState = Arc<tokio::sync::Mutex<SkillState>>;
 
 /// Skill state manager: holds the index and active skills.
@@ -97,20 +97,20 @@ impl SkillState {
     ///
     /// Removes any active skills whose names no longer appear in the new index.
     /// For an active skill whose name still resolves but whose backing source
-    /// directory changed (e.g. a project skill now shadows a workspace skill
-    /// of the same name), refreshes its body from the new source, or
+    /// directory changed (e.g. a workspace skill now shadows a user-global
+    /// skill of the same name), refreshes its body from the new source, or
     /// deactivates it with a warning if the new source can't be loaded.
     ///
     /// # Errors
     /// Returns an error if scanning fails.
     #[tracing::instrument(skip_all, fields(dirs = self.dirs.len()))]
-    pub async fn rescan(&mut self, project_skills_dir: Option<&Path>) -> anyhow::Result<()> {
+    pub async fn rescan(&mut self) -> anyhow::Result<()> {
         let skills_before = self.index.entries().len();
         tracing::info!(
             skills_before = skills_before,
             "rescanning skill directories"
         );
-        self.index = SkillIndex::scan(&self.dirs, project_skills_dir).await?;
+        self.index = SkillIndex::scan(&self.dirs).await?;
         tracing::info!(
             skills_before = skills_before,
             skills_after = self.index.entries().len(),
@@ -119,8 +119,8 @@ impl SkillState {
 
         // Reconcile active skills against the new index. A name surviving the
         // rescan is not enough on its own: the *same name* can now resolve to
-        // a different physical skill (e.g. a project's `skills/notes/` now
-        // shadows what used to be the workspace `notes` skill). An
+        // a different physical skill (e.g. a workspace `skills/notes/` now
+        // shadows what used to be a user-global `notes` skill). An
         // already-active skill's body was captured at activation time, so if
         // we only checked the name we'd keep serving stale instructions under
         // a name the index now attributes to a different source, with no
@@ -242,9 +242,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
 
         assert!(
@@ -285,9 +283,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
 
         state.activate("test-skill").await.unwrap();
@@ -316,9 +312,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
 
         state.activate("test-skill").await.unwrap();
@@ -327,7 +321,7 @@ mod tests {
         // Remove the skill directory
         tokio::fs::remove_dir_all(&skill_dir).await.unwrap();
 
-        state.rescan(None).await.unwrap();
+        state.rescan().await.unwrap();
         assert!(
             state.active_skill_names().is_empty(),
             "stale active skill should be removed after rescan"
@@ -346,13 +340,11 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
 
         state.activate("test-skill").await.unwrap();
-        state.rescan(None).await.unwrap();
+        state.rescan().await.unwrap();
         assert_eq!(
             state.active_skill_names(),
             vec!["test-skill"],
@@ -363,9 +355,27 @@ mod tests {
     #[tokio::test]
     async fn rescan_refreshes_active_skill_when_source_changes() {
         let ws_dir = tempfile::tempdir().unwrap();
-        let proj_dir = tempfile::tempdir().unwrap();
+        let user_dir = tempfile::tempdir().unwrap();
 
-        // Workspace skill named "notes" is active.
+        // User-global skill named "notes" is active.
+        let user_skill = user_dir.path().join("notes");
+        tokio::fs::create_dir(&user_skill).await.unwrap();
+        tokio::fs::write(
+            user_skill.join("SKILL.md"),
+            "---\nname: notes\ndescription: \"User-global notes\"\n---\n\nUser-global body.\n",
+        )
+        .await
+        .unwrap();
+
+        let dirs = vec![ws_dir.path().to_path_buf(), user_dir.path().to_path_buf()];
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+        let mut state = SkillState::new(index, dirs);
+
+        let active = state.activate("notes").await.unwrap();
+        assert!(active.body.contains("User-global body."));
+
+        // The workspace defining its own higher-priority "notes" skill becomes
+        // active (mirrors a workspace file being added, then `rescan` running).
         let ws_skill = ws_dir.path().join("notes");
         tokio::fs::create_dir(&ws_skill).await.unwrap();
         tokio::fs::write(
@@ -375,31 +385,12 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
-        let mut state = SkillState::new(index, vec![ws_dir.path().to_path_buf()]);
+        state.rescan().await.unwrap();
 
-        let active = state.activate("notes").await.unwrap();
-        assert!(active.body.contains("Workspace body."));
-
-        // A project defining its own higher-priority "notes" skill becomes
-        // active (mirrors `project_activate` calling `rescan(Some(project_skills_dir))`).
-        let proj_skill = proj_dir.path().join("notes");
-        tokio::fs::create_dir(&proj_skill).await.unwrap();
-        tokio::fs::write(
-            proj_skill.join("SKILL.md"),
-            "---\nname: notes\ndescription: \"Project notes\"\n---\n\nProject body.\n",
-        )
-        .await
-        .unwrap();
-
-        state.rescan(Some(proj_dir.path())).await.unwrap();
-
-        // The index now attributes "notes" to the project skill. The
+        // The index now attributes "notes" to the workspace skill. The
         // already-active skill must not keep silently serving the old
-        // workspace body under that name: it must either be refreshed to
-        // reflect the new (project) source, or deactivated outright.
+        // user-global body under that name: it must either be refreshed to
+        // reflect the new (workspace) source, or deactivated outright.
         match state.active_skill_names().as_slice() {
             [] => {
                 // Deactivating instead of refreshing is an acceptable, non-stale outcome.
@@ -407,12 +398,12 @@ mod tests {
             ["notes"] => {
                 let prompt = state.format_active_for_prompt().unwrap();
                 assert!(
-                    prompt.contains("Project body."),
+                    prompt.contains("Workspace body."),
                     "active skill should reflect the new higher-priority source"
                 );
                 assert!(
-                    !prompt.contains("Workspace body."),
-                    "must not keep silently serving the stale workspace body"
+                    !prompt.contains("User-global body."),
+                    "must not keep silently serving the stale user-global body"
                 );
             }
             other => panic!("unexpected active skills after rescan: {other:?}"),
@@ -431,9 +422,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
 
         state.activate("test-skill").await.unwrap();
@@ -472,9 +461,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
-            .await
-            .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
 
         state.activate("skill-a").await.unwrap();

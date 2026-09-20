@@ -16,7 +16,7 @@ does not apply — do not pad.
    being activated for adjacent work it does not cover.
 3. **When to Use** — concrete triggers. The reader is deciding whether to
    activate; give them recognizable conditions, not abstractions.
-4. **Prerequisites** — tools, active project, files, or credentials that must be
+4. **Prerequisites** — tools, active skills, files, or credentials that must be
    in place first. Reference credentials by location, never by value.
 5. **Procedure** — numbered, imperative steps. Each step is one action with a
    verifiable outcome.
@@ -48,11 +48,11 @@ injected into the prompt on every activation — every line costs context.
 
 ## Create-vs-Patch: Worked Example
 
-You just spent a session working out that syncing a project's notes requires
-activating the project *before* calling `memory_search`, or the search misses
-project-scoped observations. You want to capture it.
+You just spent a session working out that `memory_search` has to run *before*
+the observer folds recent messages into the episode, or the search misses the
+observations you are looking for. You want to capture it.
 
-- **Wrong:** create `project-memory-sync-ordering`. It is one narrow fact, it
+- **Wrong:** create `memory-search-ordering`. It is one narrow fact, it
   will sit alone in the index, and nobody scanning descriptions will guess it
   covers this.
 - **Right:** the `residuum-system` memory reference already owns "how memory

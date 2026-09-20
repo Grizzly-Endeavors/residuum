@@ -1,6 +1,6 @@
 //! Subagent preset parsing: frontmatter extraction and name validation.
 
-use anyhow::Context;
+use crate::util::{parse_frontmatter_md, validate_kebab_name};
 
 use super::types::SubagentPresetFrontmatter;
 
@@ -14,24 +14,8 @@ use super::types::SubagentPresetFrontmatter;
 /// Returns an error if the frontmatter is missing, invalid YAML, the name
 /// fails validation, or both tool restriction fields are set.
 pub fn parse_preset_md(content: &str) -> anyhow::Result<(SubagentPresetFrontmatter, String)> {
-    let trimmed = content.trim_start();
-
-    if !trimmed.starts_with("---") {
-        anyhow::bail!("preset file missing frontmatter delimiter '---'");
-    }
-
-    let after_open = trimmed.get(3..).unwrap_or_default();
-
-    let close_pos = after_open.find("\n---").ok_or_else(|| {
-        anyhow::anyhow!("preset file missing closing frontmatter delimiter '---'")
-    })?;
-
-    let yaml_str = after_open
-        .get(..close_pos)
-        .ok_or_else(|| anyhow::anyhow!("failed to extract YAML content"))?;
-
-    let frontmatter: SubagentPresetFrontmatter =
-        serde_yaml_ng::from_str(yaml_str).context("failed to parse preset frontmatter")?;
+    let (frontmatter, body): (SubagentPresetFrontmatter, String) =
+        parse_frontmatter_md(content, "preset file")?;
 
     validate_preset_name(&frontmatter.name)?;
 
@@ -42,9 +26,6 @@ pub fn parse_preset_md(content: &str) -> anyhow::Result<(SubagentPresetFrontmatt
             frontmatter.name
         );
     }
-
-    let body_start = "---".len() + close_pos + "\n---".len();
-    let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
 
     Ok((frontmatter, body))
 }
@@ -57,31 +38,7 @@ pub fn parse_preset_md(content: &str) -> anyhow::Result<(SubagentPresetFrontmatt
 /// # Errors
 /// Returns an error if the name is invalid.
 pub fn validate_preset_name(name: &str) -> anyhow::Result<()> {
-    if name.is_empty() || name.len() > 64 {
-        anyhow::bail!(
-            "preset name must be 1-64 characters, got {len}",
-            len = name.len()
-        );
-    }
-
-    if name.starts_with('-') || name.ends_with('-') {
-        anyhow::bail!("preset name '{name}' must not start or end with a hyphen");
-    }
-
-    if name.contains("--") {
-        anyhow::bail!("preset name '{name}' must not contain consecutive hyphens");
-    }
-
-    for ch in name.chars() {
-        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
-            anyhow::bail!(
-                "preset name '{name}' contains invalid character '{ch}' \
-                 (only lowercase alphanumeric and hyphens allowed)"
-            );
-        }
-    }
-
-    Ok(())
+    validate_kebab_name(name, "preset name")
 }
 
 #[cfg(test)]

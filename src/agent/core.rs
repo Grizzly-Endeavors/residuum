@@ -162,11 +162,6 @@ impl Agent {
         self.recent_messages.clear();
     }
 
-    /// Clear gated tool permissions (used during idle project deactivation).
-    pub async fn clear_tool_filter(&self) {
-        self.tool_filter.write().await.clear_enabled();
-    }
-
     /// Rotate messages after an observation cycle.
     ///
     /// Extracts the last 3 text exchanges, clears the buffer, then prepends
@@ -194,25 +189,41 @@ impl Agent {
         self.recent_messages.push(Message::user(content));
     }
 
-    fn memory_ctx(&self) -> MemoryContext<'_> {
+    /// Build a [`MemoryContext`] from borrowed observation/narrative fields.
+    ///
+    /// Takes explicit field references rather than `&self` so callers that
+    /// also need a simultaneous `&mut self.recent_messages` (e.g. turns that
+    /// push a message into the buffer) aren't blocked by a whole-struct
+    /// immutable borrow.
+    fn memory_ctx<'a>(
+        observations: Option<&'a str>,
+        recent_context: Option<&'a str>,
+    ) -> MemoryContext<'a> {
         MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
+            observations,
+            recent_context,
         }
     }
 
+    /// Build a [`TurnResources`] from borrowed component fields.
+    ///
+    /// Takes explicit field references rather than `&self` for the same
+    /// reason as [`Agent::memory_ctx`].
     fn turn_resources<'a>(
-        &'a self,
         provider: &'a dyn ModelProvider,
+        tools: &'a ToolRegistry,
+        tool_filter: &'a SharedToolFilter,
+        mcp_registry: &'a SharedMcpRegistry,
         identity: &'a IdentityFiles,
+        options: &'a CompletionOptions,
     ) -> TurnResources<'a> {
         TurnResources {
             provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
+            tools,
+            tool_filter,
+            mcp_registry,
             identity,
-            options: &self.options,
+            options,
         }
     }
 
@@ -249,18 +260,16 @@ impl Agent {
             "[Background results require your attention. Review and take action.]",
         ));
 
-        let memory_ctx = MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
-        };
-        let resources = TurnResources {
-            provider: &*self.provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
-            identity: &self.identity,
-            options: &self.options,
-        };
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
+        let resources = Self::turn_resources(
+            &*self.provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &self.identity,
+            &self.options,
+        );
         let events = EventContext {
             publisher,
             output_endpoint,
@@ -325,18 +334,16 @@ impl Agent {
                 .push(Message::user_with_images(user_input, images.to_vec()));
         }
 
-        let memory_ctx = MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
-        };
-        let resources = TurnResources {
-            provider: &*self.provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
-            identity: &self.identity,
-            options: &self.options,
-        };
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
+        let resources = Self::turn_resources(
+            &*self.provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &self.identity,
+            &self.options,
+        );
         let events = EventContext {
             publisher,
             output_endpoint,
@@ -386,12 +393,20 @@ impl Agent {
         // snapshot for this turn only.
         let identity = self.load_identity_snapshot().await;
 
-        let memory_ctx = self.memory_ctx();
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
 
         // System turns don't participate in interrupts — use a dead-end channel
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
-        let resources = self.turn_resources(provider, &identity);
+        let resources = Self::turn_resources(
+            provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &identity,
+            &self.options,
+        );
 
         let events = EventContext {
             publisher,
@@ -431,7 +446,8 @@ impl Agent {
         // Reload identity so `/context` reflects on-disk edits, not the snapshot
         // from the last turn.
         let identity = self.load_identity_snapshot().await;
-        let memory_ctx = self.memory_ctx();
+        let memory_ctx =
+            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
 
         let filter = self.tool_filter.read().await;
         let builtin_defs = self.tools.definitions(&filter);
@@ -484,12 +500,11 @@ mod tests {
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy, ToolFilter};
     use async_trait::async_trait;
-    use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn no_filter() -> SharedToolFilter {
-        ToolFilter::new_shared(HashSet::new())
+        ToolFilter::new_shared()
     }
 
     fn empty_mcp() -> SharedMcpRegistry {
@@ -583,10 +598,7 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(vec![
             ModelResponse::new(
@@ -640,10 +652,7 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -711,10 +720,7 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -1117,10 +1123,7 @@ mod tests {
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
 
@@ -1195,10 +1198,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
-        );
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
 
