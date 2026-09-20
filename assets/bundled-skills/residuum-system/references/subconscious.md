@@ -28,7 +28,7 @@ editable via the file.
 ## Learning
 
 End-of-turn triage can also emit a `learn` signal (`preference` or
-`recovery`), which spawns the `learner` sub-agent preset, subject to a
+`recovery`), which spawns a sub-agent with the `learner` skill, subject to a
 cooldown. Opt-in via `[subconscious] learning = true`. A separate
 `[learning] nudge_after_turns` fallback exists for users who keep the
 subconscious itself off.

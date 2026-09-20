@@ -108,15 +108,14 @@ pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
 
 /// Controls which tools are visible and executable.
 ///
-/// Supports subagent preset restrictions via `denied_tools` (permanently
-/// blocked) or `allowed_tools` (only listed tools are available, overrides
-/// all other logic).
+/// Supports a deny list (permanently blocked) or an allow list (only listed
+/// tools are available, overriding all other logic).
 #[derive(Clone, Default)]
 pub struct ToolFilter {
-    /// Tools permanently blocked by the subagent preset (`denied_tools`).
-    preset_blocked: HashSet<String>,
-    /// If set, ONLY these tools are available (`allowed_tools` preset restriction).
-    preset_allowed_only: Option<HashSet<String>>,
+    /// Tools permanently blocked for this agent.
+    blocked: HashSet<String>,
+    /// If set, ONLY these tools are available.
+    allowed_only: Option<HashSet<String>>,
 }
 
 impl ToolFilter {
@@ -132,12 +131,12 @@ impl ToolFilter {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    /// Create a new shared tool filter with preset-denied tools.
+    /// Create a new shared tool filter with a deny list.
     #[must_use]
     pub fn new_shared_with_denied(denied: HashSet<String>) -> SharedToolFilter {
         Arc::new(RwLock::new(Self {
-            preset_blocked: denied,
-            preset_allowed_only: None,
+            blocked: denied,
+            allowed_only: None,
         }))
     }
 
@@ -145,21 +144,21 @@ impl ToolFilter {
     #[must_use]
     pub fn new_shared_allowed_only(allowed: HashSet<String>) -> SharedToolFilter {
         Arc::new(RwLock::new(Self {
-            preset_blocked: HashSet::new(),
-            preset_allowed_only: Some(allowed),
+            blocked: HashSet::new(),
+            allowed_only: Some(allowed),
         }))
     }
 
     /// Check whether a tool is available.
     ///
-    /// If the preset set `allowed_only`, only listed tools are available.
-    /// Otherwise, preset-blocked tools are never available; all others are.
+    /// With an allow list set, only listed tools are available.
+    /// Otherwise, blocked tools are never available; all others are.
     #[must_use]
     pub fn is_available(&self, name: &str) -> bool {
-        if let Some(allowed) = &self.preset_allowed_only {
+        if let Some(allowed) = &self.allowed_only {
             return allowed.contains(name);
         }
-        !self.preset_blocked.contains(name)
+        !self.blocked.contains(name)
     }
 }
 
@@ -235,7 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_filter_preset_allowed_only() {
+    async fn tool_filter_allowed_only() {
         let filter = ToolFilter::new_shared_allowed_only(HashSet::from([
             "read_file".to_string(),
             "write_file".to_string(),

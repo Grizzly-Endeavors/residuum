@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use chrono::NaiveDateTime;
 
-use crate::bus::types::PresetName;
+use crate::bus::types::SkillName;
 use crate::config::BackgroundModelTier;
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
@@ -198,8 +198,8 @@ pub struct AgentResultEvent {
     pub task_id: String,
     /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
     pub source_label: String,
-    /// Subagent preset that ran the task.
-    pub agent_preset: PresetName,
+    /// Skill the sub-agent ran with, if any.
+    pub agent_skill: Option<SkillName>,
     /// What triggered this task.
     pub source: EventTrigger,
     /// What the producing agent signalled should happen with this result.
@@ -244,8 +244,8 @@ impl AgentResultEvent {
 /// Request to spawn a sub-agent from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {
-    /// Subagent preset to use for this spawn.
-    pub preset: PresetName,
+    /// Skill to activate for this sub-agent, if any.
+    pub skill: Option<SkillName>,
     /// Human-readable source label (e.g. `"pulse:email_check"`, `"agent:researcher"`).
     pub source_label: String,
     /// The prompt/instructions for the sub-agent.
@@ -254,8 +254,10 @@ pub struct SpawnRequestEvent {
     pub context: Option<String>,
     /// What triggered this spawn request.
     pub source: EventTrigger,
-    /// Override the preset's model tier.
-    pub model_tier_override: Option<BackgroundModelTier>,
+    /// Model tier to run the sub-agent at.
+    pub model_tier: BackgroundModelTier,
+    /// Render SOUL.md, AGENTS.md, and MEMORY.md into the sub-agent's prompt.
+    pub include_identity: bool,
 }
 
 /// Operational notice broadcast to connected endpoints.
@@ -321,13 +323,13 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::types::PresetName;
+    use crate::bus::types::SkillName;
 
     fn make_agent_result(summary: &str, transcript: Option<&str>) -> AgentResultEvent {
         AgentResultEvent {
             task_id: "t1".into(),
             source_label: "pulse:check".into(),
-            agent_preset: PresetName::from("default"),
+            agent_skill: Some(SkillName::from("default")),
             source: EventTrigger::Pulse,
             disposition: ResultDisposition::Silent,
             status: AgentResultStatus::Completed,

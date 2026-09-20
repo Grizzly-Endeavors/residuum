@@ -61,7 +61,7 @@ impl MacosNativeChannel {
     /// Returns an error if the macOS bridge cannot be initialized.
     pub async fn new(
         name: impl Into<String>,
-        config: MacosChannelConfig,
+        config: &MacosChannelConfig,
     ) -> anyhow::Result<(Self, JoinHandle<()>)> {
         config.validate()?;
 
@@ -72,7 +72,7 @@ impl MacosNativeChannel {
 
         permissions::check_and_request().await;
 
-        let aggregator_handle = throttle::spawn(rx, macos_bridge, config);
+        let aggregator_handle = throttle::spawn(rx, macos_bridge, config.throttle_window_secs);
 
         Ok((
             Self {

@@ -193,7 +193,7 @@ mod tests {
     fn sample_observation(episode_id: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            source_episodes: vec![episode_id.to_string()],
+            source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observation from {episode_id}"),
         }
@@ -257,12 +257,12 @@ mod tests {
             Some("workspace uses flat layout"),
             "first observation content should match"
         );
-        // Reflector observations have empty source_episodes
+        // Reflector observations have no source_episodes
         assert!(
             log.observations
                 .first()
-                .is_some_and(|o| o.source_episodes.is_empty()),
-            "reflector observations should have empty source_episodes"
+                .is_some_and(|o| o.source_episodes.is_none()),
+            "reflector observations should have no source_episodes"
         );
     }
 

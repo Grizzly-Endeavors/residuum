@@ -6,7 +6,7 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 
 ## Sub-Agents
 
-An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, and active skills. By default it **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small — a preset can opt back in with `include_identity: true` (see below).
+An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, and active skills. By default it **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small — the spawn caller can opt back in with `include_identity: true` (see below).
 
 Sub-agents share the MCP registry with the main agent.
 
@@ -22,30 +22,31 @@ Sub-agent tasks specify a model tier that maps to configured models in `[backgro
 
 The fallback chain walks up tiers. If no background model is configured at any tier, the main model is used.
 
-## Subagent Presets
+## Sub-Agent Roles
 
-Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `denied_tools`, `allowed_tools`, `include_identity`. Four built-in presets exist:
+A sub-agent is an agent loop running off the main thread. Pass a **skill** name at spawn time and that skill's body becomes the sub-agent's role instructions. There is no separate preset format — a role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn or handed to a sub-agent.
 
-- **`general-purpose`** — default when `agent_name` is omitted.
+Three role skills ship bundled:
+
 - **`introspection`** — backs the built-in `reflection`/`memory_tending` pulses.
 - **`learner`** — spawned by a subconscious `learn` signal (opt-in, cooldown-limited) or by the `[learning] nudge_after_turns` fallback. Corroborates a `preference` signal against episodic memory before promoting it to USER.md (≥2 supporting observations, evidence count annotated; single sightings go to MEMORY.md as provisional). For a `recovery` signal, prefers queuing a durable fix via the user inbox over baking the workaround into a skill.
-- **`memory-analyst`** — read-only; the main agent spawns it for synthesized questions about the user/history instead of doing raw `memory_search` itself. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates, abstains rather than fabricates, cites episode IDs.
+- **`memory-analyst`** — the main agent spawns it for synthesized questions about the user/history instead of doing raw `memory_search` itself. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates, abstains rather than fabricates, cites episode IDs.
 
-`include_identity` (boolean, default `false`) — when `true`, the sub-agent's prompt also includes SOUL.md, AGENTS.md, and MEMORY.md alongside the usual ENVIRONMENT.md/USER.md. Use it for presets that need full identity context to make judgment calls (`introspection`, `learner`, `memory-analyst` all set it).
+`include_identity` (boolean, default `false`) is set by the caller — when `true`, the sub-agent's prompt also includes SOUL.md, AGENTS.md, and MEMORY.md alongside the usual ENVIRONMENT.md/USER.md. Use it for roles that need full identity context to make judgment calls (the `introspection` and `learner` spawns both set it).
 
 ## Tools
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
-| `subagent_spawn` | `task`, `agent_name`, `model_override` | Spawn a sub-agent task. Results route through the notification router. |
+| `subagent_spawn` | `task`, `skill`, `model` | Spawn a sub-agent task. Results route through the notification router. |
 | `list_agents` | *(none)* | List active background tasks with elapsed time and prompt preview. |
 | `stop_agent` | `task_id` | Cancel an active task by ID. |
 
 ### `subagent_spawn` Details
 
 - **`task`**: The prompt/instructions for the sub-agent. Required.
-- **`agent_name`**: Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected.
-- **`model_override`**: `"small"`, `"medium"`, or `"large"`. Overrides the preset's tier.
+- **`skill`**: Name of a skill to activate as the sub-agent's role. Omit to run on the task prompt alone. `"main"` is rejected. An unknown name fails immediately with the available list.
+- **`model`**: `"small"`, `"medium"`, or `"large"`. Default: `"medium"`.
 
 A sub-agent's result is a **self-report**, not a verified outcome. When the task is checkable, ask for concrete handles in the prompt (file paths, commit SHAs, URLs) and don't take "done" at face value until they check out.
 

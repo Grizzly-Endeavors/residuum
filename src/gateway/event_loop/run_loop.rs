@@ -229,14 +229,12 @@ async fn spawn_bus_infrastructure(
     {
         bus_infra_handles.push(h);
     }
-    let registry = crate::subagents::SubagentRegistry::new(
-        Arc::clone(&parts.background_spawner),
+    if let Some(h) = crate::background::listener::spawn_listener(
         Arc::clone(&parts.spawn_context),
-        Arc::clone(&parts.skill_state),
-        Arc::clone(&parts.mcp_registry),
-        parts.layout.subagents_dir(),
-    );
-    if let Some(h) = crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await {
+        &core.bus_handle,
+    )
+    .await
+    {
         bus_infra_handles.push(h);
     }
 

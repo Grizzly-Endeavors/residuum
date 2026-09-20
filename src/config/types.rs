@@ -137,7 +137,7 @@ pub enum WebhookRouting {
     /// Route to the default inbox.
     #[default]
     Inbox,
-    /// Route to a named agent preset.
+    /// Route to a sub-agent running the named skill.
     Agent(String),
 }
 

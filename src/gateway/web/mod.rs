@@ -278,7 +278,6 @@ mod tests {
                 id: id.to_string(),
                 date,
                 observations: vec![],
-                source_episodes: vec![],
             };
             write_episode_transcript(
                 &episodes_dir,
@@ -347,7 +346,6 @@ mod tests {
                 id: id.to_string(),
                 date,
                 observations: vec![],
-                source_episodes: vec![],
             };
             write_episode_transcript(
                 &episodes_dir,

@@ -293,7 +293,7 @@ pub(super) struct TelegramConfigFile {
 pub(super) struct WebhookEntryFile {
     /// Optional bearer token for authentication.
     pub(super) secret: Option<String>,
-    /// Routing target (`"inbox"` or `"agent:<preset>"`).
+    /// Routing target (`"inbox"` or `"agent:<skill>"`).
     pub(super) routing: Option<String>,
     /// Payload format (`"parsed"` or `"raw"`).
     pub(super) format: Option<String>,

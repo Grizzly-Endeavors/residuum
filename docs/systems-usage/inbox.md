@@ -10,7 +10,7 @@ The inbox is a capture system for items the agent or background tasks want to sa
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none for the agent)* |
 | Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
 
-The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` preset) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
+The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
 
 ## How Items Arrive
 

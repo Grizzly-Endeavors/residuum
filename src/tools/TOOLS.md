@@ -263,7 +263,7 @@ On error: skill is not currently active.
 | `name`       | string          | yes      | Human-readable name for this action                                                                                                                               |
 | `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
-| `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
+| `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a skill name (e.g. `"memory-analyst"`) spawns a sub-agent with that skill as its role. Omit to spawn a sub-agent with no skill. |
 | `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
 
 ### Output
@@ -295,7 +295,7 @@ On success: count header followed by one entry per action (fire times displayed 
   {name} ({id}) — fires: {datetime} [agent info]
 ```
 
-The agent label shows `[main turn]` for main-turn actions, `[preset: {name}]` for preset-routed actions, or nothing for default sub-agent actions.
+The agent label shows `[main turn]` for main-turn actions, `[skill: {name}]` for skill-routed actions, or nothing for plain sub-agent actions.
 
 When no actions exist: `"No pending scheduled actions."`
 
@@ -579,51 +579,34 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
+> Spawn a background sub-agent to handle a task. Optionally name a skill to give the sub-agent a role — its instructions become the sub-agent's brief. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
 
 ### Input
 
 | Parameter        | Type            | Required | Description                                                          |
 |------------------|-----------------|----------|----------------------------------------------------------------------|
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
-| `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
-| `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
+| `skill`          | string          | no       | Name of a skill to activate as the sub-agent's role. Omit to run on the task prompt alone. Must match a known skill or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
+| `model`          | string          | no       | Model tier: `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
-### Subagent Presets
+### Sub-Agent Roles
 
-Presets are Markdown files in the `subagents/` directory at the workspace root (e.g., `subagents/researcher.md`). They configure sub-agent behaviour via YAML frontmatter:
+A sub-agent is an agent loop running off the main thread. Naming a `skill` activates that skill on the sub-agent's own skill state, so its body arrives as the sub-agent's role instructions through the normal active-skill path. Roles are ordinary skills in `skills/<name>/SKILL.md` — there is no separate preset format, and the same file can be activated in-turn by the main agent.
 
-```markdown
----
-name: researcher
-description: "Research specialist for gathering information"
-model_tier: small          # small / medium / large (optional, default: medium)
-denied_tools:              # permanently block these tools (mutually exclusive with allowed_tools)
-  - exec
----
-
-You are a research specialist. Focus on gathering and synthesising
-information. Always cite sources.
-```
-
-**Built-in preset:** `general-purpose` — no tool restrictions, medium tier. Always present even with no `subagents/` directory.
-
-**User-defined presets** with the same name as a built-in override the built-in.
-
-**Unknown preset names** return a `ToolResult::error` listing available presets — the call does not proceed.
+**Unknown skill names** return a `ToolResult::error` listing available skills — the call does not proceed. The check runs against the in-memory skill index, so it costs no disk I/O.
 
 ### Output
 
-On success: `"Subagent '{preset_name}' spawned with task delegated to registry."`
+On success: `"Sub-agent spawned with skill '{name}'."`, or `"Sub-agent spawned."` when no skill was named.
 
 The sub-agent runs in the background via the subagent registry. When it completes, the notification router relays the result back to the main agent.
 
 ### Errors
 
 - Missing or empty `task` → `InvalidArguments`
-- `agent_name` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
-- Invalid `model_override` value → `InvalidArguments`
-- Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
+- `skill` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
+- Invalid `model` value → `InvalidArguments`
+- Unknown `skill` (not in the skill index) → `is_error = true` with the available skill list
 - Bus publish failure → `Execution` error
 
 **Side effects:** Publishes a `SpawnRequest` to the bus, which the subagent registry picks up and spawns as a background task (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the bus notification system.

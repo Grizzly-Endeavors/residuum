@@ -3,6 +3,7 @@
 //! Each notification channel subscribes to its bus topic and delivers events
 //! independently. Channels are configured in `channels.toml`.
 
+pub mod batch_aggregator;
 pub mod channels;
 pub mod external;
 #[cfg(target_os = "macos")]

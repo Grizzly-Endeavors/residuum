@@ -1,6 +1,5 @@
 //! Background task types: task definitions, execution configs, and results.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,7 +7,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, PresetName, Publisher};
+use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, Publisher, SkillName};
 use crate::config::BackgroundModelTier;
 use crate::memory::search::HybridSearcher;
 use crate::models::CompletionOptions;
@@ -26,8 +25,8 @@ pub(crate) struct BackgroundTask {
     pub source: EventTrigger,
     /// Configuration for the sub-agent that runs this task.
     pub subagent_config: SubAgentConfig,
-    /// The agent preset that will run this task.
-    pub agent_preset: PresetName,
+    /// Skill the sub-agent runs with, if any.
+    pub agent_skill: Option<SkillName>,
 }
 
 /// Configuration for a sub-agent background task.
@@ -58,8 +57,8 @@ pub struct BackgroundResult {
     pub status: AgentResultStatus,
     /// When the task completed.
     pub timestamp: DateTime<Utc>,
-    /// The agent preset that ran this task.
-    pub agent_preset: PresetName,
+    /// Skill the sub-agent ran with, if any.
+    pub agent_skill: Option<SkillName>,
 }
 
 /// Metadata tracked for a currently-running background task.
@@ -80,18 +79,8 @@ pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
     prompt.chars().take(120).collect()
 }
 
-/// Preset-derived tool restriction for a sub-agent.
-pub enum PresetToolRestriction {
-    /// Tools permanently blocked (from `denied_tools` frontmatter).
-    Denied(HashSet<String>),
-    /// Only listed tools are available (from `allowed_tools` frontmatter).
-    AllowedOnly(HashSet<String>),
-}
-
 /// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
 pub struct SubAgentBuildConfig {
-    /// Optional preset-level tool restriction (denied or allowed-only).
-    pub preset_tool_restriction: Option<PresetToolRestriction>,
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
     /// Identity files for the system prompt.
@@ -100,10 +89,10 @@ pub struct SubAgentBuildConfig {
     pub options: CompletionOptions,
     /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
-    /// Preset-specific instructions to inject into the subagent system prompt.
-    pub preset_instructions: Option<String>,
-    /// Opt-in (from preset frontmatter) to render SOUL.md, AGENTS.md, and
-    /// MEMORY.md in the subagent's system prompt.
+    /// Skill to activate for this sub-agent, if any. Its body becomes the
+    /// sub-agent's role instructions through the normal active-skill path.
+    pub skill: Option<String>,
+    /// Render SOUL.md, AGENTS.md, and MEMORY.md in the subagent's system prompt.
     pub include_identity: bool,
     // ── Sub-agent tool dependencies ────────────────────────────────────
     /// Background task spawner for `stop_agent` / `list_agents` tools.
