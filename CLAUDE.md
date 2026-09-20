@@ -127,7 +127,7 @@ Testing is a first-class operation — NEVER skip test implementation.
 - `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
 - `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
 - `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
-- `residuum bug-report -m "description"` — send trace dump to developer (currently no-op until collection endpoint deployed)
+- `residuum bug-report -m "description"` — send a sanitized trace dump to the developer via the feedback-ingest service
 - `RUST_LOG` env var overrides the configured log level when set
 
 ## Git Workflow

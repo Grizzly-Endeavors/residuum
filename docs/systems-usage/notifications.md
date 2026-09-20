@@ -53,7 +53,7 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 | `macos` | macOS native notification (when running on macOS). |
 | `windows` | Windows Toast notification (when running on Windows). |
 
-On macOS, an urgent result is posted at the `time_sensitive` interruption level so it breaks through Focus modes; everything else uses the channel's configured `default_priority`. Windows Toasts do not yet vary by urgency — an urgent result reaches the channel, it just arrives at the same Toast priority as any other. Both platforms batch deliveries within a throttle window (default 30s), collapsing to a summary notification past three in a window.
+On macOS, an urgent result is posted at the `time_sensitive` interruption level so it breaks through Focus modes; everything else uses the channel's configured `default_priority`. Windows Toasts do not vary by urgency — an urgent result reaches the channel, it just arrives at the same Toast priority as any other. Both platforms batch deliveries within a throttle window (default 30s), collapsing to a summary notification past three in a window.
 
 **Note**: The `webhook` external notification channel is separate from the `webhook` inbound channel (which receives messages *into* the agent via `POST /webhook`). They serve opposite directions.
 
