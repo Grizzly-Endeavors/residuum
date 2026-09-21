@@ -12,5 +12,5 @@ mod xml;
 
 pub use error::FatalError;
 pub use frontmatter::{parse_frontmatter_md, validate_kebab_name};
-pub use spawn::{spawn_monitored, spawn_supervised};
+pub use spawn::{panic_message, spawn_monitored, spawn_supervised};
 pub use xml::xml_escape;
