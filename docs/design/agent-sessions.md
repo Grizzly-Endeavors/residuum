@@ -98,7 +98,7 @@ Each run has working memory that mirrors the main agent's:
 
 On completion:
 
-1. **Skip check.** A run produces no episode if its final turn ended with the `HEARTBEAT_OK` sentinel, or if its total transcript is below a small token floor (default around 2,000 tokens, configurable) and it staged nothing. Its transcript is still kept in the session store and visible in the UI.
+1. **Skip check.** A run produces no episode only if it staged nothing over the course of its run and either its final turn ended with the `HEARTBEAT_OK` sentinel or its total transcript is below a small token floor (default around 2,000 tokens, configurable). Anything staged mid-run is real, already-extracted work, so it merges regardless of how the run ended. Its transcript is still kept in the session store and visible in the UI.
 2. **Final observation.** Otherwise, the observer runs over the run's remaining unobserved messages.
 3. **Merge.** The run's staged and final observations, and its episode transcript, are submitted to the memory merge writer. The merge writer assigns episode ids, appends observations to the global log, writes the episode to the episode store, indexes and embeds it, and checks whether the reflector should run. Each merged observation and episode is tagged with the session address, run id, and category so the source is traceable.
 

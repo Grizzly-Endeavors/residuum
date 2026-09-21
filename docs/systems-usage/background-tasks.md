@@ -141,7 +141,7 @@ See [notifications.md](notifications.md) for the full routing model.
 
 ## Memory
 
-A session has its own working memory and merges what it learned into global memory when it completes — see [memory.md](memory.md#agent-sessions-and-memory) for the full model. In short: the run is checked against the same observer thresholds the main agent uses, crossing the force threshold mid-run stages observations locally, and on completion the run produces an episode (tagged with its session address, run id, and category) unless its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor` with nothing staged. Its transcript is kept in the session store either way. The run's metadata records the episode id once merged.
+A session has its own working memory and merges what it learned into global memory when it completes — see [memory.md](memory.md#agent-sessions-and-memory) for the full model. In short: the run is checked against the same observer thresholds the main agent uses, crossing the force threshold mid-run stages observations locally, and on completion the run produces an episode (tagged with its session address, run id, and category) unless it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor`. Its transcript is kept in the session store either way. The run's metadata records the episode id once merged.
 
 ## Session Store
 

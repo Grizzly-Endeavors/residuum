@@ -106,8 +106,10 @@ fn wrap(messages: &[Message], tz: Tz) -> Vec<RecentMessage> {
 /// Run a finished run's completion memory pipeline: the skip check, a final
 /// extraction over whatever the run staged nothing of yet, and the merge
 /// into global memory. Returns the merged episode id, or `None` if the run
-/// produced no episode (its transcript is still kept in the session store
-/// either way).
+/// produced no episode — it staged nothing over the course of its run and
+/// either ended with `HEARTBEAT_OK` or its transcript fell below the skip
+/// token floor (its transcript is still kept in the session store either
+/// way). Anything staged mid-run is merged regardless of how the run ended.
 ///
 /// Takes the run's address/run id/category as a [`SourceTag`] rather than a
 /// [`super::registry::SessionInfo`] so it can be reused both by a live run's
@@ -121,12 +123,19 @@ pub(crate) async fn complete_session_memory(
     memory: SessionMemory,
     env: &SessionMemoryEnv<'_>,
 ) -> Option<String> {
+    let has_staged = memory.has_staged();
     let ended_with_heartbeat_ok = summary.contains(HEARTBEAT_OK);
     let total_tokens = estimate_message_tokens(transcript);
-    let below_floor = total_tokens < env.episode_skip_token_floor && !memory.has_staged();
+    let below_floor = total_tokens < env.episode_skip_token_floor;
 
-    if ended_with_heartbeat_ok || below_floor {
+    // A run with nothing staged skips producing an episode when it ended
+    // quietly (HEARTBEAT_OK) or never accumulated enough content to be worth
+    // one. Anything staged mid-run is real, already-extracted work — it
+    // merges regardless of how the run ended, so a HEARTBEAT_OK finish never
+    // discards it.
+    if !has_staged && (ended_with_heartbeat_ok || below_floor) {
         tracing::debug!(
+            has_staged,
             ended_with_heartbeat_ok,
             total_tokens,
             below_floor,
@@ -248,6 +257,52 @@ mod tests {
         .await;
 
         assert!(id.is_none(), "a HEARTBEAT_OK run should produce no episode");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ok_run_with_staged_observations_still_merges() {
+        // A run that staged observations mid-run before ending quietly must
+        // not have that work discarded — only a run with nothing staged
+        // skips producing an episode on a HEARTBEAT_OK ending.
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let observer = observer_with_thresholds(100_000, 200_000);
+        let mw = merge_writer(dir.path());
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &mw,
+            layout: &layout,
+            episode_skip_token_floor: 2000,
+            tz: chrono_tz::UTC,
+        };
+        let transcript = vec![
+            Message::user("check things"),
+            Message::assistant(HEARTBEAT_OK, None),
+        ];
+
+        let mut memory = SessionMemory::new();
+        memory.extracted.push(ExtractedObservation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            visibility: Visibility::Background,
+            content: "staged before the quiet ending".to_string(),
+        });
+        memory.covered_through = transcript.len();
+
+        let id =
+            complete_session_memory(sample_tag(), HEARTBEAT_OK, &transcript, memory, &env).await;
+
+        assert!(
+            id.is_some(),
+            "a HEARTBEAT_OK run with staged observations must still merge"
+        );
+        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            log.observations.len(),
+            1,
+            "the staged observation must not be discarded"
+        );
     }
 
     #[tokio::test]

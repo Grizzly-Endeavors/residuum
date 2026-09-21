@@ -63,7 +63,7 @@ Every session result flows through the pub/sub bus to the notification router. `
 
 ## Memory
 
-A session merges what it learned into global memory when it completes — full model in [memory-system.md](memory-system.md#agent-sessions-and-memory). Short version: the run is checked against the same observer thresholds the main agent uses; crossing the force threshold mid-run stages observations locally; on completion the run produces an episode (tagged with its session address, run id, category) unless its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor` with nothing staged. The transcript is kept in the session store either way, and the run's metadata records the episode id once merged.
+A session merges what it learned into global memory when it completes — full model in [memory-system.md](memory-system.md#agent-sessions-and-memory). Short version: the run is checked against the same observer thresholds the main agent uses; crossing the force threshold mid-run stages observations locally; on completion the run produces an episode (tagged with its session address, run id, category) unless it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor`. The transcript is kept in the session store either way, and the run's metadata records the episode id once merged.
 
 ## Concurrency
 
