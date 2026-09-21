@@ -82,7 +82,7 @@ A setup screen walks you through connecting your AI provider and creating your f
 
 ## Works With
 
-Claude, ChatGPT, Gemini, and local models. If one goes down, your agents switch to a backup automatically.
+Claude, ChatGPT, Gemini, open models on Fireworks, and local models. If one goes down, your agents switch to a backup automatically.
 
 ## For Developers
 

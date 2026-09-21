@@ -61,6 +61,7 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
     println!("    2. openai");
     println!("    3. ollama");
     println!("    4. gemini");
+    println!("    5. fireworks");
     let provider = loop {
         let input = prompt_with_default("provider [1]", "1")?;
         match input.as_str() {
@@ -68,11 +69,12 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
             "2" | "openai" => break ProviderKind::OpenAi,
             "3" | "ollama" => break ProviderKind::Ollama,
             "4" | "gemini" => break ProviderKind::Gemini,
+            "5" | "fireworks" => break ProviderKind::Fireworks,
             other => {
                 if let Ok(kind) = ProviderKind::from_str(other) {
                     break kind;
                 }
-                println!("  invalid choice, enter 1-4 or a provider name");
+                println!("  invalid choice, enter 1-5 or a provider name");
             }
         }
     };
@@ -331,6 +333,8 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::OpenAi => "gpt-4o",
         ProviderKind::Ollama => "llama3",
         ProviderKind::Gemini => "gemini-2.0-flash",
+        // A router tracks Fireworks' current model; fixed model ids get retired.
+        ProviderKind::Fireworks => "accounts/fireworks/routers/glm-flash-latest",
     }
 }
 

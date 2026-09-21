@@ -60,7 +60,7 @@ export interface StatusResponse {
 
 // ── Setup wizard types ──────────────────────────────────────────────
 
-export type ProviderKey = "anthropic" | "openai" | "gemini" | "ollama";
+export type ProviderKey = "anthropic" | "openai" | "gemini" | "fireworks" | "ollama";
 
 export interface ProviderConfig {
   apiKey: string;

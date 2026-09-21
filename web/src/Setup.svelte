@@ -42,6 +42,7 @@
         anthropic: { apiKey: "", model: "", url: "" },
         openai: { apiKey: "", model: "", url: "" },
         gemini: { apiKey: "", model: "", url: "" },
+        fireworks: { apiKey: "", model: "", url: "" },
         ollama: { apiKey: "", model: "", url: "" },
       },
       mainProvider: "anthropic",

@@ -4,7 +4,8 @@ use std::fmt;
 use std::str::FromStr;
 
 use super::constants::{
-    DEFAULT_ANTHROPIC_URL, DEFAULT_GEMINI_URL, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL,
+    DEFAULT_ANTHROPIC_URL, DEFAULT_FIREWORKS_URL, DEFAULT_GEMINI_URL, DEFAULT_OLLAMA_URL,
+    DEFAULT_OPENAI_URL,
 };
 
 /// Resolved provider configuration for a specific role.
@@ -23,6 +24,11 @@ pub struct ProviderSpec {
     pub api_key: Option<String>,
     /// Ollama `keep_alive` duration (e.g. `"5m"`, `"0"` to unload immediately).
     pub keep_alive: Option<String>,
+    /// Stable per-workspace, per-role routing key.
+    ///
+    /// Providers that serve from per-replica prompt caches (Fireworks) send it
+    /// so a role's long, stable prompt prefix keeps landing on a warm replica.
+    pub session_affinity: Option<String>,
 }
 
 impl fmt::Debug for ProviderSpec {
@@ -33,6 +39,7 @@ impl fmt::Debug for ProviderSpec {
             .field("provider_url", &self.provider_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("keep_alive", &self.keep_alive)
+            .field("session_affinity", &self.session_affinity)
             .finish()
     }
 }
@@ -78,6 +85,9 @@ impl FromStr for ModelSpec {
 pub enum ProviderKind {
     /// Anthropic Messages API.
     Anthropic,
+    /// Fireworks AI (OpenAI-compatible wire format with Fireworks-specific
+    /// prompt-cache reporting and replica affinity).
+    Fireworks,
     /// Google Gemini `generateContent` API.
     Gemini,
     /// Ollama local inference.
@@ -92,6 +102,7 @@ impl ProviderKind {
     pub(crate) fn default_url(self) -> &'static str {
         match self {
             Self::Anthropic => DEFAULT_ANTHROPIC_URL,
+            Self::Fireworks => DEFAULT_FIREWORKS_URL,
             Self::Gemini => DEFAULT_GEMINI_URL,
             Self::Ollama => DEFAULT_OLLAMA_URL,
             Self::OpenAi => DEFAULT_OPENAI_URL,
@@ -103,6 +114,7 @@ impl fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Anthropic => write!(f, "anthropic"),
+            Self::Fireworks => write!(f, "fireworks"),
             Self::Gemini => write!(f, "gemini"),
             Self::Ollama => write!(f, "ollama"),
             Self::OpenAi => write!(f, "openai"),
@@ -116,11 +128,12 @@ impl FromStr for ProviderKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "anthropic" => Ok(Self::Anthropic),
+            "fireworks" => Ok(Self::Fireworks),
             "gemini" => Ok(Self::Gemini),
             "ollama" => Ok(Self::Ollama),
             "openai" => Ok(Self::OpenAi),
             other => Err(format!(
-                "unknown provider '{other}', expected one of: anthropic, gemini, ollama, openai"
+                "unknown provider '{other}', expected one of: anthropic, fireworks, gemini, ollama, openai"
             )),
         }
     }
@@ -129,7 +142,8 @@ impl FromStr for ProviderKind {
 #[cfg(test)]
 mod tests {
     use super::super::constants::{
-        DEFAULT_ANTHROPIC_URL, DEFAULT_GEMINI_URL, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL,
+        DEFAULT_ANTHROPIC_URL, DEFAULT_FIREWORKS_URL, DEFAULT_GEMINI_URL, DEFAULT_OLLAMA_URL,
+        DEFAULT_OPENAI_URL,
     };
     use super::*;
 
@@ -193,6 +207,17 @@ mod tests {
     }
 
     #[test]
+    fn model_spec_parse_fireworks_keeps_account_path() {
+        let spec =
+            ModelSpec::from_str("fireworks/accounts/fireworks/models/deepseek-v3p1").unwrap();
+        assert_eq!(spec.kind, ProviderKind::Fireworks, "fireworks should parse");
+        assert_eq!(
+            spec.model, "accounts/fireworks/models/deepseek-v3p1",
+            "slashes after the provider belong to the model id"
+        );
+    }
+
+    #[test]
     fn provider_kind_case_insensitive() {
         assert_eq!(
             ProviderKind::from_str("Anthropic").unwrap(),
@@ -227,6 +252,11 @@ mod tests {
             ProviderKind::Gemini.default_url(),
             DEFAULT_GEMINI_URL,
             "gemini default URL"
+        );
+        assert_eq!(
+            ProviderKind::Fireworks.default_url(),
+            DEFAULT_FIREWORKS_URL,
+            "fireworks default URL"
         );
     }
 }

@@ -22,6 +22,7 @@
     anthropic: "Anthropic",
     openai: "OpenAI",
     gemini: "Google Gemini",
+    fireworks: "Fireworks AI",
     ollama: "Ollama",
   };
 
@@ -50,7 +51,8 @@
   function getRoleProvider(role: string): string {
     if (role === "main") return wizardState.mainProvider;
     if (role === "embedding") {
-      return wizardState.embeddingModel.provider ?? defaultEmbeddingProvider();
+      const chosen = wizardState.embeddingModel.provider;
+      return chosen !== "" ? chosen : defaultEmbeddingProvider();
     }
     if (role.startsWith("bg-")) {
       const tier = role.slice(3);
@@ -150,6 +152,10 @@
     // Embedding models are never returned by provider APIs — use hardcoded lists
     if (role === "embedding") {
       const models = EMBEDDING_MODEL_LISTS[prov] ?? [];
+      // Persist the implied default so the generated providers.toml includes it.
+      if (wizardState.embeddingModel.provider === "" && prov !== "") {
+        wizardState.embeddingModel.provider = prov;
+      }
       modelLists[role] = models;
       modelErrors[role] = null;
       const current = getRoleModel(role);

@@ -92,7 +92,7 @@ pub(crate) fn from_file_and_env(
 
     let idle = resolve_idle_config(file, telegram.as_ref(), discord.as_ref())?;
 
-    let background = resolve_background_config(
+    let mut background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
         providers_file
             .and_then(|pf| pf.background.as_ref())
@@ -101,6 +101,12 @@ pub(crate) fn from_file_and_env(
         &secrets,
         &mut resolved_models.role_overrides,
     )?;
+
+    models::scope_all_session_affinity(
+        &mut resolved_models,
+        &mut background.models,
+        &workspace_dir,
+    );
 
     let retry = resolve_retry_config(file);
 
@@ -691,11 +697,7 @@ fn resolve_web_search_config(
     // Determine the main provider kind for native search detection
     let main_kind = main_chain.first().map(|p| p.model.kind);
 
-    // Provider-native search: auto-enable for Anthropic, OpenAI, Gemini
-    let has_native = matches!(
-        main_kind,
-        Some(ProviderKind::Anthropic | ProviderKind::OpenAi | ProviderKind::Gemini)
-    );
+    let has_native = main_chain.first().is_some_and(offers_native_web_search);
 
     if has_native {
         let mut native = ProviderNativeSearchConfig::default();
@@ -869,6 +871,29 @@ fn resolve_background_config(
     }
 
     Ok(cfg)
+}
+
+/// Whether the main provider offers a built-in web search tool.
+///
+/// The `openai` kind also covers self-hosted compatible servers (vLLM, LM
+/// Studio), which reject `OpenAI`'s hosted search tool, so it only qualifies
+/// when pointed at the `OpenAI` API itself.
+fn offers_native_web_search(spec: &super::provider::ProviderSpec) -> bool {
+    match spec.model.kind {
+        ProviderKind::Anthropic | ProviderKind::Gemini => true,
+        ProviderKind::OpenAi => {
+            let hosted =
+                spec.provider_url.trim_end_matches('/') == super::constants::DEFAULT_OPENAI_URL;
+            if !hosted {
+                tracing::debug!(
+                    provider_url = %spec.provider_url,
+                    "native web search off: openai-compatible endpoint is not the OpenAI API"
+                );
+            }
+            hosted
+        }
+        ProviderKind::Fireworks | ProviderKind::Ollama => false,
+    }
 }
 
 /// Resolve a single background tier assignment, extracting overrides.
@@ -1993,6 +2018,112 @@ main = "ollama/llama3"
         assert!(
             cfg.web_search.provider_native.is_none(),
             "ollama should not get provider-native search"
+        );
+    }
+
+    #[test]
+    fn web_search_native_disabled_for_fireworks() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "fireworks/accounts/fireworks/routers/glm-flash-latest"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_none(),
+            "fireworks has no hosted search tool"
+        );
+    }
+
+    #[test]
+    fn web_search_native_disabled_for_self_hosted_openai_compatible() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[providers.local-vllm]
+type = "openai"
+url = "http://localhost:8000/v1"
+
+[models]
+main = "local-vllm/qwen3"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_none(),
+            "compatible servers reject OpenAI's hosted search tool"
+        );
+    }
+
+    #[test]
+    fn web_search_native_enabled_for_openai_url_with_trailing_slash() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[providers.oai]
+type = "openai"
+url = "https://api.openai.com/v1/"
+
+[models]
+main = "oai/gpt-4o"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_some(),
+            "the OpenAI API itself still gets hosted search"
+        );
+    }
+
+    // ── Session affinity ─────────────────────────────────────────────────
+
+    #[test]
+    fn session_affinity_is_scoped_per_role_and_stable() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "fireworks/accounts/fireworks/routers/glm-flash-latest"
+"#,
+        );
+        let first =
+            from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let second =
+            from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        let main_key = first
+            .main
+            .first()
+            .unwrap()
+            .session_affinity
+            .clone()
+            .unwrap();
+        let observer_key = first
+            .observer
+            .first()
+            .unwrap()
+            .session_affinity
+            .clone()
+            .unwrap();
+        assert!(
+            main_key.starts_with("residuum-main-"),
+            "key names its role: {main_key}"
+        );
+        assert_ne!(
+            main_key, observer_key,
+            "roles inheriting main's chain still get their own key"
+        );
+        assert_eq!(
+            first.main.first().unwrap().session_affinity,
+            second.main.first().unwrap().session_affinity,
+            "key must survive a config reload to keep the replica warm"
+        );
+        let workspace = first.workspace_dir.to_string_lossy().into_owned();
+        assert!(
+            !main_key.contains(&workspace),
+            "workspace path must not leave the machine"
         );
     }
 

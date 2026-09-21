@@ -7,7 +7,7 @@ use super::failover::FailoverProvider;
 use super::providers::anthropic::AnthropicClient;
 use super::providers::gemini::GeminiClient;
 use super::providers::ollama::OllamaClient;
-use super::providers::openai::OpenAiClient;
+use super::providers::openai::{OpenAiClient, OpenAiDialect};
 use super::retry::RetryConfig;
 use super::{InferenceProvider, SharedHttpClient};
 
@@ -39,6 +39,27 @@ pub(crate) fn build_provider_from_provider_spec(
                 max_tokens,
                 retry,
             )))
+        }
+        ProviderKind::Fireworks => {
+            let key = spec.api_key.as_deref().ok_or_else(|| {
+                FatalError::Config(
+                    "fireworks requires an API key (set FIREWORKS_API_KEY or api_key in config)"
+                        .to_string(),
+                )
+            })?;
+
+            Ok(Box::new(
+                OpenAiClient::with_http_client_and_api_key(
+                    http,
+                    &spec.provider_url,
+                    &spec.model.model,
+                    key,
+                    retry,
+                )
+                .with_dialect(OpenAiDialect::Fireworks {
+                    session_affinity: spec.session_affinity.clone(),
+                }),
+            ))
         }
         ProviderKind::Gemini => {
             let key = spec.api_key.as_deref().ok_or_else(|| {
@@ -143,6 +164,7 @@ mod tests {
             provider_url: kind.default_url().to_string(),
             api_key: api_key.map(String::from),
             keep_alive: None,
+            session_affinity: None,
         }
     }
 
@@ -189,6 +211,38 @@ mod tests {
         assert!(result.is_err(), "gemini without key should fail");
         let err = result.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(err.contains("gemini"), "error should mention gemini: {err}");
+    }
+
+    #[test]
+    fn fireworks_builds_with_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(
+            ProviderKind::Fireworks,
+            "accounts/fireworks/models/deepseek-v3p1",
+            Some("fw-test"),
+        );
+        let provider =
+            build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(
+            provider.model_name(),
+            "accounts/fireworks/models/deepseek-v3p1"
+        );
+    }
+
+    #[test]
+    fn fireworks_requires_api_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(
+            ProviderKind::Fireworks,
+            "accounts/fireworks/models/deepseek-v3p1",
+            None,
+        );
+        let result = build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry());
+        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            err.contains("FIREWORKS_API_KEY"),
+            "error should say how to supply the key: {err}"
+        );
     }
 
     #[test]

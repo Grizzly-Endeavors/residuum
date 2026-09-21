@@ -12,6 +12,9 @@ pub(super) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 /// Default base URL for the Google Gemini API.
 pub(super) const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
+/// Default base URL for the Fireworks AI OpenAI-compatible inference API.
+pub(super) const DEFAULT_FIREWORKS_URL: &str = "https://api.fireworks.ai/inference/v1";
+
 /// Default request timeout in seconds.
 pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 

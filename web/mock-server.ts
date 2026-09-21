@@ -390,6 +390,11 @@ const modelsByProvider: Record<
     { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "gemini-3.0-flash", name: "Gemini 3.0 Flash" },
   ],
+  fireworks: [
+    { id: "accounts/fireworks/models/glm-5p3", name: "accounts/fireworks/models/glm-5p3" },
+    { id: "accounts/fireworks/models/kimi-k3", name: "accounts/fireworks/models/kimi-k3" },
+    { id: "accounts/fireworks/routers/glm-flash-latest", name: "accounts/fireworks/routers/glm-flash-latest" },
+  ],
   ollama: [
     { id: "llama3.3:latest", name: "Llama 3.3" },
     { id: "mistral:latest", name: "Mistral" },

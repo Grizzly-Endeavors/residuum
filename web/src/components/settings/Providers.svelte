@@ -29,6 +29,7 @@
     anthropic: "Anthropic",
     openai: "OpenAI",
     gemini: "Google Gemini",
+    fireworks: "Fireworks AI",
     ollama: "Ollama",
   };
 
