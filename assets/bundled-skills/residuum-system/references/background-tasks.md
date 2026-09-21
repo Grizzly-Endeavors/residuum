@@ -61,13 +61,17 @@ A session's result is a **self-report**, not a verified outcome. When the task i
 
 Every session result flows through the pub/sub bus to the notification router. `spawned` results relay back to the main agent, tagged with the session's address. `scheduled` and `external` results file to the inbox, additionally pushed to every configured notification channel when the summary contains `HEARTBEAT_URGENT`.
 
+## Memory
+
+A session merges what it learned into global memory when it completes — full model in [memory-system.md](memory-system.md#agent-sessions-and-memory). Short version: the run is checked against the same observer thresholds the main agent uses; crossing the force threshold mid-run stages observations locally; on completion the run produces an episode (tagged with its session address, run id, category) unless its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor` with nothing staged. The transcript is kept in the session store either way, and the run's metadata records the episode id once merged.
+
 ## Concurrency
 
 The session runtime enforces a configurable concurrency limit via a semaphore (`max_concurrent` in `[background]`). The permit is held only while a turn is running, not for the session's whole idle lifetime, so runs that exceed the limit wait for a slot rather than for another session to fully complete.
 
 ## Session Store
 
-Every run's metadata and transcript are recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. A stopped run keeps its transcript up to the point it was stopped. At startup, any run left incomplete by a prior process exit is marked completed.
+Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. While the run is live, its transcript is durably appended to a sibling `<run-id>.transcript.jsonl` file after every model response and tool result — a crash mid-turn loses at most the message in flight. On completion the full transcript is folded into the metadata file too, so a finished run's record is one self-contained file. A stopped run keeps its transcript up to the point it was stopped, and merges into memory like any other run. At startup, any run left incomplete by a prior process exit goes through the full completion pipeline (skip check, final observation, merge) from its persisted transcript before normal operation resumes, then is marked completed.
 
 ## Gotchas
 

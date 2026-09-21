@@ -29,6 +29,14 @@ The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/
 
 Customize extraction guidance by editing `memory/OBSERVER.md`.
 
+Extraction (the LLM call) and persistence (episode id allocation, writing files, indexing, embedding, the reflector check) are separate steps. Persistence always goes through the memory merge writer — a single serialized writer shared by the main agent's own observation flow and every agent session's completion, so episode numbering and log appends never race.
+
+## Agent Sessions and Memory
+
+Every agent session (a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent) merges its own findings into this same global memory when it completes — background work is not a memory dead end. A session's transcript is checked against the same observer thresholds; crossing the force threshold mid-run stages observations locally until the run finishes. On completion a run skips producing an episode only if its final turn ended with `HEARTBEAT_OK`, or its transcript is under `episode_skip_token_floor` (`[background]` config, default ~2000 tokens) with nothing staged — its transcript is kept in the session store regardless. Otherwise the staged and final observations merge as one episode tagged with the session's address, run id, and category, so search results stay traceable to their source. A session's narrative lives on its own episode, never in the shared `recent_context.json`.
+
+If the process crashes mid-run, nothing is lost: the transcript is appended to durably after every model response and tool result, and any run that never finished goes through this same skip-check/extract/merge pipeline from its saved transcript at the next startup.
+
 ## Reflector
 
 Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM to merge and deduplicate the observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just denser.
