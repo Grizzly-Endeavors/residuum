@@ -598,4 +598,86 @@ mod tests {
             "the pre-turn user message should survive a stop"
         );
     }
+
+    #[tokio::test]
+    async fn stopping_a_session_records_the_stop_note_in_the_transcript_sink() {
+        // A stop mid-model-call pushes a system "stop note" onto
+        // `recent_messages` (see `agent::turn::STOP_NOTE`). It must reach the
+        // durable transcript sink the same way every other message in the
+        // turn does, not just the in-memory buffer, so a crash right after
+        // the stop doesn't lose the note startup recovery relies on.
+        struct BlockingProvider;
+
+        #[async_trait]
+        impl InferenceProvider for BlockingProvider {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _tools: &[ToolDefinition],
+                _options: &CompletionOptions,
+            ) -> Result<InferenceResponse, InferenceError> {
+                std::future::pending().await
+            }
+
+            fn model_name(&self) -> &'static str {
+                "blocking"
+            }
+        }
+
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+        let (layout, observer, merge_writer) = test_memory_extras();
+        let resources = SubAgentResources {
+            provider: Box::new(BlockingProvider),
+            tools: ToolRegistry::new(),
+            mcp_registry,
+            skill_state,
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+        };
+        let config = SubAgentConfig {
+            prompt: "do work".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+        };
+
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = crate::background::store::SessionStore::new(store_dir.path().to_path_buf());
+        let started_at = chrono::Utc::now();
+        let sink = crate::background::store::RunTranscriptSink {
+            store: &store,
+            run_id: "run-stop-note",
+            started_at,
+        };
+
+        let stop_token = CancellationToken::new();
+        stop_token.cancel();
+
+        execute_subagent(
+            "run-stop-note",
+            &config,
+            &resources,
+            &stop_token,
+            Some(&sink),
+        )
+        .await
+        .unwrap();
+
+        let transcript = store
+            .read_incremental_transcript("run-stop-note", started_at)
+            .await;
+        assert!(
+            transcript
+                .iter()
+                .any(|m| m.content.contains("the user stopped this turn")),
+            "the stop note must reach the durable transcript sink, got {transcript:?}"
+        );
+    }
 }

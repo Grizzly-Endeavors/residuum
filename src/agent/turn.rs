@@ -97,6 +97,20 @@ async fn push_and_record(
     }
 }
 
+/// Same as [`push_and_record`], for a batch of messages produced together
+/// (e.g. the history messages an injected mid-turn user message expands
+/// into).
+async fn push_and_record_many(
+    recent_messages: &mut RecentMessages,
+    sink: Option<&dyn TranscriptSink>,
+    messages: Vec<Message>,
+) {
+    if let Some(sink) = sink {
+        sink.append(&messages).await;
+    }
+    recent_messages.extend(messages);
+}
+
 /// Execute the tool loop against the given message buffer.
 ///
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
@@ -132,7 +146,7 @@ pub(crate) async fn execute_turn(
     let turn_start = recent_messages.len().saturating_sub(1);
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
-        if drain_interrupts(interrupt_rx, recent_messages) {
+        if drain_interrupts(interrupt_rx, recent_messages, resources.transcript_sink).await {
             tracing::info!(
                 iterations = iteration,
                 "turn stopped by user before next model call"
@@ -165,7 +179,7 @@ pub(crate) async fn execute_turn(
             biased;
             () = resources.stop_token.cancelled() => {
                 tracing::info!(iterations = iteration, "turn stopped by user during model call");
-                recent_messages.push(Message::system(STOP_NOTE));
+                push_and_record(recent_messages, resources.transcript_sink, Message::system(STOP_NOTE)).await;
                 return Ok(texts);
             }
             result = resources.provider.complete(&messages, &tool_definitions, resources.options) => {
@@ -253,16 +267,17 @@ pub(crate) async fn execute_turn(
 /// the caller can end the turn gracefully at this checkpoint. Draining
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
-fn drain_interrupts(
+async fn drain_interrupts(
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
     recent_messages: &mut RecentMessages,
+    sink: Option<&dyn TranscriptSink>,
 ) -> bool {
     let mut stopped = false;
     while let Ok(interrupt) = interrupt_rx.try_recv() {
         match interrupt {
             Interrupt::UserMessage(msg) => {
                 tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
-                recent_messages.extend(msg.into_history_messages());
+                push_and_record_many(recent_messages, sink, msg.into_history_messages()).await;
             }
             Interrupt::BackgroundResult(result) => {
                 tracing::info!(
@@ -270,15 +285,20 @@ fn drain_interrupts(
                     source = %result.source_label,
                     "injecting background result mid-turn"
                 );
-                recent_messages.push(Message::user(result.format_for_agent()));
+                push_and_record(
+                    recent_messages,
+                    sink,
+                    Message::user(result.format_for_agent()),
+                )
+                .await;
             }
             Interrupt::Subconscious(content) => {
                 tracing::info!("injecting subconscious correction mid-turn");
-                recent_messages.push(Message::system(content));
+                push_and_record(recent_messages, sink, Message::system(content)).await;
             }
             Interrupt::Stopped => {
                 tracing::info!("turn stopped by user, recording note for next turn");
-                recent_messages.push(Message::system(STOP_NOTE));
+                push_and_record(recent_messages, sink, Message::system(STOP_NOTE)).await;
                 stopped = true;
             }
         }
@@ -385,17 +405,33 @@ fn log_usage(response: &InferenceResponse) {
 mod tests {
     use super::*;
     use crate::inference::Role;
+    use std::sync::Mutex as StdMutex;
 
-    #[test]
-    fn drain_injects_subconscious_correction_as_system_message() {
+    /// Collects every message it's asked to record, so a test can assert the
+    /// incremental transcript sink saw exactly what `recent_messages` did.
+    #[derive(Default)]
+    struct MockSink {
+        recorded: StdMutex<Vec<Message>>,
+    }
+
+    #[async_trait]
+    impl TranscriptSink for MockSink {
+        async fn append(&self, messages: &[Message]) {
+            self.recorded.lock().unwrap().extend_from_slice(messages);
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_injects_subconscious_correction_as_system_message() {
         let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
         let mut recent = RecentMessages::new();
+        let sink = MockSink::default();
 
         tx.try_send(Interrupt::Subconscious(
             "[Subconscious] Save the preference.".to_string(),
         ))
         .ok();
-        let stopped = drain_interrupts(&mut rx, &mut recent);
+        let stopped = drain_interrupts(&mut rx, &mut recent, Some(&sink)).await;
 
         assert!(!stopped, "a subconscious correction is not a stop");
         assert_eq!(recent.len(), 1, "one message should be injected");
@@ -406,31 +442,85 @@ mod tests {
             Some("[Subconscious] Save the preference."),
             "correction content should be preserved"
         );
+        assert_eq!(
+            contents(&sink.recorded.lock().unwrap()),
+            contents(recent.messages()),
+            "the transcript sink should have recorded the same message"
+        );
     }
 
-    #[test]
-    fn drain_reports_stop_and_injects_note() {
+    #[tokio::test]
+    async fn drain_reports_stop_and_injects_note() {
         let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
         let mut recent = RecentMessages::new();
+        let sink = MockSink::default();
 
         tx.try_send(Interrupt::Stopped).ok();
-        let stopped = drain_interrupts(&mut rx, &mut recent);
+        let stopped = drain_interrupts(&mut rx, &mut recent, Some(&sink)).await;
 
         assert!(stopped, "a queued Stopped interrupt should report true");
         assert_eq!(recent.len(), 1, "the stop note should be injected");
         let msg = recent.messages().first();
         assert_eq!(msg.map(|m| m.role), Some(Role::System));
         assert_eq!(msg.map(|m| m.content.as_str()), Some(STOP_NOTE));
+
+        let recorded = sink.recorded.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "the stop note must reach the transcript sink, not just recent_messages"
+        );
+        assert_eq!(
+            recorded.first().map(|m| m.content.as_str()),
+            Some(STOP_NOTE)
+        );
     }
 
-    #[test]
-    fn drain_with_no_interrupts_reports_no_stop() {
+    #[tokio::test]
+    async fn drain_with_no_interrupts_reports_no_stop() {
         let (_tx, mut rx) = mpsc::channel::<Interrupt>(4);
         let mut recent = RecentMessages::new();
 
-        let stopped = drain_interrupts(&mut rx, &mut recent);
+        let stopped = drain_interrupts(&mut rx, &mut recent, None).await;
 
         assert!(!stopped, "an empty channel should never report a stop");
         assert_eq!(recent.len(), 0, "nothing should be injected");
+    }
+
+    #[tokio::test]
+    async fn drain_injects_user_message_history_through_the_sink() {
+        use crate::interfaces::types::{InboundMessage, MessageOrigin};
+
+        let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let mut recent = RecentMessages::new();
+        let sink = MockSink::default();
+
+        let inbound = InboundMessage {
+            id: "msg-1".to_string(),
+            content: "hello mid-turn".to_string(),
+            origin: MessageOrigin {
+                endpoint: "test".to_string(),
+                sender: None,
+            },
+            timestamp: chrono::Utc::now(),
+            images: vec![],
+            context: None,
+        };
+        tx.try_send(Interrupt::UserMessage(inbound)).ok();
+        let stopped = drain_interrupts(&mut rx, &mut recent, Some(&sink)).await;
+
+        assert!(!stopped);
+        assert!(!recent.messages().is_empty());
+        assert_eq!(
+            contents(&sink.recorded.lock().unwrap()),
+            contents(recent.messages()),
+            "every history message an injected user message expands into must reach the sink"
+        );
+    }
+
+    /// Text content of each message, for comparing two message lists without
+    /// requiring `Message: PartialEq`.
+    fn contents(messages: &[Message]) -> Vec<&str> {
+        messages.iter().map(|m| m.content.as_str()).collect()
     }
 }
