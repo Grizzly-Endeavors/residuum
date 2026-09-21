@@ -1,10 +1,26 @@
-//! Memory merge writer: the single serialized writer for global memory.
+//! Memory merge writer: the single writer for global memory.
 //!
 //! Episode id allocation, the observation log append, the episode transcript
 //! and its search-chunk index, embedding, and the reflector trigger all go
 //! through [`MemoryMergeWriter`]. The main agent's own observation flow and
 //! every session run's completion pipeline call the same writer, so episode
 //! numbering and log appends never race between concurrent runs.
+//!
+//! Two locks divide the work: `merge_lock` serializes episode id allocation
+//! and the durable per-episode writes (transcript, observation archives,
+//! chunk index, merged-run record, completion marker), and is released
+//! before indexing, embedding, or the reflector run — so a slow network or
+//! LLM call there never blocks a concurrent merge's episode id allocation.
+//! `log_lock` separately serializes the global observation log itself: a
+//! merge's append and the reflector's compress-and-replace rewrite of that
+//! file must never interleave.
+//!
+//! A session run's completion pipeline can run more than once for the same
+//! run id — a crash between a successful merge and the run record being
+//! marked completed leaves the run `running`, and startup recovery re-runs
+//! the pipeline from the same transcript. `merge` refuses to create a
+//! duplicate episode for a run id already recorded in
+//! [`crate::memory::merged_run_log`].
 
 use std::sync::Arc;
 
@@ -48,10 +64,13 @@ pub struct MergeOutcome {
     pub reflected: bool,
 }
 
-/// State that must be mutated under the single merge lock: the reflector
-/// (updated on config reload) and the embedding provider (swapped on
-/// provider reload). Kept together so a reload's writes and a concurrent
-/// merge's reads never interleave.
+/// State that is mutated on a config/provider reload: the reflector and the
+/// embedding provider. Kept together so a reload's writes and a concurrent
+/// merge's reads never interleave. Locked only around the
+/// indexing/embedding/reflection phase of a merge — never around episode id
+/// allocation or the durable writes in [`MemoryMergeWriter::persist_episode`]
+/// — so a slow embedding call or reflector LLM call never blocks a
+/// concurrent merge from allocating its episode id.
 struct MergeState {
     reflector: Reflector,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -63,6 +82,15 @@ struct MergeState {
 /// session's completion pipeline, so this is the one place episode ids are
 /// allocated, the observation log is appended, and the reflector is checked.
 pub struct MemoryMergeWriter {
+    /// Serializes episode id allocation and the durable per-episode writes
+    /// in [`Self::persist_episode`] (transcript, observation archives, chunk
+    /// index, merged-run record, completion marker), so episode numbering
+    /// never races. Released before indexing, embedding, or reflection run.
+    merge_lock: Mutex<()>,
+    /// Serializes writes to the global observation log: a merge's append
+    /// (inside `persist_episode`) and the reflector's compress-and-replace
+    /// rewrite of that same file must never interleave.
+    log_lock: Mutex<()>,
     state: Mutex<MergeState>,
     layout: WorkspaceLayout,
     search_index: Arc<MemoryIndex>,
@@ -80,6 +108,8 @@ impl MemoryMergeWriter {
         embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     ) -> Self {
         Self {
+            merge_lock: Mutex::new(()),
+            log_lock: Mutex::new(()),
             state: Mutex::new(MergeState {
                 reflector,
                 embedding_provider,
@@ -118,22 +148,89 @@ impl MemoryMergeWriter {
     /// Returns an error if the LLM call fails or file persistence fails.
     pub async fn force_reflect(&self) -> anyhow::Result<crate::memory::types::ObservationLog> {
         let state = self.state.lock().await;
+        let _log_guard = self.log_lock.lock().await;
         state.reflector.reflect(&self.layout).await
+    }
+
+    /// Whether `tag` names a session run that has already been durably
+    /// merged into an episode, per the [`crate::memory::merged_run_log`]
+    /// record. Always `Ok(None)` for the main agent's own merges
+    /// (`SourceTag::main` carries no run id).
+    ///
+    /// Checked before allocating a new episode so a re-run of a run's
+    /// completion pipeline — e.g. startup recovery after a crash between a
+    /// successful merge and the run record being marked completed — refuses
+    /// to create a duplicate episode instead of merging the same transcript
+    /// twice.
+    ///
+    /// # Errors
+    /// Returns an error if the merged-run record exists but cannot be read.
+    async fn check_already_merged(&self, tag: &SourceTag) -> anyhow::Result<Option<MergeOutcome>> {
+        let Some(run_id) = tag.run_id.as_deref() else {
+            return Ok(None);
+        };
+        let merged =
+            crate::memory::merged_run_log::load_merged_runs(&self.layout.merged_runs_json())
+                .await?;
+        let Some(episode_id) = merged.get(run_id).cloned() else {
+            return Ok(None);
+        };
+        tracing::info!(run_id, episode_id = %episode_id, "run already merged into global memory; refusing duplicate merge");
+        let transcript_path = crate::memory::episode_store::find_episode_path(
+            &self.layout.episodes_dir(),
+            &episode_id,
+        )?
+        .unwrap_or_else(|| {
+            self.layout
+                .episodes_dir()
+                .join(format!("{episode_id}.jsonl"))
+        });
+        Ok(Some(MergeOutcome {
+            id: episode_id,
+            transcript_path,
+            narrative: None,
+            observations: Vec::new(),
+            chunks: Vec::new(),
+            date: String::new(),
+            reflected: false,
+        }))
+    }
+
+    /// Look up the episode a session run id has already been merged into, if
+    /// any, without going through the full [`Self::merge`] pipeline. Used by
+    /// startup recovery to backfill a recovered run's record instead of
+    /// re-running the completion pipeline for a run that already merged
+    /// before the crash.
+    ///
+    /// # Errors
+    /// Returns an error if the merged-run record exists but cannot be read.
+    pub(crate) async fn find_merged_episode(&self, run_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(
+            crate::memory::merged_run_log::load_merged_runs(&self.layout.merged_runs_json())
+                .await?
+                .get(run_id)
+                .cloned(),
+        )
     }
 
     /// Merge an extraction into global memory: allocate an episode id, write
     /// the transcript and observation archives, index and embed, and check
     /// whether the reflector should run.
     ///
-    /// Serialized against every other merge (main agent or session) through
-    /// the writer's internal lock, so episode numbering and log appends
-    /// never race.
+    /// Episode id allocation and the durable per-episode writes in
+    /// [`Self::persist_episode`] are serialized against every other merge
+    /// (main agent or session) through the writer's merge lock, so episode
+    /// numbering and log appends never race. That lock is released before
+    /// indexing, embedding, and the reflector check run, so a slow network
+    /// or LLM call there never blocks a concurrent merge's episode id
+    /// allocation.
     ///
     /// # Errors
     /// Returns an error if the episode id cannot be allocated or the
-    /// transcript cannot be written. Indexing, embedding, and reflector
-    /// failures are logged as warnings and never fail the merge — the
-    /// episode transcript and observation log are the durable record.
+    /// transcript, observation log, chunk index, merged-run record, or
+    /// completion marker cannot be written — these are the durable record a
+    /// merge must not silently lose. Indexing, embedding, and reflector
+    /// failures are logged as warnings and never fail the merge.
     #[tracing::instrument(skip_all, fields(session_address = tag.session_address.as_deref().unwrap_or("main")))]
     pub async fn merge(
         &self,
@@ -141,7 +238,17 @@ impl MemoryMergeWriter {
         tag: SourceTag,
         tz: Tz,
     ) -> anyhow::Result<MergeOutcome> {
-        let state = self.state.lock().await;
+        if let Some(outcome) = self.check_already_merged(&tag).await? {
+            return Ok(outcome);
+        }
+
+        let merge_guard = self.merge_lock.lock().await;
+        // Re-check under the lock: closes the window between the check above
+        // and another merge for the same run id finishing while this call
+        // waited for the lock.
+        if let Some(outcome) = self.check_already_merged(&tag).await? {
+            return Ok(outcome);
+        }
 
         let episode_id = next_episode_id(&self.layout.episodes_dir())
             .await
@@ -158,10 +265,14 @@ impl MemoryMergeWriter {
 
         let (transcript_path, observations, chunks) =
             self.persist_episode(&episode, &extraction, &tag).await?;
+        drop(merge_guard);
+
         let date_str = episode.date.to_string();
-        let reflected = self
-            .index_embed_and_reflect(&state, &episode.id, &date_str, &observations, &chunks)
-            .await;
+        let reflected = {
+            let state = self.state.lock().await;
+            self.index_embed_and_reflect(&state, &episode.id, &date_str, &observations, &chunks)
+                .await
+        };
 
         tracing::info!(
             episode_id = %episode.id,
@@ -183,16 +294,21 @@ impl MemoryMergeWriter {
     }
 
     /// Write the episode's durable artifacts: transcript, per-episode and
-    /// global observation archives, the interaction-pair chunk index, and
-    /// the completion marker. Returns the transcript path, the tagged
-    /// observations, and the extracted chunks for the caller to index.
+    /// global observation archives, the interaction-pair chunk index, the
+    /// merged-run record (for a session tag), and the completion marker —
+    /// in that order, with the marker last. Returns the transcript path,
+    /// the tagged observations, and the extracted chunks for the caller to
+    /// index.
+    ///
+    /// Called only while [`Self::merge`] holds `merge_lock`.
     ///
     /// # Errors
-    /// Returns an error if the transcript or the global observation log
-    /// cannot be written — these are the durable record a merge must not
-    /// silently lose. Per-episode archive and chunk-index write failures are
-    /// logged as warnings only; a missing archive just means startup sync
-    /// re-indexes that episode later.
+    /// Returns an error, propagated from whichever step failed, if any
+    /// artifact cannot be written. Every step here is required: the
+    /// completion marker's presence certifies that all of them landed on
+    /// disk, so a failure anywhere leaves the marker absent — the signal
+    /// [`crate::memory::episode_store::find_interrupted_episodes`] uses to
+    /// detect an interrupted write.
     async fn persist_episode(
         &self,
         episode: &Episode,
@@ -230,24 +346,41 @@ impl MemoryMergeWriter {
             .collect();
 
         let obs_path = episode_obs_path(&self.layout.episodes_dir(), episode);
-        if let Err(e) = save_episode_observations(&obs_path, &observations).await {
-            tracing::warn!(episode_id = %episode.id, error = %e, "failed to write per-episode observation archive");
-        }
-        append_observations(&self.layout.observations_json(), observations.clone())
+        save_episode_observations(&obs_path, &observations)
             .await
-            .context("failed to append to global observation log")?;
+            .context("failed to write per-episode observation archive")?;
+
+        {
+            // Serialized against the reflector's compress-and-replace
+            // rewrite of the same file, via `log_lock` — never appended to
+            // while a reflection is reading and rewriting it.
+            let _log_guard = self.log_lock.lock().await;
+            append_observations(&self.layout.observations_json(), observations.clone())
+                .await
+                .context("failed to append to global observation log")?;
+        }
         tracing::debug!(episode_id = %episode.id, count = observations.len(), "global observations updated");
 
         let date_str = episode.date.to_string();
         let chunks = extract_chunks(&extraction.messages, &episode.id, &date_str, 2);
         let idx_path = episode_idx_path(&self.layout.episodes_dir(), episode);
-        if let Err(e) = write_idx_jsonl(&idx_path, &chunks).await {
-            tracing::warn!(episode_id = %episode.id, error = %e, "failed to write interaction-pair chunk index");
+        write_idx_jsonl(&idx_path, &chunks)
+            .await
+            .context("failed to write interaction-pair chunk index")?;
+
+        if let Some(run_id) = tag.run_id.as_deref() {
+            crate::memory::merged_run_log::record_merged_run(
+                &self.layout.merged_runs_json(),
+                run_id,
+                &episode.id,
+            )
+            .await
+            .context("failed to record merged run id")?;
         }
 
-        if let Err(e) = write_completion_marker(&self.layout.episodes_dir(), episode).await {
-            tracing::warn!(episode_id = %episode.id, error = %e, "failed to write episode completion marker");
-        }
+        write_completion_marker(&self.layout.episodes_dir(), episode)
+            .await
+            .context("failed to write episode completion marker")?;
 
         Ok((transcript_path, observations, chunks))
     }
@@ -302,6 +435,10 @@ impl MemoryMergeWriter {
         if !state.reflector.should_reflect(&log) {
             return false;
         }
+        // Serialized against a concurrent merge's observation-log append via
+        // `log_lock` — the reflector reads and rewrites the whole file, so it
+        // must never interleave with an append.
+        let _log_guard = self.log_lock.lock().await;
         match state.reflector.reflect(&self.layout).await {
             Ok(compressed) => {
                 tracing::info!(
@@ -623,5 +760,170 @@ mod tests {
             compressed.observations.first().unwrap().content,
             "compressed"
         );
+    }
+
+    #[tokio::test]
+    async fn merge_refuses_a_run_id_already_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mw = writer(dir.path());
+        let tag = SourceTag::session("spawned-researcher-0001", "run-dup", "spawned");
+
+        let first = mw
+            .merge(sample_extraction("first pass"), tag.clone(), chrono_tz::UTC)
+            .await
+            .unwrap();
+
+        let second = mw
+            .merge(sample_extraction("second pass"), tag, chrono_tz::UTC)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            second.id, first.id,
+            "a second merge for the same run id must return the existing episode, not mint a new one"
+        );
+
+        let layout = WorkspaceLayout::new(dir.path());
+        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            log.observations.len(),
+            1,
+            "the duplicate merge must not append a second observation"
+        );
+        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
+            .await
+            .unwrap();
+        assert_eq!(
+            latest,
+            Some(first.id),
+            "the duplicate merge must not create a second episode"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_still_allocates_new_ids_for_different_run_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let mw = writer(dir.path());
+
+        let a = mw
+            .merge(
+                sample_extraction("a"),
+                SourceTag::session("spawned-a", "run-a", "spawned"),
+                chrono_tz::UTC,
+            )
+            .await
+            .unwrap();
+        let b = mw
+            .merge(
+                sample_extraction("b"),
+                SourceTag::session("spawned-b", "run-b", "spawned"),
+                chrono_tz::UTC,
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(a.id, b.id, "different run ids must get distinct episodes");
+    }
+
+    /// An embedding provider that sleeps before returning, standing in for a
+    /// slow network call.
+    struct SlowEmbeddingProvider {
+        delay: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl EmbeddingProvider for SlowEmbeddingProvider {
+        async fn embed(
+            &self,
+            texts: &[&str],
+        ) -> Result<crate::inference::EmbeddingResponse, crate::inference::InferenceError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(crate::inference::EmbeddingResponse {
+                embeddings: texts.iter().map(|_| vec![0.0_f32; 4]).collect(),
+                dimensions: 4,
+            })
+        }
+
+        fn model_name(&self) -> &'static str {
+            "slow-embed"
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_embedding_does_not_block_a_concurrent_merges_episode_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let search_index =
+            Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
+        let vector_store = Arc::new(VectorStore::open_or_create(&layout.vectors_db(), 4).unwrap());
+        // A never-triggering reflector isolates this test to the embedding
+        // step alone.
+        let reflector = Reflector::new(
+            Box::new(crate::inference::providers::null::NullProvider),
+            ReflectorConfig {
+                threshold_tokens: usize::MAX,
+                ..ReflectorConfig::default()
+            },
+        );
+        let slow_delay = std::time::Duration::from_millis(400);
+        let mw = Arc::new(MemoryMergeWriter::new(
+            reflector,
+            layout.clone(),
+            search_index,
+            Some(vector_store),
+            Some(Arc::new(SlowEmbeddingProvider { delay: slow_delay })),
+        ));
+
+        let mw1 = Arc::clone(&mw);
+        let first = tokio::spawn(async move {
+            mw1.merge(
+                sample_extraction("first"),
+                SourceTag::main(),
+                chrono_tz::UTC,
+            )
+            .await
+            .unwrap()
+        });
+
+        // Give the first merge time to release the merge lock and enter its
+        // slow embedding step.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mw2 = Arc::clone(&mw);
+        let second = tokio::spawn(async move {
+            mw2.merge(
+                sample_extraction("second"),
+                SourceTag::main(),
+                chrono_tz::UTC,
+            )
+            .await
+            .unwrap()
+        });
+
+        // The second merge's own indexing/embedding step also uses the slow
+        // provider and legitimately waits its turn for the shared reflector
+        // state lock — that contention is expected and not what this test
+        // checks. What must not be blocked is episode id allocation and the
+        // durable per-episode writes (`persist_episode`), which happen
+        // entirely before either merge ever touches that lock. Checking the
+        // filesystem directly — well inside the embedding delay, regardless
+        // of whether either `merge()` call has returned yet — proves that.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
+            .await
+            .unwrap();
+        assert_eq!(
+            latest,
+            Some("ep-002".to_string()),
+            "the second merge's episode id allocation and durable writes must complete \
+             well before the first merge's slow embedding step does"
+        );
+
+        let first_outcome = first.await.unwrap();
+        let second_outcome = second.await.unwrap();
+        assert_eq!(first_outcome.id, "ep-001");
+        assert_eq!(second_outcome.id, "ep-002");
     }
 }

@@ -75,6 +75,13 @@ impl WorkspaceLayout {
         self.root.join("memory/observations.json")
     }
 
+    /// Path to the durable record of which session run ids have already been
+    /// merged into an episode, keyed by run id.
+    #[must_use]
+    pub fn merged_runs_json(&self) -> PathBuf {
+        self.root.join("memory/merged_runs.json")
+    }
+
     /// Path to the recent (unobserved) messages file.
     #[must_use]
     pub fn recent_messages_json(&self) -> PathBuf {

@@ -52,9 +52,10 @@ pub struct RunRecord {
     #[serde(default)]
     pub interrupted: bool,
     /// The episode this run's observations were merged into, once merged.
-    /// `None` when the run produced no episode (a `HEARTBEAT_OK` ending, a
-    /// transcript below the skip token floor with nothing staged, or a
-    /// merge failure) — its transcript is still kept either way.
+    /// `None` when the run produced no episode — it staged nothing and
+    /// either ended with `HEARTBEAT_OK` or its transcript fell below the
+    /// skip token floor, or the merge itself failed — its transcript is
+    /// still kept either way.
     #[serde(default)]
     pub episode_id: Option<String>,
     /// The run's full message transcript, filled in at completion (empty
@@ -186,11 +187,13 @@ impl SessionStore {
         }
     }
 
-    /// Read back a run's incrementally-appended transcript, for startup
-    /// recovery of a run that never reached a terminal state. Returns an
-    /// empty vec if the file is missing or a line fails to parse (a torn
-    /// write at the very end of the file, from a crash mid-append).
-    async fn read_incremental_transcript(
+    /// Read back a run's incrementally-appended transcript, for recovering a
+    /// run that never reached a terminal state on its own — whether that's
+    /// startup recovery after a prior process exit, or backfilling a run
+    /// whose task panicked mid-turn. Returns an empty vec if the file is
+    /// missing or a line fails to parse (a torn write at the very end of the
+    /// file, from a crash mid-append).
+    pub(crate) async fn read_incremental_transcript(
         &self,
         run_id: &str,
         started_at: DateTime<Utc>,
@@ -288,9 +291,9 @@ impl SessionStore {
         recovered
     }
 
-    /// Run the completion memory pipeline for a single run record left
-    /// incomplete by a prior process exit, then rewrite it as completed.
-    /// Returns `true` if the file was rewritten.
+    /// Reconcile a single run record left incomplete by a prior process
+    /// exit, then rewrite it as completed. Returns `true` if the file was
+    /// rewritten.
     ///
     /// The metadata file's own `transcript` field is only ever populated at
     /// completion, so for a run that never got there it reads the
@@ -299,6 +302,15 @@ impl SessionStore {
     /// stands in for it, which is exactly where a session's
     /// `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinel would appear had the
     /// process not exited before recording one explicitly.
+    ///
+    /// A run's completion pipeline may have already merged successfully
+    /// before the process exited — a crash between that merge and this same
+    /// record being written as `completed` is exactly what leaves it here.
+    /// So this first asks the merge writer whether the run id is already
+    /// recorded as merged and, if so, backfills the record's state and
+    /// episode id from that instead of running the completion pipeline (and
+    /// its LLM extraction) again, which would otherwise merge the same
+    /// transcript a second time.
     async fn recover_if_incomplete(
         &self,
         path: &Path,
@@ -326,23 +338,22 @@ impl SessionStore {
         let transcript = self
             .read_incremental_transcript(&record.run_id, record.started_at)
             .await;
-        let summary = transcript
-            .last()
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-        let tag = crate::memory::types::SourceTag::session(
-            record.address.clone(),
-            record.run_id.clone(),
-            record.category.clone(),
-        );
-        let episode_id = super::session_memory::complete_session_memory(
-            tag,
-            &summary,
-            &transcript,
-            super::session_memory::SessionMemory::new(),
-            env,
-        )
-        .await;
+
+        let episode_id = match env.merge_writer.find_merged_episode(&record.run_id).await {
+            Ok(Some(existing)) => {
+                tracing::info!(run_id = %record.run_id, episode_id = %existing, "run already merged before the process exited; backfilling record instead of re-merging");
+                Some(existing)
+            }
+            Ok(None) => {
+                self.run_completion_pipeline(&record, &transcript, env)
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(run_id = %record.run_id, error = %e, "failed to check merged-run record, proceeding with the completion pipeline");
+                self.run_completion_pipeline(&record, &transcript, env)
+                    .await
+            }
+        };
 
         record.state = "completed".to_string();
         record.completed_at = Some(Utc::now());
@@ -354,6 +365,34 @@ impl SessionStore {
             return false;
         }
         true
+    }
+
+    /// Run the full completion pipeline (skip check, extraction, merge) for
+    /// a recovered run, using its last transcript message as the stand-in
+    /// "final turn summary" (see [`Self::recover_if_incomplete`]).
+    async fn run_completion_pipeline(
+        &self,
+        record: &RunRecord,
+        transcript: &[Message],
+        env: &super::session_memory::SessionMemoryEnv<'_>,
+    ) -> Option<String> {
+        let summary = transcript
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let tag = crate::memory::types::SourceTag::session(
+            record.address.clone(),
+            record.run_id.clone(),
+            record.category.clone(),
+        );
+        super::session_memory::complete_session_memory(
+            tag,
+            &summary,
+            transcript,
+            super::session_memory::SessionMemory::new(),
+            env,
+        )
+        .await
     }
 }
 
@@ -601,6 +640,117 @@ mod tests {
         assert!(
             recovered_record.episode_id.is_some(),
             "a substantial recovered transcript should be merged into an episode"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_after_merge_succeeds_but_run_record_write_fails_does_not_duplicate() {
+        // Simulates the exact crash window the double-merge bug lived in: the
+        // live run's completion pipeline merged successfully (an episode and
+        // its observations landed on disk), but the process exited before
+        // `complete_run` could persist that episode id into the run's own
+        // record — so on disk the record is still the empty "running" one
+        // `begin_run` wrote. Recovery must detect the run was already merged
+        // and backfill instead of running the pipeline again.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut info = sample_info();
+        info.run_id = "run-crash-after-merge".to_string();
+        store.begin_run(&info).await;
+
+        let big_content = "a".repeat(9000);
+        store
+            .append_transcript(
+                &info.run_id,
+                info.started_at,
+                &[
+                    Message::user("investigate the issue"),
+                    Message::assistant(big_content.clone(), None),
+                ],
+            )
+            .await;
+
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let search_index = std::sync::Arc::new(
+            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+        );
+        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = crate::memory::merge_writer::MemoryMergeWriter::new(
+            reflector,
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        );
+        let observer = crate::memory::observer::Observer::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
+            )),
+            crate::memory::observer::ObserverConfig::default(),
+        );
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &merge_writer,
+            layout: &layout,
+            episode_skip_token_floor: 2000,
+            tz: chrono_tz::UTC,
+        };
+
+        // The live run's completion pipeline runs and merges successfully...
+        let transcript = vec![
+            Message::user("investigate the issue"),
+            Message::assistant(big_content, None),
+        ];
+        let tag = crate::memory::types::SourceTag::session(
+            info.address.to_string(),
+            info.run_id.clone(),
+            info.category.as_str(),
+        );
+        let episode_id = crate::background::session_memory::complete_session_memory(
+            tag,
+            "done",
+            &transcript,
+            crate::background::session_memory::SessionMemory::new(),
+            &env,
+        )
+        .await;
+        assert!(
+            episode_id.is_some(),
+            "the simulated live-run merge should have produced an episode"
+        );
+
+        // ...but the process exits before `complete_run` can persist that
+        // episode id — the on-disk record is still the "running" one
+        // `begin_run` wrote, which is exactly what makes this run look
+        // incomplete to startup recovery below.
+
+        let recovered = store.recover_incomplete_runs(&env).await;
+        assert_eq!(recovered, 1);
+
+        let path = store.run_path(&info.run_id, info.started_at);
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.state, "completed");
+        assert_eq!(
+            record.episode_id, episode_id,
+            "recovery should backfill the existing episode id, not mint a new one"
+        );
+
+        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            log.observations.len(),
+            1,
+            "the observation must not be duplicated by recovery"
+        );
+
+        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
+            .await
+            .unwrap();
+        assert_eq!(
+            latest, episode_id,
+            "recovery must not mint a second episode for the same run"
         );
     }
 
