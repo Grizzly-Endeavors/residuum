@@ -137,7 +137,8 @@
     <div class="settings-group-label">Discord</div>
     <div class="integration-card">
       <div class="integration-desc">
-        Connect a Discord bot so your agent can communicate via DMs. Create a bot at <a
+        Connect a Discord bot so your agent can chat in DMs and, when @mentioned, in server
+        channels. Create a bot at <a
           href="https://discord.com/developers/applications"
           target="_blank"
           rel="noopener">discord.com/developers</a
@@ -185,7 +186,7 @@
     <div class="settings-group-label">Telegram</div>
     <div class="integration-card">
       <div class="integration-desc">
-        Connect a Telegram bot for DM-based interaction. Create a bot via <a
+        Connect a Telegram bot to chat privately and, when mentioned, in groups. Create a bot via <a
           href="https://t.me/BotFather"
           target="_blank"
           rel="noopener">@BotFather</a
