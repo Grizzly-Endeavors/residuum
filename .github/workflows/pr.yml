@@ -15,6 +15,7 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       web: ${{ steps.classify.outputs.web }}
+      platform: ${{ steps.classify.outputs.platform }}
 
     steps:
       - uses: actions/checkout@v4
@@ -32,25 +33,33 @@ jobs:
           set -euo pipefail
           rust=false
           web=false
+          platform=false
           changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
           while IFS= read -r path; do
             [ -z "$path" ] && continue
             case "$path" in
-              .github/*|bindings/*)
+              .github/*)
+                rust=true; web=true; platform=true ;;
+              bindings/*)
                 rust=true; web=true ;;
               web/*)
                 web=true ;;
-              src/*|tests/*|assets/*|Cargo.toml|Cargo.lock|build.rs|clippy.toml|deny.toml|rustfmt.toml|rust-toolchain.toml)
+              Cargo.toml|Cargo.lock|build.rs|rust-toolchain.toml)
+                rust=true; platform=true ;;
+              src/*|tests/*|assets/*|clippy.toml|deny.toml|rustfmt.toml)
                 rust=true ;;
               docs/*|*.md|mac/*|bundle/*|docker/*|scripts/*|.githooks/*|audit-results/*|reference-mats/*|LICENSE|.gitignore)
                 ;;
               *)
                 echo "::notice::unclassified path $path, running all checks"
-                rust=true; web=true ;;
+                rust=true; web=true; platform=true ;;
             esac
           done <<< "$changed"
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "web=$web" >> "$GITHUB_OUTPUT"
+          {
+            echo "rust=$rust"
+            echo "web=$web"
+            echo "platform=$platform"
+          } >> "$GITHUB_OUTPUT"
           {
             echo '## Changed Areas'
             echo ''
@@ -58,6 +67,7 @@ jobs:
             echo "|------|------------|"
             echo "| Rust | $rust |"
             echo "| Web | $web |"
+            echo "| Cross-compile | $platform |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   quality:
@@ -69,74 +79,16 @@ jobs:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       web: ${{ needs.changes.outputs.web == 'true' }}
 
-  cross-check:
-    name: Compile check (${{ matrix.target }})
+  cross-compile:
+    name: Cross-compile
     needs: [changes, quality]
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: lab-runners
-
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - aarch64-unknown-linux-gnu
-          - x86_64-pc-windows-gnu
-
-    env:
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build web assets
-        run: cd web && npm ci && npm run build
-
-      - name: Add target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Compile check
-        run: cargo check --all-targets --all-features --target ${{ matrix.target }}
-
-  macos-check:
-    name: Compile check (aarch64-apple-darwin)
-    needs: [changes, quality]
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: macos-15
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Cache cargo registry and target dir
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-aarch64-apple-darwin-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            macos-aarch64-apple-darwin-cargo-
-
-      - name: Build web assets
-        run: cd web && npm ci && npm run build
-
-      - name: Compile check
-        run: cargo check --all-targets --all-features --target aarch64-apple-darwin
+    if: needs.changes.outputs.platform == 'true'
+    uses: ./.github/workflows/cross-compile.yml
 
   # Single status to require on main: passes when every check that needed to run passed
   ci-ok:
     name: CI OK
-    needs: [changes, quality, cross-check, macos-check]
+    needs: [changes, quality, cross-compile]
     if: always()
     runs-on: lab-runners
 

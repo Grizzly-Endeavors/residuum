@@ -1,0 +1,65 @@
+name: Cross-Platform Compile Checks
+
+on:
+  workflow_call:
+
+jobs:
+  cross-check:
+    name: Compile check (${{ matrix.target }})
+    runs-on: lab-runners
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - x86_64-pc-windows-gnu
+
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Compile check
+        run: cargo check --all-targets --all-features --target ${{ matrix.target }}
+
+  macos-check:
+    name: Compile check (aarch64-apple-darwin)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache cargo registry and target dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-aarch64-apple-darwin-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-aarch64-apple-darwin-cargo-
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Compile check
+        run: cargo check --all-targets --all-features --target aarch64-apple-darwin
