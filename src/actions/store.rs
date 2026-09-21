@@ -22,6 +22,10 @@ impl ActionStore {
     ///
     /// Returns an empty store if the file does not exist.
     ///
+    /// A stored action left over from before `agent: "main"` was removed is
+    /// dropped — never silently reinterpreted as a plain session — with an
+    /// error naming it, while the rest of the store still loads.
+    ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or is not valid JSON.
     #[tracing::instrument(skip_all)]
@@ -29,10 +33,11 @@ impl ActionStore {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
-                let actions: Vec<ScheduledAction> =
-                    serde_json::from_str(&contents).with_context(|| {
+                let mut actions: Vec<ScheduledAction> = serde_json::from_str(&contents)
+                    .with_context(|| {
                         format!("failed to parse scheduled actions at {}", path.display())
                     })?;
+                reject_agent_main(&mut actions);
                 debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
                 Ok(Self { actions, path })
             }
@@ -134,6 +139,30 @@ impl ActionStore {
     }
 }
 
+/// Drop stored actions that still use the removed `agent: "main"` routing,
+/// logging an actionable error naming each offender. Never silently
+/// reinterpreted as a plain session — the owner needs to know this action
+/// will no longer fire the way it used to.
+fn reject_agent_main(actions: &mut Vec<ScheduledAction>) {
+    actions.retain(|action| {
+        let uses_main = action
+            .agent
+            .as_deref()
+            .is_some_and(|a| a.eq_ignore_ascii_case("main"));
+        if uses_main {
+            tracing::error!(
+                action = %action.name,
+                id = %action.id,
+                "scheduled action uses agent: \"main\", which is no longer supported — every \
+                 session fork already carries the main agent's identity and memory snapshot; \
+                 dropping it rather than silently running it as a plain session. Re-create it \
+                 with a skill name, or without agent_name, if it's still needed."
+            );
+        }
+        !uses_main
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,7 +222,7 @@ mod tests {
             name: "action with options".to_string(),
             prompt: "do something".to_string(),
             run_at: now + Duration::seconds(60),
-            agent: Some("main".to_string()),
+            agent: Some("memory-agent".to_string()),
             model_tier: Some("small".to_string()),
             created_at: now,
         };
@@ -264,6 +293,55 @@ mod tests {
         assert!(!store.remove("remove"), "should return false for missing");
         assert_eq!(store.list().len(), 1);
         assert_eq!(store.list().first().map(|a| a.id.as_str()), Some("keep"));
+    }
+
+    #[tokio::test]
+    async fn load_drops_legacy_agent_main_action_but_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scheduled_actions.json");
+
+        let now = Utc::now();
+        let legacy = ScheduledAction {
+            id: "action-legacy1".to_string(),
+            name: "legacy main action".to_string(),
+            prompt: "do something".to_string(),
+            run_at: now + Duration::seconds(60),
+            agent: Some("main".to_string()),
+            model_tier: None,
+            created_at: now,
+        };
+        let json = serde_json::to_string(&vec![legacy, make_action("keep-me", 120)]).unwrap();
+        std::fs::write(&path, json).unwrap();
+
+        let loaded = ActionStore::load(&path).await.unwrap();
+        assert_eq!(
+            loaded.list().len(),
+            1,
+            "the agent: main action should be dropped, the other kept"
+        );
+        assert_eq!(loaded.list().first().unwrap().id, "keep-me");
+    }
+
+    #[tokio::test]
+    async fn load_drops_agent_main_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scheduled_actions.json");
+
+        let now = Utc::now();
+        let legacy = ScheduledAction {
+            id: "action-legacy2".to_string(),
+            name: "legacy MAIN action".to_string(),
+            prompt: "do something".to_string(),
+            run_at: now + Duration::seconds(60),
+            agent: Some("MAIN".to_string()),
+            model_tier: None,
+            created_at: now,
+        };
+        let json = serde_json::to_string(&vec![legacy]).unwrap();
+        std::fs::write(&path, json).unwrap();
+
+        let loaded = ActionStore::load(&path).await.unwrap();
+        assert!(loaded.list().is_empty());
     }
 
     #[test]

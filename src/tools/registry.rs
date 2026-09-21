@@ -265,15 +265,18 @@ impl ToolRegistry {
     ///
     /// Both go through the shared `TracingService`. The bug-report tool
     /// also captures a snapshot of the runtime client context so each
-    /// submission carries version/model/OS metadata.
+    /// submission carries version/model/OS metadata, plus the live session
+    /// registry so `active_subagents` reflects what's running right now.
     pub fn register_feedback_tools(
         &mut self,
         service: Arc<crate::tracing_service::TracingService>,
         client_context: Arc<crate::tracing_service::ClientContext>,
+        session_registry: Arc<SessionRegistry>,
     ) {
         self.register(Box::new(file_bug_report::FileBugReportTool::new(
             Arc::clone(&service),
             client_context,
+            session_registry,
         )));
         self.register(Box::new(submit_feedback::SubmitFeedbackTool::new(service)));
     }

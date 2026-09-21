@@ -105,6 +105,7 @@ pub(super) fn init_tool_registry(
     tools.register_feedback_tools(
         Arc::clone(deps.tracing_service),
         Arc::clone(deps.tracing_client_context),
+        Arc::clone(deps.session_registry),
     );
 
     // Register Ollama Cloud web search tool if configured

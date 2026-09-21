@@ -493,6 +493,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 client_context: std::sync::Arc::new(
                     crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
                 ),
+                session_registry: std::sync::Arc::clone(&rt.session_registry),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,

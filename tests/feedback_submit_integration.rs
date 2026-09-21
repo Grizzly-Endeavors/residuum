@@ -18,7 +18,7 @@ mod feedback_submit_integration {
 
     use residuum::config::TracingConfig;
     use residuum::tracing_service::{
-        BugReport, ClientContext, Feedback, FeedbackClient, Severity, TracingService,
+        BugReport, ClientContext, Feedback, FeedbackClient, Severity, Subagent, TracingService,
     };
     use residuum::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
     use serde_json::Value;
@@ -121,6 +121,56 @@ mod feedback_submit_integration {
                     .is_empty(),
             "config_flags must be present and empty"
         );
+    }
+
+    #[tokio::test]
+    async fn bug_report_includes_active_subagents_when_present() {
+        // The wire format itself doesn't know about the session registry —
+        // that's assembled by the bug-report tool and HTTP handler (see
+        // src/tools/file_bug_report.rs and src/gateway/web/tracing_api.rs).
+        // This test only confirms the wire contract carries whatever the
+        // caller populates through unchanged, since the happy-path test
+        // above pins the empty case.
+        let server = MockServer::start().await;
+        let captured = capture_body();
+        let captured_for_mock = Arc::clone(&captured);
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(move |req: &Request| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                *captured_for_mock.lock().unwrap() = Some(body);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "public_id": "RR-SUBAGENTS",
+                    "submitted_at": "2026-04-16T14:23:00Z"
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let mut client = sample_client();
+        client.active_subagents = vec![Subagent {
+            name: "spawned-researcher-3f9a".to_string(),
+            status: "running (agent:researcher)".to_string(),
+        }];
+
+        let service = build_service(&server.uri());
+        service
+            .send_bug_report(BugReport {
+                what_happened: "it crashed".to_string(),
+                what_expected: "it should not crash".to_string(),
+                what_doing: "running the thing".to_string(),
+                severity: Severity::Broken,
+                client,
+            })
+            .await
+            .expect("submission must succeed");
+
+        let body = captured.lock().unwrap().clone().unwrap();
+        let subagents = body["client"]["active_subagents"].as_array().unwrap();
+        assert_eq!(subagents.len(), 1);
+        assert_eq!(subagents[0]["name"], "spawned-researcher-3f9a");
+        assert_eq!(subagents[0]["status"], "running (agent:researcher)");
     }
 
     #[tokio::test]

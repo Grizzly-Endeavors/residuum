@@ -6,6 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::background::registry::SessionRegistry;
 use crate::inference::ToolDefinition;
 use crate::tracing_service::{BugReport, ClientContext, Severity, TracingService};
 
@@ -14,17 +15,25 @@ use super::{Tool, ToolError, ToolResult, require_str};
 /// Built-in tool that submits a bug report through the tracing service.
 pub(crate) struct FileBugReportTool {
     service: Arc<TracingService>,
-    /// Snapshot of the runtime client context (version, model, OS, etc.).
-    /// Built at registration time; refreshed when the gateway is rebuilt
-    /// on config reload.
+    /// Snapshot of the static runtime client context (version, model, OS,
+    /// etc.). Built at registration time; refreshed when the gateway is
+    /// rebuilt on config reload.
     client_context: Arc<ClientContext>,
+    /// Session registry, read fresh on each report to populate
+    /// `active_subagents` (closes #99).
+    session_registry: Arc<SessionRegistry>,
 }
 
 impl FileBugReportTool {
-    pub(crate) fn new(service: Arc<TracingService>, client_context: Arc<ClientContext>) -> Self {
+    pub(crate) fn new(
+        service: Arc<TracingService>,
+        client_context: Arc<ClientContext>,
+        session_registry: Arc<SessionRegistry>,
+    ) -> Self {
         Self {
             service,
             client_context,
+            session_registry,
         }
     }
 }
@@ -85,12 +94,14 @@ impl Tool for FileBugReportTool {
             }
         };
 
+        let mut client = (*self.client_context).clone();
+        client.active_subagents = self.session_registry.subagent_snapshot();
         let report = BugReport {
             what_happened,
             what_expected,
             what_doing,
             severity,
-            client: (*self.client_context).clone(),
+            client,
         };
 
         match self.service.send_bug_report(report).await {

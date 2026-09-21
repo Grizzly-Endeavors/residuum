@@ -57,7 +57,7 @@ impl Tool for ScheduleActionTool {
                     },
                     "agent_name": {
                         "type": "string",
-                        "description": "Agent routing: 'main' runs a full wake turn with conversation context; a skill name (e.g. 'memory-analyst') spawns a sub-agent with that skill as its role. Omit to spawn a sub-agent with no skill."
+                        "description": "A skill name (e.g. 'memory-analyst') to fork the session with that skill as its role. Omit to fork a plain session with no skill."
                     },
                     "model_tier": {
                         "type": "string",
@@ -87,6 +87,18 @@ impl Tool for ScheduleActionTool {
             .get("agent_name")
             .and_then(Value::as_str)
             .map(String::from);
+
+        if agent_name
+            .as_deref()
+            .is_some_and(|a| a.eq_ignore_ascii_case("main"))
+        {
+            return Err(ToolError::InvalidArguments(
+                "\"main\" is no longer a valid agent_name — every session fork already carries \
+                 the main agent's identity and memory snapshot, so name a skill instead, or \
+                 omit agent_name to run on the prompt alone."
+                    .to_string(),
+            ));
+        }
 
         let model_tier = arguments
             .get("model_tier")
@@ -382,6 +394,49 @@ mod tests {
         assert!(result.is_err(), "past run_at should return ToolError");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("future"), "error should mention future: {err}");
+    }
+
+    #[tokio::test]
+    async fn schedule_action_rejects_agent_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-main.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({
+                "name": "wake main",
+                "prompt": "do the thing",
+                "run_at": "2099-01-01T00:00:00Z",
+                "agent_name": "main"
+            }))
+            .await;
+        assert!(result.is_err(), "agent_name: main should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no longer"),
+            "error should explain why, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_action_rejects_agent_main_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-main-case.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({
+                "name": "wake main",
+                "prompt": "do the thing",
+                "run_at": "2099-01-01T00:00:00Z",
+                "agent_name": "MAIN"
+            }))
+            .await;
+        assert!(result.is_err(), "agent_name: MAIN should also be rejected");
     }
 
     #[tokio::test]

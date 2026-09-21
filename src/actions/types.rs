@@ -14,8 +14,9 @@ pub struct ScheduledAction {
     pub prompt: String,
     /// When this action should fire (UTC).
     pub run_at: DateTime<Utc>,
-    /// Agent routing: `None` = plain sub-agent, `Some("main")` = main wake turn,
-    /// `Some(skill)` = sub-agent with that skill activated.
+    /// Agent routing: `None` = plain session, `Some(skill)` = session with
+    /// that skill activated. `Some("main")` is rejected both by the
+    /// `schedule_action` tool and when this store loads from disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// Model tier override (e.g. "small", "medium", "large").
