@@ -390,7 +390,8 @@ fn build_spawn_context(
         layout: rt.layout.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
-        background_spawner: Arc::clone(&rt.background_spawner),
+        session_runtime: Arc::clone(&rt.session_runtime),
+        session_registry: Arc::clone(&rt.session_registry),
         endpoint_registry: rt.endpoint_registry.clone(),
         publisher: rt.publisher.clone(),
         action_store: Arc::clone(&rt.action_store),
@@ -492,6 +493,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 client_context: std::sync::Arc::new(
                     crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
                 ),
+                session_registry: std::sync::Arc::clone(&rt.session_registry),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,

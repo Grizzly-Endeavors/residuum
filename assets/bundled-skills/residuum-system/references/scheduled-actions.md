@@ -27,16 +27,17 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 ## `schedule_action` Details
 
 - **`run_at`**: Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in the configured workspace timezone. All displayed times are also in local time — no UTC conversion needed.
-- **`agent_name`**: Routing control. `null` → SubAgent with no skill, `"main"` → main agent turn, `"<skill>"` → SubAgent with that skill as its role.
-- **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium for SubAgent execution.
-Results are filed to the inbox by the notification router, and pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`. Main-turn actions (`agent_name: "main"`) inject directly into the main agent conversation.
+- **`agent_name`**: Routing control. `null` → session with no skill, `"<skill>"` → session with that skill as its role. `"main"` is rejected.
+- **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium.
+
+Results are filed to the inbox by the notification router, and pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`.
 
 ## Execution
 
 Actions are checked on a 30-second tick. When `run_at` has passed:
 
 1. The action is removed from `scheduled_actions.json` (fire-once semantics).
-2. A background task is spawned with the action's prompt and routing.
+2. A `scheduled` session is forked with the action's prompt and routing.
 3. Results flow through the notification router to the inbox, and to notification channels when marked urgent.
 
 ## Persistence
@@ -49,4 +50,3 @@ Actions are checked on a 30-second tick. When `run_at` has passed:
 - The 30-second tick means fire-time precision is at best ~30 seconds.
 - IDs are generated as `action-{8 hex chars}`.
 - If the agent is offline when an action comes due, it fires on the next startup when the tick evaluates it.
-- Main-turn actions (`agent: "main"`) inject directly into the conversation — they bypass the notification router.

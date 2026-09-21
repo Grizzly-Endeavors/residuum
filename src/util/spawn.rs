@@ -8,6 +8,20 @@ use futures_util::FutureExt;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
+/// Extract a human-readable message from a caught panic payload.
+///
+/// Handles the common `panic!("...")` and `panic!(String)` payload shapes;
+/// falls back to a placeholder for anything else (e.g. a panic carrying a
+/// custom struct via `std::panic::panic_any`).
+#[must_use]
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
+}
+
 /// Spawn a monitored task that catches panics and logs them.
 ///
 /// Use this for long-lived tasks (adapters, tunnel) where a silent panic
@@ -27,12 +41,7 @@ where
                     tracing::debug!("task exited (returned normally)");
                 }
                 Err(e) => {
-                    let msg = e
-                        .downcast_ref::<&str>()
-                        .copied()
-                        .or_else(|| e.downcast_ref::<String>().map(String::as_str))
-                        .unwrap_or("<non-string panic payload>");
-                    tracing::error!(panic = msg, "task panicked");
+                    tracing::error!(panic = panic_message(&*e), "task panicked");
                 }
             }
         }

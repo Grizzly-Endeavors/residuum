@@ -234,7 +234,7 @@ fn drain_interrupts(
             }
             Interrupt::BackgroundResult(result) => {
                 tracing::info!(
-                    task_id = %result.task_id,
+                    run_id = %result.run_id,
                     source = %result.source_label,
                     "injecting background result mid-turn"
                 );

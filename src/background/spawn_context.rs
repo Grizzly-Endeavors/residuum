@@ -1,5 +1,5 @@
 //! Spawn context: parameters needed to construct providers and `SubAgentResources`
-//! for background tasks (pulse, actions, and on-demand sub-agents).
+//! for a new session run (pulse, action, webhook, or on-demand spawn).
 
 use std::sync::Arc;
 
@@ -7,7 +7,9 @@ use anyhow::Context as _;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::background::BackgroundTaskSpawner;
+use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
+use crate::background::registry::SessionRegistry;
+use crate::background::runtime::SessionRuntime;
 use crate::bus::{EndpointRegistry, Publisher};
 use crate::config::ProviderSpec;
 use crate::config::{BackgroundConfig, BackgroundModelTier};
@@ -22,7 +24,7 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::subagent::{SubAgentResources, build_subagent_resources};
 use super::types::SubAgentBuildConfig;
 
-/// Everything needed to spawn background tasks from the gateway event loop.
+/// Everything needed to fork a new session run from the gateway event loop.
 pub(crate) struct SpawnContext {
     pub(crate) background_config: BackgroundConfig,
     pub(crate) main_provider_specs: Vec<ProviderSpec>,
@@ -33,25 +35,28 @@ pub(crate) struct SpawnContext {
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
     pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
-    // ── Sub-agent tool dependencies ────────────────────────────────────
-    pub(crate) background_spawner: Arc<BackgroundTaskSpawner>,
+    // ── Session tool dependencies ────────────────────────────────────
+    pub(crate) session_runtime: Arc<SessionRuntime>,
+    pub(crate) session_registry: Arc<SessionRegistry>,
     pub(crate) endpoint_registry: EndpointRegistry,
     pub(crate) publisher: Publisher,
     pub(crate) action_store: Arc<Mutex<ActionStore>>,
     pub(crate) action_notify: Arc<Notify>,
     pub(crate) hybrid_searcher: Arc<HybridSearcher>,
-    /// Main agent skill state — cloned per spawn into isolated sub-agent state.
+    /// Main agent skill state — cloned per fork into isolated session state.
     pub(crate) skill_state: SharedSkillState,
-    /// Shared MCP registry (ref-counted across sub-agents).
+    /// Shared MCP registry (ref-counted across sessions).
     pub(crate) mcp_registry: SharedMcpRegistry,
 }
 
-/// Build isolated `SubAgentResources` for a background task at a given tier.
+/// Build isolated `SubAgentResources` for a new session run at a given tier.
 ///
 /// Resolves the model tier to a concrete provider spec, constructs the provider,
 /// and builds fresh isolated state. When `skill` is set, that skill is activated
-/// on the sub-agent's own skill state so its body becomes the sub-agent's role
-/// instructions.
+/// on the session's own skill state so its body becomes the session's role
+/// instructions. Also snapshots the global observation log and recent-context
+/// narrative at fork time, per the design's "Fork contents": a session never
+/// sees merges that happen after it forked.
 ///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key), the
@@ -61,7 +66,6 @@ pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
     skill: Option<&str>,
-    include_identity: bool,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let specs = ctx
         .background_config
@@ -92,11 +96,31 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
-    // Load identity fresh per spawn so sub-agents see current SOUL.md/AGENTS.md/
+    // Load identity fresh per fork so sessions see current SOUL.md/AGENTS.md/
     // etc. A read failure fails the spawn — the caller logs it loudly.
     let identity = IdentityFiles::load(&ctx.layout)
         .await
-        .context("failed to load identity files for sub-agent spawn")?;
+        .context("failed to load identity files for session fork")?;
+
+    // Snapshot memory at fork time. A read failure here degrades gracefully
+    // (the run starts with no memory context) rather than failing the spawn:
+    // an agent missing background is better than no background work at all.
+    let observations = match load_observations(&ctx.layout.observations_json()).await {
+        Ok(obs) => obs,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load observation snapshot for session fork");
+            None
+        }
+    };
+    let recent_context = match load_recent_context_narrative(&ctx.layout.recent_context_json())
+        .await
+    {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load recent-context snapshot for session fork");
+            None
+        }
+    };
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
@@ -104,8 +128,9 @@ pub(crate) async fn build_spawn_resources(
         options,
         tz: ctx.tz,
         skill: skill.map(str::to_string),
-        include_identity,
-        background_spawner: Arc::clone(&ctx.background_spawner),
+        observations,
+        recent_context,
+        session_registry: Arc::clone(&ctx.session_registry),
         endpoint_registry: ctx.endpoint_registry.clone(),
         publisher: ctx.publisher.clone(),
         action_store: Arc::clone(&ctx.action_store),

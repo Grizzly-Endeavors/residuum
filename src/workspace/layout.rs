@@ -197,12 +197,13 @@ impl WorkspaceLayout {
         self.root.join("config/channels.toml")
     }
 
-    /// Path to the background task transcript directory.
+    /// Path to the session store directory: per-run metadata and transcripts,
+    /// organized by date.
     ///
-    /// Created on-demand when the first transcript is written, not at bootstrap.
+    /// Created on-demand when the first run is recorded, not at bootstrap.
     #[must_use]
-    pub fn background_dir(&self) -> PathBuf {
-        self.root.join("memory/background")
+    pub fn sessions_dir(&self) -> PathBuf {
+        self.root.join("memory/sessions")
     }
 
     /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).

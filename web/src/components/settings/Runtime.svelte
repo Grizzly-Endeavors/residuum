@@ -114,13 +114,49 @@
         </label>
       </div>
       <div class="settings-field">
-        <label for="rt-bg-max-concurrent">Max Concurrent Background Tasks</label>
+        <label for="rt-bg-max-concurrent">Max Concurrent Session Turns</label>
         <input
           id="rt-bg-max-concurrent"
           type="number"
           bind:value={fields.bg_max_concurrent}
           placeholder="Default: 3"
         />
+      </div>
+      <div class="settings-field">
+        <label for="rt-bg-idle-scheduled">Scheduled Session Idle Timeout (minutes)</label>
+        <input
+          id="rt-bg-idle-scheduled"
+          type="number"
+          bind:value={fields.bg_idle_timeout_scheduled_minutes}
+          placeholder="Default: 2"
+        />
+        <div class="field-hint">
+          How long a pulse or scheduled-action session lingers idle before completing. Webhook
+          sessions use this timeout too.
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="rt-bg-idle-spawned">Spawned Session Idle Timeout (minutes)</label>
+        <input
+          id="rt-bg-idle-spawned"
+          type="number"
+          bind:value={fields.bg_idle_timeout_spawned_minutes}
+          placeholder="Default: 10"
+        />
+        <div class="field-hint">
+          How long a session started by subagent_spawn or the learner lingers idle before
+          completing.
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="rt-bg-idle-external">External Session Idle Timeout (minutes)</label>
+        <input
+          id="rt-bg-idle-external"
+          type="number"
+          bind:value={fields.bg_idle_timeout_external_minutes}
+          placeholder="Default: 30"
+        />
+        <div class="field-hint">Idle timeout for non-webhook external sessions.</div>
       </div>
     </div>
 

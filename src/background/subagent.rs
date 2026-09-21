@@ -1,10 +1,10 @@
-//! Sub-agent execution for background tasks.
+//! Session turn execution.
 
 use anyhow::Context as _;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::context::{PromptContext, SkillsContext, build_subagent_system_content};
+use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
@@ -18,7 +18,7 @@ use crate::workspace::identity::IdentityFiles;
 
 use super::types::{SubAgentBuildConfig, SubAgentConfig};
 
-/// Output from a completed sub-agent execution.
+/// Output from a completed session turn.
 pub(crate) struct SubAgentOutput {
     /// The final text response (last assistant message).
     pub summary: String,
@@ -26,36 +26,37 @@ pub(crate) struct SubAgentOutput {
     pub messages: Vec<Message>,
 }
 
-/// Everything needed to run a sub-agent turn, gathered at spawn time.
+/// Everything needed to run a session turn, gathered at fork time.
 pub struct SubAgentResources {
     pub(crate) provider: Box<dyn InferenceProvider>,
     pub(crate) tools: ToolRegistry,
     /// Shared MCP registry (ref-counted, not isolated).
     pub(crate) mcp_registry: SharedMcpRegistry,
-    /// Sub-agent's own isolated skill state.
+    /// This session's own isolated skill state.
     pub(crate) skill_state: SharedSkillState,
     pub(crate) identity: IdentityFiles,
     pub(crate) options: CompletionOptions,
-    /// Formatted skill index for the system prompt (built at spawn time).
+    /// Formatted skill index for the system prompt (built at fork time).
     pub(crate) skills_index: Option<String>,
-    /// Opt-in (from preset frontmatter) to render SOUL.md and AGENTS.md in the
-    /// subagent's system prompt.
-    pub(crate) include_identity: bool,
+    /// Snapshot of the global observation log, taken at fork time.
+    pub(crate) observations: Option<String>,
+    /// Snapshot of the recent-context narrative, taken at fork time.
+    pub(crate) recent_context: Option<String>,
 }
 
-/// Build isolated sub-agent resources from the main agent's shared state.
+/// Build isolated session resources from the main agent's shared state.
 ///
-/// Clones the skill index so the sub-agent starts with the same view of
+/// Clones the skill index so the session starts with the same view of
 /// available skills, but operates on its own independent copies of
 /// `SkillState` and `PathPolicy`. The `McpRegistry` is shared (ref-counted)
 /// so servers are not duplicated.
 ///
-/// When `config.skill` is set, that skill is activated on the sub-agent's own
-/// skill state so its body arrives as the sub-agent's role instructions.
+/// When `config.skill` is set, that skill is activated on the session's own
+/// skill state so its body arrives as the session's role instructions.
 ///
 /// # Errors
 /// Returns an error if `config.skill` names a skill that cannot be resolved or
-/// read — a sub-agent without the instructions that define its job is not worth
+/// read — a session without the instructions that define its job is not worth
 /// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
 pub async fn build_subagent_resources(
@@ -70,8 +71,9 @@ pub async fn build_subagent_resources(
         options,
         tz,
         skill,
-        include_identity,
-        background_spawner,
+        observations,
+        recent_context,
+        session_registry,
         endpoint_registry,
         publisher,
         action_store,
@@ -122,7 +124,7 @@ pub async fn build_subagent_resources(
         workspace_layout.agent_inbox_archive_dir(),
         workspace_layout.user_inbox_dir(),
         workspace_layout.user_inbox_attachments_dir(),
-        background_spawner,
+        session_registry,
         endpoint_registry,
         publisher,
         action_store,
@@ -137,24 +139,33 @@ pub async fn build_subagent_resources(
         identity,
         options,
         skills_index,
-        include_identity,
+        observations,
+        recent_context,
     })
 }
 
-/// Execute a sub-agent background task.
+/// Execute one session turn.
 ///
-/// Builds a minimal system prompt, reads any context files, and runs a single
-/// agent turn loop. Returns the final text response.
+/// Builds the turn's starting user message from the task prompt and context
+/// alone — identity, the observation snapshot, and skills are carried in the
+/// system message that `execute_turn` assembles itself, the same way the main
+/// agent's turns are, so nothing is injected twice.
+///
+/// `stop_token` is the session's own token: cancelling it (via `stop_agent`)
+/// aborts an in-flight model call or ends the turn at its next checkpoint,
+/// leaving `recent_messages` — and therefore the transcript — intact up to
+/// that point.
 ///
 /// # Errors
-/// Returns an error if file reading or the model call fails.
-#[tracing::instrument(skip_all, fields(task.id = %task_id))]
+/// Returns an error if the model call fails.
+#[tracing::instrument(skip_all, fields(run.id = %run_id))]
 pub(crate) async fn execute_subagent(
-    task_id: &str,
+    run_id: &str,
     config: &SubAgentConfig,
     resources: &SubAgentResources,
+    stop_token: &CancellationToken,
 ) -> Result<SubAgentOutput, anyhow::Error> {
-    // Build skills context from the sub-agent's isolated skill state
+    // Build skills context from this session's isolated skill state
     let active_instructions: Option<String> = {
         let guard = resources.skill_state.lock().await;
         guard.format_active_for_prompt()
@@ -164,15 +175,9 @@ pub(crate) async fn execute_subagent(
         active_instructions: active_instructions.as_deref(),
     };
 
-    let system_content =
-        build_subagent_system_content(&resources.identity, &skills_ctx, resources.include_identity);
-
-    // Build user message: system content + context files + prompt
+    // Build the user message: source-specific context, then the prompt. No
+    // identity/wiki/skills content here — that lives in the system message.
     let mut user_parts = Vec::new();
-
-    if !system_content.is_empty() {
-        user_parts.push(system_content);
-    }
 
     if let Some(ctx) = &config.context {
         user_parts.push(ctx.clone());
@@ -184,30 +189,26 @@ pub(crate) async fn execute_subagent(
     let mut recent_messages = RecentMessages::new();
     recent_messages.push(Message::user(combined_prompt));
 
-    // No broker needed: sub-agents pass `None` for both endpoints, so
-    // streaming events are never published.  A noop publisher satisfies
+    // No broker needed: sessions pass `None` for both endpoints, so
+    // streaming events are never published. A noop publisher satisfies
     // the type without spawning a background task.
     let publisher = Publisher::noop();
     let mut interrupt_rx = dead_interrupt_rx();
 
-    let memory_ctx = crate::agent::context::MemoryContext {
-        observations: None,
-        recent_context: None,
+    let memory_ctx = MemoryContext {
+        observations: resources.observations.as_deref(),
+        recent_context: resources.recent_context.as_deref(),
     };
 
     let prompt_ctx = PromptContext { skills: skills_ctx };
 
-    // Sub-agent turns are stopped by the spawner cancelling the whole task
-    // future (see `BackgroundTaskSpawner::cancel`), not by this token — it
-    // is never triggered.
-    let stop_token = CancellationToken::new();
     let turn_resources = TurnResources {
         provider: &*resources.provider,
         tools: &resources.tools,
         mcp_registry: &resources.mcp_registry,
         identity: &resources.identity,
         options: &resources.options,
-        stop_token: &stop_token,
+        stop_token,
     };
 
     let events = EventContext {
@@ -216,7 +217,7 @@ pub(crate) async fn execute_subagent(
         tool_activity_endpoint: None,
         correlation_id: "",
     };
-    // Sub-agent turns are not watched by the subconscious (main agent only).
+    // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
         &turn_resources,
         &memory_ctx,
@@ -230,7 +231,7 @@ pub(crate) async fn execute_subagent(
     .await?;
 
     if texts.is_empty() {
-        tracing::warn!(task_id = %task_id, "sub-agent turn produced no text output");
+        tracing::warn!(run_id = %run_id, "session turn produced no text output");
     }
     let summary = texts.pop().unwrap_or_default();
     let messages = recent_messages.messages().to_vec();
@@ -278,7 +279,8 @@ mod tests {
             identity: IdentityFiles::default(),
             options: CompletionOptions::default(),
             skills_index: None,
-            include_identity: false,
+            observations: None,
+            recent_context: None,
         }
     }
 
@@ -292,88 +294,10 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
-        let output = execute_subagent("bg-001", &config, &resources)
+        let output = execute_subagent("run-001", &config, &resources, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(output.summary, "3 new emails found");
-    }
-
-    #[test]
-    fn subagent_system_content_includes_wiki_index() {
-        // Directly verify build_subagent_system_content includes the wiki index.
-        // (The execute_subagent mock ignores message contents, so testing at
-        // that level can't catch a silent drop of identity fields.)
-        let identity = IdentityFiles {
-            wiki_index: Some("- [Machine](/machine.md): exec tool notes".to_string()),
-            ..IdentityFiles::default()
-        };
-        let content = build_subagent_system_content(&identity, &SkillsContext::default(), false);
-        assert!(
-            content.contains("- [Machine](/machine.md): exec tool notes"),
-            "should include wiki index content"
-        );
-    }
-
-    #[tokio::test]
-    async fn subagent_excludes_soul() {
-        let identity = IdentityFiles {
-            soul: Some("I am a test soul.".to_string()),
-            wiki_index: Some("wiki catalog".to_string()),
-            user: Some("User likes Rust".to_string()),
-            ..IdentityFiles::default()
-        };
-
-        let content = build_subagent_system_content(&identity, &SkillsContext::default(), false);
-
-        assert!(!content.contains("test soul"), "should not include SOUL.md");
-        assert!(
-            content.contains("wiki catalog"),
-            "should include the wiki index"
-        );
-        assert!(
-            content.contains("User likes Rust"),
-            "should include USER.md"
-        );
-    }
-
-    #[test]
-    fn subagent_system_content_includes_skills_index() {
-        let identity = IdentityFiles {
-            wiki_index: Some("wiki catalog".to_string()),
-            ..IdentityFiles::default()
-        };
-        let skills_ctx = SkillsContext {
-            index: Some("<available_skills><skill>pdf</skill></available_skills>"),
-            active_instructions: None,
-        };
-        let content = build_subagent_system_content(&identity, &skills_ctx, false);
-        assert!(
-            content.contains("<SKILLS_INDEX>"),
-            "should include skills index section"
-        );
-        assert!(
-            content.contains("pdf"),
-            "should include skill name from index"
-        );
-    }
-
-    #[test]
-    fn subagent_system_content_includes_active_skills_instructions() {
-        // Sub-agents include active skill instructions in the system prompt
-        let identity = IdentityFiles::default();
-        let skills_ctx = SkillsContext {
-            index: None,
-            active_instructions: Some("<active_skill name=\"pdf\">Do PDFs.</active_skill>"),
-        };
-        let content = build_subagent_system_content(&identity, &skills_ctx, false);
-        assert!(
-            content.contains("Do PDFs"),
-            "active skill instructions should appear in subagent system prompt"
-        );
-        assert!(
-            content.contains("<ACTIVE_SKILLS>"),
-            "should include active skills section"
-        );
     }
 
     #[tokio::test]
@@ -386,7 +310,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Small,
         };
 
-        let output = execute_subagent("bg-002", &config, &resources)
+        let output = execute_subagent("run-002", &config, &resources, &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(output.summary, "done");
@@ -407,7 +331,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subagent_includes_context_in_user_message() {
+    async fn subagent_user_message_carries_only_context_and_prompt() {
         let resources = make_resources("result");
 
         let config = SubAgentConfig {
@@ -416,18 +340,165 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
-        let output = execute_subagent("bg-ctx", &config, &resources)
+        let output = execute_subagent("run-ctx", &config, &resources, &CancellationToken::new())
             .await
             .unwrap();
         let first = output.messages.first().unwrap();
         assert_eq!(first.role, crate::inference::Role::User);
-        assert!(
-            first.content.contains("extra context"),
-            "user message should contain the context"
+        assert_eq!(
+            first.content, "extra context\n\ncheck emails",
+            "the user message must carry only source context and the task prompt — \
+             identity, wiki, and skills belong in the system message, assembled once \
+             by execute_turn, not duplicated here"
         );
+    }
+
+    /// Captures every message list it was called with, so a test can assert on
+    /// the assembled system message rather than a canned response.
+    struct CapturingProvider {
+        response: String,
+        seen: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for CapturingProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.seen.lock().unwrap().push(messages.to_vec());
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "capturing"
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_system_message_carries_identity_and_memory_snapshot_exactly_once() {
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let resources = SubAgentResources {
+            provider: Box::new(CapturingProvider {
+                response: "done".to_string(),
+                seen: Arc::clone(&seen),
+            }),
+            tools: ToolRegistry::new(),
+            mcp_registry,
+            skill_state,
+            identity: IdentityFiles {
+                soul: Some("I am the agent.".to_string()),
+                user: Some("User likes Rust.".to_string()),
+                wiki_index: Some("wiki catalog".to_string()),
+                ..IdentityFiles::default()
+            },
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: Some("episode ep-1: learned something".to_string()),
+            recent_context: Some("we were mid-refactor".to_string()),
+        };
+
+        let config = SubAgentConfig {
+            prompt: "continue the task".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+        };
+
+        execute_subagent("run-fork", &config, &resources, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        let calls = seen.lock().unwrap();
+        let call = calls.first().expect("provider should have been called");
+        let system = call
+            .iter()
+            .find(|m| m.role == crate::inference::Role::System)
+            .expect("a system message must be present");
+
+        for needle in [
+            "I am the agent.",
+            "User likes Rust.",
+            "wiki catalog",
+            "episode ep-1: learned something",
+            "we were mid-refactor",
+        ] {
+            let count = system.content.matches(needle).count();
+            assert_eq!(
+                count, 1,
+                "'{needle}' should appear exactly once, got {count}"
+            );
+        }
+
+        let user = call
+            .iter()
+            .find(|m| m.role == crate::inference::Role::User)
+            .expect("a user message must be present");
+        assert_eq!(user.content, "continue the task");
         assert!(
-            first.content.contains("check emails"),
-            "user message should contain the prompt"
+            !user.content.contains("I am the agent."),
+            "identity must not be duplicated into the user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_a_session_keeps_its_partial_transcript() {
+        // A blocking provider paired with a pre-cancelled stop token exercises
+        // the same cooperative-cancellation path `stop_agent` uses: the turn
+        // ends at its next checkpoint instead of the whole future being
+        // dropped, so the user message that was already pushed survives.
+        struct BlockingProvider;
+
+        #[async_trait]
+        impl InferenceProvider for BlockingProvider {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _tools: &[ToolDefinition],
+                _options: &CompletionOptions,
+            ) -> Result<InferenceResponse, InferenceError> {
+                std::future::pending().await
+            }
+
+            fn model_name(&self) -> &'static str {
+                "blocking"
+            }
+        }
+
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+        let resources = SubAgentResources {
+            provider: Box::new(BlockingProvider),
+            tools: ToolRegistry::new(),
+            mcp_registry,
+            skill_state,
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+        };
+        let config = SubAgentConfig {
+            prompt: "do work".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+        };
+
+        let stop_token = CancellationToken::new();
+        stop_token.cancel();
+
+        let output = execute_subagent("run-stop", &config, &resources, &stop_token)
+            .await
+            .unwrap();
+        assert!(
+            output
+                .messages
+                .iter()
+                .any(|m| m.content.contains("do work")),
+            "the pre-turn user message should survive a stop"
         );
     }
 }

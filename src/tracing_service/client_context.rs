@@ -10,14 +10,16 @@ use crate::config::Config;
 
 use super::{ClientContext, FeedbackClient};
 
-/// Gather the full client context for a bug report.
+/// Gather the static part of the client context for a bug report.
 ///
 /// Reads version/commit from build-time env vars, OS/arch from
 /// `std::env::consts`, and the active model from the resolved config.
 ///
-/// `active_subagents` and `config_flags` are intentionally empty in v1
-/// — see follow-up issues for live-instance tracking and the curated
-/// allowlist pass.
+/// `active_subagents` starts empty here: it's a live read of the session
+/// registry, overlaid onto this snapshot by the bug-report tool and HTTP
+/// handler at submission time, not something this startup-time snapshot can
+/// know. `config_flags` is intentionally empty in v1 — see follow-up issues
+/// for the curated allowlist pass.
 #[must_use]
 pub fn gather_for_bug_report(config: &Config) -> ClientContext {
     let (model_provider, model_name) = config.main.first().map_or((None, None), |spec| {

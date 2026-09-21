@@ -1,12 +1,17 @@
-//! Background task infrastructure: spawning, execution, and result delivery.
+//! Agent sessions: the session registry, runtime, and store that replace the
+//! old fire-and-forget background task spawner. See `docs/design/agent-sessions.md`
+//! for the systems-level design and `README.md` for how the pieces fit together.
 
-pub mod bridge;
 pub(crate) mod listener;
+pub mod registry;
+pub(crate) mod runtime;
 pub(crate) mod spawn_context;
-mod spawner;
+pub mod store;
 pub mod subagent;
 pub mod types;
 
-pub use spawner::BackgroundTaskSpawner;
+pub use registry::SessionRegistry;
+pub use runtime::SessionRuntime;
+pub use store::SessionStore;
 pub use subagent::{SubAgentResources, build_subagent_resources};
-pub use types::{ActiveTaskInfo, BackgroundResult, SubAgentBuildConfig, SubAgentConfig};
+pub use types::{SubAgentBuildConfig, SubAgentConfig};

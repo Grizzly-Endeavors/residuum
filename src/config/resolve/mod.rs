@@ -910,10 +910,19 @@ fn resolve_background_config(
 ) -> Result<BackgroundConfig, FatalError> {
     let mut cfg = BackgroundConfig::default();
 
-    if let Some(section) = section
-        && let Some(v) = section.max_concurrent
-    {
-        cfg.max_concurrent = v;
+    if let Some(section) = section {
+        if let Some(v) = section.max_concurrent {
+            cfg.max_concurrent = v;
+        }
+        if let Some(v) = section.idle_timeout_scheduled_minutes {
+            cfg.idle_timeout_scheduled = std::time::Duration::from_secs(v.saturating_mul(60));
+        }
+        if let Some(v) = section.idle_timeout_spawned_minutes {
+            cfg.idle_timeout_spawned = std::time::Duration::from_secs(v.saturating_mul(60));
+        }
+        if let Some(v) = section.idle_timeout_external_minutes {
+            cfg.idle_timeout_external = std::time::Duration::from_secs(v.saturating_mul(60));
+        }
     }
 
     if let Some(models_section) = models_section {

@@ -12,13 +12,13 @@ Routing is a match on the disposition the producing agent declared. There is no 
 | `HEARTBEAT_URGENT` | `Urgent` | the inbox **and** every channel in `config/channels.toml` |
 | neither | `Normal` | the inbox |
 
-Results from agent-spawned sub-agents are relayed back to the main agent instead, whatever their disposition — the agent that asked for the work gets the answer.
+Results from agent-spawned sessions are relayed back to the main agent instead, whatever their disposition, tagged with the session's address — the agent that asked for the work gets the answer.
 
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
 ### Steering it
 
-Because urgency is the sub-agent's judgment, you steer it by wording the pulse's prompt, not by editing configuration. A pulse that says "report anything unusual" will escalate more than one that says "summarize today's activity". The pulse prompt tells the sub-agent that `HEARTBEAT_URGENT` means "this needs attention before the user would next check in".
+Because urgency is the session's judgment, you steer it by wording the pulse's prompt, not by editing configuration. A pulse that says "report anything unusual" will escalate more than one that says "summarize today's activity". The pulse prompt tells the session that `HEARTBEAT_URGENT` means "this needs attention before the user would next check in".
 
 The sentinel is deliberately distinctive so that a summary *about* something urgent does not escalate itself — the literal word "urgent" in a report has no effect.
 
@@ -26,8 +26,7 @@ The sentinel is deliberately distinctive so that a summary *about* something urg
 
 No routing target injects into the agent's message feed. Two mechanisms do that job, and both are declared where the work is defined:
 
-- **`agent: main` on a pulse** (in `HEARTBEAT.yml`) runs the pulse as a wake turn: the prompt is injected into the agent's context as a system message. This bypasses the router entirely.
-- **Agent-spawned sub-agents** have their results relayed back to the main agent automatically.
+- **Agent-spawned sessions** (`subagent_spawn`, the `learner`) have their results relayed back to the main agent automatically, from every turn.
 
 Everything else reaches the agent through the inbox, which it reads with `inbox_list`.
 
@@ -38,7 +37,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 ### Interactive endpoints
 
 Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
-- `switch_endpoint` to send background output (sub-agent results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from.
+- `switch_endpoint` to send background output (relayed session results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from.
 - `send_message` to send a one-off message to any interactive endpoint.
 - `send_message` with `conversation` to post into a specific DM, group chat, or channel on a chat interface (Discord, Telegram, Teams). `list_conversations` shows the IDs. Without `conversation`, a proactive message on a chat interface goes to the owner's direct message.
 

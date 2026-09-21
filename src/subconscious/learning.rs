@@ -11,6 +11,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::background::registry::generate_address;
 use crate::bus::{EventTrigger, SkillName, SpawnRequestEvent};
 
 use super::LearnSignal;
@@ -145,16 +146,19 @@ fn build_nudge_spawn() -> SpawnRequestEvent {
 /// Assemble a learner `SpawnRequestEvent`.
 ///
 /// The learner reasons about the user from the live transcript, so it runs on
-/// the large tier with the agent's own identity in its prompt.
+/// the large tier. Every fork carries the agent's own identity in its system
+/// message now, so no special flag is needed for that.
 fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
+    let trigger = EventTrigger::Agent;
+    let address = generate_address(&trigger, LEARNER_SKILL);
     SpawnRequestEvent {
+        address,
         skill: Some(SkillName::from(LEARNER_SKILL)),
         source_label: source_label.to_string(),
         prompt,
         context: None,
-        source: EventTrigger::Agent,
+        source: trigger,
         model_tier: crate::config::BackgroundModelTier::Large,
-        include_identity: true,
     }
 }
 
@@ -192,7 +196,7 @@ mod tests {
             spawn.model_tier,
             crate::config::BackgroundModelTier::Large
         ));
-        assert!(spawn.include_identity);
+        assert!(spawn.address.as_ref().starts_with("spawned-learner-"));
 
         // A second call inside the window is suppressed.
         assert!(

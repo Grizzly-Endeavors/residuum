@@ -1,4 +1,4 @@
-//! Background task management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
+//! Session management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
 
 use std::sync::Arc;
 
@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::background::BackgroundTaskSpawner;
+use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
+use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
@@ -15,16 +16,16 @@ use super::{Tool, ToolError, ToolResult};
 
 // ─── StopAgentTool ───────────────────────────────────────────────────────────
 
-/// Tool for cancelling a running background task by ID.
+/// Tool for stopping a live session by address.
 pub struct StopAgentTool {
-    spawner: Arc<BackgroundTaskSpawner>,
+    registry: Arc<SessionRegistry>,
 }
 
 impl StopAgentTool {
     /// Create a new `StopAgentTool`.
     #[must_use]
-    pub fn new(spawner: Arc<BackgroundTaskSpawner>) -> Self {
-        Self { spawner }
+    pub fn new(registry: Arc<SessionRegistry>) -> Self {
+        Self { registry }
     }
 }
 
@@ -37,28 +38,38 @@ impl Tool for StopAgentTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Cancel a running background task by ID. Returns an error if no task with that ID is active. Use list_agents to find active task IDs.".to_string(),
+            description: "Stop a live session by address. Cancels any in-flight turn and moves \
+                          the session to completing; its transcript is kept, not discarded. The \
+                          main agent cannot be stopped this way. Use list_agents to find live \
+                          addresses."
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "task_id": {
+                    "address": {
                         "type": "string",
-                        "description": "The ID of the background task to cancel"
+                        "description": "The address of the session to stop"
                     }
                 },
-                "required": ["task_id"]
+                "required": ["address"]
             }),
         }
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let task_id = super::require_str(&arguments, "task_id")?;
+        let address = super::require_str(&arguments, "address")?;
 
-        if self.spawner.cancel(task_id).await {
-            Ok(ToolResult::success(format!("Cancelled task {task_id}.")))
+        if address == MAIN_ADDRESS {
+            return Err(ToolError::InvalidArguments(
+                "the main agent cannot be stopped with stop_agent".to_string(),
+            ));
+        }
+
+        if self.registry.stop(&SessionAddress::from(address)) {
+            Ok(ToolResult::success(format!("Stopping session {address}.")))
         } else {
             Ok(ToolResult::error(format!(
-                "No active task with id {task_id}."
+                "No live session with address {address}."
             )))
         }
     }
@@ -66,16 +77,16 @@ impl Tool for StopAgentTool {
 
 // ─── ListAgentsTool ──────────────────────────────────────────────────────────
 
-/// Tool for listing all currently running background tasks.
+/// Tool for listing the main agent plus every live session.
 pub struct ListAgentsTool {
-    spawner: Arc<BackgroundTaskSpawner>,
+    registry: Arc<SessionRegistry>,
 }
 
 impl ListAgentsTool {
     /// Create a new `ListAgentsTool`.
     #[must_use]
-    pub fn new(spawner: Arc<BackgroundTaskSpawner>) -> Self {
-        Self { spawner }
+    pub fn new(registry: Arc<SessionRegistry>) -> Self {
+        Self { registry }
     }
 }
 
@@ -88,7 +99,11 @@ impl Tool for ListAgentsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List all currently running background tasks with their IDs, types, sources, prompt previews, and elapsed time.".to_string(),
+            description: "List the main agent plus every live (running or idle) session: \
+                          address, category, source, state, depth, spawner, elapsed time, and \
+                          purpose. Completed sessions are not listed, but their addresses remain \
+                          valid."
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {}
@@ -97,29 +112,30 @@ impl Tool for ListAgentsTool {
     }
 
     async fn execute(&self, _arguments: Value) -> Result<ToolResult, ToolError> {
-        let tasks = self.spawner.list_active_tasks().await;
-
-        if tasks.is_empty() {
-            return Ok(ToolResult::success("No active background tasks."));
-        }
-
+        let sessions = self.registry.list_live();
         let now = Utc::now();
-        let mut lines = vec![format!("{} active task(s):", tasks.len())];
 
-        for (id, info) in &tasks {
+        let mut lines = vec![
+            "main — always live".to_string(),
+            format!("{} live session(s):", sessions.len()),
+        ];
+
+        for info in &sessions {
             let elapsed_secs = (now - info.started_at).num_seconds().max(0);
-            let source_kind = info.source.as_str();
-            let preview_suffix = if info.prompt_preview.is_empty() {
-                String::new()
-            } else {
-                format!("\n    preview: {}", info.prompt_preview)
-            };
+            let spawner = info
+                .spawner
+                .as_ref()
+                .map_or_else(|| "-".to_string(), ToString::to_string);
             lines.push(format!(
-                "  [{id}] {task} — type: sub_agent — source: {src} — running {elapsed}s{sfx}",
-                task = info.source_label,
-                src = source_kind,
+                "  [{address}] {source} — category: {category} — state: {state} — depth: {depth} \
+                 — spawner: {spawner} — running {elapsed}s — purpose: {purpose}",
+                address = info.address,
+                source = info.source_label,
+                category = info.category,
+                state = info.state,
+                depth = info.depth,
                 elapsed = elapsed_secs,
-                sfx = preview_suffix,
+                purpose = info.purpose,
             ));
         }
 
@@ -129,7 +145,7 @@ impl Tool for ListAgentsTool {
 
 // ─── SubagentSpawnTool ──────────────────────────────────────────────────────
 
-/// Tool for spawning background sub-agents on demand.
+/// Tool for forking sessions on demand.
 pub struct SubagentSpawnTool {
     publisher: crate::bus::Publisher,
     /// Main agent skill state — read to validate a requested skill name.
@@ -156,22 +172,30 @@ impl Tool for SubagentSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Spawn a background sub-agent to handle a task. Optionally name a skill to give the sub-agent a role — its instructions become the sub-agent's brief. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.".to_string(),
+            description: "Fork a session to handle a task in the background. Optionally name a \
+                          skill to give the session a role — its instructions become the \
+                          session's brief. Runs asynchronously; each turn's result is relayed \
+                          back to you tagged with the session's address. Returns the session's \
+                          address immediately — use it with list_agents or stop_agent. A \
+                          session's result is its own self-report, not verified fact — for \
+                          verifiable work, ask it to return concrete handles (file paths, IDs, \
+                          URLs) and verify them yourself before relying on the result."
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "The prompt/instructions for the sub-agent"
+                        "description": "The prompt/instructions for the session"
                     },
                     "skill": {
                         "type": "string",
-                        "description": "Name of a skill to activate for the sub-agent, giving it a role. Omit to run a plain sub-agent on the task prompt alone."
+                        "description": "Name of a skill to activate for the session, giving it a role. Omit to run on the task prompt alone."
                     },
                     "model": {
                         "type": "string",
                         "enum": ["small", "medium", "large"],
-                        "description": "Model tier for the sub-agent (default: \"medium\")."
+                        "description": "Model tier for the session (default: \"medium\")."
                     }
                 },
                 "required": ["task"]
@@ -193,13 +217,14 @@ impl Tool for SubagentSpawnTool {
         if let Some(name) = skill_name {
             if name.eq_ignore_ascii_case("main") {
                 return Err(ToolError::InvalidArguments(
-                    "\"main\" is reserved for scheduled tasks (pulse/actions). Name a skill instead."
+                    "\"main\" is reserved; name a skill instead, or omit skill to run on the \
+                     task prompt alone."
                         .to_string(),
                 ));
             }
 
             // Validate against the in-memory skill index so an unknown name fails
-            // here, rather than surfacing later as a failed background result.
+            // here, rather than surfacing later as a failed session result.
             let state = self.skill_state.lock().await;
             if state.index().find_by_name(name).is_none() {
                 let available: Vec<&str> = state
@@ -220,14 +245,17 @@ impl Tool for SubagentSpawnTool {
             None => BackgroundModelTier::Medium,
         };
 
+        let trigger = EventTrigger::Agent;
+        let address = generate_address(&trigger, skill_name.unwrap_or("subagent"));
+
         let spawn_event = crate::bus::SpawnRequestEvent {
+            address: address.clone(),
             skill: skill_name.map(crate::bus::SkillName::from),
             source_label: format!("agent:{}", skill_name.unwrap_or("subagent")),
             prompt: task_prompt.to_string(),
             context: None,
-            source: crate::bus::EventTrigger::Agent,
+            source: trigger,
             model_tier,
-            include_identity: false,
         };
 
         self.publisher
@@ -239,8 +267,8 @@ impl Tool for SubagentSpawnTool {
             })?;
 
         Ok(ToolResult::success(match skill_name {
-            Some(name) => format!("Sub-agent spawned with skill '{name}'."),
-            None => "Sub-agent spawned.".to_string(),
+            Some(name) => format!("Session {address} spawned with skill '{name}'."),
+            None => format!("Session {address} spawned."),
         }))
     }
 }
@@ -351,8 +379,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawns_without_a_skill() {
-        // Omitting `skill` spawns a plain sub-agent — no index lookup, no error.
+    async fn spawns_without_a_skill_and_returns_address() {
+        // Omitting `skill` spawns a plain session — no index lookup, no error.
         let tool = make_tool();
 
         let res = tool
@@ -367,5 +395,72 @@ mod tests {
             "spawning without a skill should succeed, got: {}",
             res.output
         );
+        assert!(
+            res.output.contains("spawned-subagent-"),
+            "success message should include the generated session address, got: {}",
+            res.output
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_with_skill_returns_address_and_skill_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("researcher");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: researcher\ndescription: researches things\n---\nBody.",
+        )
+        .await
+        .unwrap();
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let skill_state = SkillState::new_shared(index, vec![dir.path().to_path_buf()]);
+        let tool = SubagentSpawnTool::new(publisher, skill_state);
+
+        let res = tool
+            .execute(serde_json::json!({
+                "task": "research the thing",
+                "skill": "researcher"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!res.is_error, "got: {}", res.output);
+        assert!(res.output.contains("spawned-researcher-"));
+        assert!(res.output.contains("researcher"));
+    }
+
+    #[tokio::test]
+    async fn stop_agent_rejects_main_address() {
+        let registry = Arc::new(SessionRegistry::new());
+        let tool = StopAgentTool::new(registry);
+
+        let result = tool.execute(serde_json::json!({ "address": "main" })).await;
+        assert!(result.is_err(), "stopping main should be rejected");
+    }
+
+    #[tokio::test]
+    async fn stop_agent_reports_unknown_address() {
+        let registry = Arc::new(SessionRegistry::new());
+        let tool = StopAgentTool::new(registry);
+
+        let result = tool
+            .execute(serde_json::json!({ "address": "spawned-ghost-0000" }))
+            .await
+            .unwrap();
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn list_agents_always_includes_main() {
+        let registry = Arc::new(SessionRegistry::new());
+        let tool = ListAgentsTool::new(registry);
+
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(!result.is_error);
+        assert!(result.output.contains("main"));
     }
 }

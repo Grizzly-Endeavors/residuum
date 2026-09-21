@@ -1,170 +1,99 @@
-# Background Tasks Module
+# Background Module: Agent Sessions
 
-Manages spawning, execution, and result delivery of background tasks—SubAgents, pulse evaluations, and scheduled actions—without blocking the main agent.
+Owns the session registry, runtime, and store that execute work off the main agent's turn loop: pulse checks, scheduled actions, webhooks, and on-demand sub-agent delegation. See `docs/design/agent-sessions.md` for the systems-level design and `docs/systems-usage/background-tasks.md` for the user-facing behavior; this file covers how the module's own pieces fit together.
 
 ## Overview
 
-The background module decouples background work (pulse evaluation, scheduled action execution, subagent delegation) from the main agent's turn loop. This solves three problems:
-
-1. **Pulse/scheduled actions don't block conversation.** Background tasks run on separate Tokio tasks, managed by a bounded semaphore, so the main agent stays responsive.
-2. **User can steer mid-turn.** While a long multi-tool sequence runs, background results and user messages can be injected between tool iterations without waiting for the turn to complete.
-3. **Fire-and-forget subagents.** The main agent can spawn a self-contained task (via the `subagent_spawn` tool) and continue its conversation while the worker runs asynchronously.
+A **session** is a temporary fork of the main agent: its own identity/memory snapshot, its own tool registry, its own message history. A session has an **address** (stable, human-readable, e.g. `spawned-researcher-3f9a`) and moves through a lifecycle — `forking` → `running` → `idle` → `completing` → `completed` — tracked by the registry for as long as it's live.
 
 The module owns:
-- **Task lifecycle management:** spawning, concurrency control (semaphore), cancellation tokens, transcript persistence.
-- **SubAgent execution:** LLM-powered turn loop with isolated resources.
-- **Resource isolation:** each background task gets its own `SkillState` and `PathPolicy` so they don't interfere with each other or the main agent.
-- **Context assembly for SubAgents:** minimal system prompt (`USER.md` + the wiki root index + skills index + the activated skill's instructions, plus `SOUL.md`/`AGENTS.md` when the spawn caller sets `include_identity`) followed by the task prompt, excluding observation logs.
-- **Result-to-event conversion:** the `bridge` submodule turns a completed `BackgroundResult` into an `AgentResultEvent`, computing its `ResultDisposition` from sentinel strings in the SubAgent's summary, and publishes it on the bus.
+- **The session registry** (`registry.rs`): the single source of truth for every live session's address, run id, category, source label, lifecycle state, spawner, depth, and purpose. Discovery tools (`list_agents`, `stop_agent`) and the bug-report client context read it directly.
+- **The session runtime** (`runtime.rs`): executes a session's turn, holding the concurrency permit only while a turn is actually running, then lingering the session `idle` until its category's timeout elapses or it's stopped, before finalizing the run.
+- **The session store** (`store.rs`): durable on-disk record of every run — metadata plus transcript, one JSON file per run under `memory/sessions/YYYY-MM/DD/<run-id>.json`.
+- **Fork construction** (`spawn_context.rs`, `subagent.rs`): resolves the model tier, activates the requested skill, snapshots the global observation log and recent-context narrative, and builds the isolated `SubAgentResources` a session's turn runs with.
 
 The module does **not** handle:
-- **Channel delivery.** This module publishes each result's `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels, or the main agent) and delivers to them.
-- **Skill discovery.** `crate::skills` owns the index; this module activates a named skill on the sub-agent's own `SkillState` and lets that failure fail the spawn.
-- **Interrupt channel mechanics.** The main agent owns its own mid-turn interrupt channel; a completed background result only reaches it indirectly, via the bus and the notification router.
-- **Model tier fallback logic.** The `SpawnContext` resolves tier → provider spec (with fallback: small → medium → large → main agent model).
+- **Channel delivery.** Each completed run publishes its own `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels, or a relay to the main agent) and delivers to them.
+- **Skill discovery.** `crate::skills` owns the index; this module activates a named skill on the session's own `SkillState` and lets that failure fail the fork.
+- **Memory merging.** A completed run's transcript sits in the session store; folding its observations into the global observation log is not implemented yet (arrives in a later phase per `docs/design/agent-sessions-phases.md`).
+- **Cross-session messaging and nesting.** Sessions cannot yet message each other or spawn further sessions — `subagent_spawn` is main-only, and `build_subagent_registry()` omits it.
 
 ## How It Works
 
 ### Core Abstractions
 
-**BackgroundTask:** The envelope for any background work. Contains:
-- `id`: Unique identifier (e.g., `"agent-XXXXXXXX-timestamp"`)
-- `source_label`: Human-readable label for logging and display (e.g. `"pulse:email_check"`, `"action:deploy"`)
-- `source`: Where the task came from (`EventTrigger::Agent`, `::Pulse`, `::Action`, `::Webhook(name)`)
-- `subagent_config`: `SubAgentConfig` (prompt, context, model tier)
-- `agent_skill`: The skill the sub-agent runs with, if any (`Option<SkillName>`)
+**`SessionRegistry`** (`registry.rs`): an in-memory map from address to `SessionInfo` plus the `CancellationToken` that stops the run. `register`/`set_state`/`stop`/`remove` mutate it; `list_live`/`get`/`subagent_snapshot` read it. `generate_address(trigger, qualifier)` builds a new address from the category implied by the trigger (`EventTrigger::Pulse`/`Action` → `scheduled`, `EventTrigger::Agent` → `spawned`, `EventTrigger::Webhook` → `external`) and a slugified qualifier (skill, pulse, action, or webhook name).
 
-**SubAgentConfig:** Drives a simplified agent turn loop with minimal context. The SubAgent gets an isolated clone of `SkillState` plus a fresh `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary, along with the full message transcript.
+**`SessionRuntime`** (`runtime.rs`): holds the concurrency `Semaphore`, an `Arc<SessionRegistry>`, an `Arc<SessionStore>`, and the per-category `IdleTimeouts` resolved once from `BackgroundConfig` at construction (like `max_concurrent`, a config reload does not resize this — the semaphore and timeouts are fixed for the runtime's lifetime). `spawn()` registers the session as `forking` synchronously, then drives the rest of the lifecycle on a detached task.
 
-**BackgroundTaskSpawner:** Manages all background task lifecycles:
-- Bounded concurrency: a semaphore (default: 3) caps concurrent tasks.
-- Spawn on Tokio: each task runs as `tokio::spawn(async move {})`.
-- Cancellation: every task has a `CancellationToken`; cancelling it preempts the in-flight execution immediately — no per-task cleanup is needed, since a SubAgent's resources belong to that task alone.
-- Transcript persistence: output written to `memory/background/YYYY-MM/DD/bg-{id}.log`.
-- Result channel: on completion, sends `BackgroundResult` to the result channel. `send_result()` also lets a caller inject a pre-built `BackgroundResult` directly, without running a SubAgent turn.
+**`SessionStore`** (`store.rs`): writes a `RunRecord` (metadata + transcript) at fork time and again at completion, both to the same date-partitioned path. `mark_incomplete_as_completed()` runs once at startup, sweeping the store for any run left in a non-terminal state by a prior process exit and marking it `completed` with `interrupted: true`.
+
+**`SubAgentResources`** (`subagent.rs`): the isolated bundle a session's turn runs with — provider, tool registry, MCP registry (shared), skill state (cloned, isolated), identity, completion options, and the fork-time memory snapshot (`observations`, `recent_context`). Built by `build_subagent_resources()`.
 
 ### Primary Data Flow
 
-#### Task Spawning
+#### Fork Request
 
 ```
-SpawnRequestEvent { skill, source_label, prompt, context, source, model_tier, include_identity }
+SpawnRequestEvent { address, skill, source_label, prompt, context, source, model_tier }
     ↓ published on the bus Background topic by the pulse executor,
-      gateway action spawning, or the subagent_spawn tool
-spawn listener (src/background/listener.rs)
-    ├─ Build resources straight from the request — no resolution step
-    ├─ build_spawn_resources() → provider + isolated SubAgentResources for the resolved tier
-    └─ BackgroundTaskSpawner::spawn(BackgroundTask, Some(resources))
-         ├─ Register in active_tasks (with CancellationToken)
-         ├─ Acquire semaphore permit (waits if at capacity)
-         └─ tokio::spawn(async move {
-              race: token.cancelled() vs execute_subagent()
-              → BackgroundResult { id, source_label, source, summary, status, transcript_path, timestamp, agent_skill }
-              → send to result_tx (mpsc channel)
-            })
-    ↓
-BackgroundResult flows to background::bridge via mpsc channel
+      gateway action spawning, a webhook handler, the subconscious learner,
+      or the subagent_spawn tool
+spawn listener (listener.rs)
+    ├─ build_spawn_resources() → resolve tier → provider, activate skill,
+    │  snapshot observations + recent-context narrative
+    └─ SessionRuntime::spawn(SessionSpawnRequest, SubAgentResources)
+         ├─ Register in the registry as `forking`, with a fresh CancellationToken
+         ├─ SessionStore::begin_run() — write the initial record
+         └─ tokio::spawn(async move { run_session(...) })
 ```
 
-A pulse or scheduled action with `agent = "main"` never enters this module at all — it's returned as a main-agent wake turn and injected directly into the main agent's next turn.
+Every producer generates the session's address itself, up front — `subagent_spawn` needs to hand it back to the model synchronously, and the rest do it for consistency. The listener never generates an address; it only builds resources and hands the request to the runtime.
 
-#### SubAgent Execution
+#### Session Execution
 
-When `execute_subagent()` runs:
+`run_session()` (in `runtime.rs`) drives one run:
 
-1. **Assemble minimal context:** `build_subagent_system_content()` builds, in order:
-   - `SOUL.md` / `AGENTS.md` (only when the spawn caller sets `include_identity`)
-   - `USER.md`
-   - `WIKI_INDEX` (`wiki/index.md`)
-   - `SKILLS_INDEX` (the SubAgent's own skill index)
-   - `ACTIVE_SKILLS` (active skill instructions, if any)
+1. **Acquire a permit or get cancelled first.** `tokio::select!` races the session's `CancellationToken` against `Semaphore::acquire()`. If stopped before a permit is available, the run produces a `Cancelled` result immediately — no turn ever starts.
+2. **Run the turn.** Once a permit is held, the registry moves to `Running` and `execute_subagent()` (`subagent.rs`) runs the turn through the shared `execute_turn()` executor, with the session's own `CancellationToken` wired in as `TurnResources.stop_token`. This is what makes `stop_agent` cooperative: cancelling ends the turn at its next checkpoint (a model call or tool-loop boundary) with the transcript so far intact, rather than dropping the whole future.
+3. **Go idle.** The permit is released (it's a stack-scoped guard); the registry moves to `Idle`. The run then races the `CancellationToken` against `tokio::time::sleep(idle_timeout)` — whichever fires first ends the idle wait.
+4. **Complete.** The registry moves to `Completing`, `SessionStore::complete_run()` overwrites the run's record with its final state and full transcript, and an `AgentResultEvent` — tagged with the session's address and run id — is published on the bus. The registry entry is then removed; the session no longer appears in `list_agents`, though its store record remains.
 
-   This is joined with the explicit context passed in `SubAgentConfig` and the task prompt into a single user message.
+#### Fork Contents
 
-2. **Create isolated resources** (`build_subagent_resources()`): cloned from main agent state but independent:
-   - `SkillState`: clone of the skill index, no active skills
-   - `PathPolicy`: fresh, with no blocked paths
-   - `FileTracker`: fresh, tracks reads within this SubAgent turn only
-   - `ToolRegistry`: built from the isolated state above
-   - `McpRegistry`: shared with the main agent, not cloned
+`execute_subagent()` builds the turn's starting user message from **only** the source-specific input (task prompt, pulse/action/webhook payload, plus any explicit context) — no identity, wiki, or skills content goes into it. Everything else — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki index, the skills index, and the fork-time observation/recent-context snapshot — flows through `MemoryContext`/`PromptContext` into the *system* message, assembled once per iteration by `execute_turn()`'s own `assemble_system_prompt()`, exactly as it is for the main agent. This is deliberate: putting identity content in both the user message and the system message (as the old sub-agent path did) would show up twice in every model call.
 
-3. **Run turn loop:** Call `execute_turn()` with the minimal context and isolated resources. The mid-turn interrupt receiver is a dead channel (`dead_interrupt_rx()`), since SubAgents run to completion without being interrupted. Return the last assistant message as the summary, plus the full message transcript.
+### Result Routing
 
-4. **Handle cancellation:** `BackgroundTaskSpawner::spawn()` races `token.cancelled()` against the `execute_subagent()` future in a `tokio::select!` (cancellation checked first). If the token fires first, the in-flight future is dropped and a `Cancelled` `BackgroundResult` (empty summary, no transcript) is produced immediately.
-
-#### Result Routing
-
-`BackgroundResult` carries the completion envelope:
-- `id`: Task ID
-- `source_label`: Human-readable source label
-- `source`: `EventTrigger` the task originated from
-- `summary`: SubAgent's final text response
-- `transcript_path`: Path to disk log
-- `status`: `Completed`, `Cancelled`, or `Failed { error: String }`
-- `timestamp`: When the task completed
-- `agent_skill`: The skill it ran with, if any
-
-`background::bridge::spawn_result_bridge` reads each `BackgroundResult` off the spawner's result channel and converts it into an `AgentResultEvent`, computing a `ResultDisposition` from sentinel strings the SubAgent leaves in its own summary:
-- `HEARTBEAT_OK` on a pulse result → `Silent` (nothing worth surfacing)
-- `HEARTBEAT_URGENT` anywhere in the summary → `Urgent`
-- otherwise → `Normal`
-
-The event is published on the bus `Background` topic. The notification router (`notify::router`) subscribes and routes it: `Silent` results are discarded; agent-spawned results are relayed back to the main agent; everything else is filed to the inbox, plus pushed to every configured notification channel when `Urgent`.
-
-### Resource Isolation
-
-Each SubAgent gets its own copies of mutable state:
-
-| Resource | Shared? | Why |
-|----------|---------|-----|
-| `SkillState` | ❌ Cloned | Each SubAgent starts with no active skills |
-| `PathPolicy` | ❌ Fresh | Each SubAgent has its own blocked-path set (empty by default) |
-| `McpRegistry` | ✅ Shared (Arc) | MCP servers are started once at gateway startup; SubAgents read the same flat server list |
-| `ToolRegistry` | ❌ Fresh | Built from isolated state above |
-
-This isolation ensures:
-- Multiple SubAgents can work independently without interfering with each other's tool state.
-- The main agent's state is never modified by background tasks.
-
-### Concurrency and Cancellation
-
-**Semaphore-bounded execution:** The spawner maintains an `Arc<Semaphore>` (default capacity: 3). Every spawned task acquires a permit before executing and releases it when done (or dropped). This prevents unbounded task accumulation.
-
-**Cancellation tokens:** Every task has a `CancellationToken`. The spawner stores tokens in `active_tasks` (HashMap). Calling `cancel(task_id)` just flips the token — a non-blocking flag read on the other side. The spawned task's `tokio::select!` (biased toward the cancellation branch) picks that up and drops the in-flight `execute_subagent()` future immediately.
-
-**No blocking or locking:** Cancellation is non-blocking. Checking a `CancellationToken` is just a flag read. Task lifecycle (spawn, cancel, cleanup) uses async-safe primitives (`tokio::sync::Mutex`, channels).
+`notify::router` subscribes to the bus `Background` topic and routes each `AgentResultEvent` by the disposition its session declared (via `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in its summary — computed in `runtime.rs::build_result_event`, using the same rule the old bridge module used): `Silent` results are discarded; `spawned`-category results (`EventTrigger::Agent`) relay to the main agent; everything else files to the inbox, plus every configured notification channel when `Urgent`.
 
 ---
 
 ## Design Decisions
 
-**Decision: Semaphore-bounded concurrency, not task queuing.**
+**Decision: The concurrency permit is held only while a turn runs, not for a session's whole lifetime.**
 
-**Why:** Unbounded queuing delays all pending tasks when one slow task holds a permit. A semaphore ensures fairness: up to N tasks run in parallel, others block on the permit, first to finish releases first. This is simpler than a priority queue and matches the "no priority" constraint (all tasks compete equally for slots).
+**Why:** An idle session — lingering to receive a reply before it completes — costs memory, not a slot in the pool. Acquiring the semaphore permit inside `run_session()`, after registering the session as `forking`, means a session that's still being built (or waiting for a permit) is discoverable via `list_agents` before it's actually running, and a burst of idle sessions never starves new work.
 
----
-
-**Decision: SubAgent isolation via resource cloning, not ref-counting locks.**
-
-**Why:** Each SubAgent gets its own clone of `SkillState`, plus a fresh `PathPolicy`, because these represent mutable state (active skills, blocked paths). Sharing them behind locks would serialize tool execution across SubAgents and the main agent. Cloning them is cheap (the indices are small) and eliminates contention. MCP servers are shared because they're expensive, long-lived processes — the registry is just a flat, shared list, so there's nothing to ref-count.
+**Why not one permit for the whole run:** it would mean `max_concurrent` bounds "how many sessions can exist," not "how many turns can execute concurrently" — the two aren't the same shape of resource pressure, and the latter is what actually protects the model provider from a fan-out.
 
 ---
 
-**Decision: Transcript written asynchronously after task completes.**
+**Decision: `stop_agent` cancels cooperatively through `execute_turn`'s own stop token, not by dropping the run's future.**
 
-**Why:** Writing happens in the spawned task before returning the result, not on the critical path. The transcript path is included in `BackgroundResult` so the bridge/router can reference it.
-
----
-
-**Decision: Cancellation preempts via future-drop, not a cooperative check.**
-
-**Why:** SubAgent turns don't poll a cancellation flag mid-loop — the spawner instead races the `CancellationToken` against the whole `execute_subagent()` future in a `tokio::select!`. Whichever resolves first wins, so a task can be cancelled from anywhere in its execution, not just between tool iterations. No explicit cleanup step is needed: a SubAgent's resources are exclusive to its own task, so dropping the future is enough.
+**Why:** The old background-task spawner raced a `tokio::select!` around the whole `execute_subagent()` future, so cancelling dropped everything, including whatever transcript had accumulated. Wiring the session's own `CancellationToken` into `TurnResources.stop_token` — the same mechanism the main agent's turn loop already uses for user-initiated stops — means a stopped session's transcript up to the cancellation point survives in the session store. Stopping is not discarding.
 
 ---
 
-**Decision: No sub-to-sub delegation (SubAgents cannot spawn SubAgents).**
+**Decision: Producers generate their own session address, not the listener.**
 
-**Why:** Orchestration chains are a complexity nightmare. If the main agent needs to delegate a task that requires decomposition, it spawns multiple SubAgents itself. This keeps the dependency tree flat and reasoning about failure modes tractable. `build_subagent_registry()` registers `stop_agent` and `list_agents` for SubAgents but deliberately omits `subagent_spawn`.
+**Why:** `subagent_spawn` needs to return the address to the model in the same tool call that starts the spawn — the fork happens asynchronously, so there's no later point to hand it back. Rather than special-casing that one caller, every `SpawnRequestEvent` producer (pulse executor, gateway action spawner, webhook handler, subconscious learner) generates the address the same way, via `registry::generate_address()`. This also means the address never depends on a step the listener could fail before reaching.
+
+---
+
+**Decision: No sub-to-session nesting yet.**
+
+**Why:** Depth-capped nesting (a session spawning another session) is a real part of the design but depends on cross-session messaging existing first — a nested session's result needs somewhere to relay to besides main. `build_subagent_registry()` still registers `stop_agent` and `list_agents` for a session's own tool set (any session can inspect or stop any other) but omits `subagent_spawn`, keeping the spawn tree exactly two levels deep (main → spawned) until messaging lands.
 
 ---
 
@@ -172,57 +101,34 @@ This isolation ensures:
 
 ### Depends On
 
-- **`crate::config`** — `BackgroundConfig` (max_concurrent, model tiers), `BackgroundModelTier` (Small/Medium/Large), `ProviderSpec`, `ModelSpec`. Used to configure concurrency limits and resolve model tiers to concrete providers.
-
-- **`crate::inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for SubAgent execution.
-
-- **`crate::inference::retry`** — `RetryConfig`. Passed to provider construction; configures API call retry behavior.
-
-- **`crate::agent::context`** — Context building functions (`build_subagent_system_content`), `PromptContext`, `MemoryContext`, `SkillsContext`, `SubagentsContext`. Used to assemble the minimal system prompt for SubAgents.
-
-- **`crate::agent::turn`** — `execute_turn()`. The SubAgent executor calls this to run the isolated turn loop.
-
-- **`crate::agent::recent_messages`** — `RecentMessages`. Holds the message history for SubAgent turns.
-
-- **`crate::agent::interrupt`** — `dead_interrupt_rx()`. Provides a dummy interrupt channel (SubAgents don't respond to mid-turn interrupts; they run to completion).
-
-- **`crate::mcp`** — `SharedMcpRegistry`. A flat, shared registry of configured servers, started once at gateway startup; passed straight into `SubAgentResources` so a SubAgent's tool loop can dispatch to MCP-provided tools.
-
-- **`crate::skills`** — `SkillState`, `SharedSkillState`. Each SubAgent gets an isolated clone; used to manage active skills.
-
-- **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. SubAgents get fresh isolated instances of tool-related state.
-
-- **`crate::workspace`** — `IdentityFiles` (`SOUL.md`, `AGENTS.md`, `USER.md`, `BOOTSTRAP.md`, `wiki/index.md`), `WorkspaceLayout` (paths to directories). Used for context assembly.
-
-- **`crate::bus`** — `EventTrigger`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`. Used for task provenance, result status/disposition, and the spawn-request event other modules publish to request a task.
-
-
-- **`tokio`** — `tokio::sync::{Mutex, Semaphore, mpsc}`, `tokio_util::sync::CancellationToken`. Core async primitives for task spawning, concurrency control, and cancellation.
-
-- **`chrono`, `chrono_tz`** — Timestamps in `BackgroundResult`, task started times in `ActiveTaskInfo`, and timezone conversion when building `AgentResultEvent`.
-
-- **`anyhow`** — Error handling throughout.
-
-- **`serde_json`, `serde`** — Serialization in `ToolDefinition` (for tools/background.rs tools) and in the transcript file written to disk.
+- **`crate::config`** — `BackgroundConfig` (max_concurrent, idle timeouts per category, model tiers), `BackgroundModelTier`, `ProviderSpec`, `ModelSpec`.
+- **`crate::inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for a session's turn.
+- **`crate::inference::retry`** — `RetryConfig`, passed to provider construction.
+- **`crate::agent::context`** — `assemble_system_prompt`/`build_system_content` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `crate::agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
+- **`crate::agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
+- **`crate::agent::recent_messages`** — `RecentMessages`, the message buffer for a session's turn.
+- **`crate::agent::interrupt`** — `dead_interrupt_rx()`. A session's interrupt channel is a dead end until cross-session messaging exists.
+- **`crate::mcp`** — `SharedMcpRegistry`, shared across the main agent and every session.
+- **`crate::skills`** — `SkillState`, `SharedSkillState`. Each session gets an isolated clone.
+- **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. Each session gets fresh isolated instances.
+- **`crate::workspace`** — `IdentityFiles`, `WorkspaceLayout` (including `sessions_dir()`).
+- **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`.
+- **`tokio`** — `tokio::sync::{Semaphore, Mutex, Notify}`, `tokio_util::sync::CancellationToken`.
+- **`chrono`, `chrono_tz`** — timestamps throughout; timezone conversion for `AgentResultEvent`.
+- **`anyhow`**, **`serde_json`/`serde`** — error handling and (de)serialization of `RunRecord`.
 
 ### Used By
 
-- **`src/gateway/startup/mod.rs`** — Creates the `BackgroundTaskSpawner`, its result channel, and the `SpawnContext` during gateway startup.
-
-- **`src/gateway/event_loop/run_loop.rs`** — Wires the spawner's result channel into `background::bridge::spawn_result_bridge`, and spawns the notification router (`notify::router`) and the spawn listener (`listener.rs`) that consumes `SpawnRequestEvent`s.
-
-- **`listener.rs`** — The sole caller of `BackgroundTaskSpawner::spawn()`: subscribes to `SpawnRequestEvent`s on the bus, calls `build_spawn_resources()`, and spawns the task.
-
-- **`src/gateway/actions.rs`** — Publishes a `SpawnRequestEvent` for each due scheduled action (or returns a main-agent wake turn for `agent = "main"` actions, bypassing this module).
-
-- **`src/pulse/executor.rs`** — Builds a `SpawnRequestEvent` (or a main-agent wake turn) from a pulse definition; the gateway event loop publishes it.
-
-- **`src/tools/background.rs`** — Three tools:
-  - `stop_agent`: cancels a running task via the spawner.
-  - `list_agents`: lists active tasks via the spawner.
-  - `subagent_spawn`: validates the skill name against the in-memory index, then publishes a `SpawnRequestEvent` — spawning always happens asynchronously through the listener, never inline.
-
-- **`src/agent/turn.rs`** — `execute_turn()` is what the SubAgent executor calls to run the isolated turn loop.
+- **`src/gateway/startup/mod.rs`** — constructs the `SessionRegistry`, `SessionStore` (running its startup sweep), and `SessionRuntime`; builds the `SpawnContext`.
+- **`src/gateway/event_loop/run_loop.rs`** / **`reload.rs`** — wire `SessionRuntime`/`SessionRegistry` into `GatewayRuntime`, and rebuild `SpawnContext` on config reload.
+- **`listener.rs`** — the sole caller of `SessionRuntime::spawn()`.
+- **`src/gateway/actions.rs`** — forks a `scheduled` session for each due scheduled action.
+- **`src/pulse/executor.rs`** — builds a `SpawnRequestEvent` from a due pulse.
+- **`src/interfaces/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
+- **`src/subconscious/learning.rs`** — forks a `spawned` session running the `learner` skill.
+- **`src/tools/background.rs`** — `stop_agent`/`list_agents` (read the `SessionRegistry` directly), `subagent_spawn` (publishes a `SpawnRequestEvent` with a pre-generated address).
+- **`src/tracing_service/client_context.rs`** / **`src/tools/file_bug_report.rs`** / **`src/gateway/web/tracing_api.rs`** — read `SessionRegistry::subagent_snapshot()` to populate a bug report's `active_subagents`.
+- **`src/agent/turn.rs`** — `execute_turn()` is what a session's executor calls to run its turn loop.
 
 ---
 
@@ -230,42 +136,11 @@ This isolation ensures:
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module exports: re-exports `BackgroundTaskSpawner`, `SubAgentResources`, `build_subagent_resources()`, and the public types from `types.rs`. Declares the public `bridge` submodule and the crate-internal `spawn_context` submodule. |
-| `types.rs` | Core types: `BackgroundTask`, `SubAgentConfig`, `BackgroundResult`, `ActiveTaskInfo`, `SubAgentBuildConfig`. Helper function `truncate_prompt_preview()` for display. |
-| `spawner.rs` | `BackgroundTaskSpawner`: lifecycle management, semaphore concurrency control, cancellation, active task tracking, result channel sending, transcript writing. |
-| `subagent.rs` | SubAgent execution: `SubAgentResources` (isolated state bundle), `build_subagent_resources()` (construct resources from main agent state), `execute_subagent()` (run the isolated turn loop and return the final text plus the full transcript). |
-| `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout, and the tool dependencies isolated SubAgent tool instances need. `build_spawn_resources()` resolves the model tier, activates the requested skill, and constructs `SubAgentResources` for a specific task. |
-| `bridge.rs` | Result bridge: reads `BackgroundResult`s off the spawner's mpsc channel, converts each into an `AgentResultEvent` (computing its `ResultDisposition` from `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in the summary), and publishes it on the bus. Runs as a supervised task that restarts on panic. |
-
----
-
-## Data Flow Diagram
-
-```mermaid
-graph TD
-    Q["SpawnRequestEvent published<br/>(pulse executor / gateway actions /<br/>subagent_spawn tool)"]
-    Q -->|Background topic| R["spawn listener<br/>build_spawn_resources"]
-    R -->|BackgroundTaskSpawner::spawn| B["Register in active_tasks<br/>with CancellationToken"]
-    B --> C["Acquire semaphore permit<br/>(wait if at capacity)"]
-    C --> D["tokio::spawn async block"]
-
-    D --> F["execute_subagent"]
-
-    F --> F1["Assemble minimal context<br/>USER.md + wiki index<br/>+ active skill instructions"]
-    F1 --> F2["Build isolated resources<br/>SkillState, PathPolicy"]
-    F2 --> F3["Run execute_turn loop<br/>with isolated tools"]
-    F3 --> F5["Return LLM final text<br/>as summary"]
-
-    F5 --> H["Write transcript to disk<br/>memory/background/YYYY-MM/DD/"]
-
-    H --> I["BackgroundResult<br/>{id, source_label, summary,<br/>status, transcript_path}"]
-    I --> J["Send via result_tx<br/>mpsc channel"]
-    J --> K["Remove from active_tasks<br/>Release semaphore permit"]
-
-    K --> M["background::bridge<br/>convert to AgentResultEvent<br/>+ compute ResultDisposition"]
-    M -->|Background topic| N["notify::router"]
-    N -->|Silent| O["Discard"]
-    N -->|Agent-sourced| P["Relay to main agent"]
-    N -->|Normal or Urgent| L["File to inbox"]
-    N -->|Urgent only| S["Deliver to every configured<br/>notification channel"]
-```
+| `mod.rs` | Module exports: `SessionRegistry`, `SessionRuntime`, `SessionStore`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`. |
+| `registry.rs` | `SessionRegistry`, `SessionInfo`, `SessionCategory`, `SessionState`, address/run-id generation. |
+| `store.rs` | `SessionStore`, `RunRecord`: per-run metadata + transcript persistence, and the startup incomplete-run sweep. |
+| `runtime.rs` | `SessionRuntime`: concurrency-bounded execution, lifecycle driving (`run_session`), and `AgentResultEvent` construction. |
+| `types.rs` | `SubAgentConfig` (a run's turn configuration), `SubAgentBuildConfig` (fork construction inputs), `truncate_prompt_preview()`. |
+| `subagent.rs` | `SubAgentResources` (isolated state bundle), `build_subagent_resources()`, `execute_subagent()` (runs one turn through `execute_turn()`). |
+| `spawn_context.rs` | `SpawnContext` (gathered at gateway startup/reload): config, provider specs, identity, workspace layout, session-tool dependencies. `build_spawn_resources()` resolves the tier, activates the skill, snapshots memory, and builds `SubAgentResources`. |
+| `listener.rs` | Bus listener: turns each `SpawnRequestEvent` into a `SessionRuntime::spawn()` call. |

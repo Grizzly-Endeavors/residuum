@@ -45,6 +45,10 @@ newtype_string!(EndpointId, "Unique identifier for a bus endpoint.");
 newtype_string!(EndpointName, "Interactive endpoint identifier.");
 newtype_string!(SkillName, "Skill identifier.");
 newtype_string!(NotifyName, "Notification channel identifier.");
+newtype_string!(
+    SessionAddress,
+    "Stable address identifying an agent session (see `crate::background::registry`)."
+);
 
 // ---------------------------------------------------------------------------
 // TopicId
@@ -173,6 +177,15 @@ mod tests {
     fn newtype_display() {
         let name = NotifyName::from("my-ntfy");
         assert_eq!(name.to_string(), "my-ntfy");
+    }
+
+    #[test]
+    fn session_address_equality_and_display() {
+        let a = SessionAddress::from("spawned-research-3f9a");
+        let b = SessionAddress::from("spawned-research-3f9a".to_string());
+        assert_eq!(a, b);
+        assert_eq!(a.to_string(), "spawned-research-3f9a");
+        assert_eq!(a.as_ref(), "spawned-research-3f9a");
     }
 
     #[test]

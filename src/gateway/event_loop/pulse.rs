@@ -2,47 +2,22 @@
 
 use crate::bus::topics;
 use crate::gateway::types::GatewayRuntime;
-use crate::inference::Message;
-use crate::memory::types::Visibility;
-use crate::pulse::executor::PulseExecution;
 
-/// Handle a single pulse execution entry (main-turn or sub-agent).
+/// Fork a session for a single due pulse.
 #[tracing::instrument(skip_all)]
 pub async fn handle_pulse_execution(
-    execution: PulseExecution,
+    spawn_event: crate::bus::SpawnRequestEvent,
     rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
-    match execution {
-        PulseExecution::MainWakeTurn { pulse_name, prompt } => {
-            tracing::info!(pulse = %pulse_name, "scheduled pulse firing as main wake turn");
-            let formatted = format!("[Scheduled pulse: {pulse_name}]\n{prompt}");
-            rt.agent.inject_system_message(formatted.clone());
-            let msgs = [Message::system(&formatted)];
-            super::turns::persist_and_maybe_observe(
-                rt,
-                &msgs,
-                Visibility::Background,
-                observe_deadline,
-            )
-            .await;
-        }
-        PulseExecution::SubAgent { spawn_event } => {
-            let topic = topics::Background;
-            let source_label = spawn_event.source_label.clone();
-            if let Err(e) = rt.publisher.publish(topic, spawn_event).await {
-                tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
-            }
-        }
+    let source_label = spawn_event.source_label.clone();
+    if let Err(e) = rt.publisher.publish(topics::Background, spawn_event).await {
+        tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
     }
 }
 
-/// Process all due pulses and optionally trigger a wake turn.
+/// Process all due pulses.
 #[tracing::instrument(level = "debug", skip_all)]
-pub async fn handle_pulse_tick(
-    rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
-) {
+pub async fn handle_pulse_tick(rt: &mut GatewayRuntime) {
     use crate::pulse::executor::build_pulse_execution;
     use crate::time;
 
@@ -54,7 +29,7 @@ pub async fn handle_pulse_tick(
         tracing::debug!(count = due.len(), "processing due pulses");
     }
     for pulse in &due {
-        let exec = build_pulse_execution(pulse);
-        handle_pulse_execution(exec, rt, observe_deadline).await;
+        let spawn_event = build_pulse_execution(pulse);
+        handle_pulse_execution(spawn_event, rt).await;
     }
 }

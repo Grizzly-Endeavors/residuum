@@ -10,6 +10,3 @@ pub use types::{ContextBreakdown, MemoryContext, PromptContext, SkillsContext, S
 
 // Re-export assembly functions for use within the agent crate.
 pub(super) use assembly::{assemble_system_prompt, compute_context_breakdown};
-
-// Re-export the subagent system content builder for use across the crate.
-pub(crate) use prompt::build_subagent_system_content;

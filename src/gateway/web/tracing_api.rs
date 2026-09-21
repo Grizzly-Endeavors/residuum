@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
+use crate::background::registry::SessionRegistry;
 use crate::config::OtelEndpoint;
 use crate::tracing_service::{
     BugReport, ClientContext, ExportResult, ExportTarget, Feedback, Severity, SubmissionReceipt,
@@ -18,10 +19,15 @@ use crate::tracing_service::{
 #[derive(Clone)]
 pub(crate) struct TracingApiState {
     pub service: Arc<TracingService>,
-    /// Snapshot of the runtime client context, gathered at gateway
-    /// startup (or reload). Bug-report handlers attach this to every
-    /// submission so the user-facing forms only carry user-typed fields.
+    /// Snapshot of the static runtime client context (version, model, OS,
+    /// etc.), gathered at gateway startup (or reload). Bug-report handlers
+    /// attach this to every submission, overlaying a fresh
+    /// `active_subagents` read from `session_registry` so the user-facing
+    /// forms only carry user-typed fields.
     pub client_context: Arc<ClientContext>,
+    /// Session registry, read fresh on each bug report to populate
+    /// `active_subagents` (closes #99).
+    pub session_registry: Arc<SessionRegistry>,
 }
 
 /// `GET /api/tracing/status`
@@ -187,12 +193,14 @@ pub(crate) async fn api_tracing_bug_report(
     State(state): State<TracingApiState>,
     Json(body): Json<BugReportRequest>,
 ) -> Result<Json<SubmissionReceipt>, (StatusCode, String)> {
+    let mut client = (*state.client_context).clone();
+    client.active_subagents = state.session_registry.subagent_snapshot();
     let report = BugReport {
         what_happened: body.what_happened,
         what_expected: body.what_expected,
         what_doing: body.what_doing,
         severity: body.severity,
-        client: (*state.client_context).clone(),
+        client,
     };
     state
         .service

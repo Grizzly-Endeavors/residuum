@@ -1,4 +1,4 @@
-//! Notification router: subscribes to `TopicId::BackgroundResult` and delivers
+//! Notification router: subscribes to `TopicId::Background` and delivers
 //! each result according to the disposition its producing agent declared.
 //!
 //! Routing is a match on `ResultDisposition`, decided upstream by the agent that
@@ -17,7 +17,7 @@ use crate::bus::{
 
 /// Spawn the notification router as a bus subscriber.
 ///
-/// Subscribes to `TopicId::BackgroundResult` and routes each `AgentResultEvent`
+/// Subscribes to `TopicId::Background` and routes each `AgentResultEvent`
 /// by its declared disposition.
 ///
 /// Returns `None` if subscription fails.
@@ -64,7 +64,7 @@ async fn router_loop(mut subscriber: Subscriber<AgentResultEvent>, router: Notif
 }
 
 /// Route a single `AgentResultEvent` by its declared disposition.
-#[tracing::instrument(skip_all, fields(source_label = %event.source_label, task_id = %event.task_id))]
+#[tracing::instrument(skip_all, fields(source_label = %event.source_label, session_address = %event.session_address, run_id = %event.run_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
     // Silent results are the majority of traffic through this path and are a
     // discard by design, so check for them before logging anything at info —
@@ -114,7 +114,7 @@ async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) 
     let content = format_agent_result_message(event);
 
     let msg_event = crate::bus::MessageEvent {
-        id: format!("bg-result-{}", event.task_id),
+        id: format!("bg-result-{}", event.run_id),
         content,
         origin: crate::interfaces::types::MessageOrigin {
             endpoint: "background".to_string(),
@@ -127,7 +127,7 @@ async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) 
 
     if let Err(e) = publisher.publish(topics::UserMessage, msg_event).await {
         tracing::warn!(
-            task_id = %event.task_id,
+            run_id = %event.run_id,
             error = %e,
             "failed to publish background result to user:message"
         );
@@ -144,16 +144,17 @@ fn format_agent_result_message(event: &AgentResultEvent) -> String {
     };
 
     let mut parts = vec![format!(
-        "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
-        event.source_label, event.task_id, source_kind, status
+        "[Session Result]\nSession: {} ({})\nTask: {}\nSource: {}\nStatus: {}",
+        event.session_address, event.run_id, event.source_label, source_kind, status
     )];
 
     if !event.summary.is_empty() {
         parts.push(format!("Output:\n{}", event.summary));
     }
 
-    if let Some(path) = &event.transcript_path {
-        parts.push(format!("Transcript: {}", path.display()));
+    match &event.transcript_path {
+        Some(path) => parts.push(format!("Transcript: {}", path.display())),
+        None => parts.push("Transcript: unavailable (failed to save)".to_string()),
     }
 
     parts.join("\n")
@@ -213,7 +214,8 @@ mod tests {
 
     fn sample_event(disposition: ResultDisposition) -> AgentResultEvent {
         AgentResultEvent {
-            task_id: "t1".into(),
+            session_address: crate::bus::SessionAddress::from("scheduled-email-check-0001"),
+            run_id: "t1".into(),
             source_label: "pulse:email_check".into(),
             agent_skill: None,
             source: EventTrigger::Pulse,
@@ -288,7 +290,7 @@ mod tests {
     fn format_agent_result_message_completed() {
         let event = sample_event(ResultDisposition::Normal);
         let msg = format_agent_result_message(&event);
-        assert!(msg.contains("[Background Task Result]"));
+        assert!(msg.contains("[Session Result]"));
         assert!(msg.contains("pulse:email_check"));
         assert!(msg.contains("completed"));
         assert!(msg.contains("3 new emails found"));
@@ -317,7 +319,7 @@ mod tests {
         event.summary = String::new();
 
         let msg = format_agent_result_message(&event);
-        assert!(msg.contains("[Background Task Result]"));
+        assert!(msg.contains("[Session Result]"));
         assert!(msg.contains("cancelled"));
     }
 
@@ -418,6 +420,6 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert!(msg.content.contains("[Background Task Result]"));
+        assert!(msg.content.contains("[Session Result]"));
     }
 }

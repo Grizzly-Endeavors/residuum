@@ -177,16 +177,26 @@ pub async fn webhook_handler(
         }
     };
 
-    let notification = crate::bus::NotificationEvent {
-        title: format!("webhook:{name}"),
-        content,
-        source: crate::bus::EventTrigger::Webhook(name.clone()),
-        urgent: false,
-        timestamp: crate::time::now_local(state.tz),
-    };
+    route_webhook_content(&state, &name, &endpoint.routing, content).await
+}
 
-    match &endpoint.routing {
+/// Deliver an extracted webhook payload per its configured routing: straight
+/// to the inbox, or as a spawn request that forks an `external` session.
+async fn route_webhook_content(
+    state: &WebhookState,
+    name: &str,
+    routing: &WebhookRouting,
+    content: String,
+) -> (StatusCode, String) {
+    match routing {
         WebhookRouting::Inbox => {
+            let notification = crate::bus::NotificationEvent {
+                title: format!("webhook:{name}"),
+                content,
+                source: crate::bus::EventTrigger::Webhook(name.to_string()),
+                urgent: false,
+                timestamp: crate::time::now_local(state.tz),
+            };
             if let Err(e) = state
                 .publisher
                 .publish(crate::bus::topics::Inbox, notification)
@@ -200,14 +210,16 @@ pub async fn webhook_handler(
             }
         }
         WebhookRouting::Agent(skill) => {
+            let trigger = crate::bus::EventTrigger::Webhook(name.to_string());
+            let address = crate::background::registry::generate_address(&trigger, name);
             let spawn_event = crate::bus::SpawnRequestEvent {
+                address,
                 skill: Some(crate::bus::SkillName::from(skill.as_str())),
                 source_label: format!("webhook:{name}"),
-                prompt: notification.content,
+                prompt: content,
                 context: None,
-                source: crate::bus::EventTrigger::Webhook(name.clone()),
+                source: trigger,
                 model_tier: crate::config::BackgroundModelTier::Medium,
-                include_identity: false,
             };
             if let Err(e) = state
                 .publisher

@@ -381,6 +381,14 @@ pub(super) struct IdleConfigFile {
 pub(super) struct BackgroundConfigFile {
     /// Maximum number of concurrent background tasks.
     pub(super) max_concurrent: Option<usize>,
+    /// Idle timeout in minutes for `scheduled` sessions (also used by
+    /// webhook sessions) before they complete.
+    pub(super) idle_timeout_scheduled_minutes: Option<u64>,
+    /// Idle timeout in minutes for `spawned` sessions before they complete.
+    pub(super) idle_timeout_spawned_minutes: Option<u64>,
+    /// Idle timeout in minutes for non-webhook `external` sessions before
+    /// they complete.
+    pub(super) idle_timeout_external_minutes: Option<u64>,
 }
 
 /// Raw TOML `[cloud]` section.

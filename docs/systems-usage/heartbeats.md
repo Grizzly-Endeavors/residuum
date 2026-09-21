@@ -12,7 +12,7 @@ Every bootstrapped workspace ships `HEARTBEAT.yml` with three pulses enabled by 
 | `memory_tending` | `"24h"`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` core-facts list (capped ~15 entries, replace-don't-append). A page is created with `status: draft` on a single supporting episode and promoted to `stable` once a second independent episode corroborates it. See [wiki.md](wiki.md) for the page format and promotion rule. |
 | `wiki_lint` | `"7d"`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages (past `stale_after`), old drafts, duplicates, contradictions between pages, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
-`reflection` names the bundled `introspection` skill (`skills/introspection/SKILL.md`) with `model_tier: large` and `include_identity: true` (SOUL.md/AGENTS.md included in its prompt, in addition to the usual USER.md/WIKI_INDEX). It can only propose SOUL.md/AGENTS.md changes through its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` name the bundled `wiki` skill (`skills/wiki/SKILL.md`) with `model_tier: large` and `include_identity: false`, and may edit wiki pages and `USER.md` directly.
+`reflection` names the bundled `introspection` skill (`skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md/AGENTS.md in its system message now, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only propose SOUL.md/AGENTS.md changes through its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` name the bundled `wiki` skill (`skills/wiki/SKILL.md`) with `model_tier: large`, and may edit wiki pages and `USER.md` directly.
 
 Disabling either is a matter of setting `enabled: false` on the pulse — the user or agent can do this during onboarding if the user opts out of background self-maintenance. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) ships alongside the built-ins as optional, off-by-default add-ons.
 
@@ -26,19 +26,10 @@ pulses:
     enabled: true
     schedule: "30m"
     active_hours: "08:00-18:00"
-    agent: ~                        # null = sub-agent, small tier
+    agent: ~                        # null = plain session, small tier
     tasks:
       - name: check_inbox
         prompt: "Check my email for urgent messages. Report anything requiring action."
-
-  - name: daily_plan
-    enabled: true
-    schedule: "24h"
-    active_hours: "07:00-08:00"
-    agent: main                     # full wake turn on main agent
-    tasks:
-      - name: plan
-        prompt: "Review today's calendar and inbox. Draft a plan for the day."
 
   - name: deploy_watch
     enabled: true
@@ -64,19 +55,18 @@ pulses:
 
 | Value | Execution | Model Tier |
 |-------|-----------|------------|
-| `~` (null / omitted) | Sub-agent | Small |
-| `"main"` | Main agent wake turn | Main model |
-| `"<skill-name>"` | Sub-agent with that skill activated as its role | The pulse's `model_tier` (default: small) |
+| `~` (null / omitted) | Session with no skill | Small |
+| `"<skill-name>"` | Session with that skill activated as its role | The pulse's `model_tier` (default: small) |
 
-**Use `"main"` sparingly** — it wakes the main agent and injects a full turn. Reserve for tasks that need conversation context or should produce a visible response.
+`agent: "main"` is removed: every session fork already carries the main agent's identity and a snapshot of its memory, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse — it is never silently reinterpreted as something else.
 
 ### HEARTBEAT_OK Convention
 
-Sub-agent pulses include an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded before reaching the notification router.
+A pulse's session prompt includes an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded before reaching the notification router.
 
 ### Autonomous Framing
 
-Every pulse-triggered run — sub-agent or `agent: main` — is framed in its prompt as autonomous: no user is present to answer a question, so the run must not pause waiting on one. Pulse prompts also explicitly forbid the run from creating or modifying pulses, or scheduling further background work — a pulse that could spawn or edit other pulses risks a runaway self-scheduling loop with no user in the loop to notice. If a pulse run concludes that a new or different pulse is warranted, the correct move is to say so via the user inbox, not to write `HEARTBEAT.yml` itself.
+Every pulse-triggered session run is framed in its prompt as autonomous: no user is present to answer a question, so the run must not pause waiting on one. Pulse prompts also explicitly forbid the run from creating or modifying pulses — a pulse that could edit other pulses risks a runaway self-scheduling loop with no user in the loop to notice. If a pulse run concludes that a new or different pulse is warranted, the correct move is to say so via the user inbox, not to write `HEARTBEAT.yml` itself.
 
 ## Scheduling Behavior
 
@@ -87,6 +77,6 @@ Every pulse-triggered run — sub-agent or `agent: main` — is framed in its pr
 
 ## Result Routing
 
-Pulse results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the sub-agent declared. A summary containing `HEARTBEAT_OK` is discarded; one containing `HEARTBEAT_URGENT` is pushed to every configured notification channel as well as filed to the inbox; anything else goes to the inbox alone.
+Pulse results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the session declared. A summary containing `HEARTBEAT_OK` is discarded; one containing `HEARTBEAT_URGENT` is pushed to every configured notification channel as well as filed to the inbox; anything else goes to the inbox alone.
 
 See [notifications.md](notifications.md) for the full routing model.

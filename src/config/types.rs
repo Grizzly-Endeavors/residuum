@@ -10,14 +10,16 @@ use crate::inference::retry::RetryConfig;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_FEEDBACK_ENDPOINT,
-    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_IDLE_TIMEOUT_MINUTES,
-    DEFAULT_LEARNING_COOLDOWN_MINUTES, DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
-    DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
-    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
-    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
-    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
-    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES,
+    DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES,
+    DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES, DEFAULT_LEARNING_COOLDOWN_MINUTES,
+    DEFAULT_LEARNING_NUDGE_AFTER_TURNS, DEFAULT_MAX_CONCURRENT_BACKGROUND,
+    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
+    DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE,
+    DEFAULT_SEARCH_TEMPORAL_DECAY, DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
+    DEFAULT_SEARCH_TEXT_WEIGHT, DEFAULT_SEARCH_VECTOR_WEIGHT,
+    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
+    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
 use super::provider::ProviderSpec;
 
@@ -417,10 +419,19 @@ impl Default for LearningConfig {
 /// Validated background task configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundConfig {
-    /// Maximum number of concurrent background tasks.
+    /// Maximum number of concurrent running session turns.
     pub max_concurrent: usize,
     /// Model tier assignments for background tasks.
     pub models: BackgroundModelsConfig,
+    /// How long a `scheduled` session (pulses, actions) lingers idle before
+    /// completing. Webhook sessions (`external`) also use this timeout.
+    pub idle_timeout_scheduled: Duration,
+    /// How long a `spawned` session (`subagent_spawn`, the learner) lingers
+    /// idle before completing.
+    pub idle_timeout_spawned: Duration,
+    /// How long a non-webhook `external` session lingers idle before
+    /// completing.
+    pub idle_timeout_external: Duration,
 }
 
 impl Default for BackgroundConfig {
@@ -428,6 +439,11 @@ impl Default for BackgroundConfig {
         Self {
             max_concurrent: DEFAULT_MAX_CONCURRENT_BACKGROUND,
             models: BackgroundModelsConfig::default(),
+            idle_timeout_scheduled: Duration::from_secs(
+                DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES * 60,
+            ),
+            idle_timeout_spawned: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES * 60),
+            idle_timeout_external: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES * 60),
         }
     }
 }

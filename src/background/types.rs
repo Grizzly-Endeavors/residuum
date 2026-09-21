@@ -1,102 +1,55 @@
-//! Background task types: task definitions, execution configs, and results.
+//! Session execution types: what a session runs with, and the outcome of a run.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, Publisher, SkillName};
+use crate::bus::{EndpointRegistry, Publisher};
 use crate::config::BackgroundModelTier;
-use crate::inference::CompletionOptions;
 use crate::memory::search::HybridSearcher;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
-/// A background task to be executed by the spawner.
-#[derive(Debug, Clone)]
-pub(crate) struct BackgroundTask {
-    /// Unique task identifier.
-    pub id: String,
-    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
-    pub source_label: String,
-    /// Where this task originated.
-    pub source: EventTrigger,
-    /// Configuration for the sub-agent that runs this task.
-    pub subagent_config: SubAgentConfig,
-    /// Skill the sub-agent runs with, if any.
-    pub agent_skill: Option<SkillName>,
-}
-
-/// Configuration for a sub-agent background task.
+/// Configuration for a single session run's turn.
 #[derive(Debug, Clone)]
 pub struct SubAgentConfig {
-    /// The prompt/instructions for the sub-agent.
+    /// The prompt/instructions for the session.
     pub prompt: String,
-    /// Additional context to prepend to the sub-agent's prompt.
+    /// Additional context to prepend to the session's prompt.
     pub context: Option<String>,
     /// Which model tier to use.
     pub model_tier: BackgroundModelTier,
 }
 
-/// The result of a completed background task.
-#[derive(Debug, Clone)]
-pub struct BackgroundResult {
-    /// The task ID.
-    pub id: String,
-    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
-    pub source_label: String,
-    /// Where this task originated.
-    pub source: EventTrigger,
-    /// Summary of the result (text output or error message).
-    pub summary: String,
-    /// Path to the transcript/log file (if written).
-    pub transcript_path: Option<PathBuf>,
-    /// Completion status.
-    pub status: AgentResultStatus,
-    /// When the task completed.
-    pub timestamp: DateTime<Utc>,
-    /// Skill the sub-agent ran with, if any.
-    pub agent_skill: Option<SkillName>,
-}
-
-/// Metadata tracked for a currently-running background task.
-#[derive(Debug, Clone)]
-pub struct ActiveTaskInfo {
-    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
-    pub source_label: String,
-    /// Where this task originated.
-    pub source: EventTrigger,
-    /// Truncated prompt or command preview (at most 120 chars).
-    pub prompt_preview: String,
-    /// When the task was spawned (UTC).
-    pub started_at: DateTime<Utc>,
-}
-
-/// Extract prompt preview from a prompt string (truncated to 120 chars).
+/// Extract a truncated (120-char) preview from a prompt string, for display
+/// as a session's `purpose`.
+#[must_use]
 pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
     prompt.chars().take(120).collect()
 }
 
-/// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
+/// Configuration passed to [`build_subagent_resources`](super::build_subagent_resources)
+/// that groups constructor arguments.
 pub struct SubAgentBuildConfig {
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
     /// Identity files for the system prompt.
     pub identity: IdentityFiles,
-    /// LLM completion options for the sub-agent turn.
-    pub options: CompletionOptions,
+    /// LLM completion options for the session turn.
+    pub options: crate::inference::CompletionOptions,
     /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
-    /// Skill to activate for this sub-agent, if any. Its body becomes the
-    /// sub-agent's role instructions through the normal active-skill path.
+    /// Skill to activate for this session, if any. Its body becomes the
+    /// session's role instructions through the normal active-skill path.
     pub skill: Option<String>,
-    /// Render SOUL.md and AGENTS.md in the subagent's system prompt.
-    pub include_identity: bool,
-    // ── Sub-agent tool dependencies ────────────────────────────────────
-    /// Background task spawner for `stop_agent` / `list_agents` tools.
-    pub background_spawner: Arc<super::spawner::BackgroundTaskSpawner>,
+    /// Snapshot of the global observation log, taken at fork time.
+    pub observations: Option<String>,
+    /// Snapshot of the recent-context narrative, taken at fork time.
+    pub recent_context: Option<String>,
+    // ── Session tool dependencies ────────────────────────────────────
+    /// Session registry for `stop_agent` / `list_agents` tools.
+    pub session_registry: Arc<super::registry::SessionRegistry>,
     /// Endpoint registry for `send_message` / `list_endpoints` tools.
     pub endpoint_registry: EndpointRegistry,
     /// Bus publisher for `send_message` tool.
@@ -127,18 +80,5 @@ mod tests {
         let long_prompt = "x".repeat(200);
         let preview = truncate_prompt_preview(&long_prompt);
         assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
-    }
-
-    #[test]
-    fn agent_result_status_display() {
-        assert_eq!(AgentResultStatus::Completed.to_string(), "completed");
-        assert_eq!(AgentResultStatus::Cancelled.to_string(), "cancelled");
-        assert_eq!(
-            AgentResultStatus::Failed {
-                error: "timeout".to_string()
-            }
-            .to_string(),
-            "failed: timeout"
-        );
     }
 }

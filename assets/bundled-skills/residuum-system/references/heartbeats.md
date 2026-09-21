@@ -1,6 +1,6 @@
 # Heartbeats
 
-Heartbeats are periodic background checks defined in `HEARTBEAT.yml`. The pulse scheduler evaluates them on a 60-second tick and fires due pulses as background tasks.
+Heartbeats are periodic background checks defined in `HEARTBEAT.yml`. The pulse scheduler evaluates them on a 60-second tick and forks a `scheduled` session for each due pulse.
 
 ## Built-in Pulses
 
@@ -12,7 +12,7 @@ Three pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
 | `memory_tending` | `24h`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` core-facts list (≤15 entries, replace-don't-append, ≥2 episodes to promote a page from `draft` to `stable`). |
 | `wiki_lint` | `7d`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
-`reflection` routes to the `introspection` skill (see `skills/introspection/SKILL.md`) with `model_tier: large` and full identity context (`include_identity: true`) so it has SOUL.md/AGENTS.md available when judging what to surface — it can only *propose* SOUL.md/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `skills/wiki/SKILL.md`) with `model_tier: large` and no identity context, and may edit wiki pages and `USER.md` directly.
+`reflection` routes to the `introspection` skill (see `skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md/AGENTS.md in its system message now, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only *propose* SOUL.md/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `skills/wiki/SKILL.md`) with `model_tier: large`, and may edit wiki pages and `USER.md` directly.
 
 To disable either, set `enabled: false` on the pulse (don't delete it — the block documents what it does). To tune frequency or scope, edit the `schedule`, `active_hours`, or task prompts directly. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) follows the built-ins in the default file — optional add-ons, not enabled by default.
 
@@ -24,24 +24,15 @@ pulses:
     enabled: true
     schedule: 30m            # Duration: "30s", "5m", "2h", "1d"
     active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
-    agent: ~                 # null → SubAgent (Small tier)
+    agent: ~                 # null → session with no skill (Small tier)
     tasks:
       - name: check_inbox
         prompt: "Check inbox for new items and summarize anything unread."
 
-  - name: daily-review
-    enabled: true
-    schedule: 1d
-    active_hours: "08:00-09:00"
-    agent: main              # "main" → MainWakeTurn (runs on main agent)
-    tasks:
-      - name: morning_plan
-        prompt: "Review memory and plan for today."
-
   - name: monitor-deploys
     enabled: true
     schedule: 1h
-    agent: deploy-watcher    # Any other string → SubAgent with that skill from skills/, at the pulse's model_tier
+    agent: deploy-watcher    # Any string names a skill from skills/, at the pulse's model_tier
     tasks:
       - name: check_status
         prompt: "Check deployment status."
@@ -72,9 +63,10 @@ The `agent` field controls how the pulse executes:
 
 | Value | Execution | Model Tier |
 |-------|-----------|------------|
-| `~` (null) | SubAgent | Small |
-| `"main"` | MainWakeTurn (main agent conversation) | Main model |
-| `"<skill-name>"` | SubAgent with that skill from `skills/` | The pulse's `model_tier` (default: small) |
+| `~` (null) | Session with no skill | Small |
+| `"<skill-name>"` | Session with that skill from `skills/` | The pulse's `model_tier` (default: small) |
+
+`agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse.
 
 ## Behavior
 
@@ -82,12 +74,11 @@ The `agent` field controls how the pulse executes:
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
 - Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
-- Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the SubAgent prompt.
-- SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
-- Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses or schedule further background work itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
+- Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the session's prompt.
+- Pulse sessions include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
+- Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
 
 ## Gotchas
 
 - If multiple pulses are due simultaneously, they all fire (subject to background task concurrency limits).
 - The 60-second tick means schedule precision is at best ~1 minute.
-- Main-turn pulses (`agent: "main"`) wake the main agent and inject a turn — use sparingly to avoid interrupting user conversations.

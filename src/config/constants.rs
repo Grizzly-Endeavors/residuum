@@ -88,6 +88,17 @@ pub(super) const DEFAULT_AGENT_MODIFY_CHANNELS: bool = true;
 /// Default idle timeout in minutes (30 minutes).
 pub(super) const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 30;
 
+/// Default idle timeout for `scheduled` sessions (pulses, actions; also used
+/// by webhook sessions) before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES: u64 = 2;
+
+/// Default idle timeout for `spawned` sessions before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES: u64 = 10;
+
+/// Default idle timeout for non-webhook `external` sessions before they
+/// complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES: u64 = 30;
+
 /// Default number of earlier Teams group chat / channel messages handed to the agent on @mention.
 pub(super) const DEFAULT_TEAMS_CONTEXT_MESSAGES: usize = 20;
 
