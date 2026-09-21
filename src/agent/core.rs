@@ -183,13 +183,14 @@ impl Agent {
         self.recent_messages.push(Message::system(content));
     }
 
-    /// Inject a user message directly into the conversation history.
+    /// Inject an inbound user message directly into the conversation history.
     ///
     /// Used for user messages that arrived as interrupts during a turn's final
     /// LLM call and were drained after the turn completed. Ensures the message
-    /// is visible in the next turn without being lost.
-    pub fn inject_user_message(&mut self, content: impl Into<String>) {
-        self.recent_messages.push(Message::user(content));
+    /// (with its sender, images, and background context) is visible in the next
+    /// turn without being lost.
+    pub fn inject_inbound_message(&mut self, message: crate::interfaces::types::InboundMessage) {
+        self.recent_messages.extend(message.into_history_messages());
     }
 
     /// Build a [`MemoryContext`] from borrowed observation/narrative fields.
@@ -806,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn inject_user_message_appears_in_history() {
+    fn inject_inbound_message_appears_in_history() {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
@@ -819,7 +820,7 @@ mod tests {
             },
         );
 
-        agent.inject_user_message("leftover interrupt message");
+        agent.inject_inbound_message(make_inbound("m1", "leftover interrupt message"));
 
         let msgs = agent.messages_since(0);
         assert_eq!(msgs.len(), 1, "should have one user message");
@@ -1027,8 +1028,8 @@ mod tests {
                 layout: None,
             },
         );
-        agent.inject_user_message("hello");
-        agent.inject_user_message("world");
+        agent.inject_inbound_message(make_inbound("m1", "hello"));
+        agent.inject_inbound_message(make_inbound("m2", "world"));
         assert_eq!(agent.message_count(), 2);
         agent.clear_messages();
         assert_eq!(agent.message_count(), 0);
@@ -1118,6 +1119,7 @@ mod tests {
             },
             timestamp: chrono::Utc::now(),
             images: vec![],
+            context: None,
         }
     }
 
@@ -1651,7 +1653,7 @@ mod tests {
 
         // Inject some messages into history
         agent.inject_system_message("system context".to_string());
-        agent.inject_user_message("user question".to_string());
+        agent.inject_inbound_message(make_inbound("m1", "user question"));
         let before_count = agent.message_count();
         assert!(before_count >= 2, "should have at least 2 messages");
 

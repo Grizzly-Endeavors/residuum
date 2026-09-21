@@ -30,7 +30,7 @@ pub(super) enum IdleAction {
 ///
 /// Only operations that are expensive or user-visibly disruptive get a
 /// dedicated flag: rebinding the gateway HTTP listener, restarting the
-/// Discord/Telegram adapters, and restarting the cloud tunnel. Idle
+/// Discord/Telegram/Teams adapters, and restarting the cloud tunnel. Idle
 /// timeout/channel changes also get a dedicated flag because they control
 /// which `IdleAction` variant `handle_root_reload` returns, not a rebuild.
 ///
@@ -52,6 +52,8 @@ pub(super) struct ConfigDiff {
     pub discord_changed: bool,
     /// Telegram token added/removed/changed — restarting the adapter is user-visible.
     pub telegram_changed: bool,
+    /// Teams config (or the gateway bind it listens on) changed — restarts its listener.
+    pub teams_changed: bool,
     /// Cloud tunnel config changed — restarting the tunnel is disruptive.
     pub cloud_changed: bool,
     /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
@@ -76,6 +78,8 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     let gateway_changed = old.gateway != new.gateway;
     let discord_changed = old.discord != new.discord;
     let telegram_changed = old.telegram != new.telegram;
+    let teams_changed =
+        old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind);
     let cloud_changed = old.cloud != new.cloud;
     let idle_changed = old.idle != new.idle;
 
@@ -104,6 +108,9 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     }
     if telegram_changed {
         parts.push("telegram");
+    }
+    if teams_changed {
+        parts.push("teams");
     }
     if old.pulse_enabled != new.pulse_enabled {
         parts.push("pulse");
@@ -150,6 +157,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         gateway_changed,
         discord_changed,
         telegram_changed,
+        teams_changed,
         cloud_changed,
         idle_changed,
         summary,
@@ -272,6 +280,9 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
     if diff.telegram_changed {
         reload_telegram_adapter(rt, &new_cfg).await;
+    }
+    if diff.teams_changed {
+        reload_teams_adapter(rt, &new_cfg).await;
     }
     if diff.cloud_changed {
         reload_tunnel(rt, &new_cfg).await;
@@ -584,7 +595,7 @@ async fn reload_adapter<F, Fut>(
             let (tx, rx) = tokio::sync::watch::channel(false);
             *handle = Some(crate::util::spawn_monitored(name, build_fn(rx)));
             *shutdown_tx = Some(tx);
-            tracing::info!(adapter = %name, "adapter restarted with new token");
+            tracing::info!(adapter = %name, "adapter restarted with new config");
         }
         None => {
             tracing::info!(adapter = %name, "adapter removed from config");
@@ -683,6 +694,42 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     .await;
 }
 
+/// Stop the existing Teams adapter (if running) and start a new one if configured.
+async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    let senders = crate::gateway::event_loop::AdapterSenders {
+        publisher: rt.publisher.clone(),
+        bus_handle: rt.bus_handle.clone(),
+        reload: rt.reload_tx.clone(),
+        command: rt.command_tx.clone(),
+        stop: rt.stop_tx.clone(),
+    };
+    reload_adapter(
+        &mut rt.teams_shutdown_tx,
+        &mut rt.teams_handle,
+        "teams",
+        new_cfg.teams.as_ref().map(|cfg| {
+            let cfg = cfg.clone();
+            let bind = new_cfg.gateway.bind.clone();
+            let workspace_dir = new_cfg.workspace_dir.clone();
+            let tz = rt.tz;
+            move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                let iface = crate::interfaces::teams::TeamsInterface::new(
+                    cfg,
+                    senders,
+                    bind,
+                    workspace_dir,
+                    tz,
+                    rx,
+                );
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "teams interface failed after reload");
+                }
+            }
+        }),
+    )
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,6 +761,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
+            teams: None,
             webhooks: std::collections::HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },
@@ -853,6 +901,47 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(diff.telegram_changed);
         assert!(!diff.discord_changed);
+    }
+
+    fn teams_config() -> crate::config::TeamsConfig {
+        crate::config::TeamsConfig {
+            app_id: "app".to_string(),
+            app_password: "secret".to_string(),
+            tenant_id: "tenant".to_string(),
+            respond_to_others: false,
+            context_messages: 20,
+            port: 7701,
+        }
+    }
+
+    #[test]
+    fn diff_config_restarts_teams_on_its_own_changes() {
+        let mut old = test_config();
+        old.teams = Some(teams_config());
+        let mut new = old.clone();
+        new.teams = Some(crate::config::TeamsConfig {
+            respond_to_others: true,
+            ..teams_config()
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.teams_changed);
+        assert!(diff.summary().contains("teams"));
+        assert!(!diff.telegram_changed);
+    }
+
+    #[test]
+    fn diff_config_restarts_teams_when_the_bind_it_shares_changes() {
+        let mut old = test_config();
+        old.teams = Some(teams_config());
+        let mut new = old.clone();
+        new.gateway.bind = "0.0.0.0".to_string();
+        assert!(diff_config(&old, &new).teams_changed);
+
+        // Without Teams configured, a bind change is only a gateway change.
+        old.teams = None;
+        new.teams = None;
+        assert!(!diff_config(&old, &new).teams_changed);
     }
 
     #[test]

@@ -122,6 +122,7 @@ async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) 
         },
         timestamp: event.timestamp,
         images: vec![],
+        context: None,
     };
 
     if let Err(e) = publisher.publish(topics::UserMessage, msg_event).await {

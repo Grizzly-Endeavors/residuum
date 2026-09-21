@@ -88,7 +88,7 @@ port = 7700
 # ── Discord bot (optional) ────────────────────────────────────────────────────
 # Bot token can be set here or via RESIDUUM_DISCORD_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
-# Currently DM-only; guild channels, slash commands, and presence are planned.
+# DM-only: server channels are ignored.
 #
 # [discord]
 # token = "${RESIDUUM_DISCORD_TOKEN}"
@@ -96,10 +96,27 @@ port = 7700
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
 # Bot token can be set here or via RESIDUUM_TELEGRAM_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
-# Currently DM-only; group messages are ignored.
+# DM-only: group messages are ignored.
 #
 # [telegram]
 # token = "${RESIDUUM_TELEGRAM_TOKEN}"
+
+# ── Microsoft Teams bot (optional) ───────────────────────────────────────────
+# Setup walkthrough: docs/guides/teams-setup.md.
+# app_id, tenant_id, and app_password are all required when the section is
+# present. The client secret can also come from RESIDUUM_TEAMS_APP_PASSWORD.
+#
+# Teams listens on its own port (bound on [gateway] bind). Point your public
+# tunnel at this port only — never at the gateway port, which serves the
+# unauthenticated config API.
+#
+# [teams]
+# app_id = "11111111-2222-3333-4444-555555555555"
+# tenant_id = "your-directory-tenant-id"
+# app_password = "secret:teams"
+# respond_to_others = false   # true: coworkers can @mention / message the agent
+# context_messages = 20       # earlier group chat messages shared on @mention
+# port = 7701
 
 # ── Cloud tunnel (optional) ──────────────────────────────────────────────────
 # Connects to the relay server to make this instance accessible from the

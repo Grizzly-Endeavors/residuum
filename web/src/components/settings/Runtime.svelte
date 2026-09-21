@@ -307,6 +307,7 @@
           <option value="websocket">WebSocket</option>
           <option value="telegram">Telegram</option>
           <option value="discord">Discord</option>
+          <option value="teams">Microsoft Teams</option>
         </select>
       </div>
     </div>

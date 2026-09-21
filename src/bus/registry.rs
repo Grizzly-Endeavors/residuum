@@ -71,6 +71,15 @@ impl EndpointRegistry {
             });
         }
 
+        if config.teams.is_some() {
+            entries.push(EndpointEntry {
+                id: EndpointId::from(crate::interfaces::teams::ENDPOINT),
+                topic: TopicId::Endpoint(EndpointName::from(crate::interfaces::teams::ENDPOINT)),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "Microsoft Teams".to_string(),
+            });
+        }
+
         for ch in channels {
             let kind_label = match &ch.kind {
                 ExternalChannelKind::Ntfy { .. } => "Ntfy",
@@ -156,6 +165,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
+            teams: None,
             webhooks: HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },
@@ -281,6 +291,32 @@ mod tests {
                 .capabilities
                 .contains(EndpointCapabilities::INTERACTIVE)
         );
+    }
+
+    #[test]
+    fn from_config_includes_teams_when_configured() {
+        let mut config = minimal_config();
+        assert!(reg_has_teams(&config).is_none());
+
+        config.teams = Some(crate::config::TeamsConfig {
+            app_id: "app".to_string(),
+            app_password: "secret".to_string(),
+            tenant_id: "tenant".to_string(),
+            respond_to_others: false,
+            context_messages: 20,
+            port: 7701,
+        });
+        let teams = reg_has_teams(&config).unwrap();
+        assert_eq!(teams.display_name, "Microsoft Teams");
+        assert!(
+            teams
+                .capabilities
+                .contains(EndpointCapabilities::INTERACTIVE)
+        );
+    }
+
+    fn reg_has_teams(config: &Config) -> Option<EndpointEntry> {
+        EndpointRegistry::from_config(config, &[]).get(&EndpointId::from("teams"))
     }
 
     #[test]

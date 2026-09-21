@@ -37,7 +37,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 
 ### Interactive endpoints
 
-Bidirectional channels (WebSocket, Discord, Telegram). The agent can:
+Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
 - `switch_endpoint` to redirect responses to a different interactive endpoint.
 - `send_message` to send a one-off message to any interactive endpoint.
 

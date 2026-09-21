@@ -35,6 +35,8 @@ pub(crate) struct ConfigFile {
     pub(super) discord: Option<DiscordConfigFile>,
     /// Telegram bot configuration.
     pub(super) telegram: Option<TelegramConfigFile>,
+    /// Microsoft Teams bot configuration.
+    pub(super) teams: Option<TeamsConfigFile>,
     /// Named webhook endpoint configurations.
     pub(super) webhooks: Option<HashMap<String, WebhookEntryFile>>,
     /// Skills subsystem configuration.
@@ -285,6 +287,24 @@ pub(super) struct DiscordConfigFile {
 pub(super) struct TelegramConfigFile {
     /// Bot token (supports `${ENV_VAR}` syntax).
     pub(super) token: Option<String>,
+}
+
+/// Raw TOML `[teams]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TeamsConfigFile {
+    /// Bot (Entra app) ID from the Teams Developer Portal.
+    pub(super) app_id: Option<String>,
+    /// Client secret for the bot (supports `${ENV_VAR}` and `secret:name`).
+    pub(super) app_password: Option<String>,
+    /// Directory (tenant) ID the bot is registered in.
+    pub(super) tenant_id: Option<String>,
+    /// Whether people other than the owner can talk to the agent.
+    pub(super) respond_to_others: Option<bool>,
+    /// How many earlier group chat / channel messages to hand the agent on @mention.
+    pub(super) context_messages: Option<usize>,
+    /// Port for the dedicated Teams messaging listener.
+    pub(super) port: Option<u16>,
 }
 
 /// Raw TOML `[webhooks.<name>]` entry.

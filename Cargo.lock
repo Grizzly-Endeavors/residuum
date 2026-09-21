@@ -2968,6 +2968,7 @@ dependencies = [
  "rand 0.8.6",
  "regex",
  "reqwest 0.13.3",
+ "ring",
  "rmcp",
  "rpassword",
  "rusqlite",

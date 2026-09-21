@@ -31,7 +31,7 @@ timeout_minutes = 30       # 0 disables the idle system entirely
 idle_channel = "telegram"  # optional; interface to route output to when idle
 ```
 
-Resolved into `IdleConfig { timeout: Duration, idle_channel: Option<String> }` (`src/config/types.rs`) by `resolve_idle_config` (`src/config/resolve/mod.rs`). `idle_channel`, if set, is validated at config load time against the interfaces actually configured: `"telegram"` and `"discord"` require the corresponding `[telegram]`/`[discord]` section to be present, `"websocket"` is always valid, and any other name is rejected outright. An invalid value fails config load with a `FatalError::Config` — it is not a silent runtime fallback like the endpoint-registry check in `switch_idle_interface` above.
+Resolved into `IdleConfig { timeout: Duration, idle_channel: Option<String> }` (`src/config/types.rs`) by `resolve_idle_config` (`src/config/resolve/mod.rs`). `idle_channel`, if set, is validated at config load time against the interfaces actually configured: `"telegram"`, `"discord"`, and `"teams"` require the corresponding `[telegram]`/`[discord]`/`[teams]` section to be present, `"websocket"` is always valid, and any other name is rejected outright. An invalid value fails config load with a `FatalError::Config` — it is not a silent runtime fallback like the endpoint-registry check in `switch_idle_interface` above.
 
 ### Hot reload
 

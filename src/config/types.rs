@@ -131,6 +131,39 @@ pub struct TelegramConfig {
     pub token: String,
 }
 
+/// Validated Microsoft Teams bot configuration.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TeamsConfig {
+    /// Bot (Entra app) ID; the audience of inbound tokens.
+    pub app_id: String,
+    /// Client secret used to obtain outbound Bot Connector tokens.
+    pub app_password: String,
+    /// Directory (tenant) ID; inbound activities from other tenants are rejected.
+    pub tenant_id: String,
+    /// Whether people other than the owner can talk to the agent.
+    pub respond_to_others: bool,
+    /// How many earlier group chat / channel messages to hand the agent on @mention.
+    pub context_messages: usize,
+    /// Port for the dedicated messaging listener (bound on the gateway's address).
+    ///
+    /// Kept separate from the gateway port so a public tunnel pointed at it
+    /// exposes only the signature-checked Teams endpoint, never the config API.
+    pub port: u16,
+}
+
+impl std::fmt::Debug for TeamsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TeamsConfig")
+            .field("app_id", &self.app_id)
+            .field("app_password", &"[redacted]")
+            .field("tenant_id", &self.tenant_id)
+            .field("respond_to_others", &self.respond_to_others)
+            .field("context_messages", &self.context_messages)
+            .field("port", &self.port)
+            .finish()
+    }
+}
+
 /// Routing target for a named webhook.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WebhookRouting {
@@ -636,6 +669,8 @@ pub struct Config {
     pub discord: Option<DiscordConfig>,
     /// Telegram bot configuration (None if `[telegram]` section absent or no token).
     pub telegram: Option<TelegramConfig>,
+    /// Microsoft Teams bot configuration (None if `[teams]` section absent).
+    pub teams: Option<TeamsConfig>,
     /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEntry>,
     /// Skills subsystem configuration.
@@ -686,6 +721,7 @@ impl fmt::Debug for Config {
             .field("cloud", &self.cloud.as_ref().map(|_| "[configured]"))
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
+            .field("teams", &self.teams)
             .field(
                 "webhooks",
                 &format_args!("{} configured", self.webhooks.len()),

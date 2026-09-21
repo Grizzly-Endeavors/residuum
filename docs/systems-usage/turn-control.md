@@ -7,7 +7,7 @@ Every interface can stop the main agent turn currently in progress. This is dist
 | Interface | How |
 |-----------|-----|
 | Web UI | A square stop button replaces send while a turn is generating and the composer is empty. Typing a message brings send back so a steering message can be sent instead. |
-| Telegram / Discord | `/stop` |
+| Telegram / Discord / Teams | `/stop` (in Teams, only the owner can run commands) |
 | WebSocket clients | Send a `Cancel` message carrying the `reply_to` correlation id of the turn to stop |
 
 If nothing is running, a stop request gets a friendly "nothing is running right now" reply rather than an error or silence.

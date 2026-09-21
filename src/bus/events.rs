@@ -124,6 +124,9 @@ pub struct MessageEvent {
     pub timestamp: NaiveDateTime,
     /// Inline images attached to the message.
     pub images: Vec<ImageData>,
+    /// Earlier conversation the sender's interface supplies as background
+    /// (e.g. group chat messages leading up to an @mention).
+    pub context: Option<String>,
 }
 
 /// Agent response destined for an endpoint.

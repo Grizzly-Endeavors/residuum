@@ -215,6 +215,7 @@ mod tests {
             },
             timestamp: test_timestamp(),
             images: vec![],
+            context: None,
         }
     }
 

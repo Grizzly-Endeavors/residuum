@@ -37,10 +37,10 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 
 ### Interactive endpoints
 
-Bidirectional channels (WebSocket, Discord, Telegram). The agent can:
+Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
 - `switch_endpoint` to redirect responses to a different interactive endpoint.
 - `send_message` to send a one-off message to any interactive endpoint.
-- `send_message` with `file_path` to deliver a file attachment. Images render inline, audio gets a native player, other files appear as downloads. Telegram allows up to 50 MB; Discord, WebSocket, and notification-only endpoints cap at 25 MB. File attachments require an interactive endpoint — notification-only endpoints reject them.
+- `send_message` with `file_path` to deliver a file attachment. Images render inline, audio gets a native player, other files appear as downloads. Telegram allows up to 50 MB; Discord, WebSocket, and notification-only endpoints cap at 25 MB. File attachments require an interactive endpoint — notification-only endpoints reject them. Microsoft Teams cannot receive files from the agent: the text is delivered with a note giving the file's path.
 
 ### Notification endpoints
 

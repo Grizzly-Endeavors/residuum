@@ -58,7 +58,7 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
     for intr in leftovers {
         match intr {
             Interrupt::UserMessage(leftover_msg) => {
-                rt.agent.inject_user_message(leftover_msg.content);
+                rt.agent.inject_inbound_message(leftover_msg);
             }
             Interrupt::BackgroundResult(result) => {
                 rt.agent.inject_system_message(result.format_for_agent());
@@ -192,6 +192,7 @@ async fn run_agent_turn_with_interrupts(
                                 origin: msg_event.origin,
                                 timestamp: chrono::Utc::now(),
                                 images: msg_event.images,
+                                context: msg_event.context,
                             };
                             if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
                                 tracing::warn!("interrupt channel full, dropping user message mid-turn");
@@ -405,6 +406,10 @@ pub async fn handle_inbound_message(
     }
 
     let before = rt.agent.message_count();
+
+    if let Some(context) = message.context.as_deref() {
+        rt.agent.inject_system_message(context);
+    }
 
     let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();

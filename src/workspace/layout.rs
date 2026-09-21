@@ -211,6 +211,12 @@ impl WorkspaceLayout {
         self.root.join("pulse_state.json")
     }
 
+    /// Path to `teams_state.json` -- the Teams owner and known conversation references.
+    #[must_use]
+    pub fn teams_state_json(&self) -> PathBuf {
+        self.root.join("teams_state.json")
+    }
+
     /// Path to `scheduled_actions.json` -- persisted one-off scheduled actions.
     #[must_use]
     pub fn scheduled_actions_json(&self) -> PathBuf {

@@ -137,10 +137,6 @@ pub async fn download_attachment(
         ));
     }
 
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let saved_name = format!("{timestamp}_{}", info.filename);
-    let local_path = inbox_dir.join(&saved_name);
-
     let response = reqwest::get(url)
         .await
         .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename))?
@@ -152,7 +148,36 @@ pub async fn download_attachment(
         .await
         .map_err(|e| format!("failed to read attachment body '{}': {e}", info.filename))?;
 
-    tokio::fs::write(&local_path, &bytes).await.map_err(|e| {
+    save_attachment_bytes(info, &bytes, inbox_dir).await
+}
+
+/// Save already-downloaded attachment bytes to the inbox directory.
+///
+/// For interfaces whose files need an authenticated fetch the caller performs.
+/// Enforces the same 25 MB limit and `{timestamp}_{filename}` naming as
+/// [`download_attachment`].
+///
+/// # Errors
+///
+/// Returns an error if the attachment is too large or the file write fails.
+pub async fn save_attachment_bytes(
+    info: &AttachmentInfo,
+    bytes: &[u8],
+    inbox_dir: &Path,
+) -> Result<SavedAttachment, String> {
+    if bytes.len() > MAX_ATTACHMENT_SIZE as usize {
+        return Err(format!(
+            "attachment '{}' exceeds 25 MB limit ({} bytes)",
+            info.filename,
+            bytes.len(),
+        ));
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let saved_name = format!("{timestamp}_{}", info.filename);
+    let local_path = inbox_dir.join(&saved_name);
+
+    tokio::fs::write(&local_path, bytes).await.map_err(|e| {
         format!(
             "failed to save attachment '{}' to {}: {e}",
             info.filename,

@@ -27,6 +27,8 @@ pub struct AdapterHandles {
     pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub telegram_handle: Option<tokio::task::JoinHandle<()>>,
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub teams_handle: Option<tokio::task::JoinHandle<()>>,
+    pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
@@ -207,19 +209,14 @@ pub async fn spawn_http_server(
     Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
 }
 
-/// Spawn Discord and Telegram adapters if configured.
-pub fn spawn_adapters(
-    cfg: &Config,
-    discord: AdapterSenders,
-    telegram: AdapterSenders,
-    tz: chrono_tz::Tz,
-) -> AdapterHandles {
+/// Spawn the Discord, Telegram, and Teams adapters that are configured.
+pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz) -> AdapterHandles {
     let (mut discord_handle, mut discord_shutdown_tx) = (None, None);
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::discord::DiscordInterface::new(
             discord_cfg.clone(),
-            discord,
+            senders.clone(),
             cfg.workspace_dir.clone(),
             tz,
             rx,
@@ -238,7 +235,7 @@ pub fn spawn_adapters(
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::telegram::TelegramInterface::new(
             telegram_cfg.clone(),
-            telegram,
+            senders.clone(),
             cfg.workspace_dir.clone(),
             tz,
             rx,
@@ -252,10 +249,31 @@ pub fn spawn_adapters(
         tracing::info!("telegram interface started (DM-only mode)");
     }
 
+    let (mut teams_handle, mut teams_shutdown_tx) = (None, None);
+    if let Some(ref teams_cfg) = cfg.teams {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let iface = crate::interfaces::teams::TeamsInterface::new(
+            teams_cfg.clone(),
+            senders.clone(),
+            cfg.gateway.bind.clone(),
+            cfg.workspace_dir.clone(),
+            tz,
+            rx,
+        );
+        teams_handle = Some(crate::util::spawn_monitored("teams", async move {
+            if let Err(e) = iface.start().await {
+                tracing::error!(error = %e, "teams interface failed");
+            }
+        }));
+        teams_shutdown_tx = Some(tx);
+    }
+
     AdapterHandles {
         discord_handle,
         discord_shutdown_tx,
         telegram_handle,
         telegram_shutdown_tx,
+        teams_handle,
+        teams_shutdown_tx,
     }
 }

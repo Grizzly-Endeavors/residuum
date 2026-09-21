@@ -32,6 +32,22 @@ export function generateConfigToml(state: SetupWizardState): string {
     lines.push(`token = "${escapeTomlString(ref)}"`);
   }
 
+  // Microsoft Teams (top-level section) — app_id, tenant_id and app_password
+  // are all required together, so the section is only emitted once every
+  // required field is filled in.
+  if (
+    state.integrations.teamsAppId &&
+    state.integrations.teamsTenantId &&
+    state.integrations.teamsAppPassword
+  ) {
+    const ref = state.secretRefs["teams"] ?? state.integrations.teamsAppPassword;
+    lines.push("");
+    lines.push("[teams]");
+    lines.push(`app_id = "${escapeTomlString(state.integrations.teamsAppId)}"`);
+    lines.push(`tenant_id = "${escapeTomlString(state.integrations.teamsTenantId)}"`);
+    lines.push(`app_password = "${escapeTomlString(ref)}"`);
+  }
+
   lines.push("");
   return lines.join("\n");
 }

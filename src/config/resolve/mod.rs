@@ -13,21 +13,21 @@ use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{
     DEFAULT_CLOUD_RELAY_URL, DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_IDLE_TIMEOUT_MINUTES,
-    DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS,
+    DEFAULT_MAX_TOKENS, DEFAULT_TEAMS_CONTEXT_MESSAGES, DEFAULT_TEAMS_PORT, DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile, ProviderEntryFile,
-    ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TelegramConfigFile,
-    ToolsConfigFile, TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
+    ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TeamsConfigFile,
+    TelegramConfigFile, ToolsConfigFile, TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
     LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig,
-    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, ToolsConfig,
-    TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig,
+    ToolsConfig, TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -84,13 +84,14 @@ pub(crate) fn from_file_and_env(
     let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
+    let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), &secrets)?;
     let webhooks = resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), &secrets)?;
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let tools = resolve_tools_config(file.and_then(|f| f.tools.as_ref()), config_dir);
 
     let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
 
-    let idle = resolve_idle_config(file, telegram.as_ref(), discord.as_ref())?;
+    let idle = resolve_idle_config(file, telegram.as_ref(), discord.as_ref(), teams.as_ref())?;
 
     let mut background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
@@ -147,6 +148,7 @@ pub(crate) fn from_file_and_env(
         cloud,
         discord,
         telegram,
+        teams,
         webhooks,
         skills,
         tools,
@@ -334,6 +336,59 @@ fn resolve_telegram_config(
         }
         (None, None) => None,
     }
+}
+
+/// Resolve Microsoft Teams configuration from the TOML section and environment.
+///
+/// The client secret comes from `RESIDUUM_TEAMS_APP_PASSWORD` or the
+/// `app_password` field (with `${ENV_VAR}` / `secret:name` expansion).
+///
+/// # Errors
+/// Returns `FatalError::Config` if the section is present but `app_id`,
+/// `tenant_id`, or the client secret is missing — a half-configured bot would
+/// otherwise silently never answer.
+fn resolve_teams_config(
+    section: Option<&TeamsConfigFile>,
+    secrets: &SecretStore,
+) -> Result<Option<TeamsConfig>, FatalError> {
+    let Some(section) = section else {
+        return Ok(None);
+    };
+    let required = |value: Option<&str>, field: &str| {
+        value
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                FatalError::Config(format!(
+                    "[teams] is present but {field} is missing; set it or remove the section"
+                ))
+            })
+    };
+    let app_id = required(section.app_id.as_deref(), "app_id")?;
+    let tenant_id = required(section.tenant_id.as_deref(), "tenant_id")?;
+    let app_password = resolve_bot_token(
+        "RESIDUUM_TEAMS_APP_PASSWORD",
+        section.app_password.as_deref(),
+        secrets,
+    )
+    .ok_or_else(|| {
+        FatalError::Config(
+            "[teams] is present but app_password is missing; set RESIDUUM_TEAMS_APP_PASSWORD or app_password in config"
+                .to_string(),
+        )
+    })?;
+
+    Ok(Some(TeamsConfig {
+        app_id,
+        app_password,
+        tenant_id,
+        respond_to_others: section.respond_to_others.unwrap_or(false),
+        context_messages: section
+            .context_messages
+            .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),
+        port: section.port.unwrap_or(DEFAULT_TEAMS_PORT),
+    }))
 }
 
 /// Expand `${ENV_VAR}` references in a token string.
@@ -576,6 +631,7 @@ fn resolve_idle_config(
     file: Option<&ConfigFile>,
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
+    teams: Option<&TeamsConfig>,
 ) -> Result<IdleConfig, FatalError> {
     let section = file.and_then(|f| f.idle.as_ref());
     let timeout_minutes = section
@@ -587,6 +643,7 @@ fn resolve_idle_config(
         let valid = match channel.as_str() {
             "telegram" => telegram.is_some(),
             "discord" => discord.is_some(),
+            "teams" => teams.is_some(),
             "websocket" => true,
             other => {
                 return Err(FatalError::Config(format!(
@@ -1812,6 +1869,113 @@ main = "anthropic/claude-sonnet-4-6"
             Some("123456789:ABCdefGHIjklmnop"),
             "token should match"
         );
+    }
+
+    // ── Teams config ───────────────────────────────────────────────────────
+
+    fn resolve_with(config_toml: &str) -> Result<Config, FatalError> {
+        let cfg_file = parse_config(config_toml);
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir())
+    }
+
+    #[test]
+    fn teams_section_resolves_with_defaults() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[teams]
+app_id = "11111111-2222-3333-4444-555555555555"
+tenant_id = "tenant-guid"
+app_password = "client-secret"
+"#,
+        )
+        .unwrap();
+        let teams = cfg.teams.unwrap();
+        assert_eq!(teams.app_id, "11111111-2222-3333-4444-555555555555");
+        assert_eq!(teams.tenant_id, "tenant-guid");
+        assert_eq!(teams.app_password, "client-secret");
+        assert!(!teams.respond_to_others, "owner-only by default");
+        assert_eq!(teams.context_messages, DEFAULT_TEAMS_CONTEXT_MESSAGES);
+        assert_eq!(teams.port, DEFAULT_TEAMS_PORT);
+    }
+
+    #[test]
+    fn teams_section_honours_overrides() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[teams]
+app_id = "app"
+tenant_id = "tenant"
+app_password = "secret"
+respond_to_others = true
+context_messages = 5
+port = 8801
+"#,
+        )
+        .unwrap();
+        let teams = cfg.teams.unwrap();
+        assert!(teams.respond_to_others);
+        assert_eq!(teams.context_messages, 5);
+        assert_eq!(teams.port, 8801);
+    }
+
+    #[test]
+    fn teams_section_missing_required_field_is_an_error() {
+        for (missing, toml) in [
+            (
+                "app_id",
+                "[teams]\ntenant_id = \"t\"\napp_password = \"s\"\n",
+            ),
+            (
+                "tenant_id",
+                "[teams]\napp_id = \"a\"\napp_password = \"s\"\n",
+            ),
+            (
+                "app_password",
+                "[teams]\napp_id = \"a\"\ntenant_id = \"t\"\n",
+            ),
+        ] {
+            let err = resolve_with(&format!("timezone = \"UTC\"\n\n{toml}")).unwrap_err();
+            assert!(
+                err.to_string().contains(missing),
+                "error should name {missing}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn teams_absent_is_none_and_teams_is_a_valid_idle_channel() {
+        assert!(
+            resolve_with("timezone = \"UTC\"\n")
+                .unwrap()
+                .teams
+                .is_none()
+        );
+
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[idle]
+idle_channel = "teams"
+
+[teams]
+app_id = "a"
+tenant_id = "t"
+app_password = "s"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("teams"));
     }
 
     // ── Cloud config ───────────────────────────────────────────────────────
