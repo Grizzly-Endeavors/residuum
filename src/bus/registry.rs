@@ -1,7 +1,7 @@
-//! Thread-safe runtime catalog of configured I/O endpoints.
+//! Runtime catalog of configured I/O endpoints.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::config::Config;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
@@ -27,43 +27,34 @@ pub struct EndpointEntry {
 // EndpointRegistry
 // ---------------------------------------------------------------------------
 
-/// Thread-safe, cheaply cloneable catalog of all configured I/O endpoints.
-#[derive(Debug, Clone)]
+/// Immutable, cheaply cloneable catalog of all configured I/O endpoints.
+#[derive(Debug, Clone, Default)]
 pub struct EndpointRegistry {
-    inner: Arc<RwLock<HashMap<EndpointId, EndpointEntry>>>,
-}
-
-impl Default for EndpointRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
+    entries: Arc<HashMap<EndpointId, EndpointEntry>>,
 }
 
 impl EndpointRegistry {
-    /// Create an empty registry.
+    /// Build a registry from a set of entries; a later entry with a duplicate ID wins.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn from_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(HashMap::new())),
+            entries: Arc::new(entries.into_iter().map(|e| (e.id.clone(), e)).collect()),
         }
     }
 
     /// Build a registry from the runtime config and external channel definitions.
     #[must_use]
     pub fn from_config(config: &Config, channels: &[ExternalChannelConfig]) -> Self {
-        let registry = Self::new();
-
         // WebSocket — always present
-        registry.register(EndpointEntry {
+        let mut entries = vec![EndpointEntry {
             id: EndpointId::from("ws"),
             topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
             display_name: "WebSocket".to_string(),
-        });
+        }];
 
-        // Discord — if configured
         if config.discord.is_some() {
-            registry.register(EndpointEntry {
+            entries.push(EndpointEntry {
                 id: EndpointId::from("discord"),
                 topic: TopicId::Endpoint(EndpointName::from("discord")),
                 capabilities: EndpointCapabilities::INTERACTIVE,
@@ -71,9 +62,8 @@ impl EndpointRegistry {
             });
         }
 
-        // Telegram — if configured
         if config.telegram.is_some() {
-            registry.register(EndpointEntry {
+            entries.push(EndpointEntry {
                 id: EndpointId::from("telegram"),
                 topic: TopicId::Endpoint(EndpointName::from("telegram")),
                 capabilities: EndpointCapabilities::INTERACTIVE,
@@ -81,7 +71,6 @@ impl EndpointRegistry {
             });
         }
 
-        // External notification channels
         for ch in channels {
             let kind_label = match &ch.kind {
                 ExternalChannelKind::Ntfy { .. } => "Ntfy",
@@ -89,7 +78,7 @@ impl EndpointRegistry {
                 ExternalChannelKind::Macos { .. } => "macOS",
                 ExternalChannelKind::Windows { .. } => "Windows",
             };
-            registry.register(EndpointEntry {
+            entries.push(EndpointEntry {
                 id: EndpointId::from(ch.name.as_str()),
                 topic: TopicId::Notification(NotifyName::from(ch.name.as_str())),
                 capabilities: EndpointCapabilities::NOTIFY_ONLY,
@@ -97,103 +86,33 @@ impl EndpointRegistry {
             });
         }
 
-        // Named webhooks
-        for name in config.webhooks.keys() {
-            registry.register(EndpointEntry {
-                id: EndpointId::from(format!("webhook:{name}")),
-                topic: TopicId::Inbox,
-                capabilities: EndpointCapabilities::INPUT_ONLY,
-                display_name: format!("Webhook ({name})"),
-            });
-        }
-
-        // Inbox — always present
-        registry.register(EndpointEntry {
-            id: EndpointId::from("inbox"),
-            topic: TopicId::Inbox,
-            capabilities: EndpointCapabilities::INPUT_ONLY,
-            display_name: "Inbox".to_string(),
-        });
-
-        registry
-    }
-
-    fn read_map(&self) -> std::sync::RwLockReadGuard<'_, HashMap<EndpointId, EndpointEntry>> {
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn write_map(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<EndpointId, EndpointEntry>> {
-        self.inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Add or overwrite an endpoint entry.
-    pub fn register(&self, entry: EndpointEntry) {
-        self.write_map().insert(entry.id.clone(), entry);
-    }
-
-    /// Remove an endpoint, returning the entry if it existed.
-    #[must_use]
-    pub fn unregister(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        self.write_map().remove(id)
+        Self::from_entries(entries)
     }
 
     /// Look up an endpoint by its ID.
     #[must_use]
     pub fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        self.read_map().get(id).cloned()
+        self.entries.get(id).cloned()
     }
 
-    /// Look up an endpoint by its topic.
+    /// All interactive endpoints.
     #[must_use]
-    pub fn get_by_topic(&self, topic: &TopicId) -> Option<EndpointEntry> {
-        self.read_map()
-            .values()
-            .find(|e| e.topic == *topic)
-            .cloned()
+    pub fn interactive(&self) -> Vec<EndpointEntry> {
+        self.with_capabilities(EndpointCapabilities::INTERACTIVE)
     }
 
-    /// Return all endpoints whose capabilities contain all flags in `caps`.
+    /// All notify-only endpoints.
     #[must_use]
-    pub fn filter_by(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
-        self.read_map()
+    pub fn notify(&self) -> Vec<EndpointEntry> {
+        self.with_capabilities(EndpointCapabilities::NOTIFY_ONLY)
+    }
+
+    fn with_capabilities(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
+        self.entries
             .values()
             .filter(|e| e.capabilities.contains(caps))
             .cloned()
             .collect()
-    }
-
-    /// Convenience: all interactive endpoints.
-    #[must_use]
-    pub fn interactive(&self) -> Vec<EndpointEntry> {
-        self.filter_by(EndpointCapabilities::INTERACTIVE)
-    }
-
-    /// Convenience: all notify-only endpoints.
-    #[must_use]
-    pub fn notify(&self) -> Vec<EndpointEntry> {
-        self.filter_by(EndpointCapabilities::NOTIFY_ONLY)
-    }
-
-    /// Return all registered endpoints.
-    #[must_use]
-    pub fn all(&self) -> Vec<EndpointEntry> {
-        self.read_map().values().cloned().collect()
-    }
-
-    /// Number of registered endpoints.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.read_map().len()
-    }
-
-    /// Whether the registry has no endpoints.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.read_map().is_empty()
     }
 }
 
@@ -263,177 +182,72 @@ mod tests {
     }
 
     #[test]
-    fn new_creates_empty_registry() {
-        let reg = EndpointRegistry::new();
-        assert!(reg.is_empty());
-        assert_eq!(reg.len(), 0);
-        assert!(reg.all().is_empty());
+    fn default_is_empty() {
+        let reg = EndpointRegistry::default();
+        assert!(reg.interactive().is_empty());
+        assert!(reg.notify().is_empty());
+        assert!(reg.get(&EndpointId::from("ws")).is_none());
     }
 
     #[test]
-    fn register_and_get() {
-        let reg = EndpointRegistry::new();
-        let entry = make_entry("ws", EndpointCapabilities::INTERACTIVE);
-        reg.register(entry.clone());
+    fn from_entries_later_duplicate_wins() {
+        let reg = EndpointRegistry::from_entries([
+            EndpointEntry {
+                display_name: "first".to_string(),
+                ..make_entry("ws", EndpointCapabilities::INTERACTIVE)
+            },
+            EndpointEntry {
+                display_name: "second".to_string(),
+                ..make_entry("ws", EndpointCapabilities::STREAMING)
+            },
+        ]);
 
-        let got = reg.get(&EndpointId::from("ws")).unwrap();
-        assert_eq!(got.id, entry.id);
-        assert_eq!(got.capabilities, entry.capabilities);
-        assert_eq!(got.display_name, entry.display_name);
-    }
-
-    #[test]
-    fn register_overwrites_existing() {
-        let reg = EndpointRegistry::new();
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ws"),
-            topic: TopicId::Endpoint(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "first".to_string(),
-        });
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ws"),
-            topic: TopicId::Endpoint(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::STREAMING,
-            display_name: "second".to_string(),
-        });
-
-        assert_eq!(reg.len(), 1);
         let got = reg.get(&EndpointId::from("ws")).unwrap();
         assert_eq!(got.display_name, "second");
         assert_eq!(got.capabilities, EndpointCapabilities::STREAMING);
     }
 
     #[test]
-    fn unregister_removes_entry() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
+    fn interactive_and_notify_partition_by_capability() {
+        let reg = EndpointRegistry::from_entries([
+            make_entry(
+                "ws",
+                EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
+            ),
+            EndpointEntry {
+                id: EndpointId::from("ntfy"),
+                topic: TopicId::Notification(NotifyName::from("ntfy")),
+                capabilities: EndpointCapabilities::NOTIFY_ONLY,
+                display_name: "ntfy".to_string(),
+            },
+        ]);
 
-        let removed = reg.unregister(&EndpointId::from("ws"));
-        assert!(removed.is_some());
-        assert!(reg.is_empty());
-        assert!(reg.get(&EndpointId::from("ws")).is_none());
-    }
-
-    #[test]
-    fn unregister_nonexistent_returns_none() {
-        let reg = EndpointRegistry::new();
-        assert!(reg.unregister(&EndpointId::from("nope")).is_none());
-    }
-
-    #[test]
-    fn get_by_topic() {
-        let reg = EndpointRegistry::new();
-        let entry = EndpointEntry {
-            id: EndpointId::from("telegram"),
-            topic: TopicId::Endpoint(EndpointName::from("telegram")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "Telegram".to_string(),
-        };
-        reg.register(entry);
-
-        let got = reg
-            .get_by_topic(&TopicId::Endpoint(EndpointName::from("telegram")))
-            .unwrap();
-        assert_eq!(got.id, EndpointId::from("telegram"));
-    }
-
-    #[test]
-    fn get_by_topic_not_found() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-        assert!(
-            reg.get_by_topic(&TopicId::Endpoint(EndpointName::from("missing")))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn filter_by_interactive() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry(
-            "ws",
-            EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
-        ));
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ntfy"),
-            topic: TopicId::Notification(NotifyName::from("ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "ntfy".to_string(),
-        });
-        reg.register(EndpointEntry {
-            id: EndpointId::from("inbox"),
-            topic: TopicId::Inbox,
-            capabilities: EndpointCapabilities::INPUT_ONLY,
-            display_name: "Inbox".to_string(),
-        });
-
-        let interactive = reg.filter_by(EndpointCapabilities::INTERACTIVE);
+        let interactive = reg.interactive();
         assert_eq!(interactive.len(), 1);
         assert_eq!(interactive[0].id, EndpointId::from("ws"));
-    }
 
-    #[test]
-    fn filter_by_notify_only() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ntfy"),
-            topic: TopicId::Notification(NotifyName::from("ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "ntfy".to_string(),
-        });
-
-        let notify = reg.filter_by(EndpointCapabilities::NOTIFY_ONLY);
+        let notify = reg.notify();
         assert_eq!(notify.len(), 1);
         assert_eq!(notify[0].id, EndpointId::from("ntfy"));
     }
 
     #[test]
-    fn interactive_convenience() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ntfy"),
-            topic: TopicId::Notification(NotifyName::from("ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "ntfy".to_string(),
-        });
+    fn from_config_ignores_webhooks() {
+        let mut config = minimal_config();
+        config.webhooks.insert(
+            "github".to_string(),
+            crate::config::WebhookEntry {
+                secret: None,
+                routing: crate::config::WebhookRouting::Inbox,
+                format: crate::config::WebhookFormat::Parsed,
+                content_fields: None,
+            },
+        );
 
-        let result = reg.interactive();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, EndpointId::from("ws"));
-    }
-
-    #[test]
-    fn notify_convenience() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ntfy"),
-            topic: TopicId::Notification(NotifyName::from("ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "ntfy".to_string(),
-        });
-
-        let result = reg.notify();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, EndpointId::from("ntfy"));
-    }
-
-    #[test]
-    fn all_returns_everything() {
-        let reg = EndpointRegistry::new();
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-        reg.register(make_entry("discord", EndpointCapabilities::INTERACTIVE));
-        reg.register(EndpointEntry {
-            id: EndpointId::from("ntfy"),
-            topic: TopicId::Notification(NotifyName::from("ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "ntfy".to_string(),
-        });
-
-        assert_eq!(reg.all().len(), 3);
+        let reg = EndpointRegistry::from_config(&config, &[]);
+        assert!(reg.get(&EndpointId::from("webhook:github")).is_none());
+        assert_eq!(reg.interactive().len(), 1);
+        assert!(reg.notify().is_empty());
     }
 
     #[test]
@@ -441,24 +255,14 @@ mod tests {
         let config = minimal_config();
         let reg = EndpointRegistry::from_config(&config, &[]);
 
-        // ws and inbox are always present
         let ws = reg.get(&EndpointId::from("ws")).unwrap();
         assert_eq!(ws.display_name, "WebSocket");
         assert!(ws.capabilities.contains(EndpointCapabilities::INTERACTIVE));
         assert!(ws.capabilities.contains(EndpointCapabilities::STREAMING));
 
-        let inbox = reg.get(&EndpointId::from("inbox")).unwrap();
-        assert_eq!(inbox.display_name, "Inbox");
-        assert!(
-            inbox
-                .capabilities
-                .contains(EndpointCapabilities::INPUT_ONLY)
-        );
-
         // discord/telegram not present
         assert!(reg.get(&EndpointId::from("discord")).is_none());
         assert!(reg.get(&EndpointId::from("telegram")).is_none());
-        assert!(reg.get(&EndpointId::from("webhook")).is_none());
     }
 
     #[test]
@@ -497,56 +301,5 @@ mod tests {
         assert_eq!(ch.display_name, "Ntfy (my-ntfy)");
         assert!(ch.capabilities.contains(EndpointCapabilities::NOTIFY_ONLY));
         assert_eq!(ch.topic, TopicId::Notification(NotifyName::from("my-ntfy")));
-    }
-
-    #[test]
-    fn from_config_empty_webhooks() {
-        let config = minimal_config();
-        let reg = EndpointRegistry::from_config(&config, &[]);
-        assert_eq!(reg.len(), 2); // ws + inbox only
-    }
-
-    #[test]
-    fn from_config_named_webhooks() {
-        let mut config = minimal_config();
-        config.webhooks.insert(
-            "github".to_string(),
-            crate::config::WebhookEntry {
-                secret: None,
-                routing: crate::config::WebhookRouting::Inbox,
-                format: crate::config::WebhookFormat::Parsed,
-                content_fields: None,
-            },
-        );
-        config.webhooks.insert(
-            "deploy".to_string(),
-            crate::config::WebhookEntry {
-                secret: Some("tok".to_string()),
-                routing: crate::config::WebhookRouting::Agent("deployer".to_string()),
-                format: crate::config::WebhookFormat::Raw,
-                content_fields: None,
-            },
-        );
-
-        let reg = EndpointRegistry::from_config(&config, &[]);
-        let gh = reg.get(&EndpointId::from("webhook:github")).unwrap();
-        assert_eq!(gh.display_name, "Webhook (github)");
-        assert!(gh.capabilities.contains(EndpointCapabilities::INPUT_ONLY));
-        assert_eq!(gh.topic, TopicId::Inbox);
-
-        let deploy = reg.get(&EndpointId::from("webhook:deploy")).unwrap();
-        assert_eq!(deploy.display_name, "Webhook (deploy)");
-    }
-
-    #[test]
-    fn clone_shares_state() {
-        let reg = EndpointRegistry::new();
-        let reg2 = reg.clone();
-
-        reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-
-        // clone sees the same state
-        assert_eq!(reg2.len(), 1);
-        assert!(reg2.get(&EndpointId::from("ws")).is_some());
     }
 }

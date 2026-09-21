@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn tool_name_and_definition() {
-        let registry = EndpointRegistry::new();
+        let registry = EndpointRegistry::default();
         let tool = ListEndpointsTool::new(registry);
         assert_eq!(tool.name(), "list_endpoints");
         assert_eq!(tool.definition().name, "list_endpoints");
@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_registry_returns_no_endpoints() {
-        let registry = EndpointRegistry::new();
+        let registry = EndpointRegistry::default();
         let tool = ListEndpointsTool::new(registry);
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
@@ -110,32 +110,26 @@ mod tests {
 
     #[tokio::test]
     async fn mixed_registry_groups_correctly() {
-        let registry = EndpointRegistry::new();
-        registry.register(EndpointEntry {
-            id: EndpointId::from("ws"),
-            topic: TopicId::Endpoint(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "WebSocket".to_string(),
-        });
-        registry.register(EndpointEntry {
-            id: EndpointId::from("discord"),
-            topic: TopicId::Endpoint(EndpointName::from("discord")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "Discord".to_string(),
-        });
-        registry.register(EndpointEntry {
-            id: EndpointId::from("my-ntfy"),
-            topic: TopicId::Notification(NotifyName::from("my-ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "Ntfy (my-ntfy)".to_string(),
-        });
-        // inbox and webhooks should be excluded (INPUT_ONLY)
-        registry.register(EndpointEntry {
-            id: EndpointId::from("inbox"),
-            topic: TopicId::Inbox,
-            capabilities: EndpointCapabilities::INPUT_ONLY,
-            display_name: "Inbox".to_string(),
-        });
+        let registry = EndpointRegistry::from_entries([
+            EndpointEntry {
+                id: EndpointId::from("ws"),
+                topic: TopicId::Endpoint(EndpointName::from("ws")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "WebSocket".to_string(),
+            },
+            EndpointEntry {
+                id: EndpointId::from("discord"),
+                topic: TopicId::Endpoint(EndpointName::from("discord")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "Discord".to_string(),
+            },
+            EndpointEntry {
+                id: EndpointId::from("my-ntfy"),
+                topic: TopicId::Notification(NotifyName::from("my-ntfy")),
+                capabilities: EndpointCapabilities::NOTIFY_ONLY,
+                display_name: "Ntfy (my-ntfy)".to_string(),
+            },
+        ]);
 
         let tool = ListEndpointsTool::new(registry);
         let result = tool.execute(serde_json::json!({})).await.unwrap();
@@ -152,18 +146,16 @@ mod tests {
             "should have notify header"
         );
         assert!(result.output.contains("my-ntfy"), "should list ntfy");
-        assert!(!result.output.contains("Inbox"), "should exclude inbox");
     }
 
     #[tokio::test]
     async fn only_interactive_endpoints() {
-        let registry = EndpointRegistry::new();
-        registry.register(EndpointEntry {
+        let registry = EndpointRegistry::from_entries([EndpointEntry {
             id: EndpointId::from("ws"),
             topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
-        });
+        }]);
 
         let tool = ListEndpointsTool::new(registry);
         let result = tool.execute(serde_json::json!({})).await.unwrap();
@@ -174,13 +166,12 @@ mod tests {
 
     #[tokio::test]
     async fn only_notify_endpoints() {
-        let registry = EndpointRegistry::new();
-        registry.register(EndpointEntry {
+        let registry = EndpointRegistry::from_entries([EndpointEntry {
             id: EndpointId::from("my-ntfy"),
             topic: TopicId::Notification(NotifyName::from("my-ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "Ntfy (my-ntfy)".to_string(),
-        });
+        }]);
 
         let tool = ListEndpointsTool::new(registry);
         let result = tool.execute(serde_json::json!({})).await.unwrap();

@@ -47,10 +47,7 @@ impl Carries<ToolActivityEvent> for Endpoint {}
 impl Carries<TurnLifecycleEvent> for Endpoint {}
 impl Carries<IntermediateEvent> for Endpoint {}
 
-/// Background task orchestration.
-///
-/// Carries spawn requests, task results, and (optionally) turn activity from
-/// background agent turns that don't stream to a live endpoint.
+/// Background task orchestration: spawn requests and task results.
 pub struct Background;
 
 impl Topic for Background {
@@ -61,10 +58,6 @@ impl Topic for Background {
 
 impl Carries<AgentResultEvent> for Background {}
 impl Carries<SpawnRequestEvent> for Background {}
-impl Carries<ResponseEvent> for Background {}
-impl Carries<ToolActivityEvent> for Background {}
-impl Carries<TurnLifecycleEvent> for Background {}
-impl Carries<IntermediateEvent> for Background {}
 
 /// Inbound user messages destined for the main agent loop.
 pub struct UserMessage;

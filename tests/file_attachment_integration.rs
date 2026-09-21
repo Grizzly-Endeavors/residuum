@@ -21,14 +21,12 @@ mod tests {
     use residuum::tools::send_message::SendMessageTool;
 
     fn make_registry() -> EndpointRegistry {
-        let registry = EndpointRegistry::new();
-        registry.register(EndpointEntry {
+        EndpointRegistry::from_entries([EndpointEntry {
             id: EndpointId::from("ws"),
             topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
-        });
-        registry
+        }])
     }
 
     #[tokio::test]

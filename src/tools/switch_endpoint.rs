@@ -127,33 +127,33 @@ mod tests {
     use crate::bus::{self, EndpointEntry, NotifyName, TopicId};
 
     fn make_registry() -> EndpointRegistry {
-        let registry = EndpointRegistry::new();
-        registry.register(EndpointEntry {
-            id: EndpointId::from("ws"),
-            topic: TopicId::Endpoint(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "WebSocket".to_string(),
-        });
-        registry.register(EndpointEntry {
-            id: EndpointId::from("discord"),
-            topic: TopicId::Endpoint(EndpointName::from("discord")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "Discord".to_string(),
-        });
-        registry.register(EndpointEntry {
-            id: EndpointId::from("my-ntfy"),
-            topic: TopicId::Notification(NotifyName::from("my-ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "Ntfy (my-ntfy)".to_string(),
-        });
-        registry
+        EndpointRegistry::from_entries([
+            EndpointEntry {
+                id: EndpointId::from("ws"),
+                topic: TopicId::Endpoint(EndpointName::from("ws")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "WebSocket".to_string(),
+            },
+            EndpointEntry {
+                id: EndpointId::from("discord"),
+                topic: TopicId::Endpoint(EndpointName::from("discord")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "Discord".to_string(),
+            },
+            EndpointEntry {
+                id: EndpointId::from("my-ntfy"),
+                topic: TopicId::Notification(NotifyName::from("my-ntfy")),
+                capabilities: EndpointCapabilities::NOTIFY_ONLY,
+                display_name: "Ntfy (my-ntfy)".to_string(),
+            },
+        ])
     }
 
     #[tokio::test]
     async fn tool_name_and_definition() {
         let (tx, _rx) = watch::channel(None);
         let bus_handle = bus::spawn_broker();
-        let tool = SwitchEndpointTool::new(EndpointRegistry::new(), tx, bus_handle.publisher());
+        let tool = SwitchEndpointTool::new(EndpointRegistry::default(), tx, bus_handle.publisher());
         assert_eq!(tool.name(), "switch_endpoint");
         assert_eq!(tool.definition().name, "switch_endpoint");
     }
@@ -213,7 +213,7 @@ mod tests {
     async fn missing_endpoint_param_errors() {
         let (tx, _rx) = watch::channel(None);
         let bus_handle = bus::spawn_broker();
-        let tool = SwitchEndpointTool::new(EndpointRegistry::new(), tx, bus_handle.publisher());
+        let tool = SwitchEndpointTool::new(EndpointRegistry::default(), tx, bus_handle.publisher());
 
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "should error on missing endpoint");

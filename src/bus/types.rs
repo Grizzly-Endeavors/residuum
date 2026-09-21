@@ -58,7 +58,7 @@ newtype_string!(NotifyName, "Notification channel identifier.");
 pub enum TopicId {
     /// Interactive endpoint turn activity (responses, tool calls, lifecycle, intermediate text).
     Endpoint(EndpointName),
-    /// Background task orchestration (spawn requests, results, and optionally turn activity).
+    /// Background task orchestration (spawn requests and task results).
     Background,
     /// Inbound user messages for the main agent loop.
     UserMessage,
