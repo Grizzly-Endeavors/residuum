@@ -2,18 +2,11 @@
 
 The memory pipeline converts conversation turns into searchable long-term memory through three stages: observation, reflection, and search.
 
-## MEMORY.md
-
-A persistent scratchpad the agent owns and writes to directly. This is the agent's working notebook for cross-session context. The observer and reflector never touch it — it is entirely agent-controlled.
-
 ## USER.md
 
-Two tiers, different rules:
+Core facts only: durable identity/standing preferences, hard-capped at ~15 entries, replace-don't-append. Longer-form, evolving knowledge about the user lives in wiki pages instead — see the `wiki` skill.
 
-- **Core Facts** — durable identity/standing preferences, hard-capped at ~15 entries, replace-don't-append.
-- **Profile** — longer-form, evolving model of the user. Normal churn.
-
-**Promotion rule**: don't write to Core Facts (or add a new Profile entry) on a single sighting. Need ≥2 supporting observations, and annotate the evidence count ("seen 3x") when you do. One sighting alone goes to MEMORY.md as provisional. Both the `introspection` and `learner` skills apply this rule when tending USER.md.
+**Promotion rule**: knowledge supported by a single episode becomes a wiki page with `status: draft`. It becomes `stable` — and, if it is a core fact, earns a `USER.md` entry — once a second, independent episode supports it; each supporting episode is listed in the page's `sources`. Both the `wiki` and `learner` skills apply this rule.
 
 ## Observer
 
@@ -40,7 +33,7 @@ Customize extraction guidance by editing `memory/OBSERVER.md`.
 
 Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM to merge and deduplicate the observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just denser.
 
-**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch `MEMORY.md`. These are completely separate systems.
+**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki. These are completely separate systems.
 
 The original observations are backed up to `observations.json.bak` before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
 

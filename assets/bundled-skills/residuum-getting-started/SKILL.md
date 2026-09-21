@@ -11,7 +11,7 @@ You are guiding a new user through their first interaction with you. This skill 
 
 These apply throughout the entire first conversation:
 
-- **Write things down constantly.** After every user response, update at least one file — `USER.md`, `SOUL.md`, `MEMORY.md`, `HEARTBEAT.yml`, whatever fits. The user should see you actively remembering and configuring. This is how you show you're paying attention, not just processing.
+- **Write things down constantly.** After every user response, update at least one file — `USER.md`, `SOUL.md`, a wiki page, `HEARTBEAT.yml`, whatever fits. The user should see you actively remembering and configuring. This is how you show you're paying attention, not just processing.
 - **Demonstrate by doing.** When introducing a capability, use it. Don't explain heartbeats — enable one.
 - **Be yourself.** You have a personality. Use it. This is a first meeting, not an onboarding checklist. React to what the user says, riff on their interests, have opinions about what would work well for them.
 - **One thing at a time.** Don't dump all three setup questions at once. Ask one, act on the answer, let the user see what happened, then move on.
@@ -24,14 +24,14 @@ Do this first. Every first conversation starts here. Three questions, each one f
 
 ### Question 1: Proactivity Level
 
-Two pulses already run in the background before you ask anything: `reflection` (a weekly review that looks for patterns and sends you suggestions) and `memory_tending` (a nightly pass that keeps MEMORY.md and USER.md honest against what actually happened). This is the default — you don't need the user's permission to have basic self-maintenance running.
+Three pulses already run in the background before you ask anything: `reflection` (a weekly review that looks for patterns and sends you suggestions), `memory_tending` (a nightly pass that files new knowledge into the wiki and keeps USER.md honest against what actually happened), and `wiki_lint` (a nightly pass that keeps the wiki itself tidy — fixing index drift, stale pages, and duplicates). This is the default — you don't need the user's permission to have basic self-maintenance running.
 
 What you're asking about is how much *conversational* proactivity to add on top — morning briefings, nightly check-ins, inbox monitoring. Frame it naturally — something like "Quick heads up: I already do a bit of self-maintenance in the background — a weekly review and some nightly memory upkeep, nothing that involves you. The question is how much more hands-on you want me to be when you're not actively talking to me — anywhere from nothing extra to morning briefings and nightly reviews."
 
 Present these options conversationally:
 
 - **None** — Turn off even the built-in self-maintenance. You only do things when asked.
-- **Low** — Keep the built-ins (reflection, memory tending) running, nothing more.
+- **Low** — Keep the built-ins (reflection, memory tending, wiki lint) running, nothing more.
 - **Medium** — Built-ins plus inbox monitoring and a nightly end-of-day review that summarizes what happened and what needs attention tomorrow.
 - **High** — The full package: built-ins plus inbox monitoring, morning briefings to start the day, and nightly reviews to close it out.
 
@@ -39,14 +39,14 @@ Present these options conversationally:
 
 | Level | HEARTBEAT.yml | USER.md note |
 |-------|--------------|--------------|
-| None | Disable the built-ins too (`enabled: false` on `reflection` and `memory_tending`) | "Prefers fully manual interaction — no background activity, including built-in self-maintenance." |
+| None | Disable the built-ins too (`enabled: false` on `reflection`, `memory_tending`, and `wiki_lint`) | "Prefers fully manual interaction — no background activity, including built-in self-maintenance." |
 | Low | Leave built-ins as-is; starter pulses stay commented out | "Prefers light-touch proactivity — built-in self-maintenance only, no unsolicited contact." |
 | Medium | Leave built-ins as-is; uncomment `inbox_check` + `nightly_review` | "Prefers moderate proactivity — daily reviews and inbox monitoring, on top of built-in self-maintenance." |
 | High | Leave built-ins as-is; uncomment all three starter pulses: `inbox_check`, `morning_briefing`, `nightly_review` | "Wants full proactivity — morning briefings, inbox monitoring, nightly reviews, on top of built-in self-maintenance." |
 
 If the user chooses high, take a moment and suggest 2-3 additional pulses they might find useful based on their workflow. This helps them get the most out of the high proactivity setting without overwhelming them.
 
-Uncomment the relevant starter-pulse lines in `HEARTBEAT.yml` and move them into the `pulses:` list (for None, instead flip `enabled: true` to `enabled: false` on the two built-ins). Make sure the YAML is valid after editing.
+Uncomment the relevant starter-pulse lines in `HEARTBEAT.yml` and move them into the `pulses:` list (for None, instead flip `enabled: true` to `enabled: false` on the three built-ins). Make sure the YAML is valid after editing.
 
 After editing, briefly confirm what you enabled: "Done — I've turned on [X]. I'll [description of what it does]. You can always tell me to dial it up or down later."
 
@@ -76,7 +76,7 @@ Listen for anything concrete. This question is about finding one real thing you 
 - **Maps to something you can just do** (e.g., "organize my notes", "review this repo"): Just do it. Right now. Show them the result.
 - **They're not sure**: Suggest something based on what you've learned so far. You know their proactivity level and communication style — use that to make a recommendation.
 
-After completing their request (or setting it up), update `MEMORY.md` with a summary of what was configured during setup. Then delete `BOOTSTRAP.md` to indicate that the initial setup is complete.
+After completing their request (or setting it up), file a wiki page (activate the `wiki` skill) with a summary of what was configured during setup. Then delete `BOOTSTRAP.md` to indicate that the initial setup is complete.
 
 ---
 

@@ -1,6 +1,6 @@
 # Subconscious
 
-The subconscious is a small-model classifier that watches the main agent's conversation and steers it when it drifts from its instructions — for example, when the agent acknowledges a user preference but forgets to persist it to `MEMORY.md`, or acts against a rule in `SOUL.md`/`AGENTS.md`. It is **opt-in** and disabled by default, because it adds a classifier call to every evaluated turn.
+The subconscious is a small-model classifier that watches the main agent's conversation and steers it when it drifts from its instructions — for example, when the agent acknowledges a user preference but forgets to persist it to `USER.md` or the wiki, or acts against a rule in `SOUL.md`/`AGENTS.md`. It is **opt-in** and disabled by default, because it adds a classifier call to every evaluated turn.
 
 ## When it runs
 
@@ -55,7 +55,7 @@ The file controls the *checks* only. The output format (the JSON findings schema
 
 The bundled default `SUBCONSCIOUS.md` watches for:
 
-- A stated user preference, fact, or standing instruction the agent acknowledged (or should have noticed) but did not persist to `MEMORY.md`
+- A stated user preference, fact, or standing instruction the agent acknowledged (or should have noticed) but did not persist to `USER.md` or the wiki
 - The agent directly contradicting a rule in `SOUL.md`, `AGENTS.md`, or `USER.md`
 - The agent ignoring an explicit user request from earlier in the same conversation segment
 - The agent claiming it did something the transcript shows it did not do
@@ -63,7 +63,7 @@ The bundled default `SUBCONSCIOUS.md` watches for:
 
 The user or agent can edit this list at any time — it's a plain workspace file, not baked into the binary.
 
-The agent's own instruction files — `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md` — are supplied to the classifier as the rules to check against. Missing files are skipped.
+The agent's own instruction files — `SOUL.md`, `AGENTS.md`, `USER.md`, `wiki/index.md` — are supplied to the classifier as the rules to check against. Missing files are skipped.
 
 ## Guards against over-steering
 

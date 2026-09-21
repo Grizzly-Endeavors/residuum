@@ -6,7 +6,7 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 
 ## Sub-Agents
 
-An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, and active skills. By default it **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small — the spawn caller can opt back in with `include_identity: true` (see below).
+An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `USER.md`, the root wiki index (`WIKI_INDEX`), and active skills. By default it **excludes** SOUL.md, AGENTS.md, and the observation log to keep context small — the spawn caller can opt back in with `include_identity: true` (see below).
 
 Sub-agents share the MCP registry with the main agent.
 
@@ -26,13 +26,14 @@ The fallback chain walks up tiers. If no background model is configured at any t
 
 A sub-agent is an agent loop running off the main thread. Pass a **skill** name at spawn time and that skill's body becomes the sub-agent's role instructions. There is no separate preset format — a role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn or handed to a sub-agent.
 
-Three role skills ship bundled:
+Four role skills ship bundled:
 
-- **`introspection`** — backs the built-in `reflection`/`memory_tending` pulses.
-- **`learner`** — spawned by a subconscious `learn` signal (opt-in, cooldown-limited) or by the `[learning] nudge_after_turns` fallback. Corroborates a `preference` signal against episodic memory before promoting it to USER.md (≥2 supporting observations, evidence count annotated; single sightings go to MEMORY.md as provisional). For a `recovery` signal, prefers queuing a durable fix via the user inbox over baking the workaround into a skill.
+- **`introspection`** — backs the built-in `reflection` pulse.
+- **`wiki`** — backs the built-in `memory_tending` and `wiki_lint` pulses. `memory_tending` ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md`; `wiki_lint` fixes index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links.
+- **`learner`** — spawned by a subconscious `learn` signal (opt-in, cooldown-limited) or by the `[learning] nudge_after_turns` fallback. Corroborates a `preference` signal against episodic memory and files it as a wiki page (`status: draft` on a single episode, promoted to `stable` once a second independent episode corroborates it), adding only corroborated core facts to USER.md. For a `recovery` signal, prefers queuing a durable fix via the user inbox over baking the workaround into a skill.
 - **`memory-analyst`** — the main agent spawns it for synthesized questions about the user/history instead of doing raw `memory_search` itself. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates, abstains rather than fabricates, cites episode IDs.
 
-`include_identity` (boolean, default `false`) is set by the caller — when `true`, the sub-agent's prompt also includes SOUL.md, AGENTS.md, and MEMORY.md alongside the usual ENVIRONMENT.md/USER.md. Use it for roles that need full identity context to make judgment calls (the `introspection` and `learner` spawns both set it).
+`include_identity` (boolean, default `false`) is set by the caller — when `true`, the sub-agent's prompt also includes SOUL.md and AGENTS.md alongside the usual USER.md/WIKI_INDEX. Use it for roles that need full identity context to make judgment calls (the `introspection` spawn sets it; `learner` spawns are fixed in code with identity included).
 
 ## Tools
 
