@@ -4,14 +4,15 @@ Heartbeats are ambient scheduled checks the agent performs in the background. Th
 
 ## Built-in Pulses
 
-Every bootstrapped workspace ships `HEARTBEAT.yml` with two pulses enabled by default:
+Every bootstrapped workspace ships `HEARTBEAT.yml` with three pulses enabled by default:
 
 | Pulse | Schedule | Agent | Purpose |
 |-------|----------|-------|---------|
 | `reflection` | `"7d"` | `introspection` | Reviews recent episodes/observations for recurring patterns, unfinished requests, and friction; delivers suggestions to the user inbox via `user_inbox_add`. |
-| `memory_tending` | `"24h"`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` Core Facts tier (capped ~15 entries, replace-don't-append). Promotion to Core Facts (or to a new Profile entry) requires at least two supporting observations, annotated with the evidence count; a single sighting stays provisional in `MEMORY.md`. See [memory.md](memory.md) for the full tier and promotion rule. |
+| `memory_tending` | `"24h"`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` core-facts list (capped ~15 entries, replace-don't-append). A page is created with `status: draft` on a single supporting episode and promoted to `stable` once a second independent episode corroborates it. See [wiki.md](wiki.md) for the page format and promotion rule. |
+| `wiki_lint` | `"7d"`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages (past `stale_after`), old drafts, duplicates, contradictions between pages, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
-Both name the bundled `introspection` skill (`skills/introspection/SKILL.md`) and set `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
+`reflection` names the bundled `introspection` skill (`skills/introspection/SKILL.md`) with `model_tier: large` and `include_identity: true` (SOUL.md/AGENTS.md included in its prompt, in addition to the usual USER.md/WIKI_INDEX). It can only propose SOUL.md/AGENTS.md changes through its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` name the bundled `wiki` skill (`skills/wiki/SKILL.md`) with `model_tier: large` and `include_identity: false`, and may edit wiki pages and `USER.md` directly.
 
 Disabling either is a matter of setting `enabled: false` on the pulse — the user or agent can do this during onboarding if the user opts out of background self-maintenance. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) ships alongside the built-ins as optional, off-by-default add-ons.
 

@@ -2,7 +2,7 @@
 
 Walk the user through skills, MCP servers, and background tasks. By the end, the user should understand how to ask you to expand your capabilities.
 
-**Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
+**Remember**: Write core facts to `USER.md` and everything else to wiki pages (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end.
 
 ## Step 1: Explain Skills
 

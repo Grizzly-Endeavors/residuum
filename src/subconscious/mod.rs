@@ -388,7 +388,7 @@ impl Subconscious {
             ("SOUL.md", self.layout.soul_md()),
             ("AGENTS.md", self.layout.agents_md()),
             ("USER.md", self.layout.user_md()),
-            ("MEMORY.md", self.layout.memory_md()),
+            ("wiki/index.md", self.layout.wiki_index_md()),
         ];
 
         let mut sections = Vec::new();
@@ -416,7 +416,7 @@ mod tests {
     const EMPTY_RESPONSE: &str = r#"{"findings": []}"#;
     const ACT_RESPONSE: &str = r#"{
         "findings": [
-            {"kind": "omission", "severity": "act", "instruction": "The user said they prefer bullet points; save this preference to MEMORY.md."}
+            {"kind": "omission", "severity": "act", "instruction": "The user said they prefer bullet points; save this preference to the wiki."}
         ]
     }"#;
 
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(finding.kind, FindingKind::Omission);
         assert_eq!(finding.severity, Severity::Act);
         assert!(
-            finding.instruction.contains("MEMORY.md"),
+            finding.instruction.contains("wiki"),
             "instruction should carry the corrective guidance"
         );
     }

@@ -17,9 +17,10 @@ fn section(tag: &str, content: &str) -> String {
 /// regardless of what the user has (or hasn't) written into AGENTS.md.
 const HARNESS: &str = "You run on Residuum, a personal-agent harness. These systems are always available; use them without being asked:
 
-- **Memory**: memory_search (keyword + semantic) and memory_get retrieve past conversations and observations — search before saying you don't know or don't remember. Background pulse runs are not captured in searchable memory. An automatic observer archives conversations into episodes; MEMORY.md is your own persistent scratchpad. Write memory entries as declarative facts about the user or world ('User prefers X'), never as instructions to yourself ('Always do X') — imperative phrasing re-reads as a directive later. Skip anything that will be stale within days (ticket numbers, in-progress states).
-- **Identity files**: SOUL.md, AGENTS.md, USER.md, MEMORY.md, ENVIRONMENT.md are yours to edit with file tools; edits take effect next turn. Persist durable facts and preferences as you learn them.
-- **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Two built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox) and memory_tending (daily MEMORY.md/USER.md upkeep). If they are missing from HEARTBEAT.yml, offer to restore them. When the user mentions a recurring need, propose a pulse for it.
+- **Memory**: memory_search (keyword + semantic) and memory_get retrieve past conversations and observations — search before saying you don't know or don't remember. Background pulse runs are not captured in searchable memory. An automatic observer archives conversations into episodes.
+- **Wiki**: your long-term knowledge lives in wiki/, one concept per Markdown page with YAML frontmatter (Open Knowledge Format). WIKI_INDEX is its root index.md; folders have their own index.md. Read the index, then read the pages you need with read_file. Record what you learn there as you learn it — facts about the user, their world, this machine, their work. Write pages as declarative facts ('User prefers X'), never as instructions to yourself ('Always do X') — imperative phrasing re-reads as a directive later. Skip anything that will be stale within days (ticket numbers, in-progress states). Activate the wiki skill before writing: it holds the page format and index rules.
+- **Identity files**: SOUL.md, AGENTS.md, and USER.md are yours to edit with file tools; edits take effect next turn. USER.md holds only the user's core facts (a short, capped list); everything longer-form about the user belongs in the wiki.
+- **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Three built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox), memory_tending (nightly: files new knowledge from recent episodes into the wiki and USER.md), and wiki_lint (weekly wiki health check). If they are missing from HEARTBEAT.yml, offer to restore them. When the user mentions a recurring need, propose a pulse for it.
 - **Inboxes**: two. Your agent inbox (inbox_list, inbox_read, inbox_archive) collects items for you to process. The user inbox (user_inbox_add) delivers items to the user's web UI — use it for background findings that should not interrupt conversation; it can carry file attachments (paths to files already on disk) alongside the title and body.
 - **Scheduled actions**: one-off future tasks via the action tools; they fire once then auto-remove.
 - **Sub-agents**: spawn background work with subagent_spawn. A sub-agent is an agent loop running off the main thread; pass a skill name to give it a role, and its instructions become the sub-agent's brief. A sub-agent's result is its self-report, not verified fact — when it matters, have it return concrete handles (paths, IDs, URLs) and verify them.
@@ -52,23 +53,22 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 
 /// Build a minimal system prompt for background sub-agent turns.
 ///
-/// Includes ENVIRONMENT.md, USER.md, the skills index, and active skill
+/// Includes USER.md, the wiki's root index, the skills index, and active skill
 /// instructions. A sub-agent spawned with a skill has that skill already
 /// active, so its body arrives through `ACTIVE_SKILLS`.
 ///
-/// Excludes SOUL, AGENTS, MEMORY, observations, and recent context — unless
+/// Excludes SOUL, AGENTS, observations, and recent context — unless
 /// `include_identity` is `true` (set by the spawn caller), in which case
-/// SOUL.md, AGENTS.md, and MEMORY.md are also rendered, for sub-agents that
-/// need the agent's own identity (e.g. introspection).
+/// SOUL.md and AGENTS.md are also rendered, for sub-agents that need the
+/// agent's own identity (e.g. introspection).
 ///
 /// Assembly order (matching main prompt structure for cache efficiency):
 /// 1. `SOUL.md` (only when `include_identity` is `true`)
 /// 2. `AGENTS.md` (only when `include_identity` is `true`)
-/// 3. `ENVIRONMENT.md`
-/// 4. `USER.md`
-/// 5. `MEMORY.md` (only when `include_identity` is `true`)
-/// 6. `SKILLS_INDEX`
-/// 7. `ACTIVE_SKILLS` (when skills are loaded)
+/// 3. `USER.md`
+/// 4. `WIKI_INDEX`
+/// 5. `SKILLS_INDEX`
+/// 6. `ACTIVE_SKILLS` (when skills are loaded)
 #[must_use]
 pub(crate) fn build_subagent_system_content(
     identity: &IdentityFiles,
@@ -87,16 +87,12 @@ pub(crate) fn build_subagent_system_content(
         }
     }
 
-    if let Some(environment_md) = &identity.environment {
-        parts.push(section("ENVIRONMENT.md", environment_md));
-    }
-
     if let Some(user) = &identity.user {
         parts.push(section("USER.md", user));
     }
 
-    if include_identity && let Some(memory) = &identity.memory {
-        parts.push(section("MEMORY.md", memory));
+    if let Some(wiki_index) = &identity.wiki_index {
+        parts.push(section("WIKI_INDEX", wiki_index));
     }
 
     if let Some(idx) = skills_ctx.index
@@ -121,17 +117,16 @@ pub(crate) fn build_subagent_system_content(
 /// 2. `AGENTS.md`
 /// 3. `HARNESS` (code-owned, static — always present)
 /// 4. `BOOTSTRAP.md` (first-run only, deleted after first conversation)
-/// 5. `ENVIRONMENT.md`
-/// 6. `USER.md`
-/// 7. `MEMORY.md`
-/// 8. `OBSERVATION_LOG` (if present)
-/// 9. `RECENT_CONTEXT` (if present)
-/// 10. `SKILLS_INDEX` (available skills listing)
-/// 11. `ACTIVE_SKILLS` (when skills are loaded)
+/// 5. `USER.md`
+/// 6. `WIKI_INDEX` (the wiki's root `index.md`)
+/// 7. `OBSERVATION_LOG` (if present)
+/// 8. `RECENT_CONTEXT` (if present)
+/// 9. `SKILLS_INDEX` (available skills listing)
+/// 10. `ACTIVE_SKILLS` (when skills are loaded)
 ///
-/// Static sections (1-6) form a stable cache prefix shared across all conversations.
-/// Dynamic sections (7-9) update as memory changes. The index (10) appears before
-/// the active section (11) to maximize cache reuse as skills change.
+/// Static sections (1-5) form a stable cache prefix shared across all conversations.
+/// Dynamic sections (6-8) update as knowledge and memory change. The skills index (9)
+/// appears before the active section (10) to maximize cache reuse as skills change.
 pub(super) fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -153,16 +148,12 @@ pub(super) fn build_system_content(
         parts.push(section("BOOTSTRAP.md", bootstrap));
     }
 
-    if let Some(environment_md) = &identity.environment {
-        parts.push(section("ENVIRONMENT.md", environment_md));
-    }
-
     if let Some(user) = &identity.user {
         parts.push(section("USER.md", user));
     }
 
-    if let Some(memory) = &identity.memory {
-        parts.push(section("MEMORY.md", memory));
+    if let Some(wiki_index) = &identity.wiki_index {
+        parts.push(section("WIKI_INDEX", wiki_index));
     }
 
     if let Some(obs) = memory_ctx.observations
@@ -310,7 +301,7 @@ mod tests {
     fn sections_wrapped_in_xml_tags() {
         let identity = IdentityFiles {
             soul: Some("I am the soul.".to_string()),
-            memory: Some("User prefers Rust.".to_string()),
+            wiki_index: Some("- [Rust](/rust.md): user's main language".to_string()),
             ..IdentityFiles::default()
         };
         let mem = MemoryContext {
@@ -324,24 +315,25 @@ mod tests {
             "soul should be wrapped in SOUL.md tags"
         );
         assert!(
-            content.contains("<MEMORY.md>\nUser prefers Rust.\n</MEMORY.md>"),
-            "memory should be wrapped in MEMORY.md tags"
+            content
+                .contains("<WIKI_INDEX>\n- [Rust](/rust.md): user's main language\n</WIKI_INDEX>"),
+            "wiki index should be wrapped in WIKI_INDEX tags"
         );
         assert!(
             content.contains("<OBSERVATION_LOG>\nsome observation\n</OBSERVATION_LOG>"),
             "observations should be wrapped in OBSERVATION_LOG tags"
         );
 
-        // Memory and observation log should be clearly separate sections
-        let memory_close = content.find("</MEMORY.md>");
+        // Wiki index and observation log should be clearly separate sections
+        let wiki_close = content.find("</WIKI_INDEX>");
         let obs_open = content.find("<OBSERVATION_LOG>");
         assert!(
-            memory_close.is_some() && obs_open.is_some(),
+            wiki_close.is_some() && obs_open.is_some(),
             "both sections should exist"
         );
         assert!(
-            memory_close < obs_open,
-            "memory should close before observation log opens"
+            wiki_close < obs_open,
+            "wiki index should close before observation log opens"
         );
     }
 
@@ -402,11 +394,11 @@ mod tests {
     // ── Bootstrap context tests ───────────────────────────────────────────────
 
     #[test]
-    fn bootstrap_injected_between_agents_and_environment() {
+    fn bootstrap_injected_between_agents_and_user() {
         let identity = IdentityFiles {
             agents: Some("agent rules".to_string()),
             bootstrap: Some("first run guidance".to_string()),
-            environment: Some("env notes".to_string()),
+            user: Some("user facts".to_string()),
             ..IdentityFiles::default()
         };
         let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
@@ -418,14 +410,14 @@ mod tests {
 
         let agents_close = content.find("</AGENTS.md>").unwrap();
         let bootstrap_open = content.find("<BOOTSTRAP.md>").unwrap();
-        let env_open = content.find("<ENVIRONMENT.md>").unwrap();
+        let user_open = content.find("<USER.md>").unwrap();
         assert!(
             agents_close < bootstrap_open,
             "AGENTS.md should close before BOOTSTRAP.md opens"
         );
         assert!(
-            bootstrap_open < env_open,
-            "BOOTSTRAP.md should open before ENVIRONMENT.md"
+            bootstrap_open < user_open,
+            "BOOTSTRAP.md should open before USER.md"
         );
     }
 
@@ -520,10 +512,10 @@ mod tests {
     // ── build_subagent_system_content tests ──────────────────────────────────
 
     #[test]
-    fn subagent_system_content_includes_environment_user_skills() {
+    fn subagent_system_content_includes_user_wiki_skills() {
         let identity = IdentityFiles {
             soul: Some("SOUL content".to_string()),
-            environment: Some("env notes".to_string()),
+            wiki_index: Some("wiki catalog".to_string()),
             user: Some("user prefs".to_string()),
             ..IdentityFiles::default()
         };
@@ -535,7 +527,6 @@ mod tests {
 
         assert!(!content.contains("SOUL"), "should exclude SOUL.md");
         assert!(!content.contains("AGENTS.md"), "should exclude AGENTS.md");
-        assert!(!content.contains("MEMORY.md"), "should exclude MEMORY.md");
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "should exclude OBSERVATION_LOG"
@@ -549,8 +540,8 @@ mod tests {
             "should exclude SUBAGENTS_INDEX"
         );
         assert!(
-            content.contains("env notes"),
-            "should include ENVIRONMENT.md"
+            content.contains("<WIKI_INDEX>\nwiki catalog\n</WIKI_INDEX>"),
+            "should include the wiki index"
         );
         assert!(content.contains("user prefs"), "should include USER.md");
         assert!(
@@ -560,12 +551,11 @@ mod tests {
     }
 
     #[test]
-    fn subagent_system_content_include_identity_true_renders_soul_agents_memory() {
+    fn subagent_system_content_include_identity_true_renders_soul_agents() {
         let identity = IdentityFiles {
             soul: Some("SOUL content".to_string()),
             agents: Some("AGENTS content".to_string()),
-            memory: Some("MEMORY content".to_string()),
-            environment: Some("env notes".to_string()),
+            wiki_index: Some("wiki catalog".to_string()),
             ..IdentityFiles::default()
         };
         let content = build_subagent_system_content(&identity, &SkillsContext::default(), true);
@@ -579,8 +569,8 @@ mod tests {
             "should include AGENTS.md when include_identity is true"
         );
         assert!(
-            content.contains("<MEMORY.md>\nMEMORY content\n</MEMORY.md>"),
-            "should include MEMORY.md when include_identity is true"
+            content.contains("<WIKI_INDEX>\nwiki catalog\n</WIKI_INDEX>"),
+            "should still include the wiki index when include_identity is true"
         );
     }
 
@@ -619,7 +609,7 @@ mod tests {
     #[test]
     fn subagent_system_content_section_order() {
         let identity = IdentityFiles {
-            environment: Some("env content".to_string()),
+            wiki_index: Some("wiki content".to_string()),
             user: Some("user content".to_string()),
             ..IdentityFiles::default()
         };
@@ -629,15 +619,15 @@ mod tests {
         };
         let content = build_subagent_system_content(&identity, &skills_ctx, false);
 
-        // Verify order: ENVIRONMENT → USER → SKILLS_INDEX → ACTIVE_SKILLS
-        let env_pos = content.find("env content").unwrap();
+        // Verify order: USER → WIKI_INDEX → SKILLS_INDEX → ACTIVE_SKILLS
         let user_pos = content.find("user content").unwrap();
+        let wiki_pos = content.find("wiki content").unwrap();
         let skl_idx_pos = content.find("<SKILLS_INDEX>").unwrap();
         let active_skl_pos = content.find("<ACTIVE_SKILLS>").unwrap();
 
         assert!(
-            env_pos < user_pos && user_pos < skl_idx_pos && skl_idx_pos < active_skl_pos,
-            "sections should appear in order: ENVIRONMENT, USER, SKILLS_INDEX, ACTIVE_SKILLS"
+            user_pos < wiki_pos && wiki_pos < skl_idx_pos && skl_idx_pos < active_skl_pos,
+            "sections should appear in order: USER, WIKI_INDEX, SKILLS_INDEX, ACTIVE_SKILLS"
         );
     }
 

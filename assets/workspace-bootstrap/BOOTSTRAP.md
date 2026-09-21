@@ -19,5 +19,5 @@ As you talk, pay attention to:
 ## After Quick Setup
 
 - Delete this file (BOOTSTRAP.md)
-- Update MEMORY.md with what you learned
+- File what you learned: core facts (name, timezone, how they like to be addressed) in USER.md, everything else as wiki pages — activate the `wiki` skill first
 - Your workspace is set up. The rest evolves naturally.

@@ -11,8 +11,8 @@
 #   agent: ~ (plain sub-agent) | "main" (wake turn) | "skill-name" (sub-agent
 #          with that skill activated as its role)
 #   model_tier: optional — "small" (default) | "medium" | "large"
-#   include_identity: optional — true renders SOUL.md/AGENTS.md/MEMORY.md into
-#          the sub-agent's prompt; default false
+#   include_identity: optional — true renders SOUL.md/AGENTS.md into the
+#          sub-agent's prompt; default false
 
 # ── Built-in pulses ─────────────────────────────────────────────
 # On by default. Comment out to disable; edit freely to tune.
@@ -33,14 +33,23 @@ pulses:
     enabled: true
     schedule: "24h"
     active_hours: "02:00-06:00"
-    agent: "introspection"
+    agent: "wiki"
     model_tier: "large"
-    include_identity: true
     tasks:
       - name: gate
-        prompt: "Check whether meaningful new episodes or observations exist from the last 24 hours (this pulse runs nightly). If nothing new, stop here."
-      - name: tend_memory
-        prompt: "Reconcile MEMORY.md and USER.md against recent episode evidence: add durable facts and preferences that surfaced, correct entries the evidence contradicts, remove stale ones. Keep USER.md's Core Facts tier bounded and current — replace, don't append, when it is full. Promote a recurring pattern into USER.md only when at least two observations support it; a single sighting stays provisional in MEMORY.md."
+        prompt: "Find the last ingest entry in wiki/log.md and the episode it went through, then try memory_get on the next episode ID. If that episode is not found, respond with exactly HEARTBEAT_OK and skip the remaining tasks."
+      - name: ingest
+        prompt: "Run the Ingest procedure from your instructions: file the new knowledge into wiki pages and USER.md, then update the indexes and log. Summarize what you filed, one line per page touched."
+
+  - name: wiki_lint
+    enabled: true
+    schedule: "7d"
+    active_hours: "02:00-06:00"
+    agent: "wiki"
+    model_tier: "large"
+    tasks:
+      - name: lint
+        prompt: "Run the Lint procedure from your instructions across the whole wiki, fixing each problem as you find it. Summarize what you fixed, one line per fix."
 
 # ── Starter pulses ──────────────────────────────────────────────
 # Optional add-ons. Uncomment during first setup if the user wants

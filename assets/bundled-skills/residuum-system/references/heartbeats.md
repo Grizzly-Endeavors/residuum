@@ -4,14 +4,15 @@ Heartbeats are periodic background checks defined in `HEARTBEAT.yml`. The pulse 
 
 ## Built-in Pulses
 
-Two pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
+Three pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
 
 | Pulse | Schedule | Agent | What it does |
 |-------|----------|-------|---------------|
 | `reflection` | `7d` | `introspection` | Reviews recent episodes/observations for patterns (repeated manual tasks, recurring topics, unfinished requests, friction) and delivers findings via `user_inbox_add`. |
-| `memory_tending` | `24h`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` Core Facts tier (≤15 entries, replace-don't-append, ≥2 observations to promote). |
+| `memory_tending` | `24h`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` core-facts list (≤15 entries, replace-don't-append, ≥2 episodes to promote a page from `draft` to `stable`). |
+| `wiki_lint` | `7d`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
-Both route to the `introspection` skill (see `skills/introspection/SKILL.md`) and set `model_tier: large` with full identity context (`include_identity: true`) so it has SOUL.md/AGENTS.md/MEMORY.md available when judging what to tend. It edits MEMORY.md/USER.md directly but only *proposes* SOUL.md/AGENTS.md changes in its inbox delivery — it cannot edit those files itself.
+`reflection` routes to the `introspection` skill (see `skills/introspection/SKILL.md`) with `model_tier: large` and full identity context (`include_identity: true`) so it has SOUL.md/AGENTS.md available when judging what to surface — it can only *propose* SOUL.md/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `skills/wiki/SKILL.md`) with `model_tier: large` and no identity context, and may edit wiki pages and `USER.md` directly.
 
 To disable either, set `enabled: false` on the pulse (don't delete it — the block documents what it does). To tune frequency or scope, edit the `schedule`, `active_hours`, or task prompts directly. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) follows the built-ins in the default file — optional add-ons, not enabled by default.
 

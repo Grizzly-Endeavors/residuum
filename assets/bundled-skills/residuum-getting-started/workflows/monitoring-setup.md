@@ -1,8 +1,8 @@
 # Workflow: Monitoring Setup
 
-Walk the user through heartbeats and notification routing. Build on whatever was already configured during Quick Setup — the built-in `reflection` and `memory_tending` pulses run by default, and the user may also have starter pulses (inbox_check, morning_briefing, nightly_review) enabled if they opted into more proactivity. Don't re-explain what's already running; acknowledge it and expand from there.
+Walk the user through heartbeats and notification routing. Build on whatever was already configured during Quick Setup — the built-in `reflection`, `memory_tending`, and `wiki_lint` pulses run by default, and the user may also have starter pulses (inbox_check, morning_briefing, nightly_review) enabled if they opted into more proactivity. Don't re-explain what's already running; acknowledge it and expand from there.
 
-**Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
+**Remember**: Write core facts to `USER.md` and everything else to wiki pages (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end.
 
 ## Step 1: Review What's Already Running and Ask What Else to Monitor
 

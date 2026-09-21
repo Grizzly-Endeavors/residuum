@@ -92,7 +92,7 @@ pub struct SubAgentBuildConfig {
     /// Skill to activate for this sub-agent, if any. Its body becomes the
     /// sub-agent's role instructions through the normal active-skill path.
     pub skill: Option<String>,
-    /// Render SOUL.md, AGENTS.md, and MEMORY.md in the subagent's system prompt.
+    /// Render SOUL.md and AGENTS.md in the subagent's system prompt.
     pub include_identity: bool,
     // ── Sub-agent tool dependencies ────────────────────────────────────
     /// Background task spawner for `stop_agent` / `list_agents` tools.

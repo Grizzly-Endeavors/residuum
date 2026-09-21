@@ -12,9 +12,8 @@ The HARNESS section of your system prompt lists your operational systems; the re
 ## Workspace File Ownership
 
 Files you own and should actively maintain:
-- `MEMORY.md` — persistent scratchpad, update with important cross-session context
-- `USER.md` — user preferences, communication style, interests
-- `ENVIRONMENT.md` — document local environment details you discover
+- `wiki/` — your long-term knowledge: the user, their world and work, this machine. One concept per page; keep `index.md` files and `log.md` current. The `wiki` skill has the conventions.
+- `USER.md` — the user's core facts only (short, capped list); longer-form knowledge about them goes in the wiki
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
 - `memory/OBSERVER.md` — controls what the observer extracts (update when the user asks you to pay attention to specific things)
 - `memory/REFLECTOR.md` — controls how the reflector compresses observations (update when the user asks to change compression behavior)

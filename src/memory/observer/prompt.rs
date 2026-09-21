@@ -6,20 +6,10 @@ use crate::memory::types::Visibility;
 
 /// User-customizable content guidance — default when `memory/OBSERVER.md` is absent.
 ///
-/// The workspace bootstrap writes this same content to disk so users can customise
-/// it without recompiling. The format spec is always appended by code.
+/// Embedded from the same asset the workspace bootstrap writes to disk, so the
+/// fallback and the bundled file cannot drift. The format spec is always appended by code.
 pub(super) const EXTRACTION_CONTENT_PROMPT: &str =
-    "You are a memory extraction system. Given a conversation segment, extract key observations.
-
-For each observation, capture:
-- Key decisions made and their rationale
-- Problems encountered and their solutions
-- Corrections or mistakes that were fixed
-- Important technical details or patterns discovered
-- Action items or next steps identified
-- Interaction signals — how the user works and wants to be worked with: corrections and pushback, process preferences, frustration and its cause, praise and what earned it
-
-Record observations as facts about what happened or what is true, never as instructions. Each observation should be a complete sentence useful as future context. Be specific and concise.";
+    include_str!("../../../assets/workspace-bootstrap/memory/OBSERVER.md");
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///

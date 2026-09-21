@@ -9,7 +9,7 @@ An ephemeral LLM turn loop with its own context. Sub-agents are lightweight work
 **What's included in sub-agent context:**
 - Task prompt
 - `USER.md`
-- `ENVIRONMENT.md`
+- `WIKI_INDEX` (the root `wiki/index.md`)
 - Active skills
 - Full tool set (with exceptions below)
 - Optional inline context and file references
@@ -18,10 +18,9 @@ An ephemeral LLM turn loop with its own context. Sub-agents are lightweight work
 - `SOUL.md` (no identity)
 - `AGENTS.md` (no behavioral rules)
 - Observation log
-- `MEMORY.md`
 - Recent conversation messages
 
-The spawn caller can opt back into identity context with `include_identity: true` — this adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt alongside the usual `ENVIRONMENT.md`/`USER.md`. The built-in `reflection` and `memory_tending` pulses set it, since the `introspection` skill needs full identity context to judge what belongs in memory.
+The spawn caller can opt back into identity context with `include_identity: true` — this adds `SOUL.md` and `AGENTS.md` to the sub-agent's prompt alongside the usual `USER.md`/`WIKI_INDEX`. The built-in `reflection` pulse sets it, since the `introspection` skill needs full identity context to judge what's worth surfacing.
 
 **Tools excluded from sub-agents:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `stop_agent` (no sub-to-sub delegation, no action scheduling from background).
 
@@ -93,8 +92,9 @@ A spawn naming a skill that does not resolve fails loudly rather than running a 
 
 | Skill | Spawned by |
 |-------|------------|
-| `introspection` | The built-in `reflection`/`memory_tending` pulses, at `large` with identity included. |
-| `learner` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, promotes it to `USER.md` once at least two supporting observations exist (annotating the evidence count); single sightings go to `MEMORY.md` as provisional. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
+| `introspection` | The built-in `reflection` pulse, at `large` with identity included. |
+| `wiki` | The built-in `memory_tending` and `wiki_lint` pulses, at `large` without identity. `memory_tending` ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md`; `wiki_lint` fixes index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links. |
+| `learner` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, files it as a wiki page — `status: draft` for a single episode, promoted to `stable` once a second independent episode supports it — and adds only corroborated core facts to `USER.md`. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
 | `memory-analyst` | The main agent, when it needs a synthesized answer about the user or past history rather than raw search results. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates instead of silently picking one, abstains rather than fabricating when the record is silent, and cites episode IDs. |
 
 ## Concurrency

@@ -28,7 +28,7 @@ pub struct PulseDef {
     /// Model tier for the sub-agent. Defaults to `small`.
     #[serde(default)]
     pub model_tier: Option<String>,
-    /// Render SOUL.md, AGENTS.md, and MEMORY.md into the sub-agent's prompt.
+    /// Render SOUL.md and AGENTS.md into the sub-agent's prompt.
     #[serde(default)]
     pub include_identity: bool,
     #[serde(default)]
@@ -537,10 +537,15 @@ pulses:
         ))
         .unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["reflection", "memory_tending"]);
+        assert_eq!(names, ["reflection", "memory_tending", "wiki_lint"]);
+        let agents: Vec<Option<&str>> = cfg.pulses.iter().map(|p| p.agent.as_deref()).collect();
+        assert_eq!(
+            agents,
+            [Some("introspection"), Some("wiki"), Some("wiki")],
+            "each built-in pulse runs as a bundled role skill"
+        );
         for pulse in &cfg.pulses {
             assert!(pulse.enabled, "built-in pulses ship enabled");
-            assert_eq!(pulse.agent.as_deref(), Some("introspection"));
             parse_schedule_duration(&pulse.schedule).unwrap();
             if let Some(hours) = &pulse.active_hours {
                 parse_active_hours(hours).unwrap();

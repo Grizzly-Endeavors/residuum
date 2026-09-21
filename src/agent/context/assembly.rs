@@ -21,9 +21,8 @@ pub(in crate::agent) fn compute_context_breakdown(
         identity.soul.as_deref(),
         identity.agents.as_deref(),
         identity.bootstrap.as_deref(),
-        identity.environment.as_deref(),
         identity.user.as_deref(),
-        identity.memory.as_deref(),
+        identity.wiki_index.as_deref(),
     ]
     .into_iter()
     .flatten()

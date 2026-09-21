@@ -15,10 +15,8 @@ pub struct IdentityFiles {
     pub agents: Option<String>,
     /// USER.md -- user preferences and context.
     pub user: Option<String>,
-    /// MEMORY.md -- persistent memory across restarts.
-    pub memory: Option<String>,
-    /// ENVIRONMENT.md -- local environment notes.
-    pub environment: Option<String>,
+    /// `wiki/index.md` -- the knowledge wiki's root catalog. Pages are read on demand.
+    pub wiki_index: Option<String>,
     /// BOOTSTRAP.md -- first-run guidance (present only on first conversation).
     pub bootstrap: Option<String>,
 }
@@ -37,8 +35,7 @@ impl IdentityFiles {
         let soul_result = read_optional(&layout.soul_md()).await?;
         let agents_result = read_optional(&layout.agents_md()).await?;
         let user_result = read_optional(&layout.user_md()).await?;
-        let memory_result = read_optional(&layout.memory_md()).await?;
-        let environment_result = read_optional(&layout.environment_md()).await?;
+        let wiki_index_result = read_optional(&layout.wiki_index_md()).await?;
 
         let bootstrap = read_optional(&layout.bootstrap_md()).await?.into_option();
 
@@ -46,8 +43,7 @@ impl IdentityFiles {
             soul: soul_result.into_option(),
             agents: agents_result.into_option(),
             user: user_result.into_option(),
-            memory: memory_result.into_option(),
-            environment: environment_result.into_option(),
+            wiki_index: wiki_index_result.into_option(),
             bootstrap,
         })
     }
@@ -67,11 +63,8 @@ impl IdentityFiles {
         if self.user.is_none() {
             tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
         }
-        if self.memory.is_none() {
-            tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
-        }
-        if self.environment.is_none() {
-            tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
+        if self.wiki_index.is_none() {
+            tracing::warn!(path = %layout.wiki_index_md().display(), "wiki/index.md is missing or empty; expected after bootstrap");
         }
     }
 }
@@ -127,6 +120,29 @@ mod tests {
         assert!(
             identity.bootstrap.is_none(),
             "bootstrap should be None after file deletion"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_reads_wiki_root_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+        tokio::fs::write(
+            layout.wiki_index_md(),
+            "# Wiki\n\n- [Homelab](/homelab/index.md): the user's k8s cluster\n",
+        )
+        .await
+        .unwrap();
+
+        let identity = IdentityFiles::load(&layout).await.unwrap();
+        assert!(
+            identity
+                .wiki_index
+                .as_deref()
+                .is_some_and(|idx| idx.contains("/homelab/index.md")),
+            "wiki_index should hold the root index.md content"
         );
     }
 

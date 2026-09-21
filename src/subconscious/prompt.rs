@@ -177,7 +177,7 @@ fn phase_question(phase: EvalPhase) -> &'static str {
         EvalPhase::EndOfTurn => {
             "The agent has finished this turn. Acting as a triage step, decide what still needs \
              the agent's attention: did it omit something it should have done — for example, \
-             failing to persist a stated user preference to MEMORY.md — or violate one of its \
+             failing to record a stated user preference in the wiki — or violate one of its \
              instructions? Do not repeat steering that was already applied this turn, and do not \
              escalate a queued note unless it remains genuinely unaddressed. Returning no \
              findings is the normal, correct outcome — most turns need nothing."
@@ -275,13 +275,13 @@ mod tests {
             Some(vec![ToolCall {
                 id: "call_1".to_string(),
                 name: "write_file".to_string(),
-                arguments: serde_json::json!({"path": "MEMORY.md"}),
+                arguments: serde_json::json!({"path": "wiki/index.md"}),
             }]),
         );
         let formatted = format_message(&msg);
         assert!(formatted.contains("write_file"), "tool name included");
         assert!(formatted.contains("call_1"), "tool call id included");
-        assert!(formatted.contains("MEMORY.md"), "arguments included");
+        assert!(formatted.contains("wiki/index.md"), "arguments included");
     }
 
     #[test]

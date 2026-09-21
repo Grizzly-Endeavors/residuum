@@ -25,8 +25,6 @@
     "SOUL.md",
     "AGENTS.md",
     "USER.md",
-    "MEMORY.md",
-    "ENVIRONMENT.md",
     "HEARTBEAT.yml",
     "CHANNELS.yml",
   ]);

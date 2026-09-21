@@ -4,25 +4,15 @@ The memory system gives the agent persistent recall across conversations. It has
 
 ## Components
 
-### MEMORY.md — Persistent Scratchpad
+### Knowledge Wiki
 
-A markdown file the agent owns and writes to directly. This is the agent's working notebook for cross-session context: important facts, ongoing threads, user preferences it wants to remember.
+Distilled long-term knowledge — facts about the user, their world, their work, and the machine — lives in the `wiki/` directory as one-concept Markdown pages. Only its root `index.md` is in the prompt; pages are read on demand. The memory pipeline below is the raw material the wiki is built from: the `memory_tending` pulse reads new episodes and files what they teach into wiki pages. See [wiki.md](wiki.md).
 
-- Updated by the agent using `write_file` or `edit_file` tools
-- Always loaded into the agent's context window
-- Not touched by the observer or reflector — entirely agent-controlled
-- Think of it as the agent's handwritten notes
+### USER.md — Core Facts
 
-### USER.md — Two-Tier User Model
+`USER.md` holds only durable identity and standing preferences the agent needs on every turn (name, timezone, how the user likes to be addressed and answered). It is hard-capped at roughly 15 entries and **replace, don't append**: once full, adding an entry means removing one. Everything longer-form about the user lives in wiki pages.
 
-`USER.md` splits into two sections with different churn and different rules:
-
-- **Core Facts** — durable identity and standing preferences only. Hard-capped at roughly 15 entries and **replace, don't append**: once full, adding a new entry means removing one. This is the always-loaded summary, so it stays short and current by construction rather than growing without bound.
-- **Profile** — the longer-form, evolving model: communication style, context about the user's work and life, preferences that haven't earned a Core Facts slot yet. Normal append/update churn.
-
-**Promotion rule**: an observation is only durable enough for Core Facts (or for a new entry in Profile) once at least two supporting observations back it — the pattern must recur, not just be seen once. Promoted entries are annotated with the evidence count (e.g. "seen 3x"). A single, uncorroborated sighting is written to `MEMORY.md` as a provisional note instead, not into `USER.md`.
-
-This rule is enforced by whichever agent is doing the tending — the `introspection` skill (via the `memory_tending` pulse) and the `learner` skill (see below) both apply it the same way.
+An entry belongs in `USER.md` only once it is corroborated — supported by at least two independent episodes. Knowledge seen in a single episode goes into a `draft` wiki page instead. The `memory_tending` pulse and the `learner` skill both apply this rule.
 
 ### Observer — Automatic Episode Extraction
 
@@ -51,7 +41,7 @@ Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). Next ID determined
 
 Fires when `memory/observations.json` exceeds a token threshold. Calls the LLM to merge and deduplicate observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just compressed.
 
-**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch `MEMORY.md`. These are completely separate systems.
+**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki or `USER.md`. These are completely separate systems.
 
 Original observations are backed up before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
 
@@ -119,8 +109,9 @@ Retrieves the full transcript of a specific episode.
 
 ## Context Assembly
 
-Memory appears in the agent's context as:
-1. `MEMORY.md` content (the persistent scratchpad)
-2. Formatted observation log from observations.json
-2. Narrative context from the latest observation (`memory/recent_context.json`)
-3. Unread inbox count (from inbox system, not memory — but surfaced in the same status area)
+Knowledge and memory appear in the agent's context, after `USER.md`, as:
+1. `WIKI_INDEX` — the wiki's root `index.md`
+2. `OBSERVATION_LOG` — the formatted observation log from `observations.json`
+3. `RECENT_CONTEXT` — the narrative from the latest observation (`memory/recent_context.json`)
+
+Sub-agents get `USER.md` and `WIKI_INDEX` but not the observation log or recent context.

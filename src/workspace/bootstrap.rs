@@ -9,8 +9,8 @@ use super::layout::WorkspaceLayout;
 const DEFAULT_SOUL: &str = include_str!("../../assets/workspace-bootstrap/SOUL.md");
 const DEFAULT_AGENTS: &str = include_str!("../../assets/workspace-bootstrap/AGENTS.md");
 const DEFAULT_USER: &str = include_str!("../../assets/workspace-bootstrap/USER.md");
-const DEFAULT_MEMORY: &str = include_str!("../../assets/workspace-bootstrap/MEMORY.md");
-const DEFAULT_ENVIRONMENT: &str = include_str!("../../assets/workspace-bootstrap/ENVIRONMENT.md");
+const DEFAULT_WIKI_INDEX: &str = include_str!("../../assets/workspace-bootstrap/wiki/index.md");
+const DEFAULT_WIKI_LOG: &str = include_str!("../../assets/workspace-bootstrap/wiki/log.md");
 
 /// Default content for BOOTSTRAP.md -- first-run guidance.
 ///
@@ -35,8 +35,8 @@ const DEFAULT_REFLECTOR_PROMPT: &str =
 
 const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
 
-/// Built-in `introspection` skill, used by the reflection and `memory_tending`
-/// pulses to review episode memory and tend identity files.
+/// Built-in `introspection` skill, used by the reflection pulse to review
+/// episode memory and deliver suggestions.
 const INTROSPECTION_SKILL_MD: &str =
     include_str!("../../assets/bundled-skills/introspection/SKILL.md");
 
@@ -51,6 +51,11 @@ const LEARNER_SKILL_MD: &str = include_str!("../../assets/bundled-skills/learner
 const MEMORY_ANALYST_SKILL_MD: &str =
     include_str!("../../assets/bundled-skills/memory-analyst/SKILL.md");
 
+/// Built-in `wiki` skill: the knowledge wiki's page format, index rules, and
+/// ingest/lint procedures. Activated before writing to the wiki, and the role
+/// of the `memory_tending` and `wiki_lint` pulses.
+const WIKI_SKILL_MD: &str = include_str!("../../assets/bundled-skills/wiki/SKILL.md");
+
 /// Default subconscious check policy written to SUBCONSCIOUS.md.
 ///
 /// Contains only the customizable check guidance — the output format spec is
@@ -61,20 +66,51 @@ const DEFAULT_SUBCONSCIOUS: &str = include_str!("../../assets/workspace-bootstra
 
 // residuum-system skill
 const SYSTEM_SKILL_MD: &str = include_str!("../../assets/bundled-skills/residuum-system/SKILL.md");
-const SYSTEM_REF_MEMORY: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/memory-system.md");
-const SYSTEM_REF_HEARTBEATS: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/heartbeats.md");
-const SYSTEM_REF_INBOX: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/inbox.md");
-const SYSTEM_REF_ACTIONS: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/scheduled-actions.md");
-const SYSTEM_REF_SKILLS: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/skills.md");
-const SYSTEM_REF_NOTIFICATIONS: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/notifications.md");
-const SYSTEM_REF_BACKGROUND: &str =
-    include_str!("../../assets/bundled-skills/residuum-system/references/background-tasks.md");
+
+/// Every reference file of the residuum-system skill, as `(file name, content)`.
+/// SKILL.md links to each by name; the bootstrap writes all of them.
+const SYSTEM_REFS: &[(&str, &str)] = &[
+    (
+        "memory-system.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/memory-system.md"),
+    ),
+    (
+        "heartbeats.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/heartbeats.md"),
+    ),
+    (
+        "inbox.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/inbox.md"),
+    ),
+    (
+        "scheduled-actions.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/scheduled-actions.md"),
+    ),
+    (
+        "skills.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/skills.md"),
+    ),
+    (
+        "tools.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/tools.md"),
+    ),
+    (
+        "mcp.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/mcp.md"),
+    ),
+    (
+        "notifications.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/notifications.md"),
+    ),
+    (
+        "background-tasks.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/background-tasks.md"),
+    ),
+    (
+        "subconscious.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/subconscious.md"),
+    ),
+];
 
 // residuum-getting-started skill
 const GETTING_STARTED_SKILL_MD: &str =
@@ -153,8 +189,8 @@ pub async fn ensure_workspace(
     let user_content = build_user_content(user_name, timezone);
     write_if_missing(&layout.user_md(), &user_content).await?;
 
-    write_if_missing(&layout.memory_md(), DEFAULT_MEMORY).await?;
-    write_if_missing(&layout.environment_md(), DEFAULT_ENVIRONMENT).await?;
+    write_if_missing(&layout.wiki_index_md(), DEFAULT_WIKI_INDEX).await?;
+    write_if_missing(&layout.wiki_log_md(), DEFAULT_WIKI_LOG).await?;
 
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
@@ -204,10 +240,7 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
         return DEFAULT_USER.to_string();
     }
 
-    let mut out = String::from("# User\n\n## Core Facts\n\n");
-    out.push_str("<!-- Durable identity and standing preferences only. Hard cap ~15 entries.\n");
-    out.push_str("     Replace, don't append: when full, an entry must be removed to add one.\n");
-    out.push_str("     Keep this tier short and current — it is the always-loaded summary. -->\n");
+    let mut out = DEFAULT_USER.to_string();
     if let Some(name) = name {
         out.push_str("\n**Name**: ");
         out.push_str(name);
@@ -216,8 +249,7 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
         out.push_str("\n**Timezone**: ");
         out.push_str(tz);
     }
-    out.push_str("\n\n## Profile\n\n");
-    out.push_str("Update this section as you learn about the user — communication style, context about their work and life, evolving preferences, and anything that doesn't yet belong in Core Facts. This is the longer-form, evolving model.\n");
+    out.push('\n');
     out
 }
 
@@ -237,32 +269,18 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     })?;
 
     write_if_missing(&system_dir.join("SKILL.md"), SYSTEM_SKILL_MD).await?;
-    write_if_missing(&system_refs.join("memory-system.md"), SYSTEM_REF_MEMORY).await?;
-    write_if_missing(&system_refs.join("heartbeats.md"), SYSTEM_REF_HEARTBEATS).await?;
-    write_if_missing(&system_refs.join("inbox.md"), SYSTEM_REF_INBOX).await?;
-    write_if_missing(
-        &system_refs.join("scheduled-actions.md"),
-        SYSTEM_REF_ACTIONS,
-    )
-    .await?;
-    write_if_missing(&system_refs.join("skills.md"), SYSTEM_REF_SKILLS).await?;
-    write_if_missing(
-        &system_refs.join("notifications.md"),
-        SYSTEM_REF_NOTIFICATIONS,
-    )
-    .await?;
-    write_if_missing(
-        &system_refs.join("background-tasks.md"),
-        SYSTEM_REF_BACKGROUND,
-    )
-    .await?;
+    for (file_name, content) in SYSTEM_REFS {
+        write_if_missing(&system_refs.join(file_name), content).await?;
+    }
 
-    // Role skills — spawned as sub-agents by pulses, the subconscious, and the
-    // main agent. They carry no references, so each is a lone SKILL.md.
+    // Single-file skills: role skills spawned as sub-agents by pulses, the
+    // subconscious, and the main agent, plus the wiki conventions skill (also a
+    // pulse role). None carries references, so each is a lone SKILL.md.
     for (name, body) in [
         ("introspection", INTROSPECTION_SKILL_MD),
         ("learner", LEARNER_SKILL_MD),
         ("memory-analyst", MEMORY_ANALYST_SKILL_MD),
+        ("wiki", WIKI_SKILL_MD),
     ] {
         let dir = layout.skills_dir().join(name);
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
@@ -371,10 +389,10 @@ mod tests {
         assert!(layout.soul_md().exists(), "SOUL.md should exist");
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
-        assert!(layout.memory_md().exists(), "MEMORY.md should exist");
+        assert!(layout.wiki_dir().exists(), "wiki dir should exist");
         assert!(
-            layout.environment_md().exists(),
-            "ENVIRONMENT.md should exist"
+            layout.wiki_index_md().exists(),
+            "wiki/index.md should exist"
         );
         assert!(layout.bootstrap_md().exists(), "BOOTSTRAP.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
@@ -395,8 +413,8 @@ mod tests {
 
         let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
         assert!(!soul.is_empty(), "SOUL.md should have default content");
-        let memory = tokio::fs::read_to_string(layout.memory_md()).await.unwrap();
-        assert!(!memory.is_empty(), "MEMORY.md should have default content");
+        let user = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert!(!user.is_empty(), "USER.md should have default content");
     }
 
     #[tokio::test]
@@ -406,7 +424,7 @@ mod tests {
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        for name in ["introspection", "learner", "memory-analyst"] {
+        for name in ["introspection", "learner", "memory-analyst", "wiki"] {
             let skill_path = layout.skills_dir().join(name).join("SKILL.md");
             assert!(skill_path.exists(), "{name}/SKILL.md should be created");
 
@@ -449,31 +467,12 @@ mod tests {
         // residuum-system skill tree
         let system_dir = layout.skills_dir().join("residuum-system");
         assert!(system_dir.join("SKILL.md").exists(), "system SKILL.md");
-        assert!(
-            system_dir.join("references/memory-system.md").exists(),
-            "memory-system.md"
-        );
-        assert!(
-            system_dir.join("references/heartbeats.md").exists(),
-            "heartbeats.md"
-        );
-        assert!(system_dir.join("references/inbox.md").exists(), "inbox.md");
-        assert!(
-            system_dir.join("references/scheduled-actions.md").exists(),
-            "scheduled-actions.md"
-        );
-        assert!(
-            system_dir.join("references/skills.md").exists(),
-            "skills.md"
-        );
-        assert!(
-            system_dir.join("references/notifications.md").exists(),
-            "notifications.md"
-        );
-        assert!(
-            system_dir.join("references/background-tasks.md").exists(),
-            "background-tasks.md"
-        );
+        for (file_name, _) in SYSTEM_REFS {
+            assert!(
+                system_dir.join("references").join(file_name).exists(),
+                "residuum-system reference {file_name} should be written"
+            );
+        }
 
         // residuum-getting-started skill tree
         let started_dir = layout.skills_dir().join("residuum-getting-started");
@@ -527,6 +526,42 @@ mod tests {
         assert!(
             !system_skill_content.is_empty(),
             "system SKILL.md should have content"
+        );
+    }
+
+    #[test]
+    fn system_skill_links_match_bundled_references() {
+        let linked: std::collections::BTreeSet<&str> = SYSTEM_SKILL_MD
+            .split("(references/")
+            .skip(1)
+            .filter_map(|rest| rest.split_once(')').map(|(name, _)| name))
+            .collect();
+        let bundled: std::collections::BTreeSet<&str> =
+            SYSTEM_REFS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            linked, bundled,
+            "every reference linked from residuum-system SKILL.md must be bundled, and every bundled reference linked"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_seeds_wiki() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let index = tokio::fs::read_to_string(layout.wiki_index_md())
+            .await
+            .unwrap();
+        assert!(
+            index.contains("okf_version"),
+            "root wiki index should declare its OKF version"
+        );
+        assert!(layout.wiki_log_md().exists(), "wiki/log.md should exist");
+        assert!(
+            layout.skills_dir().join("wiki/SKILL.md").exists(),
+            "wiki skill should be bundled"
         );
     }
 
