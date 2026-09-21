@@ -158,6 +158,19 @@
         />
         <div class="field-hint">Idle timeout for non-webhook external sessions.</div>
       </div>
+      <div class="settings-field">
+        <label for="rt-bg-episode-skip-floor">Episode Skip Token Floor</label>
+        <input
+          id="rt-bg-episode-skip-floor"
+          type="number"
+          bind:value={fields.bg_episode_skip_token_floor}
+          placeholder="Default: 2000"
+        />
+        <div class="field-hint">
+          A completed session run below this many transcript tokens, with nothing staged, produces
+          no episode. Its transcript is still kept.
+        </div>
+      </div>
     </div>
 
     <div class="settings-group">

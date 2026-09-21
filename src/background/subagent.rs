@@ -11,6 +11,8 @@ use crate::agent::turn::{EventContext, TurnResources, execute_turn};
 use crate::bus::Publisher;
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::merge_writer::MemoryMergeWriter;
+use crate::memory::observer::Observer;
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, ToolRegistry};
@@ -42,6 +44,17 @@ pub struct SubAgentResources {
     pub(crate) observations: Option<String>,
     /// Snapshot of the recent-context narrative, taken at fork time.
     pub(crate) recent_context: Option<String>,
+    /// Workspace layout, for the completion memory pipeline (episode
+    /// storage, observer guidance files).
+    pub(crate) layout: crate::workspace::layout::WorkspaceLayout,
+    /// This session's own observer instance, for per-run threshold checks
+    /// and extraction.
+    pub(crate) observer: Arc<Observer>,
+    /// The single serialized writer for global memory.
+    pub(crate) merge_writer: Arc<MemoryMergeWriter>,
+    /// Token floor below which a completed run with nothing staged produces
+    /// no episode.
+    pub(crate) episode_skip_token_floor: usize,
 }
 
 /// Build isolated session resources from the main agent's shared state.
@@ -79,6 +92,9 @@ pub async fn build_subagent_resources(
         action_store,
         action_notify,
         hybrid_searcher,
+        observer,
+        merge_writer,
+        episode_skip_token_floor,
     } = config;
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
@@ -141,6 +157,10 @@ pub async fn build_subagent_resources(
         skills_index,
         observations,
         recent_context,
+        layout: workspace_layout,
+        observer,
+        merge_writer,
+        episode_skip_token_floor,
     })
 }
 
@@ -156,6 +176,11 @@ pub async fn build_subagent_resources(
 /// leaving `recent_messages` — and therefore the transcript — intact up to
 /// that point.
 ///
+/// `transcript_sink`, when given, receives every message as it's produced
+/// (the initial user message here, then each model response and tool
+/// result inside `execute_turn`) so the run's transcript survives a crash
+/// mid-turn in the session store.
+///
 /// # Errors
 /// Returns an error if the model call fails.
 #[tracing::instrument(skip_all, fields(run.id = %run_id))]
@@ -164,6 +189,7 @@ pub(crate) async fn execute_subagent(
     config: &SubAgentConfig,
     resources: &SubAgentResources,
     stop_token: &CancellationToken,
+    transcript_sink: Option<&dyn crate::agent::turn::TranscriptSink>,
 ) -> Result<SubAgentOutput, anyhow::Error> {
     // Build skills context from this session's isolated skill state
     let active_instructions: Option<String> = {
@@ -186,8 +212,12 @@ pub(crate) async fn execute_subagent(
     user_parts.push(config.prompt.clone());
 
     let combined_prompt = user_parts.join("\n\n");
+    let initial_message = Message::user(combined_prompt);
     let mut recent_messages = RecentMessages::new();
-    recent_messages.push(Message::user(combined_prompt));
+    recent_messages.push(initial_message.clone());
+    if let Some(sink) = transcript_sink {
+        sink.append(&[initial_message]).await;
+    }
 
     // No broker needed: sessions pass `None` for both endpoints, so
     // streaming events are never published. A noop publisher satisfies
@@ -209,6 +239,7 @@ pub(crate) async fn execute_subagent(
         identity: &resources.identity,
         options: &resources.options,
         stop_token,
+        transcript_sink,
     };
 
     let events = EventContext {
@@ -236,6 +267,33 @@ pub(crate) async fn execute_subagent(
     let summary = texts.pop().unwrap_or_default();
     let messages = recent_messages.messages().to_vec();
     Ok(SubAgentOutput { summary, messages })
+}
+
+/// Test-only layout, observer, and merge writer, backed by a leaked temp
+/// directory. `Observer::disabled`/a threshold-disabled reflector mean
+/// neither ever fires unless a test explicitly configures otherwise. Shared
+/// with `runtime`'s tests, which also build `SubAgentResources`.
+#[cfg(test)]
+pub(crate) fn test_memory_extras() -> (
+    crate::workspace::layout::WorkspaceLayout,
+    Arc<Observer>,
+    Arc<MemoryMergeWriter>,
+) {
+    let dir = tempfile::tempdir().unwrap().keep();
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&dir);
+    let search_index = Arc::new(
+        crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+    );
+    let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+    let merge_writer = Arc::new(MemoryMergeWriter::new(
+        reflector,
+        layout.clone(),
+        search_index,
+        None,
+        None,
+    ));
+    let observer = Arc::new(Observer::disabled(chrono_tz::UTC));
+    (layout, observer, merge_writer)
 }
 
 #[cfg(test)]
@@ -269,6 +327,7 @@ mod tests {
     fn make_resources(response: &str) -> SubAgentResources {
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
         let mcp_registry = McpRegistry::new_shared();
+        let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
@@ -281,6 +340,10 @@ mod tests {
             skills_index: None,
             observations: None,
             recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
         }
     }
 
@@ -294,9 +357,15 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
-        let output = execute_subagent("run-001", &config, &resources, &CancellationToken::new())
-            .await
-            .unwrap();
+        let output = execute_subagent(
+            "run-001",
+            &config,
+            &resources,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(output.summary, "3 new emails found");
     }
 
@@ -310,9 +379,15 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Small,
         };
 
-        let output = execute_subagent("run-002", &config, &resources, &CancellationToken::new())
-            .await
-            .unwrap();
+        let output = execute_subagent(
+            "run-002",
+            &config,
+            &resources,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(output.summary, "done");
         assert!(
             output.messages.len() >= 2,
@@ -340,9 +415,15 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
-        let output = execute_subagent("run-ctx", &config, &resources, &CancellationToken::new())
-            .await
-            .unwrap();
+        let output = execute_subagent(
+            "run-ctx",
+            &config,
+            &resources,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
         let first = output.messages.first().unwrap();
         assert_eq!(first.role, crate::inference::Role::User);
         assert_eq!(
@@ -382,6 +463,7 @@ mod tests {
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
         let mcp_registry = McpRegistry::new_shared();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             provider: Box::new(CapturingProvider {
                 response: "done".to_string(),
@@ -400,6 +482,10 @@ mod tests {
             skills_index: None,
             observations: Some("episode ep-1: learned something".to_string()),
             recent_context: Some("we were mid-refactor".to_string()),
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
         };
 
         let config = SubAgentConfig {
@@ -408,9 +494,15 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
-        execute_subagent("run-fork", &config, &resources, &CancellationToken::new())
-            .await
-            .unwrap();
+        execute_subagent(
+            "run-fork",
+            &config,
+            &resources,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap();
 
         let calls = seen.lock().unwrap();
         let call = calls.first().expect("provider should have been called");
@@ -470,6 +562,7 @@ mod tests {
 
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
         let mcp_registry = McpRegistry::new_shared();
+        let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
@@ -480,6 +573,10 @@ mod tests {
             skills_index: None,
             observations: None,
             recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
         };
         let config = SubAgentConfig {
             prompt: "do work".to_string(),
@@ -490,7 +587,7 @@ mod tests {
         let stop_token = CancellationToken::new();
         stop_token.cancel();
 
-        let output = execute_subagent("run-stop", &config, &resources, &stop_token)
+        let output = execute_subagent("run-stop", &config, &resources, &stop_token, None)
             .await
             .unwrap();
         assert!(

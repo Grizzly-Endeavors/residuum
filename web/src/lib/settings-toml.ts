@@ -52,6 +52,7 @@ export interface ConfigFields {
   bg_idle_timeout_scheduled_minutes: string;
   bg_idle_timeout_spawned_minutes: string;
   bg_idle_timeout_external_minutes: string;
+  bg_episode_skip_token_floor: string;
   // retry
   retry_max_retries: string;
   retry_initial_delay_ms: string;
@@ -134,6 +135,7 @@ export function defaultConfigFields(): ConfigFields {
     bg_idle_timeout_scheduled_minutes: "",
     bg_idle_timeout_spawned_minutes: "",
     bg_idle_timeout_external_minutes: "",
+    bg_episode_skip_token_floor: "",
     retry_max_retries: "",
     retry_initial_delay_ms: "",
     retry_max_delay_ms: "",
@@ -251,6 +253,7 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.bg_idle_timeout_scheduled_minutes = str(bg.idle_timeout_scheduled_minutes);
     fields.bg_idle_timeout_spawned_minutes = str(bg.idle_timeout_spawned_minutes);
     fields.bg_idle_timeout_external_minutes = str(bg.idle_timeout_external_minutes);
+    fields.bg_episode_skip_token_floor = str(bg.episode_skip_token_floor);
   }
 
   const retry = doc.retry as Record<string, unknown> | undefined;
@@ -717,7 +720,8 @@ export function serializeConfigToml(f: ConfigFields): string {
     f.bg_max_concurrent ||
     f.bg_idle_timeout_scheduled_minutes ||
     f.bg_idle_timeout_spawned_minutes ||
-    f.bg_idle_timeout_external_minutes
+    f.bg_idle_timeout_external_minutes ||
+    f.bg_episode_skip_token_floor
   ) {
     lines.push("");
     lines.push("[background]");
@@ -728,6 +732,8 @@ export function serializeConfigToml(f: ConfigFields): string {
       lines.push(`idle_timeout_spawned_minutes = ${f.bg_idle_timeout_spawned_minutes}`);
     if (f.bg_idle_timeout_external_minutes)
       lines.push(`idle_timeout_external_minutes = ${f.bg_idle_timeout_external_minutes}`);
+    if (f.bg_episode_skip_token_floor)
+      lines.push(`episode_skip_token_floor = ${f.bg_episode_skip_token_floor}`);
   }
 
   // agent

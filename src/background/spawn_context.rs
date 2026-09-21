@@ -16,6 +16,8 @@ use crate::config::{BackgroundConfig, BackgroundModelTier};
 use crate::inference::retry::RetryConfig;
 use crate::inference::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::merge_writer::MemoryMergeWriter;
+use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
@@ -47,6 +49,15 @@ pub(crate) struct SpawnContext {
     pub(crate) skill_state: SharedSkillState,
     /// Shared MCP registry (ref-counted across sessions).
     pub(crate) mcp_registry: SharedMcpRegistry,
+    /// A session's own observer instance, built from the same `[observer]`
+    /// config the main agent uses, for per-run threshold checks and
+    /// extraction. Independent from the main agent's `Observer` instance so
+    /// a session fork never contends with a main config-reload swap.
+    pub(crate) observer: Arc<Observer>,
+    /// The single serialized writer for global memory, shared with the main
+    /// agent so episode numbering and log appends never race between a
+    /// session's completion pipeline and the main agent's own observations.
+    pub(crate) merge_writer: Arc<MemoryMergeWriter>,
 }
 
 /// Build isolated `SubAgentResources` for a new session run at a given tier.
@@ -136,6 +147,9 @@ pub(crate) async fn build_spawn_resources(
         action_store: Arc::clone(&ctx.action_store),
         action_notify: Arc::clone(&ctx.action_notify),
         hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
+        observer: Arc::clone(&ctx.observer),
+        merge_writer: Arc::clone(&ctx.merge_writer),
+        episode_skip_token_floor: ctx.background_config.episode_skip_token_floor,
     };
 
     build_subagent_resources(

@@ -5,6 +5,7 @@
 pub(crate) mod listener;
 pub mod registry;
 pub(crate) mod runtime;
+pub(crate) mod session_memory;
 pub(crate) mod spawn_context;
 pub mod store;
 pub mod subagent;

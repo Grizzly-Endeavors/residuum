@@ -24,7 +24,8 @@ use crate::config::BackgroundConfig;
 use super::registry::{
     MAIN_ADDRESS, SessionCategory, SessionInfo, SessionRegistry, SessionState, generate_run_id,
 };
-use super::store::SessionStore;
+use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
+use super::store::{RunTranscriptSink, SessionStore};
 use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
 
@@ -248,7 +249,7 @@ async fn recover_from_panic(
 ) {
     registry.set_state(&info.address, SessionState::Completing);
     let transcript_path = store
-        .complete_run(info, SessionState::Completed.as_str(), Vec::new())
+        .complete_run(info, SessionState::Completed.as_str(), Vec::new(), None)
         .await;
 
     let status = AgentResultStatus::Failed {
@@ -283,7 +284,7 @@ async fn run_session(
             match permit {
                 Ok(_permit) => {
                     env.registry.set_state(&info.address, SessionState::Running);
-                    run_turn(&info.run_id, &config, resources.as_ref(), &stop_token).await
+                    run_turn(&info, &config, resources.as_ref(), &stop_token, &env.store).await
                 }
                 Err(_closed) => {
                     tracing::warn!("concurrency semaphore closed before session could acquire a permit");
@@ -298,6 +299,22 @@ async fn run_session(
             }
         }
     };
+
+    // Per-run threshold check: mirrors the main agent's own rotation, and
+    // matters most for a run whose single turn already produced enough
+    // content to cross the force threshold. Staged observations are held
+    // locally and merged alongside the final observation on completion.
+    let mut memory = SessionMemory::new();
+    if let Some(res) = resources.as_ref() {
+        let mem_env = SessionMemoryEnv {
+            observer: &res.observer,
+            merge_writer: &res.merge_writer,
+            layout: &res.layout,
+            episode_skip_token_floor: res.episode_skip_token_floor,
+            tz: env.tz,
+        };
+        memory.maybe_stage(&transcript, &mem_env).await;
+    }
 
     // A cancelled run — whether stopped before its turn started or mid-turn
     // — skips lingering idle and goes straight to completing, per the
@@ -323,9 +340,36 @@ async fn run_session(
     info.state = SessionState::Completing;
     env.registry
         .set_state(&info.address, SessionState::Completing);
+
+    // Merge into global memory before recording the run as completed, so a
+    // successful merge's episode id lands in the same record. A stopped run
+    // merges like any other — stopping is not discarding.
+    let episode_id = if let Some(res) = resources.as_ref() {
+        let mem_env = SessionMemoryEnv {
+            observer: &res.observer,
+            merge_writer: &res.merge_writer,
+            layout: &res.layout,
+            episode_skip_token_floor: res.episode_skip_token_floor,
+            tz: env.tz,
+        };
+        let tag = crate::memory::types::SourceTag::session(
+            info.address.to_string(),
+            info.run_id.clone(),
+            info.category.as_str(),
+        );
+        complete_session_memory(tag, &summary, &transcript, memory, &mem_env).await
+    } else {
+        None
+    };
+
     let transcript_path = env
         .store
-        .complete_run(&info, SessionState::Completed.as_str(), transcript)
+        .complete_run(
+            &info,
+            SessionState::Completed.as_str(),
+            transcript,
+            episode_id,
+        )
         .await;
 
     let event = build_result_event(&info, status, summary, transcript_path, env.tz);
@@ -348,15 +392,21 @@ async fn run_session(
 /// fact tells them apart while still keeping whatever partial
 /// summary/transcript the turn produced before it was stopped.
 async fn run_turn(
-    run_id: &str,
+    info: &SessionInfo,
     config: &SubAgentConfig,
     resources: Option<&SubAgentResources>,
     stop_token: &CancellationToken,
+    store: &SessionStore,
 ) -> (AgentResultStatus, String, Vec<crate::inference::Message>) {
+    let sink = RunTranscriptSink {
+        store,
+        run_id: &info.run_id,
+        started_at: info.started_at,
+    };
     let outcome = async {
         let res =
             resources.ok_or_else(|| anyhow::anyhow!("session run requires SubAgentResources"))?;
-        execute_subagent(run_id, config, res, stop_token).await
+        execute_subagent(&info.run_id, config, res, stop_token, Some(&sink)).await
     }
     .await;
 
@@ -428,6 +478,8 @@ mod tests {
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
 
+    use super::super::subagent::test_memory_extras;
+
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
     /// subscriber for the `AgentResultEvent`s it publishes on completion.
     async fn test_runtime(
@@ -475,6 +527,7 @@ mod tests {
     }
 
     fn make_resources(response: &str) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             provider: Box::new(MockProvider {
                 response: response.to_string(),
@@ -487,6 +540,10 @@ mod tests {
             skills_index: None,
             observations: None,
             recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
         }
     }
 
@@ -624,6 +681,7 @@ mod tests {
         // before the permit was even acquired.
         let (runtime, mut sub) = test_runtime(3).await;
         let address = SessionAddress::from("spawned-researcher-0005");
+        let (layout, observer, merge_writer) = test_memory_extras();
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
@@ -636,6 +694,10 @@ mod tests {
                 skills_index: None,
                 observations: None,
                 recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
             }),
         );
 
@@ -680,6 +742,7 @@ mod tests {
     async fn panicking_turn_still_publishes_failed_result_and_frees_registry() {
         let (runtime, mut sub) = test_runtime(3).await;
         let address = SessionAddress::from("spawned-researcher-0006");
+        let (layout, observer, merge_writer) = test_memory_extras();
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
@@ -692,6 +755,10 @@ mod tests {
                 skills_index: None,
                 observations: None,
                 recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
             }),
         );
 
@@ -715,6 +782,7 @@ mod tests {
     async fn shutdown_stops_live_sessions_and_waits_for_completion() {
         let (runtime, mut sub) = test_runtime(3).await;
         let address = SessionAddress::from("spawned-researcher-0007");
+        let (layout, observer, merge_writer) = test_memory_extras();
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
@@ -727,6 +795,10 @@ mod tests {
                 skills_index: None,
                 observations: None,
                 recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
             }),
         );
 
