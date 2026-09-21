@@ -27,10 +27,20 @@ pub struct EndpointEntry {
 // EndpointRegistry
 // ---------------------------------------------------------------------------
 
-/// Immutable, cheaply cloneable catalog of all configured I/O endpoints.
+type EntryMap = HashMap<EndpointId, EndpointEntry>;
+
+/// Shared, cheaply cloneable catalog of all configured I/O endpoints.
+///
+/// Every clone refers to the same catalog, so a [`refresh`](Self::refresh)
+/// after a config or `channels.toml` reload is seen by everything holding
+/// one — tools, the notification router, idle switching.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointRegistry {
-    entries: Arc<HashMap<EndpointId, EndpointEntry>>,
+    entries: Arc<std::sync::RwLock<Arc<EntryMap>>>,
+}
+
+fn index_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> EntryMap {
+    entries.into_iter().map(|e| (e.id.clone(), e)).collect()
 }
 
 impl EndpointRegistry {
@@ -38,13 +48,37 @@ impl EndpointRegistry {
     #[must_use]
     pub fn from_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> Self {
         Self {
-            entries: Arc::new(entries.into_iter().map(|e| (e.id.clone(), e)).collect()),
+            entries: Arc::new(std::sync::RwLock::new(Arc::new(index_entries(entries)))),
         }
     }
 
     /// Build a registry from the runtime config and external channel definitions.
     #[must_use]
     pub fn from_config(config: &Config, channels: &[ExternalChannelConfig]) -> Self {
+        Self::from_entries(Self::config_entries(config, channels))
+    }
+
+    /// Replace the catalog for every clone of this registry.
+    pub fn refresh(&self, config: &Config, channels: &[ExternalChannelConfig]) {
+        let fresh = Arc::new(index_entries(Self::config_entries(config, channels)));
+        *self
+            .entries
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    }
+
+    /// Snapshot of the current catalog.
+    fn snapshot(&self) -> Arc<EntryMap> {
+        // The lock only guards an Arc swap; a poisoned lock still holds a whole map.
+        Arc::clone(
+            &self
+                .entries
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn config_entries(config: &Config, channels: &[ExternalChannelConfig]) -> Vec<EndpointEntry> {
         // WebSocket — always present
         let mut entries = vec![EndpointEntry {
             id: EndpointId::from("ws"),
@@ -95,13 +129,13 @@ impl EndpointRegistry {
             });
         }
 
-        Self::from_entries(entries)
+        entries
     }
 
     /// Look up an endpoint by its ID.
     #[must_use]
     pub fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        self.entries.get(id).cloned()
+        self.snapshot().get(id).cloned()
     }
 
     /// All interactive endpoints.
@@ -117,7 +151,7 @@ impl EndpointRegistry {
     }
 
     fn with_capabilities(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
-        self.entries
+        self.snapshot()
             .values()
             .filter(|e| e.capabilities.contains(caps))
             .cloned()
@@ -290,6 +324,31 @@ mod tests {
             discord
                 .capabilities
                 .contains(EndpointCapabilities::INTERACTIVE)
+        );
+    }
+
+    #[test]
+    fn refresh_is_seen_by_every_clone() {
+        let mut config = minimal_config();
+        let registry = EndpointRegistry::from_config(&config, &[]);
+        let held_by_a_tool = registry.clone();
+        assert!(held_by_a_tool.get(&EndpointId::from("discord")).is_none());
+
+        config.discord = Some(crate::config::DiscordConfig {
+            token: "added-on-reload".to_string(),
+        });
+        registry.refresh(&config, &[]);
+        assert!(
+            held_by_a_tool.get(&EndpointId::from("discord")).is_some(),
+            "an adapter added by a reload is visible without a restart"
+        );
+
+        config.discord = None;
+        registry.refresh(&config, &[]);
+        assert!(held_by_a_tool.get(&EndpointId::from("discord")).is_none());
+        assert!(
+            held_by_a_tool.get(&EndpointId::from("ws")).is_some(),
+            "ws survives every refresh"
         );
     }
 

@@ -58,7 +58,8 @@ impl DiscordInterface {
     pub(crate) async fn start(self) -> Result<(), Box<serenity::Error>> {
         let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 
-        let inbox_dir = self.workspace_dir.join("inbox");
+        let inbox_dir =
+            crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir).agent_inbox_dir();
 
         let channel_id = Arc::new(tokio::sync::Mutex::new(None));
 

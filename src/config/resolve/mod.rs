@@ -637,14 +637,21 @@ fn resolve_idle_config(
     let timeout_minutes = section
         .and_then(|s| s.timeout_minutes)
         .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
-    let idle_channel = section.and_then(|s| s.idle_channel.clone());
+    // The web UI's endpoint ID is `ws`; `websocket` is the name users see and write.
+    let idle_channel =
+        section
+            .and_then(|s| s.idle_channel.as_deref())
+            .map(|channel| match channel {
+                "websocket" => "ws".to_string(),
+                other => other.to_string(),
+            });
 
     if let Some(ref channel) = idle_channel {
         let valid = match channel.as_str() {
             "telegram" => telegram.is_some(),
             "discord" => discord.is_some(),
             "teams" => teams.is_some(),
-            "websocket" => true,
+            "ws" => true,
             other => {
                 return Err(FatalError::Config(format!(
                     "idle_channel \"{other}\" is not a recognized interface"

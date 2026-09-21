@@ -92,7 +92,7 @@ pub(super) fn init_tool_registry(
     tools.register_send_message_tool(deps.endpoint_registry.clone(), deps.publisher.clone());
     tools.register_list_endpoints_tool(deps.endpoint_registry.clone());
 
-    let (override_tx, _override_rx) = tokio::sync::watch::channel(None);
+    let override_tx = tokio::sync::watch::Sender::new(None);
     let override_tx_for_runtime = override_tx.clone();
     tools.register_switch_endpoint_tool(
         deps.endpoint_registry.clone(),

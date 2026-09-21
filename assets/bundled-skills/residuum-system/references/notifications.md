@@ -38,7 +38,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 ### Interactive endpoints
 
 Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
-- `switch_endpoint` to redirect responses to a different interactive endpoint.
+- `switch_endpoint` to send background output (sub-agent results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from.
 - `send_message` to send a one-off message to any interactive endpoint.
 
 ### Notification endpoints
@@ -66,7 +66,7 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 | Tool | Purpose |
 |------|---------|
 | `list_endpoints` | Show available interactive and notification endpoints. |
-| `switch_endpoint` | Redirect subsequent responses to a different interactive endpoint. Auto-clears when the user sends a message. |
+| `switch_endpoint` | Send background output to a different interactive endpoint. Auto-clears when the user sends a message. |
 | `send_message` | One-off message to any interactive or notification endpoint. Does not change where turn responses go. |
 | `subagent_spawn` | Spawn a background subagent. The result is relayed back to you. |
 | `schedule_action` | Schedule a future action. The result is filed to the inbox, or pushed too if marked urgent. |

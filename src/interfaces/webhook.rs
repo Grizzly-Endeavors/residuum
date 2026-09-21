@@ -25,13 +25,78 @@ pub struct WebhookEndpointState {
     pub routing: WebhookRouting,
 }
 
+impl From<&crate::config::WebhookEntry> for WebhookEndpointState {
+    fn from(entry: &crate::config::WebhookEntry) -> Self {
+        Self {
+            secret: entry.secret.clone(),
+            format: entry.format.clone(),
+            content_fields: entry.content_fields.clone(),
+            routing: entry.routing.clone(),
+        }
+    }
+}
+
+/// The named webhooks the server currently accepts.
+///
+/// Shared between the running HTTP server and the gateway runtime, so a
+/// config reload swaps the set in place without rebinding the listener.
+#[derive(Clone, Default)]
+pub struct WebhookTable(std::sync::Arc<std::sync::RwLock<HashMap<String, WebhookEndpointState>>>);
+
+impl WebhookTable {
+    /// Build a table from the resolved `[webhooks.*]` config.
+    #[must_use]
+    pub fn from_config(webhooks: &HashMap<String, crate::config::WebhookEntry>) -> Self {
+        let table = Self::default();
+        table.replace_from_config(webhooks);
+        table
+    }
+
+    /// Replace every webhook with the resolved `[webhooks.*]` config.
+    pub fn replace_from_config(&self, webhooks: &HashMap<String, crate::config::WebhookEntry>) {
+        let fresh = webhooks
+            .iter()
+            .map(|(name, entry)| (name.clone(), WebhookEndpointState::from(entry)))
+            .collect();
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    }
+
+    fn get(&self, name: &str) -> Option<WebhookEndpointState> {
+        // The lock guards plain owned data; a poisoned lock still holds a whole map.
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .cloned()
+    }
+}
+
+impl From<HashMap<String, WebhookEndpointState>> for WebhookTable {
+    fn from(webhooks: HashMap<String, WebhookEndpointState>) -> Self {
+        Self(std::sync::Arc::new(std::sync::RwLock::new(webhooks)))
+    }
+}
+
+/// Compare a presented secret with the configured one without leaking, through
+/// response timing, how much of it was right: only fixed-length digests are
+/// compared, so an early mismatch reveals nothing about the secret itself.
+fn secrets_match(provided: &str, expected: &str) -> bool {
+    use ring::digest::{SHA256, digest};
+    digest(&SHA256, provided.as_bytes()).as_ref() == digest(&SHA256, expected.as_bytes()).as_ref()
+}
+
 /// Shared state for the webhook handler — holds all named webhook configs.
 #[derive(Clone)]
 pub struct WebhookState {
     /// Publisher for sending events onto the bus.
     pub publisher: crate::bus::Publisher,
     /// Named webhook endpoint configurations.
-    pub webhooks: HashMap<String, WebhookEndpointState>,
+    pub webhooks: WebhookTable,
+    /// Timezone for inbox item timestamps.
+    pub tz: chrono_tz::Tz,
 }
 
 /// Axum handler for `POST /webhook/{name}`.
@@ -67,7 +132,7 @@ pub async fn webhook_handler(
             .unwrap_or("");
 
         let provided = auth.strip_prefix("Bearer ").unwrap_or("");
-        if provided != expected.as_str() {
+        if !secrets_match(provided, expected) {
             tracing::warn!(webhook = %name, "webhook authentication failed");
             return (
                 StatusCode::UNAUTHORIZED,
@@ -117,7 +182,7 @@ pub async fn webhook_handler(
         content,
         source: crate::bus::EventTrigger::Webhook(name.clone()),
         urgent: false,
-        timestamp: crate::time::now_local(chrono_tz::UTC),
+        timestamp: crate::time::now_local(state.tz),
     };
 
     match &endpoint.routing {
@@ -259,7 +324,8 @@ mod tests {
             .unwrap();
         let state = WebhookState {
             publisher,
-            webhooks,
+            webhooks: webhooks.into(),
+            tz: chrono_tz::UTC,
         };
         let app = axum::Router::new()
             .route("/webhook/{name}", post(webhook_handler))
@@ -283,6 +349,53 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(name.to_string(), endpoint);
         map
+    }
+
+    #[tokio::test]
+    async fn webhook_added_by_reload_is_served_without_rebinding() {
+        let bus_handle = crate::bus::spawn_broker();
+        let table = WebhookTable::default();
+        let app = axum::Router::new()
+            .route("/webhook/{name}", post(webhook_handler))
+            .with_state(WebhookState {
+                publisher: bus_handle.publisher(),
+                webhooks: table.clone(),
+                tz: chrono_tz::UTC,
+            });
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/webhook/github")
+                .header("authorization", "Bearer s3cret")
+                .body(Body::from(r#"{"content":"push"}"#))
+                .unwrap()
+        };
+
+        let before = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(before.status(), StatusCode::NOT_FOUND);
+
+        let mut reloaded = HashMap::new();
+        reloaded.insert(
+            "github".to_string(),
+            crate::config::WebhookEntry {
+                secret: Some("s3cret".to_string()),
+                routing: WebhookRouting::Inbox,
+                format: WebhookFormat::Parsed,
+                content_fields: None,
+            },
+        );
+        table.replace_from_config(&reloaded);
+
+        let after = app.oneshot(request()).await.unwrap();
+        assert_eq!(after.status(), StatusCode::ACCEPTED);
+    }
+
+    #[test]
+    fn secrets_match_only_on_exact_equality() {
+        assert!(secrets_match("s3cret", "s3cret"));
+        assert!(!secrets_match("s3cre", "s3cret"));
+        assert!(!secrets_match("", "s3cret"));
+        assert!(!secrets_match("S3CRET", "s3cret"));
     }
 
     #[tokio::test]
@@ -544,7 +657,8 @@ mod tests {
 
         let state = WebhookState {
             publisher,
-            webhooks: single_webhook("agent-hook", endpoint),
+            webhooks: single_webhook("agent-hook", endpoint).into(),
+            tz: chrono_tz::UTC,
         };
         let app = axum::Router::new()
             .route("/webhook/{name}", post(webhook_handler))
