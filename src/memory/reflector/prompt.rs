@@ -4,15 +4,10 @@ use crate::inference::Message;
 
 /// User-customizable content guidance — default when `memory/REFLECTOR.md` is absent.
 ///
-/// The workspace bootstrap writes this same content to disk so users can customise
-/// it without recompiling. The format spec is always appended by code.
-pub(super) const REFLECTION_CONTENT_PROMPT: &str = "You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
-
-Rules:
-- Merge related observations into single, precise sentences
-- Do NOT summarize — preserve specific details
-- Remove redundant or duplicate observations
-- Each output object should have a complete, self-contained content sentence";
+/// Embedded from the same asset the workspace bootstrap writes to disk, so the
+/// fallback and the bundled file cannot drift. The format spec is always appended by code.
+pub(super) const REFLECTION_CONTENT_PROMPT: &str =
+    include_str!("../../../assets/workspace-bootstrap/memory/REFLECTOR.md");
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///
