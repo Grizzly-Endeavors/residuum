@@ -144,8 +144,8 @@ mod tests {
             "memory writes should be allowed"
         );
         assert!(
-            policy.check_write(&ws.join("MEMORY.md")).is_ok(),
-            "MEMORY.md writes should be allowed"
+            policy.check_write(&ws.join("wiki/index.md")).is_ok(),
+            "wiki writes should be allowed"
         );
     }
 
@@ -198,8 +198,8 @@ mod tests {
         let policy = PathPolicy::with_blocked_paths(blocked);
 
         assert!(
-            policy.check_write(&ws.join("MEMORY.md")).is_ok(),
-            "MEMORY.md should be writable"
+            policy.check_write(&ws.join("wiki/index.md")).is_ok(),
+            "wiki pages should be writable"
         );
         assert!(
             policy.check_write(&ws.join("memory/notes.md")).is_ok(),

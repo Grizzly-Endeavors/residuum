@@ -12,7 +12,8 @@ doubt, return nothing.
 ## Watch for
 
 - A stated user preference, fact, or standing instruction that the agent
-  acknowledged (or should have noticed) but did not persist to MEMORY.md
+  acknowledged (or should have noticed) but did not persist to USER.md or the
+  wiki
 - The agent directly contradicting a rule in its instruction files
   (SOUL.md, AGENTS.md, USER.md)
 - The agent ignoring an explicit user request from earlier in the same

@@ -14,7 +14,7 @@ The module owns:
 - **Task lifecycle management:** spawning, concurrency control (semaphore), cancellation tokens, transcript persistence.
 - **SubAgent execution:** LLM-powered turn loop with isolated resources.
 - **Resource isolation:** each background task gets its own `SkillState` and `PathPolicy` so they don't interfere with each other or the main agent.
-- **Context assembly for SubAgents:** minimal system prompt (`ENVIRONMENT.md` + `USER.md` + skills index + the activated skill's instructions, plus `SOUL.md`/`AGENTS.md`/`MEMORY.md` when the spawn caller sets `include_identity`) followed by the task prompt, excluding observation logs.
+- **Context assembly for SubAgents:** minimal system prompt (`USER.md` + the wiki root index + skills index + the activated skill's instructions, plus `SOUL.md`/`AGENTS.md` when the spawn caller sets `include_identity`) followed by the task prompt, excluding observation logs.
 - **Result-to-event conversion:** the `bridge` submodule turns a completed `BackgroundResult` into an `AgentResultEvent`, computing its `ResultDisposition` from sentinel strings in the SubAgent's summary, and publishes it on the bus.
 
 The module does **not** handle:
@@ -74,9 +74,8 @@ When `execute_subagent()` runs:
 
 1. **Assemble minimal context:** `build_subagent_system_content()` builds, in order:
    - `SOUL.md` / `AGENTS.md` (only when the spawn caller sets `include_identity`)
-   - `ENVIRONMENT.md`
    - `USER.md`
-   - `MEMORY.md` (only if `include_identity`)
+   - `WIKI_INDEX` (`wiki/index.md`)
    - `SKILLS_INDEX` (the SubAgent's own skill index)
    - `ACTIVE_SKILLS` (active skill instructions, if any)
 
@@ -193,7 +192,7 @@ This isolation ensures:
 
 - **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. SubAgents get fresh isolated instances of tool-related state.
 
-- **`crate::workspace`** — `IdentityFiles` (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, `ENVIRONMENT.md`), `WorkspaceLayout` (paths to directories). Used for context assembly.
+- **`crate::workspace`** — `IdentityFiles` (`SOUL.md`, `AGENTS.md`, `USER.md`, `BOOTSTRAP.md`, `wiki/index.md`), `WorkspaceLayout` (paths to directories). Used for context assembly.
 
 - **`crate::bus`** — `EventTrigger`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`. Used for task provenance, result status/disposition, and the spawn-request event other modules publish to request a task.
 
@@ -252,7 +251,7 @@ graph TD
 
     D --> F["execute_subagent"]
 
-    F --> F1["Assemble minimal context<br/>ENVIRONMENT.md + USER.md<br/>+ active skill instructions"]
+    F --> F1["Assemble minimal context<br/>USER.md + wiki index<br/>+ active skill instructions"]
     F1 --> F2["Build isolated resources<br/>SkillState, PathPolicy"]
     F2 --> F3["Run execute_turn loop<br/>with isolated tools"]
     F3 --> F5["Return LLM final text<br/>as summary"]

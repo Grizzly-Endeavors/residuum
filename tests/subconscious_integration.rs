@@ -110,7 +110,7 @@ subconscious = "ollama/llama3-mini"
 
         let response = r#"{
             "findings": [
-                {"kind": "omission", "severity": "act", "instruction": "Persist the user's bullet-point preference to MEMORY.md."}
+                {"kind": "omission", "severity": "act", "instruction": "Persist the user's bullet-point preference to the wiki."}
             ]
         }"#;
         let sub = Subconscious::new(
@@ -139,7 +139,7 @@ subconscious = "ollama/llama3-mini"
         let finding = outcome.findings.first().unwrap();
         assert_eq!(finding.kind, FindingKind::Omission);
         assert_eq!(finding.severity, Severity::Act);
-        assert!(finding.instruction.contains("MEMORY.md"));
+        assert!(finding.instruction.contains("wiki"));
         assert!(
             outcome.learnings.is_empty(),
             "learnings must be empty when learning is disabled (the default)"

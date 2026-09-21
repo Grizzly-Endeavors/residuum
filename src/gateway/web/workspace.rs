@@ -163,14 +163,7 @@ fn is_blocked_path(relative: &str) -> bool {
 /// Checks the file name only (ignores any leading directory components) so that
 /// identity files nested inside subdirectories are also recognised.
 fn is_identity_file(relative: &str) -> bool {
-    const IDENTITY_FILES: &[&str] = &[
-        "SOUL.md",
-        "AGENTS.md",
-        "USER.md",
-        "MEMORY.md",
-        "ENVIRONMENT.md",
-        "HEARTBEAT.yml",
-    ];
+    const IDENTITY_FILES: &[&str] = &["SOUL.md", "AGENTS.md", "USER.md", "HEARTBEAT.yml"];
 
     let file_name = Path::new(relative)
         .file_name()

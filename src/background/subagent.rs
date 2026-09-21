@@ -38,8 +38,8 @@ pub struct SubAgentResources {
     pub(crate) options: CompletionOptions,
     /// Formatted skill index for the system prompt (built at spawn time).
     pub(crate) skills_index: Option<String>,
-    /// Opt-in (from preset frontmatter) to render SOUL.md, AGENTS.md, and
-    /// MEMORY.md in the subagent's system prompt.
+    /// Opt-in (from preset frontmatter) to render SOUL.md and AGENTS.md in the
+    /// subagent's system prompt.
     pub(crate) include_identity: bool,
 }
 
@@ -299,18 +299,18 @@ mod tests {
     }
 
     #[test]
-    fn subagent_system_content_includes_environment() {
-        // Directly verify build_subagent_system_content includes ENVIRONMENT.md
-        // content. (The execute_subagent mock ignores message contents, so
-        // testing at that level can't catch a silent drop of identity fields.)
+    fn subagent_system_content_includes_wiki_index() {
+        // Directly verify build_subagent_system_content includes the wiki index.
+        // (The execute_subagent mock ignores message contents, so testing at
+        // that level can't catch a silent drop of identity fields.)
         let identity = IdentityFiles {
-            environment: Some("You have access to exec tool.".to_string()),
+            wiki_index: Some("- [Machine](/machine.md): exec tool notes".to_string()),
             ..IdentityFiles::default()
         };
         let content = build_subagent_system_content(&identity, &SkillsContext::default(), false);
         assert!(
-            content.contains("You have access to exec tool."),
-            "should include ENVIRONMENT.md content"
+            content.contains("- [Machine](/machine.md): exec tool notes"),
+            "should include wiki index content"
         );
     }
 
@@ -318,7 +318,7 @@ mod tests {
     async fn subagent_excludes_soul() {
         let identity = IdentityFiles {
             soul: Some("I am a test soul.".to_string()),
-            environment: Some("exec tool".to_string()),
+            wiki_index: Some("wiki catalog".to_string()),
             user: Some("User likes Rust".to_string()),
             ..IdentityFiles::default()
         };
@@ -327,8 +327,8 @@ mod tests {
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
         assert!(
-            content.contains("exec tool"),
-            "should include ENVIRONMENT.md"
+            content.contains("wiki catalog"),
+            "should include the wiki index"
         );
         assert!(
             content.contains("User likes Rust"),
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn subagent_system_content_includes_skills_index() {
         let identity = IdentityFiles {
-            environment: Some("exec tool".to_string()),
+            wiki_index: Some("wiki catalog".to_string()),
             ..IdentityFiles::default()
         };
         let skills_ctx = SkillsContext {
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn subagent_system_content_includes_active_skills_instructions() {
-        // Sub-agents now include active skill instructions in the system prompt
+        // Sub-agents include active skill instructions in the system prompt
         let identity = IdentityFiles::default();
         let skills_ctx = SkillsContext {
             index: None,
