@@ -1,0 +1,12 @@
+name: Main Branch Checks
+
+on:
+  push:
+    branches: [main]
+
+# PRs cross-compile only when dependencies or the toolchain change, so this run
+# catches platform breaks in plain code and points at the merge that caused them.
+jobs:
+  cross-compile:
+    name: Cross-compile
+    uses: ./.github/workflows/cross-compile.yml

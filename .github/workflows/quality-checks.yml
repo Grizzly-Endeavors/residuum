@@ -2,10 +2,20 @@ name: Quality Checks
 
 on:
   workflow_call:
+    inputs:
+      web:
+        description: Run the web format, lint, type, and build checks
+        type: boolean
+        default: true
+      rust:
+        description: Run the Rust format, clippy, test, and dependency checks
+        type: boolean
+        default: true
 
 jobs:
-  quality:
-    name: Quality Checks
+  web:
+    name: Web Checks
+    if: inputs.web
     runs-on: lab-runners
 
     steps:
@@ -27,7 +37,34 @@ jobs:
         run: cd web && npm run check
 
       - name: Build web assets
+        id: web_build
         run: cd web && npm run build
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo '## Web Check Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Format | ${{ steps.web_format.outcome }} |"
+            echo "| Lint | ${{ steps.web_lint.outcome }} |"
+            echo "| Types | ${{ steps.web_typecheck.outcome }} |"
+            echo "| Build | ${{ steps.web_build.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  rust:
+    name: Rust Checks
+    if: inputs.rust
+    runs-on: lab-runners
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # build.rs refuses to compile without web/dist, which gets embedded in the binary
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
 
       - name: Check formatting
         id: fmt
@@ -48,14 +85,13 @@ jobs:
       - name: Build summary
         if: always()
         run: |
-          echo '## CI Check Results' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '| Check | Status |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|-------|--------|' >> "$GITHUB_STEP_SUMMARY"
-          echo "| Web Format | ${{ steps.web_format.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Web Lint | ${{ steps.web_lint.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Web Types | ${{ steps.web_typecheck.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Format | ${{ steps.fmt.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Clippy | ${{ steps.clippy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Tests | ${{ steps.test.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Deny | ${{ steps.deny.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Rust Check Results'
+            echo ''
+            echo '| Check | Status |'
+            echo '|-------|--------|'
+            echo "| Format | ${{ steps.fmt.outcome }} |"
+            echo "| Clippy | ${{ steps.clippy.outcome }} |"
+            echo "| Tests | ${{ steps.test.outcome }} |"
+            echo "| Deny | ${{ steps.deny.outcome }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

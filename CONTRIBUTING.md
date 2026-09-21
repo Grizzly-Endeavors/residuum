@@ -27,7 +27,7 @@ All changes go through pull requests. Direct pushes to `main` are blocked.
 1. Create a feature branch from `main` with a descriptive name
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
-4. CI must pass before merge (formatting, clippy, tests, dependency audit)
+4. CI must pass before merge. The `CI OK` check sums it up. CI runs only the checks your changes need: Rust changes get formatting, clippy, tests, and dependency audit; `web/` changes get the web format, lint, type, and build checks; changes that only touch docs skip both. The aarch64, Windows, and macOS compile checks run on a PR only when `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` change. They also run on every push to `main`, so a platform break in plain code shows up against the merge that caused it. The path rules live in the `changes` job of `.github/workflows/pr.yml`, and any path they don't list runs every check.
 5. PRs require one approving review
 
 ### Branch Naming
