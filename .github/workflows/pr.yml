@@ -8,13 +8,71 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: lab-runners
+
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      web: ${{ steps.classify.outputs.web }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Paths not listed below trigger every check, so a new directory is never
+      # skipped by accident; it has to be classified here first.
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          rust=false
+          web=false
+          changed=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            case "$path" in
+              .github/*|bindings/*)
+                rust=true; web=true ;;
+              web/*)
+                web=true ;;
+              src/*|tests/*|assets/*|Cargo.toml|Cargo.lock|build.rs|clippy.toml|deny.toml|rustfmt.toml|rust-toolchain.toml)
+                rust=true ;;
+              docs/*|*.md|mac/*|bundle/*|docker/*|scripts/*|.githooks/*|audit-results/*|reference-mats/*|LICENSE|.gitignore)
+                ;;
+              *)
+                echo "::notice::unclassified path $path, running all checks"
+                rust=true; web=true ;;
+            esac
+          done <<< "$changed"
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Changed Areas'
+            echo ''
+            echo "| Area | Checks run |"
+            echo "|------|------------|"
+            echo "| Rust | $rust |"
+            echo "| Web | $web |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   quality:
     name: Quality Checks
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
     uses: ./.github/workflows/quality-checks.yml
+    with:
+      rust: ${{ needs.changes.outputs.rust == 'true' }}
+      web: ${{ needs.changes.outputs.web == 'true' }}
 
   cross-check:
     name: Compile check (${{ matrix.target }})
-    needs: quality
+    needs: [changes, quality]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: lab-runners
 
     strategy:
@@ -41,7 +99,8 @@ jobs:
 
   macos-check:
     name: Compile check (aarch64-apple-darwin)
-    needs: quality
+    needs: [changes, quality]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: macos-15
 
     steps:
@@ -73,3 +132,23 @@ jobs:
 
       - name: Compile check
         run: cargo check --all-targets --all-features --target aarch64-apple-darwin
+
+  # Single status to require on main: passes when every check that needed to run passed
+  ci-ok:
+    name: CI OK
+    needs: [changes, quality, cross-check, macos-check]
+    if: always()
+    runs-on: lab-runners
+
+    steps:
+      - name: Verify check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::a required check finished as $result"; exit 1 ;;
+            esac
+          done
