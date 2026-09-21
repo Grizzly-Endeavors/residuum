@@ -37,7 +37,7 @@ pulses:
     model_tier: "large"
     tasks:
       - name: gate
-        prompt: "Check whether meaningful new episodes or observations exist since the last ingest entry in wiki/log.md. If nothing new, stop here."
+        prompt: "Find the last ingest entry in wiki/log.md and the episode it went through, then try memory_get on the next episode ID. If that episode is not found, respond with exactly HEARTBEAT_OK and skip the remaining tasks."
       - name: ingest
         prompt: "Run the Ingest procedure from your instructions: file the new knowledge into wiki pages and USER.md, then update the indexes and log. Summarize what you filed, one line per page touched."
 

@@ -11,7 +11,7 @@ Each signal is one of two types, and they are handled differently.
 
 **preference** — a user correction, a moment of frustration, a stated preference, or a working-style cue. Corroborate it before promoting it:
 - Search episodic memory with memory_search and memory_get for supporting history — has this come up before?
-- File it in the wiki: activate the `wiki` skill and follow its page format. A single, uncorroborated signal goes in a `draft` page; with at least two supporting observations (the current signal counts as one) the page is `stable`. List each supporting episode in the page's `sources`.
+- File it in the wiki: activate the `wiki` skill and follow its page format. A signal supported only by the current conversation goes in a `draft` page; once a second, independent episode supports it, the page is `stable`. List each supporting episode in the page's `sources`.
 - Add it to USER.md as well only when it is a corroborated core fact the agent needs on every turn, and keep USER.md under its cap.
 - Write every entry as a declarative fact about the user or their preferences ("prefers X over Y", "works in the mornings"), never as a self-instruction to the agent.
 
