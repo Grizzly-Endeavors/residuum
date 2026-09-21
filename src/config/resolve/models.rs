@@ -4,9 +4,11 @@
 //! `ProviderSpec` values with failover chains.
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::Path;
 use std::str::FromStr;
 
-use crate::config::types::RoleOverrides;
+use crate::config::types::{BackgroundModelsConfig, RoleOverrides};
 use crate::util::FatalError;
 
 use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
@@ -108,7 +110,7 @@ pub(super) fn resolve_all_model_specs(
     {
         return Err(FatalError::Config(
             "anthropic does not offer an embeddings API; \
-             use openai, ollama, or gemini for models.embedding"
+             use openai, fireworks, ollama, or gemini for models.embedding"
                 .to_string(),
         ));
     }
@@ -182,6 +184,7 @@ fn resolve_model_string(
             provider_url,
             api_key,
             keep_alive: entry.keep_alive.clone(),
+            session_affinity: None,
         });
     }
 
@@ -189,7 +192,7 @@ fn resolve_model_string(
     let kind = ProviderKind::from_str(provider_part).map_err(|_parse_err| {
         FatalError::Config(format!(
             "'{provider_part}' is not a known provider name or type \
-             (expected one of: anthropic, gemini, ollama, openai, \
+             (expected one of: anthropic, fireworks, gemini, ollama, openai, \
              or a key from [providers])"
         ))
     })?;
@@ -207,6 +210,7 @@ fn resolve_model_string(
         provider_url,
         api_key,
         keep_alive: None,
+        session_affinity: None,
     })
 }
 
@@ -289,10 +293,52 @@ fn resolve_role_chain_from_assignment(
     Ok(main.to_vec())
 }
 
+/// Give every role's chain, including background tiers, its session-affinity key.
+pub(super) fn scope_all_session_affinity(
+    models: &mut ResolvedModels,
+    background: &mut BackgroundModelsConfig,
+    workspace_dir: &Path,
+) {
+    for (specs, role) in [
+        (&mut models.main, "main"),
+        (&mut models.observer, "observer"),
+        (&mut models.reflector, "reflector"),
+        (&mut models.pulse, "pulse"),
+        (&mut models.subconscious, "subconscious"),
+    ] {
+        scope_session_affinity(specs, workspace_dir, role);
+    }
+    for (tier, role) in [
+        (&mut background.small, "bg_small"),
+        (&mut background.medium, "bg_medium"),
+        (&mut background.large, "bg_large"),
+    ] {
+        if let Some(specs) = tier {
+            scope_session_affinity(specs, workspace_dir, role);
+        }
+    }
+}
+
+/// Stamp every spec in a role's chain with that role's session-affinity key.
+///
+/// The key hashes the workspace path so no filesystem detail leaves the
+/// machine, and includes the role because each role sends a different stable
+/// prompt prefix. Runs after role resolution because roles without their own
+/// assignment clone the main chain, including main's key.
+fn scope_session_affinity(specs: &mut [ProviderSpec], workspace_dir: &Path, role: &str) {
+    let mut hasher = DefaultHasher::new();
+    workspace_dir.hash(&mut hasher);
+    let key = format!("residuum-{role}-{:016x}", hasher.finish());
+    for spec in specs {
+        spec.session_affinity = Some(key.clone());
+    }
+}
+
 /// Get the provider-specific API key from environment variables.
 fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
     match kind {
         ProviderKind::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok(),
+        ProviderKind::Fireworks => std::env::var("FIREWORKS_API_KEY").ok(),
         ProviderKind::Gemini => std::env::var("GEMINI_API_KEY").ok(),
         ProviderKind::OpenAi => std::env::var("OPENAI_API_KEY").ok(),
         ProviderKind::Ollama => std::env::var("OLLAMA_API_KEY").ok(),

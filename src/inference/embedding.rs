@@ -49,7 +49,7 @@ pub(crate) fn build_embedding_provider(
     match spec.model.kind {
         ProviderKind::Anthropic => Err(FatalError::Config(
             "anthropic does not offer an embeddings API; \
-             use openai, ollama, or gemini for models.embedding"
+             use openai, fireworks, ollama, or gemini for models.embedding"
                 .to_string(),
         )),
         ProviderKind::OpenAi => {
@@ -92,6 +92,24 @@ pub(crate) fn build_embedding_provider(
             };
             Ok(Box::new(client))
         }
+        ProviderKind::Fireworks => {
+            let key = spec.api_key.as_ref().ok_or_else(|| {
+                FatalError::Config(
+                    "fireworks embeddings require an API key \
+                     (set FIREWORKS_API_KEY or api_key in config)"
+                        .to_string(),
+                )
+            })?;
+            Ok(Box::new(
+                super::providers::openai::OpenAiEmbeddingClient::with_http_client_and_api_key(
+                    http,
+                    &spec.provider_url,
+                    &spec.model.model,
+                    key,
+                    retry,
+                ),
+            ))
+        }
         ProviderKind::Gemini => {
             let key = spec.api_key.as_ref().ok_or_else(|| {
                 FatalError::Config(
@@ -128,6 +146,7 @@ mod tests {
             provider_url: kind.default_url().to_string(),
             api_key: api_key.map(String::from),
             keep_alive: None,
+            session_affinity: None,
         }
     }
 
@@ -182,6 +201,30 @@ mod tests {
         );
         let provider = build_embedding_provider(&spec, http, RetryConfig::no_retry()).unwrap();
         assert_eq!(provider.model_name(), "text-embedding-004");
+    }
+
+    #[test]
+    fn fireworks_builds_with_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(
+            ProviderKind::Fireworks,
+            "fireworks/qwen3-embedding-8b",
+            Some("fw-test"),
+        );
+        let provider = build_embedding_provider(&spec, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "fireworks/qwen3-embedding-8b");
+    }
+
+    #[test]
+    fn fireworks_requires_api_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(
+            ProviderKind::Fireworks,
+            "fireworks/qwen3-embedding-8b",
+            None,
+        );
+        let result = build_embedding_provider(&spec, http, RetryConfig::no_retry());
+        assert!(result.is_err(), "fireworks without key should fail");
     }
 
     #[test]
