@@ -1,11 +1,16 @@
 //! Telegram bus subscriber — translates typed bus events to Telegram chat messages.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use teloxide::Bot;
 use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
 use crate::bus::{ErrorEvent, NoticeEvent, TurnLifecycleEvent};
 use crate::interfaces::chunking::chunk_text;
+
+use super::TelegramState;
 
 /// Maximum message length for Telegram.
 const TELEGRAM_MAX_CHARS: usize = 4096;
@@ -15,41 +20,28 @@ const TELEGRAM_MAX_CHARS: usize = 4096;
 /// Telegram's typing indicator lasts ~5s, so 4s provides overlap.
 const TYPING_INTERVAL_SECS: u64 = 4;
 
-/// Typed subscribers for a single Telegram connection.
-pub(crate) type TelegramSubscribers = crate::interfaces::BaseSubscribers;
-
-/// Receives events from the bus and delivers them to the Telegram chat.
-pub(crate) async fn run_telegram_subscriber(
-    mut subs: TelegramSubscribers,
+/// Receives events from the bus and delivers them to Telegram chats.
+pub(super) async fn run_telegram_subscriber(
+    mut subs: crate::interfaces::BaseSubscribers,
     bot: Bot,
-    chat_id: ChatId,
+    state: Arc<TelegramState>,
 ) {
-    let mut typing_cancel: Option<tokio::sync::watch::Sender<bool>> = None;
+    // One typing loop per in-flight turn, stopped by dropping its sender.
+    let mut typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
     let mut clean_exit = true;
 
     loop {
         tokio::select! {
             event = subs.turn_lifecycle.recv() => {
                 match event {
-                    Ok(Some(TurnLifecycleEvent::Started { .. })) => {
-                        let b = bot.clone();
-                        let cid = chat_id;
-                        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-                        typing_cancel = Some(stop_tx);
-                        tokio::spawn(async move {
-                            loop {
-                                if let Err(e) = b.send_chat_action(cid, ChatAction::Typing).await {
-                                    tracing::trace!(error = %e, "telegram typing indicator failed");
-                                }
-                                tokio::select! {
-                                    () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                                    _ = stop_rx.changed() => break,
-                                }
-                            }
-                        });
+                    Ok(Some(TurnLifecycleEvent::Started { correlation_id })) => {
+                        if let Some(chat_id) = state.target_for(&correlation_id).await {
+                            typing.insert(correlation_id, spawn_typing(bot.clone(), chat_id));
+                        }
                     }
-                    Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
-                        typing_cancel.take();
+                    Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
+                        typing.remove(&correlation_id);
+                        state.reply_targets.release(&correlation_id);
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -58,10 +50,12 @@ pub(crate) async fn run_telegram_subscriber(
             event = subs.response.recv() => {
                 match event {
                     Ok(Some(resp)) => {
-                        if let Some(ref att) = resp.attachment {
-                            send_file(&bot, chat_id, att, &resp.content).await;
-                        } else if !resp.content.is_empty() {
-                            send_chunks(&bot, chat_id, &resp.content).await;
+                        if let Some(chat_id) = target_or_warn(&state, &resp.correlation_id).await {
+                            if let Some(ref att) = resp.attachment {
+                                send_file(&bot, chat_id, att, &resp.content).await;
+                            } else if !resp.content.is_empty() {
+                                send_chunks(&bot, chat_id, &resp.content).await;
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -70,15 +64,23 @@ pub(crate) async fn run_telegram_subscriber(
             }
             event = subs.intermediate.recv() => {
                 match event {
-                    Ok(Some(im)) => send_chunks(&bot, chat_id, &im.content).await,
+                    Ok(Some(im)) => {
+                        if let Some(chat_id) = target_or_warn(&state, &im.correlation_id).await {
+                            send_chunks(&bot, chat_id, &im.content).await;
+                        }
+                    }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
                 }
             }
+            // System notices and errors can carry internals; they only ever
+            // go to the owner.
             event = subs.notice.recv() => {
                 match event {
                     Ok(Some(NoticeEvent { message })) => {
-                        send_chunks(&bot, chat_id, &message).await;
+                        if let Some(chat_id) = state.owner_dm().await {
+                            send_chunks(&bot, chat_id, &message).await;
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -87,8 +89,9 @@ pub(crate) async fn run_telegram_subscriber(
             event = subs.error.recv() => {
                 match event {
                     Ok(Some(ErrorEvent { message, .. })) => {
-                        let text = format!("**Error:** {message}");
-                        send_chunks(&bot, chat_id, &text).await;
+                        if let Some(chat_id) = state.owner_dm().await {
+                            send_chunks(&bot, chat_id, &format!("**Error:** {message}")).await;
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -102,6 +105,34 @@ pub(crate) async fn run_telegram_subscriber(
     } else {
         tracing::warn!("telegram subscriber loop ended unexpectedly");
     }
+}
+
+async fn target_or_warn(state: &TelegramState, correlation_id: &str) -> Option<ChatId> {
+    let target = state.target_for(correlation_id).await;
+    if target.is_none() {
+        tracing::warn!(
+            correlation_id,
+            "no telegram chat to deliver to; the owner has not messaged the bot yet"
+        );
+    }
+    target
+}
+
+fn spawn_typing(bot: Bot, chat_id: ChatId) -> tokio::sync::watch::Sender<()> {
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
+                tracing::trace!(error = %e, "telegram typing indicator failed");
+            }
+            tokio::select! {
+                () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
+                // Resolves with an error once the sender is dropped at turn end.
+                _ = stop_rx.changed() => break,
+            }
+        }
+    });
+    stop_tx
 }
 
 async fn send_chunks(bot: &Bot, chat_id: ChatId, content: &str) {

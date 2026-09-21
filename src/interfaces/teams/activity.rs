@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub(super) use crate::interfaces::chat_state::ConversationKind;
+
 /// An inbound activity the Bot Connector sends to the messaging endpoint.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,25 +96,11 @@ pub(super) struct NamedRef {
     pub(super) name: Option<String>,
 }
 
-/// Kind of Teams conversation, which decides whether the bot needs an @mention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum ConversationKind {
-    /// 1:1 chat between one person and the bot.
-    Personal,
-    /// Group chat with the bot as a member.
-    GroupChat,
-    /// Standard team channel.
-    Channel,
-}
-
-impl ConversationKind {
-    fn from_wire(value: Option<&str>) -> Self {
-        match value {
-            Some("groupChat") => Self::GroupChat,
-            Some("channel") => Self::Channel,
-            _ => Self::Personal,
-        }
+fn conversation_kind_from_wire(value: Option<&str>) -> ConversationKind {
+    match value {
+        Some("groupChat") => ConversationKind::GroupChat,
+        Some("channel") => ConversationKind::Channel,
+        _ => ConversationKind::Personal,
     }
 }
 
@@ -131,7 +119,7 @@ impl Activity {
     }
 
     pub(super) fn conversation_kind(&self) -> ConversationKind {
-        ConversationKind::from_wire(
+        conversation_kind_from_wire(
             self.conversation
                 .as_ref()
                 .and_then(|c| c.conversation_type.as_deref()),

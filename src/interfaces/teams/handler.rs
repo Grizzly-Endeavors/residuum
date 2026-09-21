@@ -16,7 +16,8 @@ use super::TeamsRuntime;
 use super::activity::{Activity, Attachment, ChannelAccount, ConversationKind};
 use super::auth::AuthError;
 use super::context_buffer::{BufferedMessage, render_context};
-use super::store::{ConversationRef, Owner};
+use super::store::ConversationRef;
+use crate::interfaces::chat_state::{Owner, Standing};
 
 /// Attachment content type Teams uses for files shared in a chat.
 const FILE_DOWNLOAD_INFO: &str = "application/vnd.microsoft.teams.file.download.info";
@@ -112,11 +113,12 @@ fn is_bot(activity: &Activity, account: &ChannelAccount) -> bool {
 
 /// Keep the store's reference for a conversation current, keyed by its base ID.
 async fn remember_conversation(rt: &TeamsRuntime, reference: &ConversationRef) {
+    let base_id = base_conversation_id(&reference.conversation_id);
     let stored = ConversationRef {
-        conversation_id: base_conversation_id(&reference.conversation_id).to_string(),
+        conversation_id: base_id.to_string(),
         ..reference.clone()
     };
-    if let Err(e) = rt.store.remember(stored).await {
+    if let Err(e) = rt.store.remember(base_id, stored).await {
         tracing::warn!(error = %e, conversation = %reference.label, "failed to save teams conversation reference");
     }
 }
@@ -159,20 +161,6 @@ async fn handle_installation(rt: &TeamsRuntime, activity: &Activity) {
             }
         }
         _ => {}
-    }
-}
-
-/// Who sent a message, relative to the bot's owner.
-enum Standing {
-    Owner,
-    Other { owner: Option<Owner> },
-}
-
-async fn standing_of(rt: &TeamsRuntime, sender_aad: Option<&str>) -> Standing {
-    let owner = rt.store.owner().await;
-    match (&owner, sender_aad) {
-        (Some(o), Some(aad)) if o.aad_object_id == aad => Standing::Owner,
-        _ => Standing::Other { owner },
     }
 }
 
@@ -247,24 +235,25 @@ fn buffer_for_context(rt: &TeamsRuntime, incoming: &Incoming) {
 /// The sender's standing if they may use the bot; otherwise tells them why
 /// not and returns `None`.
 async fn permitted_standing(rt: &TeamsRuntime, incoming: &Incoming) -> Option<Standing> {
-    let standing = standing_of(rt, incoming.from.aad_object_id.as_deref()).await;
-    let Standing::Other { owner } = &standing else {
-        return Some(standing);
-    };
-    if rt.cfg.respond_to_others {
-        return Some(standing);
+    match rt
+        .store
+        .admit(
+            incoming.from.aad_object_id.as_deref(),
+            rt.cfg.respond_to_others,
+        )
+        .await
+    {
+        Ok(standing) => Some(standing),
+        Err(refusal) => {
+            tracing::info!(
+                sender = %incoming.sender_name,
+                conversation = %incoming.reference.label,
+                "teams message from someone other than the owner; respond_to_others is off"
+            );
+            rt.send_text(&incoming.reference, &refusal).await;
+            None
+        }
     }
-    tracing::info!(
-        sender = %incoming.sender_name,
-        conversation = %incoming.reference.label,
-        "teams message from someone other than the owner; respond_to_others is off"
-    );
-    let reply = match owner {
-        Some(owner) => format!("I only take requests from {}.", owner.name),
-        None => "I'm not set up yet. My owner needs to send me a direct message first.".to_string(),
-    };
-    rt.send_text(&incoming.reference, &reply).await;
-    None
 }
 
 async fn run_command(
@@ -318,7 +307,7 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming) {
             .id
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     );
-    rt.track_reply_target(&correlation_id, reference.clone());
+    rt.reply_targets.track(&correlation_id, reference.clone());
 
     let event = crate::bus::MessageEvent {
         id: correlation_id,
@@ -360,7 +349,7 @@ async fn claim_owner_if_unset(
         return;
     };
     let owner = Owner {
-        aad_object_id: aad.clone(),
+        user_id: aad.clone(),
         name: sender_name.to_string(),
         dm_conversation_id: base_conversation_id(&reference.conversation_id).to_string(),
     };
@@ -515,7 +504,6 @@ mod tests {
 
     // ── Endpoint + worker, end to end (no network) ───────────────────────
 
-    use std::collections::HashMap;
     use std::time::Duration;
 
     use crate::bus::{MessageEvent, Subscriber, topics};
@@ -564,7 +552,7 @@ mod tests {
                 .await
                 .unwrap(),
             buffer: ContextBuffer::new(10),
-            reply_targets: std::sync::Mutex::new(HashMap::new()),
+            reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
             inbound_tx,
             publisher: bus.publisher(),
             reload_tx: tokio::sync::watch::channel(crate::gateway::types::ReloadSignal::Root).0,
@@ -721,7 +709,7 @@ mod tests {
         assert_eq!(sender.id, "aad-bear");
         assert_eq!(sender.location.as_deref(), Some("direct message"));
         assert_eq!(
-            h.rt.store.owner().await.map(|o| o.aad_object_id).as_deref(),
+            h.rt.store.owner().await.map(|o| o.user_id).as_deref(),
             Some("aad-bear")
         );
         assert_eq!(

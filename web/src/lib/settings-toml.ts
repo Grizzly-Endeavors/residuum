@@ -77,7 +77,9 @@ export interface ConfigFields {
   thinking: string;
   // integrations
   discord_token: string;
+  discord_respond_to_others: boolean;
   telegram_token: string;
+  telegram_respond_to_others: boolean;
   teams_app_id: string;
   teams_tenant_id: string;
   teams_app_password: string;
@@ -147,7 +149,9 @@ export function defaultConfigFields(): ConfigFields {
     temperature: "",
     thinking: "",
     discord_token: "",
+    discord_respond_to_others: false,
     telegram_token: "",
+    telegram_respond_to_others: false,
     teams_app_id: "",
     teams_tenant_id: "",
     teams_app_password: "",
@@ -280,11 +284,13 @@ export function parseConfigToml(raw: string): ConfigFields {
   const discord = doc.discord as Record<string, unknown> | undefined;
   if (discord) {
     fields.discord_token = str(discord.token);
+    fields.discord_respond_to_others = bool(discord.respond_to_others, false);
   }
 
   const telegram = doc.telegram as Record<string, unknown> | undefined;
   if (telegram) {
     fields.telegram_token = str(telegram.token);
+    fields.telegram_respond_to_others = bool(telegram.respond_to_others, false);
   }
 
   const teams = doc.teams as Record<string, unknown> | undefined;
@@ -605,6 +611,7 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("");
     lines.push("[discord]");
     lines.push(`token = "${escapeTomlString(f.discord_token)}"`);
+    if (f.discord_respond_to_others) lines.push("respond_to_others = true");
   }
 
   // telegram
@@ -612,6 +619,7 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("");
     lines.push("[telegram]");
     lines.push(`token = "${escapeTomlString(f.telegram_token)}"`);
+    if (f.telegram_respond_to_others) lines.push("respond_to_others = true");
   }
 
   // teams — app_id, tenant_id and app_password are all required together, so

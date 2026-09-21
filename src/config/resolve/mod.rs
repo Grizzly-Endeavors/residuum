@@ -260,7 +260,10 @@ fn resolve_discord_config(
     );
 
     match (section, token) {
-        (_, Some(tok)) => Some(DiscordConfig { token: tok }),
+        (_, Some(tok)) => Some(DiscordConfig {
+            token: tok,
+            respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+        }),
         (Some(_), None) => {
             tracing::warn!(
                 section = "discord",
@@ -326,7 +329,10 @@ fn resolve_telegram_config(
     );
 
     match (section, token) {
-        (_, Some(tok)) => Some(TelegramConfig { token: tok }),
+        (_, Some(tok)) => Some(TelegramConfig {
+            token: tok,
+            respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+        }),
         (Some(_), None) => {
             tracing::warn!(
                 section = "telegram",
@@ -1876,6 +1882,33 @@ main = "anthropic/claude-sonnet-4-6"
             Some("123456789:ABCdefGHIjklmnop"),
             "token should match"
         );
+    }
+
+    fn chat_bots_config(extra: &str) -> Config {
+        let cfg_file = parse_config(&format!(
+            "timezone = \"UTC\"\n\n[discord]\ntoken = \"d-token\"\n{extra}\n[telegram]\ntoken = \"t-token\"\n{extra}"
+        ));
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap()
+    }
+
+    #[test]
+    fn chat_bots_are_owner_only_by_default() {
+        let cfg = chat_bots_config("");
+        assert_eq!(cfg.discord.map(|d| d.respond_to_others), Some(false));
+        assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(false));
+    }
+
+    #[test]
+    fn chat_bots_respond_to_others_when_enabled() {
+        let cfg = chat_bots_config("respond_to_others = true\n");
+        assert_eq!(cfg.discord.map(|d| d.respond_to_others), Some(true));
+        assert_eq!(cfg.telegram.map(|t| t.respond_to_others), Some(true));
     }
 
     // ── Teams config ───────────────────────────────────────────────────────

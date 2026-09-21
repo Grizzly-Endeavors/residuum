@@ -31,7 +31,7 @@ pub(super) async fn run_teams_subscriber(rt: Arc<TeamsRuntime>, mut subs: BaseSu
                 }
                 Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
                     typing.remove(&correlation_id);
-                    rt.release_reply_target(&correlation_id);
+                    rt.reply_targets.release(&correlation_id);
                 }
                 Ok(None) => break,
                 Err(e) => {

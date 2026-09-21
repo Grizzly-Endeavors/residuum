@@ -21,15 +21,15 @@ mod handler;
 mod store;
 mod subscriber;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::interfaces::reply_targets::ReplyTargets;
 
 use self::auth::TokenValidator;
 use self::connector::ConnectorClient;
@@ -42,9 +42,6 @@ pub(crate) const ENDPOINT: &str = "teams";
 pub(crate) const MESSAGES_PATH: &str = "/api/teams/messages";
 /// Activities waiting for the inbound worker before the endpoint sheds load.
 const INBOUND_QUEUE: usize = 64;
-/// Reply targets for turns that never report an end (e.g. a message folded
-/// into another turn mid-flight) are dropped after this long.
-const REPLY_TARGET_TTL: Duration = Duration::from_hours(1);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// State shared by the HTTP endpoint, the inbound worker, and the outbound subscriber.
@@ -56,7 +53,7 @@ pub(super) struct TeamsRuntime {
     store: TeamsStore,
     buffer: ContextBuffer,
     /// Conversation each in-flight turn should answer in, by correlation ID.
-    reply_targets: std::sync::Mutex<HashMap<String, (ConversationRef, Instant)>>,
+    reply_targets: ReplyTargets<ConversationRef>,
     inbound_tx: tokio::sync::mpsc::Sender<activity::Activity>,
     publisher: Publisher,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
@@ -67,34 +64,10 @@ pub(super) struct TeamsRuntime {
 }
 
 impl TeamsRuntime {
-    fn reply_targets(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, (ConversationRef, Instant)>> {
-        // Plain map of owned values; a panic mid-insert cannot corrupt it.
-        self.reply_targets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Remember where the turn for `correlation_id` should reply.
-    fn track_reply_target(&self, correlation_id: &str, target: ConversationRef) {
-        let mut targets = self.reply_targets();
-        targets.retain(|_, (_, at)| at.elapsed() < REPLY_TARGET_TTL);
-        targets.insert(correlation_id.to_string(), (target, Instant::now()));
-    }
-
-    fn release_reply_target(&self, correlation_id: &str) {
-        self.reply_targets().remove(correlation_id);
-    }
-
     /// Where output for `correlation_id` goes: the conversation that started
     /// the turn, or the owner's DM for proactive output.
     async fn target_for(&self, correlation_id: &str) -> Option<ConversationRef> {
-        let tracked = self
-            .reply_targets()
-            .get(correlation_id)
-            .map(|(target, _)| target.clone());
-        match tracked {
+        match self.reply_targets.get(correlation_id) {
             Some(target) => Some(target),
             None => self.owner_dm().await,
         }
@@ -183,7 +156,7 @@ impl TeamsInterface {
             buffer: ContextBuffer::new(self.cfg.context_messages),
             http,
             store,
-            reply_targets: std::sync::Mutex::new(HashMap::new()),
+            reply_targets: ReplyTargets::default(),
             inbound_tx,
             publisher: self.senders.publisher,
             reload_tx: self.senders.reload,

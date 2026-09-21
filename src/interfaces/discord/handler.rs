@@ -10,23 +10,26 @@ use serenity::builder::{
 use serenity::model::application::Interaction;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
+use serenity::model::user::User;
 use serenity::prelude::*;
 
-use crate::bus::{BusHandle, EndpointName, Publisher};
+use crate::bus::Publisher;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
+use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
 use crate::interfaces::types::MessageOrigin;
 
-/// Serenity event handler that filters for DMs, registers slash commands,
-/// and handles attachments.
+use super::DiscordState;
+
+/// Serenity event handler that filters for DMs, enforces who may use the
+/// bot, registers slash commands, and handles attachments.
 pub(super) struct DiscordHandler {
+    pub(super) state: Arc<DiscordState>,
     pub(super) publisher: Publisher,
-    pub(super) bus_handle: BusHandle,
-    pub(super) channel_id: Arc<tokio::sync::Mutex<Option<serenity::model::id::ChannelId>>>,
     pub(super) inbox_dir: PathBuf,
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
@@ -43,26 +46,9 @@ impl EventHandler for DiscordHandler {
         if let Err(e) = register_commands(&ctx).await {
             tracing::warn!(error = %e, "failed to register discord slash commands");
         }
-
-        // Subscribe to typed bus topics and spawn subscriber loop
-        match super::subscriber::DiscordSubscribers::new(
-            &self.bus_handle,
-            EndpointName::from("discord"),
-        )
-        .await
-        {
-            Ok(subs) => {
-                let h = Arc::clone(&ctx.http);
-                let cid = Arc::clone(&self.channel_id);
-                tokio::spawn(super::subscriber::run_discord_subscriber(subs, h, cid));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to subscribe to discord bus topics");
-            }
-        }
     }
 
-    async fn message(&self, _ctx: Context, msg: Message) {
+    async fn message(&self, ctx: Context, msg: Message) {
         // Ignore bot messages
         if msg.author.bot {
             return;
@@ -78,13 +64,32 @@ impl EventHandler for DiscordHandler {
             tracing::debug!(author = %msg.author.name, content_len = msg.content.len(), "discord DM received");
         }
 
-        // Track the DM channel for subscriber output
+        let channel_key = msg.channel_id.to_string();
+        if let Err(e) = self
+            .state
+            .store
+            .remember(&channel_key, ChatRef::direct_message())
+            .await
         {
-            let mut cid = self.channel_id.lock().await;
-            if cid.is_none() {
-                *cid = Some(msg.channel_id);
-                tracing::debug!(channel_id = %msg.channel_id, "discord DM channel tracked");
+            tracing::warn!(error = %e, channel_id = %msg.channel_id, "failed to save discord conversation");
+        }
+        claim_owner_if_unset(&self.state, &msg.author, &channel_key).await;
+
+        let sender_id = msg.author.id.to_string();
+        if let Err(refusal) = self
+            .state
+            .store
+            .admit(Some(&sender_id), self.state.respond_to_others)
+            .await
+        {
+            tracing::info!(
+                sender = %msg.author.name,
+                "discord message from someone other than the owner; respond_to_others is off"
+            );
+            if let Err(e) = msg.channel_id.say(&ctx.http, refusal).await {
+                tracing::warn!(error = %e, channel_id = %msg.channel_id, "failed to send discord refusal");
             }
+            return;
         }
 
         // Build content with attachment metadata and collect inline images
@@ -98,17 +103,21 @@ impl EventHandler for DiscordHandler {
         .await;
 
         let origin = MessageOrigin {
-            endpoint: "discord".to_string(),
+            endpoint: super::ENDPOINT.to_string(),
             sender: Some(MessageSender {
                 name: msg.author.name.clone(),
-                id: msg.author.id.to_string(),
-                interface: "discord".to_string(),
+                id: sender_id,
+                interface: super::ENDPOINT.to_string(),
                 location: Some("direct message".to_string()),
             }),
         };
 
+        let correlation_id = msg.id.to_string();
+        self.state
+            .reply_targets
+            .track(&correlation_id, msg.channel_id);
         let msg_event = crate::bus::MessageEvent {
-            id: msg.id.to_string(),
+            id: correlation_id,
             content,
             origin,
             timestamp: crate::time::now_local(self.tz),
@@ -121,7 +130,17 @@ impl EventHandler for DiscordHandler {
             .publish(crate::bus::topics::UserMessage, msg_event)
             .await
         {
-            tracing::warn!(error = %e, "failed to publish discord message to bus");
+            tracing::error!(error = %e, "failed to publish discord message to bus");
+            if let Err(reply_err) = msg
+                .channel_id
+                .say(
+                    &ctx.http,
+                    "Something went wrong handing your message to the agent. Please try again.",
+                )
+                .await
+            {
+                tracing::warn!(error = %reply_err, channel_id = %msg.channel_id, "failed to send discord error reply");
+            }
         }
     }
 
@@ -130,6 +149,25 @@ impl EventHandler for DiscordHandler {
             return;
         };
         tracing::debug!(command = %cmd.data.name, "discord slash command received");
+
+        let standing = self
+            .state
+            .store
+            .standing_of(Some(&cmd.user.id.to_string()))
+            .await;
+        if !matches!(standing, Standing::Owner) {
+            tracing::info!(command = %cmd.data.name, user = %cmd.user.name, "refused discord slash command from someone other than the owner");
+            let msg = CreateInteractionResponseMessage::new()
+                .content("Only my owner can run commands.")
+                .ephemeral(true);
+            if let Err(e) = cmd
+                .create_response(&ctx, CreateInteractionResponse::Message(msg))
+                .await
+            {
+                tracing::warn!(command = %cmd.data.name, error = %e, "failed to refuse discord slash command");
+            }
+            return;
+        }
 
         // Extract optional text argument from Discord interaction options
         let cmd_args = cmd
@@ -150,7 +188,7 @@ impl EventHandler for DiscordHandler {
             cmd.data.name.as_str(),
             cmd_args.as_deref(),
             &dispatch,
-            "discord",
+            super::ENDPOINT,
             &cmd.user.name,
         )
         .await;
@@ -164,6 +202,22 @@ impl EventHandler for DiscordHandler {
                 "failed to respond to discord slash command"
             );
         }
+    }
+}
+
+/// Make the sender the owner if nobody is yet; only called for DMs.
+async fn claim_owner_if_unset(state: &DiscordState, author: &User, dm_channel: &str) {
+    let owner = Owner {
+        user_id: author.id.to_string(),
+        name: author.name.clone(),
+        dm_conversation_id: dm_channel.to_string(),
+    };
+    match state.store.claim_owner(owner).await {
+        Ok(true) => {
+            tracing::info!(owner = %author.name, "discord owner set from first direct message");
+        }
+        Ok(false) => {}
+        Err(e) => tracing::error!(error = %e, "failed to save discord owner"),
     }
 }
 

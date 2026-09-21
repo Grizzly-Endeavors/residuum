@@ -279,6 +279,8 @@ pub(super) struct GatewayConfigFile {
 pub(super) struct DiscordConfigFile {
     /// Bot token (supports `${ENV_VAR}` syntax).
     pub(super) token: Option<String>,
+    /// Whether people other than the owner can talk to the agent.
+    pub(super) respond_to_others: Option<bool>,
 }
 
 /// Raw TOML `[telegram]` section.
@@ -287,6 +289,8 @@ pub(super) struct DiscordConfigFile {
 pub(super) struct TelegramConfigFile {
     /// Bot token (supports `${ENV_VAR}` syntax).
     pub(super) token: Option<String>,
+    /// Whether people other than the owner can talk to the agent.
+    pub(super) respond_to_others: Option<bool>,
 }
 
 /// Raw TOML `[teams]` section.
