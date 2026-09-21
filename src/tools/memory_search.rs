@@ -1,4 +1,4 @@
-//! Memory search tool for querying past observations and interaction chunks.
+//! Memory search tool for querying past observations, interaction chunks, and wiki pages.
 
 use std::sync::Arc;
 
