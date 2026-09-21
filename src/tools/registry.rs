@@ -5,7 +5,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::background::BackgroundTaskSpawner;
+use crate::background::registry::SessionRegistry;
 use crate::bus::EndpointRegistry;
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
@@ -172,12 +172,12 @@ impl ToolRegistry {
         )));
     }
 
-    /// Register background task management tools (`stop_agent`, `list_agents`).
-    pub fn register_background_tools(&mut self, spawner: Arc<BackgroundTaskSpawner>) {
+    /// Register session management tools (`stop_agent`, `list_agents`).
+    pub fn register_background_tools(&mut self, registry: Arc<SessionRegistry>) {
         self.register(Box::new(background::StopAgentTool::new(Arc::clone(
-            &spawner,
+            &registry,
         ))));
-        self.register(Box::new(background::ListAgentsTool::new(spawner)));
+        self.register(Box::new(background::ListAgentsTool::new(registry)));
     }
 
     /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
@@ -192,14 +192,14 @@ impl ToolRegistry {
         )));
     }
 
-    /// Build a tool registry for a background sub-agent.
+    /// Build a tool registry for a session.
     ///
     /// Includes all tools available to the main agent except `switch_endpoint`
-    /// and `subagent_spawn`. Sub-agents get their own isolated skill state but
+    /// and `subagent_spawn`. Sessions get their own isolated skill state but
     /// share the same endpoint registry, action store, etc.
     #[expect(
         clippy::too_many_arguments,
-        reason = "sub-agent registry needs all tool dependencies"
+        reason = "session registry needs all tool dependencies"
     )]
     #[must_use]
     pub fn build_subagent_registry(
@@ -213,7 +213,7 @@ impl ToolRegistry {
         agent_inbox_archive_dir: std::path::PathBuf,
         user_inbox_dir: std::path::PathBuf,
         user_inbox_attachments_dir: std::path::PathBuf,
-        background_spawner: Arc<BackgroundTaskSpawner>,
+        session_registry: Arc<SessionRegistry>,
         endpoint_registry: EndpointRegistry,
         publisher: crate::bus::Publisher,
         action_store: Arc<Mutex<ActionStore>>,
@@ -240,8 +240,8 @@ impl ToolRegistry {
             tz,
         );
 
-        // Background task management (stop_agent, list_agents — NOT subagent_spawn)
-        registry.register_background_tools(background_spawner);
+        // Session management (stop_agent, list_agents — NOT subagent_spawn)
+        registry.register_background_tools(session_registry);
 
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher);

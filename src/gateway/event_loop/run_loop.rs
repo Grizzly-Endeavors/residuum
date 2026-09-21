@@ -9,14 +9,13 @@ use tokio::time::Duration;
 
 use crate::config::Config;
 use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
-use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::util::FatalError;
 
 use super::commands::handle_server_command;
 use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server};
 use super::pulse::handle_pulse_tick;
-use super::turns::{handle_inbound_message, persist_and_maybe_observe};
+use super::turns::handle_inbound_message;
 
 use crate::gateway::memory::execute_observation;
 use crate::gateway::{actions, idle, reload, watcher, web};
@@ -208,18 +207,7 @@ async fn spawn_bus_infrastructure(
     )
     .await;
 
-    let background_result_rx = parts
-        .background_result_rx
-        .take()
-        .ok_or_else(|| FatalError::Gateway("background_result_rx already consumed".to_string()))?;
-
     let mut bus_infra_handles = Vec::new();
-    let shared_result_rx = Arc::new(tokio::sync::Mutex::new(background_result_rx));
-    bus_infra_handles.push(crate::background::bridge::spawn_result_bridge(
-        shared_result_rx,
-        core.publisher.clone(),
-        parts.tz,
-    ));
     if let Some(h) = crate::notify::router::spawn_notification_router(
         &core.bus_handle,
         parts.endpoint_registry.clone(),
@@ -271,7 +259,8 @@ async fn build_runtime(
         vector_store: parts.vector_store,
         embedding_provider: parts.embedding_provider,
         hybrid_searcher: parts.hybrid_searcher,
-        background_spawner: parts.background_spawner,
+        session_runtime: parts.session_runtime,
+        session_registry: parts.session_registry,
         action_store: parts.action_store,
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
@@ -447,36 +436,9 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-/// Spawn due actions and handle any resulting main turns.
-async fn check_and_run_due_actions(
-    rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
-) {
-    let main_turns = actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
-    handle_action_main_turns(main_turns, rt, observe_deadline).await;
-}
-
-/// Inject main-turn prompts from scheduled actions and run a wake turn.
-async fn handle_action_main_turns(
-    main_turns: Vec<actions::ActionMainTurn>,
-    rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
-) {
-    if main_turns.is_empty() {
-        return;
-    }
-
-    tracing::info!(
-        count = main_turns.len(),
-        "running scheduled action main turns"
-    );
-    for turn in &main_turns {
-        tracing::debug!(action = %turn.action_name, "injecting action main turn");
-        let formatted = format!("[Scheduled action: {}]\n{}", turn.action_name, turn.prompt);
-        rt.agent.inject_system_message(formatted.clone());
-        let msgs = [crate::inference::Message::system(&formatted)];
-        persist_and_maybe_observe(rt, &msgs, Visibility::Background, observe_deadline).await;
-    }
+/// Fork sessions for every due scheduled action.
+async fn check_and_run_due_actions(rt: &mut GatewayRuntime) {
+    actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
 }
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
@@ -702,15 +664,15 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             _ = pulse_tick.tick(), if rt.pulse_enabled => {
-                handle_pulse_tick(&mut rt, &mut observe_deadline).await;
+                handle_pulse_tick(&mut rt).await;
             }
 
             _ = action_tick.tick() => {
-                check_and_run_due_actions(&mut rt, &mut observe_deadline).await;
+                check_and_run_due_actions(&mut rt).await;
             }
 
             () = rt.action_notify.notified() => {
-                check_and_run_due_actions(&mut rt, &mut observe_deadline).await;
+                check_and_run_due_actions(&mut rt).await;
             }
 
             () = wait_for_deadline(observe_deadline) => {

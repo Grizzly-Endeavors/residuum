@@ -21,18 +21,46 @@ pub struct PulseDef {
     pub enabled: bool,
     pub schedule: String,
     pub active_hours: Option<String>,
-    /// Optional agent routing: `"main"` for a full wake turn, or a skill name
-    /// to run a sub-agent with that skill activated.
+    /// Optional agent routing: a skill name to run a session with that skill
+    /// activated. `"main"` is rejected at load — see [`validate_pulse`].
     #[serde(default)]
     pub agent: Option<String>,
-    /// Model tier for the sub-agent. Defaults to `small`.
+    /// Model tier for the session. Defaults to `small`.
     #[serde(default)]
     pub model_tier: Option<String>,
-    /// Render SOUL.md and AGENTS.md into the sub-agent's prompt.
+    /// Removed field, kept here only so its presence in HEARTBEAT.yml can be
+    /// detected and rejected at load rather than silently ignored. Forks
+    /// always carry the full agent identity now, so this option no longer
+    /// does anything.
     #[serde(default)]
-    pub include_identity: bool,
+    pub include_identity: Option<bool>,
     #[serde(default)]
     pub tasks: Vec<PulseTask>,
+}
+
+/// Validate a pulse definition against removed options.
+///
+/// # Errors
+/// Returns an error naming the pulse and the field to remove if it uses
+/// `agent: "main"` or sets `include_identity` at all (forks always carry the
+/// main agent's identity now, so the field is never silently reinterpreted).
+pub fn validate_pulse(pulse: &PulseDef) -> Result<(), String> {
+    if pulse.agent.as_deref() == Some("main") {
+        return Err(format!(
+            "pulse '{}' uses agent: \"main\", which is no longer supported — every session fork \
+             already carries the main agent's identity and memory snapshot, so remove the \
+             `agent: main` line (or set it to a skill name to give the session a role)",
+            pulse.name
+        ));
+    }
+    if pulse.include_identity.is_some() {
+        return Err(format!(
+            "pulse '{}' sets include_identity, which has been removed — every session fork \
+             already carries SOUL.md and AGENTS.md, so remove the `include_identity` line",
+            pulse.name
+        ));
+    }
+    Ok(())
 }
 
 fn default_enabled() -> bool {
@@ -187,9 +215,25 @@ pub(crate) fn load_heartbeat(
     };
 
     dedupe_pulse_names(&mut cfg.pulses);
+    reject_invalid_pulses(&mut cfg.pulses);
 
     tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
     Some(cfg)
+}
+
+/// Drop pulses that use a removed option (`agent: "main"` or
+/// `include_identity`), logging an actionable error per offender.
+///
+/// Never silently reinterpreted: the pulse is skipped entirely, not routed
+/// as if the option were absent, so the owner notices and fixes it.
+fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) {
+    pulses.retain(|pulse| match validate_pulse(pulse) {
+        Ok(()) => true,
+        Err(message) => {
+            tracing::error!(pulse = %pulse.name, "{message}");
+            false
+        }
+    });
 }
 
 /// Drop pulses whose name duplicates an earlier one in the list, keeping the first.

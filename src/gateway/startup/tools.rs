@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
 use crate::agent::{Agent, AgentConfig};
-use crate::background::BackgroundTaskSpawner;
+use crate::background::registry::SessionRegistry;
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
@@ -23,7 +23,7 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub action_notify: &'a Arc<tokio::sync::Notify>,
     pub skill_state: &'a SharedSkillState,
     pub tools_path: &'a crate::tools::SharedToolsPath,
-    pub background_spawner: &'a Arc<BackgroundTaskSpawner>,
+    pub session_registry: &'a Arc<SessionRegistry>,
     pub endpoint_registry: &'a EndpointRegistry,
     pub publisher: &'a crate::bus::Publisher,
     pub tracing_service: &'a Arc<crate::tracing_service::TracingService>,
@@ -86,7 +86,7 @@ pub(super) fn init_tool_registry(
         layout.user_inbox_attachments_dir(),
         tz,
     );
-    tools.register_background_tools(Arc::clone(deps.background_spawner));
+    tools.register_background_tools(Arc::clone(deps.session_registry));
     tools.register_spawn_tool(deps.publisher.clone(), Arc::clone(deps.skill_state));
 
     tools.register_send_message_tool(deps.endpoint_registry.clone(), deps.publisher.clone());

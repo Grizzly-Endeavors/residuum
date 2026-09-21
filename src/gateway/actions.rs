@@ -3,64 +3,37 @@
 use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
+use crate::background::registry::generate_address;
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::BackgroundModelTier;
-use crate::pulse::executor::{AgentRoute, route_agent};
 
-/// A scheduled action that should run as a main agent wake turn rather than a sub-agent.
-pub(super) struct ActionMainTurn {
-    /// Action name (for logging/formatting).
-    pub action_name: String,
-    /// The prompt to inject.
-    pub prompt: String,
-}
-
-/// Spawn due scheduled actions as background tasks, returning any that need main agent turns.
-///
-/// - `agent = Some("main")` actions are returned as `ActionMainTurn`s.
-/// - `agent = Some(preset)` actions publish a `SpawnRequest` to the preset topic.
-/// - `agent = None` actions publish a `SpawnRequest` to `general-purpose`.
+/// Fork due scheduled actions as `scheduled` sessions.
 ///
 /// Due actions are drained from the store and saved.
 pub(super) async fn spawn_due_actions(
     action_store: &Arc<tokio::sync::Mutex<ActionStore>>,
     publisher: &Publisher,
-) -> Vec<ActionMainTurn> {
+) {
     let now = chrono::Utc::now();
     let mut store = action_store.lock().await;
     let due = store.take_due(now);
 
     if due.is_empty() {
-        return Vec::new();
+        return;
     }
 
-    let mut main_turns = Vec::new();
-
     for action in &due {
-        match route_agent(action.agent.as_deref()) {
-            AgentRoute::MainWakeTurn => {
-                main_turns.push(ActionMainTurn {
-                    action_name: action.name.clone(),
-                    prompt: action.prompt.clone(),
-                });
-            }
-            AgentRoute::SubAgent { skill } => {
-                publish_action_spawn(action, skill, publisher).await;
-            }
-        }
+        publish_action_spawn(action, publisher).await;
     }
 
     if let Err(e) = store.save().await {
         tracing::warn!(error = %e, "failed to save action store after spawning due actions");
     }
-
-    main_turns
 }
 
 /// Publish a `SpawnRequest` for a scheduled action.
 async fn publish_action_spawn(
     action: &crate::actions::types::ScheduledAction,
-    skill_name: Option<&str>,
     publisher: &Publisher,
 ) {
     let tier = action
@@ -69,14 +42,17 @@ async fn publish_action_spawn(
         .and_then(|s| s.parse().ok())
         .unwrap_or(BackgroundModelTier::Medium);
 
+    let trigger = EventTrigger::Action;
+    let address = generate_address(&trigger, &action.name);
+
     let spawn_event = SpawnRequestEvent {
-        skill: skill_name.map(SkillName::from),
+        address,
+        skill: action.agent.as_deref().map(SkillName::from),
         source_label: format!("action:{}", action.name),
         prompt: action.prompt.clone(),
         context: None,
-        source: EventTrigger::Action,
+        source: trigger,
         model_tier: tier,
-        include_identity: false,
     };
 
     if let Err(e) = publisher.publish(topics::Background, spawn_event).await {

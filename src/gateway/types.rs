@@ -6,7 +6,8 @@ use tokio::sync::mpsc;
 
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
-use crate::background::BackgroundTaskSpawner;
+use crate::background::SessionRuntime;
+use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
 use crate::config::Config;
@@ -207,7 +208,8 @@ pub(crate) struct GatewayRuntime {
     pub vector_store: Option<Arc<VectorStore>>,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub hybrid_searcher: Arc<HybridSearcher>,
-    pub background_spawner: Arc<BackgroundTaskSpawner>,
+    pub session_runtime: Arc<SessionRuntime>,
+    pub session_registry: Arc<SessionRegistry>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,

@@ -8,12 +8,11 @@ pub use providers::init_providers;
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
-use crate::background::BackgroundTaskSpawner;
-use crate::background::types::BackgroundResult;
+use crate::background::SessionRuntime;
+use crate::background::registry::SessionRegistry;
+use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
 use crate::config::Config;
 use crate::inference::{EmbeddingProvider, SharedHttpClient};
@@ -54,8 +53,8 @@ pub(crate) struct GatewayComponents {
     pub endpoint_registry: EndpointRegistry,
     pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
     pub http_client: SharedHttpClient,
-    pub background_spawner: Arc<BackgroundTaskSpawner>,
-    pub background_result_rx: Option<mpsc::Receiver<BackgroundResult>>,
+    pub session_runtime: Arc<SessionRuntime>,
+    pub session_registry: Arc<SessionRegistry>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
@@ -139,18 +138,36 @@ async fn init_skills(cfg: &Config) -> SharedSkillState {
     SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
 
-/// Create the background task spawner and its result channel.
-fn init_background_spawner(
+/// Create the session registry, store, and runtime.
+///
+/// At startup, any run left in the store from a prior process exit is marked
+/// completed before normal operation begins — memory merging for those runs
+/// arrives in Phase 2.
+async fn init_session_runtime(
     cfg: &Config,
     layout: &WorkspaceLayout,
-) -> (mpsc::Receiver<BackgroundResult>, Arc<BackgroundTaskSpawner>) {
-    let (bg_result_tx, bg_result_rx) = mpsc::channel::<BackgroundResult>(32);
-    let background_spawner = Arc::new(BackgroundTaskSpawner::new(
-        bg_result_tx,
+    publisher: &crate::bus::Publisher,
+) -> (Arc<SessionRegistry>, Arc<SessionRuntime>) {
+    let registry = Arc::new(SessionRegistry::new());
+    let store = Arc::new(SessionStore::new(layout.sessions_dir()));
+
+    let recovered = store.mark_incomplete_as_completed().await;
+    if recovered > 0 {
+        tracing::warn!(
+            recovered,
+            "marked session runs left incomplete by a prior process exit as completed"
+        );
+    }
+
+    let runtime = Arc::new(SessionRuntime::new(
+        Arc::clone(&registry),
+        store,
         cfg.background.max_concurrent,
-        layout.background_dir(),
+        &cfg.background,
+        publisher.clone(),
+        cfg.timezone,
     ));
-    (bg_result_rx, background_spawner)
+    (registry, runtime)
 }
 
 /// Load and connect workspace MCP servers.
@@ -354,7 +371,7 @@ pub(crate) async fn initialize(
     let (action_store, action_notify) = init_action_store(&layout).await;
     let skill_state = init_skills(cfg).await;
 
-    let (bg_result_rx, background_spawner) = init_background_spawner(cfg, &layout);
+    let (session_registry, session_runtime) = init_session_runtime(cfg, &layout, publisher).await;
 
     // Shared, reloadable effective PATH for spawned children (exec + MCP stdio).
     let tools_path: SharedToolsPath =
@@ -379,7 +396,8 @@ pub(crate) async fn initialize(
         layout: layout.clone(),
         tz,
         role_overrides: cfg.role_overrides.clone(),
-        background_spawner: Arc::clone(&background_spawner),
+        session_runtime: Arc::clone(&session_runtime),
+        session_registry: Arc::clone(&session_registry),
         endpoint_registry: endpoint_registry.clone(),
         publisher: publisher.clone(),
         action_store: Arc::clone(&action_store),
@@ -396,7 +414,7 @@ pub(crate) async fn initialize(
         action_notify: &action_notify,
         skill_state: &skill_state,
         tools_path: &tools_path,
-        background_spawner: &background_spawner,
+        session_registry: &session_registry,
         endpoint_registry: &endpoint_registry,
         publisher,
         tracing_service: &tracing_service,
@@ -446,8 +464,8 @@ pub(crate) async fn initialize(
         endpoint_registry,
         channel_configs,
         http_client: http.clone(),
-        background_spawner,
-        background_result_rx: Some(bg_result_rx),
+        session_runtime,
+        session_registry,
         spawn_context,
         path_policy: path_policy_for_runtime,
         output_topic_override_tx,

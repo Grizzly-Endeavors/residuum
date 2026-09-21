@@ -19,7 +19,7 @@ mod proactivity_integration {
         CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, Role,
         ToolDefinition,
     };
-    use residuum::pulse::executor::{PulseExecution, build_pulse_execution};
+    use residuum::pulse::executor::build_pulse_execution;
     use residuum::pulse::scheduler::PulseScheduler;
     use residuum::pulse::types::{PulseDef, PulseTask};
     use residuum::tools::ToolRegistry;
@@ -84,7 +84,7 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             model_tier: None,
-            include_identity: false,
+            include_identity: None,
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -95,42 +95,34 @@ mod proactivity_integration {
     // ── build_pulse_execution tests ────────────────────────────────────────
 
     #[test]
-    fn build_pulse_execution_no_agent_returns_subagent() {
+    fn build_pulse_execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.skill, None);
-                assert_eq!(spawn_event.source_label, "pulse:email_check");
-                assert!(matches!(spawn_event.source, EventTrigger::Pulse));
-            }
-            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
-        }
+        let spawn_event = build_pulse_execution(&pulse);
+        assert_eq!(spawn_event.skill, None);
+        assert_eq!(spawn_event.source_label, "pulse:email_check");
+        assert!(matches!(spawn_event.source, EventTrigger::Pulse));
     }
 
     #[test]
     fn build_pulse_execution_prompt_contains_pulse_name_and_heartbeat_ok() {
         let pulse = sample_pulse();
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event, .. } => {
-                assert!(
-                    spawn_event.prompt.contains("email_check"),
-                    "prompt should contain pulse name"
-                );
-                assert!(
-                    spawn_event.prompt.contains("check_inbox"),
-                    "prompt should contain task name"
-                );
-                assert!(
-                    spawn_event.prompt.contains("Check email"),
-                    "prompt should contain task prompt"
-                );
-                assert!(
-                    spawn_event.prompt.contains("HEARTBEAT_OK"),
-                    "prompt should contain HEARTBEAT_OK instruction"
-                );
-            }
-            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
-        }
+        let spawn_event = build_pulse_execution(&pulse);
+        assert!(
+            spawn_event.prompt.contains("email_check"),
+            "prompt should contain pulse name"
+        );
+        assert!(
+            spawn_event.prompt.contains("check_inbox"),
+            "prompt should contain task name"
+        );
+        assert!(
+            spawn_event.prompt.contains("Check email"),
+            "prompt should contain task prompt"
+        );
+        assert!(
+            spawn_event.prompt.contains("HEARTBEAT_OK"),
+            "prompt should contain HEARTBEAT_OK instruction"
+        );
     }
 
     #[test]
@@ -142,50 +134,50 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             model_tier: None,
-            include_identity: false,
+            include_identity: None,
             tasks: vec![],
         };
 
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event, .. } => {
-                assert_eq!(spawn_event.source_label, "pulse:empty_test");
-                assert!(
-                    spawn_event.prompt.contains("HEARTBEAT_OK"),
-                    "should still have HEARTBEAT_OK instruction with no tasks"
-                );
-            }
-            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
-        }
+        let spawn_event = build_pulse_execution(&pulse);
+        assert_eq!(spawn_event.source_label, "pulse:empty_test");
+        assert!(
+            spawn_event.prompt.contains("HEARTBEAT_OK"),
+            "should still have HEARTBEAT_OK instruction with no tasks"
+        );
     }
 
     #[test]
-    fn build_pulse_execution_agent_main_returns_wake_turn() {
-        let mut pulse = sample_pulse();
-        pulse.agent = Some("main".to_string());
-        match build_pulse_execution(&pulse) {
-            PulseExecution::MainWakeTurn { pulse_name, prompt } => {
-                assert_eq!(pulse_name, "email_check");
-                assert!(prompt.contains("check_inbox"));
-                assert!(prompt.contains("HEARTBEAT_OK"));
-            }
-            PulseExecution::SubAgent { .. } => panic!("expected MainWakeTurn"),
-        }
-    }
-
-    #[test]
-    fn build_pulse_execution_agent_name_returns_subagent_with_skill() {
+    fn build_pulse_execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(
-                    spawn_event.skill.as_ref().map(AsRef::as_ref),
-                    Some("memory-agent")
-                );
-                assert_eq!(spawn_event.source_label, "pulse:email_check");
-            }
-            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
-        }
+        let spawn_event = build_pulse_execution(&pulse);
+        assert_eq!(
+            spawn_event.skill.as_ref().map(AsRef::as_ref),
+            Some("memory-agent")
+        );
+        assert_eq!(spawn_event.source_label, "pulse:email_check");
+    }
+
+    #[test]
+    fn pulse_with_agent_main_fails_validation() {
+        use residuum::pulse::types::validate_pulse;
+
+        let mut pulse = sample_pulse();
+        pulse.agent = Some("main".to_string());
+        let err = validate_pulse(&pulse).expect_err("agent: main must be rejected");
+        assert!(err.contains("email_check"));
+        assert!(err.contains("agent: \"main\""));
+    }
+
+    #[test]
+    fn pulse_with_include_identity_fails_validation() {
+        use residuum::pulse::types::validate_pulse;
+
+        let mut pulse = sample_pulse();
+        pulse.include_identity = Some(true);
+        let err = validate_pulse(&pulse).expect_err("include_identity must be rejected");
+        assert!(err.contains("email_check"));
+        assert!(err.contains("include_identity"));
     }
 
     // ── Scheduler tests ──────────────────────────────────────────────────────

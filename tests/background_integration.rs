@@ -1,22 +1,22 @@
-//! End-to-end integration tests for the background task subsystem.
+//! End-to-end integration tests for agent sessions.
 //!
-//! Tests sub-agent execution, spawner concurrency, result routing through the
-//! notification system, and isolated skill state for sub-agents.
+//! Tests result routing through the notification system, the session
+//! registry's public discovery surface, and pulse execution's spawn-request
+//! structure. Session lifecycle mechanics (fork → running → idle →
+//! completed, transcript persistence) are covered where they're exercised —
+//! `src/background/runtime.rs` and `src/background/store.rs` — since driving
+//! them from here would mean re-exposing crate-internal construction just
+//! for the test.
 
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod background_integration {
-    use std::sync::Arc;
-
     use tempfile::tempdir;
-    use tokio::sync::mpsc;
 
-    use residuum::background::BackgroundTaskSpawner;
-    use residuum::background::types::BackgroundResult;
-    use residuum::bus::AgentResultStatus;
-    use residuum::bus::{EventTrigger, NotificationEvent, spawn_broker, topics};
+    use residuum::background::registry::SessionRegistry;
+    use residuum::bus::{EventTrigger, NotificationEvent, SessionAddress, spawn_broker, topics};
     use residuum::notify::channels::InboxChannel;
     use residuum::notify::subscriber::run_notify_subscriber;
 
@@ -73,75 +73,26 @@ mod background_integration {
         assert!(found, "should create one inbox item within timeout");
     }
 
-    // ── Unrouted task still has transcript ──────────────────────────────
+    // ── Session registry discovery surface ──────────────────────────────
 
     #[tokio::test]
-    async fn unrouted_task_has_transcript_but_no_delivery() {
-        let dir = tempdir().unwrap();
-
-        // Empty channels = unrouted
-        let result = BackgroundResult {
-            id: "unrouted-1".to_string(),
-            source_label: "agent:nobody_listens".to_string(),
-            source: EventTrigger::Agent,
-            summary: "result that goes nowhere".to_string(),
-            transcript_path: Some(dir.path().join("bg-unrouted-1.log")),
-            status: AgentResultStatus::Completed,
-            timestamp: chrono::Utc::now(),
-
-            agent_skill: None,
-        };
-
-        // Transcript path was set (would have been written by spawner)
-        assert!(result.transcript_path.is_some());
+    async fn stopping_an_unknown_address_reports_not_found() {
+        let registry = SessionRegistry::new();
+        assert!(!registry.stop(&SessionAddress::from("spawned-ghost-0000")));
     }
 
-    // ── Phase 3: cancel ─────────────────────────────────────────────
-
     #[tokio::test]
-    async fn cancel_nonexistent_task_returns_false() {
-        let dir = tempdir().unwrap();
-        let (tx, _rx) = mpsc::channel(32);
-        let spawner = Arc::new(BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf()));
-
-        let not_found = spawner.cancel("does-not-exist").await;
-        assert!(!not_found, "cancel should return false for unknown task");
-    }
-    // ── Phase 5: Pulse/actions via background spawner ───────────────────
-
-    #[tokio::test]
-    async fn send_result_delivers_action_event() {
-        let dir = tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner = BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf());
-
-        let result = BackgroundResult {
-            id: "action-evt-test-1".to_string(),
-            source_label: "action:reminder".to_string(),
-            source: EventTrigger::Action,
-            summary: "time to stretch".to_string(),
-            transcript_path: None,
-            status: AgentResultStatus::Completed,
-            timestamp: chrono::Utc::now(),
-
-            agent_skill: None,
-        };
-
-        spawner.send_result(result).await.unwrap();
-
-        let received = rx.recv().await.unwrap();
-        assert_eq!(received.id, "action-evt-test-1");
-        assert_eq!(received.source_label, "action:reminder");
-        assert_eq!(received.summary, "time to stretch");
-        assert!(matches!(received.source, EventTrigger::Action));
-        assert!(matches!(received.status, AgentResultStatus::Completed));
+    async fn a_freshly_constructed_registry_has_no_live_sessions() {
+        let registry = SessionRegistry::new();
+        assert!(registry.list_live().is_empty());
+        assert!(registry.subagent_snapshot().is_empty());
     }
 
     // ── Pulse execution builds correct structure ──────────────────────
 
     #[test]
     fn build_pulse_execution_creates_correct_structure() {
-        use residuum::pulse::executor::{PulseExecution, build_pulse_execution};
+        use residuum::pulse::executor::build_pulse_execution;
         use residuum::pulse::types::{PulseDef, PulseTask};
 
         let pulse = PulseDef {
@@ -151,23 +102,23 @@ mod background_integration {
             active_hours: None,
             agent: None,
             model_tier: None,
-            include_identity: false,
+            include_identity: None,
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),
             }],
         };
 
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.skill, None);
-                assert_eq!(spawn_event.source_label, "pulse:status_check");
-                assert!(spawn_event.prompt.contains("status_check"));
-                assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
-            }
-            PulseExecution::MainWakeTurn { .. } => {
-                panic!("expected SubAgent");
-            }
-        }
+        let spawn_event = build_pulse_execution(&pulse);
+        assert_eq!(spawn_event.skill, None);
+        assert_eq!(spawn_event.source_label, "pulse:status_check");
+        assert!(spawn_event.prompt.contains("status_check"));
+        assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
+        assert!(
+            spawn_event
+                .address
+                .as_ref()
+                .starts_with("scheduled-status-check-")
+        );
     }
 }
