@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -218,6 +219,54 @@ impl SessionStore {
         }
     }
 
+    /// Find a run's metadata record file by run id, without needing to know
+    /// its start date up front — mirrors
+    /// [`crate::memory::episode_store::find_episode_path`]'s directory walk.
+    ///
+    /// Returns `Ok(None)` when the sessions directory is missing or no run
+    /// with this id exists, and `Err` only on I/O failures reading
+    /// directories.
+    ///
+    /// # Errors
+    /// Returns an error if a directory cannot be read.
+    pub(crate) async fn find_run_path(&self, run_id: &str) -> anyhow::Result<Option<PathBuf>> {
+        if !matches!(tokio::fs::try_exists(&self.sessions_dir).await, Ok(true)) {
+            return Ok(None);
+        }
+        let target = format!("{run_id}.json");
+        find_file_by_name(&self.sessions_dir, &target).await
+    }
+
+    /// Read a run's on-disk record and transcript by run id.
+    ///
+    /// A completed run's transcript is already in the record; a run that
+    /// hasn't reached a terminal state yet has an empty `transcript` field,
+    /// so this falls back to the live incremental sidecar file in that case.
+    ///
+    /// # Errors
+    /// Returns an error if the sessions directory cannot be read, or the
+    /// record file cannot be read or parsed.
+    pub(crate) async fn read_run(
+        &self,
+        run_id: &str,
+    ) -> anyhow::Result<Option<(RunRecord, Vec<Message>)>> {
+        let Some(path) = self.find_run_path(run_id).await? else {
+            return Ok(None);
+        };
+        let contents = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("failed to read session run record at {}", path.display()))?;
+        let record: RunRecord = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse session run record at {}", path.display()))?;
+        let transcript = if record.transcript.is_empty() && record.state != "completed" {
+            self.read_incremental_transcript(&record.run_id, record.started_at)
+                .await
+        } else {
+            record.transcript.clone()
+        };
+        Ok(Some((record, transcript)))
+    }
+
     /// Finalize a run's record: set its terminal state, completion time,
     /// full transcript, and the episode it was merged into (if any).
     ///
@@ -394,6 +443,34 @@ impl SessionStore {
         )
         .await
     }
+}
+
+/// Recursively search `dir` for a file named exactly `target`, iteratively
+/// (a stack of pending directories rather than async recursion).
+///
+/// # Errors
+/// Returns an error if a directory cannot be read.
+async fn find_file_by_name(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let mut entries = tokio::fs::read_dir(&current)
+            .await
+            .with_context(|| format!("failed to read directory {}", current.display()))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .with_context(|| format!("failed to read directory entry in {}", current.display()))?
+        {
+            let is_dir = entry.file_type().await.is_ok_and(|t| t.is_dir());
+            let path = entry.path();
+            if is_dir {
+                pending.push(path);
+            } else if path.file_name().is_some_and(|n| n == target) {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Serialize and atomically write a run record.
@@ -751,6 +828,93 @@ mod tests {
         assert_eq!(
             latest, episode_id,
             "recovery must not mint a second episode for the same run"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_run_path_locates_a_run_without_knowing_its_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let found = store.find_run_path(&info.run_id).await.unwrap();
+        assert!(found.is_some(), "should find the run by id alone");
+        assert!(found.unwrap().ends_with(format!("{}.json", info.run_id)));
+    }
+
+    #[tokio::test]
+    async fn find_run_path_returns_none_for_unknown_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        assert!(
+            store
+                .find_run_path("run-does-not-exist")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn find_run_path_on_missing_sessions_dir_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().join("does-not-exist"));
+        assert!(store.find_run_path("run-anything").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_run_returns_the_completed_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+        let transcript = vec![Message::user("hello"), Message::assistant("hi", None)];
+        store
+            .complete_run(
+                &info,
+                "completed",
+                transcript.clone(),
+                Some("ep-001".to_string()),
+            )
+            .await;
+
+        let (record, read_transcript) = store.read_run(&info.run_id).await.unwrap().unwrap();
+        assert_eq!(record.state, "completed");
+        assert_eq!(record.episode_id.as_deref(), Some("ep-001"));
+        assert_eq!(read_transcript.len(), transcript.len());
+    }
+
+    #[tokio::test]
+    async fn read_run_falls_back_to_the_incremental_transcript_for_a_live_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+        store
+            .append_transcript(
+                &info.run_id,
+                info.started_at,
+                &[Message::user("still running")],
+            )
+            .await;
+
+        let (record, transcript) = store.read_run(&info.run_id).await.unwrap().unwrap();
+        assert_eq!(record.state, "running");
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript.first().unwrap().content, "still running");
+    }
+
+    #[tokio::test]
+    async fn read_run_returns_none_for_unknown_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        assert!(
+            store
+                .read_run("run-does-not-exist")
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 
