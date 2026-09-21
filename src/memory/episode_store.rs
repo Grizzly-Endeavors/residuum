@@ -10,7 +10,7 @@ use serde::Deserialize;
 use anyhow::Context;
 
 use crate::inference::{Message, Role};
-use crate::memory::types::Episode;
+use crate::memory::types::{Episode, SourceTag};
 
 /// Metadata from the first line of an episode JSONL file.
 #[derive(Debug, Deserialize)]
@@ -19,20 +19,53 @@ pub struct EpisodeMeta {
     pub id: String,
     /// Date of the episode.
     pub date: chrono::NaiveDate,
+    /// Session/run/category this episode was merged from, if any. Optional
+    /// on read so episode files written before session memory existed still
+    /// load.
+    #[serde(flatten)]
+    pub source: SourceTag,
+    /// Narrative summary captured at merge time, if any.
+    #[serde(default)]
+    pub narrative: Option<String>,
 }
 
 /// Write an episode transcript file to the episodes directory.
 ///
 /// Creates `{episodes_dir}/{YYYY-MM}/{DD}/{episode.id}.jsonl` as a JSONL file.
 /// Line 1 is a meta JSON object; subsequent lines are serialized [`Message`] values.
-/// Creates the date subdirectory if it doesn't exist.
+/// Creates the date subdirectory if it doesn't exist. Tags the meta line with
+/// [`SourceTag::main`] and no narrative — use
+/// [`write_episode_transcript_tagged`] to record a session's source or a
+/// captured narrative.
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
+///
+/// Test-only: production code always has a [`SourceTag`] and calls
+/// [`write_episode_transcript_tagged`] directly (the merge writer is the
+/// only production caller).
+#[cfg(test)]
 pub(crate) async fn write_episode_transcript(
     episodes_dir: &Path,
     episode: &Episode,
     messages: &[Message],
+) -> anyhow::Result<()> {
+    write_episode_transcript_tagged(episodes_dir, episode, messages, &SourceTag::main(), None).await
+}
+
+/// Write an episode transcript file, tagging its meta line with the source
+/// that produced it and, when present, the narrative captured at merge time.
+///
+/// Otherwise identical to [`write_episode_transcript`].
+///
+/// # Errors
+/// Returns an error if the file cannot be written.
+pub(crate) async fn write_episode_transcript_tagged(
+    episodes_dir: &Path,
+    episode: &Episode,
+    messages: &[Message],
+    tag: &SourceTag,
+    narrative: Option<&str>,
 ) -> anyhow::Result<()> {
     let day_dir = episodes_dir.join(episode.date.format("%Y-%m/%d").to_string());
     tokio::fs::create_dir_all(&day_dir).await.with_context(|| {
@@ -44,11 +77,22 @@ pub(crate) async fn write_episode_transcript(
 
     let path = episode_jsonl_path(episodes_dir, episode);
 
-    let meta = serde_json::json!({
+    let mut meta = serde_json::json!({
         "type": "meta",
         "id": episode.id,
         "date": episode.date.to_string(),
     });
+    if let serde_json::Value::Object(map) = &mut meta {
+        if let Ok(serde_json::Value::Object(tag_map)) = serde_json::to_value(tag) {
+            map.extend(tag_map);
+        }
+        if let Some(n) = narrative {
+            map.insert(
+                "narrative".to_string(),
+                serde_json::Value::String(n.to_string()),
+            );
+        }
+    }
 
     let mut lines = Vec::with_capacity(messages.len() + 1);
     lines.push(serde_json::to_string(&meta).context("failed to serialize episode meta")?);
@@ -562,6 +606,35 @@ mod tests {
             Some("hello"),
             "first message should round-trip"
         );
+    }
+
+    #[tokio::test]
+    async fn episode_meta_without_source_tag_loads_as_main() {
+        // A transcript written before session memory existed has a meta
+        // line with only "type"/"id"/"date" — no session_address/run_id/
+        // category/narrative keys at all.
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        let day_dir = dir.path().join(episode.date.format("%Y-%m/%d").to_string());
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+        let path = episode_jsonl_path(dir.path(), &episode);
+        let legacy_meta = serde_json::json!({
+            "type": "meta",
+            "id": episode.id,
+            "date": episode.date.to_string(),
+        });
+        tokio::fs::write(&path, format!("{legacy_meta}\n"))
+            .await
+            .unwrap();
+
+        let (meta, messages) = read_episode_jsonl(&path).await.unwrap();
+        assert_eq!(meta.id, "ep-001");
+        assert!(
+            !meta.source.is_session(),
+            "a legacy meta line with no source tag should load as untagged"
+        );
+        assert!(meta.narrative.is_none());
+        assert!(messages.is_empty());
     }
 
     // --- find_episode_path tests ---

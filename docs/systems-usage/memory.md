@@ -18,6 +18,16 @@ An entry belongs in `USER.md` only once it is corroborated — supported by at l
 
 Fires automatically after enough conversation accumulates (token threshold). The agent and user do not invoke it — the gateway handles timing.
 
+Extraction (the LLM call that turns messages into observations and a narrative) and persistence (episode id allocation, writing the transcript and observation archives, indexing, embedding, and the reflector check) are separate steps. Persistence always goes through the memory merge writer, the single serialized writer for global memory — the main agent's own observation flow and every agent session's completion both call it, so episode numbering and observation-log appends never race between concurrent writers.
+
+### Agent Sessions and Memory
+
+Every agent session — a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent — has its own working memory and merges into this same global memory when it completes. A session's run is checked against the same observer thresholds as the main agent's; crossing the force threshold mid-run extracts and stages observations locally, invisible to any other agent until the run finishes. On completion, a run produces no episode only if it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is below a configurable token floor (`episode_skip_token_floor` in `[background]`, default ~2000 tokens) — its transcript is still kept in the session store either way. Otherwise a final extraction runs over whatever wasn't staged, and the combined observations merge through the memory merge writer alongside the run's full transcript as one episode.
+
+Merged observations and episodes carry the originating session's address, run id, and category, so `memory_search` and `memory_get` results stay traceable to their source. These fields are optional on read, so observation and episode files written before session memory existed still load. The main agent's own recent-context narrative (`recent_context.json`) is only ever replaced by the main agent's own observations — a session's captured narrative lives on its own episode's transcript instead, never in the shared recent-context file.
+
+If the process exits mid-run, the run's transcript is not lost: it is appended to durably as the run progresses (after every model response and tool result), and at the next startup any run that never reached a terminal state goes through this same completion pipeline — skip check, extraction, merge — from its persisted transcript before normal operation resumes.
+
 **Trigger modes:**
 - Soft threshold (`threshold_tokens`): starts a cooldown timer, fires when cooldown expires
 - Force threshold (`force_threshold_tokens`): fires immediately, bypassing cooldown
@@ -119,7 +129,7 @@ Knowledge and memory appear in the agent's context, after `USER.md`, as:
 2. `OBSERVATION_LOG` — the formatted observation log from `observations.json`
 3. `RECENT_CONTEXT` — the narrative from the latest observation (`memory/recent_context.json`)
 
-Sub-agents get `USER.md` and `WIKI_INDEX` but not the observation log or recent context.
+An agent session's fork carries a snapshot of the observation log and the recent-context narrative taken at fork time, alongside `USER.md` and `WIKI_INDEX` — a session never sees observations merged after it forked; it sees them on its next run. See [background-tasks.md](background-tasks.md) for the full fork contents.
 
 ## Message Senders
 

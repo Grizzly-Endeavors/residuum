@@ -923,6 +923,9 @@ fn resolve_background_config(
         if let Some(v) = section.idle_timeout_external_minutes {
             cfg.idle_timeout_external = std::time::Duration::from_secs(v.saturating_mul(60));
         }
+        if let Some(v) = section.episode_skip_token_floor {
+            cfg.episode_skip_token_floor = v;
+        }
     }
 
     if let Some(models_section) = models_section {

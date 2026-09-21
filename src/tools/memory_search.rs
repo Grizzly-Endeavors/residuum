@@ -189,6 +189,7 @@ mod tests {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "rust memory safety and ownership model".to_string(),
+            source: crate::memory::types::SourceTag::main(),
         }];
         index
             .index_observations("ep-001", "2026-02-19", &obs)

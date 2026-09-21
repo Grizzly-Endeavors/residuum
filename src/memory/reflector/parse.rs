@@ -44,6 +44,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
                 source_episodes: None,
                 visibility: item.visibility.clone(),
                 content: item.content.clone(),
+                source: crate::memory::types::SourceTag::main(),
             });
         }
         return Ok(log);
@@ -93,6 +94,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             source_episodes: None,
             visibility,
             content: obs_content.to_string(),
+            source: crate::memory::types::SourceTag::main(),
         });
     }
 

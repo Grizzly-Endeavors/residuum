@@ -1159,6 +1159,7 @@ mod tests {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: text.to_string(),
+            source: crate::memory::types::SourceTag::main(),
         }
     }
 

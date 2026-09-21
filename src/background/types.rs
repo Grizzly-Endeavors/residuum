@@ -7,6 +7,8 @@ use tokio::sync::{Mutex, Notify};
 use crate::actions::store::ActionStore;
 use crate::bus::{EndpointRegistry, Publisher};
 use crate::config::BackgroundModelTier;
+use crate::memory::merge_writer::MemoryMergeWriter;
+use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
@@ -60,6 +62,15 @@ pub struct SubAgentBuildConfig {
     pub action_notify: Arc<Notify>,
     /// Hybrid searcher for `memory_search` tool.
     pub hybrid_searcher: Arc<HybridSearcher>,
+    /// This session's own observer instance, for per-run threshold checks
+    /// and extraction.
+    pub observer: Arc<Observer>,
+    /// The single serialized writer for global memory, shared with the main
+    /// agent.
+    pub merge_writer: Arc<MemoryMergeWriter>,
+    /// Token floor below which a completed run with nothing staged produces
+    /// no episode.
+    pub episode_skip_token_floor: usize,
 }
 
 #[cfg(test)]

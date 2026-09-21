@@ -11,12 +11,11 @@ use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
 use crate::config::Config;
-use crate::inference::{EmbeddingProvider, SharedHttpClient};
+use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
-use crate::memory::reflector::Reflector;
-use crate::memory::search::{HybridSearcher, MemoryIndex};
-use crate::memory::vector_store::VectorStore;
+use crate::memory::search::HybridSearcher;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -199,14 +198,15 @@ pub(crate) struct GatewayRuntime {
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
     pub observer: Observer,
-    pub reflector: Reflector,
+    /// The single serialized writer for global memory: episode id
+    /// allocation, the observation log, the search index, embedding, and
+    /// the reflector trigger. Shared with every session run's completion
+    /// pipeline through `spawn_context`.
+    pub merge_writer: Arc<MemoryMergeWriter>,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
     /// In-memory learning-loop state (cooldown + fallback turn counter). Resets
     /// on restart.
     pub learning_state: crate::subconscious::LearningState,
-    pub search_index: Arc<MemoryIndex>,
-    pub vector_store: Option<Arc<VectorStore>>,
-    pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,

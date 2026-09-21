@@ -23,6 +23,32 @@ pub(super) struct MemoryComponents {
     pub vector_store: Option<Arc<VectorStore>>,
 }
 
+/// Build an observer from `Config`'s `[observer]` provider chain.
+///
+/// Used both for the main agent's own observer and, independently, for a
+/// session's own observer instance in `SpawnContext` — the same
+/// configuration, but a separate provider/instance so a session fork never
+/// contends with the main agent's config-reload swaps.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the observer provider cannot be built.
+pub(super) fn build_observer(
+    cfg: &Config,
+    tz: chrono_tz::Tz,
+    http: SharedHttpClient,
+) -> Result<Observer, FatalError> {
+    let observer_provider =
+        build_provider_chain(&cfg.observer, cfg.max_tokens, http, cfg.retry.clone())?;
+    Ok(Observer::new(
+        observer_provider,
+        ObserverConfig {
+            tz,
+            role_overrides: cfg.role_overrides.get("observer").cloned(),
+            ..ObserverConfig::default()
+        },
+    ))
+}
+
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
 /// # Errors
@@ -32,24 +58,10 @@ pub(super) fn build_memory_components(
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
 ) -> Result<(Observer, Reflector), FatalError> {
-    let observer_provider = build_provider_chain(
-        &cfg.observer,
-        cfg.max_tokens,
-        http.clone(),
-        cfg.retry.clone(),
-    )?;
+    let observer = build_observer(cfg, tz, http.clone())?;
+
     let reflector_provider =
         build_provider_chain(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
-
-    let observer = Observer::new(
-        observer_provider,
-        ObserverConfig {
-            tz,
-            role_overrides: cfg.role_overrides.get("observer").cloned(),
-            ..ObserverConfig::default()
-        },
-    );
-
     let reflector = Reflector::new(
         reflector_provider,
         ReflectorConfig {
@@ -489,6 +501,7 @@ mod tests {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: content.to_string(),
+            source: crate::memory::types::SourceTag::main(),
         }];
         std::fs::create_dir_all(path.parent().expect("obs path should have a parent"))
             .expect("failed to create episode directory");

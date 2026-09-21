@@ -139,8 +139,14 @@ Every session's result flows through the pub/sub bus to the notification router,
 
 See [notifications.md](notifications.md) for the full routing model.
 
+## Memory
+
+A session has its own working memory and merges what it learned into global memory when it completes — see [memory.md](memory.md#agent-sessions-and-memory) for the full model. In short: the run is checked against the same observer thresholds the main agent uses, crossing the force threshold mid-run stages observations locally, and on completion the run produces an episode (tagged with its session address, run id, and category) unless it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor`. Its transcript is kept in the session store either way. The run's metadata records the episode id once merged.
+
 ## Session Store
 
-Every run's metadata and transcript are recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. Stopped runs keep their transcript up to the point they were stopped. At startup, any run left incomplete by a prior process exit is marked completed; its transcript is whatever had already been recorded.
+Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. While the run is live, its transcript is durably appended to a sibling `<run-id>.transcript.jsonl` file after every model response and tool result, so a crash mid-turn loses at most the message in flight; on completion the full transcript is folded into the metadata file too, so a finished run's record is a single, self-contained file. Stopped runs keep their transcript up to the point they were stopped and merge into memory like any other run.
 
-The record carries the session's address, run id, category, source label, spawner, depth, purpose, and lifecycle timestamps, plus the full message transcript once the run completes.
+At startup, any run left incomplete by a prior process exit goes through the full completion pipeline — skip check, final observation, merge — from its persisted transcript before normal operation resumes, then is marked completed.
+
+The record carries the session's address, run id, category, source label, spawner, depth, purpose, lifecycle timestamps, the episode id once merged, and the full message transcript once the run completes.

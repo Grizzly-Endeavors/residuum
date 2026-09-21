@@ -352,7 +352,7 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     reload_providers(rt, new_cfg, http_client.clone()).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
-    reload_memory_thresholds(rt, new_cfg);
+    reload_memory_thresholds(rt, new_cfg).await;
     rt.pulse_enabled = new_cfg.pulse_enabled;
     rt.subconscious = crate::subconscious::Subconscious::build(new_cfg, &rt.layout, http_client);
     tracing::debug!(
@@ -375,6 +375,19 @@ fn build_spawn_context(
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) -> Arc<SpawnContext> {
+    // Rebuilt fresh so sessions forked after this reload pick up the new
+    // `[observer]` config, mirroring `reload_providers`'s treatment of the
+    // main agent's own observer. A failed rebuild keeps the previous
+    // instance (stale config) rather than losing session extraction
+    // entirely — the same degrade-gracefully choice `reload_providers` makes.
+    let observer = match startup::init_session_observer(new_cfg, rt.tz, http_client.clone()) {
+        Ok(observer) => Arc::new(observer),
+        Err(err) => {
+            tracing::warn!(error = %err, "session observer rebuild failed, keeping current instance");
+            Arc::clone(&rt.spawn_context.observer)
+        }
+    };
+
     Arc::new(SpawnContext {
         background_config: new_cfg.background.clone(),
         main_provider_specs: new_cfg.main.clone(),
@@ -399,6 +412,8 @@ fn build_spawn_context(
         hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
         skill_state: Arc::clone(&rt.skill_state),
         mcp_registry: Arc::clone(&rt.mcp_registry),
+        observer,
+        merge_writer: Arc::clone(&rt.merge_writer),
     })
 }
 
@@ -417,8 +432,10 @@ async fn reload_providers(
             rt.agent
                 .swap_provider(components.provider, components.options);
             rt.observer = components.observer;
-            rt.reflector = components.reflector;
-            rt.embedding_provider = components.embedding_provider;
+            rt.merge_writer.swap_reflector(components.reflector).await;
+            rt.merge_writer
+                .set_embedding_provider(components.embedding_provider)
+                .await;
             tracing::debug!("providers swapped successfully");
         }
         Err(err) => {
@@ -433,7 +450,7 @@ async fn reload_providers(
 }
 
 /// Update observer and reflector thresholds from the new config.
-fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
     use crate::memory::observer::ObserverConfig;
     use crate::memory::reflector::ReflectorConfig;
 
@@ -445,11 +462,13 @@ fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
         role_overrides: new_cfg.role_overrides.get("observer").cloned(),
     });
 
-    rt.reflector.update_config(ReflectorConfig {
-        threshold_tokens: new_cfg.memory.reflector_threshold_tokens,
-        tz: new_cfg.timezone,
-        role_overrides: new_cfg.role_overrides.get("reflector").cloned(),
-    });
+    rt.merge_writer
+        .update_reflector_config(ReflectorConfig {
+            threshold_tokens: new_cfg.memory.reflector_threshold_tokens,
+            tz: new_cfg.timezone,
+            role_overrides: new_cfg.role_overrides.get("reflector").cloned(),
+        })
+        .await;
 
     tracing::debug!("memory thresholds updated");
 }

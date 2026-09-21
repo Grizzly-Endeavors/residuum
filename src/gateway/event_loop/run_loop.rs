@@ -253,12 +253,9 @@ async fn build_runtime(
         tz: parts.tz,
         agent: parts.agent,
         observer: parts.observer,
+        merge_writer: parts.merge_writer,
         subconscious: parts.subconscious,
         learning_state: crate::subconscious::LearningState::default(),
-        reflector: parts.reflector,
-        search_index: parts.search_index,
-        vector_store: parts.vector_store,
-        embedding_provider: parts.embedding_provider,
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
@@ -496,11 +493,9 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 async fn run_observation(rt: &mut GatewayRuntime) {
     let mem = crate::gateway::memory::MemorySubsystems {
         observer: &rt.observer,
-        reflector: &rt.reflector,
-        search_index: &rt.search_index,
+        merge_writer: &rt.merge_writer,
         layout: &rt.layout,
-        vector_store: rt.vector_store.as_ref(),
-        embedding_provider: rt.embedding_provider.as_ref(),
+        tz: rt.tz,
     };
     execute_observation(&mem, &mut rt.agent).await;
 }
