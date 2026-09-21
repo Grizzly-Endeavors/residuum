@@ -408,6 +408,24 @@ mod tests {
     }
 
     #[test]
+    fn observation_without_source_tag_loads_as_main() {
+        // A record written before session memory existed has none of
+        // session_address/run_id/category — it must still load, as an
+        // untagged (main-agent) observation.
+        let json = r#"{
+            "timestamp": "2024-02-19T00:00",
+            "source_episodes": "ep-001",
+            "visibility": "user",
+            "content": "written before session memory existed"
+        }"#;
+        let obs: Observation = serde_json::from_str(json).unwrap();
+        assert!(
+            !obs.source.is_session(),
+            "an observation with no source tag fields should load as untagged"
+        );
+    }
+
+    #[test]
     fn observation_source_episodes_skipped_when_none() {
         let obs = Observation {
             source_episodes: None,

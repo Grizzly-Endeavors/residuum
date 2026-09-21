@@ -608,6 +608,35 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn episode_meta_without_source_tag_loads_as_main() {
+        // A transcript written before session memory existed has a meta
+        // line with only "type"/"id"/"date" — no session_address/run_id/
+        // category/narrative keys at all.
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        let day_dir = dir.path().join(episode.date.format("%Y-%m/%d").to_string());
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+        let path = episode_jsonl_path(dir.path(), &episode);
+        let legacy_meta = serde_json::json!({
+            "type": "meta",
+            "id": episode.id,
+            "date": episode.date.to_string(),
+        });
+        tokio::fs::write(&path, format!("{legacy_meta}\n"))
+            .await
+            .unwrap();
+
+        let (meta, messages) = read_episode_jsonl(&path).await.unwrap();
+        assert_eq!(meta.id, "ep-001");
+        assert!(
+            !meta.source.is_session(),
+            "a legacy meta line with no source tag should load as untagged"
+        );
+        assert!(meta.narrative.is_none());
+        assert!(messages.is_empty());
+    }
+
     // --- find_episode_path tests ---
 
     #[tokio::test]
