@@ -19,6 +19,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `memory/REFLECTOR.md` | Low | Reflector compression prompt. Same — agent self-improves. |
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
 | `pulse_state.json` | Managed by gateway | Pulse last-run timestamps and run counts. Persisted across restarts. Never edited directly. |
+| `teams_state.json` | Managed by the Teams interface | Teams owner and conversation references for proactive messages. Edit only to reset the owner (see [Microsoft Teams](teams.md)). |
 
 ### User-owned files
 
@@ -61,6 +62,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, role skills in `skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
+| [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
 
 ## What This Is Not
 
