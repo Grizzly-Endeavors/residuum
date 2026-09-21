@@ -173,13 +173,20 @@ impl SessionRuntime {
             env.store.begin_run(&info).await;
 
             // Cloned up front so cleanup still has something to work with if
-            // the task panics — the originals are moved into `run_session`
-            // and gone with it once the panic unwinds past this point.
+            // the task panics — the originals (including `resources`, which
+            // is not `Clone`) are moved into `run_session` and gone with it
+            // once the panic unwinds past this point.
             let panic_info = info.clone();
             let registry = Arc::clone(&env.registry);
             let store = Arc::clone(&env.store);
             let publisher = env.publisher.clone();
             let tz = env.tz;
+            let mem_extras = resources.as_ref().map(|res| PanicMemoryExtras {
+                observer: Arc::clone(&res.observer),
+                merge_writer: Arc::clone(&res.merge_writer),
+                layout: res.layout.clone(),
+                episode_skip_token_floor: res.episode_skip_token_floor,
+            });
 
             let outcome = std::panic::AssertUnwindSafe(run_session(
                 info,
@@ -200,7 +207,16 @@ impl SessionRuntime {
                     panic = msg,
                     "session task panicked"
                 );
-                recover_from_panic(&panic_info, &registry, &store, &publisher, tz, msg).await;
+                recover_from_panic(
+                    &panic_info,
+                    &registry,
+                    &store,
+                    &publisher,
+                    tz,
+                    msg,
+                    mem_extras,
+                )
+                .await;
             }
         });
     }
@@ -235,10 +251,31 @@ impl SessionRuntime {
     }
 }
 
+/// Owned copies of the memory subsystem handles a run's completion pipeline
+/// needs, cloned up front (before `resources` moves into [`run_session`])
+/// since a panic unwinds through and drops the original `SubAgentResources`
+/// — its provider/tools/MCP registry aren't `Clone`, but these three handles
+/// are cheap `Arc`/owned clones and are all [`recover_from_panic`] needs to
+/// run the same completion pipeline a normal run does.
+struct PanicMemoryExtras {
+    observer: Arc<crate::memory::observer::Observer>,
+    merge_writer: Arc<crate::memory::merge_writer::MemoryMergeWriter>,
+    layout: crate::workspace::layout::WorkspaceLayout,
+    episode_skip_token_floor: usize,
+}
+
 /// Finalize a session's record and notify listeners after its task panicked,
 /// mirroring the cleanup [`run_session`] performs on any other terminal path
 /// — otherwise a panic would leave the session `running` forever in the
 /// store and permanently registered as live.
+///
+/// Backfills the transcript from the run's durable `.transcript.jsonl`
+/// sidecar (the same file [`RunTranscriptSink`] appended to during the run)
+/// and, when the resources for it are available, runs the normal completion
+/// memory pipeline over it — a panic mid-turn must not silently drop
+/// whatever the run had already produced. The merge writer's own
+/// idempotency check (see `crate::memory::merged_run_log`) makes this safe
+/// even if the panic happened after a merge had already succeeded.
 async fn recover_from_panic(
     info: &SessionInfo,
     registry: &SessionRegistry,
@@ -246,10 +283,43 @@ async fn recover_from_panic(
     publisher: &Publisher,
     tz: chrono_tz::Tz,
     panic_msg: &str,
+    mem_extras: Option<PanicMemoryExtras>,
 ) {
     registry.set_state(&info.address, SessionState::Completing);
+
+    let transcript = store
+        .read_incremental_transcript(&info.run_id, info.started_at)
+        .await;
+
+    let episode_id = if let Some(extras) = mem_extras {
+        let summary = transcript
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        let mem_env = SessionMemoryEnv {
+            observer: extras.observer.as_ref(),
+            merge_writer: extras.merge_writer.as_ref(),
+            layout: &extras.layout,
+            episode_skip_token_floor: extras.episode_skip_token_floor,
+            tz,
+        };
+        let tag = crate::memory::types::SourceTag::session(
+            info.address.to_string(),
+            info.run_id.clone(),
+            info.category.as_str(),
+        );
+        complete_session_memory(tag, &summary, &transcript, SessionMemory::new(), &mem_env).await
+    } else {
+        None
+    };
+
     let transcript_path = store
-        .complete_run(info, SessionState::Completed.as_str(), Vec::new(), None)
+        .complete_run(
+            info,
+            SessionState::Completed.as_str(),
+            transcript,
+            episode_id,
+        )
         .await;
 
     let status = AgentResultStatus::Failed {
@@ -775,6 +845,127 @@ mod tests {
         assert!(
             runtime.registry.get(&address).is_none(),
             "a panicked session must not linger in the registry forever"
+        );
+
+        let transcript_path = event
+            .transcript_path
+            .expect("a panicked run should still record a transcript path");
+        let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let transcript = record.get("transcript").unwrap().as_array().unwrap();
+        assert!(
+            !transcript.is_empty(),
+            "the pre-panic transcript (the initial user message, durably \
+             sink-appended before the provider call panicked) must be \
+             backfilled from the transcript sidecar rather than discarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_from_panic_backfills_and_merges_a_substantial_transcript() {
+        // Drives `recover_from_panic` directly against a store whose
+        // incremental transcript sidecar already holds substantial content —
+        // the same durable file a real panic mid-turn would have left behind
+        // — to prove the panic path backfills the transcript and runs the
+        // normal completion memory pipeline instead of always reporting an
+        // empty transcript with no episode.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = SessionInfo {
+            address: SessionAddress::from("spawned-researcher-0006b"),
+            run_id: "run-panic-substantial".to_string(),
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: SessionState::Running,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
+            purpose: "research the thing".to_string(),
+            agent_skill: None,
+            started_at: Utc::now(),
+        };
+        store.begin_run(&info).await;
+
+        let big_content = "a".repeat(9000);
+        store
+            .append_transcript(
+                &info.run_id,
+                info.started_at,
+                &[
+                    Message::user("investigate the issue"),
+                    Message::assistant(big_content, None),
+                ],
+            )
+            .await;
+
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let search_index = std::sync::Arc::new(
+            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+        );
+        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = Arc::new(crate::memory::merge_writer::MemoryMergeWriter::new(
+            reflector,
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        ));
+        let observer = Arc::new(crate::memory::observer::Observer::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                r#"{"observations": [{"content": "recovered from a panic", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
+            )),
+            crate::memory::observer::ObserverConfig::default(),
+        ));
+        let mem_extras = PanicMemoryExtras {
+            observer,
+            merge_writer,
+            layout,
+            episode_skip_token_floor: 2000,
+        };
+
+        let registry = SessionRegistry::new();
+        registry.register(info.clone(), CancellationToken::new());
+        let bus_handle = crate::bus::spawn_broker();
+        let mut sub: crate::bus::Subscriber<AgentResultEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let publisher = bus_handle.publisher();
+
+        recover_from_panic(
+            &info,
+            &registry,
+            &store,
+            &publisher,
+            chrono_tz::UTC,
+            "intentional panic for test coverage",
+            Some(mem_extras),
+        )
+        .await;
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .expect("panic recovery should publish a result")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
+        assert!(
+            registry.get(&info.address).is_none(),
+            "panic recovery must remove the session from the registry"
+        );
+
+        let transcript_path = event
+            .transcript_path
+            .expect("panic recovery should still record a transcript path");
+        let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let transcript = record.get("transcript").unwrap().as_array().unwrap();
+        assert_eq!(
+            transcript.len(),
+            2,
+            "the pre-panic transcript must be backfilled from the sidecar file"
+        );
+        assert!(
+            record.get("episode_id").unwrap().is_string(),
+            "a substantial pre-panic transcript should still be merged into an episode, got {record:?}"
         );
     }
 
