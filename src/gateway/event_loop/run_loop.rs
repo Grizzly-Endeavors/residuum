@@ -442,6 +442,11 @@ async fn check_and_run_due_actions(rt: &mut GatewayRuntime) {
     actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
 }
 
+/// Maximum time to wait for live sessions to stop and finish recording their
+/// runs during graceful shutdown, before giving up and leaving the rest to
+/// startup recovery.
+const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     tracing::info!(
@@ -449,6 +454,10 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
         bus_infra_handles = rt.bus_infra_handles.len(),
         "beginning graceful shutdown"
     );
+    // Stop live sessions first, while the bus and its subscribers (notify
+    // router included) are still running, so their results are recorded and
+    // delivered rather than left for startup recovery on the next boot.
+    rt.session_runtime.shutdown(SESSION_SHUTDOWN_TIMEOUT).await;
     for h in rt.notify_handles.drain(..) {
         h.abort();
     }
