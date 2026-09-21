@@ -60,10 +60,11 @@ Let agents address each other, relay results through messaging, and allow depth-
   - Each `spawned` session turn's final response is delivered to its spawner through the same mechanism. Nested sessions relay to their direct spawner, not main.
   - `memory_get` has a run-id mode that returns a run's transcript from the session store, so resume pointers to runs without an episode can be followed.
   - Hop counts are carried and computed per the design, including the task brief of a spawned session (spawning turn's highest input hop count + 1). At or above the soft limit (default 8) the message carries the "reply only if needed" note. At or above the hard limit (default 32) delivery is refused with a tool error, a `warn` log, and an error event in both sessions' event streams. Limits are configurable.
+  - Only the main agent talks to the owner: `send_message` from a session refuses the owner's DM on every interface and the web UI, with an error directing it to message `main`. Other conversations and endpoints remain reachable.
   - Sessions have `subagent_spawn`. Depth is tracked, and spawning past the cap (default 2, configurable) is refused with an explanatory error.
   - The `BackgroundResult` interrupt variant (handled by the turn loop, never sent) is replaced by an agent-message interrupt carrying sender address, category, and hop count. It is the live delivery path into running turns, main's included.
 - **Verification:**
-  - Tests: delivery in each target state. A spawn chain accumulates hop counts. `memory_get` returns a run transcript by run id. The resume creates a new run with the pointer and the same address. Hop counts propagate and the soft note and hard refusal trigger at the limits. The depth cap refuses at the cap. Relays go to the direct spawner. Two sessions messaging each other in a loop stop at the hard limit.
+  - Tests: delivery in each target state. A spawn chain accumulates hop counts. `memory_get` returns a run transcript by run id. The resume creates a new run with the pointer and the same address. Hop counts propagate and the soft note and hard refusal trigger at the limits. The depth cap refuses at the cap. Relays go to the direct spawner. Two sessions messaging each other in a loop stop at the hard limit. `send_message` from a session to the owner's DM or the web UI is refused, while a post to a group conversation succeeds.
   - Manually: main spawns a session, messages it mid-turn and sees it change course, then messages it after it completes and sees a resumed run that can find its previous episode.
 
 ## Phase 4 — Conversation routing
@@ -74,7 +75,7 @@ Route non-owner-DM conversations to per-conversation sessions and generalize the
 - **Preconditions:** Phase 1 (sessions with `external` category and deterministic addressing support), Phase 3 (delivery to running and idle sessions, resume on a completed address).
 - **Shape when done:**
   - The main agent receives only the owner's DMs and web UI messages. Every other admitted conversation (group chats, channels, non-owner DMs) is delivered to that conversation's session at its deterministic address, following the design's delivery rules. Admission rules are unchanged.
-  - A conversation session's responses go to its own conversation. The owner-DM fallback and failure notification behave as today.
+  - A conversation session's responses go to its own conversation. They never fall back to the owner's DM. An unresolvable target produces an `error` log and a failure notice to `main`.
   - Unmentioned messages in shared conversations on Discord, Telegram, and Teams go into a shared per-conversation buffer, sized by each interface's `context_messages` setting, and are handed over with the next addressed message, either to a live session or to seed a new run. Discord buffers the server messages it already receives. Telegram buffers group messages when it receives them (closes #157).
   - The inbound message schema carries a stable conversation id, the conversation kind, and an owner flag. The Discord, Telegram, and Teams handlers populate them, and web UI messages are treated as the owner's.
   - Webhook sessions are unaffected beyond Phase 1.
