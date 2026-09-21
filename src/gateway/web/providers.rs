@@ -87,6 +87,9 @@ pub(super) async fn api_provider_models(
         }
         "openai" => fetch_openai_models(&client, resolved_key.as_deref(), req.url.as_deref()).await,
         "gemini" => fetch_gemini_models(&client, resolved_key.as_deref(), req.url.as_deref()).await,
+        "fireworks" => {
+            fetch_fireworks_models(&client, resolved_key.as_deref(), req.url.as_deref()).await
+        }
         "ollama" => fetch_ollama_models(&client, req.url.as_deref()).await,
         other => Err(format!("unknown provider: {other}")),
     };
@@ -216,6 +219,66 @@ async fn fetch_openai_models(
         .filter_map(|m| {
             let id = m.get("id")?.as_str()?;
             if skip_prefixes.iter().any(|prefix| id.starts_with(prefix)) {
+                return None;
+            }
+            Some(ModelEntry {
+                id: id.to_string(),
+                name: id.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Fetch chat-capable models from the Fireworks `/models` endpoint.
+async fn fetch_fireworks_models(
+    client: &reqwest::Client,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<Vec<ModelEntry>, String> {
+    let key = api_key.ok_or("api_key is required for fireworks")?;
+    let base = base_url.unwrap_or("https://api.fireworks.ai/inference/v1");
+    let url = format!("{base}/models");
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {key}"))
+        .send()
+        .await
+        .map_err(|err| format!("request failed: {err}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("fireworks returned {status}: {body}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("invalid json: {err}"))?;
+    parse_fireworks_chat_models(&json)
+}
+
+/// Keep the models that can drive an agent turn.
+///
+/// Fireworks lists embedding and reranker models alongside chat models (and
+/// marks even those `supports_chat`), so the `kind` field is what separates them.
+fn parse_fireworks_chat_models(json: &serde_json::Value) -> Result<Vec<ModelEntry>, String> {
+    let data = json
+        .get("data")
+        .and_then(|v| v.as_array())
+        .ok_or("missing data array")?;
+
+    Ok(data
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id")?.as_str()?;
+            let is_embedding = m.get("kind").and_then(|v| v.as_str()) == Some("EMBEDDING_MODEL");
+            let supports_tools = m
+                .get("supports_tools")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            if is_embedding || !supports_tools {
                 return None;
             }
             Some(ModelEntry {
@@ -404,5 +467,48 @@ pub(super) async fn api_providers_validate(
             valid: false,
             error: Some(e),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fireworks_listing_drops_embedding_and_toolless_models() {
+        let json = serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "accounts/fireworks/models/glm-5p3", "kind": "HF_BASE_MODEL",
+                 "supports_chat": true, "supports_tools": true},
+                {"id": "accounts/fireworks/routers/glm-5p3-fast", "kind": "HF_BASE_MODEL",
+                 "supports_chat": true, "supports_tools": true},
+                {"id": "accounts/fireworks/models/qwen3-embedding-8b", "kind": "EMBEDDING_MODEL",
+                 "supports_chat": true, "supports_tools": false},
+                {"id": "accounts/fireworks/models/qwen3-reranker-8b", "kind": "EMBEDDING_MODEL",
+                 "supports_chat": true, "supports_tools": false},
+                {"id": "accounts/fireworks/models/base-only", "kind": "HF_BASE_MODEL",
+                 "supports_chat": true, "supports_tools": false}
+            ]
+        });
+        let ids: Vec<String> = parse_fireworks_chat_models(&json)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "accounts/fireworks/models/glm-5p3".to_string(),
+                "accounts/fireworks/routers/glm-5p3-fast".to_string(),
+            ],
+            "only tool-capable chat models can run agent turns"
+        );
+    }
+
+    #[test]
+    fn fireworks_listing_rejects_unexpected_shape() {
+        let err = parse_fireworks_chat_models(&serde_json::json!({"models": []})).err();
+        assert_eq!(err.as_deref(), Some("missing data array"));
     }
 }
