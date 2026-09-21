@@ -176,7 +176,10 @@ port = 7700
 
 # ── Web search (optional) ────────────────────────────────────────────────
 # Providers with native search (Anthropic, OpenAI, Gemini) enable it
-# automatically. Use `backend` for providers without native support (Ollama).
+# automatically. OpenAI-type providers only qualify when pointed at the OpenAI
+# API itself; self-hosted compatible servers (vLLM, LM Studio) do not. Use
+# `backend` for providers without native support (Ollama, Fireworks, and
+# self-hosted OpenAI-compatible servers).
 #
 # [web_search]
 # backend = "brave"              # "brave", "tavily", or "ollama"
