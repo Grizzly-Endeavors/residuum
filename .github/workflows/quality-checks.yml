@@ -19,7 +19,7 @@ jobs:
     runs-on: lab-runners
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install web dependencies
         run: cd web && npm ci
@@ -60,7 +60,7 @@ jobs:
     runs-on: lab-runners
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # build.rs refuses to compile without web/dist, which gets embedded in the binary
       - name: Build web assets
