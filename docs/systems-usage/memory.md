@@ -62,22 +62,25 @@ Two search backends, used together when both are available:
 
 ### BM25 (tantivy)
 
-Full-text keyword search over observations and interaction-pair chunks. Always available.
+Full-text keyword search over observations, interaction-pair chunks, and wiki pages. Always available.
 
-- Index rebuilt on startup (incremental via `.index_manifest.json`)
-- Updated after each observer extraction
+- Episode files are synced on startup (incremental via `.index_manifest.json`) and indexed after each observer extraction; the observer records what it indexed in the manifest, so startup does not index an episode twice
+- Wiki pages are synced before every search: changed, new, and deleted pages are found by modification time, and only those are reindexed (see [wiki.md](wiki.md#how-it-reaches-the-model))
 - Supports AND, OR, and phrase queries with quotes
 
 ### Vector (sqlite-vec)
 
 Semantic similarity search via embeddings. Available when an embedding provider is configured in `[memory.search]`.
 
-- Storage: `memory/vectors.db` (sqlite — deliberate exception to file-first philosophy since raw vectors aren't human-parsable)
+- Storage: `memory/vectors.db` (sqlite — deliberate exception to file-first philosophy since raw vectors aren't human-parsable), one table each for observations, chunks, and wiki pages
+- A wiki page is re-embedded only when its text changes, so restarts reuse existing page embeddings
 - When no embedding provider is configured, this branch is silently skipped (graceful degradation to BM25-only)
 
 ### Hybrid Search Flow
 
 BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge → optional temporal decay → filter by min_score → return top N.
+
+Temporal decay never applies to wiki pages: they hold maintained knowledge, and staleness is handled by their `stale_after` field and the `wiki_lint` pulse rather than by age.
 
 ## Tools
 
@@ -87,10 +90,12 @@ BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge
 |-----------|------|----------|-------|
 | `query` | string | yes | Supports AND, OR, phrase queries |
 | `limit` | integer | no | Max results. Default 5, cap 20 |
-| `source` | string enum | no | `"observations"`, `"episodes"`, or `"both"` |
+| `source` | string enum | no | `"observations"`, `"episodes"`, or `"wiki"`; omit to search all three |
 | `date_from` | string | no | `YYYY-MM-DD`, inclusive lower bound |
 | `date_to` | string | no | `YYYY-MM-DD`, inclusive upper bound |
-| `episode_ids` | string[] | no | Limit to specific episode IDs |
+| `episode_ids` | string[] | no | Limit to specific episode IDs (excludes wiki pages, which belong to no episode) |
+
+A wiki result's ID is the page's workspace-relative path (`wiki/homelab/cluster.md`), ready for `read_file`.
 
 ### `memory_get`
 

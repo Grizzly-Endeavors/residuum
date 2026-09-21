@@ -39,7 +39,7 @@ Body in plain Markdown. Link related pages: [homelab cluster](/homelab/cluster.m
 - `stale_after`: set it when a fact has a natural shelf life (versions, current jobs, ongoing projects). Omit it for durable facts.
 - `tags`: optional, for grouping across folders.
 
-Write the body as declarative facts ("The user prefers X"), not instructions to yourself. Keep one page per concept: before creating a page, search the index (and memory_search) for an existing one and update it instead.
+Write the body as declarative facts ("The user prefers X"), not instructions to yourself. Keep one page per concept: before creating a page, check the indexes and run memory_search with `source: "wiki"` for an existing one, and update it instead.
 
 ## Links
 

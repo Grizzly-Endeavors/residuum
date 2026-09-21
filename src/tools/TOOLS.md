@@ -143,10 +143,10 @@ Commands are resolved against the configured tool `PATH`: the directories in
 **Source:** `memory_search.rs` · `MemorySearchTool`
 
 **Description sent to LLM (vector enabled):**
-> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
+> Search past conversation observations, interaction chunks, and knowledge wiki pages using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets; a wiki result's ID is the page path to open with read_file. Supports filtering by source type, date range, and episode IDs.
 
 **Description sent to LLM (BM25 only):**
-> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
+> Search past conversation observations, interaction chunks, and knowledge wiki pages using BM25 full-text search. Returns matching results with relevance scores and snippets; a wiki result's ID is the page path to open with read_file. Supports filtering by source type, date range, and episode IDs.
 
 ### Input
 
@@ -154,10 +154,10 @@ Commands are resolved against the configured tool `PATH`: the directories in
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
 | `limit`           | integer         | no       | Maximum results to return (default: 5, max: 20)              |
-| `source`          | string          | no       | Filter by source: `"observations"` or `"episodes"`. Omit to search both. |
+| `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
-| `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs                     |
+| `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs (excludes wiki pages) |
 
 ### Output
 

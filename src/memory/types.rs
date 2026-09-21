@@ -36,18 +36,20 @@ pub enum Visibility {
 
 /// Which kind of document a memory search result came from.
 ///
-/// The memory index holds two kinds of documents: distilled [`Observation`]s
-/// and raw interaction-pair [`IndexChunk`]s. `DocSource` is the single internal
-/// vocabulary for that distinction — it is the value stored in the index's
-/// `source_type` field, the value filtered on, and the value shown in results.
-/// The `memory_search` tool maps its user-facing names (`"observations"`/
-/// `"episodes"`) onto these variants at its boundary.
+/// The memory index holds three kinds of documents: distilled [`Observation`]s,
+/// raw interaction-pair [`IndexChunk`]s, and knowledge wiki pages. `DocSource`
+/// is the single internal vocabulary for that distinction — it is the value
+/// stored in the index's `source_type` field, the value filtered on, and the
+/// value shown in results. The `memory_search` tool maps its user-facing names
+/// (`"observations"`/`"episodes"`/`"wiki"`) onto these variants at its boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocSource {
     /// A distilled observation document.
     Observation,
     /// A raw interaction-pair chunk document.
     Chunk,
+    /// A knowledge wiki page, one document per page.
+    Wiki,
 }
 
 impl DocSource {
@@ -57,6 +59,7 @@ impl DocSource {
         match self {
             Self::Observation => "observation",
             Self::Chunk => "chunk",
+            Self::Wiki => "wiki",
         }
     }
 
@@ -69,6 +72,7 @@ impl DocSource {
         match value {
             "observation" => Some(Self::Observation),
             "chunk" => Some(Self::Chunk),
+            "wiki" => Some(Self::Wiki),
             _ => None,
         }
     }
@@ -367,7 +371,7 @@ mod tests {
 
     #[test]
     fn doc_source_as_str_round_trips_through_index_value() {
-        for source in [DocSource::Observation, DocSource::Chunk] {
+        for source in [DocSource::Observation, DocSource::Chunk, DocSource::Wiki] {
             assert_eq!(
                 DocSource::from_index_value(source.as_str()),
                 Some(source),
@@ -380,6 +384,7 @@ mod tests {
     fn doc_source_index_values_are_stable() {
         assert_eq!(DocSource::Observation.as_str(), "observation");
         assert_eq!(DocSource::Chunk.as_str(), "chunk");
+        assert_eq!(DocSource::Wiki.as_str(), "wiki");
     }
 
     #[test]

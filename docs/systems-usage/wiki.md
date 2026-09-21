@@ -58,7 +58,7 @@ Only the root `index.md` is in the prompt, as the `WIKI_INDEX` section — for t
 
 The prompt is rebuilt from disk every turn, so index edits show up on the next turn without a restart.
 
-Wiki pages are not indexed by `memory_search`; the indexes are how pages are found.
+Pages are also searchable with `memory_search` (`source: "wiki"`, or included when `source` is omitted), one search document per page built from its title, description, and body. The searcher resyncs changed, new, and deleted pages before every search, so a page is searchable as soon as it is written; `index.md` and `log.md` are not indexed. A wiki hit's ID is the page path, and wiki pages are exempt from the search's temporal decay. The indexes remain the primary way in: search is for finding a page the indexes don't lead to, and for checking whether a page already exists before creating one.
 
 ## Who writes it
 

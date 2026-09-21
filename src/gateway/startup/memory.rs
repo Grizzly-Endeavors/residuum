@@ -11,6 +11,7 @@ use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
+use crate::memory::wiki_index::WikiIndexer;
 use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 use anyhow::Context;
@@ -142,12 +143,15 @@ pub(super) async fn init_memory(
     }
 
     // Hybrid searcher
-    let hybrid_searcher = Arc::new(HybridSearcher::new(
-        Arc::clone(&search_index),
-        vector_store.clone(),
-        embedding_provider.cloned(),
-        cfg.memory.search.clone(),
-    ));
+    let hybrid_searcher = Arc::new(
+        HybridSearcher::new(
+            Arc::clone(&search_index),
+            vector_store.clone(),
+            embedding_provider.cloned(),
+            cfg.memory.search.clone(),
+        )
+        .with_wiki(WikiIndexer::new(layout.root(), layout.wiki_dir())),
+    );
 
     Ok(MemoryComponents {
         search_index,

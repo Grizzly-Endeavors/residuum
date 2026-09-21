@@ -1,8 +1,9 @@
 //! Vector similarity search using `SQLite` + sqlite-vec.
 //!
-//! Stores observation and chunk embeddings in `vec0` virtual tables with
+//! Stores observation, chunk, and wiki page embeddings in `vec0` virtual tables with
 //! denormalized metadata columns for efficient filtered search.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -13,14 +14,14 @@ use anyhow::Context;
 
 use crate::memory::types::{DocSource, IndexChunk, Observation};
 
-/// A vector search result from either the observation or chunk table.
+/// A vector search result from the observation, chunk, or wiki table.
 #[derive(Debug, Clone)]
 pub struct VectorSearchResult {
-    /// Document identifier (obs or chunk ID).
+    /// Document identifier (obs ID, chunk ID, or wiki page path).
     pub id: String,
     /// Which kind of document this result came from.
     pub source_type: DocSource,
-    /// Parent episode identifier.
+    /// Parent episode identifier (empty for wiki pages).
     pub episode_id: String,
     /// Date string (YYYY-MM-DD).
     pub date: String,
@@ -41,8 +42,24 @@ pub struct VectorSearchFilters {
     pub date_from: Option<String>,
     /// Filter results on or before this date (YYYY-MM-DD, inclusive).
     pub date_to: Option<String>,
-    /// Filter to results from these episode IDs.
+    /// Filter to results from these episode IDs. Wiki pages belong to no
+    /// episode, so an episode filter excludes them.
     pub episode_ids: Option<Vec<String>>,
+    /// Filter to a single document kind; `None` searches every table.
+    pub source: Option<DocSource>,
+}
+
+/// A wiki page's embedding, keyed by its workspace-relative path.
+#[derive(Debug, Clone)]
+pub struct WikiVector<'a> {
+    /// Workspace-relative page path (the page's doc ID).
+    pub page_id: &'a str,
+    /// Page date (YYYY-MM-DD), from its last modification.
+    pub date: &'a str,
+    /// The text that was embedded.
+    pub content: &'a str,
+    /// The embedding vector.
+    pub embedding: &'a [f32],
 }
 
 /// `SQLite` + sqlite-vec backed vector store for memory embeddings.
@@ -244,9 +261,70 @@ impl VectorStore {
         Ok(doc_ids)
     }
 
-    /// Search for similar vectors across both tables.
+    /// Replace the stored embeddings of wiki pages (delete, then insert).
     ///
-    /// Returns results from both observation and chunk tables, sorted by distance.
+    /// # Errors
+    /// Returns an error if the write fails or an embedding dimension doesn't match.
+    pub fn upsert_wiki_pages(&self, pages: &[WikiVector<'_>]) -> anyhow::Result<()> {
+        if pages.is_empty() {
+            return Ok(());
+        }
+        for page in pages {
+            self.check_dim(page.embedding)?;
+        }
+
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .context("failed to start wiki vector transaction")?;
+        for page in pages {
+            tx.execute(
+                "DELETE FROM wiki_vectors WHERE page_id = ?1",
+                [page.page_id],
+            )
+            .with_context(|| format!("failed to delete wiki vector {}", page.page_id))?;
+            tx.execute(
+                "INSERT INTO wiki_vectors(page_id, date, content, embedding)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    page.page_id,
+                    page.date,
+                    page.content,
+                    page.embedding.as_bytes()
+                ],
+            )
+            .with_context(|| format!("failed to insert wiki vector {}", page.page_id))?;
+        }
+        tx.commit()
+            .context("failed to commit wiki vector transaction")?;
+        Ok(())
+    }
+
+    /// The embedded content of every stored wiki page, keyed by page ID.
+    ///
+    /// Lets a resync skip re-embedding pages whose text has not changed.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn wiki_page_contents(&self) -> anyhow::Result<HashMap<String, String>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT page_id, content FROM wiki_vectors")
+            .context("failed to prepare wiki content query")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .context("wiki content query failed")?;
+        let mut contents = HashMap::new();
+        for row in rows {
+            let (id, content): (String, String) = row.context("failed to read wiki content row")?;
+            contents.insert(id, content);
+        }
+        Ok(contents)
+    }
+
+    /// Search for similar vectors across the tables `filters.source` selects.
+    ///
+    /// Returns results sorted by distance.
     ///
     /// # Errors
     /// Returns an error if the query fails.
@@ -258,18 +336,33 @@ impl VectorStore {
     ) -> anyhow::Result<Vec<VectorSearchResult>> {
         self.check_dim(query_embedding)?;
         let conn = self.lock_conn()?;
+        let wants = |source: DocSource| filters.source.is_none_or(|s| s == source);
 
         let mut results = Vec::new();
 
-        // Search observations
-        let obs_results = search_obs_table(&conn, query_embedding, limit, filters)?;
+        let obs_results = if wants(DocSource::Observation) {
+            search_obs_table(&conn, query_embedding, limit, filters)?
+        } else {
+            Vec::new()
+        };
         let obs_count = obs_results.len();
         results.extend(obs_results);
 
-        // Search chunks
-        let chunk_results = search_chunk_table(&conn, query_embedding, limit, filters)?;
+        let chunk_results = if wants(DocSource::Chunk) {
+            search_chunk_table(&conn, query_embedding, limit, filters)?
+        } else {
+            Vec::new()
+        };
         let chunk_count = chunk_results.len();
         results.extend(chunk_results);
+
+        let wiki_results = if wants(DocSource::Wiki) && filters.episode_ids.is_none() {
+            search_wiki_table(&conn, query_embedding, limit, filters)?
+        } else {
+            Vec::new()
+        };
+        let wiki_count = wiki_results.len();
+        results.extend(wiki_results);
 
         // Sort by distance ascending (most similar first)
         results.sort_by(|a, b| {
@@ -282,13 +375,14 @@ impl VectorStore {
         tracing::trace!(
             obs_candidates = obs_count,
             chunk_candidates = chunk_count,
+            wiki_candidates = wiki_count,
             returned = results.len(),
             "vector search complete"
         );
         Ok(results)
     }
 
-    /// Delete documents by their IDs from both tables.
+    /// Delete documents by their IDs from every table.
     ///
     /// # Errors
     /// Returns an error if the delete fails.
@@ -303,11 +397,13 @@ impl VectorStore {
             .context("failed to begin delete transaction")?;
 
         for id in ids {
-            // Try both tables — a given ID only exists in one
+            // Try every table — a given ID only exists in one
             tx.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
                 .context("failed to delete from obs_vectors")?;
             tx.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
                 .context("failed to delete from chunk_vectors")?;
+            tx.execute("DELETE FROM wiki_vectors WHERE page_id = ?1", [id])
+                .context("failed to delete from wiki_vectors")?;
         }
 
         tx.commit().context("failed to commit delete transaction")?;
@@ -397,6 +493,13 @@ fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
             +content TEXT,
             +line_start INTEGER,
             +line_end INTEGER,
+            embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS wiki_vectors USING vec0(
+            page_id TEXT PRIMARY KEY,
+            date TEXT,
+            +content TEXT,
             embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
         );"
     ))
@@ -511,6 +614,69 @@ fn search_chunk_table(
     let mut results = Vec::new();
     for row in rows {
         results.push(row.context("failed to read chunk search row")?);
+    }
+    Ok(results)
+}
+
+/// Search the `wiki_vectors` table.
+///
+/// Callers skip this table when an episode filter is set: wiki pages belong to
+/// no episode, and the table has no `episode_id` column to filter on.
+fn search_wiki_table(
+    conn: &Connection,
+    query_embedding: &[f32],
+    limit: usize,
+    filters: &VectorSearchFilters,
+) -> anyhow::Result<Vec<VectorSearchResult>> {
+    let date_only = VectorSearchFilters {
+        date_from: filters.date_from.clone(),
+        date_to: filters.date_to.clone(),
+        episode_ids: None,
+        source: None,
+    };
+    let (where_clause, params) = build_filter_clauses(&date_only);
+
+    let sql = format!(
+        "SELECT page_id, date, content, distance
+         FROM wiki_vectors
+         WHERE embedding MATCH ?1
+           AND k = ?2
+           {where_clause}
+         ORDER BY distance"
+    );
+
+    let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+
+    let mut stmt = conn
+        .prepare_cached(&sql)
+        .context("failed to prepare wiki search")?;
+
+    let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
+    all_params.push(Box::new(limit_i64));
+    for p in params {
+        all_params.push(Box::new(p));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| &**p).collect();
+
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok(VectorSearchResult {
+                id: row.get(0)?,
+                source_type: DocSource::Wiki,
+                episode_id: String::new(),
+                date: row.get(1)?,
+                content: row.get(2)?,
+                line_start: None,
+                line_end: None,
+                distance: row.get(3)?,
+            })
+        })
+        .context("wiki vector search failed")?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.context("failed to read wiki search row")?);
     }
     Ok(results)
 }
@@ -853,5 +1019,111 @@ mod tests {
             1,
             "duplicate insert should not create extra rows"
         );
+    }
+
+    fn wiki_vector<'a>(page_id: &'a str, content: &'a str, emb: &'a [f32]) -> WikiVector<'a> {
+        WikiVector {
+            page_id,
+            date: "2026-09-20",
+            content,
+            embedding: emb,
+        }
+    }
+
+    #[test]
+    fn upsert_wiki_pages_replaces_existing_row() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "first", &emb)])
+            .unwrap();
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "second", &emb)])
+            .unwrap();
+
+        let contents = store.wiki_page_contents().unwrap();
+        assert_eq!(contents.len(), 1, "upsert should not duplicate the page");
+        assert_eq!(
+            contents.get("wiki/a.md").map(String::as_str),
+            Some("second")
+        );
+
+        let results = store
+            .search(&emb, 10, &VectorSearchFilters::default())
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_type, DocSource::Wiki);
+        assert_eq!(results[0].id, "wiki/a.md");
+    }
+
+    #[test]
+    fn delete_by_doc_ids_removes_wiki_rows() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "text", &emb)])
+            .unwrap();
+        store.delete_by_doc_ids(&["wiki/a.md".to_string()]).unwrap();
+        assert!(store.wiki_page_contents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_source_filter_restricts_tables() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .insert_observations(
+                "ep-001",
+                "2026-09-20",
+                &[sample_observation("an observation")],
+                std::slice::from_ref(&emb),
+            )
+            .unwrap();
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+
+        let only = |source| {
+            store
+                .search(
+                    &emb,
+                    10,
+                    &VectorSearchFilters {
+                        source: Some(source),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let wiki = only(DocSource::Wiki);
+        assert!(
+            wiki.iter().all(|r| r.source_type == DocSource::Wiki) && wiki.len() == 1,
+            "wiki filter should return only wiki rows, got {wiki:?}"
+        );
+        let obs = only(DocSource::Observation);
+        assert!(
+            obs.iter().all(|r| r.source_type == DocSource::Observation) && obs.len() == 1,
+            "observation filter should return only observation rows, got {obs:?}"
+        );
+    }
+
+    #[test]
+    fn search_episode_filter_excludes_wiki_rows() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+        let results = store
+            .search(
+                &emb,
+                10,
+                &VectorSearchFilters {
+                    episode_ids: Some(vec!["ep-001".to_string()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(results.is_empty(), "wiki pages belong to no episode");
     }
 }

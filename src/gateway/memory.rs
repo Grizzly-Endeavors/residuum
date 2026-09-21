@@ -204,21 +204,20 @@ async fn finalize_observation(
     result: &ObserveResult,
 ) -> bool {
     // Index observations and chunks into the search index
-    if let Err(e) =
-        mem.search_index
-            .index_observations(&result.id, &result.date, &result.observations)
-    {
-        tracing::warn!(error = %e, "failed to index observations");
-    }
-    if let Err(e) = mem.search_index.index_chunks(&result.chunks) {
-        tracing::warn!(error = %e, "failed to index chunks");
-    }
+    let obs_ids = mem
+        .search_index
+        .index_observations(&result.id, &result.date, &result.observations)
+        .inspect_err(|e| tracing::warn!(error = %e, episode_id = %result.id, "failed to index observations; startup sync will retry"))
+        .ok();
+    let chunk_ids = mem
+        .search_index
+        .index_chunks(&result.chunks)
+        .inspect_err(|e| tracing::warn!(error = %e, episode_id = %result.id, "failed to index chunks; startup sync will retry"))
+        .ok();
 
     // Embed and store in vector index
     let embedded = embed_observation_result(result, mem.vector_store, mem.embedding_provider).await;
-    if embedded {
-        mark_episode_embedded(mem.layout, result).await;
-    }
+    record_episode_in_manifest(mem.layout, result, obs_ids, chunk_ids, embedded).await;
 
     let reflected = run_reflector_check(mem.reflector, mem.layout).await;
 
@@ -341,17 +340,26 @@ pub(super) async fn run_forced_observe(
     publish_notice(publisher, notice).await;
 }
 
-/// Mark an episode's `.obs.json` and `.idx.jsonl` as embedded in the manifest.
+/// Record a just-indexed episode's `.obs.json` and `.idx.jsonl` in the manifest.
 ///
-/// If a manifest entry already exists for the file, sets `embedded = true`.
-/// If no entry exists, creates one with the file's mtime, empty `doc_ids`, and `embedded = true`.
-/// Empty `doc_ids` is safe: the next startup `incremental_sync` will fill them in.
-async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult) {
+/// Each file whose documents were indexed gets an entry with its mtime and doc
+/// IDs, so the next startup sync sees it as unchanged instead of indexing it a
+/// second time, and can delete exactly those documents if the file later changes
+/// or disappears. A file whose indexing failed (`None`) is left out so startup
+/// sync indexes it. `embedded` is false when there is no vector store or
+/// embedding failed; startup backfill then embeds the file.
+async fn record_episode_in_manifest(
+    layout: &WorkspaceLayout,
+    result: &ObserveResult,
+    obs_ids: Option<Vec<String>>,
+    chunk_ids: Option<Vec<String>>,
+    embedded: bool,
+) {
     let manifest_path = layout.index_manifest_json();
     let mut manifest = match IndexManifest::load(&manifest_path).await {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to load manifest to mark embedded");
+            tracing::warn!(error = %e, episode_id = %result.id, "failed to load index manifest to record episode; startup sync will reindex it");
             return;
         }
     };
@@ -361,40 +369,44 @@ async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult)
         return;
     };
 
-    let rel_paths = [
-        format!("episodes/{date_dir}/{}.obs.json", result.id),
-        format!("episodes/{date_dir}/{}.idx.jsonl", result.id),
+    let files = [
+        (
+            format!("episodes/{date_dir}/{}.obs.json", result.id),
+            obs_ids,
+        ),
+        (
+            format!("episodes/{date_dir}/{}.idx.jsonl", result.id),
+            chunk_ids,
+        ),
     ];
 
     let memory_dir = layout.memory_dir();
 
-    for rel_path in &rel_paths {
-        if let Some(entry) = manifest.files.get_mut(rel_path.as_str()) {
-            entry.embedded = true;
-        } else {
-            // File was just created — read mtime from disk
-            let abs_path = memory_dir.join(rel_path);
-            let mtime = match std::fs::metadata(&abs_path) {
-                Ok(meta) => {
-                    let modified = meta.modified().unwrap_or(std::time::SystemTime::now());
-                    let dt: chrono::DateTime<chrono::Utc> = modified.into();
-                    dt.format("%Y-%m-%dT%H:%M:%S").to_string()
-                }
-                Err(_) => chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-            };
-            manifest.files.insert(
-                rel_path.clone(),
-                ManifestFileEntry {
-                    mtime,
-                    doc_ids: Vec::new(),
-                    embedded: true,
-                },
-            );
-        }
+    for (rel_path, doc_ids) in files {
+        let Some(doc_ids) = doc_ids else {
+            continue;
+        };
+        let abs_path = memory_dir.join(&rel_path);
+        let modified = match std::fs::metadata(&abs_path).and_then(|m| m.modified()) {
+            Ok(modified) => modified,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %abs_path.display(), "failed to read mtime of indexed episode file; startup sync will reindex it");
+                continue;
+            }
+        };
+        let dt: chrono::DateTime<chrono::Utc> = modified.into();
+        manifest.files.insert(
+            rel_path,
+            ManifestFileEntry {
+                mtime: dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                doc_ids,
+                embedded,
+            },
+        );
     }
 
     if let Err(e) = manifest.save(&manifest_path).await {
-        tracing::warn!(error = %e, "failed to save manifest after marking embedded");
+        tracing::warn!(error = %e, episode_id = %result.id, "failed to save index manifest after recording episode");
     }
 }
 

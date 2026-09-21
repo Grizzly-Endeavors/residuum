@@ -1,4 +1,4 @@
-//! Memory search tool for querying past observations and interaction chunks.
+//! Memory search tool for querying past observations, interaction chunks, and wiki pages.
 
 use std::sync::Arc;
 
@@ -31,14 +31,16 @@ impl Tool for MemorySearchTool {
 
     fn definition(&self) -> ToolDefinition {
         let desc = if self.searcher.has_vector() {
-            "Search past conversation observations and interaction chunks using \
-             hybrid BM25 + vector similarity search. Returns matching results with \
-             relevance scores and snippets. Supports filtering by source type, date \
-             range, and episode IDs."
+            "Search past conversation observations, interaction chunks, and knowledge \
+             wiki pages using hybrid BM25 + vector similarity search. Returns matching \
+             results with relevance scores and snippets; a wiki result's ID is the page \
+             path to open with read_file. Supports filtering by source type, date range, \
+             and episode IDs."
         } else {
-            "Search past conversation observations and interaction chunks using \
-             BM25 full-text search. Returns matching results with relevance scores \
-             and snippets. Supports filtering by source type, date range, and \
+            "Search past conversation observations, interaction chunks, and knowledge \
+             wiki pages using BM25 full-text search. Returns matching results with \
+             relevance scores and snippets; a wiki result's ID is the page path to open \
+             with read_file. Supports filtering by source type, date range, and \
              episode IDs."
         };
         ToolDefinition {
@@ -57,8 +59,8 @@ impl Tool for MemorySearchTool {
                     },
                     "source": {
                         "type": "string",
-                        "description": "Filter by source type: 'observations' or 'episodes'. Omit to search both.",
-                        "enum": ["observations", "episodes"]
+                        "description": "Filter by source type: 'observations', 'episodes', or 'wiki'. Omit to search all three.",
+                        "enum": ["observations", "episodes", "wiki"]
                     },
                     "date_from": {
                         "type": "string",
@@ -71,7 +73,7 @@ impl Tool for MemorySearchTool {
                     "episode_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter to results from these episode IDs"
+                        "description": "Filter to results from these episode IDs (excludes wiki pages)"
                     }
                 },
                 "required": ["query"]
@@ -97,15 +99,16 @@ impl Tool for MemorySearchTool {
         };
 
         // Map the tool-facing source names onto the internal DocSource vocabulary.
-        // Omitted → None (search both); an unrecognized value is rejected rather
-        // than silently falling back to searching both.
+        // Omitted → None (search every source); an unrecognized value is rejected
+        // rather than silently falling back to searching everything.
         let source_filter = match arguments.get("source").and_then(Value::as_str) {
             Some("observations") => Some(DocSource::Observation),
             Some("episodes") => Some(DocSource::Chunk),
+            Some("wiki") => Some(DocSource::Wiki),
             None => None,
             Some(other) => {
                 return Err(ToolError::InvalidArguments(format!(
-                    "unknown source '{other}': expected 'observations' or 'episodes'"
+                    "unknown source '{other}': expected 'observations', 'episodes', or 'wiki'"
                 )));
             }
         };
@@ -273,6 +276,36 @@ mod tests {
         assert!(
             result.output.contains("[observation]"),
             "should return observations"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_finds_wiki_pages_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = dir.path().join("wiki/homelab/cluster.md");
+        std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+        std::fs::write(
+            &page,
+            "---\ntype: Machine\ntitle: Homelab cluster\ndescription: Three-node k3s cluster.\n---\nRuns Flux.\n",
+        )
+        .unwrap();
+        let index = MemoryIndex::open_or_create(&dir.path().join(".index")).unwrap();
+        let searcher =
+            HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default()).with_wiki(
+                crate::memory::wiki_index::WikiIndexer::new(dir.path(), dir.path().join("wiki")),
+            );
+        let tool = MemorySearchTool::new(Arc::new(searcher));
+
+        let result = tool
+            .execute(serde_json::json!({"query": "k3s", "source": "wiki"}))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "wiki search should succeed");
+        assert!(
+            result.output.contains("[wiki] wiki/homelab/cluster.md"),
+            "a wiki hit should show its source and page path, got: {}",
+            result.output
         );
     }
 
