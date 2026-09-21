@@ -164,6 +164,19 @@
           />
         {/if}
       </div>
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.discord_respond_to_others} />
+            <span class="toggle-slider"></span>
+          </span>
+          Let others use the agent
+        </label>
+        <span class="field-hint"
+          >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
+          use the agent.</span
+        >
+      </div>
     </div>
   </div>
 
@@ -198,6 +211,19 @@
             placeholder="Telegram bot token"
           />
         {/if}
+      </div>
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.telegram_respond_to_others} />
+            <span class="toggle-slider"></span>
+          </span>
+          Let others use the agent
+        </label>
+        <span class="field-hint"
+          >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
+          use the agent.</span
+        >
       </div>
     </div>
   </div>

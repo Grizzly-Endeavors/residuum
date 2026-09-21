@@ -1,22 +1,29 @@
 //! Telegram long-polling message handler and command dispatch.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+use anyhow::Context as _;
 
 use teloxide::Bot;
 use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
 use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind, Video, Voice};
 
-use crate::bus::{BusHandle, EndpointName, Publisher};
+use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
+use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
 use crate::interfaces::types::MessageOrigin;
 
+use super::{ENDPOINT, TelegramState};
+
 /// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {
+    state: &'a TelegramState,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
     reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
@@ -40,9 +47,11 @@ struct AttachmentMeta<'a> {
 /// cleanly when the shutdown signal fires.
 ///
 /// # Errors
-/// Returns an error if the initial `get_me` verification fails.
+/// Returns an error if the initial `get_me` verification or the bus
+/// subscription fails.
 pub(super) async fn run_telegram_polling(
     token: &str,
+    state: Arc<TelegramState>,
     senders: AdapterSenders,
     workspace_dir: std::path::PathBuf,
     tz: chrono_tz::Tz,
@@ -76,9 +85,17 @@ pub(super) async fn run_telegram_polling(
         tracing::warn!(error = %e, "failed to register telegram bot commands");
     }
 
+    let subs = crate::interfaces::BaseSubscribers::new(&bus_handle, EndpointName::from(ENDPOINT))
+        .await
+        .context("failed to subscribe to telegram bus topics")?;
+    let _outbound = OutboundTask(tokio::spawn(super::subscriber::run_telegram_subscriber(
+        subs,
+        bot.clone(),
+        Arc::clone(&state),
+    )));
+
     let mut offset: i32 = 0;
     let mut consecutive_errors: u32 = 0;
-    let mut subscriber_spawned = false;
 
     loop {
         let updates = tokio::select! {
@@ -139,14 +156,8 @@ pub(super) async fn run_telegram_polling(
                 continue;
             }
 
-            // Spawn subscriber loops on first private DM
-            if !subscriber_spawned {
-                subscriber_spawned = true;
-                let chat_id = msg.chat.id;
-                spawn_telegram_subscribers(&bus_handle, &bot, chat_id).await;
-            }
-
             let ctx = TelegramContext {
+                state: &state,
                 publisher: &publisher,
                 inbox_dir: &inbox_dir,
                 reload_tx: &reload_tx,
@@ -159,21 +170,14 @@ pub(super) async fn run_telegram_polling(
     }
 }
 
-/// Spawn typed bus subscriber loop for Telegram output.
-async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: ChatId) {
-    match super::subscriber::TelegramSubscribers::new(bus_handle, EndpointName::from("telegram"))
-        .await
-    {
-        Ok(subs) => {
-            let b = bot.clone();
-            tokio::spawn(super::subscriber::run_telegram_subscriber(subs, b, chat_id));
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to subscribe to telegram bus topics");
-        }
-    }
+/// Aborts the outbound subscriber when the polling loop exits, so a
+/// restarted adapter never leaves a second subscriber delivering duplicates.
+struct OutboundTask(tokio::task::JoinHandle<()>);
 
-    tracing::debug!(%chat_id, "telegram subscriber loops spawned");
+impl Drop for OutboundTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Register slash commands with the Telegram API so users see autocomplete.
@@ -210,6 +214,10 @@ async fn dispatch_message(
         tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message received");
     }
 
+    let Some(standing) = admit_sender(bot, chat_id, from, ctx.state).await else {
+        return;
+    };
+
     // Check for /command prefix
     if let Some(text) = msg.text()
         && let Some(cmd_text) = text.strip_prefix('/')
@@ -222,7 +230,12 @@ async fn dispatch_message(
         // Strip @botname suffix from commands (e.g. /help@mybot)
         let cmd_name = cmd_name.split_once('@').map_or(cmd_name, |(name, _)| name);
 
-        handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx).await;
+        if matches!(standing, Standing::Owner) {
+            handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx).await;
+        } else {
+            tracing::info!(command = %cmd_name, sender = %build_sender_name(from), "refused telegram command from someone other than the owner");
+            send_reply(bot, chat_id, "Only my owner can run commands.").await;
+        }
         return;
     }
 
@@ -250,17 +263,20 @@ async fn dispatch_message(
     let sender_name = build_sender_name(from);
 
     let origin = MessageOrigin {
-        endpoint: "telegram".to_string(),
+        endpoint: ENDPOINT.to_string(),
         sender: Some(MessageSender {
             name: sender_name.clone(),
             id: from.id.to_string(),
-            interface: "telegram".to_string(),
+            interface: ENDPOINT.to_string(),
             location: Some("direct message".to_string()),
         }),
     };
 
+    // Telegram message IDs are only unique within a chat.
+    let correlation_id = format!("telegram-{chat_id}-{}", msg.id);
+    ctx.state.reply_targets.track(&correlation_id, chat_id);
     let msg_event = crate::bus::MessageEvent {
-        id: msg.id.to_string(),
+        id: correlation_id,
         content,
         origin,
         timestamp: crate::time::now_local(ctx.tz),
@@ -273,7 +289,70 @@ async fn dispatch_message(
         .publish(crate::bus::topics::UserMessage, msg_event)
         .await
     {
-        tracing::warn!(sender = %sender_name, chat_id = %chat_id, error = %e, "failed to publish telegram message to bus");
+        tracing::error!(sender = %sender_name, chat_id = %chat_id, error = %e, "failed to publish telegram message to bus");
+        send_reply(
+            bot,
+            chat_id,
+            "Something went wrong handing your message to the agent. Please try again.",
+        )
+        .await;
+    }
+}
+
+/// Record the chat, claim ownership if unset, and decide whether the sender
+/// may use the bot. Refused senders are told why and get `None`.
+async fn admit_sender(
+    bot: &Bot,
+    chat_id: ChatId,
+    from: &teloxide::types::User,
+    state: &TelegramState,
+) -> Option<Standing> {
+    let chat_key = chat_id.to_string();
+    if let Err(e) = state
+        .store
+        .remember(&chat_key, ChatRef::direct_message())
+        .await
+    {
+        tracing::warn!(error = %e, %chat_id, "failed to save telegram conversation");
+    }
+    claim_owner_if_unset(state, from, &chat_key).await;
+
+    match state
+        .store
+        .admit(Some(&from.id.to_string()), state.respond_to_others)
+        .await
+    {
+        Ok(standing) => Some(standing),
+        Err(refusal) => {
+            tracing::info!(
+                sender = %build_sender_name(from),
+                "telegram message from someone other than the owner; respond_to_others is off"
+            );
+            send_reply(bot, chat_id, &refusal).await;
+            None
+        }
+    }
+}
+
+/// Make the sender the owner if nobody is yet; only called for private chats.
+async fn claim_owner_if_unset(state: &TelegramState, from: &teloxide::types::User, dm_chat: &str) {
+    let owner = Owner {
+        user_id: from.id.to_string(),
+        name: build_sender_name(from),
+        dm_conversation_id: dm_chat.to_string(),
+    };
+    match state.store.claim_owner(owner).await {
+        Ok(true) => {
+            tracing::info!(owner = %build_sender_name(from), "telegram owner set from first direct message");
+        }
+        Ok(false) => {}
+        Err(e) => tracing::error!(error = %e, "failed to save telegram owner"),
+    }
+}
+
+async fn send_reply(bot: &Bot, chat_id: ChatId, text: &str) {
+    if let Err(e) = bot.send_message(chat_id, text).await {
+        tracing::warn!(%chat_id, error = %e, "failed to send telegram reply");
     }
 }
 
@@ -306,7 +385,7 @@ async fn handle_command(
         cmd_name,
         cmd_args,
         &dispatch,
-        "telegram",
+        ENDPOINT,
         &build_sender_name(from),
     )
     .await;

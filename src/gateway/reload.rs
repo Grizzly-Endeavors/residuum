@@ -873,6 +873,7 @@ mod tests {
         let mut new = old.clone();
         new.discord = Some(DiscordConfig {
             token: "new-token".to_string(),
+            respond_to_others: false,
         });
 
         let diff = diff_config(&old, &new);
@@ -887,6 +888,7 @@ mod tests {
         let mut old = test_config();
         old.discord = Some(DiscordConfig {
             token: "existing-token".to_string(),
+            respond_to_others: false,
         });
         let mut new = old.clone();
         new.discord = None;
@@ -900,10 +902,12 @@ mod tests {
         let mut old = test_config();
         old.telegram = Some(TelegramConfig {
             token: "old-tg-token".to_string(),
+            respond_to_others: false,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
+            respond_to_others: false,
         });
 
         let diff = diff_config(&old, &new);

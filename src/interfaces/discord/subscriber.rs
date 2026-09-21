@@ -1,12 +1,14 @@
-//! Discord bus subscriber — translates typed bus events to Discord DM messages.
+//! Discord bus subscriber — translates typed bus events to Discord messages.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serenity::model::id::ChannelId;
-use tokio::sync::Mutex;
 
 use crate::bus::{ErrorEvent, NoticeEvent, TurnLifecycleEvent};
 use crate::interfaces::chunking::chunk_text;
+
+use super::DiscordState;
 
 /// Maximum message length for Discord.
 const DISCORD_MAX_CHARS: usize = 2000;
@@ -16,46 +18,28 @@ const DISCORD_MAX_CHARS: usize = 2000;
 /// Discord's typing indicator lasts ~10s, so 8s provides overlap.
 const TYPING_INTERVAL_SECS: u64 = 8;
 
-/// Typed subscribers for a single Discord connection.
-pub(crate) type DiscordSubscribers = crate::interfaces::BaseSubscribers;
-
-/// Receives events from the bus and delivers them to the Discord DM channel.
-pub(crate) async fn run_discord_subscriber(
-    mut subs: DiscordSubscribers,
+/// Receives events from the bus and delivers them to Discord.
+pub(super) async fn run_discord_subscriber(
+    mut subs: crate::interfaces::BaseSubscribers,
     http: Arc<serenity::http::Http>,
-    channel_id: Arc<Mutex<Option<ChannelId>>>,
+    state: Arc<DiscordState>,
 ) {
-    let mut typing_cancel: Option<tokio::sync::watch::Sender<bool>> = None;
+    // One typing loop per in-flight turn, stopped by dropping its sender.
+    let mut typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
     let mut clean_exit = true;
 
     loop {
-        let Some(cid) = *channel_id.lock().await else {
-            // No channel yet — wait a bit and retry
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            continue;
-        };
-
         tokio::select! {
             event = subs.turn_lifecycle.recv() => {
                 match event {
-                    Ok(Some(TurnLifecycleEvent::Started { .. })) => {
-                        let h = Arc::clone(&http);
-                        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-                        typing_cancel = Some(stop_tx);
-                        tokio::spawn(async move {
-                            loop {
-                                if let Err(e) = cid.broadcast_typing(&h).await {
-                                    tracing::trace!(error = %e, "discord typing indicator failed");
-                                }
-                                tokio::select! {
-                                    () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                                    _ = stop_rx.changed() => break,
-                                }
-                            }
-                        });
+                    Ok(Some(TurnLifecycleEvent::Started { correlation_id })) => {
+                        if let Some(cid) = state.target_for(&correlation_id).await {
+                            typing.insert(correlation_id, spawn_typing(Arc::clone(&http), cid));
+                        }
                     }
-                    Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
-                        typing_cancel.take();
+                    Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
+                        typing.remove(&correlation_id);
+                        state.reply_targets.release(&correlation_id);
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -64,10 +48,12 @@ pub(crate) async fn run_discord_subscriber(
             event = subs.response.recv() => {
                 match event {
                     Ok(Some(resp)) => {
-                        if let Some(ref att) = resp.attachment {
-                            send_file_attachment(&http, cid, att, &resp.content).await;
-                        } else if !resp.content.is_empty() {
-                            send_chunks(&http, cid, &resp.content).await;
+                        if let Some(cid) = target_or_warn(&state, &resp.correlation_id).await {
+                            if let Some(ref att) = resp.attachment {
+                                send_file_attachment(&http, cid, att, &resp.content).await;
+                            } else if !resp.content.is_empty() {
+                                send_chunks(&http, cid, &resp.content).await;
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -76,15 +62,23 @@ pub(crate) async fn run_discord_subscriber(
             }
             event = subs.intermediate.recv() => {
                 match event {
-                    Ok(Some(im)) => send_chunks(&http, cid, &im.content).await,
+                    Ok(Some(im)) => {
+                        if let Some(cid) = target_or_warn(&state, &im.correlation_id).await {
+                            send_chunks(&http, cid, &im.content).await;
+                        }
+                    }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
                 }
             }
+            // System notices and errors can carry internals; they only ever
+            // go to the owner.
             event = subs.notice.recv() => {
                 match event {
                     Ok(Some(NoticeEvent { message })) => {
-                        send_chunks(&http, cid, &message).await;
+                        if let Some(cid) = state.owner_dm().await {
+                            send_chunks(&http, cid, &message).await;
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -93,8 +87,9 @@ pub(crate) async fn run_discord_subscriber(
             event = subs.error.recv() => {
                 match event {
                     Ok(Some(ErrorEvent { message, .. })) => {
-                        let text = format!("**Error:** {message}");
-                        send_chunks(&http, cid, &text).await;
+                        if let Some(cid) = state.owner_dm().await {
+                            send_chunks(&http, cid, &format!("**Error:** {message}")).await;
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -108,6 +103,37 @@ pub(crate) async fn run_discord_subscriber(
     } else {
         tracing::warn!("discord subscriber loop ended unexpectedly");
     }
+}
+
+async fn target_or_warn(state: &DiscordState, correlation_id: &str) -> Option<ChannelId> {
+    let target = state.target_for(correlation_id).await;
+    if target.is_none() {
+        tracing::warn!(
+            correlation_id,
+            "no discord channel to deliver to; the owner has not messaged the bot yet"
+        );
+    }
+    target
+}
+
+fn spawn_typing(
+    http: Arc<serenity::http::Http>,
+    channel_id: ChannelId,
+) -> tokio::sync::watch::Sender<()> {
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = channel_id.broadcast_typing(&http).await {
+                tracing::trace!(error = %e, "discord typing indicator failed");
+            }
+            tokio::select! {
+                () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
+                // Resolves with an error once the sender is dropped at turn end.
+                _ = stop_rx.changed() => break,
+            }
+        }
+    });
+    stop_tx
 }
 
 async fn send_chunks(http: &serenity::http::Http, channel_id: ChannelId, content: &str) {

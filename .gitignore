@@ -18,3 +18,4 @@ mac/*.xcworkspace/
 mac/DerivedData/
 mac/build/
 .superpowers/
+CLAUDE.local.md

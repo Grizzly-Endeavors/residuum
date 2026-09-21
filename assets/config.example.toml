@@ -88,18 +88,22 @@ port = 7700
 # ── Discord bot (optional) ────────────────────────────────────────────────────
 # Bot token can be set here or via RESIDUUM_DISCORD_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
-# DM-only: server channels are ignored.
+# DM-only: server channels are ignored. The first person to DM the bot
+# becomes its owner (saved in discord_state.json).
 #
 # [discord]
 # token = "${RESIDUUM_DISCORD_TOKEN}"
+# respond_to_others = false   # true: anyone who can DM the bot can use the agent
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
 # Bot token can be set here or via RESIDUUM_TELEGRAM_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
-# DM-only: group messages are ignored.
+# DM-only: group messages are ignored. The first person to message the bot
+# becomes its owner (saved in telegram_state.json).
 #
 # [telegram]
 # token = "${RESIDUUM_TELEGRAM_TOKEN}"
+# respond_to_others = false   # true: anyone who can message the bot can use the agent
 
 # ── Microsoft Teams bot (optional) ───────────────────────────────────────────
 # Setup walkthrough: docs/guides/teams-setup.md.

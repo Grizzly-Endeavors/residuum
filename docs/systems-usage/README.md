@@ -20,6 +20,8 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
 | `pulse_state.json` | Managed by gateway | Pulse last-run timestamps and run counts. Persisted across restarts. Never edited directly. |
 | `teams_state.json` | Managed by the Teams interface | Teams owner and conversation references for proactive messages. Edit only to reset the owner (see [Microsoft Teams](teams.md)). |
+| `discord_state.json` | Managed by the Discord interface | Discord owner and the conversations the bot has seen. Edit only to reset the owner (see [Discord](discord.md)). |
+| `telegram_state.json` | Managed by the Telegram interface | Telegram owner and the chats the bot has seen. Edit only to reset the owner (see [Telegram](telegram.md)). |
 
 ### User-owned files
 
@@ -63,6 +65,8 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
+| [Discord](discord.md) | Chat with the agent in Discord DMs | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
+| [Telegram](telegram.md) | Chat with the agent in Telegram private chats | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
 
 ## What This Is Not
 

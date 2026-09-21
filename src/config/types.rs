@@ -118,17 +118,39 @@ pub struct CloudConfig {
 }
 
 /// Validated Discord bot configuration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DiscordConfig {
     /// Bot token for the Discord API.
     pub token: String,
+    /// Whether people other than the owner can talk to the agent.
+    pub respond_to_others: bool,
+}
+
+impl std::fmt::Debug for DiscordConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordConfig")
+            .field("token", &"[redacted]")
+            .field("respond_to_others", &self.respond_to_others)
+            .finish()
+    }
 }
 
 /// Validated Telegram bot configuration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TelegramConfig {
     /// Bot token for the Telegram API.
     pub token: String,
+    /// Whether people other than the owner can talk to the agent.
+    pub respond_to_others: bool,
+}
+
+impl std::fmt::Debug for TelegramConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramConfig")
+            .field("token", &"[redacted]")
+            .field("respond_to_others", &self.respond_to_others)
+            .finish()
+    }
 }
 
 /// Validated Microsoft Teams bot configuration.

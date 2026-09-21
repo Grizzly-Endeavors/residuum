@@ -217,6 +217,18 @@ impl WorkspaceLayout {
         self.root.join("teams_state.json")
     }
 
+    /// Path to `discord_state.json` -- the Discord owner and known conversations.
+    #[must_use]
+    pub fn discord_state_json(&self) -> PathBuf {
+        self.root.join("discord_state.json")
+    }
+
+    /// Path to `telegram_state.json` -- the Telegram owner and known conversations.
+    #[must_use]
+    pub fn telegram_state_json(&self) -> PathBuf {
+        self.root.join("telegram_state.json")
+    }
+
     /// Path to `scheduled_actions.json` -- persisted one-off scheduled actions.
     #[must_use]
     pub fn scheduled_actions_json(&self) -> PathBuf {

@@ -1,9 +1,11 @@
 //! Communication interfaces between the user and the agent.
 
 pub mod attachment;
+pub(crate) mod chat_state;
 pub mod chunking;
 pub mod commands;
 pub mod discord;
+pub(crate) mod reply_targets;
 pub mod teams;
 pub mod telegram;
 pub mod types;
