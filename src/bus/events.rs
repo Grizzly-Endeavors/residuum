@@ -256,7 +256,7 @@ pub struct SpawnRequestEvent {
     pub source: EventTrigger,
     /// Model tier to run the sub-agent at.
     pub model_tier: BackgroundModelTier,
-    /// Render SOUL.md, AGENTS.md, and MEMORY.md into the sub-agent's prompt.
+    /// Render SOUL.md and AGENTS.md into the sub-agent's prompt.
     pub include_identity: bool,
 }
 

@@ -39,16 +39,22 @@ impl WorkspaceLayout {
         self.root.join("USER.md")
     }
 
-    /// Path to MEMORY.md -- persistent memory across restarts.
+    /// Path to the knowledge wiki -- an OKF bundle of agent-maintained concept pages.
     #[must_use]
-    pub fn memory_md(&self) -> PathBuf {
-        self.root.join("MEMORY.md")
+    pub fn wiki_dir(&self) -> PathBuf {
+        self.root.join("wiki")
     }
 
-    /// Path to ENVIRONMENT.md -- local environment notes.
+    /// Path to the wiki's root `index.md` -- the catalog injected into every prompt.
     #[must_use]
-    pub fn environment_md(&self) -> PathBuf {
-        self.root.join("ENVIRONMENT.md")
+    pub fn wiki_index_md(&self) -> PathBuf {
+        self.root.join("wiki/index.md")
+    }
+
+    /// Path to the wiki's root `log.md` -- append-only history of wiki changes.
+    #[must_use]
+    pub fn wiki_log_md(&self) -> PathBuf {
+        self.root.join("wiki/log.md")
     }
 
     /// Path to the memory directory for episodes and persistent state.
@@ -216,6 +222,7 @@ impl WorkspaceLayout {
     pub fn required_dirs(&self) -> Vec<PathBuf> {
         vec![
             self.root.clone(),
+            self.wiki_dir(),
             self.memory_dir(),
             self.episodes_dir(),
             self.search_index_dir(),
@@ -256,11 +263,6 @@ mod tests {
             layout.memory_dir(),
             PathBuf::from("/tmp/ws/memory"),
             "memory_dir path"
-        );
-        assert_eq!(
-            layout.environment_md(),
-            PathBuf::from("/tmp/ws/ENVIRONMENT.md"),
-            "environment_md path"
         );
         assert_eq!(
             layout.observer_md(),
@@ -331,6 +333,30 @@ mod tests {
             layout.subconscious_md(),
             PathBuf::from("/tmp/ws/SUBCONSCIOUS.md"),
             "subconscious_md path"
+        );
+    }
+
+    #[test]
+    fn layout_wiki_paths() {
+        let layout = WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            layout.wiki_dir(),
+            PathBuf::from("/tmp/ws/wiki"),
+            "wiki_dir path"
+        );
+        assert_eq!(
+            layout.wiki_index_md(),
+            PathBuf::from("/tmp/ws/wiki/index.md"),
+            "wiki_index_md path"
+        );
+        assert_eq!(
+            layout.wiki_log_md(),
+            PathBuf::from("/tmp/ws/wiki/log.md"),
+            "wiki_log_md path"
+        );
+        assert!(
+            layout.required_dirs().contains(&layout.wiki_dir()),
+            "wiki dir should be a required dir"
         );
     }
 

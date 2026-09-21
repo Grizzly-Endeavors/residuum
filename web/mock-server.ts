@@ -22,15 +22,7 @@ interface MockState {
   mcpJson: string;
   workspaceFiles: Record<string, Array<{ name: string; entry_type: string; size: number | null }>>;
   workspaceFileContents: Record<string, string>;
-  inboxItems: Array<{
-    id: string;
-    title: string;
-    body: string;
-    source: string;
-    timestamp: string;
-    read: boolean;
-    attachments: string[];
-  }>;
+  inboxItems: Array<{ id: string; title: string; body: string; source: string; timestamp: string; read: boolean; attachments: string[] }>;
 }
 
 function loadAsset(filename: string): string {
@@ -56,11 +48,10 @@ function createState(): MockState {
         { name: "SOUL.md", entry_type: "file", size: 847 },
         { name: "AGENTS.md", entry_type: "file", size: 523 },
         { name: "USER.md", entry_type: "file", size: 312 },
-        { name: "MEMORY.md", entry_type: "file", size: 1205 },
-        { name: "ENVIRONMENT.md", entry_type: "file", size: 689 },
         { name: "PRESENCE.toml", entry_type: "file", size: 245 },
         { name: "HEARTBEAT.yml", entry_type: "file", size: 178 },
         { name: "CHANNELS.yml", entry_type: "file", size: 392 },
+        { name: "wiki", entry_type: "directory", size: null },
         { name: "memory", entry_type: "directory", size: null },
         { name: "skills", entry_type: "directory", size: null },
         { name: "config", entry_type: "directory", size: null },
@@ -68,7 +59,7 @@ function createState(): MockState {
         { name: "subagents", entry_type: "directory", size: null },
         { name: "archive", entry_type: "directory", size: null },
       ],
-      skills: [
+      "skills": [
         { name: "research", entry_type: "directory", size: null },
         { name: "code-review", entry_type: "directory", size: null },
       ],
@@ -76,70 +67,52 @@ function createState(): MockState {
         { name: "SKILL.md", entry_type: "file", size: 634 },
         { name: "prompt.md", entry_type: "file", size: 1102 },
       ],
-      "skills/code-review": [{ name: "SKILL.md", entry_type: "file", size: 478 }],
-      config: [
+      "skills/code-review": [
+        { name: "SKILL.md", entry_type: "file", size: 478 },
+      ],
+      "config": [
         { name: "mcp.json", entry_type: "file", size: 1567 },
         { name: "channels.toml", entry_type: "file", size: 834 },
       ],
-      memory: [
+      "wiki": [
+        { name: "index.md", entry_type: "file", size: 512 },
+        { name: "log.md", entry_type: "file", size: 340 },
+        { name: "projects", entry_type: "directory", size: null },
+      ],
+      "wiki/projects": [
+        { name: "index.md", entry_type: "file", size: 210 },
+        { name: "residuum.md", entry_type: "file", size: 486 },
+      ],
+      "memory": [
         { name: "observations.jsonl", entry_type: "file", size: 45230 },
         { name: "reflections.jsonl", entry_type: "file", size: 12450 },
       ],
-      inbox: [],
-      subagents: [],
-      archive: [],
+      "inbox": [],
+      "subagents": [],
+      "archive": [],
     },
     workspaceFileContents: {
-      "SOUL.md":
-        "# Soul\n\nI am Residuum, a personal AI agent framework designed for long-running autonomous operation.\n\n## Core Identity\n\n- I maintain persistent memory across conversations\n- I operate with genuine agency, not just reactivity\n- I respect my operator's preferences and working style\n- I am transparent about my capabilities and limitations\n\n## Values\n\n- **Honesty**: I never fabricate information or hide errors\n- **Autonomy**: I take initiative when appropriate\n- **Memory**: I remember and build on past interactions\n- **Craft**: I strive for quality in everything I produce\n",
-      "AGENTS.md":
-        "# Agents\n\n## Active Agents\n\n### Observer\nMonitors context window usage and triggers memory extraction.\n- Threshold: 30,000 tokens\n- Frequency: Checked after each turn\n\n### Reflector\nSynthesizes observations into higher-level reflections.\n- Threshold: 40,000 tokens\n- Minimum observations: 5\n\n### Pulse\nRuns periodic system health checks.\n- Interval: 5 minutes\n- Reports: memory stats, token usage, active tasks\n",
-      "USER.md":
-        "# User Profile\n\n- **Name**: Bear\n- **Timezone**: America/New_York\n- **Preferred communication**: Direct and concise\n- **Working hours**: Flexible, mostly evenings\n",
-      "MEMORY.md":
-        "# Memory Index\n\n## Recent Observations\n- 42 observations stored\n- 8 reflections synthesized\n- Last compaction: 2026-03-09\n\n## Key Topics\n- Notification routing system design\n- Kubernetes deployment pipeline\n- Memory search optimization\n",
-      "ENVIRONMENT.md":
-        "# Environment\n\n## System\n- **OS**: Pop!_OS 24.04 LTS\n- **Arch**: x86_64\n- **Shell**: Fish\n\n## Development\n- Rust 1.84.0\n- Node.js 22.x\n- Docker 29.1.3\n",
-      "PRESENCE.toml":
-        '[presence]\nstatus = "active"\nlast_seen = "2026-03-10T14:30:00Z"\n\n[presence.channels]\nweb = true\ndiscord = false\ntelegram = true\n',
-      "HEARTBEAT.yml":
-        'interval_seconds: 300\nchecks:\n  - memory_usage\n  - token_count\n  - active_tasks\n  - channel_status\nlast_beat: "2026-03-10T14:30:00Z"\nstatus: healthy\n',
-      "CHANNELS.yml":
-        'channels:\n  web:\n    enabled: true\n    priority: high\n  discord:\n    enabled: false\n    token_ref: "secret:discord_token"\n  telegram:\n    enabled: true\n    token_ref: "secret:telegram_token"\n    chat_id: "123456789"\n',
-      "skills/research/SKILL.md":
-        '# Research Skill\n\n## Purpose\nConduct thorough research on topics using available tools and memory.\n\n## Triggers\n- User asks to "research" or "look into" a topic\n- User asks for comprehensive analysis\n\n## Process\n1. Search memory for existing knowledge\n2. Use web search if available\n3. Synthesize findings\n4. Store key observations\n',
-      "skills/research/prompt.md":
-        "You are conducting research on the following topic: {{topic}}\n\n## Guidelines\n- Search memory first for existing knowledge\n- Use web search tools if available\n- Cross-reference multiple sources\n- Note confidence levels for each finding\n- Store important observations for future reference\n\n## Output Format\n- Summary (2-3 sentences)\n- Key findings (bulleted list)\n- Sources and confidence levels\n- Suggested follow-up questions\n",
-      "skills/code-review/SKILL.md":
-        "# Code Review Skill\n\n## Purpose\nReview code changes for quality, correctness, and style.\n\n## Triggers\n- User asks for code review\n- PR review requests\n\n## Checklist\n- [ ] Logic correctness\n- [ ] Error handling\n- [ ] Style consistency\n- [ ] Test coverage\n- [ ] Security considerations\n",
-      "config/mcp.json":
-        '{\n  "servers": {\n    "filesystem": {\n      "command": "mcp-filesystem",\n      "args": ["--root", "/home/user/projects"]\n    }\n  }\n}',
-      "config/channels.toml":
-        '[web]\nenabled = true\nport = 3001\n\n[discord]\nenabled = false\ntoken_ref = "secret:discord_token"\n\n[telegram]\nenabled = true\ntoken_ref = "secret:telegram_token"\nchat_id = "123456789"\n',
-      "memory/observations.jsonl":
-        '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
-      "memory/reflections.jsonl":
-        '{"text":"User is building a personal agent framework focused on genuine autonomy and persistent memory","timestamp":"2026-03-09T12:00:00Z","observations":5}\n',
+      "SOUL.md": "# Soul\n\nI am Residuum, a personal AI agent framework designed for long-running autonomous operation.\n\n## Core Identity\n\n- I maintain persistent memory across conversations\n- I operate with genuine agency, not just reactivity\n- I respect my operator's preferences and working style\n- I am transparent about my capabilities and limitations\n\n## Values\n\n- **Honesty**: I never fabricate information or hide errors\n- **Autonomy**: I take initiative when appropriate\n- **Memory**: I remember and build on past interactions\n- **Craft**: I strive for quality in everything I produce\n",
+      "AGENTS.md": "# Agents\n\n## Active Agents\n\n### Observer\nMonitors context window usage and triggers memory extraction.\n- Threshold: 30,000 tokens\n- Frequency: Checked after each turn\n\n### Reflector\nSynthesizes observations into higher-level reflections.\n- Threshold: 40,000 tokens\n- Minimum observations: 5\n\n### Pulse\nRuns periodic system health checks.\n- Interval: 5 minutes\n- Reports: memory stats, token usage, active tasks\n",
+      "USER.md": "# User Profile\n\n- **Name**: Bear\n- **Timezone**: America/New_York\n- **Preferred communication**: Direct and concise\n- **Working hours**: Flexible, mostly evenings\n",
+      "PRESENCE.toml": '[presence]\nstatus = "active"\nlast_seen = "2026-03-10T14:30:00Z"\n\n[presence.channels]\nweb = true\ndiscord = false\ntelegram = true\n',
+      "HEARTBEAT.yml": "interval_seconds: 300\nchecks:\n  - memory_usage\n  - token_count\n  - active_tasks\n  - channel_status\nlast_beat: \"2026-03-10T14:30:00Z\"\nstatus: healthy\n",
+      "CHANNELS.yml": "channels:\n  web:\n    enabled: true\n    priority: high\n  discord:\n    enabled: false\n    token_ref: \"secret:discord_token\"\n  telegram:\n    enabled: true\n    token_ref: \"secret:telegram_token\"\n    chat_id: \"123456789\"\n",
+      "skills/research/SKILL.md": "# Research Skill\n\n## Purpose\nConduct thorough research on topics using available tools and memory.\n\n## Triggers\n- User asks to \"research\" or \"look into\" a topic\n- User asks for comprehensive analysis\n\n## Process\n1. Search memory for existing knowledge\n2. Use web search if available\n3. Synthesize findings\n4. Store key observations\n",
+      "skills/research/prompt.md": "You are conducting research on the following topic: {{topic}}\n\n## Guidelines\n- Search memory first for existing knowledge\n- Use web search tools if available\n- Cross-reference multiple sources\n- Note confidence levels for each finding\n- Store important observations for future reference\n\n## Output Format\n- Summary (2-3 sentences)\n- Key findings (bulleted list)\n- Sources and confidence levels\n- Suggested follow-up questions\n",
+      "skills/code-review/SKILL.md": "# Code Review Skill\n\n## Purpose\nReview code changes for quality, correctness, and style.\n\n## Triggers\n- User asks for code review\n- PR review requests\n\n## Checklist\n- [ ] Logic correctness\n- [ ] Error handling\n- [ ] Style consistency\n- [ ] Test coverage\n- [ ] Security considerations\n",
+      "config/mcp.json": '{\n  "servers": {\n    "filesystem": {\n      "command": "mcp-filesystem",\n      "args": ["--root", "/home/user/projects"]\n    }\n  }\n}',
+      "config/channels.toml": '[web]\nenabled = true\nport = 3001\n\n[discord]\nenabled = false\ntoken_ref = "secret:discord_token"\n\n[telegram]\nenabled = true\ntoken_ref = "secret:telegram_token"\nchat_id = "123456789"\n',
+      "wiki/index.md": "---\nokf_version: \"0.1\"\n---\n\n# Wiki Index\n\n- [projects](projects/index.md) — active projects and their status\n",
+      "wiki/log.md": "# Wiki Log\n\n- 2026-03-09: ingest — filed 3 pages from episodes ep-041..ep-043\n- 2026-03-05: lint — fixed stale frontmatter on projects/residuum.md\n",
+      "wiki/projects/index.md": "---\ntype: index\ntitle: Projects\n---\n\n# Projects\n\n- [residuum](residuum.md) — personal agent framework\n",
+      "wiki/projects/residuum.md": "---\ntype: concept\ntitle: Residuum\ndescription: Personal agent framework the user is building.\ntags: [project, rust]\nstatus: stable\nsources:\n  - episode: ep-041\nlast_modified: 2026-03-09\nstale_after: 2026-06-09\n---\n\n# Residuum\n\nA personal AI agent framework focused on genuine autonomy and persistent memory.\n",
+      "memory/observations.jsonl": '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
+      "memory/reflections.jsonl": '{"text":"User is building a personal agent framework focused on genuine autonomy and persistent memory","timestamp":"2026-03-09T12:00:00Z","observations":5}\n',
     },
     inboxItems: [
-      {
-        id: "mock_1",
-        title: "Deploy tomorrow",
-        body: "Reminder to trigger the deployment pipeline tomorrow morning.",
-        source: "agent:pulse",
-        timestamp: new Date().toISOString(),
-        read: false,
-        attachments: [],
-      },
-      {
-        id: "mock_2",
-        title: "Daily Digest",
-        body: "Here is your daily summary.",
-        source: "agent:digest",
-        timestamp: new Date(Date.now() - 3600000).toISOString(),
-        read: true,
-        attachments: [],
-      },
+      { id: "mock_1", title: "Deploy tomorrow", body: "Reminder to trigger the deployment pipeline tomorrow morning.", source: "agent:pulse", timestamp: new Date().toISOString(), read: false, attachments: [] },
+      { id: "mock_2", title: "Daily Digest", body: "Here is your daily summary.", source: "agent:digest", timestamp: new Date(Date.now() - 3600000).toISOString(), read: true, attachments: [] },
     ],
   };
 }
@@ -268,7 +241,8 @@ function sampleEpisodes(): SampleEpisode[] {
       messages: [
         {
           role: "user",
-          content: "Walk me through what the observer actually stores vs. what it drops.",
+          content:
+            "Walk me through what the observer actually stores vs. what it drops.",
           timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
           visibility: "user",
         },
@@ -396,7 +370,10 @@ const cannedResponses = [
     "Let me know if you'd like a deeper dive into any specific area.",
 ];
 
-const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
+const modelsByProvider: Record<
+  string,
+  Array<{ id: string; name: string }>
+> = {
   anthropic: [
     { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
@@ -416,10 +393,7 @@ const modelsByProvider: Record<string, Array<{ id: string; name: string }>> = {
   fireworks: [
     { id: "accounts/fireworks/models/glm-5p3", name: "accounts/fireworks/models/glm-5p3" },
     { id: "accounts/fireworks/models/kimi-k3", name: "accounts/fireworks/models/kimi-k3" },
-    {
-      id: "accounts/fireworks/routers/glm-flash-latest",
-      name: "accounts/fireworks/routers/glm-flash-latest",
-    },
+    { id: "accounts/fireworks/routers/glm-flash-latest", name: "accounts/fireworks/routers/glm-flash-latest" },
   ],
   ollama: [
     { id: "llama3.3:latest", name: "Llama 3.3" },
@@ -572,7 +546,10 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/mcp-catalog" && method === "GET") {
         try {
-          const catalog = readFileSync(resolve(__dirname, "public", "mcp-catalog.json"), "utf-8");
+          const catalog = readFileSync(
+            resolve(__dirname, "public", "mcp-catalog.json"),
+            "utf-8",
+          );
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(catalog);
         } catch {
@@ -612,7 +589,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       const readMatch = path.match(/^\/api\/inbox\/(.+)\/read$/);
       if (readMatch && method === "PUT") {
         const id = decodeURIComponent(readMatch[1]);
-        const item = state.inboxItems.find((i) => i.id === id);
+        const item = state.inboxItems.find(i => i.id === id);
         if (item) {
           item.read = true;
           json(res, 200, item);
@@ -625,7 +602,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       const archiveMatch = path.match(/^\/api\/inbox\/(.+)\/archive$/);
       if (archiveMatch && method === "POST") {
         const id = decodeURIComponent(archiveMatch[1]);
-        state.inboxItems = state.inboxItems.filter((i) => i.id !== id);
+        state.inboxItems = state.inboxItems.filter(i => i.id !== id);
         json(res, 200, {});
         return;
       }
@@ -776,7 +753,10 @@ function setupWebSocket(server: ViteDevServer) {
     });
   });
 
-  function simulateConversation(ws: WebSocket, msg: { type: string; [key: string]: unknown }) {
+  function simulateConversation(
+    ws: WebSocket,
+    msg: { type: string; [key: string]: unknown },
+  ) {
     const replyTo = String(msg.id ?? "unknown");
 
     // 1. turn_started (immediate)
@@ -849,7 +829,9 @@ export function mockServerPlugin(): Plugin {
       const modeLabel = state.mode === "setup" ? "setup" : "running";
       console.log("");
       console.log("  [mock] API mock server active");
-      console.log(`  [mock] Mode: ${modeLabel} (set VITE_MOCK_SETUP=1 for setup wizard)`);
+      console.log(
+        `  [mock] Mode: ${modeLabel} (set VITE_MOCK_SETUP=1 for setup wizard)`,
+      );
       console.log("  [mock] WebSocket echo server on /ws");
       console.log("");
     },

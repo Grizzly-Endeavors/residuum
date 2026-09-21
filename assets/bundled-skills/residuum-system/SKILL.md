@@ -12,6 +12,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | System | Tools | Config File | Reference |
 |--------|-------|-------------|-----------|
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
+| Wiki | `read_file`, `write_file`, `edit_file` | `wiki/` | the `wiki` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
 | Inbox | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* | [inbox](references/inbox.md) |
 | Scheduled Actions | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` | [scheduled-actions](references/scheduled-actions.md) |
@@ -28,12 +29,13 @@ This skill provides reference documentation for every major workspace system. Ac
 workspace/
 ├── SOUL.md                  # Core identity and personality
 ├── AGENTS.md                # Agent behavior rules
-├── USER.md                  # User preferences
-├── MEMORY.md                # Persistent scratchpad (agent-maintained)
-├── ENVIRONMENT.md           # Local environment notes
+├── USER.md                  # User preferences (core facts only)
 ├── BOOTSTRAP.md             # First-run guidance (deleted after first conversation)
 ├── HEARTBEAT.yml            # Pulse scheduling
 ├── scheduled_actions.json   # Persisted one-off actions
+├── wiki/                    # Open Knowledge Format knowledge base (agent-maintained)
+│   ├── index.md             # Root index — the only page injected into prompts
+│   └── log.md               # Append-only change log
 ├── memory/
 │   ├── observations.json    # Flat observation log
 │   ├── recent_messages.json # Unobserved messages buffer

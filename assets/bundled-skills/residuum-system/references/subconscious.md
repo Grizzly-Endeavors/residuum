@@ -2,8 +2,8 @@
 
 A small-model classifier that watches the main agent's conversation and
 steers it when it drifts from its instructions — e.g. acknowledging a user
-preference but not persisting it to `MEMORY.md`, or acting against a rule in
-`SOUL.md`/`AGENTS.md`. Opt-in, disabled by default.
+preference but not persisting it to `USER.md` or the wiki, or acting against
+a rule in `SOUL.md`/`AGENTS.md`. Opt-in, disabled by default.
 
 ## When it runs
 

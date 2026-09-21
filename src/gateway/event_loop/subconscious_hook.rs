@@ -158,7 +158,7 @@ fn build_correction_event(
     let content = format!(
         "[Subconscious] A background check of your last turn found a problem to correct now:\n\
          {instruction}\n\
-         Take the corrective action (e.g. update MEMORY.md). Only message the user if they \
+         Take the corrective action (e.g. update a wiki page). Only message the user if they \
          need to know something new."
     );
 

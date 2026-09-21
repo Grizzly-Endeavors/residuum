@@ -55,7 +55,7 @@ enabled = true
 # ── Subconscious (instruction-drift classifier, opt-in) ─────────────────────
 # A small model that watches conversations and steers the main agent when it
 # ignores an instruction or forgets something (like saving a user preference
-# to MEMORY.md). Off by default: it adds a classifier call per evaluated turn.
+# to USER.md or the wiki). Off by default: it adds a classifier call per evaluated turn.
 # Checks are customizable in SUBCONSCIOUS.md in the workspace.
 # Assign a cheap model to `subconscious` in providers.toml under [models].
 #

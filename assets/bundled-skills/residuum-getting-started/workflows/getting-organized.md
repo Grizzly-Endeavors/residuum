@@ -2,7 +2,7 @@
 
 Walk the user through the inbox and memory. By the end, they should understand how the inbox captures things that need attention and how memory works passively in the background.
 
-**Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end. If the user mentions a preference, a tool they use, or context about their life, write it down immediately.
+**Remember**: Write core facts to `USER.md` and everything else to wiki pages (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end. If the user mentions a preference, a tool they use, or context about their life, write it down immediately.
 
 ## Step 1: Introduce the Inbox
 
