@@ -165,18 +165,6 @@ impl Tool for SendMessageTool {
             .capabilities
             .contains(EndpointCapabilities::NOTIFY_ONLY);
 
-        if !is_interactive && !is_notify {
-            let available = self.sendable_endpoint_names();
-            return Ok(ToolResult::error(format!(
-                "endpoint '{endpoint_name}' does not accept messages; available: {}",
-                if available.is_empty() {
-                    "(none configured)".to_string()
-                } else {
-                    available.join(", ")
-                }
-            )));
-        }
-
         // File attachments only supported on interactive endpoints
         let attachment = if let Some(fp) = file_path_str {
             if !is_interactive {
@@ -245,26 +233,20 @@ mod tests {
     use crate::bus::{EndpointEntry, TopicId};
 
     fn make_registry() -> EndpointRegistry {
-        let registry = EndpointRegistry::new();
-        registry.register(EndpointEntry {
-            id: EndpointId::from("ws"),
-            topic: TopicId::Endpoint(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "WebSocket".to_string(),
-        });
-        registry.register(EndpointEntry {
-            id: EndpointId::from("my-ntfy"),
-            topic: TopicId::Notification(NotifyName::from("my-ntfy")),
-            capabilities: EndpointCapabilities::NOTIFY_ONLY,
-            display_name: "Ntfy (my-ntfy)".to_string(),
-        });
-        registry.register(EndpointEntry {
-            id: EndpointId::from("inbox"),
-            topic: TopicId::Inbox,
-            capabilities: EndpointCapabilities::INPUT_ONLY,
-            display_name: "Inbox".to_string(),
-        });
-        registry
+        EndpointRegistry::from_entries([
+            EndpointEntry {
+                id: EndpointId::from("ws"),
+                topic: TopicId::Endpoint(EndpointName::from("ws")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "WebSocket".to_string(),
+            },
+            EndpointEntry {
+                id: EndpointId::from("my-ntfy"),
+                topic: TopicId::Notification(NotifyName::from("my-ntfy")),
+                capabilities: EndpointCapabilities::NOTIFY_ONLY,
+                display_name: "Ntfy (my-ntfy)".to_string(),
+            },
+        ])
     }
 
     fn make_publisher() -> Publisher {
@@ -274,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_name_and_definition() {
-        let registry = EndpointRegistry::new();
+        let registry = EndpointRegistry::default();
         let publisher = make_publisher();
         let tool = SendMessageTool::new(registry, publisher);
         assert_eq!(tool.name(), "send_message");
@@ -335,28 +317,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_to_inbox_returns_error() {
-        let registry = make_registry();
-        let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
-
-        let result = tool
-            .execute(serde_json::json!({
-                "endpoint": "inbox",
-                "message": "test"
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.is_error, "should error for inbox");
-        assert!(
-            result.output.contains("does not accept messages"),
-            "should explain: {}",
-            result.output
-        );
-    }
-
-    #[tokio::test]
     async fn send_to_unknown_endpoint_returns_error() {
         let registry = make_registry();
         let publisher = make_publisher();
@@ -376,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_missing_endpoint_returns_error() {
-        let registry = EndpointRegistry::new();
+        let registry = EndpointRegistry::default();
         let publisher = make_publisher();
         let tool = SendMessageTool::new(registry, publisher);
 

@@ -226,16 +226,12 @@ mod tests {
     }
 
     fn registry_with_channels(names: &[&str]) -> EndpointRegistry {
-        let reg = EndpointRegistry::new();
-        for name in names {
-            reg.register(EndpointEntry {
-                id: crate::bus::EndpointId::from(*name),
-                topic: TopicId::Notification(NotifyName::from(*name)),
-                capabilities: EndpointCapabilities::NOTIFY_ONLY,
-                display_name: (*name).to_string(),
-            });
-        }
-        reg
+        EndpointRegistry::from_entries(names.iter().map(|name| EndpointEntry {
+            id: crate::bus::EndpointId::from(*name),
+            topic: TopicId::Notification(NotifyName::from(*name)),
+            capabilities: EndpointCapabilities::NOTIFY_ONLY,
+            display_name: (*name).to_string(),
+        }))
     }
 
     #[test]
@@ -266,13 +262,20 @@ mod tests {
 
     #[test]
     fn interactive_endpoints_are_never_delivery_targets() {
-        let reg = registry_with_channels(&["ntfy_phone"]);
-        reg.register(EndpointEntry {
-            id: crate::bus::EndpointId::from("websocket"),
-            topic: TopicId::Notification(NotifyName::from("websocket")),
-            capabilities: EndpointCapabilities::INTERACTIVE,
-            display_name: "websocket".to_string(),
-        });
+        let reg = EndpointRegistry::from_entries([
+            EndpointEntry {
+                id: crate::bus::EndpointId::from("ntfy_phone"),
+                topic: TopicId::Notification(NotifyName::from("ntfy_phone")),
+                capabilities: EndpointCapabilities::NOTIFY_ONLY,
+                display_name: "ntfy_phone".to_string(),
+            },
+            EndpointEntry {
+                id: crate::bus::EndpointId::from("websocket"),
+                topic: TopicId::Notification(NotifyName::from("websocket")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
+                display_name: "websocket".to_string(),
+            },
+        ]);
 
         let targets = delivery_targets(&reg, true);
         assert!(

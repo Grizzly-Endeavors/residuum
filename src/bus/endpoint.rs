@@ -15,8 +15,6 @@ impl EndpointCapabilities {
     pub const STREAMING: Self = Self(0b0010);
     /// Output-only push (notifications).
     pub const NOTIFY_ONLY: Self = Self(0b0100);
-    /// Input-only, no response path.
-    pub const INPUT_ONLY: Self = Self(0b1000);
 
     /// No capabilities set.
     #[must_use]
@@ -51,7 +49,6 @@ mod tests {
         assert!(!empty.contains(EndpointCapabilities::INTERACTIVE));
         assert!(!empty.contains(EndpointCapabilities::STREAMING));
         assert!(!empty.contains(EndpointCapabilities::NOTIFY_ONLY));
-        assert!(!empty.contains(EndpointCapabilities::INPUT_ONLY));
     }
 
     #[test]
@@ -60,7 +57,6 @@ mod tests {
         assert!(caps.contains(EndpointCapabilities::INTERACTIVE));
         assert!(caps.contains(EndpointCapabilities::STREAMING));
         assert!(!caps.contains(EndpointCapabilities::NOTIFY_ONLY));
-        assert!(!caps.contains(EndpointCapabilities::INPUT_ONLY));
     }
 
     #[test]
@@ -68,10 +64,7 @@ mod tests {
         use super::EndpointCapabilities as C;
         assert_ne!(C::INTERACTIVE, C::STREAMING);
         assert_ne!(C::INTERACTIVE, C::NOTIFY_ONLY);
-        assert_ne!(C::INTERACTIVE, C::INPUT_ONLY);
         assert_ne!(C::STREAMING, C::NOTIFY_ONLY);
-        assert_ne!(C::STREAMING, C::INPUT_ONLY);
-        assert_ne!(C::NOTIFY_ONLY, C::INPUT_ONLY);
     }
 
     #[test]
