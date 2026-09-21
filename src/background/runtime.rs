@@ -492,6 +492,83 @@ mod tests {
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
     }
 
+    #[tokio::test]
+    async fn idle_session_releases_its_permit_for_a_new_run() {
+        // max_concurrent = 1: if an idle session held its permit, a second
+        // session could not start running until the first's idle timeout
+        // elapsed. Give the first session an idle window long enough that
+        // waiting it out would be obviously slow, then prove the second
+        // reaches running/idle almost immediately instead.
+        let idle_window = Duration::from_millis(300);
+        let bus_handle = crate::bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            1,
+            IdleTimeouts {
+                scheduled: idle_window,
+                spawned: idle_window,
+                external: idle_window,
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+        );
+
+        let first = SessionAddress::from("spawned-first-0001");
+        runtime.spawn(
+            sample_request(first.as_ref()),
+            Some(make_resources("first done")),
+        );
+
+        // Wait for the first session to go idle (releasing its permit).
+        let idle_at = wait_for(&runtime, &first, Duration::from_secs(1), |info| {
+            info.state == SessionState::Idle
+        })
+        .await
+        .expect("first session should reach idle");
+
+        let second = SessionAddress::from("spawned-second-0002");
+        runtime.spawn(
+            sample_request(second.as_ref()),
+            Some(make_resources("second done")),
+        );
+        // Any state past `Forking` means the permit was acquired and the
+        // turn at least started — must happen well inside the first
+        // session's idle window to prove it didn't wait on that timeout.
+        let second_started = wait_for(&runtime, &second, idle_window, |info| {
+            info.state != SessionState::Forking
+        })
+        .await;
+        let elapsed = idle_at.elapsed();
+        assert!(
+            second_started.is_some(),
+            "second session should start running without waiting for the first's idle timeout \
+             (waited {elapsed:?} against an idle window of {idle_window:?})"
+        );
+    }
+
+    /// Poll a runtime's registry until `address`'s info satisfies `pred`, or the deadline elapses.
+    async fn wait_for(
+        runtime: &SessionRuntime,
+        address: &SessionAddress,
+        deadline: Duration,
+        pred: impl Fn(&SessionInfo) -> bool,
+    ) -> Option<std::time::Instant> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < deadline {
+            if let Some(info) = runtime.registry.get(address)
+                && pred(&info)
+            {
+                return Some(std::time::Instant::now());
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        None
+    }
+
     #[test]
     fn idle_timeouts_use_scheduled_timeout_for_webhooks() {
         let timeouts = IdleTimeouts {

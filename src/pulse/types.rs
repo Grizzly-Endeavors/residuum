@@ -693,4 +693,50 @@ pulses:
             "the surviving 'dup' pulse should be the first one in the file"
         );
     }
+
+    #[test]
+    fn load_heartbeat_drops_pulse_with_agent_main_but_keeps_the_rest() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+pulses:
+  - name: wake_main
+    schedule: "1h"
+    agent: main
+    tasks: []
+  - name: keep_me
+    schedule: "2h"
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let cfg = load_heartbeat(&path, &mut last_error).unwrap();
+        let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["keep_me"],
+            "the agent: main pulse should be dropped, never silently reinterpreted, \
+             while the rest of the file still loads"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_drops_pulse_with_include_identity() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+pulses:
+  - name: legacy_identity
+    schedule: "1h"
+    include_identity: true
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let cfg = load_heartbeat(&path, &mut last_error).unwrap();
+        assert!(
+            cfg.pulses.is_empty(),
+            "a pulse setting include_identity (removed) must not load"
+        );
+    }
 }
