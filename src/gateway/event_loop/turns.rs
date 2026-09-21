@@ -102,11 +102,9 @@ pub async fn persist_and_maybe_observe(
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
         let mem = MemorySubsystems {
             observer: &rt.observer,
-            reflector: &rt.reflector,
-            search_index: &rt.search_index,
+            merge_writer: &rt.merge_writer,
             layout: &rt.layout,
-            vector_store: rt.vector_store.as_ref(),
-            embedding_provider: rt.embedding_provider.as_ref(),
+            tz: rt.tz,
         };
         execute_observation(&mem, &mut rt.agent).await;
     }

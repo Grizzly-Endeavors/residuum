@@ -22,11 +22,9 @@ pub(super) async fn execute_idle_transition(
     // 2. Fire observer, then clear in-memory message buffer
     let mem = MemorySubsystems {
         observer: &rt.observer,
-        reflector: &rt.reflector,
-        search_index: &rt.search_index,
+        merge_writer: &rt.merge_writer,
         layout: &rt.layout,
-        vector_store: rt.vector_store.as_ref(),
-        embedding_provider: rt.embedding_provider.as_ref(),
+        tz: rt.tz,
     };
     execute_observation(&mem, &mut rt.agent).await;
     *observe_deadline = None;

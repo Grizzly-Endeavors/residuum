@@ -19,16 +19,14 @@ pub async fn handle_server_command(
             *observe_deadline = None;
             let mem = MemorySubsystems {
                 observer: &rt.observer,
-                reflector: &rt.reflector,
-                search_index: &rt.search_index,
+                merge_writer: &rt.merge_writer,
                 layout: &rt.layout,
-                vector_store: rt.vector_store.as_ref(),
-                embedding_provider: rt.embedding_provider.as_ref(),
+                tz: rt.tz,
             };
             run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
         }
         "reflect" => {
-            run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.publisher).await;
+            run_forced_reflect(&rt.merge_writer, &rt.layout, &mut rt.agent, &rt.publisher).await;
         }
         "context" => {
             let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;

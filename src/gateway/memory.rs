@@ -1,30 +1,27 @@
 //! Memory pipeline helpers: observation, reflection, and persistence.
+//!
+//! Extraction (the LLM call) is [`Observer::extract`]'s job; persistence —
+//! episode id allocation, the observation log, indexing, embedding, and the
+//! reflector check — is the [`MemoryMergeWriter`]'s, shared with every
+//! session run's own completion pipeline so episode numbering and log
+//! appends never race. This module's job is the main agent's side of that
+//! flow: loading/clearing `recent_messages.json`, saving the recent-context
+//! narrative (session merges never touch it), and reloading the agent's
+//! context after a merge.
 
 use std::sync::Arc;
 
 use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
 use crate::bus::Publisher;
-use crate::inference::EmbeddingProvider;
-use crate::memory::log_store::load_observation_log;
-use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
+use crate::memory::merge_writer::MemoryMergeWriter;
+use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
 use crate::memory::recent_messages::{
     append_recent_messages, clear_recent_messages, load_recent_messages,
 };
-use crate::memory::reflector::Reflector;
-use crate::memory::search::MemoryIndex;
-use crate::memory::types::{IndexManifest, ManifestFileEntry, Visibility};
-use crate::memory::vector_store::VectorStore;
+use crate::memory::types::{SourceTag, Visibility};
 use crate::workspace::layout::WorkspaceLayout;
-
-/// Date format for episode file paths: `YYYY-MM/DD`.
-fn episode_date_dir(date: &str) -> Option<String> {
-    // date is "YYYY-MM-DD" → "YYYY-MM/DD"
-    let year_month = date.get(..7)?;
-    let day = date.get(8..10)?;
-    Some(format!("{year_month}/{day}"))
-}
 
 /// Persist new messages and check whether observation thresholds are met.
 ///
@@ -59,17 +56,15 @@ pub(super) async fn persist_and_check_thresholds(
     observer.check_thresholds(&recent)
 }
 
-/// Subsystem references for memory observation and embedding.
+/// Subsystem references for the main agent's observation flow.
 pub(super) struct MemorySubsystems<'a> {
     pub observer: &'a Observer,
-    pub reflector: &'a Reflector,
-    pub search_index: &'a Arc<MemoryIndex>,
+    pub merge_writer: &'a Arc<MemoryMergeWriter>,
     pub layout: &'a WorkspaceLayout,
-    pub vector_store: Option<&'a Arc<VectorStore>>,
-    pub embedding_provider: Option<&'a Arc<dyn EmbeddingProvider>>,
+    pub tz: chrono_tz::Tz,
 }
 
-/// Execute an observation cycle: LLM call, clear file, rotate messages, index, reflect, reload.
+/// Execute an observation cycle: extract, merge, clear file, rotate messages, reload.
 #[tracing::instrument(skip_all)]
 pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut Agent) {
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
@@ -84,196 +79,47 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
         return;
     }
 
-    match mem.observer.observe(&recent, mem.layout).await {
-        Ok(result) => {
-            tracing::info!(episode_id = %result.id, "observer extracted episode");
-            let reflected = run_observation_result(mem, agent, &result).await;
-            if reflected {
-                tracing::info!(episode_id = %result.id, "reflection triggered");
-            }
-        }
+    let extraction = match mem.observer.extract(&recent, mem.layout).await {
+        Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, "observer failed");
-        }
-    }
-}
-
-/// Embed a batch of texts, then call a blocking insert closure with the resulting vectors.
-///
-/// Returns `true` on success, `false` if embedding or insertion fails.
-async fn embed_and_insert<F, T>(
-    ep: &dyn EmbeddingProvider,
-    texts: &[&str],
-    embed_label: &'static str,
-    insert_label: &'static str,
-    insert: F,
-) -> bool
-where
-    F: FnOnce(Vec<Vec<f32>>) -> anyhow::Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    match ep.embed(texts).await {
-        Ok(response) => {
-            let embeddings = response.embeddings;
-            match tokio::task::spawn_blocking(move || insert(embeddings)).await {
-                Ok(Ok(_)) => true,
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "failed to {insert_label}");
-                    false
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "{insert_label} task panicked");
-                    false
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to embed {embed_label}");
-            false
-        }
-    }
-}
-
-/// Embed observations and chunks from an observer result into the vector store.
-///
-/// Silently returns `false` if no embedding provider or vector store is configured.
-/// Embedding failures are reported as warnings, never fatal.
-/// Returns `true` if all embedding inserts succeeded.
-async fn embed_observation_result(
-    result: &ObserveResult,
-    vector_store: Option<&Arc<VectorStore>>,
-    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
-) -> bool {
-    let (Some(vs), Some(ep)) = (vector_store, embedding_provider) else {
-        return false;
-    };
-
-    let mut all_ok = true;
-
-    if !result.observations.is_empty() {
-        let texts: Vec<&str> = result
-            .observations
-            .iter()
-            .map(|o| o.content.as_str())
-            .collect();
-        let vs2 = Arc::clone(vs);
-        let episode_id = result.id.clone();
-        let date = result.date.clone();
-        let observations = result.observations.clone();
-        if !embed_and_insert(
-            ep.as_ref(),
-            &texts,
-            "observations",
-            "insert observation vectors",
-            move |embeddings| {
-                vs2.insert_observations(&episode_id, &date, &observations, &embeddings)
-            },
-        )
-        .await
-        {
-            all_ok = false;
-        }
-    }
-
-    if !result.chunks.is_empty() {
-        let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
-        let vs2 = Arc::clone(vs);
-        let chunks = result.chunks.clone();
-        if !embed_and_insert(
-            ep.as_ref(),
-            &texts,
-            "chunks",
-            "insert chunk vectors",
-            move |embeddings| vs2.insert_chunks(&chunks, &embeddings),
-        )
-        .await
-        {
-            all_ok = false;
-        }
-    }
-
-    all_ok
-}
-
-/// Post-observation steps: index, embed, reflect check, reload agent context.
-///
-/// Returns `true` if the reflector was triggered.
-async fn finalize_observation(
-    mem: &MemorySubsystems<'_>,
-    agent: &mut Agent,
-    result: &ObserveResult,
-) -> bool {
-    // Index observations and chunks into the search index
-    let obs_ids = mem
-        .search_index
-        .index_observations(&result.id, &result.date, &result.observations)
-        .inspect_err(|e| tracing::warn!(error = %e, episode_id = %result.id, "failed to index observations; startup sync will retry"))
-        .ok();
-    let chunk_ids = mem
-        .search_index
-        .index_chunks(&result.chunks)
-        .inspect_err(|e| tracing::warn!(error = %e, episode_id = %result.id, "failed to index chunks; startup sync will retry"))
-        .ok();
-
-    // Embed and store in vector index
-    let embedded = embed_observation_result(result, mem.vector_store, mem.embedding_provider).await;
-    record_episode_in_manifest(mem.layout, result, obs_ids, chunk_ids, embedded).await;
-
-    let reflected = run_reflector_check(mem.reflector, mem.layout).await;
-
-    if let Err(e) = agent.reload_observations(mem.layout).await {
-        tracing::warn!(error = %e, "failed to reload observations");
-    }
-    if let Err(e) = agent.reload_recent_context(mem.layout).await {
-        tracing::warn!(error = %e, "failed to reload recent context");
-    }
-
-    reflected
-}
-
-/// Run the reflector if the observation log exceeds the threshold, returning whether it fired.
-async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) -> bool {
-    let log = match load_observation_log(&layout.observations_json()).await {
-        Ok(log) => log,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load observation log for reflection check");
-            return false;
+            return;
         }
     };
 
-    if reflector.should_reflect(&log) {
-        match reflector.reflect(layout).await {
-            Ok(compressed) => {
-                tracing::info!(
-                    episodes = compressed.observations.len(),
-                    "reflector compressed observation log"
-                );
-                true
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "reflector failed");
-                false
+    match mem
+        .merge_writer
+        .merge(extraction, SourceTag::main(), mem.tz)
+        .await
+    {
+        Ok(outcome) => {
+            tracing::info!(episode_id = %outcome.id, "observer extracted episode");
+            apply_observation_outcome(mem, agent, &outcome).await;
+            if outcome.reflected {
+                tracing::info!(episode_id = %outcome.id, "reflection triggered");
             }
         }
-    } else {
-        false
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to merge observation");
+        }
     }
 }
 
-/// Apply post-observe steps shared by silent and forced observation paths.
-///
-/// Saves the narrative context if present, clears recent messages, rotates
-/// agent messages, and finalizes. Returns `true` if reflection was triggered.
-async fn run_observation_result(
+/// Apply post-merge steps for the main agent: save the recent-context
+/// narrative, clear recent messages, rotate the agent's own history, and
+/// reload its observation/recent-context views. Only the main agent's own
+/// observations replace the recent-context narrative — session merges never
+/// touch it (see the design's "Memory model").
+async fn apply_observation_outcome(
     mem: &MemorySubsystems<'_>,
     agent: &mut Agent,
-    result: &ObserveResult,
-) -> bool {
-    if let Some(narrative) = &result.narrative {
+    outcome: &crate::memory::merge_writer::MergeOutcome,
+) {
+    if let Some(narrative) = &outcome.narrative {
         let ctx = RecentContext {
             narrative: narrative.clone(),
             created_at: crate::time::now_local(mem.observer.timezone()),
-            episode_id: result.id.clone(),
+            episode_id: outcome.id.clone(),
         };
         if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
             tracing::warn!(error = %e, "failed to save recent context");
@@ -285,13 +131,18 @@ async fn run_observation_result(
     }
     agent.rotate_messages_after_observation();
 
-    finalize_observation(mem, agent, result).await
+    if let Err(e) = agent.reload_observations(mem.layout).await {
+        tracing::warn!(error = %e, "failed to reload observations");
+    }
+    if let Err(e) = agent.reload_recent_context(mem.layout).await {
+        tracing::warn!(error = %e, "failed to reload recent context");
+    }
 }
 
 /// Force an observation cycle regardless of token threshold.
 ///
-/// Loads recent messages, runs the observer, clears recent messages, updates
-/// the search index, optionally triggers reflection, and publishes a notice.
+/// Loads recent messages, extracts and merges, clears recent messages, and
+/// publishes a notice.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_forced_observe(
     mem: &MemorySubsystems<'_>,
@@ -316,8 +167,8 @@ pub(super) async fn run_forced_observe(
         return;
     }
 
-    let result = match mem.observer.observe(&recent, mem.layout).await {
-        Ok(r) => r,
+    let extraction = match mem.observer.extract(&recent, mem.layout).await {
+        Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed");
             publish_error(publisher, format!("observe failed: {e}")).await;
@@ -325,89 +176,32 @@ pub(super) async fn run_forced_observe(
         }
     };
 
-    let reflected = run_observation_result(mem, agent, &result).await;
+    let outcome = match mem
+        .merge_writer
+        .merge(extraction, SourceTag::main(), mem.tz)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "forced observe failed to merge");
+            publish_error(publisher, format!("observe failed: {e}")).await;
+            return;
+        }
+    };
 
-    let suffix = if reflected {
+    apply_observation_outcome(mem, agent, &outcome).await;
+
+    let suffix = if outcome.reflected {
         "; reflection triggered"
     } else {
         ""
     };
     let notice = format!(
         "[memory] observed: {} ({} observations){suffix}",
-        result.id,
-        result.observations.len()
+        outcome.id,
+        outcome.observations.len()
     );
     publish_notice(publisher, notice).await;
-}
-
-/// Record a just-indexed episode's `.obs.json` and `.idx.jsonl` in the manifest.
-///
-/// Each file whose documents were indexed gets an entry with its mtime and doc
-/// IDs, so the next startup sync sees it as unchanged instead of indexing it a
-/// second time, and can delete exactly those documents if the file later changes
-/// or disappears. A file whose indexing failed (`None`) is left out so startup
-/// sync indexes it. `embedded` is false when there is no vector store or
-/// embedding failed; startup backfill then embeds the file.
-async fn record_episode_in_manifest(
-    layout: &WorkspaceLayout,
-    result: &ObserveResult,
-    obs_ids: Option<Vec<String>>,
-    chunk_ids: Option<Vec<String>>,
-    embedded: bool,
-) {
-    let manifest_path = layout.index_manifest_json();
-    let mut manifest = match IndexManifest::load(&manifest_path).await {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!(error = %e, episode_id = %result.id, "failed to load index manifest to record episode; startup sync will reindex it");
-            return;
-        }
-    };
-
-    let Some(date_dir) = episode_date_dir(&result.date) else {
-        tracing::warn!(date = %result.date, "invalid date format in episode result");
-        return;
-    };
-
-    let files = [
-        (
-            format!("episodes/{date_dir}/{}.obs.json", result.id),
-            obs_ids,
-        ),
-        (
-            format!("episodes/{date_dir}/{}.idx.jsonl", result.id),
-            chunk_ids,
-        ),
-    ];
-
-    let memory_dir = layout.memory_dir();
-
-    for (rel_path, doc_ids) in files {
-        let Some(doc_ids) = doc_ids else {
-            continue;
-        };
-        let abs_path = memory_dir.join(&rel_path);
-        let modified = match std::fs::metadata(&abs_path).and_then(|m| m.modified()) {
-            Ok(modified) => modified,
-            Err(e) => {
-                tracing::warn!(error = %e, path = %abs_path.display(), "failed to read mtime of indexed episode file; startup sync will reindex it");
-                continue;
-            }
-        };
-        let dt: chrono::DateTime<chrono::Utc> = modified.into();
-        manifest.files.insert(
-            rel_path,
-            ManifestFileEntry {
-                mtime: dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
-                doc_ids,
-                embedded,
-            },
-        );
-    }
-
-    if let Err(e) = manifest.save(&manifest_path).await {
-        tracing::warn!(error = %e, episode_id = %result.id, "failed to save index manifest after recording episode");
-    }
 }
 
 /// Force a reflection cycle regardless of observation log size.
@@ -415,12 +209,12 @@ async fn record_episode_in_manifest(
 /// Runs the reflector, reloads observations into the agent, and publishes a notice.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_forced_reflect(
-    reflector: &Reflector,
+    merge_writer: &MemoryMergeWriter,
     layout: &WorkspaceLayout,
     agent: &mut Agent,
     publisher: &Publisher,
 ) {
-    match reflector.reflect(layout).await {
+    match merge_writer.force_reflect().await {
         Ok(compressed) => {
             if let Err(e) = agent.reload_observations(layout).await {
                 tracing::warn!(error = %e, "failed to reload observations after forced reflect");

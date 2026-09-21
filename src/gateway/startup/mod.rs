@@ -15,11 +15,11 @@ use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
 use crate::config::Config;
-use crate::inference::{EmbeddingProvider, SharedHttpClient};
+use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
-use crate::memory::reflector::Reflector;
-use crate::memory::search::{HybridSearcher, MemoryIndex};
+use crate::memory::search::HybridSearcher;
 use crate::notify::channels::InboxChannel;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
 use crate::tools::SharedToolsPath;
@@ -38,16 +38,13 @@ pub(crate) struct GatewayComponents {
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
     pub observer: Observer,
-    pub reflector: Reflector,
+    pub merge_writer: Arc<MemoryMergeWriter>,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
-    pub search_index: Arc<MemoryIndex>,
-    pub vector_store: Option<Arc<crate::memory::vector_store::VectorStore>>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
     pub tools_path: SharedToolsPath,
     pub skill_state: SharedSkillState,
-    pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub pulse_enabled: bool,
     pub endpoint_registry: EndpointRegistry,
@@ -105,6 +102,19 @@ pub(super) async fn init_identity_and_http(
     Ok((identity, http))
 }
 
+/// Build a fresh session observer from `[observer]` config, for
+/// `SpawnContext` at startup and on every config reload.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the observer provider cannot be built.
+pub(crate) fn init_session_observer(
+    cfg: &Config,
+    tz: chrono_tz::Tz,
+    http: SharedHttpClient,
+) -> Result<Observer, FatalError> {
+    memory::build_observer(cfg, tz, http)
+}
+
 /// Load the scheduled action store and create the notification handle.
 async fn init_action_store(
     layout: &WorkspaceLayout,
@@ -138,24 +148,118 @@ async fn init_skills(cfg: &Config) -> SharedSkillState {
     SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
 
+/// Build a session's own observer and the shared memory merge writer.
+///
+/// The session observer is independent from the main agent's own
+/// (`providers.observer`) so a session fork never contends with a main
+/// config-reload swap, but is built from the same `[observer]` config so
+/// extraction behaves identically — rebuilt fresh in `SpawnContext` on every
+/// config reload, matching the rest of it. The merge writer is shared with
+/// the main agent so episode numbering and log appends never race.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the session observer's provider cannot be built.
+fn build_session_memory_components(
+    cfg: &Config,
+    tz: chrono_tz::Tz,
+    http: SharedHttpClient,
+    layout: &WorkspaceLayout,
+    reflector: crate::memory::reflector::Reflector,
+    mem: &memory::MemoryComponents,
+    embedding_provider: Option<Arc<dyn crate::inference::EmbeddingProvider>>,
+) -> Result<(Arc<Observer>, Arc<MemoryMergeWriter>), FatalError> {
+    let session_observer = Arc::new(memory::build_observer(cfg, tz, http)?);
+    let merge_writer = Arc::new(MemoryMergeWriter::new(
+        reflector,
+        layout.clone(),
+        Arc::clone(&mem.search_index),
+        mem.vector_store.clone(),
+        embedding_provider,
+    ));
+    Ok((session_observer, merge_writer))
+}
+
+/// Inputs to [`build_startup_spawn_context`], gathered because
+/// `SpawnContext` itself has this many independent dependencies (mirrors
+/// `reload::build_spawn_context`'s equivalent construction from a live
+/// `GatewayRuntime`, which doesn't exist yet at startup).
+struct StartupSpawnContextInputs<'a> {
+    cfg: &'a Config,
+    layout: &'a WorkspaceLayout,
+    tz: chrono_tz::Tz,
+    http_client: SharedHttpClient,
+    session_runtime: &'a Arc<SessionRuntime>,
+    session_registry: &'a Arc<SessionRegistry>,
+    endpoint_registry: &'a EndpointRegistry,
+    publisher: &'a crate::bus::Publisher,
+    action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
+    action_notify: &'a Arc<tokio::sync::Notify>,
+    hybrid_searcher: &'a Arc<HybridSearcher>,
+    skill_state: &'a SharedSkillState,
+    mcp_registry: &'a SharedMcpRegistry,
+    session_observer: &'a Arc<Observer>,
+    merge_writer: &'a Arc<MemoryMergeWriter>,
+}
+
+/// Build the `SpawnContext` every session forks from, at startup.
+fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<SpawnContext> {
+    Arc::new(SpawnContext {
+        background_config: inputs.cfg.background.clone(),
+        main_provider_specs: inputs.cfg.main.clone(),
+        http_client: inputs.http_client,
+        max_tokens: inputs.cfg.max_tokens,
+        retry_config: inputs.cfg.retry.clone(),
+        options: crate::inference::CompletionOptions {
+            max_tokens: Some(inputs.cfg.max_tokens),
+            temperature: inputs.cfg.temperature,
+            thinking: inputs.cfg.thinking.clone(),
+            ..crate::inference::CompletionOptions::default()
+        },
+        layout: inputs.layout.clone(),
+        tz: inputs.tz,
+        role_overrides: inputs.cfg.role_overrides.clone(),
+        session_runtime: Arc::clone(inputs.session_runtime),
+        session_registry: Arc::clone(inputs.session_registry),
+        endpoint_registry: inputs.endpoint_registry.clone(),
+        publisher: inputs.publisher.clone(),
+        action_store: Arc::clone(inputs.action_store),
+        action_notify: Arc::clone(inputs.action_notify),
+        hybrid_searcher: Arc::clone(inputs.hybrid_searcher),
+        skill_state: Arc::clone(inputs.skill_state),
+        mcp_registry: Arc::clone(inputs.mcp_registry),
+        observer: Arc::clone(inputs.session_observer),
+        merge_writer: Arc::clone(inputs.merge_writer),
+    })
+}
+
 /// Create the session registry, store, and runtime.
 ///
-/// At startup, any run left in the store from a prior process exit is marked
-/// completed before normal operation begins — memory merging for those runs
-/// arrives in Phase 2.
+/// At startup, any run left in the store from a prior process exit goes
+/// through the full completion pipeline (skip check, final observation,
+/// merge) from its persisted transcript before normal operation begins.
 async fn init_session_runtime(
     cfg: &Config,
     layout: &WorkspaceLayout,
     publisher: &crate::bus::Publisher,
+    session_observer: &Observer,
+    merge_writer: &MemoryMergeWriter,
+    episode_skip_token_floor: usize,
 ) -> (Arc<SessionRegistry>, Arc<SessionRuntime>) {
     let registry = Arc::new(SessionRegistry::new());
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
 
-    let recovered = store.mark_incomplete_as_completed().await;
+    let recovery_env = crate::background::session_memory::SessionMemoryEnv {
+        observer: session_observer,
+        merge_writer,
+        layout,
+        episode_skip_token_floor,
+        tz: cfg.timezone,
+    };
+    let recovered = store.recover_incomplete_runs(&recovery_env).await;
     if recovered > 0 {
         tracing::warn!(
             recovered,
-            "marked session runs left incomplete by a prior process exit as completed"
+            "recovered session runs left incomplete by a prior process exit"
         );
     }
 
@@ -272,6 +376,31 @@ fn init_channels_and_registry(
     (channel_configs, endpoint_registry)
 }
 
+/// The shared PATH, MCP registry, and endpoint/channel setup a fresh
+/// gateway (or a config reload) needs before it can build tools.
+struct NetworkingComponents {
+    tools_path: SharedToolsPath,
+    mcp_registry: SharedMcpRegistry,
+    channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    endpoint_registry: EndpointRegistry,
+}
+
+/// Build the shared tools `PATH`, connect workspace MCP servers, and load
+/// the channel/endpoint registry.
+async fn init_networking(cfg: &Config, layout: &WorkspaceLayout) -> NetworkingComponents {
+    let tools_path: SharedToolsPath =
+        Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
+    let mcp_registry = init_mcp_servers(layout, Arc::clone(&tools_path)).await;
+    connect_web_search_mcp(cfg, &mcp_registry).await;
+    let (channel_configs, endpoint_registry) = init_channels_and_registry(layout, cfg);
+    NetworkingComponents {
+        tools_path,
+        mcp_registry,
+        channel_configs,
+        endpoint_registry,
+    }
+}
+
 /// Spawn notify subscribers for each configured channel and the inbox.
 ///
 /// Each channel subscribes to its `TopicId::Notification(name)` topic on the bus.
@@ -363,6 +492,7 @@ pub(crate) async fn initialize(
     publisher: &crate::bus::Publisher,
 ) -> Result<GatewayComponents, FatalError> {
     let (layout, tz) = init_workspace(cfg).await?;
+
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone())?;
     let mem = memory::init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
@@ -371,40 +501,42 @@ pub(crate) async fn initialize(
     let (action_store, action_notify) = init_action_store(&layout).await;
     let skill_state = init_skills(cfg).await;
 
-    let (session_registry, session_runtime) = init_session_runtime(cfg, &layout, publisher).await;
-
-    // Shared, reloadable effective PATH for spawned children (exec + MCP stdio).
-    let tools_path: SharedToolsPath =
-        Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
-
-    let mcp_registry = init_mcp_servers(&layout, Arc::clone(&tools_path)).await;
-    connect_web_search_mcp(cfg, &mcp_registry).await;
-    let (channel_configs, endpoint_registry) = init_channels_and_registry(&layout, cfg);
-
-    let spawn_context = Arc::new(SpawnContext {
-        background_config: cfg.background.clone(),
-        main_provider_specs: cfg.main.clone(),
-        http_client: http.clone(),
-        max_tokens: cfg.max_tokens,
-        retry_config: cfg.retry.clone(),
-        options: crate::inference::CompletionOptions {
-            max_tokens: Some(cfg.max_tokens),
-            temperature: cfg.temperature,
-            thinking: cfg.thinking.clone(),
-            ..crate::inference::CompletionOptions::default()
-        },
-        layout: layout.clone(),
+    let (session_observer, merge_writer) = build_session_memory_components(
+        cfg,
         tz,
-        role_overrides: cfg.role_overrides.clone(),
-        session_runtime: Arc::clone(&session_runtime),
-        session_registry: Arc::clone(&session_registry),
-        endpoint_registry: endpoint_registry.clone(),
-        publisher: publisher.clone(),
-        action_store: Arc::clone(&action_store),
-        action_notify: Arc::clone(&action_notify),
-        hybrid_searcher: Arc::clone(&mem.hybrid_searcher),
-        skill_state: Arc::clone(&skill_state),
-        mcp_registry: Arc::clone(&mcp_registry),
+        http.clone(),
+        &layout,
+        providers.reflector,
+        &mem,
+        providers.embedding_provider.clone(),
+    )?;
+    let (session_registry, session_runtime) = init_session_runtime(
+        cfg,
+        &layout,
+        publisher,
+        &session_observer,
+        &merge_writer,
+        cfg.background.episode_skip_token_floor,
+    )
+    .await;
+    let net = init_networking(cfg, &layout).await;
+
+    let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
+        cfg,
+        layout: &layout,
+        tz,
+        http_client: http.clone(),
+        session_runtime: &session_runtime,
+        session_registry: &session_registry,
+        endpoint_registry: &net.endpoint_registry,
+        publisher,
+        action_store: &action_store,
+        action_notify: &action_notify,
+        hybrid_searcher: &mem.hybrid_searcher,
+        skill_state: &skill_state,
+        mcp_registry: &net.mcp_registry,
+        session_observer: &session_observer,
+        merge_writer: &merge_writer,
     });
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
@@ -413,9 +545,9 @@ pub(crate) async fn initialize(
         action_store: &action_store,
         action_notify: &action_notify,
         skill_state: &skill_state,
-        tools_path: &tools_path,
+        tools_path: &net.tools_path,
         session_registry: &session_registry,
-        endpoint_registry: &endpoint_registry,
+        endpoint_registry: &net.endpoint_registry,
         publisher,
         tracing_service: &tracing_service,
         tracing_client_context: &tracing_client_context,
@@ -426,7 +558,7 @@ pub(crate) async fn initialize(
     // Reserve the built-in tool namespace so any MCP tool (workspace or web
     // search) that reuses a built-in name is shadowed visibly instead of
     // silently. See src/mcp/CLAUDE.md.
-    mcp_registry
+    net.mcp_registry
         .write()
         .await
         .set_reserved_tool_names(tools.tool_names());
@@ -438,7 +570,7 @@ pub(crate) async fn initialize(
             tools,
             identity,
         },
-        &mcp_registry,
+        &net.mcp_registry,
         tz,
         &layout,
     )
@@ -449,20 +581,17 @@ pub(crate) async fn initialize(
         tz,
         agent,
         observer: providers.observer,
-        reflector: providers.reflector,
+        merge_writer,
         subconscious,
-        search_index: mem.search_index,
-        vector_store: mem.vector_store,
         action_store,
         action_notify,
-        mcp_registry,
-        tools_path,
+        mcp_registry: net.mcp_registry,
+        tools_path: net.tools_path,
         skill_state,
-        embedding_provider: providers.embedding_provider,
         hybrid_searcher: mem.hybrid_searcher,
         pulse_enabled: cfg.pulse_enabled,
-        endpoint_registry,
-        channel_configs,
+        endpoint_registry: net.endpoint_registry,
+        channel_configs: net.channel_configs,
         http_client: http.clone(),
         session_runtime,
         session_registry,
