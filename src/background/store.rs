@@ -110,22 +110,27 @@ impl SessionStore {
     /// Finalize a run's record: set its terminal state, completion time, and
     /// full transcript.
     ///
-    /// Best-effort, like [`begin_run`](Self::begin_run).
+    /// Returns the path the record was written to, or `None` if the write
+    /// failed — callers must not report a transcript to exist when it
+    /// doesn't; the failure itself is already logged with structured fields.
     pub async fn complete_run(
         &self,
         info: &SessionInfo,
         state: &str,
         transcript: Vec<Message>,
-    ) -> PathBuf {
+    ) -> Option<PathBuf> {
         let path = self.run_path(&info.run_id, info.started_at);
         let mut record = RunRecord::starting(info);
         record.state = state.to_string();
         record.completed_at = Some(Utc::now());
         record.transcript = transcript;
-        if let Err(e) = write_record(&path, &record).await {
-            tracing::warn!(run_id = %info.run_id, path = %path.display(), error = %e, "failed to write completed session run record");
+        match write_record(&path, &record).await {
+            Ok(()) => Some(path),
+            Err(e) => {
+                tracing::warn!(run_id = %info.run_id, path = %path.display(), error = %e, "failed to write completed session run record");
+                None
+            }
         }
-        path
     }
 
     /// At startup, mark every run left incomplete by a prior process exit as
@@ -260,7 +265,10 @@ mod tests {
         store.begin_run(&info).await;
 
         let transcript = vec![Message::user("hello"), Message::assistant("hi", None)];
-        let path = store.complete_run(&info, "completed", transcript).await;
+        let path = store
+            .complete_run(&info, "completed", transcript)
+            .await
+            .expect("write should succeed");
 
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         let record: RunRecord = serde_json::from_str(&contents).unwrap();
@@ -326,5 +334,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().join("does-not-exist"));
         assert_eq!(store.mark_incomplete_as_completed().await, 0);
+    }
+
+    #[tokio::test]
+    async fn complete_run_returns_none_when_write_fails() {
+        // A regular file sitting where the sessions directory should be
+        // makes `create_dir_all` fail for every run path under it.
+        let dir = tempfile::tempdir().unwrap();
+        let blocked_path = dir.path().join("blocked");
+        tokio::fs::write(&blocked_path, b"not a directory")
+            .await
+            .unwrap();
+        let store = SessionStore::new(blocked_path);
+        let info = sample_info();
+
+        let result = store.complete_run(&info, "completed", vec![]).await;
+        assert!(
+            result.is_none(),
+            "a failed write must not report a transcript path"
+        );
     }
 }

@@ -152,8 +152,9 @@ fn format_agent_result_message(event: &AgentResultEvent) -> String {
         parts.push(format!("Output:\n{}", event.summary));
     }
 
-    if let Some(path) = &event.transcript_path {
-        parts.push(format!("Transcript: {}", path.display()));
+    match &event.transcript_path {
+        Some(path) => parts.push(format!("Transcript: {}", path.display())),
+        None => parts.push("Transcript: unavailable (failed to save)".to_string()),
     }
 
     parts.join("\n")

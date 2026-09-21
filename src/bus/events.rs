@@ -242,9 +242,12 @@ impl AgentResultEvent {
             out.push_str(&self.summary);
         }
 
-        if let Some(ref path) = self.transcript_path {
-            out.push_str("\nTranscript: ");
-            out.push_str(&path.display().to_string());
+        match &self.transcript_path {
+            Some(path) => {
+                out.push_str("\nTranscript: ");
+                out.push_str(&path.display().to_string());
+            }
+            None => out.push_str("\nTranscript: unavailable (failed to save)"),
         }
 
         out
@@ -404,7 +407,7 @@ mod tests {
         let event = make_agent_result("", None);
         assert_eq!(
             event.format_for_agent(),
-            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed"
+            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nTranscript: unavailable (failed to save)"
         );
     }
 
@@ -413,7 +416,7 @@ mod tests {
         let event = make_agent_result("some output", None);
         assert_eq!(
             event.format_for_agent(),
-            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nOutput:\nsome output"
+            "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: unavailable (failed to save)"
         );
     }
 
