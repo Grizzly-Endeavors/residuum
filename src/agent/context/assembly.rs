@@ -69,7 +69,13 @@ pub(in crate::agent) fn assemble_system_prompt(
     let mut messages = Vec::with_capacity(2 + conversation.len());
 
     messages.push(Message::system(system_content));
-    messages.extend(conversation.iter().cloned());
+    messages.extend(conversation.iter().map(|m| {
+        let mut rendered = m.clone();
+        if m.sender.is_some() {
+            rendered.content = m.attributed_content().into_owned();
+        }
+        rendered
+    }));
 
     if let Some(ctx) = status_line {
         let tag = build_status_line(ctx);
@@ -166,6 +172,41 @@ mod tests {
         assert_eq!(
             messages[1].content, "hello",
             "user message content should match"
+        );
+    }
+
+    #[test]
+    fn assemble_attributes_every_user_message_with_a_sender() {
+        let identity = IdentityFiles::default();
+        let mut recent = RecentMessages::new();
+        let sender = |name: &str| crate::inference::MessageSender {
+            name: name.to_string(),
+            id: format!("id-{name}"),
+            interface: "teams".to_string(),
+            location: Some("#eng".to_string()),
+        };
+        recent.push(Message::user("first").with_sender(Some(sender("Jane"))));
+        recent.push(Message::assistant("ok", None));
+        recent.push(Message::user("second").with_sender(Some(sender("Sam"))));
+        recent.push(Message::user("from the web ui"));
+
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &PromptContext::default(),
+            None,
+        );
+        let contents: Vec<&str> = messages[1..].iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            contents,
+            [
+                "[From: Jane via teams (#eng)]\nfirst",
+                "ok",
+                "[From: Sam via teams (#eng)]\nsecond",
+                "from the web ui",
+            ],
+            "earlier senders stay attributed, not just the latest message"
         );
     }
 

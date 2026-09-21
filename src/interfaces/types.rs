@@ -2,17 +2,18 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::inference::ImageData;
+use crate::inference::{ImageData, MessageSender};
 
 /// Where a message originated from.
 #[derive(Debug, Clone)]
 pub struct MessageOrigin {
-    /// Endpoint name (e.g. `"websocket"`, `"discord"`, `"webhook"`).
+    /// Endpoint name (e.g. `"ws"`, `"discord"`, `"background"`).
     pub endpoint: String,
-    /// Human-readable sender name.
-    pub sender_name: String,
-    /// Unique sender identifier (user ID, IP, etc.).
-    pub sender_id: String,
+    /// The person who sent it, for interfaces that identify one.
+    ///
+    /// `None` for the local web UI (always the owner) and for internal
+    /// origins such as background tasks.
+    pub sender: Option<MessageSender>,
 }
 
 /// A normalized inbound message from any interface.

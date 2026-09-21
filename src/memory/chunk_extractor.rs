@@ -30,7 +30,7 @@ pub(crate) fn extract_chunks(
 ) -> Vec<IndexChunk> {
     let mut chunks = Vec::new();
     // (line_number, content)
-    let mut pending_user: Option<(usize, &str)> = None;
+    let mut pending_user: Option<(usize, std::borrow::Cow<'_, str>)> = None;
 
     for (i, rm) in recent_messages.iter().enumerate() {
         let msg = &rm.message;
@@ -38,7 +38,7 @@ pub(crate) fn extract_chunks(
         match msg.role {
             Role::User => {
                 // New user message — set (or replace) pending
-                pending_user = Some((line_num, &msg.content));
+                pending_user = Some((line_num, msg.attributed_content()));
             }
             Role::Assistant => {
                 let text = msg.content.trim();

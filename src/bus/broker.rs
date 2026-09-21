@@ -211,8 +211,7 @@ mod tests {
             content: content.into(),
             origin: MessageOrigin {
                 endpoint: "test".into(),
-                sender_name: "tester".into(),
-                sender_id: "t-1".into(),
+                sender: None,
             },
             timestamp: test_timestamp(),
             images: vec![],

@@ -146,6 +146,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             images: Vec::new(),
+            sender: None,
         });
     }
 
@@ -194,6 +195,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             images: Vec::new(),
+            sender: None,
         });
     }
 
@@ -204,6 +206,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
             images: Vec::new(),
+            sender: None,
         });
     }
 
@@ -218,6 +221,7 @@ mod tests {
             }]),
             tool_call_id: None,
             images: Vec::new(),
+            sender: None,
         });
     }
 

@@ -11,7 +11,7 @@ use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
-use crate::inference::ImageData;
+use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
@@ -252,8 +252,12 @@ async fn dispatch_message(
 
     let origin = MessageOrigin {
         endpoint: "telegram".to_string(),
-        sender_name: sender_name.clone(),
-        sender_id: from.id.to_string(),
+        sender: Some(MessageSender {
+            name: sender_name.clone(),
+            id: from.id.to_string(),
+            interface: "telegram".to_string(),
+            location: Some("direct message".to_string()),
+        }),
     };
 
     let msg_event = crate::bus::MessageEvent {

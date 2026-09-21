@@ -251,7 +251,7 @@
     {/if}
     {#each items as item (item.id)}
       {#if item.kind === "user"}
-        <MessageUser content={item.content} images={item.images} />
+        <MessageUser content={item.content} images={item.images} sender={item.sender} />
       {:else if item.kind === "assistant"}
         <MessageAssistant content={item.content} />
       {:else if item.kind === "divider"}

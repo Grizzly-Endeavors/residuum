@@ -33,6 +33,36 @@ pub struct Message {
     /// Inline images attached to the message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageData>,
+    /// Who sent a user message, when it came from an identifiable person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<MessageSender>,
+}
+
+/// The person behind a user message and where they sent it from.
+///
+/// Stored with the message so the agent can tell participants apart in
+/// shared spaces (team channels) long after the message arrived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSender {
+    /// Display name as the interface reports it.
+    pub name: String,
+    /// Stable identifier on that interface (user ID, AAD object ID).
+    pub id: String,
+    /// Interface the message arrived on (e.g. `"discord"`, `"teams"`).
+    pub interface: String,
+    /// Where on the interface it was sent (e.g. `"direct message"`, `"#general"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+}
+
+impl std::fmt::Display for MessageSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} via {}", self.name, self.interface)?;
+        if let Some(location) = &self.location {
+            write!(f, " ({location})")?;
+        }
+        Ok(())
+    }
 }
 
 impl Message {
@@ -45,6 +75,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             images: Vec::new(),
+            sender: None,
         }
     }
 
@@ -57,6 +88,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             images,
+            sender: None,
         }
     }
 
@@ -69,6 +101,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             images: Vec::new(),
+            sender: None,
         }
     }
 
@@ -81,6 +114,7 @@ impl Message {
             tool_calls,
             tool_call_id: None,
             images: Vec::new(),
+            sender: None,
         }
     }
 
@@ -93,6 +127,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             images: Vec::new(),
+            sender: None,
         }
     }
 
@@ -109,6 +144,26 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             images,
+            sender: None,
+        }
+    }
+
+    /// Attach the person who sent this message.
+    #[must_use]
+    pub fn with_sender(mut self, sender: Option<MessageSender>) -> Self {
+        self.sender = sender;
+        self
+    }
+
+    /// Message text as the agent reads it in history and transcripts.
+    ///
+    /// A message with a known sender is prefixed with a `[From: …]` line so
+    /// the agent can tell who said what in a shared conversation.
+    #[must_use]
+    pub fn attributed_content(&self) -> std::borrow::Cow<'_, str> {
+        match &self.sender {
+            Some(sender) => format!("[From: {sender}]\n{}", self.content).into(),
+            None => std::borrow::Cow::Borrowed(&self.content),
         }
     }
 }
@@ -303,6 +358,54 @@ pub trait InferenceProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn jane_in_channel() -> MessageSender {
+        MessageSender {
+            name: "Jane Doe".to_string(),
+            id: "aad-123".to_string(),
+            interface: "teams".to_string(),
+            location: Some("#eng-team".to_string()),
+        }
+    }
+
+    #[test]
+    fn attributed_content_prefixes_known_sender() {
+        let msg = Message::user("can you check the build?").with_sender(Some(jane_in_channel()));
+        assert_eq!(
+            msg.attributed_content(),
+            "[From: Jane Doe via teams (#eng-team)]\ncan you check the build?"
+        );
+    }
+
+    #[test]
+    fn attributed_content_omits_missing_location() {
+        let sender = MessageSender {
+            location: None,
+            ..jane_in_channel()
+        };
+        let msg = Message::user("hi").with_sender(Some(sender));
+        assert_eq!(msg.attributed_content(), "[From: Jane Doe via teams]\nhi");
+    }
+
+    #[test]
+    fn attributed_content_is_plain_without_sender() {
+        let msg = Message::user("hi");
+        assert_eq!(msg.attributed_content(), "hi");
+    }
+
+    #[test]
+    fn sender_round_trips_and_is_optional_on_disk() {
+        let msg = Message::user("hi").with_sender(Some(jane_in_channel()));
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sender, Some(jane_in_channel()));
+
+        // History written before senders existed has no `sender` key.
+        let legacy: Message = serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
+        assert_eq!(legacy.sender, None);
+        let plain = serde_json::to_string(&Message::user("hi")).unwrap();
+        assert!(!plain.contains("sender"), "absent sender is not serialized");
+    }
 
     #[test]
     fn inference_response_is_complete() {

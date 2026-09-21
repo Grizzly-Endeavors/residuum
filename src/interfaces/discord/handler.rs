@@ -14,7 +14,7 @@ use serenity::prelude::*;
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
-use crate::inference::ImageData;
+use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
@@ -101,8 +101,12 @@ impl EventHandler for DiscordHandler {
 
         let origin = MessageOrigin {
             endpoint: "discord".to_string(),
-            sender_name: msg.author.name.clone(),
-            sender_id: msg.author.id.to_string(),
+            sender: Some(MessageSender {
+                name: msg.author.name.clone(),
+                id: msg.author.id.to_string(),
+                interface: "discord".to_string(),
+                location: Some("direct message".to_string()),
+            }),
         };
 
         let msg_event = crate::bus::MessageEvent {

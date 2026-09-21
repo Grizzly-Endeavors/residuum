@@ -74,6 +74,15 @@
   white-space: pre-wrap;
 }
 
+.msg-user-sender {
+  font-family: var(--font-mono);
+  font-weight: 300;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
 .msg-assistant {
   background: var(--card-assistant);
   border: 1px solid rgba(59, 139, 219, 0.18);
