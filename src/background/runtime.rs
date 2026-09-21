@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use futures_util::FutureExt;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -169,9 +170,97 @@ impl SessionRuntime {
 
         tokio::spawn(async move {
             env.store.begin_run(&info).await;
-            run_session(info, config, resources, stop_token, idle_timeout, env).await;
+
+            // Cloned up front so cleanup still has something to work with if
+            // the task panics — the originals are moved into `run_session`
+            // and gone with it once the panic unwinds past this point.
+            let panic_info = info.clone();
+            let registry = Arc::clone(&env.registry);
+            let store = Arc::clone(&env.store);
+            let publisher = env.publisher.clone();
+            let tz = env.tz;
+
+            let outcome = std::panic::AssertUnwindSafe(run_session(
+                info,
+                config,
+                resources,
+                stop_token,
+                idle_timeout,
+                env,
+            ))
+            .catch_unwind()
+            .await;
+
+            if let Err(panic) = outcome {
+                let msg = crate::util::panic_message(&*panic);
+                tracing::error!(
+                    address = %panic_info.address,
+                    run_id = %panic_info.run_id,
+                    panic = msg,
+                    "session task panicked"
+                );
+                recover_from_panic(&panic_info, &registry, &store, &publisher, tz, msg).await;
+            }
         });
     }
+
+    /// Stop every live session and wait for their runs to finish completing
+    /// and being recorded, so a graceful shutdown doesn't leave sessions for
+    /// startup recovery to pick up.
+    ///
+    /// Waits up to `timeout` by polling the registry; logs a warning and
+    /// returns if sessions are still live once the deadline passes (their
+    /// runs remain in the store as `running` and get swept by startup
+    /// recovery on the next boot).
+    pub(crate) async fn shutdown(&self, timeout: Duration) {
+        let signalled = self.registry.stop_all();
+        if signalled == 0 {
+            return;
+        }
+        tracing::info!(sessions = signalled, "stopping live sessions for shutdown");
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline {
+            if self.registry.list_live().is_empty() {
+                tracing::info!("all sessions completed for shutdown");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tracing::warn!(
+            remaining = self.registry.list_live().len(),
+            "shutdown timed out waiting for live sessions to complete"
+        );
+    }
+}
+
+/// Finalize a session's record and notify listeners after its task panicked,
+/// mirroring the cleanup [`run_session`] performs on any other terminal path
+/// — otherwise a panic would leave the session `running` forever in the
+/// store and permanently registered as live.
+async fn recover_from_panic(
+    info: &SessionInfo,
+    registry: &SessionRegistry,
+    store: &SessionStore,
+    publisher: &Publisher,
+    tz: chrono_tz::Tz,
+    panic_msg: &str,
+) {
+    registry.set_state(&info.address, SessionState::Completing);
+    let transcript_path = store
+        .complete_run(info, SessionState::Completed.as_str(), Vec::new())
+        .await;
+
+    let status = AgentResultStatus::Failed {
+        error: format!("session task panicked: {panic_msg}"),
+    };
+    let event = build_result_event(info, status, String::new(), transcript_path, tz);
+    if let Err(e) = publisher.publish(topics::Background, event).await {
+        tracing::warn!(error = %e, "failed to publish panicked session result to bus");
+    }
+
+    registry.remove(&info.address);
+    tracing::info!("session removed from registry after panic recovery");
 }
 
 /// Drive one session run from permit acquisition through completion.
@@ -210,17 +299,24 @@ async fn run_session(
         }
     };
 
-    env.registry.set_state(&info.address, SessionState::Idle);
-    tracing::debug!(
-        idle_secs = idle_timeout.as_secs(),
-        "session idle, awaiting further input or timeout"
-    );
-    tokio::select! {
-        () = stop_token.cancelled() => {
-            tracing::info!("session stopped while idle");
-        }
-        () = tokio::time::sleep(idle_timeout) => {
-            tracing::debug!("session idle timeout elapsed");
+    // A cancelled run — whether stopped before its turn started or mid-turn
+    // — skips lingering idle and goes straight to completing, per the
+    // design: stopping a session moves it straight to `completing`.
+    if matches!(status, AgentResultStatus::Cancelled) {
+        tracing::info!("session stopped, skipping idle and completing directly");
+    } else {
+        env.registry.set_state(&info.address, SessionState::Idle);
+        tracing::debug!(
+            idle_secs = idle_timeout.as_secs(),
+            "session idle, awaiting further input or timeout"
+        );
+        tokio::select! {
+            () = stop_token.cancelled() => {
+                tracing::info!("session stopped while idle");
+            }
+            () = tokio::time::sleep(idle_timeout) => {
+                tracing::debug!("session idle timeout elapsed");
+            }
         }
     }
 
@@ -232,7 +328,7 @@ async fn run_session(
         .complete_run(&info, SessionState::Completed.as_str(), transcript)
         .await;
 
-    let event = build_result_event(&info, status, summary, Some(transcript_path), env.tz);
+    let event = build_result_event(&info, status, summary, transcript_path, env.tz);
     if let Err(e) = env.publisher.publish(topics::Background, event).await {
         tracing::warn!(error = %e, "failed to publish session result to bus");
     }
@@ -244,6 +340,13 @@ async fn run_session(
 /// Run the session's single turn, translating a missing-resources or
 /// execution error into a `Failed` result rather than panicking or losing
 /// the run.
+///
+/// `execute_subagent` returns `Ok` both when the turn finishes normally and
+/// when it was stopped mid-flight (the stop token races the model call and
+/// ends the turn at its next checkpoint rather than surfacing an error), so
+/// an `Ok` alone cannot distinguish the two. Checking the token after the
+/// fact tells them apart while still keeping whatever partial
+/// summary/transcript the turn produced before it was stopped.
 async fn run_turn(
     run_id: &str,
     config: &SubAgentConfig,
@@ -258,6 +361,10 @@ async fn run_turn(
     .await;
 
     match outcome {
+        Ok(SubAgentOutput { summary, messages }) if stop_token.is_cancelled() => {
+            tracing::info!("session turn stopped mid-flight");
+            (AgentResultStatus::Cancelled, summary, messages)
+        }
         Ok(SubAgentOutput { summary, messages }) => {
             tracing::info!("session turn completed");
             (AgentResultStatus::Completed, summary, messages)
@@ -490,6 +597,168 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
+    }
+
+    struct BlockingProvider;
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for BlockingProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            std::future::pending().await
+        }
+
+        fn model_name(&self) -> &'static str {
+            "blocking"
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_during_running_turn_produces_cancelled_result() {
+        // A provider that never returns keeps the turn stuck mid-flight so
+        // the stop lands while the session is genuinely `running`, not
+        // before the permit was even acquired.
+        let (runtime, mut sub) = test_runtime(3).await;
+        let address = SessionAddress::from("spawned-researcher-0005");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(BlockingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+            }),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("session should reach running while blocked on the model call");
+
+        assert!(runtime.registry.stop(&address));
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .expect("result should be published after the running turn is stopped")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event.status, AgentResultStatus::Cancelled),
+            "a session stopped mid-turn must report cancelled, not completed"
+        );
+    }
+
+    struct PanickingProvider;
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for PanickingProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            panic!("intentional provider panic for test coverage");
+        }
+
+        fn model_name(&self) -> &'static str {
+            "panicking"
+        }
+    }
+
+    #[tokio::test]
+    async fn panicking_turn_still_publishes_failed_result_and_frees_registry() {
+        let (runtime, mut sub) = test_runtime(3).await;
+        let address = SessionAddress::from("spawned-researcher-0006");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(PanickingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+            }),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .expect("a panicked session must still publish a result")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event.status, AgentResultStatus::Failed { .. }),
+            "a panicked turn should be reported as failed, got {:?}",
+            event.status
+        );
+        assert!(
+            runtime.registry.get(&address).is_none(),
+            "a panicked session must not linger in the registry forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_live_sessions_and_waits_for_completion() {
+        let (runtime, mut sub) = test_runtime(3).await;
+        let address = SessionAddress::from("spawned-researcher-0007");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(BlockingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+            }),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("session should reach running before shutdown stops it");
+
+        runtime.shutdown(Duration::from_secs(2)).await;
+
+        assert!(
+            runtime.registry.get(&address).is_none(),
+            "shutdown should wait for the stopped session to finish completing"
+        );
+        let event = tokio::time::timeout(Duration::from_millis(200), sub.recv())
+            .await
+            .expect("shutdown should have let the session publish its result")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.status, AgentResultStatus::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn shutdown_with_no_live_sessions_returns_immediately() {
+        let (runtime, _sub) = test_runtime(3).await;
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            runtime.shutdown(Duration::from_secs(5)),
+        )
+        .await
+        .expect("shutdown must not block when there is nothing to stop");
     }
 
     #[tokio::test]
