@@ -572,22 +572,22 @@ mod tests {
     #[test]
     fn idle_timeouts_use_scheduled_timeout_for_webhooks() {
         let timeouts = IdleTimeouts {
-            scheduled: Duration::from_secs(120),
-            spawned: Duration::from_secs(600),
+            scheduled: Duration::from_mins(2),
+            spawned: Duration::from_mins(10),
             external: Duration::from_mins(30),
         };
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Webhook("gh".into())),
-            Duration::from_secs(120),
+            Duration::from_mins(2),
             "a webhook call is one-shot, so it uses the scheduled timeout"
         );
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Pulse),
-            Duration::from_secs(120)
+            Duration::from_mins(2)
         );
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Agent),
-            Duration::from_secs(600)
+            Duration::from_mins(10)
         );
     }
 
