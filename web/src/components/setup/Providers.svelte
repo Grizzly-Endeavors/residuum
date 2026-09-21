@@ -12,7 +12,7 @@
 
   const providers: Record<
     ProviderKey,
-    { name: string; desc: string; keyEnv: string; showUrl?: boolean }
+    { name: string; desc: string; keyEnv: string; keyPlaceholder?: string; showUrl?: boolean }
   > = {
     anthropic: {
       name: "Anthropic",
@@ -30,6 +30,12 @@
       desc: "Gemini models via Google AI",
       keyEnv: "GEMINI_API_KEY",
     },
+    fireworks: {
+      name: "Fireworks AI",
+      desc: "Open models (GLM, Kimi, DeepSeek, Qwen) on Fireworks' hosted inference",
+      keyEnv: "FIREWORKS_API_KEY",
+      keyPlaceholder: "fw_...",
+    },
     ollama: {
       name: "Ollama",
       desc: "Local models (no API key needed)",
@@ -37,7 +43,7 @@
     },
   };
 
-  const providerKeys: ProviderKey[] = ["anthropic", "openai", "gemini", "ollama"];
+  const providerKeys: ProviderKey[] = ["anthropic", "openai", "gemini", "fireworks", "ollama"];
 
   function toggleProvider(key: ProviderKey) {
     const idx = wizardState.selectedProviders.indexOf(key);
@@ -91,7 +97,7 @@
     <span class="provider-warning-icon">&#9888;</span>
     <span
       >None of the selected providers offer an embedding API. Memory search works best with
-      embeddings — consider adding OpenAI, Gemini, or Ollama.</span
+      embeddings — consider adding OpenAI, Gemini, Fireworks, or Ollama.</span
     >
   </div>
 {/if}
@@ -112,7 +118,7 @@
               id="prov-{key}-apikey"
               type="password"
               bind:value={cfg.apiKey}
-              placeholder="sk-..."
+              placeholder={p.keyPlaceholder ?? "sk-..."}
             />
           </div>
         {/if}

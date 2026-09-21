@@ -30,6 +30,11 @@ export const FALLBACK_MODELS: Record<string, ModelEntry[]> = {
     { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
   ],
+  fireworks: [
+    { id: "accounts/fireworks/routers/glm-flash-latest", name: "GLM Flash (latest)" },
+    { id: "accounts/fireworks/models/kimi-k3", name: "Kimi K3" },
+    { id: "accounts/fireworks/models/deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+  ],
   ollama: [
     { id: "llama3.1", name: "llama3.1" },
     { id: "mistral", name: "mistral" },
@@ -41,12 +46,14 @@ export const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
   gemini: "gemini-2.5-flash",
+  fireworks: "accounts/fireworks/routers/glm-flash-latest",
   ollama: "llama3.1",
 };
 
 export const DEFAULT_EMBEDDING_MODELS: Record<string, string> = {
   openai: "text-embedding-3-small",
   gemini: "gemini-embedding-001",
+  fireworks: "accounts/fireworks/models/qwen3-embedding-8b",
   ollama: "nomic-embed-text",
 };
 
@@ -58,6 +65,7 @@ export const EMBEDDING_MODEL_LISTS: Record<string, ModelEntry[]> = {
     { id: "text-embedding-ada-002", name: "text-embedding-ada-002" },
   ],
   gemini: [{ id: "gemini-embedding-001", name: "gemini-embedding-001" }],
+  fireworks: [{ id: "accounts/fireworks/models/qwen3-embedding-8b", name: "qwen3-embedding-8b" }],
   ollama: [
     { id: "nomic-embed-text", name: "nomic-embed-text" },
     { id: "mxbai-embed-large", name: "mxbai-embed-large" },
@@ -65,7 +73,7 @@ export const EMBEDDING_MODEL_LISTS: Record<string, ModelEntry[]> = {
   ],
 };
 
-export const EMBEDDING_PROVIDERS = ["openai", "gemini", "ollama"];
+export const EMBEDDING_PROVIDERS = ["openai", "gemini", "fireworks", "ollama"];
 
 const cache = new Map<string, FetchResult>();
 
