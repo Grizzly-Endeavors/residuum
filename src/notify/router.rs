@@ -118,8 +118,7 @@ async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) 
         content,
         origin: crate::interfaces::types::MessageOrigin {
             endpoint: "background".to_string(),
-            sender_name: "background-task".to_string(),
-            sender_id: event.task_id.clone(),
+            sender: None,
         },
         timestamp: event.timestamp,
         images: vec![],

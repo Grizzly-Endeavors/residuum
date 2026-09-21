@@ -167,8 +167,7 @@ fn build_correction_event(
         content,
         origin: crate::interfaces::types::MessageOrigin {
             endpoint: "background".to_string(),
-            sender_name: "subconscious".to_string(),
-            sender_id: correlation_id.to_string(),
+            sender: None,
         },
         timestamp,
         images: vec![],
@@ -247,7 +246,6 @@ mod tests {
             event.origin.endpoint, "background",
             "correction must use the background origin to avoid re-evaluation"
         );
-        assert_eq!(event.origin.sender_name, "subconscious");
         assert_eq!(event.id, "subconscious-corr-123");
         assert!(
             event.content.contains("save the preference"),

@@ -334,11 +334,13 @@ impl Agent {
         };
         self.last_user_message_at = Some(now);
 
+        let sender = origin.and_then(|o| o.sender.clone());
         if images.is_empty() {
-            self.recent_messages.push(Message::user(user_input));
+            self.recent_messages
+                .push(Message::user(user_input).with_sender(sender));
         } else {
             self.recent_messages
-                .push(Message::user_with_images(user_input, images.to_vec()));
+                .push(Message::user_with_images(user_input, images.to_vec()).with_sender(sender));
         }
 
         let memory_ctx =
@@ -1112,8 +1114,7 @@ mod tests {
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
                 endpoint: "test".to_string(),
-                sender_name: "tester".to_string(),
-                sender_id: "t1".to_string(),
+                sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

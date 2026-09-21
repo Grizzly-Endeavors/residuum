@@ -256,7 +256,7 @@ export class FeedStore {
       const content = msg.content;
       switch (msg.role) {
         case "user":
-          out.push({ id: nextFeedId(), kind: "user", content });
+          out.push({ id: nextFeedId(), kind: "user", content, sender: msg.sender });
           break;
         case "assistant": {
           if (content.trim()) {

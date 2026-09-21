@@ -169,8 +169,7 @@ async fn handle_client_message(
 
             let origin = MessageOrigin {
                 endpoint: "ws".to_string(),
-                sender_name: "ws-client".to_string(),
-                sender_id: "ws-client".to_string(),
+                sender: None,
             };
             let msg_event = crate::bus::MessageEvent {
                 id: id.clone(),

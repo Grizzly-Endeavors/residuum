@@ -230,7 +230,7 @@ fn drain_interrupts(
         match interrupt {
             Interrupt::UserMessage(msg) => {
                 tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
-                recent_messages.push(Message::user(msg.content));
+                recent_messages.push(Message::user(msg.content).with_sender(msg.origin.sender));
             }
             Interrupt::BackgroundResult(result) => {
                 tracing::info!(

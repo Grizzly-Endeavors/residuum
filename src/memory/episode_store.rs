@@ -484,7 +484,10 @@ fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) 
                 Role::Assistant => "Assistant",
                 Role::Tool => unreachable!(),
             };
-            parts.push(format!("[line {line_num}] {label}: {}", msg.content));
+            parts.push(format!(
+                "[line {line_num}] {label}: {}",
+                msg.attributed_content()
+            ));
         }
     }
 }

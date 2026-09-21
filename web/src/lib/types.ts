@@ -25,6 +25,14 @@ export interface ToolCallRecord {
   arguments: unknown;
 }
 
+/** Person behind a user message that arrived on a chat interface. */
+export interface MessageSender {
+  name: string;
+  id: string;
+  interface: string;
+  location?: string;
+}
+
 export interface RecentMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -32,6 +40,7 @@ export interface RecentMessage {
   tool_call_id?: string;
   timestamp: string;
   visibility: "user" | "background";
+  sender?: MessageSender;
 }
 
 // ── Chat history segments (paginated lazy-load) ──────────────────────
@@ -244,6 +253,7 @@ export interface UserFeedItem extends FeedItemBase {
   kind: "user";
   content: string;
   images?: ImageAttachment[];
+  sender?: MessageSender;
 }
 
 export interface AssistantFeedItem extends FeedItemBase {

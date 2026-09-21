@@ -77,7 +77,7 @@ pub(super) fn format_recent_message(rm: &RecentMessage) -> String {
     let mut parts = vec![header];
 
     if !rm.message.content.is_empty() {
-        parts.push(rm.message.content.clone());
+        parts.push(rm.message.attributed_content().into_owned());
     }
 
     if let Some(tool_calls) = &rm.message.tool_calls {

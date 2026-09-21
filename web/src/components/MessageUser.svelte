@@ -1,10 +1,21 @@
 <script lang="ts">
-  import type { ImageAttachment } from "../lib/types";
+  import type { ImageAttachment, MessageSender } from "../lib/types";
 
-  let { content, images }: { content: string; images?: ImageAttachment[] } = $props();
+  let {
+    content,
+    images,
+    sender,
+  }: { content: string; images?: ImageAttachment[]; sender?: MessageSender } = $props();
+
+  let senderLabel = $derived(
+    sender ? [sender.name, sender.interface, sender.location].filter(Boolean).join(" · ") : null,
+  );
 </script>
 
 <div class="msg msg-user">
+  {#if senderLabel}
+    <div class="msg-user-sender">{senderLabel}</div>
+  {/if}
   {#if content}
     <div class="msg-content">{content}</div>
   {/if}

@@ -120,3 +120,9 @@ Knowledge and memory appear in the agent's context, after `USER.md`, as:
 3. `RECENT_CONTEXT` — the narrative from the latest observation (`memory/recent_context.json`)
 
 Sub-agents get `USER.md` and `WIKI_INDEX` but not the observation log or recent context.
+
+## Message Senders
+
+A user message that arrives on a chat interface (Discord, Telegram, Teams) records who sent it: display name, stable ID, interface, and where on that interface it was sent (a direct message, a named channel). The sender is stored as its own field alongside the message in `recent_messages.json` and episode transcripts; the message text is never rewritten.
+
+Wherever the conversation is read back — the agent's history on every model call, the observer's extraction transcript, `memory_get` output, and search chunks — a message with a sender is rendered with a leading `[From: Jane Doe via teams (#eng-team)]` line. That keeps attribution intact for every earlier message, not just the latest one, so the agent can tell participants apart in shared spaces. Messages from the web UI and from internal sources (background results, subconscious corrections) carry no sender. The web chat history shows the sender as a small label above the message.
