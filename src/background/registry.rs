@@ -188,6 +188,28 @@ impl SessionRegistry {
         true
     }
 
+    /// Stop every live session (running, idle, or forking) — used at gateway
+    /// shutdown so runs complete and are recorded rather than being left for
+    /// startup recovery on the next boot.
+    ///
+    /// Returns the number of sessions signalled. Sessions already
+    /// `completing`/`completed` are left alone, matching [`stop`](Self::stop).
+    pub fn stop_all(&self) -> usize {
+        let guard = self.lock();
+        let mut signalled = 0;
+        for entry in guard.values() {
+            if matches!(
+                entry.info.state,
+                SessionState::Completing | SessionState::Completed
+            ) {
+                continue;
+            }
+            entry.stop_token.cancel();
+            signalled += 1;
+        }
+        signalled
+    }
+
     /// Remove a session from the registry once it has fully completed.
     pub fn remove(&self, address: &SessionAddress) -> Option<SessionInfo> {
         self.lock().remove(address).map(|entry| entry.info)
@@ -369,6 +391,42 @@ mod tests {
         registry.register(info.clone(), CancellationToken::new());
 
         assert!(!registry.stop(&info.address));
+    }
+
+    #[test]
+    fn stop_all_cancels_every_live_session_but_skips_completing() {
+        let registry = SessionRegistry::new();
+        let running = sample_info("spawned-a-0001");
+        let mut idle = sample_info("spawned-b-0002");
+        idle.state = SessionState::Idle;
+        let mut completing = sample_info("spawned-c-0003");
+        completing.state = SessionState::Completing;
+
+        let running_token = CancellationToken::new();
+        let idle_token = CancellationToken::new();
+        let completing_token = CancellationToken::new();
+        registry.register(running.clone(), running_token.clone());
+        registry.register(idle.clone(), idle_token.clone());
+        registry.register(completing.clone(), completing_token.clone());
+
+        let signalled = registry.stop_all();
+
+        assert_eq!(
+            signalled, 2,
+            "only the running and idle sessions should be signalled"
+        );
+        assert!(running_token.is_cancelled());
+        assert!(idle_token.is_cancelled());
+        assert!(
+            !completing_token.is_cancelled(),
+            "a session already completing should be left alone"
+        );
+    }
+
+    #[test]
+    fn stop_all_on_empty_registry_returns_zero() {
+        let registry = SessionRegistry::new();
+        assert_eq!(registry.stop_all(), 0);
     }
 
     #[test]
