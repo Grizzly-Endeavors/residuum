@@ -112,6 +112,53 @@ where
     })
 }
 
+/// Where a merged observation or episode came from.
+///
+/// Unset (all `None`) for the main agent's own observations. Set when a
+/// session's run was merged into global memory, so the source stays
+/// traceable through search and `memory_get`. All fields are optional on
+/// read so records written before session memory existed still load.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceTag {
+    /// The session's address, when this record came from a session run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_address: Option<String>,
+    /// The run id within that session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// The session's category (`"scheduled"`, `"external"`, or `"spawned"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+}
+
+impl SourceTag {
+    /// No source tag: the main agent's own observation or episode.
+    #[must_use]
+    pub fn main() -> Self {
+        Self::default()
+    }
+
+    /// Tag identifying the session run a merged observation or episode came from.
+    #[must_use]
+    pub fn session(
+        address: impl Into<String>,
+        run_id: impl Into<String>,
+        category: impl Into<String>,
+    ) -> Self {
+        Self {
+            session_address: Some(address.into()),
+            run_id: Some(run_id.into()),
+            category: Some(category.into()),
+        }
+    }
+
+    /// Whether this tag identifies a session run (as opposed to the main agent).
+    #[must_use]
+    pub fn is_session(&self) -> bool {
+        self.session_address.is_some()
+    }
+}
+
 /// A single extracted observation with full metadata.
 ///
 /// Each observation is self-describing: it carries when it was created,
@@ -133,6 +180,9 @@ pub struct Observation {
     pub visibility: Visibility,
     /// The observation content as a single concise sentence.
     pub content: String,
+    /// Session/run/category this observation was merged from, if any.
+    #[serde(flatten)]
+    pub source: SourceTag,
 }
 
 /// Flat list of all observations across sessions.
@@ -286,6 +336,7 @@ mod tests {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "tantivy provides BM25 search without C dependencies".to_string(),
+            source: SourceTag::main(),
         }
     }
 

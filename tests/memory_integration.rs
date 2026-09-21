@@ -19,7 +19,8 @@ mod memory_integration {
     };
     use residuum::memory::episode_store::next_episode_id;
     use residuum::memory::log_store::load_observation_log;
-    use residuum::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
+    use residuum::memory::merge_writer::MemoryMergeWriter;
+    use residuum::memory::observer::{ObserveAction, Observer, ObserverConfig};
     use residuum::memory::recent_context::{
         RecentContext, load_recent_context, save_recent_context,
     };
@@ -28,8 +29,25 @@ mod memory_integration {
     };
     use residuum::memory::reflector::{Reflector, ReflectorConfig};
     use residuum::memory::search::{MemoryIndex, SearchFilters};
-    use residuum::memory::types::{DocSource, IndexManifest, Visibility};
+    use residuum::memory::types::{DocSource, IndexManifest, SourceTag, Visibility};
     use residuum::workspace::layout::WorkspaceLayout;
+
+    /// Build a merge writer over a real search index but a disabled
+    /// reflector, so tests that only care about the observe→merge path
+    /// aren't also exercised by reflection (covered separately below).
+    ///
+    /// # Errors
+    /// Returns an error if the search index cannot be created.
+    fn make_merge_writer(layout: &WorkspaceLayout) -> anyhow::Result<MemoryMergeWriter> {
+        let search_index = Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir())?);
+        Ok(MemoryMergeWriter::new(
+            Reflector::disabled(chrono_tz::UTC),
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        ))
+    }
 
     /// Mock provider that returns configurable JSON responses.
     struct MockProvider {
@@ -157,14 +175,19 @@ mod memory_integration {
             "should trigger observation"
         );
 
-        let ObserveResult {
-            id: episode_id,
-            transcript_path,
-            observations,
-            chunks,
-            date,
-            ..
-        } = observer.observe(&recent, &layout).await.unwrap();
+        let mw = make_merge_writer(&layout).unwrap();
+        let extraction = observer.extract(&recent, &layout).await.unwrap();
+        let outcome = mw
+            .merge(extraction, SourceTag::main(), chrono_tz::UTC)
+            .await
+            .unwrap();
+        let (episode_id, transcript_path, observations, chunks, date) = (
+            outcome.id,
+            outcome.transcript_path,
+            outcome.observations,
+            outcome.chunks,
+            outcome.date,
+        );
         clear_recent_messages(&recent_path).await.unwrap();
 
         assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
@@ -245,7 +268,11 @@ mod memory_integration {
         .unwrap();
 
         let recent2 = load_recent_messages(&recent_path).await.unwrap();
-        let second_ep = observer.observe(&recent2, &layout).await.unwrap();
+        let extraction2 = observer.extract(&recent2, &layout).await.unwrap();
+        let second_ep = mw
+            .merge(extraction2, SourceTag::main(), chrono_tz::UTC)
+            .await
+            .unwrap();
         clear_recent_messages(&recent_path).await.unwrap();
 
         assert_eq!(second_ep.id, "ep-002", "second episode should be ep-002");
@@ -415,6 +442,7 @@ mod memory_integration {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "the agent uses SOUL.md for personality".to_string(),
+            source: SourceTag::main(),
         }];
 
         index
@@ -522,7 +550,7 @@ mod memory_integration {
             .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
-        let result = observer.observe(&recent, &layout).await.unwrap();
+        let result = observer.extract(&recent, &layout).await.unwrap();
 
         assert!(
             result.narrative.is_some(),
@@ -562,7 +590,7 @@ mod memory_integration {
             .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
-        let result = observer.observe(&recent, &layout).await.unwrap();
+        let result = observer.extract(&recent, &layout).await.unwrap();
 
         assert_eq!(
             result.observations.len(),
@@ -612,6 +640,7 @@ mod memory_integration {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "first observation about workspace".to_string(),
+            source: SourceTag::main(),
         }];
         tokio::fs::write(
             day_dir.join("ep-001.obs.json"),
@@ -654,6 +683,7 @@ mod memory_integration {
             source_episodes: Some("ep-002".to_string()),
             visibility: Visibility::User,
             content: "second observation about testing".to_string(),
+            source: SourceTag::main(),
         }];
         tokio::fs::write(
             day_dir.join("ep-002.obs.json"),
@@ -696,6 +726,7 @@ mod memory_integration {
             source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: "residuum uses tantivy for search".to_string(),
+            source: SourceTag::main(),
         }];
         std::fs::write(
             day_dir_1.join("ep-001.obs.json"),
@@ -709,6 +740,7 @@ mod memory_integration {
             source_episodes: Some("ep-002".to_string()),
             visibility: Visibility::User,
             content: "devops uses kubernetes for search orchestration".to_string(),
+            source: SourceTag::main(),
         }];
         std::fs::write(
             day_dir_2.join("ep-002.obs.json"),

@@ -228,6 +228,9 @@ impl Agent {
             identity,
             options,
             stop_token,
+            // The main agent persists its transcript separately
+            // (`recent_messages.json`, written after the whole turn).
+            transcript_sink: None,
         }
     }
 

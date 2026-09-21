@@ -196,6 +196,7 @@ mod tests {
             source_episodes: Some(episode_id.to_string()),
             visibility: Visibility::User,
             content: format!("observation from {episode_id}"),
+            source: crate::memory::types::SourceTag::main(),
         }
     }
 

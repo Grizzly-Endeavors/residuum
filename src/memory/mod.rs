@@ -6,6 +6,7 @@
 pub(crate) mod chunk_extractor;
 pub mod episode_store;
 pub mod log_store;
+pub mod merge_writer;
 pub mod observer;
 pub mod recent_context;
 pub mod recent_messages;

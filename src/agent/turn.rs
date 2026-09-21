@@ -1,5 +1,6 @@
 //! Turn execution: the tool loop that drives the agent.
 
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -45,6 +46,21 @@ impl EventContext<'_> {
 /// Maximum retries for empty responses (transient API glitches).
 const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 
+/// Sink for incremental transcript persistence.
+///
+/// Called after every model response and every tool result is appended to
+/// `recent_messages`, so a crash mid-turn loses at most the message
+/// currently in flight rather than the whole turn. The main agent's own
+/// persistence path is separate (`recent_messages.json`, written after the
+/// whole turn), so its turns pass `None`; a session's turn passes a sink
+/// bound to its run so the session store's transcript stays durable as the
+/// run progresses.
+#[async_trait]
+pub(crate) trait TranscriptSink: Send + Sync {
+    /// Append newly-produced messages to the durable transcript.
+    async fn append(&self, messages: &[Message]);
+}
+
 /// Shared subsystem references needed for each turn iteration.
 pub(crate) struct TurnResources<'a> {
     pub provider: &'a dyn InferenceProvider,
@@ -57,12 +73,29 @@ pub(crate) struct TurnResources<'a> {
     /// turns that don't support being stopped (system/wake turns) pass a
     /// token nobody ever cancels.
     pub stop_token: &'a CancellationToken,
+    /// Incremental transcript persistence, or `None` when the caller
+    /// persists the transcript some other way (the main agent).
+    pub transcript_sink: Option<&'a dyn TranscriptSink>,
 }
 
 /// System note injected into the conversation when a turn is stopped
 /// mid-flight, so the next turn knows the work above was cut short rather
 /// than completed or abandoned.
 const STOP_NOTE: &str = "[Stopped] the user stopped this turn before it finished; review what's already been done above before continuing or repeating any of it.";
+
+/// Push a message onto the turn's history and, when a sink is configured,
+/// durably record it in the same step — the one place every message that
+/// enters `recent_messages` during a turn also reaches the transcript sink.
+async fn push_and_record(
+    recent_messages: &mut RecentMessages,
+    sink: Option<&dyn TranscriptSink>,
+    message: Message,
+) {
+    recent_messages.push(message.clone());
+    if let Some(sink) = sink {
+        sink.append(&[message]).await;
+    }
+}
 
 /// Execute the tool loop against the given message buffer.
 ///
@@ -164,7 +197,8 @@ pub(crate) async fn execute_turn(
                 anyhow::bail!("model returned empty response with no tool calls");
             }
             tracing::debug!(iterations = iteration, "turn complete");
-            recent_messages.push(Message::assistant(response.content.clone(), None));
+            let final_message = Message::assistant(response.content.clone(), None);
+            push_and_record(recent_messages, resources.transcript_sink, final_message).await;
             texts.push(response.content);
             return Ok(texts);
         }
@@ -191,10 +225,8 @@ pub(crate) async fn execute_turn(
             tracing::debug!(error = %e, "failed to publish intermediate text event");
         }
 
-        recent_messages.push(Message::assistant(
-            response.content.clone(),
-            Some(response.tool_calls.clone()),
-        ));
+        let msg = Message::assistant(response.content.clone(), Some(response.tool_calls.clone()));
+        push_and_record(recent_messages, resources.transcript_sink, msg).await;
 
         // Classification runs concurrently with tool execution; a correction
         // lands at a later drain_interrupts poll.
@@ -326,15 +358,12 @@ async fn execute_tool(
         )
         .await;
 
-    if images.is_empty() {
-        recent_messages.push(Message::tool(output, tool_call.id.clone()));
+    let tool_message = if images.is_empty() {
+        Message::tool(output, tool_call.id.clone())
     } else {
-        recent_messages.push(Message::tool_with_images(
-            output,
-            tool_call.id.clone(),
-            images,
-        ));
-    }
+        Message::tool_with_images(output, tool_call.id.clone(), images)
+    };
+    push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
 }
 
 /// Log token usage from a model response at debug level.

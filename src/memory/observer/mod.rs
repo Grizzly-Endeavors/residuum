@@ -1,45 +1,53 @@
-//! Observer: compresses recent messages into structured episodes via LLM.
+//! Observer: extracts observations and a narrative from recent messages via LLM.
 //!
-//! Fires synchronously after the agent completes a turn when the accumulated
-//! recent message token count exceeds the configured threshold.
+//! Runs synchronously after the agent completes a turn when the accumulated
+//! recent message token count exceeds the configured threshold. Extraction
+//! has no side effects — see [`Observer::extract`]; persisting the result as
+//! an episode is [`crate::memory::merge_writer::MemoryMergeWriter`]'s job.
 
 mod parse;
 mod prompt;
 
 use anyhow::Context;
+use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
-use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
-use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
-use crate::memory::episode_store::{
-    episode_idx_path, episode_obs_path, next_episode_id, write_completion_marker,
-    write_episode_transcript,
-};
-use crate::memory::log_store::{append_observations, save_episode_observations};
+use crate::inference::{CompletionOptions, InferenceProvider, ResponseFormat};
 use crate::memory::recent_messages::RecentMessage;
-use crate::memory::types::{Episode, IndexChunk, Observation};
-use crate::time::now_local;
+use crate::memory::types::Visibility;
 use crate::workspace::layout::WorkspaceLayout;
-use parse::{ObserverParseResult, parse_observer_response};
+use parse::parse_observer_response;
 use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt, observer_response_schema};
 
-/// The result of a successful observation run.
-pub struct ObserveResult {
-    /// The episode identifier (e.g., `"ep-001"`).
-    pub id: String,
-    /// Path to the transcript file on disk.
-    pub transcript_path: std::path::PathBuf,
-    /// Narrative summary of the conversation at the time of observation.
+/// A single observation extracted from a conversation segment, before it is
+/// assigned an episode id or written anywhere.
+#[derive(Debug, Clone)]
+pub struct ExtractedObservation {
+    /// When the observed event happened, at minute precision.
+    pub timestamp: NaiveDateTime,
+    /// Whether the source turn was user-visible or a background turn.
+    pub visibility: Visibility,
+    /// The observation content as a single concise sentence.
+    pub content: String,
+}
+
+/// Output of a pure extraction pass: observations and a narrative, plus the
+/// plain messages that were extracted from. Carries no side effects — nothing
+/// is written to disk, no episode id is allocated. Persisting an extraction
+/// (episode id allocation, transcript/observation/index writes, embedding,
+/// and the reflector check) is the memory merge writer's job.
+pub struct Extraction {
+    /// Narrative summary of the conversation at the time of extraction.
     pub narrative: Option<String>,
-    /// The extracted observations, for downstream indexing without re-reading disk.
-    pub observations: Vec<Observation>,
-    /// Interaction-pair chunks extracted from the transcript.
-    pub chunks: Vec<IndexChunk>,
-    /// Episode date in `YYYY-MM-DD` format.
-    pub date: String,
+    /// The extracted observations.
+    pub observations: Vec<ExtractedObservation>,
+    /// The messages the extraction was run over (with their timestamp and
+    /// visibility metadata intact), for the merge writer to persist as an
+    /// episode transcript and interaction-pair chunks.
+    pub messages: Vec<RecentMessage>,
 }
 
 /// What the observer thinks should happen after checking token thresholds.
@@ -171,25 +179,26 @@ impl Observer {
         }
     }
 
-    /// Extract observations from recent messages and persist them.
+    /// Extract observations and a narrative from recent messages.
     ///
-    /// The caller is responsible for clearing the recent messages file
-    /// after this succeeds.
+    /// Pure extraction: no episode id is allocated and nothing is written to
+    /// disk. Persisting the result — allocating an episode id, writing the
+    /// transcript and observation archives, indexing, embedding, and
+    /// checking the reflector — is the memory merge writer's job, so that
+    /// all persistence (main agent and session runs alike) is serialized
+    /// through one writer.
     ///
     /// # Errors
-    /// Returns an error if the LLM call fails or file persistence fails.
-    #[tracing::instrument(skip_all, fields(operation = "observe", message_count = recent_messages.len()))]
-    pub async fn observe(
+    /// Returns an error if the LLM call fails or its response cannot be parsed.
+    #[tracing::instrument(skip_all, fields(operation = "extract", message_count = recent_messages.len()))]
+    pub async fn extract(
         &self,
         recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
-    ) -> anyhow::Result<ObserveResult> {
+    ) -> anyhow::Result<Extraction> {
         if recent_messages.is_empty() {
             anyhow::bail!("no recent messages to extract from");
         }
-
-        // Generate the next episode ID by scanning the episodes directory
-        let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
         // Load content guidance from disk, falling back to embedded constant.
         let content_guidance = match tokio::fs::read_to_string(layout.observer_md()).await {
@@ -228,7 +237,22 @@ impl Observer {
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
 
-        build_episode_and_persist(parsed, episode_id, recent_messages, layout, self.config.tz).await
+        let messages: Vec<RecentMessage> = recent_messages.to_vec();
+        let observations = parsed
+            .extractions
+            .into_iter()
+            .map(|e| ExtractedObservation {
+                timestamp: e.timestamp,
+                visibility: e.visibility,
+                content: e.content,
+            })
+            .collect();
+
+        Ok(Extraction {
+            narrative: parsed.narrative,
+            observations,
+            messages,
+        })
     }
 }
 
@@ -240,93 +264,10 @@ fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
         .sum()
 }
 
-/// Build the episode from parsed extractions and persist all artifacts to disk.
-async fn build_episode_and_persist(
-    parsed: ObserverParseResult,
-    episode_id: String,
-    recent_messages: &[RecentMessage],
-    layout: &WorkspaceLayout,
-    tz: Tz,
-) -> anyhow::Result<ObserveResult> {
-    // Extract inner messages for the episode transcript.
-    let messages: Vec<Message> = recent_messages
-        .iter()
-        .map(|rm| rm.message.clone())
-        .collect();
-
-    let episode = Episode {
-        id: episode_id.clone(),
-        date: now_local(tz).date(),
-        observations: parsed
-            .extractions
-            .iter()
-            .map(|e| e.content.clone())
-            .collect(),
-    };
-
-    // Persist transcript
-    let transcript_path =
-        crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
-    write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
-    tracing::debug!(episode_id = %episode.id, "episode transcript written");
-
-    // Convert episode observations → flat Observations
-    let observations: Vec<Observation> = parsed
-        .extractions
-        .iter()
-        .map(|e| Observation {
-            timestamp: e.timestamp,
-            source_episodes: Some(episode.id.clone()),
-            visibility: e.visibility.clone(),
-            content: e.content.clone(),
-        })
-        .collect();
-
-    let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
-    save_episode_observations(&obs_path, &observations).await?;
-    tracing::debug!(episode_id = %episode.id, count = observations.len(), "per-episode observations archived");
-    append_observations(&layout.observations_json(), observations.clone()).await?;
-    tracing::debug!(episode_id = %episode.id, "global observations updated");
-
-    // Extract interaction-pair chunks from recent messages and persist as idx.jsonl.
-    // line_offset=2 because line 1 is the meta object in the JSONL transcript.
-    let date_str = episode.date.to_string();
-    let chunks = extract_chunks(recent_messages, &episode.id, &date_str, 2);
-    let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
-    write_idx_jsonl(&idx_path, &chunks).await?;
-    tracing::debug!(episode_id = %episode.id, chunks = chunks.len(), "interaction-pair chunks written");
-
-    // Completion marker — MUST stay the final persistence step. Its presence
-    // certifies that every artifact above was written durably; if any step
-    // above failed, the `?` returned before this line and the marker is absent,
-    // which is how startup reconciliation detects an interrupted write.
-    write_completion_marker(&layout.episodes_dir(), &episode).await?;
-    tracing::debug!(episode_id = %episode.id, "episode persistence completed");
-
-    tracing::info!(
-        episode_id = %episode.id,
-        observations = observations.len(),
-        chunks = chunks.len(),
-        has_narrative = parsed.narrative.is_some(),
-        "episode extracted"
-    );
-
-    Ok(ObserveResult {
-        id: episode.id,
-        transcript_path,
-        narrative: parsed.narrative,
-        observations,
-        chunks,
-        date: date_str,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::{InferenceResponse, Role};
-    use crate::memory::episode_store::episode_obs_path;
-    use crate::memory::log_store::load_observation_log;
+    use crate::inference::{InferenceResponse, Message, Role};
     use crate::memory::recent_messages::RecentMessage;
     use crate::memory::test_helpers::MockMemoryProvider;
     use crate::memory::types::Visibility;
@@ -587,7 +528,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observe_creates_episode() {
+    async fn extract_returns_observations_and_messages_without_persisting() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
 
@@ -607,48 +548,23 @@ mod tests {
         );
 
         let messages = make_recent_messages(5);
-        let result = observer.observe(&messages, &layout).await.unwrap();
+        let result = observer.extract(&messages, &layout).await.unwrap();
 
-        assert_eq!(result.id, "ep-001", "first episode should be ep-001");
         assert_eq!(
             result.observations.len(),
             2,
             "SAMPLE_RESPONSE has 2 observations"
         );
-        assert!(
-            result.transcript_path.exists(),
-            "transcript file should exist"
-        );
-
-        let log = load_observation_log(&layout.observations_json())
-            .await
-            .unwrap();
-        // SAMPLE_RESPONSE has 2 observation objects → 2 Observations in the log
         assert_eq!(
-            log.observations.len(),
-            2,
-            "observation log should have two observations (one per object)"
+            result.messages.len(),
+            5,
+            "extraction should carry the plain messages for the caller to persist"
         );
-
-        // Verify the per-episode obs archive was written alongside the transcript
-        let episode = crate::memory::types::Episode {
-            id: result.id.clone(),
-            date: chrono::Utc::now().naive_utc().date(),
-            observations: vec![],
-        };
-        let obs_archive = episode_obs_path(&layout.episodes_dir(), &episode);
         assert!(
-            obs_archive.exists(),
-            "per-episode obs archive should exist alongside transcript"
-        );
-
-        // The completion marker is written last; its presence certifies that
-        // persistence finished rather than being interrupted midway.
-        let marker =
-            crate::memory::episode_store::episode_marker_path(&layout.episodes_dir(), &episode);
-        assert!(
-            marker.exists(),
-            "completion marker should exist after a successful observe"
+            !layout.episodes_dir().exists()
+                || std::fs::read_dir(layout.episodes_dir())
+                    .map_or(true, |mut d| d.next().is_none()),
+            "extraction alone must not write any episode files — that's the merge writer's job"
         );
     }
 
@@ -808,7 +724,7 @@ mod tests {
         observer.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
 
         let messages = make_recent_messages(5);
-        let result = observer.observe(&messages, &layout).await.unwrap();
+        let result = observer.extract(&messages, &layout).await.unwrap();
         assert_eq!(
             result.observations.len(),
             1,
@@ -822,7 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observe_returns_err_for_empty_messages() {
+    async fn extract_returns_err_for_empty_messages() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
 
@@ -831,10 +747,10 @@ mod tests {
             ObserverConfig::default(),
         );
 
-        let result = observer.observe(&[], &layout).await;
+        let result = observer.extract(&[], &layout).await;
         assert!(
             result.is_err(),
-            "observe with empty messages should return Err"
+            "extract with empty messages should return Err"
         );
     }
 
