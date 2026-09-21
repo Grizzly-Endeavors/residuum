@@ -1,4 +1,4 @@
-//! Full-text BM25 search over observations and interaction-pair chunks using tantivy,
+//! Full-text BM25 search over observations, interaction-pair chunks, and wiki pages using tantivy,
 //! with optional hybrid vector search via sqlite-vec.
 
 use std::collections::HashMap;
@@ -19,6 +19,7 @@ use crate::inference::EmbeddingProvider;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
+use crate::memory::wiki_index::{WikiIndexer, WikiPage};
 
 /// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
@@ -26,7 +27,7 @@ const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
 /// A search result from the memory index.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
-    /// Document identifier (obs or chunk ID).
+    /// Document identifier (obs ID, chunk ID, or wiki page path).
     pub id: String,
     /// Which kind of document this result came from.
     pub source_type: DocSource,
@@ -47,14 +48,15 @@ pub struct SearchResult {
 /// Filters for narrowing search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
-    /// Filter to a single document source. `None` searches both.
+    /// Filter to a single document source. `None` searches every source.
     /// The tool layer translates user-facing names before setting this.
     pub source: Option<DocSource>,
     /// Filter results on or after this date (YYYY-MM-DD, inclusive).
     pub date_from: Option<String>,
     /// Filter results on or before this date (YYYY-MM-DD, inclusive).
     pub date_to: Option<String>,
-    /// Filter to results from these episode IDs.
+    /// Filter to results from these episode IDs. Wiki pages belong to no episode,
+    /// so an episode filter excludes them.
     pub episode_ids: Option<Vec<String>>,
 }
 
@@ -257,6 +259,46 @@ impl MemoryIndex {
         for id in ids {
             let term = Term::from_field_text(self.id_field, id);
             writer.delete_term(term);
+        }
+        self.commit_and_reload(&mut writer)
+    }
+
+    /// Replace wiki page documents in one commit.
+    ///
+    /// Deletes each page in `pages` and each ID in `removed_ids`, then adds
+    /// `pages`. With `replace_all`, every existing wiki document is deleted
+    /// first, so the index holds exactly `pages`.
+    ///
+    /// # Errors
+    /// Returns an error if the index writer fails.
+    pub(crate) fn replace_wiki_documents(
+        &self,
+        pages: &[WikiPage],
+        removed_ids: &[String],
+        replace_all: bool,
+    ) -> anyhow::Result<()> {
+        let mut writer = self.writer()?;
+        if replace_all {
+            writer.delete_term(Term::from_field_text(
+                self.source_type_field,
+                DocSource::Wiki.as_str(),
+            ));
+        }
+        for id in removed_ids.iter().chain(pages.iter().map(|p| &p.id)) {
+            writer.delete_term(Term::from_field_text(self.id_field, id));
+        }
+        for page in pages {
+            let mut doc = TantivyDocument::default();
+            doc.add_text(self.id_field, &page.id);
+            doc.add_text(self.source_type_field, DocSource::Wiki.as_str());
+            doc.add_text(self.episode_id_field, "");
+            doc.add_text(self.date_field, &page.date);
+            doc.add_text(self.content_field, &page.content);
+            doc.add_u64(self.line_start_field, u64::MAX);
+            doc.add_u64(self.line_end_field, u64::MAX);
+            writer
+                .add_document(doc)
+                .with_context(|| format!("failed to add wiki page {} to search index", page.id))?;
         }
         self.commit_and_reload(&mut writer)
     }
@@ -551,6 +593,11 @@ impl MemoryIndex {
         Ok(doc_ids)
     }
 
+    /// Add an observation document, replacing any existing document with the same ID.
+    ///
+    /// Doc IDs are deterministic per episode, so replacing keeps the index free of
+    /// duplicates when an episode is indexed again (e.g. by startup sync after the
+    /// observer already indexed it).
     fn add_obs_document(
         &self,
         writer: &mut IndexWriter,
@@ -559,6 +606,7 @@ impl MemoryIndex {
         date: &str,
         content: &str,
     ) -> anyhow::Result<()> {
+        writer.delete_term(Term::from_field_text(self.id_field, doc_id));
         let mut doc = TantivyDocument::default();
         doc.add_text(self.id_field, doc_id);
         doc.add_text(self.source_type_field, DocSource::Observation.as_str());
@@ -574,11 +622,13 @@ impl MemoryIndex {
         Ok(())
     }
 
+    /// Add a chunk document, replacing any existing document with the same ID.
     fn add_chunk_document(
         &self,
         writer: &mut IndexWriter,
         chunk: &IndexChunk,
     ) -> anyhow::Result<()> {
+        writer.delete_term(Term::from_field_text(self.id_field, &chunk.chunk_id));
         let mut doc = TantivyDocument::default();
         doc.add_text(self.id_field, &chunk.chunk_id);
         doc.add_text(self.source_type_field, DocSource::Chunk.as_str());
@@ -761,6 +811,7 @@ pub struct HybridSearcher {
     vector: Option<Arc<VectorStore>>,
     embedding: Option<Arc<dyn EmbeddingProvider>>,
     cfg: SearchConfig,
+    wiki: Option<WikiIndexer>,
 }
 
 impl HybridSearcher {
@@ -777,6 +828,28 @@ impl HybridSearcher {
             vector,
             embedding,
             cfg,
+            wiki: None,
+        }
+    }
+
+    /// Keep the knowledge wiki's pages in the index, resynced before each search.
+    #[must_use]
+    pub fn with_wiki(mut self, wiki: WikiIndexer) -> Self {
+        self.wiki = Some(wiki);
+        self
+    }
+
+    /// Bring wiki pages in the index up to date with the files on disk.
+    ///
+    /// A failed sync leaves the previous wiki documents searchable, so it is
+    /// logged rather than failing the search; the next search retries it.
+    async fn sync_wiki(&self) {
+        let Some(wiki) = &self.wiki else {
+            return;
+        };
+        let vector = self.vector.as_ref().zip(self.embedding.as_ref());
+        if let Err(e) = wiki.sync(&self.bm25, vector).await {
+            tracing::warn!(error = %format!("{e:#}"), "failed to sync wiki pages into the search index; wiki results may be stale");
         }
     }
 
@@ -798,6 +871,10 @@ impl HybridSearcher {
         filters: &SearchFilters,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let candidates = limit * self.cfg.candidate_multiplier;
+
+        if filters.source.is_none_or(|s| s == DocSource::Wiki) {
+            self.sync_wiki().await;
+        }
 
         // BM25 search
         let bm25_results = self.bm25.search(query, candidates, filters)?;
@@ -853,6 +930,7 @@ impl HybridSearcher {
             date_from: filters.date_from.clone(),
             date_to: filters.date_to.clone(),
             episode_ids: filters.episode_ids.clone(),
+            source: filters.source,
         };
         let vec_limit = candidates;
         let vec_results = tokio::task::spawn_blocking(move || {
@@ -1023,7 +1101,9 @@ fn merge_hybrid_results(
 ///
 /// Each result's score is multiplied by `exp(-lambda * age_days)` where
 /// `lambda = ln(2) / half_life_days`. Results with unparseable dates are
-/// left unchanged.
+/// left unchanged. Wiki pages are exempt: they hold maintained knowledge whose
+/// age says nothing about whether it is still true (`stale_after` and the
+/// `wiki_lint` pulse handle that).
 fn apply_temporal_decay(
     results: &mut [SearchResult],
     half_life_days: f64,
@@ -1032,6 +1112,9 @@ fn apply_temporal_decay(
     let lambda = f64::ln(2.0) / half_life_days;
 
     for result in results {
+        if result.source_type == DocSource::Wiki {
+            continue;
+        }
         let Ok(date) = chrono::NaiveDate::parse_from_str(&result.date, "%Y-%m-%d") else {
             tracing::warn!(date = %result.date, id = %result.id, "unparseable date, skipping temporal decay");
             continue;
@@ -1311,6 +1394,37 @@ mod tests {
 
         let after = index.search("deleteable rust", 5, &no_filters()).unwrap();
         assert!(after.is_empty(), "should not find after delete");
+    }
+
+    #[test]
+    fn reindexing_an_episode_does_not_duplicate_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        let day_dir = memory_dir.join("episodes/2026-02/19");
+        std::fs::create_dir_all(&day_dir).unwrap();
+        let obs = vec![sample_observation("duplicate guard observation")];
+        std::fs::write(
+            day_dir.join("ep-001.obs.json"),
+            serde_json::to_string(&obs).unwrap(),
+        )
+        .unwrap();
+        let index = MemoryIndex::open_or_create(&memory_dir.join(".index")).unwrap();
+
+        // The observer indexes the episode at runtime; a startup sync whose
+        // manifest lacks the file then indexes the same episode again.
+        index
+            .index_observations("ep-001", "2026-02-19", &obs)
+            .unwrap();
+        index
+            .incremental_sync(&memory_dir, &IndexManifest::new())
+            .unwrap();
+
+        let hits = index.search("duplicate guard", 10, &no_filters()).unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "the episode should be indexed once, got {hits:?}"
+        );
     }
 
     #[test]
@@ -1893,6 +2007,23 @@ mod tests {
         assert!(
             results[0].score < 1.0,
             "even recent result should have some decay"
+        );
+    }
+
+    #[test]
+    fn temporal_decay_exempts_wiki_pages() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 2, 24).unwrap();
+        let mut results = vec![SearchResult {
+            source_type: DocSource::Wiki,
+            ..make_result("wiki/old-fact.md", "2024-01-01", 1.0)
+        }];
+
+        apply_temporal_decay(&mut results, 30.0, today);
+
+        assert!(
+            (results[0].score - 1.0).abs() < f32::EPSILON,
+            "a wiki page's age should not reduce its score, got {}",
+            results[0].score
         );
     }
 

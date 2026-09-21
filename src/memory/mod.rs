@@ -14,6 +14,7 @@ pub mod search;
 pub mod tokens;
 pub mod types;
 pub mod vector_store;
+pub mod wiki_index;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;

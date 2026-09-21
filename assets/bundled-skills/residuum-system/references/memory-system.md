@@ -41,19 +41,19 @@ Customize compression guidance by editing `memory/REFLECTOR.md`.
 
 ## Search
 
-Use `memory_search` to query past observations and episode chunks. When an embedding provider is configured, hybrid search (BM25 + vector similarity) is used automatically. Otherwise, BM25 keyword search only.
+Use `memory_search` to query past observations, episode chunks, and wiki pages. When an embedding provider is configured, hybrid search (BM25 + vector similarity) is used automatically. Otherwise, BM25 keyword search only.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `query` | string | **Required.** Free-text search query (supports AND, OR, phrase queries). |
-| `source` | string | `"observations"`, `"episodes"`, or `"both"` (default: `"both"`). |
+| `source` | string | `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from` | string | ISO date lower bound (inclusive). |
 | `date_to` | string | ISO date upper bound (inclusive). |
-| `episode_ids` | array | Filter to specific episode IDs. |
+| `episode_ids` | array | Filter to specific episode IDs (excludes wiki pages). |
 
 Use `memory_get` to retrieve the full transcript of a specific episode by ID.
 
-The search index is rebuilt on startup (incrementally) and updated after each observer extraction.
+Episodes are indexed after each observer extraction and synced on startup. Wiki pages are resynced before every search, so a page you just wrote is searchable immediately; a wiki result's ID is the page path to open with `read_file`. Wiki pages are exempt from temporal decay.
 
 ## Gotchas
 
