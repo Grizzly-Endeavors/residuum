@@ -292,20 +292,18 @@ fn signing_key(entry: JwkEntry) -> Option<SigningKey> {
     })
 }
 
+/// Signing fixtures shared by the auth and endpoint tests.
 #[cfg(test)]
-mod tests {
+pub(super) mod test_support {
     use super::*;
-
-    const APP_ID: &str = "11111111-2222-3333-4444-555555555555";
-    const SERVICE_URL: &str = "https://smba.trafficmanager.net/amer/";
-    const NOW: i64 = 1_790_000_000;
 
     fn test_keypair() -> ring::signature::RsaKeyPair {
         ring::signature::RsaKeyPair::from_der(include_bytes!("testdata/test_signing_key.rsa.der"))
             .unwrap()
     }
 
-    fn test_key(endorsements: &[&str]) -> SigningKey {
+    /// The public half of the test key, published under `kid = "key-1"`.
+    pub(in crate::interfaces::teams) fn test_key(endorsements: &[&str]) -> SigningKey {
         let components: ring::signature::RsaPublicKeyComponents<Vec<u8>> =
             test_keypair().public().into();
         SigningKey {
@@ -316,7 +314,11 @@ mod tests {
         }
     }
 
-    fn sign(header: &serde_json::Value, claims: &serde_json::Value) -> String {
+    /// Sign a JWT with the test key.
+    pub(in crate::interfaces::teams) fn sign(
+        header: &serde_json::Value,
+        claims: &serde_json::Value,
+    ) -> String {
         let signed = format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(header.to_string()),
@@ -334,6 +336,45 @@ mod tests {
             .unwrap();
         format!("{signed}.{}", URL_SAFE_NO_PAD.encode(sig))
     }
+
+    /// A currently valid connector token for `app_id` and `service_url`.
+    pub(in crate::interfaces::teams) fn valid_token(app_id: &str, service_url: &str) -> String {
+        let now = chrono::Utc::now().timestamp();
+        sign(
+            &serde_json::json!({ "alg": "RS256", "kid": "key-1" }),
+            &serde_json::json!({
+                "iss": EXPECTED_ISSUER,
+                "aud": app_id,
+                "exp": now + 3600,
+                "nbf": now - 60,
+                "serviceurl": service_url,
+            }),
+        )
+    }
+
+    impl TokenValidator {
+        /// A validator that already holds the test key, so it never fetches.
+        pub(in crate::interfaces::teams) fn with_test_key(app_id: &str) -> Self {
+            Self {
+                http: reqwest::Client::new(),
+                app_id: app_id.to_string(),
+                cache: tokio::sync::Mutex::new(KeyCache {
+                    keys: vec![test_key(&["msteams"])],
+                    fetched_at: Some(Instant::now()),
+                }),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{sign, test_key};
+    use super::*;
+
+    const APP_ID: &str = "11111111-2222-3333-4444-555555555555";
+    const SERVICE_URL: &str = "https://smba.trafficmanager.net/amer/";
+    const NOW: i64 = 1_790_000_000;
 
     fn header() -> serde_json::Value {
         serde_json::json!({ "alg": "RS256", "kid": "key-1", "typ": "JWT" })

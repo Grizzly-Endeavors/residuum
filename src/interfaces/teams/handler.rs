@@ -512,4 +512,294 @@ mod tests {
         assert_eq!(shared_file_names(&attachments), "[shared file: plan.pdf]");
         assert_eq!(shared_file_names(&[]), "");
     }
+
+    // ── Endpoint + worker, end to end (no network) ───────────────────────
+
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use crate::bus::{MessageEvent, Subscriber, topics};
+
+    use super::super::auth::TokenValidator;
+    use super::super::auth::test_support::valid_token;
+    use super::super::connector::ConnectorClient;
+    use super::super::context_buffer::ContextBuffer;
+    use super::super::store::TeamsStore;
+
+    const APP_ID: &str = "app-id";
+    const TENANT: &str = "tenant-1";
+    const SERVICE_URL: &str = "https://smba.trafficmanager.net/amer/";
+
+    struct Harness {
+        rt: Arc<TeamsRuntime>,
+        inbound_rx: tokio::sync::mpsc::Receiver<Activity>,
+        user_messages: Subscriber<MessageEvent>,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn harness(respond_to_others: bool) -> Harness {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = crate::bus::spawn_broker();
+        let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
+        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(8);
+        let http = reqwest::Client::new();
+        let rt = Arc::new(TeamsRuntime {
+            cfg: crate::config::TeamsConfig {
+                app_id: APP_ID.to_string(),
+                app_password: "unused".to_string(),
+                tenant_id: TENANT.to_string(),
+                respond_to_others,
+                context_messages: 10,
+                port: 0,
+            },
+            validator: TokenValidator::with_test_key(APP_ID),
+            connector: ConnectorClient::new(
+                http.clone(),
+                TENANT,
+                APP_ID.to_string(),
+                "unused".to_string(),
+            ),
+            http,
+            store: TeamsStore::load(dir.path().join("teams_state.json"))
+                .await
+                .unwrap(),
+            buffer: ContextBuffer::new(10),
+            reply_targets: std::sync::Mutex::new(HashMap::new()),
+            inbound_tx,
+            publisher: bus.publisher(),
+            reload_tx: tokio::sync::watch::channel(crate::gateway::types::ReloadSignal::Root).0,
+            command_tx: tokio::sync::mpsc::channel(1).0,
+            stop_tx: tokio::sync::mpsc::channel(1).0,
+            inbox_dir: dir.path().to_path_buf(),
+            tz: chrono_tz::UTC,
+        });
+        Harness {
+            rt,
+            inbound_rx,
+            user_messages,
+            _dir: dir,
+        }
+    }
+
+    fn message(
+        id: &str,
+        from: (&str, &str),
+        conversation: &serde_json::Value,
+        text: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "type": "message",
+            "id": id,
+            "serviceUrl": SERVICE_URL,
+            "channelId": "msteams",
+            "from": { "id": format!("29:{}", from.1), "name": from.0, "aadObjectId": from.1 },
+            "conversation": conversation,
+            "recipient": { "id": "28:bot", "name": "Residuum" },
+            "text": text,
+            "entities": [{
+                "type": "mention",
+                "text": "<at>Residuum</at>",
+                "mentioned": { "id": "28:bot", "name": "Residuum" }
+            }],
+            "channelData": { "tenant": { "id": TENANT } }
+        })
+    }
+
+    fn dm_from_owner(text: &str) -> serde_json::Value {
+        message(
+            "1",
+            ("Bear", "aad-bear"),
+            &serde_json::json!({ "id": "a:dm-bear", "conversationType": "personal", "tenantId": TENANT }),
+            text,
+        )
+    }
+
+    fn group(id: &str, from: (&str, &str), text: &str) -> serde_json::Value {
+        let mut activity = message(
+            id,
+            from,
+            &serde_json::json!({
+                "id": "19:launch@thread.v2",
+                "conversationType": "groupChat",
+                "name": "Launch",
+                "tenantId": TENANT
+            }),
+            text,
+        );
+        if !text.contains("<at>") {
+            activity
+                .as_object_mut()
+                .unwrap()
+                .insert("entities".to_string(), serde_json::json!([]));
+        }
+        activity
+    }
+
+    fn headers(token: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(token) = token {
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+        }
+        headers
+    }
+
+    async fn post(h: &Harness, activity: &serde_json::Value, token: Option<&str>) -> StatusCode {
+        messages_endpoint(
+            State(Arc::clone(&h.rt)),
+            headers(token),
+            Bytes::from(activity.to_string()),
+        )
+        .await
+    }
+
+    /// Post with a valid token, then run the worker step for what was queued.
+    async fn deliver(h: &mut Harness, activity: &serde_json::Value) {
+        let token = valid_token(APP_ID, SERVICE_URL);
+        assert_eq!(post(h, activity, Some(&token)).await, StatusCode::OK);
+        let queued = h.inbound_rx.try_recv().unwrap();
+        process_activity(&h.rt, queued).await;
+    }
+
+    async fn next_user_message(h: &mut Harness) -> Option<MessageEvent> {
+        tokio::time::timeout(Duration::from_millis(200), h.user_messages.recv())
+            .await
+            .ok()
+            .map(|r| r.unwrap().unwrap())
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_and_foreign_tokens_without_queueing() {
+        let mut h = harness(false).await;
+        let activity = dm_from_owner("hi");
+
+        assert_eq!(post(&h, &activity, None).await, StatusCode::UNAUTHORIZED);
+        let other_bot = valid_token("some-other-bot", SERVICE_URL);
+        assert_eq!(
+            post(&h, &activity, Some(&other_bot)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let other_url = valid_token(APP_ID, "https://attacker.example/");
+        assert_eq!(
+            post(&h, &activity, Some(&other_url)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(
+            h.inbound_rx.try_recv().is_err(),
+            "nothing reaches the worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_activities_from_other_tenants() {
+        let mut h = harness(false).await;
+        let mut activity = dm_from_owner("hi");
+        activity.as_object_mut().unwrap().insert(
+            "channelData".to_string(),
+            serde_json::json!({ "tenant": { "id": "someone-elses-tenant" } }),
+        );
+        let token = valid_token(APP_ID, SERVICE_URL);
+        assert_eq!(
+            post(&h, &activity, Some(&token)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert!(h.inbound_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn first_dm_sets_owner_and_reaches_the_agent() {
+        let mut h = harness(false).await;
+        deliver(&mut h, &dm_from_owner("what's on today?")).await;
+
+        let event = next_user_message(&mut h).await.expect("dm published");
+        assert_eq!(event.content, "what's on today?");
+        assert_eq!(event.context, None);
+        let sender = event.origin.sender.unwrap();
+        assert_eq!(sender.name, "Bear");
+        assert_eq!(sender.id, "aad-bear");
+        assert_eq!(sender.location.as_deref(), Some("direct message"));
+        assert_eq!(
+            h.rt.store.owner().await.map(|o| o.aad_object_id).as_deref(),
+            Some("aad-bear")
+        );
+        assert_eq!(
+            h.rt.owner_dm().await.map(|c| c.conversation_id).as_deref(),
+            Some("a:dm-bear"),
+            "proactive output has somewhere to go"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_mention_carries_the_chatter_since_the_last_mention() {
+        let mut h = harness(false).await;
+        deliver(&mut h, &dm_from_owner("hello")).await;
+        next_user_message(&mut h).await.expect("dm published");
+
+        deliver(
+            &mut h,
+            &group("2", ("Sam", "aad-sam"), "build is red again"),
+        )
+        .await;
+        assert!(
+            next_user_message(&mut h).await.is_none(),
+            "unmentioned chatter is buffered, not sent"
+        );
+
+        deliver(
+            &mut h,
+            &group("3", ("Bear", "aad-bear"), "<at>Residuum</at> can you look?"),
+        )
+        .await;
+        let event = next_user_message(&mut h).await.expect("mention published");
+        assert_eq!(event.content, "can you look?");
+        let context = event.context.expect("background context attached");
+        assert!(context.contains("group chat \"Launch\""), "{context}");
+        assert!(context.contains("Sam: build is red again"), "{context}");
+        assert_eq!(
+            event.origin.sender.unwrap().location.as_deref(),
+            Some("group chat \"Launch\"")
+        );
+        assert_eq!(
+            h.rt.target_for(&event.id)
+                .await
+                .map(|c| c.conversation_id)
+                .as_deref(),
+            Some("19:launch@thread.v2"),
+            "the reply goes back to the group chat"
+        );
+
+        deliver(
+            &mut h,
+            &group("4", ("Bear", "aad-bear"), "<at>Residuum</at> thanks"),
+        )
+        .await;
+        let again = next_user_message(&mut h).await.expect("second mention");
+        assert_eq!(
+            again.context, None,
+            "already-delivered chatter is not repeated"
+        );
+    }
+
+    #[tokio::test]
+    async fn coworkers_reach_the_agent_when_respond_to_others_is_on() {
+        let mut h = harness(true).await;
+        deliver(&mut h, &dm_from_owner("hello")).await;
+        next_user_message(&mut h).await.expect("dm published");
+
+        deliver(
+            &mut h,
+            &group(
+                "2",
+                ("Sam", "aad-sam"),
+                "<at>Residuum</at> summarize this thread",
+            ),
+        )
+        .await;
+        let event = next_user_message(&mut h)
+            .await
+            .expect("coworker mention published");
+        assert_eq!(event.origin.sender.unwrap().name, "Sam");
+    }
 }
