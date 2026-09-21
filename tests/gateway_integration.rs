@@ -214,6 +214,7 @@ mod gateway_integration {
                                         content: text.clone(),
                                         timestamp: chrono::NaiveDateTime::default(),
                                         attachment: None,
+                                        conversation: None,
                                     },
                                 )
                                 .await,

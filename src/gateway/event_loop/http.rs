@@ -19,6 +19,8 @@ pub struct AdapterSenders {
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
     pub stop: mpsc::Sender<StopRequest>,
+    /// Where the adapter registers the conversations it can reach.
+    pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
 }
 
 /// Lifecycle handles returned from spawning chat adapters.

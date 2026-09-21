@@ -1,23 +1,29 @@
-//! Telegram interface adapter (DM-only).
+//! Telegram interface adapter.
 //!
 //! Uses the teloxide Bot API for long-polling message reception and publishes
-//! private messages onto the bus for agent processing.
+//! messages onto the bus for agent processing.
 //!
+//! - Private messages always reach the agent; in groups only messages
+//!   addressed to the bot do (see `groups`).
 //! - The owner is whoever first DMs the bot; others are refused unless
 //!   `[telegram] respond_to_others` is on. Commands run only for the owner.
-//! - Replies go back to the chat a message came from; proactive output
-//!   (scheduled results, `send_message`), notices, and errors go to the owner.
+//! - Replies go back to the chat a message came from; proactive output goes
+//!   to the owner's chat unless `send_message` names a conversation. Notices
+//!   and errors only ever go to the owner.
 
+mod groups;
 mod handler;
 pub(crate) mod subscriber;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use teloxide::types::ChatId;
 
 use crate::config::TelegramConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
+use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
 
 /// Endpoint and interface name for Telegram on the bus.
@@ -58,7 +64,14 @@ impl TelegramState {
     }
 }
 
-/// Telegram interface adapter that routes private messages to the agent inbound channel.
+#[async_trait::async_trait]
+impl ConversationSource for TelegramState {
+    async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>> {
+        Ok(self.store.known_conversations().await)
+    }
+}
+
+/// Telegram interface adapter that routes private and addressed group messages to the agent.
 pub struct TelegramInterface {
     cfg: TelegramConfig,
     senders: AdapterSenders,
@@ -96,11 +109,15 @@ impl TelegramInterface {
     /// cannot connect, or the bus subscription fails.
     pub(crate) async fn start(self) -> anyhow::Result<()> {
         let layout = crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir);
-        let state = std::sync::Arc::new(TelegramState {
+        let state = Arc::new(TelegramState {
             respond_to_others: self.cfg.respond_to_others,
             store: ChatStateStore::load(layout.telegram_state_json()).await?,
             reply_targets: ReplyTargets::default(),
         });
+        let _registration = self
+            .senders
+            .conversations
+            .register(ENDPOINT, Arc::clone(&state) as Arc<dyn ConversationSource>);
         handler::run_telegram_polling(
             &self.cfg.token,
             state,

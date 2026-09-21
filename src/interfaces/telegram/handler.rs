@@ -9,21 +9,28 @@ use anyhow::Context as _;
 use teloxide::Bot;
 use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
-use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind, Video, Voice};
+use teloxide::types::{
+    Audio, BotCommand, ChatId, ChatMemberUpdated, Document, PhotoSize, UpdateKind, UserId, Video,
+    Voice,
+};
 
 use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
+use crate::interfaces::chat_state::{ChatRef, ConversationKind, Owner, Standing};
 use crate::interfaces::commands::all_commands;
 use crate::interfaces::types::MessageOrigin;
 
+use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
 
 /// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {
     state: &'a TelegramState,
+    /// The bot's `@username`, without the `@`, for spotting mentions in groups.
+    bot_username: &'a str,
+    bot_id: UserId,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
     reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
@@ -133,40 +140,81 @@ pub(super) async fn run_telegram_polling(
             }
         };
 
+        let ctx = TelegramContext {
+            state: &state,
+            bot_username: me.username(),
+            bot_id: me.id,
+            publisher: &publisher,
+            inbox_dir: &inbox_dir,
+            reload_tx: &reload_tx,
+            command_tx: &command_tx,
+            stop_tx: &stop_tx,
+            tz,
+        };
         for update in updates {
             // UpdateId wraps u32; offset is i32 per Telegram API
             offset = (update.id.0).cast_signed() + 1;
-
-            let UpdateKind::Message(msg) = update.kind else {
-                continue;
-            };
-
-            // DM-only: skip non-private chats
-            if !msg.chat.is_private() {
-                continue;
-            }
-
-            // Skip messages without a sender (channel posts)
-            let Some(ref from) = msg.from else {
-                continue;
-            };
-
-            // Skip bot's own messages
-            if from.is_bot {
-                continue;
-            }
-
-            let ctx = TelegramContext {
-                state: &state,
-                publisher: &publisher,
-                inbox_dir: &inbox_dir,
-                reload_tx: &reload_tx,
-                command_tx: &command_tx,
-                stop_tx: &stop_tx,
-                tz,
-            };
-            dispatch_message(&bot, &msg, from, &ctx).await;
+            handle_update(&bot, update.kind, &ctx).await;
         }
+    }
+}
+
+async fn handle_update(bot: &Bot, update: UpdateKind, ctx: &TelegramContext<'_>) {
+    if let UpdateKind::MyChatMember(change) = &update {
+        track_group_membership(ctx.state, change).await;
+        return;
+    }
+    let UpdateKind::Message(msg) = update else {
+        return;
+    };
+    if let Some(&new_id) = msg.migrate_to_chat_id() {
+        forget_migrated_group(ctx.state, msg.chat.id, new_id).await;
+        return;
+    }
+    // Skip messages without a sender (channel posts) and bots' own.
+    let Some(ref from) = msg.from else {
+        return;
+    };
+    if from.is_bot {
+        return;
+    }
+    dispatch_message(bot, &msg, from, ctx).await;
+}
+
+/// Keep the saved group list in step with the bot being added or removed.
+async fn track_group_membership(state: &TelegramState, change: &ChatMemberUpdated) {
+    let chat = &change.chat;
+    if !(chat.is_group() || chat.is_supergroup()) {
+        return;
+    }
+    let key = chat.id.to_string();
+    let label = group_label(chat.title());
+    let result = if change.new_chat_member.is_present() {
+        tracing::info!(group = %label, "telegram bot added to a group");
+        state
+            .store
+            .remember(
+                &key,
+                ChatRef {
+                    kind: ConversationKind::GroupChat,
+                    label,
+                },
+            )
+            .await
+    } else {
+        tracing::info!(group = %label, "telegram bot removed from a group");
+        state.store.forget(&key).await
+    };
+    if let Err(e) = result {
+        tracing::warn!(error = %e, chat_id = %chat.id, "failed to save telegram group membership");
+    }
+}
+
+/// A group upgraded to a supergroup gets a new chat ID; the old one stops working.
+async fn forget_migrated_group(state: &TelegramState, old: ChatId, new: ChatId) {
+    tracing::info!(%old, %new, "telegram group moved to a new chat ID");
+    if let Err(e) = state.store.forget(&old.to_string()).await {
+        tracing::warn!(error = %e, chat_id = %old, "failed to forget migrated telegram group");
     }
 }
 
@@ -196,7 +244,10 @@ async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Dispatch a single incoming private message: commands, text, or attachments.
+/// Dispatch a single incoming message: commands, text, or attachments.
+///
+/// Every private message is handled; group messages only when addressed to
+/// the bot (see [`super::groups`]).
 async fn dispatch_message(
     bot: &Bot,
     msg: &teloxide::types::Message,
@@ -204,6 +255,9 @@ async fn dispatch_message(
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
+    let Some((location, text)) = addressed_to_agent(msg, from, ctx).await else {
+        return;
+    };
     {
         let _span = tracing::debug_span!("telegram_message",
             sender = %build_sender_name(from),
@@ -211,17 +265,14 @@ async fn dispatch_message(
             msg_id = %msg.id
         )
         .entered();
-        tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message received");
+        tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, location = %location, "telegram message received");
     }
 
     let Some(standing) = admit_sender(bot, chat_id, from, ctx.state).await else {
         return;
     };
 
-    // Check for /command prefix
-    if let Some(text) = msg.text()
-        && let Some(cmd_text) = text.strip_prefix('/')
-    {
+    if let Some(cmd_text) = text.strip_prefix('/') {
         let (cmd_name, cmd_args) = match cmd_text.split_once(' ') {
             Some((name, args)) => (name, Some(args)),
             None => (cmd_text, None),
@@ -240,7 +291,7 @@ async fn dispatch_message(
     }
 
     // Build content with attachment metadata and collect inline images
-    let mut content = msg.text().unwrap_or("").to_string();
+    let mut content = text;
     let mut images: Vec<ImageData> = Vec::new();
 
     process_attachments(
@@ -268,7 +319,7 @@ async fn dispatch_message(
             name: sender_name.clone(),
             id: from.id.to_string(),
             interface: ENDPOINT.to_string(),
-            location: Some("direct message".to_string()),
+            location: Some(location),
         }),
     };
 
@@ -299,24 +350,54 @@ async fn dispatch_message(
     }
 }
 
-/// Record the chat, claim ownership if unset, and decide whether the sender
-/// may use the bot. Refused senders are told why and get `None`.
+/// Where a message was sent and its text (or caption), if it is meant for
+/// the agent. Private chats are also recorded, and the first one claims
+/// ownership; addressed groups are recorded so the agent can post there later.
+async fn addressed_to_agent(
+    msg: &teloxide::types::Message,
+    from: &teloxide::types::User,
+    ctx: &TelegramContext<'_>,
+) -> Option<(String, String)> {
+    let chat = &msg.chat;
+    let text = msg.text().or_else(|| msg.caption()).unwrap_or_default();
+    let key = chat.id.to_string();
+    let (location, text, reference) = if chat.is_private() {
+        let reference = ChatRef::direct_message(&build_sender_name(from));
+        ("direct message".to_string(), text.to_string(), reference)
+    } else if chat.is_group() || chat.is_supergroup() {
+        let replies_to_bot = msg
+            .reply_to_message()
+            .and_then(|m| m.from.as_ref())
+            .is_some_and(|u| u.id == ctx.bot_id);
+        let text = addressed_text(text, ctx.bot_username, replies_to_bot)?;
+        let label = group_label(chat.title());
+        let reference = ChatRef {
+            kind: ConversationKind::GroupChat,
+            label: label.clone(),
+        };
+        (label, text, reference)
+    } else {
+        return None;
+    };
+
+    let is_private = reference.kind == ConversationKind::Personal;
+    if let Err(e) = ctx.state.store.remember(&key, reference).await {
+        tracing::warn!(error = %e, chat_id = %chat.id, "failed to save telegram conversation");
+    }
+    if is_private {
+        claim_owner_if_unset(ctx.state, from, &key).await;
+    }
+    Some((location, text))
+}
+
+/// Decide whether the sender may use the bot. Refused senders are told why
+/// and get `None`.
 async fn admit_sender(
     bot: &Bot,
     chat_id: ChatId,
     from: &teloxide::types::User,
     state: &TelegramState,
 ) -> Option<Standing> {
-    let chat_key = chat_id.to_string();
-    if let Err(e) = state
-        .store
-        .remember(&chat_key, ChatRef::direct_message())
-        .await
-    {
-        tracing::warn!(error = %e, %chat_id, "failed to save telegram conversation");
-    }
-    claim_owner_if_unset(state, from, &chat_key).await;
-
     match state
         .store
         .admit(Some(&from.id.to_string()), state.respond_to_others)

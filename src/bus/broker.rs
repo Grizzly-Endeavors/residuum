@@ -262,6 +262,7 @@ mod tests {
             content: "void".into(),
             timestamp: test_timestamp(),
             attachment: None,
+            conversation: None,
         };
 
         // Publishing to a topic with no subscribers should not error.
@@ -320,6 +321,7 @@ mod tests {
             content: "for response".into(),
             timestamp: test_timestamp(),
             attachment: None,
+            conversation: None,
         };
         pub_.publish(topics::Endpoint(ep), resp_event)
             .await
@@ -377,6 +379,7 @@ mod tests {
                 content: "hello".into(),
                 timestamp: test_timestamp(),
                 attachment: None,
+                conversation: None,
             },
         )
         .await

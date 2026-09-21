@@ -140,6 +140,10 @@ pub struct ResponseEvent {
     pub timestamp: NaiveDateTime,
     /// Optional file attachment.
     pub attachment: Option<FileAttachment>,
+    /// Conversation on the endpoint to deliver to (an ID from
+    /// `list_conversations`). When `None` the interface routes by
+    /// correlation ID: the conversation that started the turn, else the owner.
+    pub conversation: Option<String>,
 }
 
 /// Push notification for notify channels.

@@ -17,7 +17,7 @@ use super::activity::{Activity, Attachment, ChannelAccount, ConversationKind};
 use super::auth::AuthError;
 use super::context_buffer::{BufferedMessage, render_context};
 use super::store::ConversationRef;
-use crate::interfaces::chat_state::{Owner, Standing};
+use crate::interfaces::chat_state::{Owner, Standing, direct_message_label};
 
 /// Attachment content type Teams uses for files shared in a chat.
 const FILE_DOWNLOAD_INFO: &str = "application/vnd.microsoft.teams.file.download.info";
@@ -96,11 +96,19 @@ fn base_conversation_id(conversation_id: &str) -> &str {
 }
 
 fn conversation_ref(activity: &Activity) -> Option<ConversationRef> {
+    let kind = activity.conversation_kind();
+    // A DM is labelled with the person in it so the agent can tell DMs apart
+    // in list_conversations.
+    let person = activity.from.as_ref().and_then(|f| f.name.as_deref());
+    let label = match (kind, person) {
+        (ConversationKind::Personal, Some(person)) => direct_message_label(person),
+        _ => activity.location_label(),
+    };
     Some(ConversationRef {
         conversation_id: activity.conversation.as_ref()?.id.clone(),
         service_url: activity.service_url.clone()?,
-        kind: activity.conversation_kind(),
-        label: activity.location_label(),
+        kind,
+        label,
     })
 }
 
@@ -301,6 +309,7 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming) {
             render_context(&reference.label, &rt.buffer.drain(&base_id))
         }
     };
+    let location = activity.location_label();
     let correlation_id = format!(
         "teams-{}",
         activity
@@ -318,7 +327,7 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming) {
                 name: sender_name.clone(),
                 id: from.aad_object_id.unwrap_or(from.id),
                 interface: super::ENDPOINT.to_string(),
-                location: Some(reference.label.clone()),
+                location: Some(location),
             }),
         },
         timestamp: crate::time::now_local(rt.tz),

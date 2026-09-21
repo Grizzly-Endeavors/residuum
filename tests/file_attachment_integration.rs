@@ -102,6 +102,7 @@ mod tests {
                     content: "Here's your photo".into(),
                     timestamp: chrono::Utc::now().naive_utc(),
                     attachment: Some(att),
+                    conversation: None,
                 },
             )
             .await

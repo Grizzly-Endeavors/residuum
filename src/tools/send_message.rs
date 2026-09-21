@@ -105,7 +105,10 @@ impl Tool for SendMessageTool {
             description: "Send a message and/or file attachment to an endpoint. When sharing \
                 a file with the user, always use the file_path parameter — the file will be \
                 delivered natively (inline image, audio player, or download link) rather than \
-                as a text path. Use list_endpoints to see available targets."
+                as a text path. Use list_endpoints to see available targets. On a chat \
+                endpoint (discord, telegram, teams) the message goes to the owner's direct \
+                message unless you pass a conversation from list_conversations, e.g. to post \
+                into a specific channel or group chat."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -125,6 +128,10 @@ impl Tool for SendMessageTool {
                     "title": {
                         "type": "string",
                         "description": "Optional title for notifications (defaults to first 60 chars of message)"
+                    },
+                    "conversation": {
+                        "type": "string",
+                        "description": "Optional conversation ID on a chat endpoint, from list_conversations. Omit to message the owner directly."
                     }
                 },
                 "required": ["endpoint"]
@@ -137,6 +144,7 @@ impl Tool for SendMessageTool {
         let message = arguments.get("message").and_then(Value::as_str);
         let file_path_str = arguments.get("file_path").and_then(Value::as_str);
         let title = arguments.get("title").and_then(Value::as_str);
+        let conversation_id = arguments.get("conversation").and_then(Value::as_str);
 
         // Must have at least one of message or file_path
         if message.is_none() && file_path_str.is_none() {
@@ -180,6 +188,14 @@ impl Tool for SendMessageTool {
             None
         };
 
+        let conversation = match conversation_id {
+            Some(id) => match self.registry.conversations().find(endpoint_name, id).await {
+                Ok(conversation) => Some(conversation),
+                Err(reason) => return Ok(ToolResult::error(reason)),
+            },
+            None => None,
+        };
+
         let now = chrono::Utc::now().naive_utc();
         let content = message.unwrap_or("").to_string();
 
@@ -210,6 +226,7 @@ impl Tool for SendMessageTool {
                 content,
                 timestamp: now,
                 attachment,
+                conversation: conversation.as_ref().map(|c| c.id.clone()),
             };
             let topic = topics::Endpoint(EndpointName::from(endpoint_name));
             self.publisher.publish(topic, response).await.map_err(|e| {
@@ -220,8 +237,11 @@ impl Tool for SendMessageTool {
             })?;
         }
 
-        // Build success message
-        let success_msg = build_success_message(endpoint_name, file_path_str, message);
+        let destination = match &conversation {
+            Some(c) => format!("{endpoint_name} ({})", c.label),
+            None => endpoint_name.to_string(),
+        };
+        let success_msg = build_success_message(&destination, file_path_str, message);
 
         Ok(ToolResult::success(success_msg))
     }
@@ -482,5 +502,100 @@ mod tests {
             "should explain: {}",
             result.output
         );
+    }
+
+    struct OneChannel;
+
+    #[async_trait]
+    impl crate::interfaces::conversations::ConversationSource for OneChannel {
+        async fn conversations(
+            &self,
+        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
+            Ok(vec![crate::interfaces::conversations::KnownConversation {
+                id: "19:builds".to_string(),
+                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                label: "#builds (Eng Team)".to_string(),
+            }])
+        }
+    }
+
+    fn registry_with_teams() -> EndpointRegistry {
+        EndpointRegistry::from_entries([EndpointEntry {
+            id: EndpointId::from("teams"),
+            topic: TopicId::Endpoint(EndpointName::from("teams")),
+            capabilities: EndpointCapabilities::INTERACTIVE,
+            display_name: "Microsoft Teams".to_string(),
+        }])
+    }
+
+    #[tokio::test]
+    async fn send_to_known_conversation_carries_the_target() {
+        let registry = registry_with_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(OneChannel));
+        let bus_handle = crate::bus::spawn_broker();
+        let mut subscriber = bus_handle
+            .subscribe(topics::Endpoint(EndpointName::from("teams")))
+            .await
+            .unwrap();
+        let tool = SendMessageTool::new(registry, bus_handle.publisher());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "conversation": "19:builds",
+                "message": "nightly build is green"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+        assert!(
+            result.output.contains("#builds (Eng Team)"),
+            "{}",
+            result.output
+        );
+        let event: crate::bus::ResponseEvent = subscriber.recv().await.unwrap().unwrap();
+        assert_eq!(event.conversation.as_deref(), Some("19:builds"));
+    }
+
+    #[tokio::test]
+    async fn send_to_unknown_conversation_is_rejected_before_publishing() {
+        let registry = registry_with_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(OneChannel));
+        let tool = SendMessageTool::new(registry, make_publisher());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "conversation": "19:gone",
+                "message": "hello?"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+        assert!(
+            result.output.contains("list_conversations"),
+            "{}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_on_an_endpoint_without_conversations_is_rejected() {
+        let tool = SendMessageTool::new(make_registry(), make_publisher());
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "my-ntfy",
+                "conversation": "anything",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+        assert!(result.is_error);
     }
 }

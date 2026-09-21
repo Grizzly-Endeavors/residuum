@@ -102,26 +102,58 @@ async fn target_or_warn(rt: &TeamsRuntime, correlation_id: &str) -> Option<Conve
 }
 
 async fn deliver_response(rt: &TeamsRuntime, response: ResponseEvent) {
-    let Some(target) = target_or_warn(rt, &response.correlation_id).await else {
-        return;
+    let target = match &response.conversation {
+        Some(id) => {
+            let Some(target) = rt.store.conversation(id).await else {
+                tracing::warn!(conversation = %id, "teams message addressed to an unknown conversation");
+                notify_owner_of_failure(rt, id, "the bot no longer knows that conversation").await;
+                return;
+            };
+            target
+        }
+        None => match target_or_warn(rt, &response.correlation_id).await {
+            Some(target) => target,
+            None => return,
+        },
     };
-    if let Some(attachment) = &response.attachment {
-        // Bots can only send files in Teams through a consent-card upload
-        // flow, which this interface does not implement.
-        tracing::warn!(
-            file = %attachment.path.display(),
-            "teams cannot deliver file attachments; sending the text with a note"
-        );
-        let note = format!(
-            "{}\n\n_I made a file for you ({}), but I can't send files over Teams yet. \
-             It's saved at `{}` and available in the web UI._",
-            response.content,
-            attachment.filename,
-            attachment.path.display()
-        );
-        rt.send_text(&target, note.trim_start()).await;
-    } else if !response.content.is_empty() {
-        rt.send_text(&target, &response.content).await;
+    let text = match &response.attachment {
+        Some(attachment) => {
+            // Bots can only send files in Teams through a consent-card upload
+            // flow, which this interface does not implement.
+            tracing::warn!(
+                file = %attachment.path.display(),
+                "teams cannot deliver file attachments; sending the text with a note"
+            );
+            format!(
+                "{}\n\n_I made a file for you ({}), but I can't send files over Teams yet. \
+                 It's saved at `{}` and available in the web UI._",
+                response.content,
+                attachment.filename,
+                attachment.path.display()
+            )
+            .trim_start()
+            .to_string()
+        }
+        None if response.content.is_empty() => return,
+        None => response.content,
+    };
+    if let Err(e) = rt.try_send_text(&target, &text).await {
+        tracing::error!(error = %e, conversation = %target.label, "failed to send teams message");
+        if response.conversation.is_some() {
+            notify_owner_of_failure(rt, &target.label, &e.to_string()).await;
+        }
+    }
+}
+
+/// Tell the owner a message the agent addressed to a specific conversation
+/// did not go out, since nobody else will see that it failed.
+async fn notify_owner_of_failure(rt: &TeamsRuntime, place: &str, reason: &str) {
+    if let Some(dm) = rt.owner_dm().await {
+        rt.send_text(
+            &dm,
+            &format!("**Error:** I couldn't post a message to {place}: {reason}"),
+        )
+        .await;
     }
 }
 

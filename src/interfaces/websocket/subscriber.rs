@@ -200,6 +200,7 @@ mod tests {
                 content: "hello".into(),
                 timestamp: ts(),
                 attachment: None,
+                conversation: None,
             },
         )
         .await

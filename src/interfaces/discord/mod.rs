@@ -1,25 +1,30 @@
-//! Discord interface adapter (DM-only).
+//! Discord interface adapter.
 //!
-//! Implements the serenity `EventHandler` trait to receive DMs and publish them
-//! onto the bus for agent processing.
+//! Implements the serenity `EventHandler` trait to receive messages and
+//! publish them onto the bus for agent processing.
 //!
+//! - Direct messages always reach the agent; in server channels only
+//!   messages that @mention the bot do.
 //! - The owner is whoever first DMs the bot; others are refused unless
 //!   `[discord] respond_to_others` is on.
-//! - Replies go back to the DM a message came from; proactive output
-//!   (scheduled results, `send_message`), notices, and errors go to the owner.
+//! - Replies go back to the channel a message came from; proactive output
+//!   goes to the owner's DM unless `send_message` names a conversation.
+//!   Notices and errors only ever go to the owner.
 //!
 //! Supports:
 //! - Slash commands from the shared command registry (owner only)
 //! - Attachment downloading to the workspace inbox
 
+mod channels;
 mod handler;
 pub(crate) mod subscriber;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use anyhow::Context as _;
-use serenity::model::id::ChannelId;
+use serenity::model::id::{ChannelId, UserId};
 use serenity::prelude::*;
 
 use crate::bus::EndpointName;
@@ -40,9 +45,28 @@ pub(super) struct DiscordState {
     store: ChatStateStore<ChatRef>,
     /// Channel each in-flight turn should answer in, by correlation ID.
     reply_targets: ReplyTargets<ChannelId>,
+    /// The bot's own user, learned when the gateway connection is ready.
+    bot_id: OnceLock<UserId>,
+    /// Server channel labels already looked up, e.g. `"#builds (Eng Team)"`.
+    channel_labels: Mutex<HashMap<ChannelId, String>>,
 }
 
 impl DiscordState {
+    fn labels(&self) -> MutexGuard<'_, HashMap<ChannelId, String>> {
+        // Plain map of owned strings; a panic mid-insert cannot corrupt it.
+        self.channel_labels
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn cached_label(&self, channel_id: ChannelId) -> Option<String> {
+        self.labels().get(&channel_id).cloned()
+    }
+
+    fn cache_label(&self, channel_id: ChannelId, label: String) {
+        self.labels().insert(channel_id, label);
+    }
+
     /// Where output for `correlation_id` goes: the channel that started the
     /// turn, or the owner's DM for proactive output.
     async fn target_for(&self, correlation_id: &str) -> Option<ChannelId> {
@@ -67,7 +91,7 @@ impl DiscordState {
     }
 }
 
-/// Discord interface adapter that routes DMs to the agent inbound channel.
+/// Discord interface adapter that routes DMs and server mentions to the agent.
 pub struct DiscordInterface {
     cfg: DiscordConfig,
     senders: AdapterSenders,
@@ -105,13 +129,18 @@ impl DiscordInterface {
     /// subscription fails, the serenity client cannot be built, or the
     /// connection fails.
     pub(crate) async fn start(self) -> anyhow::Result<()> {
-        let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+        let intents = GatewayIntents::DIRECT_MESSAGES
+            | GatewayIntents::GUILDS
+            | GatewayIntents::GUILD_MESSAGES
+            | GatewayIntents::MESSAGE_CONTENT;
         let layout = crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir);
 
         let state = Arc::new(DiscordState {
             respond_to_others: self.cfg.respond_to_others,
             store: ChatStateStore::load(layout.discord_state_json()).await?,
             reply_targets: ReplyTargets::default(),
+            bot_id: OnceLock::new(),
+            channel_labels: Mutex::new(HashMap::new()),
         });
         let subs = crate::interfaces::BaseSubscribers::new(
             &self.senders.bus_handle,
@@ -135,6 +164,13 @@ impl DiscordInterface {
             .await
             .context("failed to build the discord client")?;
 
+        let _registration = self.senders.conversations.register(
+            ENDPOINT,
+            Arc::new(channels::DiscordConversations {
+                state: Arc::clone(&state),
+                http: Arc::clone(&client.http),
+            }),
+        );
         let outbound = tokio::spawn(subscriber::run_discord_subscriber(
             subs,
             Arc::clone(&client.http),

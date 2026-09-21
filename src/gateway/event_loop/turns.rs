@@ -329,6 +329,7 @@ async fn publish_turn_outcome(
                             content: text.clone(),
                             timestamp: crate::time::now_local(tz),
                             attachment: None,
+                            conversation: None,
                         },
                     )
                     .await

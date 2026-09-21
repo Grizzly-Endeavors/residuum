@@ -136,8 +136,12 @@ impl ToolRegistry {
         )));
     }
 
-    /// Register the `list_endpoints` tool for querying available endpoints.
+    /// Register `list_endpoints` and `list_conversations` for discovering
+    /// where messages can go.
     pub fn register_list_endpoints_tool(&mut self, registry: EndpointRegistry) {
+        self.register(Box::new(
+            super::list_conversations::ListConversationsTool::new(registry.clone()),
+        ));
         self.register(Box::new(super::list_endpoints::ListEndpointsTool::new(
             registry,
         )));

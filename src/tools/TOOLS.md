@@ -440,7 +440,7 @@ On error:
 **Source:** `send_message.rs` · `SendMessageTool`
 
 **Description sent to LLM:**
-> Send a message and/or file attachment to an endpoint. When sharing a file with the user, always use the file_path parameter — the file will be delivered natively (inline image, audio player, or download link) rather than as a text path. Use list_endpoints to see available targets.
+> Send a message and/or file attachment to an endpoint. When sharing a file with the user, always use the file_path parameter — the file will be delivered natively (inline image, audio player, or download link) rather than as a text path. Use list_endpoints to see available targets. On a chat endpoint (discord, telegram, teams) the message goes to the owner's direct message unless you pass a conversation from list_conversations, e.g. to post into a specific channel or group chat.
 
 ### Input
 
@@ -450,6 +450,7 @@ On error:
 | `message`   | string | no†             | Message body or caption text                                                   |
 | `file_path` | string | no†             | Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text. |
 | `title`     | string | no              | Optional title for notifications (defaults to first 60 chars of message)      |
+| `conversation` | string | no           | Conversation ID on a chat endpoint, from `list_conversations`. Omit to message the owner directly. |
 
 † At least one of `message` or `file_path` must be provided.
 
@@ -460,6 +461,8 @@ On success:
 - File only: `"File '{filename}' published to endpoint '{name}'"`
 - Text + file: `"Message and file '{filename}' published to endpoint '{name}'"`
 
+With `conversation`, `{name}` reads `{endpoint} ({conversation label})`, e.g. `teams (#builds (Eng Team))`.
+
 On error:
 - Neither message nor file → `"at least one of 'message' or 'file_path' is required"`
 - Unknown endpoint → `"unknown endpoint '{name}'; available: {list}"`
@@ -467,11 +470,14 @@ On error:
 - File with notify endpoint → `"endpoint '{name}' does not support file attachments"`
 - File not found → `"file not found: {path}"`
 - File exceeds size limit → `"file '{name}' is {N}MB, exceeds {limit}MB limit for {endpoint}"`
+- `conversation` on an endpoint with no running chat interface → `"'{name}' has no conversations to choose from; only running chat interfaces (discord, telegram, teams) do — omit 'conversation' to send there"`
+- `conversation` not among the endpoint's conversations → `"no conversation '{id}' on '{name}'; use list_conversations to see the ones available"`
+- The interface cannot list its conversations → `"couldn't list conversations on '{name}': {reason}"`
 - Bus publish failure → execution error with details
 
 **Side effects:**
 - Notify endpoints: publishes `NotificationEvent` to the endpoint's topic
-- Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic (with optional `FileAttachment`)
+- Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic (with optional `FileAttachment` and the validated `conversation` target). If delivery to a named conversation fails later, the owner gets an error message on that interface.
 - **Cannot send to inbox** — the agent has no write path to inbox
 - **File attachments require interactive endpoints** — Telegram allows up to 50MB, others 25MB
 
@@ -503,6 +509,40 @@ Notification endpoints (for send_message):
 When no endpoints configured: `"No endpoints configured."`
 
 Excludes inbox, webhook, and other input-only or system endpoints.
+
+---
+
+## `list_conversations`
+
+**Source:** `list_conversations.rs` · `ListConversationsTool`
+
+**Description sent to LLM:**
+> List the direct messages, group chats, and channels you can post into on each chat interface (discord, telegram, teams). Pass an ID from here as send_message's 'conversation' to post there. Chats appear once the bot has been added to them or has heard from them; Discord server channels are listed directly.
+
+### Input
+
+| Parameter  | Type   | Required | Description                                                  |
+|------------|--------|----------|--------------------------------------------------------------|
+| `endpoint` | string | no       | Only list conversations on this chat endpoint (e.g. `"teams"`) |
+
+### Output
+
+One section per running chat interface, sorted by endpoint then label:
+```
+discord:
+  1234567890 — #builds (Eng Team) (channel)
+  9876543210 — direct message with bear (direct message)
+
+teams:
+  19:abc@thread.tacv2 — #general (Eng Team) (channel)
+```
+
+- An interface that knows no conversations yet shows `  (none yet)`.
+- An interface that fails to list shows `  couldn't list conversations: {reason}` (the other sections still appear).
+- No chat interface running → `"No chat interfaces are running (discord, telegram, and teams list conversations)."`
+- `endpoint` that is not a running chat interface → error `"'{name}' is not a running chat interface; running: {list}"`
+
+**Side effects:** none. Discord lists server channels through its API on every call; Teams and Telegram read their saved state.
 
 ---
 
