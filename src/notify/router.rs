@@ -1,4 +1,4 @@
-//! Notification router: subscribes to `TopicId::BackgroundResult` and delivers
+//! Notification router: subscribes to `TopicId::Background` and delivers
 //! each result according to the disposition its producing agent declared.
 //!
 //! Routing is a match on `ResultDisposition`, decided upstream by the agent that
@@ -17,7 +17,7 @@ use crate::bus::{
 
 /// Spawn the notification router as a bus subscriber.
 ///
-/// Subscribes to `TopicId::BackgroundResult` and routes each `AgentResultEvent`
+/// Subscribes to `TopicId::Background` and routes each `AgentResultEvent`
 /// by its declared disposition.
 ///
 /// Returns `None` if subscription fails.
