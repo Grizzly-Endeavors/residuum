@@ -7,7 +7,7 @@ Scheduled actions are one-off future tasks. They fire once at a specified time a
 1. Agent (or user via agent) creates an action with `schedule_action`
 2. Action persisted to `scheduled_actions.json` (atomic write: temp file + rename)
 3. Gateway checks for due actions on a **30-second tick**
-4. When `run_at` has passed: action removed from persistence, background task spawned
+4. When `run_at` has passed: action removed from persistence, a `scheduled` session is forked
 5. Results delivered by the notification router according to the disposition the agent declared
 
 If the gateway was offline when an action was due, it fires on next startup.
@@ -21,8 +21,8 @@ If the gateway was offline when an action was due, it fires on next startup.
 | `name` | string | yes | Human-readable label |
 | `prompt` | string | yes | The prompt to execute when the action fires |
 | `run_at` | string | yes | Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in configured workspace timezone. Displayed times are also local. Must be in the future. |
-| `agent_name` | string | no | `"main"` = full wake turn with conversation context. `"<skill>"` = sub-agent with that skill as its role. Omitted = sub-agent with no skill. |
-| `model_tier` | string enum | no | `"small"`, `"medium"`, `"large"`. Only applies to sub-agent actions. |
+| `agent_name` | string | no | `"<skill>"` = session forked with that skill as its role. Omitted = plain session with no skill. `"main"` is rejected. |
+| `model_tier` | string enum | no | `"small"`, `"medium"`, `"large"`. |
 
 ### `list_actions`
 
@@ -36,7 +36,7 @@ No parameters. Returns all pending actions.
 
 ## Routing
 
-Scheduled action results flow through the pub/sub bus to the notification router and are filed to the inbox, or pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`. Main-turn actions (`agent_name: "main"`) inject directly into the main agent conversation.
+Scheduled action results flow through the pub/sub bus to the notification router and are filed to the inbox, or pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`.
 
 See [notifications.md](notifications.md) for the full routing model.
 

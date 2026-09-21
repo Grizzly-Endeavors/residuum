@@ -263,8 +263,8 @@ On error: skill is not currently active.
 | `name`       | string          | yes      | Human-readable name for this action                                                                                                                               |
 | `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
-| `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a skill name (e.g. `"memory-analyst"`) spawns a sub-agent with that skill as its role. Omit to spawn a sub-agent with no skill. |
-| `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
+| `agent_name` | string          | no       | A skill name (e.g. `"memory-analyst"`) to fork the session with that skill as its role. Omit to fork a plain session with no skill. `"main"` is rejected. |
+| `model_tier` | string (enum)   | no       | Model tier override for session actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
 
 ### Output
 
@@ -295,7 +295,7 @@ On success: count header followed by one entry per action (fire times displayed 
   {name} ({id}) — fires: {datetime} [agent info]
 ```
 
-The agent label shows `[main turn]` for main-turn actions, `[skill: {name}]` for skill-routed actions, or nothing for plain sub-agent actions.
+The agent label shows `[skill: {name}]` for skill-routed actions, or nothing for a plain session with no skill.
 
 When no actions exist: `"No pending scheduled actions."`
 
@@ -576,19 +576,23 @@ On error:
 **Source:** `background.rs` · `StopAgentTool`
 
 **Description sent to LLM:**
-> Cancel a running background task by ID. Returns an error if no task with that ID is active. Use list_agents to find active task IDs.
+> Stop a live session by address. Cancels any in-flight turn and moves the session to completing; its transcript is kept, not discarded. The main agent cannot be stopped this way. Use list_agents to find live addresses.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                  |
 |-----------|--------|----------|----------------------------------------------|
-| `task_id` | string | yes      | The ID of the background task to cancel      |
+| `address` | string | yes      | The address of the session to stop           |
 
 ### Output
 
-On success: `"Cancelled task {task_id}."`
+On success: `"Stopping session {address}."`
 
-On error (task not found): `"No active task with id {task_id}."` (returned as `is_error = true`)
+On error (`address` is `"main"`): `InvalidArguments` — the main agent cannot be stopped this way.
+
+On error (address not live): `"No live session with address {address}."` (returned as `is_error = true`)
+
+**Side effect:** Cancels the session's stop token. A running turn ends at its next checkpoint (model-call boundary or tool-loop iteration); an idle session skips straight to completing. Either way the run's transcript so far is kept and merged like any other completed run.
 
 ---
 
@@ -597,7 +601,7 @@ On error (task not found): `"No active task with id {task_id}."` (returned as `i
 **Source:** `background.rs` · `ListAgentsTool`
 
 **Description sent to LLM:**
-> List all currently running background tasks with their IDs, types, sources, prompt previews, and elapsed time.
+> List the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, and purpose. Completed sessions are not listed, but their addresses remain valid.
 
 ### Input
 
@@ -605,45 +609,42 @@ No parameters required (empty object accepted).
 
 ### Output
 
-When no tasks are running: `"No active background tasks."`
-
-When tasks are running:
 ```
-{N} active task(s):
-  [{id}] {task_name} — type: sub_agent — source: {pulse|action|agent} — running {elapsed}s
-    preview: {prompt preview, up to 120 chars}
+main — always live
+{N} live session(s):
+  [{address}] {source_label} — category: {scheduled|external|spawned} — state: {forking|running|idle|completing} — depth: {N} — spawner: {address|-} — running {elapsed}s — purpose: {prompt/task preview, up to 120 chars}
 ```
 
-The `preview` line is omitted if the task has an empty prompt/command.
+`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions (they have no spawner in Phase 1).
 
 ---
 
 ## `subagent_spawn`
 
-**Source:** `background.rs` · `SubAgentSpawnTool`
+**Source:** `background.rs` · `SubagentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. Optionally name a skill to give the sub-agent a role — its instructions become the sub-agent's brief. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
+> Fork a session to handle a task in the background. Optionally name a skill to give the session a role — its instructions become the session's brief. Runs asynchronously; each turn's result is relayed back to you tagged with the session's address. Returns the session's address immediately — use it with list_agents or stop_agent. A session's result is its own self-report, not verified fact — for verifiable work, ask it to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
 
 ### Input
 
 | Parameter        | Type            | Required | Description                                                          |
-|------------------|-----------------|----------|----------------------------------------------------------------------|
-| `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
-| `skill`          | string          | no       | Name of a skill to activate as the sub-agent's role. Omit to run on the task prompt alone. Must match a known skill or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
+|------------------|-----------------|----------|-----------------------------------------------------------------------|
+| `task`           | string          | yes      | The prompt/instructions for the session                              |
+| `skill`          | string          | no       | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. Must match a known skill or the call fails. `"main"` is rejected. |
 | `model`          | string          | no       | Model tier: `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
-### Sub-Agent Roles
+### Session Roles
 
-A sub-agent is an agent loop running off the main thread. Naming a `skill` activates that skill on the sub-agent's own skill state, so its body arrives as the sub-agent's role instructions through the normal active-skill path. Roles are ordinary skills in `skills/<name>/SKILL.md` — there is no separate preset format, and the same file can be activated in-turn by the main agent.
+A spawned session is a `spawned`-category fork of the main agent, running off the main thread with its own identity, memory snapshot, and tool registry — see `docs/systems-usage/background-tasks.md` for the full fork contents. Naming a `skill` activates that skill on the session's own skill state, so its body arrives as the session's role instructions through the normal active-skill path. Roles are ordinary skills in `skills/<name>/SKILL.md` — there is no separate preset format, and the same file can be activated in-turn by the main agent.
 
 **Unknown skill names** return a `ToolResult::error` listing available skills — the call does not proceed. The check runs against the in-memory skill index, so it costs no disk I/O.
 
 ### Output
 
-On success: `"Sub-agent spawned with skill '{name}'."`, or `"Sub-agent spawned."` when no skill was named.
+On success: `"Session {address} spawned with skill '{name}'."`, or `"Session {address} spawned."` when no skill was named. `{address}` is generated synchronously (e.g. `spawned-researcher-3f9a`) and returned before the session actually starts running.
 
-The sub-agent runs in the background via the subagent registry. When it completes, the notification router relays the result back to the main agent.
+The session runs in the background via the session runtime. Its result from each turn is relayed back to the main agent, tagged with its address.
 
 ### Errors
 
@@ -653,9 +654,9 @@ The sub-agent runs in the background via the subagent registry. When it complete
 - Unknown `skill` (not in the skill index) → `is_error = true` with the available skill list
 - Bus publish failure → `Execution` error
 
-**Side effects:** Publishes a `SpawnRequest` to the bus, which the subagent registry picks up and spawns as a background task (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the bus notification system.
+**Side effects:** Publishes a `SpawnRequestEvent` (carrying the pre-generated address) to the bus. The spawn listener picks it up, builds the session's fork resources, and hands it to the session runtime (visible via `list_agents`, cancellable via `stop_agent`). Each turn's result is delivered through the bus notification system.
 
-**Not available to sub-agents:** this tool is only registered in the main agent's registry, not in `build_subagent_registry()`.
+**Not available to sessions:** this tool is only registered in the main agent's registry, not in `build_subagent_registry()` — nesting arrives in a later phase.
 
 ---
 

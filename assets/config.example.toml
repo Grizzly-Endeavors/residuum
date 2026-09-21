@@ -229,10 +229,15 @@ port = 7700
 # [web_search.gemini]
 # exclude_domains = ["example.com"]
 
-# ── Background tasks (optional) ───────────────────────────────────────────
-# Semaphore-bounded concurrent background tasks (sub-agents and scripts).
+# ── Agent sessions (optional) ──────────────────────────────────────────────
+# Semaphore-bounded concurrent session turns (pulses, scheduled actions,
+# webhooks, and subagent_spawn). The permit is held only while a turn is
+# running, not for a session's whole idle lifetime.
 # Model tiers fall back: tier → next tier up → main.
 # Model tier assignments are configured in providers.toml under [background.models].
 #
 # [background]
 # max_concurrent = 3
+# idle_timeout_scheduled_minutes = 2    # pulses, actions; webhook sessions use this too
+# idle_timeout_spawned_minutes = 10     # subagent_spawn, the learner
+# idle_timeout_external_minutes = 30    # non-webhook external sessions

@@ -183,7 +183,6 @@ impl Tool for ListActionsTool {
                 .with_timezone(&self.tz)
                 .format("%Y-%m-%dT%H:%M:%S");
             let agent_label = match action.agent.as_deref() {
-                Some("main") => " [main turn]".to_string(),
                 Some(skill) => format!(" [skill: {skill}]"),
                 None => String::new(),
             };

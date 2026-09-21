@@ -1,32 +1,64 @@
 # Background Tasks
 
-Background tasks let the agent run work without blocking the main conversation. The execution model is sub-agents — ephemeral LLM turn loops that run independently and deliver results through notification channels.
+Background tasks let the agent run work without blocking the main conversation. The execution model is **agent sessions** — temporary forks of the main agent that run independently and deliver results through notification channels.
 
-## Sub-Agents
+## Sessions
 
-An ephemeral LLM turn loop with its own context. Sub-agents are lightweight workers — they get enough context to do their job but don't carry the full agent identity.
+A session is a fork of the main agent with its own identity, memory snapshot, and tool registry, running off the main thread.
 
-**What's included in sub-agent context:**
-- Task prompt
-- `USER.md`
-- `WIKI_INDEX` (the root `wiki/index.md`)
-- Active skills
-- Full tool set (with exceptions below)
-- Optional inline context and file references
+**What's included in a session's fork:**
+- The main agent's full identity and system prompt content — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki root index, the skills index — assembled once in the system message, exactly as it is for the main agent.
+- A snapshot of the global observation log and the recent-context narrative, taken at fork time. A session never sees observations merged after it forked.
+- Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), or the webhook payload (webhook).
+- The requested skill activated, when one was given.
+- The requested model tier.
 
-**What's excluded by default:**
-- `SOUL.md` (no identity)
-- `AGENTS.md` (no behavioral rules)
-- Observation log
-- Recent conversation messages
+**What's excluded:**
+- The main agent's live, unobserved conversation. A session never sees what the user and main agent are currently discussing — the spawning agent writes a task prompt with whatever context the session needs.
 
-The spawn caller can opt back into identity context with `include_identity: true` — this adds `SOUL.md` and `AGENTS.md` to the sub-agent's prompt alongside the usual `USER.md`/`WIKI_INDEX`. The built-in `reflection` pulse sets it, since the `introspection` skill needs full identity context to judge what's worth surfacing.
+**Tools excluded from sessions:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `switch_endpoint` (no nesting yet, no action scheduling from a session, and `switch_endpoint` only makes sense for the main agent's own output routing).
 
-**Tools excluded from sub-agents:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `stop_agent` (no sub-to-sub delegation, no action scheduling from background).
-
-Sub-agents share the MCP registry with the main agent.
+Sessions share the MCP registry with the main agent.
 
 For shell commands and scripts, the agent uses its own `write_file` and `exec` tools directly — there is no separate "script task" type.
+
+## Categories
+
+Every session has a category, derived from what started it:
+
+| Category | Started by | Address prefix |
+|----------|-----------|-----------------|
+| `scheduled` | Pulses and scheduled actions | `scheduled-` |
+| `external` | Webhooks | `external-` |
+| `spawned` | `subagent_spawn`, the subconscious `learner` | `spawned-` |
+
+## Lifecycle
+
+A session run moves through: `forking` → `running` → `idle` → `completing` → `completed`.
+
+- **forking** — the session is registered and its fork resources (identity, memory snapshot, tools) are being built; no turn has started.
+- **running** — a turn is executing. The run holds one concurrency permit.
+- **idle** — the turn ended; the session is still discoverable via `list_agents` and lingers for its category's idle timeout.
+- **completing** — the idle timeout elapsed, or the session was stopped via `stop_agent`.
+- **completed** — the run's final transcript and metadata are recorded in the session store, and the result is delivered. The session is no longer listed by `list_agents`, though its address stays meaningful for the record.
+
+Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing.
+
+### Idle Timeouts
+
+Configurable in the `[background]` config section:
+
+| Category | Config key | Default |
+|----------|-----------|---------|
+| `scheduled` (also used by `external` webhook sessions — a webhook call is one-shot) | `idle_timeout_scheduled_minutes` | 2 minutes |
+| `spawned` | `idle_timeout_spawned_minutes` | 10 minutes |
+| `external` (non-webhook) | `idle_timeout_external_minutes` | 30 minutes |
+
+## Addresses
+
+Every session has a stable, human-readable address, e.g. `spawned-researcher-3f9a`: the category, a slugified qualifier (skill, pulse, action, or webhook name), and a short random suffix. `subagent_spawn` generates the address synchronously and returns it immediately, before the session has actually started running.
+
+A run id, distinct from the address, identifies the specific run within the session's lifecycle.
 
 ## Tools
 
@@ -34,23 +66,23 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
-| `task` | string | yes | The prompt/instructions for the sub-agent. Must not be empty. |
-| `skill` | string | no | Name of a skill to activate as the sub-agent's role. Omit to run on the task prompt alone. `"main"` is rejected — you cannot spawn main as a sub-agent. |
+| `task` | string | yes | The prompt/instructions for the session. Must not be empty. |
+| `skill` | string | no | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. `"main"` is rejected. |
 | `model` | string enum | no | `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
-A sub-agent's final result is a **self-report** — it describes what the sub-agent believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
+Returns the session's address immediately. A session's final result is a **self-report** — it describes what the session believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
 
 ### `list_agents`
 
-No parameters. Lists all currently active background tasks.
+No parameters. Lists the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, and purpose.
 
 ### `stop_agent`
 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
-| `task_id` | string | yes | Cancels the task by ID. |
+| `address` | string | yes | Stops the session at this address. |
 
-Cancels a background sub-agent. To stop the main-agent turn itself — the conversation the user is having — see [Turn Control](turn-control.md) instead; that's a user-facing interface control, not a tool.
+The main agent cannot be stopped this way. To stop the main-agent turn itself — the conversation the user is having — see [Turn Control](turn-control.md) instead; that's a user-facing interface control, not a tool.
 
 ## Model Tiers
 
@@ -62,11 +94,11 @@ Cancels a background sub-agent. To stop the main-agent turn itself — the conve
 
 Model tiers are configured in `[background]` config section (`models.small`, `models.medium`, `models.large`).
 
-## Sub-Agent Roles
+## Session Roles
 
-A sub-agent is an agent loop running off the main thread. The only thing that distinguishes one sub-agent from another is what the caller passes at spawn time: a prompt, a model tier, whether identity files are included, and optionally a **skill** whose body becomes the sub-agent's role instructions.
+The only thing that distinguishes one spawned session from another is what the caller passes at fork time: a prompt, a model tier, and optionally a **skill** whose body becomes the session's role instructions.
 
-There is no separate preset format. A role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn by the main agent or handed to a sub-agent as its brief.
+There is no separate preset format. A role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn by the main agent or handed to a session as its brief.
 
 ```yaml
 ---
@@ -74,7 +106,7 @@ name: memory-analyst
 description: Answers synthesized questions about the user and past history from episodic memory.
 ---
 
-(Body — the instructions this sub-agent runs with.)
+(Body — the instructions this session runs with.)
 ```
 
 Spawn configuration lives at the call site, not in the file:
@@ -82,39 +114,33 @@ Spawn configuration lives at the call site, not in the file:
 | Caller | Where the config lives |
 |--------|------------------------|
 | `subagent_spawn` | The tool's `skill` and `model` parameters. |
-| Heartbeat pulses | `agent`, `model_tier`, and `include_identity` on the pulse in `HEARTBEAT.yml`. |
-| Scheduled actions | `agent` and `model_tier` on the action. |
-| Subconscious `learner` | Fixed in code: the `learner` skill, `large` tier, identity included. |
+| Heartbeat pulses | `agent` and `model_tier` on the pulse in `HEARTBEAT.yml`. `agent: "main"` and `include_identity` are removed — a pulse using either fails to load with an error naming it. |
+| Scheduled actions | `agent` and `model_tier` on the action. `agent_name: "main"` is rejected by `schedule_action` and dropped (loudly) from any stored action that predates this change. |
+| Subconscious `learner` | Fixed in code: the `learner` skill, `large` tier. |
 
-A spawn naming a skill that does not resolve fails loudly rather than running a sub-agent without the instructions that define its job.
+A spawn naming a skill that does not resolve fails loudly rather than running a session without the instructions that define its job.
 
 ### Bundled Role Skills
 
 | Skill | Spawned by |
 |-------|------------|
-| `introspection` | The built-in `reflection` pulse, at `large` with identity included. |
-| `wiki` | The built-in `memory_tending` and `wiki_lint` pulses, at `large` without identity. `memory_tending` ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md`; `wiki_lint` fixes index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links. |
+| `introspection` | The built-in `reflection` pulse, at `large`. |
+| `wiki` | The built-in `memory_tending` and `wiki_lint` pulses, at `large`. `memory_tending` ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md`; `wiki_lint` fixes index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links. |
 | `learner` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, files it as a wiki page — `status: draft` for a single episode, promoted to `stable` once a second independent episode supports it — and adds only corroborated core facts to `USER.md`. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
 | `memory-analyst` | The main agent, when it needs a synthesized answer about the user or past history rather than raw search results. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates instead of silently picking one, abstains rather than fabricating when the record is silent, and cites episode IDs. |
 
 ## Concurrency
 
-`BackgroundTaskSpawner` uses a semaphore bounded by `max_concurrent` in the `[background]` config section. Tasks that exceed the limit wait for a permit.
+The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` config section. The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
 
 ## Result Routing
 
-All background task results flow through the pub/sub bus to the notification router, which delivers each result according to the disposition the producing agent declared. Agent-spawned task results are relayed back to the main agent instead.
+Every session's result flows through the pub/sub bus to the notification router, which delivers it according to the disposition the producing agent declared. A `spawned` session's result relays back to the main agent, tagged with its address; `scheduled` and `external` results go through the inbox/urgent-fanout rules.
 
 See [notifications.md](notifications.md) for the full routing model.
 
-## Transcript Logging
+## Session Store
 
-Every background task writes a transcript to `memory/background/YYYY-MM/DD/bg-<task-id>.log`. The directory is created on-demand (not at bootstrap).
+Every run's metadata and transcript are recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. Stopped runs keep their transcript up to the point they were stopped. At startup, any run left incomplete by a prior process exit is marked completed; its transcript is whatever had already been recorded.
 
-Transcripts contain the full turn history: tool calls, tool results, intermediate messages, and the final response, serialized as JSON. This provides an auditable record of everything the sub-agent did.
-
-## Task Lifecycle
-
-Spawn → Acquire semaphore permit → Execute → Complete → Route result → Cleanup
-
-All spawns are asynchronous — `subagent_spawn` returns immediately with a task ID. Results are routed through the notification system when the sub-agent completes.
+The record carries the session's address, run id, category, source label, spawner, depth, purpose, and lifecycle timestamps, plus the full message transcript once the run completes.

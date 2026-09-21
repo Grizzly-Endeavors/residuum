@@ -51,12 +51,12 @@ Explain: "When a heartbeat check finds something worth reporting, the result is 
 
 There is no per-pulse routing field. Do not add a `channels:` key to a pulse — it is not a real field and will be silently ignored.
 
-How a result is handled depends on what the sub-agent reports:
+How a result is handled depends on what the session reports:
 - Nothing noteworthy -> it replies `HEARTBEAT_OK` and the result is discarded entirely. This is what keeps routine checks from becoming noise.
 - Something worth knowing -> filed to the inbox for the user to review.
-- Something that cannot wait -> the sub-agent ends its report with `HEARTBEAT_URGENT`, which also pushes to every configured notification channel.
+- Something that cannot wait -> the session ends its report with `HEARTBEAT_URGENT`, which also pushes to every configured notification channel.
 
-The sub-agent makes that urgency call itself, so **the way you word the pulse prompt is how you steer it**. Be concrete about what counts as urgent for this particular check. Compare:
+The session makes that urgency call itself, so **the way you word the pulse prompt is how you steer it**. Be concrete about what counts as urgent for this particular check. Compare:
 
 ```yaml
     tasks:
@@ -64,22 +64,9 @@ The sub-agent makes that urgency call itself, so **the way you word the pulse pr
         prompt: "Run 'curl -s -o /dev/null -w \"%{http_code}\" https://example.com'. If the status code is not 200, that is urgent — the site is down. If it is 200, report HEARTBEAT_OK."
 ```
 
-That tells the sub-agent exactly which outcome deserves to interrupt. A vague prompt gets vague judgment.
+That tells the session exactly which outcome deserves to interrupt. A vague prompt gets vague judgment.
 
-If the user wants a pulse to talk to them directly in conversation rather than filing to the inbox, set `agent: main` on the pulse. That runs it as a wake turn and injects the prompt straight into the conversation:
-
-```yaml
-pulses:
-  - name: server_health
-    schedule: "30m"
-    active_hours: "08:00-22:00"
-    agent: main
-    tasks:
-      - name: check_server
-        prompt: "Check whether https://example.com returns 200."
-```
-
-Use `agent: main` sparingly -- it interrupts every time it fires, whether or not there is anything to say. Most monitoring should stay a background sub-agent.
+Every pulse result goes through the inbox (and, when urgent, every configured notification channel) -- there is no mode that injects a pulse's result straight into the conversation.
 
 ## Step 4: External Notifications (Optional)
 
@@ -104,7 +91,7 @@ Tell the user that `HEARTBEAT.yml` is re-read on every scheduler tick -- changes
 Summarize what was configured:
 - Which pulse is running and how often
 - Where results are delivered
-- How to check results (the inbox, or directly in conversation if the pulse uses `agent: main`)
+- How to check results (the inbox, and any notification channels for urgent findings)
 
 Suggest next steps:
 - "If you think of more things to monitor, just tell me and I will set up new pulses."
