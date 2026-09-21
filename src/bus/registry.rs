@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::interfaces::conversations::ConversationDirectory;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 use super::endpoint::EndpointCapabilities;
@@ -33,10 +34,12 @@ type EntryMap = HashMap<EndpointId, EndpointEntry>;
 ///
 /// Every clone refers to the same catalog, so a [`refresh`](Self::refresh)
 /// after a config or `channels.toml` reload is seen by everything holding
-/// one — tools, the notification router, idle switching.
+/// one — tools, the notification router, idle switching. It also carries the
+/// directory of conversations the running chat interfaces can reach.
 #[derive(Debug, Clone, Default)]
 pub struct EndpointRegistry {
     entries: Arc<std::sync::RwLock<Arc<EntryMap>>>,
+    conversations: ConversationDirectory,
 }
 
 fn index_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> EntryMap {
@@ -49,6 +52,7 @@ impl EndpointRegistry {
     pub fn from_entries(entries: impl IntoIterator<Item = EndpointEntry>) -> Self {
         Self {
             entries: Arc::new(std::sync::RwLock::new(Arc::new(index_entries(entries)))),
+            conversations: ConversationDirectory::default(),
         }
     }
 
@@ -65,6 +69,12 @@ impl EndpointRegistry {
             .entries
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+    }
+
+    /// Conversations each running chat interface can reach.
+    #[must_use]
+    pub(crate) fn conversations(&self) -> &ConversationDirectory {
+        &self.conversations
     }
 
     /// Snapshot of the current catalog.

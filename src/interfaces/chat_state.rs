@@ -12,6 +12,8 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use super::conversations::KnownConversation;
+
 /// Kind of chat conversation, which decides whether the bot needs an @mention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,12 +36,33 @@ pub(crate) struct ChatRef {
 }
 
 impl ChatRef {
-    /// The reference for a 1:1 chat with the bot.
-    pub(crate) fn direct_message() -> Self {
+    /// The reference for a 1:1 chat between `person` and the bot.
+    pub(crate) fn direct_message(person: &str) -> Self {
         Self {
             kind: ConversationKind::Personal,
-            label: "direct message".to_string(),
+            label: direct_message_label(person),
         }
+    }
+}
+
+/// How a 1:1 chat is labelled in `list_conversations`.
+pub(crate) fn direct_message_label(person: &str) -> String {
+    format!("direct message with {person}")
+}
+
+/// A stored conversation reference that can describe itself to the agent.
+pub(crate) trait ConversationRecord {
+    fn kind(&self) -> ConversationKind;
+    fn label(&self) -> &str;
+}
+
+impl ConversationRecord for ChatRef {
+    fn kind(&self) -> ConversationKind {
+        self.kind
+    }
+
+    fn label(&self) -> &str {
+        &self.label
     }
 }
 
@@ -176,6 +199,24 @@ where
             .conversations
             .get(conversation_id)
             .cloned()
+    }
+
+    /// Every stored conversation, as the agent sees it in `list_conversations`.
+    pub(crate) async fn known_conversations(&self) -> Vec<KnownConversation>
+    where
+        C: ConversationRecord,
+    {
+        self.state
+            .lock()
+            .await
+            .conversations
+            .iter()
+            .map(|(id, c)| KnownConversation {
+                id: id.clone(),
+                kind: c.kind(),
+                label: c.label().to_string(),
+            })
+            .collect()
     }
 
     /// Insert or update a conversation reference, writing only when it changed.

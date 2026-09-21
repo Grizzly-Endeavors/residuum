@@ -40,6 +40,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
 - `switch_endpoint` to send background output (sub-agent results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from.
 - `send_message` to send a one-off message to any interactive endpoint.
+- `send_message` with `conversation` to post into a specific DM, group chat, or channel on a chat interface (Discord, Telegram, Teams). `list_conversations` shows the IDs. Without `conversation`, a proactive message on a chat interface goes to the owner's direct message.
 
 ### Notification endpoints
 
@@ -66,8 +67,9 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 | Tool | Purpose |
 |------|---------|
 | `list_endpoints` | Show available interactive and notification endpoints. |
+| `list_conversations` | Show the DMs, group chats, and channels each running chat interface can post into, with the IDs `send_message` takes as `conversation`. |
 | `switch_endpoint` | Send background output to a different interactive endpoint. Auto-clears when the user sends a message. |
-| `send_message` | One-off message to any interactive or notification endpoint. Does not change where turn responses go. |
+| `send_message` | One-off message to any interactive or notification endpoint, optionally to a specific `conversation` on a chat interface. Does not change where turn responses go. |
 | `subagent_spawn` | Spawn a background subagent. The result is relayed back to you. |
 | `schedule_action` | Schedule a future action. The result is filed to the inbox, or pushed too if marked urgent. |
 
@@ -76,4 +78,5 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 - Notification channel delivery failures are logged at warn level. They do not retry or block other channels.
 - If `send_message` targets an offline endpoint, the agent receives an error via the bus error topic.
 - The `inbox` topic is not available as a `send_message` target — inbox is input-only.
+- A `conversation` is checked before sending: an ID `list_conversations` doesn't show is rejected. If the platform then refuses the post (the bot was removed, lacks permission), the owner gets an error message on that interface.
 - Background results from agent-spawned tasks are injected mid-turn if the agent is active, or start a new turn if idle.

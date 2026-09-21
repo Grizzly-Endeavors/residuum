@@ -8,6 +8,7 @@ pub(crate) mod file_bug_report;
 pub(crate) mod file_tracker;
 pub mod inbox;
 mod line_hash;
+pub(crate) mod list_conversations;
 pub(crate) mod list_endpoints;
 pub mod memory_get;
 pub mod memory_search;

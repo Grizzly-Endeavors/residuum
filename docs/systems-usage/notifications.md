@@ -40,6 +40,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agent can:
 - `switch_endpoint` to send background output (sub-agent results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from.
 - `send_message` to send a one-off message to any interactive endpoint.
+- `send_message` with `conversation` to post into a specific DM, group chat, or channel on a chat interface (Discord, Telegram, Teams). `list_conversations` shows the IDs. Without `conversation`, a proactive message on a chat interface goes to the owner's direct message.
 - `send_message` with `file_path` to deliver a file attachment. Images render inline, audio gets a native player, other files appear as downloads. Telegram allows up to 50 MB; Discord, WebSocket, and notification-only endpoints cap at 25 MB. File attachments require an interactive endpoint — notification-only endpoints reject them. Microsoft Teams cannot receive files from the agent: the text is delivered with a note giving the file's path.
 
 ### Notification endpoints
@@ -66,8 +67,9 @@ Input-only. Items arrive from the notification router, webhook routing, and the 
 | Tool | Purpose |
 |------|---------|
 | `list_endpoints` | Show available interactive and notification endpoints. |
+| `list_conversations` | Show the DMs, group chats, and channels each running chat interface can post into, with the IDs `send_message` takes as `conversation`. |
 | `switch_endpoint` | Send background output to a different interactive endpoint. Auto-clears when the user sends a message. |
-| `send_message` | One-off message and/or file attachment to any interactive or notification endpoint. Does not change where turn responses go. File attachments require an interactive endpoint. |
+| `send_message` | One-off message and/or file attachment to any interactive or notification endpoint, optionally to a specific `conversation` on a chat interface. Does not change where turn responses go. File attachments require an interactive endpoint. |
 
 ## Sentinels
 

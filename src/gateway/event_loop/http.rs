@@ -19,6 +19,8 @@ pub struct AdapterSenders {
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
     pub stop: mpsc::Sender<StopRequest>,
+    /// Where the adapter registers the conversations it can reach.
+    pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
 }
 
 /// Lifecycle handles returned from spawning chat adapters.
@@ -208,7 +210,7 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
             }
         }));
         discord_shutdown_tx = Some(tx);
-        tracing::info!("discord interface started (DM-only mode)");
+        tracing::info!("discord interface started");
     }
 
     let (mut telegram_handle, mut telegram_shutdown_tx) = (None, None);
@@ -227,7 +229,7 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
             }
         }));
         telegram_shutdown_tx = Some(tx);
-        tracing::info!("telegram interface started (DM-only mode)");
+        tracing::info!("telegram interface started");
     }
 
     let (mut teams_handle, mut teams_shutdown_tx) = (None, None);

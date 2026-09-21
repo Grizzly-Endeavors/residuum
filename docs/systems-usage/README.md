@@ -59,14 +59,14 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
 | [Tool PATH](tools.md) | Runtime-extensible PATH for spawned CLIs (exec + MCP stdio) | *(automatic — no tools)* | `[tools]` in `config.toml`, `~/.residuum/bin` |
 | [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json` |
-| [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `switch_endpoint`, `send_message` | `config/channels.toml` |
+| [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` |
 | [Idle](idle.md) | Deactivates skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
 | [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, role skills in `skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
-| [Discord](discord.md) | Chat with the agent in Discord DMs | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
-| [Telegram](telegram.md) | Chat with the agent in Telegram private chats | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
+| [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
+| [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
 
 ## What This Is Not
 

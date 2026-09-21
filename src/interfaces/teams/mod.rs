@@ -29,6 +29,7 @@ use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
 
 use self::auth::TokenValidator;
@@ -80,16 +81,30 @@ impl TeamsRuntime {
 
     /// Send a markdown message, logging (not propagating) failure.
     async fn send_text(&self, target: &ConversationRef, text: &str) {
-        for chunk in crate::interfaces::chunking::chunk_text(text, subscriber::MAX_MESSAGE_BYTES) {
-            if let Err(e) = self
-                .connector
-                .send_activity(target, &connector::message_activity(&chunk))
-                .await
-            {
-                tracing::error!(error = %e, conversation = %target.label, "failed to send teams message");
-                return;
-            }
+        if let Err(e) = self.try_send_text(target, text).await {
+            tracing::error!(error = %e, conversation = %target.label, "failed to send teams message");
         }
+    }
+
+    /// Send a markdown message in chunks, stopping at the first failure.
+    async fn try_send_text(
+        &self,
+        target: &ConversationRef,
+        text: &str,
+    ) -> Result<(), connector::ConnectorError> {
+        for chunk in crate::interfaces::chunking::chunk_text(text, subscriber::MAX_MESSAGE_BYTES) {
+            self.connector
+                .send_activity(target, &connector::message_activity(&chunk))
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ConversationSource for TeamsRuntime {
+    async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>> {
+        Ok(self.store.known_conversations().await)
     }
 }
 
@@ -192,6 +207,10 @@ impl TeamsInterface {
             }
         });
         let outbound = tokio::spawn(subscriber::run_teams_subscriber(Arc::clone(&rt), subs));
+        let _registration = self
+            .senders
+            .conversations
+            .register(ENDPOINT, Arc::clone(&rt) as Arc<dyn ConversationSource>);
 
         let mut shutdown_rx = self.shutdown_rx;
         let served = axum::serve(listener, app)

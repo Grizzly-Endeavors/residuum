@@ -19,7 +19,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Skills | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` | [skills](references/skills.md) |
 | Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/bin` | [tools](references/tools.md) |
 | MCP | *(none — surfaced as regular tools)* | `config/mcp.json` | [mcp](references/mcp.md) |
-| Notifications | `list_endpoints`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
+| Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
 | Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
 

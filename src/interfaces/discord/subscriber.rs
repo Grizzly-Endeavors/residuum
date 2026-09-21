@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use serenity::model::id::ChannelId;
 
-use crate::bus::{ErrorEvent, NoticeEvent, TurnLifecycleEvent};
+use serenity::http::Http;
+
+use crate::bus::{ErrorEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent};
 use crate::interfaces::chunking::chunk_text;
 
 use super::DiscordState;
@@ -47,15 +49,7 @@ pub(super) async fn run_discord_subscriber(
             }
             event = subs.response.recv() => {
                 match event {
-                    Ok(Some(resp)) => {
-                        if let Some(cid) = target_or_warn(&state, &resp.correlation_id).await {
-                            if let Some(ref att) = resp.attachment {
-                                send_file_attachment(&http, cid, att, &resp.content).await;
-                            } else if !resp.content.is_empty() {
-                                send_chunks(&http, cid, &resp.content).await;
-                            }
-                        }
-                    }
+                    Ok(Some(resp)) => deliver_response(&http, &state, resp).await,
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
                 }
@@ -64,7 +58,7 @@ pub(super) async fn run_discord_subscriber(
                 match event {
                     Ok(Some(im)) => {
                         if let Some(cid) = target_or_warn(&state, &im.correlation_id).await {
-                            send_chunks(&http, cid, &im.content).await;
+                            send_or_warn(&http, cid, &im.content).await;
                         }
                     }
                     Ok(None) => break,
@@ -77,7 +71,7 @@ pub(super) async fn run_discord_subscriber(
                 match event {
                     Ok(Some(NoticeEvent { message })) => {
                         if let Some(cid) = state.owner_dm().await {
-                            send_chunks(&http, cid, &message).await;
+                            send_or_warn(&http, cid, &message).await;
                         }
                     }
                     Ok(None) => break,
@@ -88,7 +82,7 @@ pub(super) async fn run_discord_subscriber(
                 match event {
                     Ok(Some(ErrorEvent { message, .. })) => {
                         if let Some(cid) = state.owner_dm().await {
-                            send_chunks(&http, cid, &format!("**Error:** {message}")).await;
+                            send_or_warn(&http, cid, &format!("**Error:** {message}")).await;
                         }
                     }
                     Ok(None) => break,
@@ -136,56 +130,93 @@ fn spawn_typing(
     stop_tx
 }
 
-async fn send_chunks(http: &serenity::http::Http, channel_id: ChannelId, content: &str) {
-    let chunks = chunk_text(content, DISCORD_MAX_CHARS);
-    for chunk in chunks {
-        if let Err(e) = channel_id.say(http, &chunk).await {
-            tracing::warn!(channel_id = %channel_id, error = %e, "failed to send discord message");
+async fn deliver_response(http: &Http, state: &DiscordState, resp: ResponseEvent) {
+    let target = match &resp.conversation {
+        Some(id) => match id.parse::<u64>() {
+            Ok(n) if n != 0 => ChannelId::new(n),
+            _ => {
+                tracing::warn!(conversation = %id, "discord message addressed to an invalid channel ID");
+                notify_owner_of_failure(http, state, id, "that is not a Discord channel ID").await;
+                return;
+            }
+        },
+        None => match target_or_warn(state, &resp.correlation_id).await {
+            Some(target) => target,
+            None => return,
+        },
+    };
+    let sent = if let Some(ref att) = resp.attachment {
+        send_file_attachment(http, target, att, &resp.content).await
+    } else if resp.content.is_empty() {
+        Ok(())
+    } else {
+        send_chunks(http, target, &resp.content).await
+    };
+    if let Err(e) = sent {
+        tracing::warn!(channel_id = %target, error = %e, "failed to deliver discord message");
+        if resp.conversation.is_some() {
+            let place = state
+                .cached_label(target)
+                .unwrap_or_else(|| format!("channel {target}"));
+            notify_owner_of_failure(http, state, &place, &e.to_string()).await;
         }
     }
 }
 
+/// Tell the owner a message the agent addressed to a specific conversation
+/// did not go out, since nobody else will see that it failed.
+async fn notify_owner_of_failure(http: &Http, state: &DiscordState, place: &str, reason: &str) {
+    if let Some(dm) = state.owner_dm().await {
+        send_or_warn(
+            http,
+            dm,
+            &format!("**Error:** I couldn't post a message to {place}: {reason}"),
+        )
+        .await;
+    }
+}
+
+async fn send_or_warn(http: &Http, channel_id: ChannelId, content: &str) {
+    if let Err(e) = send_chunks(http, channel_id, content).await {
+        tracing::warn!(channel_id = %channel_id, error = %e, "failed to send discord message");
+    }
+}
+
+/// Send `content` in chunks, stopping at the first failure.
+async fn send_chunks(
+    http: &Http,
+    channel_id: ChannelId,
+    content: &str,
+) -> Result<(), Box<serenity::Error>> {
+    for chunk in chunk_text(content, DISCORD_MAX_CHARS) {
+        channel_id.say(http, &chunk).await.map_err(Box::new)?;
+    }
+    Ok(())
+}
+
 async fn send_file_attachment(
-    http: &serenity::http::Http,
+    http: &Http,
     channel_id: ChannelId,
     attachment: &crate::interfaces::attachment::FileAttachment,
     caption: &str,
-) {
+) -> Result<(), Box<serenity::Error>> {
     use serenity::builder::{CreateAttachment, CreateMessage};
 
-    let file_attachment = match CreateAttachment::path(&attachment.path).await {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(
-                filename = %attachment.filename,
-                endpoint = "discord",
-                error = %e,
-                "failed to read file for discord attachment"
-            );
-            return;
-        }
-    };
-
+    let file_attachment = CreateAttachment::path(&attachment.path)
+        .await
+        .map_err(Box::new)?;
     let mut message = CreateMessage::new().add_file(file_attachment);
     if !caption.is_empty() {
         message = message.content(caption);
     }
-
-    match channel_id.send_message(http, message).await {
-        Ok(_) => {
-            tracing::debug!(
-                filename = %attachment.filename,
-                endpoint = "discord",
-                "file delivered"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                filename = %attachment.filename,
-                endpoint = "discord",
-                error = %e,
-                "file delivery failed"
-            );
-        }
-    }
+    channel_id
+        .send_message(http, message)
+        .await
+        .map_err(Box::new)?;
+    tracing::debug!(
+        filename = %attachment.filename,
+        endpoint = "discord",
+        "file delivered"
+    );
+    Ok(())
 }

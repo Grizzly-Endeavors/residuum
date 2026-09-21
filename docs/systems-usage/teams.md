@@ -48,7 +48,8 @@ The buffer for that conversation is emptied when it is delivered, so each messag
 ## Where replies go
 
 - A reply goes to the conversation the message came from; in a channel it lands in the same thread.
-- Proactive output with no originating Teams message — `send_message` to the `teams` endpoint, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — goes to the owner's DM.
+- `send_message` with a `conversation` from `list_conversations` posts into that DM, group chat, or channel (a channel post starts a new thread). If Teams refuses the post, the owner gets an error DM saying so.
+- Other proactive output with no originating Teams message — `send_message` without a conversation, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — goes to the owner's DM.
 - System notices and errors go only to the owner's DM, never into a shared conversation.
 - If a turn is already running when another Teams message arrives, the new message joins that turn and the answer goes to the conversation that started it.
 
@@ -76,7 +77,7 @@ port = 7701
 
 ## State
 
-`teams_state.json` in the workspace root holds the owner and a reference (conversation ID, service URL, kind, label) for every conversation the bot has seen or been added to. References are what make proactive messages possible — Teams gives a bot no way to open a conversation it has never heard from. Removing the bot from a conversation, or uninstalling the app there, drops its reference.
+`teams_state.json` in the workspace root holds the owner and a reference (conversation ID, service URL, kind, label) for every conversation the bot has seen or been added to. References are what make proactive messages possible — Teams gives a bot no way to open or list a conversation it has never heard from. Removing the bot from a conversation, or uninstalling the app there, drops its reference. These references are what `list_conversations` shows for Teams; DMs are labelled with the person (`direct message with Jane Doe`).
 
 ## Code
 
