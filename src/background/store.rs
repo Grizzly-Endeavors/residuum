@@ -57,7 +57,10 @@ pub struct RunRecord {
     /// merge failure) — its transcript is still kept either way.
     #[serde(default)]
     pub episode_id: Option<String>,
-    /// The run's message transcript, appended as the run progresses.
+    /// The run's full message transcript, filled in at completion (empty
+    /// until then — the durable record while the run is live is the sibling
+    /// `<run_id>.transcript.jsonl` file, appended to by
+    /// [`SessionStore::append_transcript`]).
     #[serde(default)]
     pub transcript: Vec<Message>,
 }
