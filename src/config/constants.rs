@@ -88,5 +88,11 @@ pub(super) const DEFAULT_AGENT_MODIFY_CHANNELS: bool = true;
 /// Default idle timeout in minutes (30 minutes).
 pub(super) const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 30;
 
+/// Default number of earlier Teams group chat / channel messages handed to the agent on @mention.
+pub(super) const DEFAULT_TEAMS_CONTEXT_MESSAGES: usize = 20;
+
+/// Default port for the dedicated Teams messaging listener.
+pub(super) const DEFAULT_TEAMS_PORT: u16 = 7701;
+
 /// Default relay WebSocket URL.
 pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";

@@ -12,9 +12,7 @@ use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::commands::{
-    CommandContext, CommandSideEffect, all_commands, execute_command,
-};
+use crate::interfaces::commands::all_commands;
 use crate::interfaces::types::MessageOrigin;
 
 /// Shared gateway references threaded through telegram message dispatch.
@@ -266,6 +264,7 @@ async fn dispatch_message(
         origin,
         timestamp: crate::time::now_local(ctx.tz),
         images,
+        context: None,
     };
 
     if let Err(e) = ctx
@@ -294,46 +293,22 @@ async fn handle_command(
     cmd_args: Option<&str>,
     ctx: &TelegramContext<'_>,
 ) {
-    let result = {
-        let _span = tracing::debug_span!("telegram_command", command = %cmd_name).entered();
-        let command_ctx = CommandContext::default();
-        execute_command(cmd_name, cmd_args, &command_ctx)
+    tracing::debug!(command = %cmd_name, "telegram command received");
+    let dispatch = crate::interfaces::CommandDispatch {
+        reload_tx: ctx.reload_tx,
+        command_tx: ctx.command_tx,
+        stop_tx: ctx.stop_tx,
+        inbox_dir: ctx.inbox_dir,
+        tz: ctx.tz,
     };
-
-    let response_text = match result.side_effect {
-        Some(CommandSideEffect::Reload) => {
-            tracing::info!("reload requested via telegram command");
-            if ctx.reload_tx.send(ReloadSignal::Root).is_err() {
-                tracing::warn!(command = %cmd_name, "reload_tx closed, reload dropped");
-            }
-            result.response
-        }
-        Some(CommandSideEffect::ServerCommand { name, args }) => {
-            crate::interfaces::dispatch_server_command(
-                ctx.command_tx,
-                name,
-                args,
-                result.response,
-                "telegram command",
-            )
-            .await
-        }
-        Some(CommandSideEffect::InboxAdd(body)) => {
-            let source = format!("telegram:{}", build_sender_name(from));
-            crate::interfaces::inbox_add_from_command(
-                ctx.inbox_dir,
-                &body,
-                &source,
-                ctx.tz,
-                result.response,
-            )
-            .await
-        }
-        Some(CommandSideEffect::Stop) => {
-            crate::interfaces::dispatch_stop_request(ctx.stop_tx, "telegram command").await
-        }
-        None => result.response,
-    };
+    let response_text = crate::interfaces::run_chat_command(
+        cmd_name,
+        cmd_args,
+        &dispatch,
+        "telegram",
+        &build_sender_name(from),
+    )
+    .await;
 
     if let Err(e) = bot.send_message(chat_id, &response_text).await {
         tracing::warn!(

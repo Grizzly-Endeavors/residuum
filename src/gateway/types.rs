@@ -261,6 +261,8 @@ pub(crate) struct GatewayRuntime {
     pub telegram_handle: Option<tokio::task::JoinHandle<()>>,
     pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub teams_handle: Option<tokio::task::JoinHandle<()>>,
+    pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Cloned core senders for rebuilding adapters on reload.
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,

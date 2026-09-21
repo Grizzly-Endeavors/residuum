@@ -86,14 +86,13 @@ async fn spawn_server_and_adapters(
     restart_tx: &tokio::sync::mpsc::Sender<()>,
     gateway_shutdown_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> Result<SpawnedHandles, FatalError> {
-    let discord_senders = AdapterSenders {
+    let adapter_senders = AdapterSenders {
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
         stop: core.stop_tx.clone(),
     };
-    let telegram_senders = discord_senders.clone();
     let (tunnel_status_tx, tunnel_status_rx) =
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
     let tunnel_status_tx = Arc::new(tunnel_status_tx);
@@ -137,7 +136,7 @@ async fn spawn_server_and_adapters(
         tracing_api_state,
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
-    let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
+    let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
     let sigterm = crate::gateway::types::TermSignal::new()
         .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
@@ -309,6 +308,8 @@ async fn build_runtime(
         telegram_handle: spawned.adapters.telegram_handle,
         discord_shutdown_tx: spawned.adapters.discord_shutdown_tx,
         telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
+        teams_handle: spawned.adapters.teams_handle,
+        teams_shutdown_tx: spawned.adapters.teams_shutdown_tx,
         watcher_handle: spawned.watcher_handle,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
@@ -498,6 +499,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(tx) = rt.telegram_shutdown_tx.take() {
         tx.send(true).ok();
     }
+    if let Some(tx) = rt.teams_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
     if let Some(h) = rt.watcher_handle.take() {
         h.abort();
     }
@@ -559,11 +563,26 @@ async fn poll_handle(
     }
 }
 
+/// Resolves when the first of the chat adapters or the workspace watcher
+/// exits, naming which one; pends forever while none are running.
+async fn next_log_only_task_exit(
+    discord: &mut Option<tokio::task::JoinHandle<()>>,
+    telegram: &mut Option<tokio::task::JoinHandle<()>>,
+    teams: &mut Option<tokio::task::JoinHandle<()>>,
+    watcher: &mut Option<tokio::task::JoinHandle<()>>,
+) -> (&'static str, Result<(), tokio::task::JoinError>) {
+    tokio::select! {
+        result = poll_handle(discord) => ("discord adapter", result),
+        result = poll_handle(telegram) => ("telegram adapter", result),
+        result = poll_handle(teams) => ("teams adapter", result),
+        result = poll_handle(watcher) => ("workspace watcher", result),
+    }
+}
+
 /// Logs an unexpected exit or failure of a background adapter task.
 ///
-/// Shared by the `discord_handle`/`telegram_handle`/`watcher_handle` arms of
-/// `run_event_loop`, which only log on exit (unlike `tunnel_handle`, which
-/// also respawns).
+/// Used for the tasks `run_event_loop` only logs on exit (unlike
+/// `tunnel_handle`, which also respawns).
 fn log_adapter_task_exit(task_name: &str, result: &Result<(), tokio::task::JoinError>) {
     match result {
         Ok(()) => tracing::error!("{task_name} task exited unexpectedly"),
@@ -592,6 +611,7 @@ async fn handle_bus_event(
                 origin: msg_event.origin,
                 timestamp: chrono::Utc::now(),
                 images: msg_event.images,
+                context: msg_event.context,
             };
             handle_inbound_message(message, rt, observe_deadline, idle_deadline).await;
             BusEventAction::Continue
@@ -739,16 +759,13 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 respawn_tunnel(&mut rt);
             }
 
-            result = poll_handle(&mut rt.discord_handle) => {
-                log_adapter_task_exit("discord adapter", &result);
-            }
-
-            result = poll_handle(&mut rt.telegram_handle) => {
-                log_adapter_task_exit("telegram adapter", &result);
-            }
-
-            result = poll_handle(&mut rt.watcher_handle) => {
-                log_adapter_task_exit("workspace watcher", &result);
+            (task_name, result) = next_log_only_task_exit(
+                &mut rt.discord_handle,
+                &mut rt.telegram_handle,
+                &mut rt.teams_handle,
+                &mut rt.watcher_handle,
+            ) => {
+                log_adapter_task_exit(task_name, &result);
             }
         }
     }

@@ -177,6 +177,7 @@ async fn handle_client_message(
                 origin,
                 timestamp: crate::time::now_local(chrono_tz::UTC),
                 images,
+                context: None,
             };
             if let Err(e) = state
                 .publisher

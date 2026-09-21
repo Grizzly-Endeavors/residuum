@@ -18,9 +18,7 @@ use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
-use crate::interfaces::commands::{
-    CommandContext, CommandSideEffect, all_commands, execute_command,
-};
+use crate::interfaces::commands::all_commands;
 use crate::interfaces::types::MessageOrigin;
 
 /// Serenity event handler that filters for DMs, registers slash commands,
@@ -115,6 +113,7 @@ impl EventHandler for DiscordHandler {
             origin,
             timestamp: crate::time::now_local(self.tz),
             images,
+            context: None,
         };
 
         if let Err(e) = self
@@ -127,10 +126,10 @@ impl EventHandler for DiscordHandler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        let _span = tracing::info_span!("discord_interaction").entered();
         let Interaction::Command(cmd) = interaction else {
             return;
         };
+        tracing::debug!(command = %cmd.data.name, "discord slash command received");
 
         // Extract optional text argument from Discord interaction options
         let cmd_args = cmd
@@ -140,47 +139,21 @@ impl EventHandler for DiscordHandler {
             .and_then(|opt| opt.value.as_str())
             .map(str::to_string);
 
-        let command_ctx = CommandContext::default();
-
-        let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);
-        drop(_span);
-
-        // Handle side effects
-        let response_text = match result.side_effect {
-            Some(CommandSideEffect::Reload) => {
-                tracing::info!("reload requested via discord slash command");
-                if self.reload_tx.send(ReloadSignal::Root).is_err() {
-                    tracing::warn!(command = %cmd.data.name, "reload_tx closed, reload dropped");
-                }
-                result.response
-            }
-            Some(CommandSideEffect::ServerCommand { name, args }) => {
-                crate::interfaces::dispatch_server_command(
-                    &self.command_tx,
-                    name,
-                    args,
-                    result.response,
-                    "discord slash command",
-                )
-                .await
-            }
-            Some(CommandSideEffect::InboxAdd(body)) => {
-                let source = format!("discord:{}", cmd.user.name);
-                crate::interfaces::inbox_add_from_command(
-                    &self.inbox_dir,
-                    &body,
-                    &source,
-                    self.tz,
-                    result.response,
-                )
-                .await
-            }
-            Some(CommandSideEffect::Stop) => {
-                crate::interfaces::dispatch_stop_request(&self.stop_tx, "discord slash command")
-                    .await
-            }
-            None => result.response,
+        let dispatch = crate::interfaces::CommandDispatch {
+            reload_tx: &self.reload_tx,
+            command_tx: &self.command_tx,
+            stop_tx: &self.stop_tx,
+            inbox_dir: &self.inbox_dir,
+            tz: self.tz,
         };
+        let response_text = crate::interfaces::run_chat_command(
+            cmd.data.name.as_str(),
+            cmd_args.as_deref(),
+            &dispatch,
+            "discord",
+            &cmd.user.name,
+        )
+        .await;
 
         let msg = CreateInteractionResponseMessage::new().content(response_text);
         let response = CreateInteractionResponse::Message(msg);

@@ -4,6 +4,7 @@ pub mod attachment;
 pub mod chunking;
 pub mod commands;
 pub mod discord;
+pub mod teams;
 pub mod telegram;
 pub mod types;
 pub mod webhook;
@@ -35,6 +36,70 @@ impl BaseSubscribers {
             notice: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
         })
+    }
+}
+
+/// Channels a chat adapter needs to carry out slash-command side effects.
+pub(crate) struct CommandDispatch<'a> {
+    pub(crate) reload_tx: &'a tokio::sync::watch::Sender<crate::gateway::types::ReloadSignal>,
+    pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
+    pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    pub(crate) inbox_dir: &'a Path,
+    pub(crate) tz: chrono_tz::Tz,
+}
+
+/// Run a slash command typed into a chat interface and return the reply text.
+///
+/// `interface` (e.g. `"telegram"`) labels logs and the inbox source;
+/// `sender_name` is who typed it.
+pub(crate) async fn run_chat_command(
+    name: &str,
+    args: Option<&str>,
+    dispatch: &CommandDispatch<'_>,
+    interface: &str,
+    sender_name: &str,
+) -> String {
+    let result = commands::execute_command(name, args, &commands::CommandContext::default());
+    let source = format!("{interface} command");
+    match result.side_effect {
+        Some(commands::CommandSideEffect::Reload) => {
+            tracing::info!(interface, "reload requested via chat command");
+            if dispatch
+                .reload_tx
+                .send(crate::gateway::types::ReloadSignal::Root)
+                .is_err()
+            {
+                tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");
+            }
+            result.response
+        }
+        Some(commands::CommandSideEffect::ServerCommand {
+            name: server_command,
+            args: server_args,
+        }) => {
+            dispatch_server_command(
+                dispatch.command_tx,
+                server_command,
+                server_args,
+                result.response,
+                &source,
+            )
+            .await
+        }
+        Some(commands::CommandSideEffect::InboxAdd(body)) => {
+            inbox_add_from_command(
+                dispatch.inbox_dir,
+                &body,
+                &format!("{interface}:{sender_name}"),
+                dispatch.tz,
+                result.response,
+            )
+            .await
+        }
+        Some(commands::CommandSideEffect::Stop) => {
+            dispatch_stop_request(dispatch.stop_tx, &source).await
+        }
+        None => result.response,
     }
 }
 

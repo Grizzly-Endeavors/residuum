@@ -171,6 +171,7 @@ fn build_correction_event(
         },
         timestamp,
         images: vec![],
+        context: None,
     }
 }
 
