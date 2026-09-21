@@ -185,6 +185,8 @@ pub(crate) struct GatewayState {
     pub publisher: Publisher,
     pub bus_handle: BusHandle,
     pub file_registry: crate::gateway::file_server::FileRegistry,
+    /// Named webhooks served at `/webhook/{name}`; swapped in place on config reload.
+    pub webhooks: crate::interfaces::webhook::WebhookTable,
 }
 
 /// All state needed by the main event loop.
@@ -214,6 +216,10 @@ pub(crate) struct GatewayRuntime {
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
+    /// Notification channels from `channels.toml`, kept to rebuild the endpoint registry on reload.
+    pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
+    /// Shared with the HTTP server's webhook route; replaced on config reload.
+    pub webhooks: crate::interfaces::webhook::WebhookTable,
     /// Bus infrastructure handles (bridge, result router, registry) — not restarted on reload.
     pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,

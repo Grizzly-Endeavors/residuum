@@ -36,7 +36,8 @@ pub(super) enum IdleAction {
 ///
 /// Every other subsystem (provider chains, memory thresholds, subconscious,
 /// background config, skills, tool PATH, agent ability gates, tracing, the
-/// pulse toggle, HTTP client timeout) is cheap to rebuild and
+/// pulse toggle, HTTP client timeout, webhooks, the endpoint registry) is
+/// cheap to rebuild and
 /// `handle_root_reload` rebuilds all of them unconditionally whenever
 /// `changed` is true, in one fixed order — see `rebuild_cheap_components`.
 #[expect(
@@ -143,6 +144,9 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     }
     if old.timeout_secs != new.timeout_secs {
         parts.push("http timeout");
+    }
+    if old.webhooks != new.webhooks {
+        parts.push("webhooks");
     }
 
     let changed = !parts.is_empty();
@@ -359,6 +363,10 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
     reload_tools_path(rt, new_cfg).await;
     reload_agent_abilities(rt, new_cfg).await;
     reload_tracing(rt, new_cfg).await;
+    rt.webhooks.replace_from_config(&new_cfg.webhooks);
+    // Adapters added or removed by this reload must show up in list_endpoints,
+    // send_message, and idle switching without a restart.
+    rt.endpoint_registry.refresh(new_cfg, &rt.channel_configs);
 }
 
 /// Build a new `SpawnContext` from the current runtime and new config.
@@ -464,6 +472,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 publisher: rt.publisher.clone(),
                 bus_handle: rt.bus_handle.clone(),
                 file_registry: rt.file_registry.clone(),
+                webhooks: rt.webhooks.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
                 config_dir: rt.config_dir.clone(),
@@ -486,7 +495,6 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
-                new_cfg,
                 config_api_state,
                 update_api_state,
                 tracing_api_state,

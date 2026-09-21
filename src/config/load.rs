@@ -433,12 +433,19 @@ main = "invalid-format"
     }
 
     #[test]
-    fn idle_channel_websocket_always_valid() {
-        let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"websocket\"\n";
-        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let cfg = Config::load_at(dir.path()).unwrap();
-        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("websocket"));
+    fn idle_channel_websocket_always_valid_and_names_the_ws_endpoint() {
+        for written in ["websocket", "ws"] {
+            let dir = tempfile::tempdir().unwrap();
+            write_providers(dir.path());
+            let toml = format!("timezone = \"UTC\"\n\n[idle]\nidle_channel = \"{written}\"\n");
+            std::fs::write(dir.path().join("config.toml"), toml).unwrap();
+            let cfg = Config::load_at(dir.path()).unwrap();
+            // Must match the registry's endpoint ID or idle switching silently does nothing.
+            assert_eq!(
+                cfg.idle.idle_channel.as_deref(),
+                Some("ws"),
+                "written as {written}"
+            );
+        }
     }
 }

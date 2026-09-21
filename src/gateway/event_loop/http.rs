@@ -34,41 +34,24 @@ pub struct AdapterHandles {
 /// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
 pub fn build_gateway_app(
     state: GatewayState,
-    cfg: &Config,
     config_api_state: web::ConfigApiState,
     update_api_state: web::update::UpdateApiState,
     tracing_api_state: web::tracing_api::TracingApiState,
 ) -> axum::Router {
     use axum::routing::{get, post};
 
-    let webhook_router = if cfg.webhooks.is_empty() {
-        None
-    } else {
-        let mut endpoints = std::collections::HashMap::new();
-        for (name, entry) in &cfg.webhooks {
-            endpoints.insert(
-                name.clone(),
-                crate::interfaces::webhook::WebhookEndpointState {
-                    secret: entry.secret.clone(),
-                    format: entry.format.clone(),
-                    content_fields: entry.content_fields.clone(),
-                    routing: entry.routing.clone(),
-                },
-            );
-        }
-        let webhook_state = crate::interfaces::webhook::WebhookState {
-            publisher: state.publisher.clone(),
-            webhooks: endpoints,
-        };
-        Some(
-            axum::Router::new()
-                .route(
-                    "/webhook/{name}",
-                    axum::routing::post(crate::interfaces::webhook::webhook_handler),
-                )
-                .with_state(webhook_state),
+    // Always mounted: the table is swapped on reload, so webhooks added later
+    // work without rebinding the server. Unknown names get a 404.
+    let webhook_router = axum::Router::new()
+        .route(
+            "/webhook/{name}",
+            axum::routing::post(crate::interfaces::webhook::webhook_handler),
         )
-    };
+        .with_state(crate::interfaces::webhook::WebhookState {
+            publisher: state.publisher.clone(),
+            webhooks: state.webhooks.clone(),
+            tz: state.tz,
+        });
 
     let cloud_router = {
         let cloud_state = web::cloud::CloudApiState {
@@ -104,13 +87,11 @@ pub fn build_gateway_app(
         )
         .with_state(state.file_registry.clone());
 
-    let mut app = axum::Router::new()
+    axum::Router::new()
         .route("/ws", get(ws_handler))
-        .with_state(state);
-    if let Some(wh) = webhook_router {
-        app = app.merge(wh);
-    }
-    app.merge(file_router)
+        .with_state(state)
+        .merge(webhook_router)
+        .merge(file_router)
         .merge(cloud_router)
         .merge(update_router)
         .merge(tracing_router)

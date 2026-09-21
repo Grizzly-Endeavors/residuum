@@ -154,7 +154,8 @@ port = 7700
 
 # ── Named webhooks (optional) ────────────────────────────────────────────────
 # Each [webhooks.<name>] section creates a POST /webhook/<name> endpoint.
-# Presence in config = enabled; remove to disable.
+# Presence in config = enabled; remove to disable. Changes apply on reload,
+# without a restart.
 #
 # Options:
 #   secret         - Bearer token for auth (supports ${ENV_VAR} / secret:name)

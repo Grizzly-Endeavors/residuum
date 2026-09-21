@@ -74,6 +74,7 @@ struct SpawnedHandles {
     tracing_service: Arc<crate::tracing_service::TracingService>,
     sigterm: crate::gateway::types::TermSignal,
     file_registry: crate::gateway::file_server::FileRegistry,
+    webhooks: crate::interfaces::webhook::WebhookTable,
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -99,6 +100,7 @@ async fn spawn_server_and_adapters(
 
     let file_registry = crate::gateway::file_server::FileRegistry::new();
     file_registry.spawn_cleanup_task();
+    let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let state = GatewayState {
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
@@ -109,6 +111,7 @@ async fn spawn_server_and_adapters(
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
         file_registry: file_registry.clone(),
+        webhooks: webhooks.clone(),
     };
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
@@ -128,13 +131,7 @@ async fn spawn_server_and_adapters(
         service: Arc::clone(&tracing_service),
         client_context: Arc::clone(&parts.tracing_client_context),
     };
-    let app = build_gateway_app(
-        state,
-        cfg,
-        config_api_state,
-        update_api_state,
-        tracing_api_state,
-    );
+    let app = build_gateway_app(state, config_api_state, update_api_state, tracing_api_state);
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
@@ -156,6 +153,7 @@ async fn spawn_server_and_adapters(
         tracing_service,
         sigterm,
         file_registry,
+        webhooks,
         watcher_handle,
     })
 }
@@ -280,6 +278,8 @@ async fn build_runtime(
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
         notify_handles: infra.notify_handles,
+        channel_configs: parts.channel_configs.clone(),
+        webhooks: spawned.webhooks,
         bus_infra_handles: infra.bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
@@ -386,6 +386,8 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
             )
             .await;
             rt.notify_handles = new_handles;
+            rt.endpoint_registry.refresh(&rt.cfg, &configs);
+            rt.channel_configs = configs;
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");

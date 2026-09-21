@@ -359,6 +359,15 @@ async fn publish_turn_outcome(
     }
 }
 
+/// Where a background turn's output goes: the `switch_endpoint` override if
+/// the agent set one since the user last spoke, else the user's last endpoint.
+fn background_output_endpoint(
+    switched_to: Option<EndpointName>,
+    last_user_endpoint: Option<&EndpointName>,
+) -> Option<EndpointName> {
+    switched_to.or_else(|| last_user_endpoint.cloned())
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 #[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
@@ -371,10 +380,14 @@ pub async fn handle_inbound_message(
     let origin = message.origin.clone();
     let is_background = origin.endpoint == "background";
 
-    // Determine output endpoint: background turns reuse the user's last endpoint,
-    // user turns derive from the origin and become the new last endpoint.
+    // Determine output endpoint: background turns go wherever `switch_endpoint`
+    // last pointed them, else the user's last endpoint; user turns derive from
+    // the origin and become the new last endpoint.
     let output_endpoint = if is_background {
-        rt.last_output_endpoint.clone()
+        background_output_endpoint(
+            rt.output_topic_override_tx.borrow().clone(),
+            rt.last_output_endpoint.as_ref(),
+        )
     } else {
         // Clear any switch_endpoint override so responses follow the user's endpoint.
         rt.output_topic_override_tx.send_replace(None);
@@ -482,6 +495,21 @@ mod tests {
 
     fn endpoint() -> EndpointName {
         EndpointName::from("ws")
+    }
+
+    #[test]
+    fn background_output_prefers_the_switched_endpoint() {
+        let telegram = EndpointName::from("telegram");
+        assert_eq!(
+            background_output_endpoint(Some(telegram.clone()), Some(&endpoint())),
+            Some(telegram),
+            "switch_endpoint must take effect for background turns"
+        );
+        assert_eq!(
+            background_output_endpoint(None, Some(&endpoint())),
+            Some(endpoint())
+        );
+        assert_eq!(background_output_endpoint(None, None), None);
     }
 
     /// Assert a subscriber receives no event within a short window, proving the

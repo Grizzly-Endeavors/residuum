@@ -8,7 +8,7 @@ pub struct StatusLine {
     pub now: NaiveDateTime,
     /// When the previous user message was sent (if any).
     pub last_message_at: Option<NaiveDateTime>,
-    /// Which interface this message arrived from (e.g. `"websocket"`, `"discord"`).
+    /// Which interface this message arrived from (e.g. `"ws"`, `"discord"`).
     pub message_source: Option<String>,
 }
 

@@ -61,7 +61,8 @@ pub(super) async fn run_telegram_polling(
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
-    let inbox_dir = workspace_dir.join("inbox");
+    let inbox_dir =
+        crate::workspace::layout::WorkspaceLayout::new(&workspace_dir).agent_inbox_dir();
 
     // Verify the bot token is valid
     let me = bot.get_me().await?;

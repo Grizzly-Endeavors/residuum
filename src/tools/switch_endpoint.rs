@@ -58,9 +58,11 @@ impl Tool for SwitchEndpointTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Switch the active endpoint for subsequent responses. \
-                Takes effect on the next turn. Use list_endpoints to see available \
-                interactive endpoints."
+            description: "Send your background output (sub-agent results, scheduled \
+                work, and other turns the user didn't start) to a different interactive \
+                endpoint. The current reply is unaffected, and the user's next message \
+                switches output back to wherever they wrote from. Use list_endpoints to \
+                see available interactive endpoints."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -106,7 +108,10 @@ impl Tool for SwitchEndpointTool {
             .publish(
                 topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
                 NoticeEvent {
-                    message: "Agent switched output to this endpoint.".to_string(),
+                    message: format!(
+                        "Background output now goes to {} until your next message.",
+                        entry.display_name
+                    ),
                 },
             )
             .await
@@ -115,7 +120,7 @@ impl Tool for SwitchEndpointTool {
         }
 
         Ok(ToolResult::success(format!(
-            "Switched output to '{}'. Subsequent responses will be sent there.",
+            "Background output now goes to '{}' until the user's next message.",
             entry.display_name,
         )))
     }
