@@ -120,6 +120,15 @@
   // ── Web Search ─────────────────────────────────────────────────────
 
   let nativeOverridesOpen = $state(false);
+
+  // ── Teams ──────────────────────────────────────────────────────────
+
+  let teamsPartiallyFilled = $derived.by(() => {
+    const filled = [fields.teams_app_id, fields.teams_tenant_id, fields.teams_app_password].filter(
+      Boolean,
+    ).length;
+    return filled > 0 && filled < 3;
+  });
 </script>
 
 <div class="settings-section">
@@ -189,6 +198,103 @@
             placeholder="Telegram bot token"
           />
         {/if}
+      </div>
+    </div>
+  </div>
+
+  <!-- Microsoft Teams -->
+  <div class="settings-group">
+    <div class="settings-group-label">Microsoft Teams</div>
+    <div class="integration-card">
+      <div class="integration-desc">
+        Connect a Microsoft Teams bot so your agent can chat in DMs, group chats, and channels.
+        Register a bot in the <a
+          href="https://dev.teams.microsoft.com/bots"
+          target="_blank"
+          rel="noopener">Teams Developer Portal</a
+        >, then point its messaging endpoint at a tunnel to this machine's Teams port. See the Teams
+        setup guide in the docs.
+      </div>
+      <div class="settings-field">
+        <label for="integ-teams-app-id">App ID</label>
+        <input
+          id="integ-teams-app-id"
+          type="text"
+          bind:value={fields.teams_app_id}
+          placeholder="11111111-2222-3333-4444-555555555555"
+        />
+      </div>
+      <div class="settings-field">
+        <label for="integ-teams-tenant-id">Tenant ID</label>
+        <input
+          id="integ-teams-tenant-id"
+          type="text"
+          bind:value={fields.teams_tenant_id}
+          placeholder="Directory (tenant) ID"
+        />
+      </div>
+      <div class="settings-field">
+        <label for="integ-teams-app-password">Client Secret</label>
+        {#if fields.teams_app_password.startsWith("secret:")}
+          <div class="secret-stored">
+            <span class="secret-badge">Stored securely</span>
+            <button
+              class="btn btn-sm btn-secondary"
+              onclick={() => {
+                fields.teams_app_password = "";
+              }}>Change</button
+            >
+          </div>
+        {:else}
+          <input
+            id="integ-teams-app-password"
+            type="password"
+            bind:value={fields.teams_app_password}
+            placeholder="Client secret"
+          />
+        {/if}
+      </div>
+      {#if teamsPartiallyFilled}
+        <div class="validation-msg error">
+          App ID, Tenant ID, and Client Secret are all required to enable Teams. Fill in all three,
+          or clear them to leave Teams unconfigured.
+        </div>
+      {/if}
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.teams_respond_to_others} />
+            <span class="toggle-slider"></span>
+          </span>
+          Let others use the agent
+        </label>
+        <span class="field-hint"
+          >Off: only you (the first person to DM the bot). On: coworkers can @mention or message it
+          too.</span
+        >
+      </div>
+      <div class="settings-field">
+        <label for="integ-teams-context-messages">Context messages</label>
+        <input
+          id="integ-teams-context-messages"
+          type="number"
+          min="0"
+          bind:value={fields.teams_context_messages}
+          placeholder="Default: 20"
+        />
+        <span class="field-hint"
+          >Earlier group chat messages shared with the agent when it's @mentioned.</span
+        >
+      </div>
+      <div class="settings-field">
+        <label for="integ-teams-port">Listener port</label>
+        <input
+          id="integ-teams-port"
+          type="number"
+          bind:value={fields.teams_port}
+          placeholder="Default: 7701"
+        />
+        <span class="field-hint">Expose only this port through your tunnel.</span>
       </div>
     </div>
   </div>

@@ -78,6 +78,12 @@ export interface ConfigFields {
   // integrations
   discord_token: string;
   telegram_token: string;
+  teams_app_id: string;
+  teams_tenant_id: string;
+  teams_app_password: string;
+  teams_respond_to_others: boolean;
+  teams_context_messages: string;
+  teams_port: string;
   webhooks: WebhookFormEntry[];
   // cloud
   cloud_enabled: boolean;
@@ -142,6 +148,12 @@ export function defaultConfigFields(): ConfigFields {
     thinking: "",
     discord_token: "",
     telegram_token: "",
+    teams_app_id: "",
+    teams_tenant_id: "",
+    teams_app_password: "",
+    teams_respond_to_others: false,
+    teams_context_messages: "",
+    teams_port: "",
     webhooks: [],
     cloud_enabled: true,
     cloud_token: "",
@@ -273,6 +285,16 @@ export function parseConfigToml(raw: string): ConfigFields {
   const telegram = doc.telegram as Record<string, unknown> | undefined;
   if (telegram) {
     fields.telegram_token = str(telegram.token);
+  }
+
+  const teams = doc.teams as Record<string, unknown> | undefined;
+  if (teams) {
+    fields.teams_app_id = str(teams.app_id);
+    fields.teams_tenant_id = str(teams.tenant_id);
+    fields.teams_app_password = str(teams.app_password);
+    fields.teams_respond_to_others = bool(teams.respond_to_others, false);
+    fields.teams_context_messages = str(teams.context_messages);
+    fields.teams_port = str(teams.port);
   }
 
   const webhooks = doc.webhooks as Record<string, Record<string, unknown>> | undefined;
@@ -590,6 +612,20 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("");
     lines.push("[telegram]");
     lines.push(`token = "${escapeTomlString(f.telegram_token)}"`);
+  }
+
+  // teams — app_id, tenant_id and app_password are all required together, so
+  // the section is only emitted once every required field is filled in.
+  if (f.teams_app_id && f.teams_tenant_id && f.teams_app_password) {
+    lines.push("");
+    lines.push("[teams]");
+    lines.push(`app_id = "${escapeTomlString(f.teams_app_id)}"`);
+    lines.push(`tenant_id = "${escapeTomlString(f.teams_tenant_id)}"`);
+    lines.push(`app_password = "${escapeTomlString(f.teams_app_password)}"`);
+    if (f.teams_respond_to_others) lines.push("respond_to_others = true");
+    if (f.teams_context_messages && f.teams_context_messages !== "20")
+      lines.push(`context_messages = ${f.teams_context_messages}`);
+    if (f.teams_port && f.teams_port !== "7701") lines.push(`port = ${f.teams_port}`);
   }
 
   // webhooks

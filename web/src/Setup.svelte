@@ -58,7 +58,13 @@
         large: { provider: "", model: "" },
       },
       mcpServers: [],
-      integrations: { discordToken: "", telegramToken: "" },
+      integrations: {
+        discordToken: "",
+        telegramToken: "",
+        teamsAppId: "",
+        teamsTenantId: "",
+        teamsAppPassword: "",
+      },
       secretRefs: {},
     };
   }
@@ -88,7 +94,13 @@
     for (const key of Object.keys(clone.providerConfigs) as ProviderKey[]) {
       clone.providerConfigs[key] = { ...clone.providerConfigs[key], apiKey: "" };
     }
-    clone.integrations = { discordToken: "", telegramToken: "" };
+    clone.integrations = {
+      discordToken: "",
+      telegramToken: "",
+      teamsAppId: clone.integrations.teamsAppId,
+      teamsTenantId: clone.integrations.teamsTenantId,
+      teamsAppPassword: "",
+    };
     return clone;
   }
 

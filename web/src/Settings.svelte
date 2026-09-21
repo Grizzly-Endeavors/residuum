@@ -311,13 +311,14 @@
   async function storeNewSecrets() {
     // Collect secrets that need storing (non-empty, non-secret: values)
     const secretOps: {
-      field: "discord_token" | "telegram_token" | "cloud_token";
+      field: "discord_token" | "telegram_token" | "teams_app_password" | "cloud_token";
       name: string;
     }[] = [];
 
     const secretFields = [
       { field: "discord_token" as const, name: "discord" },
       { field: "telegram_token" as const, name: "telegram" },
+      { field: "teams_app_password" as const, name: "teams" },
       { field: "cloud_token" as const, name: "cloud_token" },
     ];
 

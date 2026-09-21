@@ -46,6 +46,17 @@
         }),
       );
     }
+    if (
+      wizardState.integrations.teamsAppId &&
+      wizardState.integrations.teamsTenantId &&
+      wizardState.integrations.teamsAppPassword
+    ) {
+      promises.push(
+        storeSecret("teams", wizardState.integrations.teamsAppPassword).then((res) => {
+          wizardState.secretRefs["teams"] = res.reference;
+        }),
+      );
+    }
 
     await Promise.all(promises);
   }
@@ -111,13 +122,18 @@
       <span class="review-value">{wizardState.mcpServers.map((s) => s.name).join(", ")}</span>
     </div>
   {/if}
-  {#if wizardState.integrations.discordToken || wizardState.integrations.telegramToken}
+  {#if wizardState.integrations.discordToken || wizardState.integrations.telegramToken || (wizardState.integrations.teamsAppId && wizardState.integrations.teamsTenantId && wizardState.integrations.teamsAppPassword)}
     <div class="review-item">
       <span class="review-label">Integrations</span>
       <span class="review-value">
         {[
           wizardState.integrations.discordToken ? "Discord" : "",
           wizardState.integrations.telegramToken ? "Telegram" : "",
+          wizardState.integrations.teamsAppId &&
+          wizardState.integrations.teamsTenantId &&
+          wizardState.integrations.teamsAppPassword
+            ? "Microsoft Teams"
+            : "",
         ]
           .filter(Boolean)
           .join(", ")}

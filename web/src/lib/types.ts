@@ -119,6 +119,9 @@ export interface McpCatalogEntry {
 export interface IntegrationsConfig {
   discordToken: string;
   telegramToken: string;
+  teamsAppId: string;
+  teamsTenantId: string;
+  teamsAppPassword: string;
 }
 
 export interface SetupWizardState {
