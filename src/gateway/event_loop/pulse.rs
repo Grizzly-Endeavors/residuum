@@ -26,7 +26,7 @@ pub async fn handle_pulse_tick(rt: &mut GatewayRuntime) {
     let due = rt
         .pulse_scheduler
         .due_pulses(now, &rt.layout.heartbeat_yml());
-    if let Some(notice) = rt.pulse_scheduler.take_rejection_notice() {
+    if let Some(notice) = rt.pulse_scheduler.take_problem_notice() {
         publish_notice(&rt.publisher, notice).await;
     }
     if !due.is_empty() {

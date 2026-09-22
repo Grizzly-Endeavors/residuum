@@ -19,3 +19,9 @@ pub use xml::xml_escape;
 /// actions rejected at load for using an option removed by the agent
 /// sessions overhaul (`agent: "main"`, `include_identity`).
 pub(crate) const MIGRATION_GUIDE_URL: &str = "https://github.com/Grizzly-Endeavors/residuum/blob/main/docs/guides/migrating-to-agent-sessions.md";
+
+/// Reference doc linked from owner notices about a `HEARTBEAT.yml` problem
+/// that isn't about a removed option (a duplicate pulse name, or an
+/// unparseable `schedule`/`active_hours` string).
+pub(crate) const HEARTBEATS_REFERENCE_URL: &str =
+    "https://github.com/Grizzly-Endeavors/residuum/blob/main/docs/systems-usage/heartbeats.md";

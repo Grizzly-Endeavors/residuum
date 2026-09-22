@@ -5,8 +5,8 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    PulseDef, RejectedPulse, is_within_active_hours, load_heartbeat, parse_active_hours,
-    parse_schedule_duration, read_and_parse, rejected_pulses_notice,
+    HeartbeatProblem, ProblemKind, PulseDef, heartbeat_problems_notice, is_within_active_hours,
+    load_heartbeat, parse_active_hours, parse_schedule_duration, read_and_parse,
 };
 
 /// Tracks per-pulse last-run times and determines which pulses are due.
@@ -24,16 +24,18 @@ pub struct PulseScheduler {
     /// doesn't re-warn on an identical error every tick (ticks run every 60s).
     #[serde(skip)]
     last_heartbeat_parse_error: Option<String>,
-    /// Pulses rejected at load on the most recent successful parse (sorted by
-    /// name), so `due_pulses` only re-logs and re-notifies when this set
-    /// actually changes rather than on every tick of an unchanged file.
+    /// Every problem found on the most recent tick's HEARTBEAT.yml (sorted by
+    /// name then message) — a pulse using a removed option, a duplicate
+    /// pulse name, or an unparseable `schedule`/`active_hours` string — so
+    /// `due_pulses` only re-logs and re-notifies when this set actually
+    /// changes rather than on every tick of an unchanged, still-broken file.
     #[serde(skip)]
-    last_rejected_pulses: Vec<RejectedPulse>,
-    /// Owner-facing notice queued by `due_pulses` when the rejected-pulse set
+    last_heartbeat_problems: Vec<HeartbeatProblem>,
+    /// Owner-facing notice queued by `due_pulses` when the problem set
     /// changed on the most recent tick; taken (and cleared) by
-    /// `take_rejection_notice`.
+    /// `take_problem_notice`.
     #[serde(skip)]
-    pending_rejection_notice: Option<String>,
+    pending_problem_notice: Option<String>,
 }
 
 impl Default for PulseScheduler {
@@ -50,8 +52,8 @@ impl PulseScheduler {
             last_run: HashMap::new(),
             state_path: None,
             last_heartbeat_parse_error: None,
-            last_rejected_pulses: Vec::new(),
-            pending_rejection_notice: None,
+            last_heartbeat_problems: Vec::new(),
+            pending_problem_notice: None,
         }
     }
 
@@ -78,15 +80,14 @@ impl PulseScheduler {
     #[must_use]
     #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
-        let mut rejected = Vec::new();
+        let mut problems = Vec::new();
         let Some(heartbeat) = load_heartbeat(
             heartbeat_path,
             &mut self.last_heartbeat_parse_error,
-            &mut rejected,
+            &mut problems,
         ) else {
             return Vec::new();
         };
-        self.record_rejected_pulses(rejected);
 
         let current_pulse_names: HashSet<String> =
             heartbeat.pulses.iter().map(|p| p.name.clone()).collect();
@@ -102,31 +103,37 @@ impl PulseScheduler {
             let duration = match parse_schedule_duration(&pulse.schedule) {
                 Ok(d) => d,
                 Err(e) => {
-                    tracing::warn!(
-                        pulse = %pulse.name,
-                        schedule = %pulse.schedule,
-                        error = %e,
-                        "invalid schedule, skipping pulse"
-                    );
+                    problems.push(HeartbeatProblem {
+                        name: pulse.name.clone(),
+                        message: format!(
+                            "pulse '{}' has an invalid schedule '{}' ({e}) — skipping until fixed",
+                            pulse.name, pulse.schedule
+                        ),
+                        kind: ProblemKind::Malformed,
+                    });
                     continue;
                 }
             };
 
             // Parse active hours window
-            let active_window = pulse.active_hours.as_ref().and_then(|hours_str| {
-                match parse_active_hours(hours_str) {
+            let active_window = match pulse.active_hours.as_deref() {
+                None => None,
+                Some(hours_str) => match parse_active_hours(hours_str) {
                     Ok(window) => Some(window),
                     Err(e) => {
-                        tracing::warn!(
-                            pulse = %pulse.name,
-                            active_hours = %hours_str,
-                            error = %e,
-                            "invalid active_hours, skipping pulse"
-                        );
+                        problems.push(HeartbeatProblem {
+                            name: pulse.name.clone(),
+                            message: format!(
+                                "pulse '{}' has an invalid active_hours '{hours_str}' ({e}) — \
+                                 skipping until fixed",
+                                pulse.name
+                            ),
+                            kind: ProblemKind::Malformed,
+                        });
                         None
                     }
-                }
-            });
+                },
+            };
 
             // Skip if active_hours was set but failed to parse
             if pulse.active_hours.is_some() && active_window.is_none() {
@@ -154,6 +161,8 @@ impl PulseScheduler {
             }
         }
 
+        self.record_heartbeat_problems(problems);
+
         if (pruned || !due.is_empty())
             && let Err(e) = self.save_state()
         {
@@ -167,36 +176,43 @@ impl PulseScheduler {
         due
     }
 
-    /// Record which pulses are currently rejected at load, logging one
-    /// `error!` per rejected pulse and queuing an owner notice — but only
-    /// when this set differs from the last time it was checked, so an
-    /// unchanged HEARTBEAT.yml doesn't re-log or re-notify on every
-    /// once-a-minute scheduler tick.
-    fn record_rejected_pulses(&mut self, mut rejected: Vec<RejectedPulse>) {
-        rejected.sort_by(|a, b| a.name.cmp(&b.name));
-        if rejected == self.last_rejected_pulses {
+    /// Record every problem found while loading and evaluating the current
+    /// tick's HEARTBEAT.yml — a pulse using a removed option, a duplicate
+    /// pulse name, or an unparseable `schedule`/`active_hours` string — logging
+    /// one line per problem and queuing an owner notice, but only when this
+    /// set differs from the last time it was checked. An unchanged, still-
+    /// broken HEARTBEAT.yml therefore logs and notifies exactly once, not on
+    /// every once-a-minute scheduler tick.
+    fn record_heartbeat_problems(&mut self, mut problems: Vec<HeartbeatProblem>) {
+        problems.sort_by(|a, b| (&a.name, &a.message).cmp(&(&b.name, &b.message)));
+        if problems == self.last_heartbeat_problems {
             return;
         }
-        if rejected.is_empty() {
-            tracing::info!(
-                "previously rejected HEARTBEAT.yml pulses now load cleanly after an edit"
-            );
+        if problems.is_empty() {
+            tracing::info!("previously reported HEARTBEAT.yml problems are now resolved");
         } else {
-            for pulse in &rejected {
-                tracing::error!(pulse = %pulse.name, "{}", pulse.message);
+            for problem in &problems {
+                match problem.kind {
+                    ProblemKind::RemovedOption => {
+                        tracing::error!(pulse = %problem.name, "{}", problem.message);
+                    }
+                    ProblemKind::Malformed => {
+                        tracing::warn!(pulse = %problem.name, "{}", problem.message);
+                    }
+                }
             }
-            self.pending_rejection_notice = Some(rejected_pulses_notice(&rejected));
+            self.pending_problem_notice = Some(heartbeat_problems_notice(&problems));
         }
-        self.last_rejected_pulses = rejected;
+        self.last_heartbeat_problems = problems;
     }
 
     /// Take the owner-facing notice queued by the most recent `due_pulses`
-    /// call, if the set of rejected pulses changed on that tick. Returns
-    /// `None` on every tick where nothing new needs telling — including
-    /// every tick of an unchanged, still-broken file.
+    /// call, if the set of HEARTBEAT.yml problems changed on that tick.
+    /// Returns `None` on every tick where nothing new needs telling —
+    /// including every tick of an unchanged, still-broken file.
     #[must_use]
-    pub fn take_rejection_notice(&mut self) -> Option<String> {
-        self.pending_rejection_notice.take()
+    pub fn take_problem_notice(&mut self) -> Option<String> {
+        self.pending_problem_notice.take()
     }
 
     /// Remove `last_run` entries for pulses no longer present in
@@ -609,7 +625,7 @@ pulses:
         );
     }
 
-    // ── Rejected-pulse notice tests ───────────────────────────────────
+    // ── HEARTBEAT.yml problem notice tests ───────────────────────────────────
 
     const AGENT_MAIN_HEARTBEAT: &str = r#"
 pulses:
@@ -631,7 +647,7 @@ pulses:
 
         let due = scheduler.due_pulses(now, &path);
         assert!(due.is_empty(), "a rejected pulse should never become due");
-        let notice = scheduler.take_rejection_notice();
+        let notice = scheduler.take_problem_notice();
         assert!(
             notice.is_some(),
             "the first tick that sees a rejected pulse should queue a notice"
@@ -658,7 +674,7 @@ pulses:
             "a rejected pulse should never become due"
         );
         assert!(
-            scheduler.take_rejection_notice().is_some(),
+            scheduler.take_problem_notice().is_some(),
             "first tick should queue a notice"
         );
 
@@ -673,7 +689,7 @@ pulses:
                 "a rejected pulse should never become due"
             );
             assert!(
-                scheduler.take_rejection_notice().is_none(),
+                scheduler.take_problem_notice().is_none(),
                 "tick {minute} over an unchanged file should not requeue the notice"
             );
         }
@@ -694,7 +710,7 @@ pulses:
             first_due.is_empty(),
             "a rejected pulse should never become due"
         );
-        assert!(scheduler.take_rejection_notice().is_some());
+        assert!(scheduler.take_problem_notice().is_some());
 
         let later = now + chrono::Duration::minutes(1);
         let second_due = scheduler.due_pulses(later, &path);
@@ -703,7 +719,7 @@ pulses:
             "a rejected pulse should never become due"
         );
         assert!(
-            scheduler.take_rejection_notice().is_none(),
+            scheduler.take_problem_notice().is_none(),
             "sanity check: unchanged file should not requeue"
         );
 
@@ -728,7 +744,7 @@ pulses:
             third_due.is_empty(),
             "a rejected pulse should never become due"
         );
-        let notice = scheduler.take_rejection_notice();
+        let notice = scheduler.take_problem_notice();
         assert!(
             notice.is_some(),
             "a changed rejection set should queue a new notice"
@@ -750,8 +766,207 @@ pulses:
         let due = scheduler.due_pulses(now, &path);
         assert_eq!(due.len(), 1, "the valid pulse should still fire normally");
         assert!(
-            scheduler.take_rejection_notice().is_none(),
+            scheduler.take_problem_notice().is_none(),
             "a valid HEARTBEAT.yml should never queue a rejection notice"
         );
+    }
+
+    // ── Duplicate pulse names get the same once-per-change treatment ────
+
+    const DUPLICATE_NAME_HEARTBEAT: &str = r#"
+pulses:
+  - name: dup
+    schedule: "1h"
+    tasks: []
+  - name: dup
+    schedule: "2h"
+    tasks: []
+"#;
+
+    #[test]
+    fn due_pulses_queues_a_notice_the_first_time_a_name_is_duplicated() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), DUPLICATE_NAME_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let due = scheduler.due_pulses(now, &path);
+        assert_eq!(due.len(), 1, "the surviving 'dup' pulse should still fire");
+        let notice = scheduler.take_problem_notice();
+        assert!(
+            notice.is_some(),
+            "the first tick that sees a duplicate name should queue a notice"
+        );
+        assert!(
+            notice.unwrap().contains("dup"),
+            "notice should name the duplicated pulse"
+        );
+    }
+
+    #[test]
+    fn due_pulses_does_not_requeue_duplicate_name_notice_on_unchanged_ticks() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), DUPLICATE_NAME_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let first_due = scheduler.due_pulses(now, &path);
+        assert_eq!(first_due.len(), 1, "the surviving 'dup' pulse should fire");
+        assert!(
+            scheduler.take_problem_notice().is_some(),
+            "first tick should queue a notice"
+        );
+
+        // The surviving 'dup' pulse has a 1h schedule, so it won't be due
+        // again on these later ticks — only the duplicate-name problem is
+        // under test here, and it should stay silent while nothing changes.
+        for minute in 1..=5 {
+            let later = now + chrono::Duration::minutes(minute);
+            let later_due = scheduler.due_pulses(later, &path);
+            assert!(later_due.is_empty(), "not due again within the 1h schedule");
+            assert!(
+                scheduler.take_problem_notice().is_none(),
+                "tick {minute} over an unchanged duplicate should not requeue the notice"
+            );
+        }
+    }
+
+    #[test]
+    fn due_pulses_requeues_duplicate_name_notice_after_a_new_duplicate_appears() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), DUPLICATE_NAME_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let first_due = scheduler.due_pulses(now, &path);
+        assert_eq!(first_due.len(), 1, "the surviving 'dup' pulse should fire");
+        assert!(scheduler.take_problem_notice().is_some());
+
+        let later = now + chrono::Duration::minutes(1);
+        let second_due = scheduler.due_pulses(later, &path);
+        assert!(
+            second_due.is_empty(),
+            "not due again within the 1h schedule"
+        );
+        assert!(
+            scheduler.take_problem_notice().is_none(),
+            "sanity check: unchanged file should not requeue"
+        );
+
+        // A second, distinct duplicate name appears — a genuinely new
+        // problem, so it should queue a fresh notice.
+        let edited = r#"
+pulses:
+  - name: dup
+    schedule: "1h"
+    tasks: []
+  - name: dup
+    schedule: "2h"
+    tasks: []
+  - name: also-dup
+    schedule: "1h"
+    tasks: []
+  - name: also-dup
+    schedule: "2h"
+    tasks: []
+"#;
+        std::fs::write(&path, edited).unwrap();
+        let even_later = now + chrono::Duration::minutes(2);
+        let third_due = scheduler.due_pulses(even_later, &path);
+        assert_eq!(
+            third_due.len(),
+            1,
+            "the new 'also-dup' survivor should fire for the first time"
+        );
+        let notice = scheduler.take_problem_notice();
+        assert!(
+            notice.is_some(),
+            "a changed duplicate set should queue a new notice"
+        );
+        let notice = notice.unwrap();
+        assert!(notice.contains("dup"));
+        assert!(notice.contains("also-dup"));
+    }
+
+    // ── Invalid schedule / active_hours get the same treatment ──────────
+
+    const INVALID_SCHEDULE_HEARTBEAT: &str = r#"
+pulses:
+  - name: bad_schedule
+    enabled: true
+    schedule: "not-a-duration"
+    tasks: []
+"#;
+
+    #[test]
+    fn due_pulses_dedupes_invalid_schedule_notice_across_ticks() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), INVALID_SCHEDULE_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let due = scheduler.due_pulses(now, &path);
+        assert!(due.is_empty(), "a pulse with a bad schedule never fires");
+        let notice = scheduler.take_problem_notice();
+        assert!(notice.is_some(), "first tick should queue a notice");
+        assert!(notice.unwrap().contains("bad_schedule"));
+
+        for minute in 1..=5 {
+            let later = now + chrono::Duration::minutes(minute);
+            let later_due = scheduler.due_pulses(later, &path);
+            assert!(later_due.is_empty(), "a bad schedule never becomes due");
+            assert!(
+                scheduler.take_problem_notice().is_none(),
+                "tick {minute} over an unchanged bad schedule should not requeue"
+            );
+        }
+    }
+
+    const INVALID_ACTIVE_HOURS_HEARTBEAT: &str = r#"
+pulses:
+  - name: bad_hours
+    enabled: true
+    schedule: "1h"
+    active_hours: "not-valid"
+    tasks: []
+"#;
+
+    #[test]
+    fn due_pulses_dedupes_invalid_active_hours_notice_across_ticks() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), INVALID_ACTIVE_HOURS_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let due = scheduler.due_pulses(now, &path);
+        assert!(due.is_empty(), "a pulse with bad active_hours never fires");
+        let notice = scheduler.take_problem_notice();
+        assert!(notice.is_some(), "first tick should queue a notice");
+        assert!(notice.unwrap().contains("bad_hours"));
+
+        for minute in 1..=5 {
+            let later = now + chrono::Duration::minutes(minute);
+            let later_due = scheduler.due_pulses(later, &path);
+            assert!(later_due.is_empty(), "bad active_hours never becomes due");
+            assert!(
+                scheduler.take_problem_notice().is_none(),
+                "tick {minute} over unchanged bad active_hours should not requeue"
+            );
+        }
     }
 }

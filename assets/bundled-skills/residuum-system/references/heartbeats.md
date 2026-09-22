@@ -70,7 +70,7 @@ The `agent` field controls how the pulse executes:
 
 ## Behavior
 
-- The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. It's also fully re-validated on every tick, but a rejected pulse is only logged and notified about when the rejected set actually changes, not on every tick of an unchanged file.
+- The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. It's also fully re-validated on every tick — a rejected pulse, a duplicate pulse name, or an unparseable `schedule`/`active_hours` string — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged file. A removed-option rejection links `migrating-to-agent-sessions.md`; a duplicate name or bad schedule/active_hours links this doc instead.
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
 - Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
