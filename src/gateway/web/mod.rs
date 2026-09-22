@@ -19,6 +19,7 @@ pub mod config;
 pub mod inbox;
 pub mod providers;
 pub mod secrets;
+pub(crate) mod sessions;
 pub mod tracing_api;
 pub mod update;
 pub mod workspace;

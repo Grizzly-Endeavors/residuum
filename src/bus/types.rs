@@ -64,6 +64,8 @@ pub enum TopicId {
     Endpoint(EndpointName),
     /// Background task orchestration (spawn requests and task results).
     Background,
+    /// Agent session lifecycle and session-tagged turn events.
+    Sessions,
     /// Inbound user messages for the main agent loop.
     UserMessage,
     /// Push notifications for a named channel (including the well-known "system" channel).
@@ -77,6 +79,7 @@ impl fmt::Display for TopicId {
         match self {
             Self::Endpoint(name) => write!(f, "endpoint:{name}"),
             Self::Background => f.write_str("background"),
+            Self::Sessions => f.write_str("sessions"),
             Self::UserMessage => f.write_str("user:message"),
             Self::Notification(name) => write!(f, "notification:{name}"),
             Self::Inbox => f.write_str("inbox"),

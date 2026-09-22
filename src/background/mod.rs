@@ -2,6 +2,7 @@
 //! old fire-and-forget background task spawner. See `docs/design/agent-sessions.md`
 //! for the systems-level design and `README.md` for how the pieces fit together.
 
+pub(crate) mod events;
 pub(crate) mod listener;
 pub mod messaging;
 pub mod registry;

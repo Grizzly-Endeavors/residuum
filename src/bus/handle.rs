@@ -65,8 +65,8 @@ impl Publisher {
     /// Create a publisher not backed by any broker.
     ///
     /// Publish calls return [`BusError::BrokerShutdown`]. Use in contexts
-    /// where event publishing is disabled (e.g., background sub-agent turns
-    /// with no output endpoints).
+    /// where nothing observes the published events (e.g. tests exercising a
+    /// turn rather than the events it publishes).
     #[must_use]
     pub fn noop() -> Self {
         Self { cmd_tx: None }

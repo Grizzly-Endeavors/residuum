@@ -20,10 +20,12 @@ use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK,
-    HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress, SkillName, topics,
+    HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress, SessionEventKind, SkillName,
+    topics,
 };
 use crate::config::BackgroundConfig;
 
+use super::events::publish_session_event;
 use super::messaging::{AgentMessenger, DeliveryOutcome};
 use super::registry::{
     DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionCategory, SessionInfo, SessionRegistry,
@@ -31,7 +33,7 @@ use super::registry::{
 };
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
-use super::subagent::{SubAgentResources, TurnKickoff, execute_subagent};
+use super::subagent::{SessionTurnIdentity, SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
 
 /// Idle timeouts per category, resolved once from config at construction.
@@ -195,6 +197,13 @@ impl SessionRuntime {
         let config = req.subagent_config;
 
         tokio::spawn(async move {
+            publish_session_event(
+                &env.publisher,
+                &info.address,
+                &info.run_id,
+                SessionEventKind::Started(Box::new(info.clone())),
+            )
+            .await;
             env.store.begin_run(&info).await;
 
             // Cloned up front so cleanup still has something to work with if
@@ -369,8 +378,22 @@ async fn recover_from_panic(
     panic_msg: &str,
     mem_extras: Option<PanicMemoryExtras>,
 ) {
-    env.registry
-        .set_state(&info.address, SessionState::Completing);
+    transition_state(
+        &env.registry,
+        &env.publisher,
+        info,
+        SessionState::Completing,
+    )
+    .await;
+    publish_session_event(
+        &env.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Error {
+            message: format!("session task panicked: {panic_msg}"),
+        },
+    )
+    .await;
 
     let mut transcript = env
         .store
@@ -413,15 +436,13 @@ async fn recover_from_panic(
     {
         let hop_count = mem_extras.as_ref().map_or(0, |m| m.hop_counter.outgoing());
         let content = relay_content(&info.address, &status, "");
-        if let Some(note) = relay_result_to_spawner(
-            info,
-            &spawner,
-            &content,
-            hop_count,
-            &env.messenger,
-            &env.store,
-        )
-        .await
+        let relay_env = RelayEnv {
+            messenger: &env.messenger,
+            store: &env.store,
+            publisher: &env.publisher,
+        };
+        if let Some(note) =
+            relay_result_to_spawner(info, &spawner, &content, hop_count, &relay_env).await
         {
             transcript.push(note);
         }
@@ -436,16 +457,23 @@ async fn recover_from_panic(
             info,
             SessionState::Completed.as_str(),
             transcript,
-            episode_id,
+            episode_id.clone(),
         )
         .await;
 
-    let event = build_result_event(info, status, String::new(), transcript_path, env.tz);
+    let event = build_result_event(info, status.clone(), String::new(), transcript_path, env.tz);
     if let Err(e) = env.publisher.publish(topics::Background, event).await {
         tracing::warn!(error = %e, "failed to publish panicked session result to bus");
     }
 
     env.registry.remove(&info.address, &info.run_id);
+    publish_session_event(
+        &env.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Completed { status, episode_id },
+    )
+    .await;
     tracing::info!("session removed from registry after panic recovery");
 }
 
@@ -463,6 +491,25 @@ fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
         spawner: info.spawner.clone(),
         depth: info.depth,
     }
+}
+
+/// Move a run to a new lifecycle state in the registry and announce it on
+/// the sessions topic, so every observer (discovery tools, the web UI) sees
+/// the same transition.
+async fn transition_state(
+    registry: &SessionRegistry,
+    publisher: &Publisher,
+    info: &SessionInfo,
+    state: SessionState,
+) {
+    registry.set_state(&info.address, state);
+    publish_session_event(
+        publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::StateChanged(state),
+    )
+    .await;
 }
 
 /// What ended a session's idle wait.
@@ -545,6 +592,8 @@ async fn run_session(
     // the time anything after the loop reads them.
     let mut status;
     let mut summary;
+    // Numbers this run's turns, for the turn ids its turn events carry.
+    let mut turn_number: u32 = 0;
 
     loop {
         (status, summary) = tokio::select! {
@@ -556,14 +605,17 @@ async fn run_session(
             permit = env.semaphore.acquire() => {
                 match permit {
                     Ok(_permit) => {
-                        env.registry.set_state(&info.address, SessionState::Running);
+                        transition_state(&env.registry, &env.publisher, &info, SessionState::Running).await;
+                        turn_number += 1;
                         let ctx = TurnCtx {
                             info: &info,
                             resources: resources.as_ref(),
                             stop_token: &stop_token,
                             store: &env.store,
+                            publisher: &env.publisher,
                         };
-                        run_turn(&ctx, &mut recent_messages, kickoff, &mut interrupt_rx).await
+                        let turn_id = format!("{}-t{turn_number}", info.run_id);
+                        run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
                     }
                     Err(_closed) => {
                         tracing::warn!("concurrency semaphore closed before session could acquire a permit");
@@ -614,14 +666,18 @@ async fn run_session(
             break;
         }
 
-        env.registry.set_state(&info.address, SessionState::Idle);
+        transition_state(&env.registry, &env.publisher, &info, SessionState::Idle).await;
         tracing::debug!(
             idle_secs = idle_timeout.as_secs(),
             "session idle, awaiting further input or timeout"
         );
         match wait_idle(&stop_token, idle_timeout, &mut interrupt_rx).await {
             IdleOutcome::Stopped => {
+                // An explicit stop ends the run early whatever its last turn
+                // did, so report it as cancelled; an idle timeout keeps the
+                // last turn's own outcome.
                 tracing::info!("session stopped while idle");
+                status = AgentResultStatus::Cancelled;
                 break;
             }
             IdleOutcome::TimedOut => {
@@ -711,8 +767,13 @@ async fn finish_run(
     } = outcome;
 
     info.state = SessionState::Completing;
-    env.registry
-        .set_state(&info.address, SessionState::Completing);
+    transition_state(
+        &env.registry,
+        &env.publisher,
+        info,
+        SessionState::Completing,
+    )
+    .await;
 
     // Merge into global memory before recording the run as completed, so a
     // successful merge's episode id lands in the same record. A stopped run
@@ -739,16 +800,23 @@ async fn finish_run(
             info,
             SessionState::Completed.as_str(),
             recent_messages.messages().to_vec(),
-            episode_id,
+            episode_id.clone(),
         )
         .await;
 
-    let event = build_result_event(info, status, summary, transcript_path, env.tz);
+    let event = build_result_event(info, status.clone(), summary, transcript_path, env.tz);
     if let Err(e) = env.publisher.publish(topics::Background, event).await {
         tracing::warn!(error = %e, "failed to publish session result to bus");
     }
 
     env.registry.remove(&info.address, &info.run_id);
+    publish_session_event(
+        &env.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Completed { status, episode_id },
+    )
+    .await;
     tracing::info!("session completed");
 
     if !leftover_messages.is_empty() {
@@ -821,15 +889,13 @@ async fn maybe_relay_result(
     };
     let content = relay_content(&info.address, status, summary);
     let hop_count = resources.map_or(0, |res| res.hop_counter.outgoing());
-    if let Some(note) = relay_result_to_spawner(
-        info,
-        &spawner,
-        &content,
-        hop_count,
-        &env.messenger,
-        &env.store,
-    )
-    .await
+    let relay_env = RelayEnv {
+        messenger: &env.messenger,
+        store: &env.store,
+        publisher: &env.publisher,
+    };
+    if let Some(note) =
+        relay_result_to_spawner(info, &spawner, &content, hop_count, &relay_env).await
     {
         recent_messages.push(note);
     }
@@ -844,6 +910,9 @@ async fn maybe_relay_result(
 /// point) as a delivery failure exactly like a hard send error, not a
 /// silent success.
 ///
+/// The failure is also published as an error event on the session's own
+/// stream, so the web UI shows it on the affected session.
+///
 /// Returns the appended note on failure, so the caller can also fold it into
 /// whatever in-memory transcript buffer it holds for the run — `None` on a
 /// successful relay.
@@ -852,10 +921,10 @@ async fn relay_result_to_spawner(
     spawner: &SessionAddress,
     content: &str,
     hop_count: u32,
-    messenger: &AgentMessenger,
-    store: &SessionStore,
+    env: &RelayEnv<'_>,
 ) -> Option<crate::inference::Message> {
-    let outcome = messenger
+    let outcome = env
+        .messenger
         .send(
             spawner.as_ref(),
             info.address.clone(),
@@ -888,11 +957,28 @@ async fn relay_result_to_spawner(
     let note_text = format!(
         "[Result Relay Failed] could not deliver this turn's result to spawner {spawner}: {reason}"
     );
+    publish_session_event(
+        env.publisher,
+        &info.address,
+        &info.run_id,
+        SessionEventKind::Error {
+            message: note_text.clone(),
+        },
+    )
+    .await;
     Some(
-        store
+        env.store
             .append_note(&info.run_id, info.started_at, &note_text)
             .await,
     )
+}
+
+/// What [`relay_result_to_spawner`] needs besides the run and the relay
+/// itself, grouped to keep its argument count down.
+struct RelayEnv<'a> {
+    messenger: &'a AgentMessenger,
+    store: &'a SessionStore,
+    publisher: &'a Publisher,
 }
 
 /// A run's identity and resources, unchanging across however many turns the
@@ -904,6 +990,7 @@ struct TurnCtx<'a> {
     resources: Option<&'a SubAgentResources>,
     stop_token: &'a CancellationToken,
     store: &'a SessionStore,
+    publisher: &'a Publisher,
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -916,7 +1003,52 @@ struct TurnCtx<'a> {
 /// an `Ok` alone cannot distinguish the two. Checking the token after the
 /// fact tells them apart while still keeping whatever partial transcript
 /// (left in `recent_messages`) the turn produced before it was stopped.
+///
+/// Brackets the turn with the same events the main agent's turns produce —
+/// turn started, then the response (or an error), then turn ended — tagged
+/// with the session's address, run id, and `turn_id`.
 async fn run_turn(
+    ctx: &TurnCtx<'_>,
+    turn_id: &str,
+    recent_messages: &mut RecentMessages,
+    kickoff: TurnKickoff,
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+) -> (AgentResultStatus, String) {
+    let publish =
+        |kind| publish_session_event(ctx.publisher, &ctx.info.address, &ctx.info.run_id, kind);
+    publish(SessionEventKind::TurnStarted {
+        turn_id: turn_id.to_string(),
+    })
+    .await;
+
+    let result = execute_turn_outcome(ctx, recent_messages, kickoff, interrupt_rx).await;
+
+    match &result {
+        (AgentResultStatus::Completed, summary) if !summary.is_empty() => {
+            publish(SessionEventKind::Response {
+                turn_id: turn_id.to_string(),
+                content: summary.clone(),
+            })
+            .await;
+        }
+        (AgentResultStatus::Failed { error }, _) => {
+            publish(SessionEventKind::Error {
+                message: format!("turn failed: {error}"),
+            })
+            .await;
+        }
+        (AgentResultStatus::Completed | AgentResultStatus::Cancelled, _) => {}
+    }
+    publish(SessionEventKind::TurnEnded {
+        turn_id: turn_id.to_string(),
+    })
+    .await;
+    result
+}
+
+/// Execute the turn itself and classify how it ended. Split out of
+/// [`run_turn`] so the event bracketing there stays readable.
+async fn execute_turn_outcome(
     ctx: &TurnCtx<'_>,
     recent_messages: &mut RecentMessages,
     kickoff: TurnKickoff,
@@ -931,8 +1063,13 @@ async fn run_turn(
         let res = ctx
             .resources
             .ok_or_else(|| anyhow::anyhow!("session run requires SubAgentResources"))?;
+        let identity = SessionTurnIdentity {
+            publisher: ctx.publisher,
+            address: &ctx.info.address,
+            run_id: &ctx.info.run_id,
+        };
         execute_subagent(
-            &ctx.info.run_id,
+            &identity,
             kickoff,
             recent_messages,
             res,
@@ -1399,19 +1536,35 @@ mod tests {
             started_at: Utc::now(),
         };
         store.begin_run(&info).await;
+        let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
 
+        let publisher = bus_handle.publisher();
+        let relay_env = RelayEnv {
+            messenger: &messenger,
+            store: &store,
+            publisher: &publisher,
+        };
         let note = relay_result_to_spawner(
             &info,
             &SessionAddress::from("spawned-ghost-0000"),
             "done",
             1,
-            &messenger,
-            &store,
+            &relay_env,
         )
         .await;
         assert!(
             note.is_some(),
             "an unreachable spawner must be reported as a relay failure"
+        );
+
+        let event = session_events.recv().await.unwrap().unwrap();
+        assert_eq!(event.address, info.address);
+        assert_eq!(event.run_id, info.run_id);
+        assert!(
+            matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Result Relay Failed")),
+            "the relay failure must appear as an error on the session's own stream, got {:?}",
+            event.kind
         );
 
         let transcript = store
@@ -2404,6 +2557,235 @@ mod tests {
         assert_eq!(
             matching, 2,
             "each of the run's two turns should have staged its own observation"
+        );
+    }
+
+    /// Calls a tool (one that doesn't exist, so it errors) on its first
+    /// completion, then answers with text — enough to exercise every turn
+    /// event a session publishes.
+    struct ToolThenAnswerProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for ToolThenAnswerProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            let idx = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if idx == 0 {
+                Ok(InferenceResponse::new(
+                    "checking".to_string(),
+                    vec![crate::inference::ToolCall {
+                        id: "tc-1".to_string(),
+                        name: "no_such_tool".to_string(),
+                        arguments: serde_json::json!({"q": 1}),
+                    }],
+                ))
+            } else {
+                Ok(InferenceResponse::new("all done".to_string(), vec![]))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "tool-then-answer"
+        }
+    }
+
+    /// Collect session events until (and including) the run's `Completed`.
+    async fn collect_until_completed(
+        sub: &mut crate::bus::Subscriber<crate::bus::SessionEvent>,
+    ) -> Vec<crate::bus::SessionEvent> {
+        let mut events = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+                .await
+                .expect("the run should complete before the test timeout")
+                .unwrap()
+                .unwrap();
+            let done = matches!(event.kind, SessionEventKind::Completed { .. });
+            events.push(event);
+            if done {
+                return events;
+            }
+        }
+    }
+
+    /// Short label per event, for asserting the sequence in one comparison.
+    fn event_label(kind: &SessionEventKind) -> String {
+        match kind {
+            SessionEventKind::Started(info) => format!("started:{}", info.state),
+            SessionEventKind::StateChanged(state) => format!("state:{state}"),
+            SessionEventKind::Completed { status, .. } => format!("completed:{status}"),
+            SessionEventKind::TurnStarted { .. } => "turn_started".to_string(),
+            SessionEventKind::TurnEnded { .. } => "turn_ended".to_string(),
+            SessionEventKind::ToolCall(call) => format!("tool_call:{}", call.name),
+            SessionEventKind::ToolResult(result) => {
+                format!("tool_result:{}:{}", result.name, result.is_error)
+            }
+            SessionEventKind::Intermediate { content } => format!("intermediate:{content}"),
+            SessionEventKind::Response { content, .. } => format!("response:{content}"),
+            SessionEventKind::Error { .. } => "error".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_publishes_lifecycle_and_turn_events_in_order() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-events");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        let mut request = sample_request(address.as_ref());
+        // No spawner: keeps the relay (and its own events) out of this test.
+        request.spawner = None;
+        runtime.spawn(
+            request,
+            Some(SubAgentResources {
+                provider: Box::new(ToolThenAnswerProvider {
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
+            }),
+        );
+
+        let collected = collect_until_completed(&mut events).await;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "started:forking",
+                "state:running",
+                "turn_started",
+                "intermediate:checking",
+                "tool_call:no_such_tool",
+                "tool_result:no_such_tool:true",
+                "response:all done",
+                "turn_ended",
+                "state:idle",
+                "state:completing",
+                "completed:completed",
+            ]
+        );
+
+        let run_id = &collected.first().unwrap().run_id;
+        assert!(
+            collected
+                .iter()
+                .all(|e| &e.run_id == run_id && e.address == address),
+            "every event must be tagged with the session's address and run id"
+        );
+        let turn_ids: Vec<&str> = collected
+            .iter()
+            .filter_map(|e| match &e.kind {
+                SessionEventKind::TurnStarted { turn_id }
+                | SessionEventKind::TurnEnded { turn_id }
+                | SessionEventKind::Response { turn_id, .. } => Some(turn_id.as_str()),
+                SessionEventKind::Started(_)
+                | SessionEventKind::StateChanged(_)
+                | SessionEventKind::Completed { .. }
+                | SessionEventKind::ToolCall(_)
+                | SessionEventKind::ToolResult(_)
+                | SessionEventKind::Intermediate { .. }
+                | SessionEventKind::Error { .. } => None,
+            })
+            .collect();
+        let expected_turn_id = format!("{run_id}-t1");
+        assert!(
+            turn_ids.iter().all(|id| *id == expected_turn_id),
+            "turn events should share the turn's id, got {turn_ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_an_idle_session_reports_cancelled() {
+        let (runtime, mut results) = test_runtime_with_idle_window(Duration::from_hours(1)).await;
+        let address = SessionAddress::from("spawned-researcher-idle-stop");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        let mut request = sample_request(address.as_ref());
+        request.spawner = None;
+        runtime.spawn(
+            request,
+            Some(SubAgentResources {
+                provider: Box::new(ToolThenAnswerProvider {
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
+            }),
+        );
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while runtime.registry.get(&address).map(|s| s.state) != Some(SessionState::Idle) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the session should go idle after its first turn");
+        assert!(runtime.registry.stop(&address));
+
+        let result = tokio::time::timeout(Duration::from_secs(10), results.recv())
+            .await
+            .expect("the stopped session should publish its result")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(result.status, AgentResultStatus::Cancelled),
+            "an explicit stop while idle is a cancellation, got {:?}",
+            result.status
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_publishes_an_error_event_and_a_failed_completion() {
+        let (runtime, _results, bus_handle) = test_runtime_with_bus(3).await;
+        let mut events: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let mut request = sample_request("spawned-researcher-fails");
+        request.spawner = None;
+        // Missing resources fail the turn before any model call.
+        runtime.spawn(request, None);
+
+        let collected = collect_until_completed(&mut events).await;
+        let labels: Vec<String> = collected.iter().map(|e| event_label(&e.kind)).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "started:forking",
+                "state:running",
+                "turn_started",
+                "error",
+                "turn_ended",
+                "state:idle",
+                "state:completing",
+                "completed:failed: session run requires SubAgentResources",
+            ]
         );
     }
 }

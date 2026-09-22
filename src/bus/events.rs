@@ -279,8 +279,20 @@ pub struct AgentMessageEvent {
 impl AgentMessageEvent {
     /// Format this message for injection into the recipient's conversation,
     /// naming the sender's address and category so the recipient can reply.
+    ///
+    /// A message the owner typed into the web sessions sidebar (sender
+    /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
+    /// from the owner instead: the owner is not an agent and has no address
+    /// to message back, but sees this session's responses directly.
     #[must_use]
     pub fn format_for_agent(&self) -> String {
+        if self.from.as_ref() == crate::background::registry::OWNER_ADDRESS {
+            return format!(
+                "[Message from the owner via the web UI — your response in this turn is shown \
+                 to them directly]\n{}",
+                self.content
+            );
+        }
         format!(
             "[Agent Message from {} ({})]\n{}",
             self.from, self.from_category, self.content
@@ -361,6 +373,75 @@ pub struct ErrorEvent {
     pub correlation_id: String,
     /// Error description.
     pub message: String,
+}
+
+/// Something observable happened in a live agent session: a lifecycle
+/// transition, or one of the same turn events the main agent publishes.
+///
+/// Carried on [`super::topics::Sessions`] so the web UI can follow every
+/// session without polling. Every event names the session's address and the
+/// run it belongs to, since one address can have several runs over time.
+#[derive(Debug, Clone)]
+pub struct SessionEvent {
+    /// Address of the session the event belongs to.
+    pub address: SessionAddress,
+    /// Run within the session the event belongs to.
+    pub run_id: String,
+    /// What happened.
+    pub kind: SessionEventKind,
+}
+
+/// The payload of a [`SessionEvent`].
+#[derive(Debug, Clone)]
+pub enum SessionEventKind {
+    /// A new run was registered (state `forking`). Carries the run's full
+    /// registry entry so a listener can render it without a lookup.
+    Started(Box<crate::background::registry::SessionInfo>),
+    /// The run moved to a new lifecycle state (`running`, `idle`, or
+    /// `completing`). Reaching `completed` is reported by [`Self::Completed`]
+    /// instead.
+    StateChanged(crate::background::registry::SessionState),
+    /// The run finished, was recorded in the session store, and left the
+    /// registry.
+    Completed {
+        /// Outcome of the run's last turn.
+        status: AgentResultStatus,
+        /// Episode the run was merged into, if it produced one.
+        episode_id: Option<String>,
+    },
+    /// A turn began executing.
+    TurnStarted {
+        /// Identifies this turn within the run.
+        turn_id: String,
+    },
+    /// A turn finished, whatever its outcome.
+    TurnEnded {
+        /// Identifies this turn within the run.
+        turn_id: String,
+    },
+    /// The session invoked a tool.
+    ToolCall(ToolCallEvent),
+    /// A tool the session invoked returned.
+    ToolResult(ToolResultEvent),
+    /// Intermediate text the session emitted alongside tool calls.
+    Intermediate {
+        /// The intermediate content.
+        content: String,
+    },
+    /// A turn's final text response.
+    Response {
+        /// Identifies the turn that produced it.
+        turn_id: String,
+        /// The response content.
+        content: String,
+    },
+    /// Something went wrong that affects this session: a failed turn, a
+    /// refused message (hop limit), or a result relay that could not be
+    /// delivered.
+    Error {
+        /// Human-readable description.
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +584,22 @@ mod tests {
             msg.format_for_agent(),
             "[Agent Message from spawned-researcher-3f9a (spawned)]\nfound the answer"
         );
+    }
+
+    #[test]
+    fn agent_message_event_from_owner_is_labelled_as_the_owner() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from(crate::background::registry::OWNER_ADDRESS),
+            from_category: "owner".to_string(),
+            content: "how's it going?".to_string(),
+            hop_count: 0,
+        };
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with("[Message from the owner via the web UI"),
+            "owner messages should not be framed as agent messages, got {text}"
+        );
+        assert!(text.ends_with("\nhow's it going?"));
     }
 
     #[test]

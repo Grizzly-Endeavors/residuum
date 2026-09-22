@@ -8,6 +8,7 @@ mod idle;
 mod memory;
 pub mod protocol;
 mod reload;
+pub(crate) mod sessions;
 pub mod setup;
 pub(crate) mod startup;
 pub(crate) mod types;

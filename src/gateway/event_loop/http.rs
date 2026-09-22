@@ -89,11 +89,18 @@ pub fn build_gateway_app(
         )
         .with_state(state.file_registry.clone());
 
+    let sessions_router = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
+        registry: Arc::clone(&state.session_registry),
+        store: Arc::clone(&state.session_store),
+        tz: state.tz,
+    });
+
     axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state)
         .merge(webhook_router)
         .merge(file_router)
+        .merge(sessions_router)
         .merge(cloud_router)
         .merge(update_router)
         .merge(tracing_router)

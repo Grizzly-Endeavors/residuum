@@ -5,7 +5,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
-    EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
+    EndpointName, Publisher, SessionAddress, SessionEventKind, ToolActivityEvent, ToolCallEvent,
+    ToolResultEvent, topics,
 };
 use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
@@ -26,20 +27,108 @@ pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
 /// Context for publishing streaming events during a turn.
 pub(crate) struct EventContext<'a> {
     pub publisher: &'a Publisher,
-    pub output_endpoint: Option<&'a EndpointName>,
-    pub tool_activity_endpoint: Option<&'a EndpointName>,
-    pub correlation_id: &'a str,
+    pub target: EventTarget<'a>,
+}
+
+/// Where a turn's streaming events (tool activity, intermediate text) go.
+pub(crate) enum EventTarget<'a> {
+    /// The main agent: interactive endpoint topics, correlated to the
+    /// message that started the turn. Either endpoint may be absent (e.g. a
+    /// background turn with nowhere to show its output).
+    Endpoint {
+        output_endpoint: Option<&'a EndpointName>,
+        tool_activity_endpoint: Option<&'a EndpointName>,
+        correlation_id: &'a str,
+    },
+    /// An agent session: the sessions topic, tagged with the session's
+    /// address and run id.
+    Session {
+        address: &'a SessionAddress,
+        run_id: &'a str,
+    },
 }
 
 impl EventContext<'_> {
+    /// Correlation id stamped on tool activity events. Sessions have no
+    /// inbound message to correlate to; their events are identified by the
+    /// session address and run id instead.
+    fn correlation_id(&self) -> &str {
+        match self.target {
+            EventTarget::Endpoint { correlation_id, .. } => correlation_id,
+            EventTarget::Session { .. } => "",
+        }
+    }
+
     async fn publish_tool_activity(&self, event: ToolActivityEvent, tool_name: &str) {
-        if let Some(ep) = self.tool_activity_endpoint
-            && let Err(e) = self
-                .publisher
-                .publish(topics::Endpoint(ep.clone()), event)
-                .await
-        {
-            tracing::debug!(error = %e, tool_name = %tool_name, "failed to publish tool activity event");
+        match self.target {
+            EventTarget::Endpoint {
+                tool_activity_endpoint: Some(ep),
+                ..
+            } => {
+                if let Err(e) = self
+                    .publisher
+                    .publish(topics::Endpoint(ep.clone()), event)
+                    .await
+                {
+                    tracing::debug!(error = %e, tool_name = %tool_name, "failed to publish tool activity event");
+                }
+            }
+            EventTarget::Endpoint {
+                tool_activity_endpoint: None,
+                ..
+            } => {}
+            EventTarget::Session { address, run_id } => {
+                let kind = match event {
+                    ToolActivityEvent::Call(call) => SessionEventKind::ToolCall(call),
+                    ToolActivityEvent::Result(result) => SessionEventKind::ToolResult(result),
+                };
+                crate::background::events::publish_session_event(
+                    self.publisher,
+                    address,
+                    run_id,
+                    kind,
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn publish_intermediate(&self, content: &str) {
+        match self.target {
+            EventTarget::Endpoint {
+                output_endpoint: Some(ep),
+                correlation_id,
+                ..
+            } => {
+                if let Err(e) = self
+                    .publisher
+                    .publish(
+                        topics::Endpoint(ep.clone()),
+                        crate::bus::IntermediateEvent {
+                            correlation_id: correlation_id.to_owned(),
+                            content: content.to_owned(),
+                        },
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %e, "failed to publish intermediate text event");
+                }
+            }
+            EventTarget::Endpoint {
+                output_endpoint: None,
+                ..
+            } => {}
+            EventTarget::Session { address, run_id } => {
+                crate::background::events::publish_session_event(
+                    self.publisher,
+                    address,
+                    run_id,
+                    SessionEventKind::Intermediate {
+                        content: content.to_owned(),
+                    },
+                )
+                .await;
+            }
         }
     }
 }
@@ -225,20 +314,8 @@ pub(crate) async fn execute_turn(
             "processing tool calls"
         );
 
-        if !response.content.is_empty()
-            && let Some(ep) = events.output_endpoint
-            && let Err(e) = events
-                .publisher
-                .publish(
-                    topics::Endpoint(ep.clone()),
-                    crate::bus::IntermediateEvent {
-                        correlation_id: events.correlation_id.to_owned(),
-                        content: response.content.clone(),
-                    },
-                )
-                .await
-        {
-            tracing::debug!(error = %e, "failed to publish intermediate text event");
+        if !response.content.is_empty() {
+            events.publish_intermediate(&response.content).await;
         }
 
         let msg = Message::assistant(response.content.clone(), Some(response.tool_calls.clone()));
@@ -342,7 +419,7 @@ async fn execute_tool(
     events
         .publish_tool_activity(
             ToolActivityEvent::Call(ToolCallEvent {
-                correlation_id: events.correlation_id.to_owned(),
+                correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
@@ -393,7 +470,7 @@ async fn execute_tool(
     events
         .publish_tool_activity(
             ToolActivityEvent::Result(ToolResultEvent {
-                correlation_id: events.correlation_id.to_owned(),
+                correlation_id: events.correlation_id().to_owned(),
                 tool_call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 output: output.clone(),

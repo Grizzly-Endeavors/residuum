@@ -39,4 +39,24 @@ body: string, } | { "type": "cancel",
  * `TurnStarted`/`TurnEnded`). A stop for a turn that has already
  * ended is silently ignored.
  */
-reply_to: string, };
+reply_to: string, } | { "type": "session_send_message", 
+/**
+ * Client-generated correlation ID for the reply.
+ */
+id: string, 
+/**
+ * Address of the target session (not `main`).
+ */
+address: string, 
+/**
+ * The message content.
+ */
+content: string, } | { "type": "session_stop", 
+/**
+ * Client-generated correlation ID for the reply.
+ */
+id: string, 
+/**
+ * Address of the session to stop.
+ */
+address: string, };

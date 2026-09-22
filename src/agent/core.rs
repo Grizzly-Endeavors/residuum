@@ -13,7 +13,7 @@ use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{EventContext, TurnResources, execute_turn};
+use super::turn::{EventContext, EventTarget, TurnResources, execute_turn};
 
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
@@ -307,9 +307,11 @@ impl Agent {
         );
         let events = EventContext {
             publisher,
-            output_endpoint,
-            tool_activity_endpoint,
-            correlation_id,
+            target: EventTarget::Endpoint {
+                output_endpoint,
+                tool_activity_endpoint,
+                correlation_id,
+            },
         };
         execute_turn(
             &resources,

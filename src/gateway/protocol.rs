@@ -1,8 +1,10 @@
 //! WebSocket protocol types: client and server message frames.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::background::registry::{SessionCategory, SessionState};
 use crate::inference::ImageData;
 
 /// Messages sent from a WebSocket client to the server.
@@ -49,6 +51,124 @@ pub enum ClientMessage {
         /// ended is silently ignored.
         reply_to: String,
     },
+    /// Send the owner's message to an agent session from the sessions
+    /// sidebar. Delivered like any agent message (hop count 0): an interrupt
+    /// if the session's turn is running, a new turn if it is idle, or a new
+    /// run if it has completed. Answered with `SessionMessageDelivered` or
+    /// `SessionCommandFailed`, both carrying `id`.
+    SessionSendMessage {
+        /// Client-generated correlation ID for the reply.
+        id: String,
+        /// Address of the target session (not `main`).
+        address: String,
+        /// The message content.
+        content: String,
+    },
+    /// Stop a live agent session: cancels any in-flight turn and moves it
+    /// straight to `completing`. Answered with `SessionStopRequested` or
+    /// `SessionCommandFailed`, both carrying `id`.
+    SessionStop {
+        /// Client-generated correlation ID for the reply.
+        id: String,
+        /// Address of the session to stop.
+        address: String,
+    },
+}
+
+/// One run of an agent session, as listed in the web UI's sessions sidebar
+/// and carried by `SessionStarted`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSummary {
+    /// The session's stable address.
+    pub address: String,
+    /// This run's id (unique across all runs).
+    pub run_id: String,
+    /// How the session was started.
+    pub category: SessionCategory,
+    /// Precise source (e.g. `"pulse:email_check"`, `"agent:researcher"`).
+    pub source_label: String,
+    /// Current lifecycle state (`completed` for a finished run).
+    pub state: SessionState,
+    /// The agent that spawned this session, if any.
+    pub spawner: Option<String>,
+    /// Depth from the main agent (main = 0).
+    pub depth: u32,
+    /// One-line description of what the run is doing.
+    pub purpose: String,
+    /// When the run started (RFC 3339, UTC).
+    #[ts(type = "string")]
+    pub started_at: DateTime<Utc>,
+    /// When the run completed (RFC 3339, UTC), once it has.
+    #[ts(type = "string | null")]
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Episode the run was merged into, if it produced one.
+    pub episode_id: Option<String>,
+    /// `true` when the run was completed at startup because the process
+    /// exited before it finished on its own.
+    pub interrupted: bool,
+}
+
+/// `GET /api/sessions` response: live sessions plus one page of completed
+/// runs.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionListResponse {
+    /// Every live session (forking, running, idle, or completing) matching
+    /// the filter, newest first. Not paginated.
+    pub live: Vec<SessionSummary>,
+    /// One page of completed runs from the session store, newest first.
+    pub completed: Vec<SessionSummary>,
+    /// Opaque cursor for the next page of completed runs (pass back as
+    /// `?before=`), or `null` when there are no more.
+    pub next_cursor: Option<String>,
+}
+
+/// How a session's run ended, as reported by `SessionCompleted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SessionRunStatus {
+    /// The last turn finished normally.
+    Completed,
+    /// The session was stopped.
+    Cancelled,
+    /// The last turn failed.
+    Failed,
+}
+
+/// Where a `SessionSendMessage` landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SessionDeliveryOutcome {
+    /// Delivered to the live session: mid-turn if it was running, as a new
+    /// turn if it was idle.
+    Live,
+    /// The session had completed; a new run was started at the same
+    /// address with the message as its input.
+    Resumed,
+    /// The session's run was finishing up; the message will start a new run
+    /// once it has.
+    Queued,
+}
+
+/// Why a session command (`SessionSendMessage`, `SessionStop`) failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SessionCommandErrorCode {
+    /// The request itself is unusable (empty message, `main` as target).
+    InvalidRequest,
+    /// No session has ever run at this address.
+    UnknownAddress,
+    /// The session is live but can't take another message right now.
+    Busy,
+    /// The session is not live (already completing or completed), so there
+    /// is nothing to stop.
+    NotLive,
+    /// The message could not be handed to the session.
+    DeliveryFailed,
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -138,6 +258,142 @@ pub enum ServerMessage {
     /// stream rather than as a transient toast.
     InlineOutput {
         /// Body to render inline.
+        message: String,
+    },
+    /// A new agent session run was registered (state `forking`).
+    SessionStarted {
+        /// The new run.
+        session: SessionSummary,
+    },
+    /// A live session run moved to a new lifecycle state (`running`,
+    /// `idle`, or `completing`). Reaching `completed` is reported by
+    /// `SessionCompleted` instead.
+    SessionStateChanged {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// The new state.
+        state: SessionState,
+    },
+    /// A session run finished, was recorded in the session store, and is
+    /// no longer live. Its transcript is available from the transcript
+    /// endpoint.
+    SessionCompleted {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// How the run's last turn ended.
+        status: SessionRunStatus,
+        /// The failure, when `status` is `failed`.
+        error: Option<String>,
+        /// Episode the run was merged into, if it produced one.
+        episode_id: Option<String>,
+    },
+    /// A session turn began.
+    SessionTurnStarted {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Identifies the turn within the run.
+        turn_id: String,
+    },
+    /// A session turn finished, whatever its outcome.
+    SessionTurnEnded {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Identifies the turn within the run.
+        turn_id: String,
+    },
+    /// A session invoked a tool (verbose only).
+    SessionToolCall {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Unique tool call ID for correlating with results.
+        id: String,
+        /// Name of the tool.
+        name: String,
+        /// Tool arguments as JSON.
+        arguments: serde_json::Value,
+    },
+    /// A tool a session invoked returned (verbose only).
+    SessionToolResult {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Correlation ID matching the original tool call.
+        tool_call_id: String,
+        /// Name of the tool.
+        name: String,
+        /// Tool output text.
+        output: String,
+        /// Whether the tool returned an error.
+        is_error: bool,
+    },
+    /// Intermediate text a session emitted alongside tool calls.
+    SessionBroadcastResponse {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// The intermediate content.
+        content: String,
+    },
+    /// A session turn's final text response.
+    SessionResponse {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// The turn that produced it.
+        turn_id: String,
+        /// The response content.
+        content: String,
+    },
+    /// Something went wrong that affects a session: a failed turn, a
+    /// message refused at the hop limit, or a result relay that could not
+    /// be delivered.
+    SessionError {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Error description.
+        message: String,
+    },
+    /// Reply to `SessionSendMessage`: the message was handed to the session.
+    SessionMessageDelivered {
+        /// The `id` from the `SessionSendMessage`.
+        id: String,
+        /// The target session's address.
+        address: String,
+        /// Where the message landed.
+        outcome: SessionDeliveryOutcome,
+    },
+    /// Reply to `SessionStop`: the session was signalled to stop. Its
+    /// `SessionStateChanged` (`completing`) and `SessionCompleted` follow.
+    SessionStopRequested {
+        /// The `id` from the `SessionStop`.
+        id: String,
+        /// The stopped session's address.
+        address: String,
+    },
+    /// Reply to `SessionSendMessage` or `SessionStop`: the command failed.
+    SessionCommandFailed {
+        /// The `id` from the failed command.
+        id: String,
+        /// The session address the command named.
+        address: String,
+        /// Machine-readable reason.
+        code: SessionCommandErrorCode,
+        /// Human-readable explanation, suitable to show the user.
         message: String,
     },
 }
@@ -475,6 +731,80 @@ mod tests {
         assert!(
             !json.contains("\"caption\""),
             "caption should be skipped when None"
+        );
+    }
+
+    #[test]
+    fn client_message_deserialize_session_commands() {
+        let send: ClientMessage = serde_json::from_str(
+            r#"{"type":"session_send_message","id":"c1","address":"spawned-a-0001","content":"hi"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &send,
+            ClientMessage::SessionSendMessage { id, address, content }
+                if id == "c1" && address == "spawned-a-0001" && content == "hi"
+        ));
+
+        let stop: ClientMessage =
+            serde_json::from_str(r#"{"type":"session_stop","id":"c2","address":"spawned-a-0001"}"#)
+                .unwrap();
+        assert!(matches!(
+            &stop,
+            ClientMessage::SessionStop { id, address } if id == "c2" && address == "spawned-a-0001"
+        ));
+    }
+
+    #[test]
+    fn server_message_serialize_session_command_replies() {
+        let delivered = ServerMessage::SessionMessageDelivered {
+            id: "c1".into(),
+            address: "spawned-a-0001".into(),
+            outcome: SessionDeliveryOutcome::Resumed,
+        };
+        assert_eq!(
+            serde_json::to_value(&delivered).unwrap(),
+            serde_json::json!({
+                "type": "session_message_delivered",
+                "id": "c1",
+                "address": "spawned-a-0001",
+                "outcome": "resumed",
+            })
+        );
+
+        let failed = ServerMessage::SessionCommandFailed {
+            id: "c2".into(),
+            address: "spawned-a-0001".into(),
+            code: SessionCommandErrorCode::UnknownAddress,
+            message: "no such session".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&failed).unwrap(),
+            serde_json::json!({
+                "type": "session_command_failed",
+                "id": "c2",
+                "address": "spawned-a-0001",
+                "code": "unknown_address",
+                "message": "no such session",
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_session_state_changed() {
+        let msg = ServerMessage::SessionStateChanged {
+            address: "scheduled-pulse-0001".into(),
+            run_id: "run-1".into(),
+            state: SessionState::Idle,
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "session_state_changed",
+                "address": "scheduled-pulse-0001",
+                "run_id": "run-1",
+                "state": "idle",
+            })
         );
     }
 }
