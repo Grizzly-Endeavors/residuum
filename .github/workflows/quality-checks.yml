@@ -36,6 +36,10 @@ jobs:
         id: web_typecheck
         run: cd web && npm run check
 
+      - name: Web unit tests
+        id: web_test
+        run: cd web && npm test
+
       - name: Build web assets
         id: web_build
         run: cd web && npm run build
@@ -51,6 +55,7 @@ jobs:
             echo "| Format | ${{ steps.web_format.outcome }} |"
             echo "| Lint | ${{ steps.web_lint.outcome }} |"
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
+            echo "| Tests | ${{ steps.web_test.outcome }} |"
             echo "| Build | ${{ steps.web_build.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 

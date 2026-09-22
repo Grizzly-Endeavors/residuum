@@ -84,6 +84,9 @@ if [ -n "$STAGED_WEB" ]; then
 
     echo "Type-checking web..."
     (cd web && npm run check) || fail "ERROR: svelte-check found issues."
+
+    echo "Testing web..."
+    (cd web && npm test) || fail "ERROR: web unit tests failed."
 fi
 
 # Content gates on the staged diff. These catch the two things clippy cannot:

@@ -16,7 +16,7 @@ Superseded documents live in [`docs/archive/`](./docs/archive/); they record his
 ### Pre-Commit Hooks
 
 Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When `web/src/` files are staged it also runs the web formatter, ESLint, and `svelte-check`. Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When `web/src/` files are staged it also runs the web formatter, ESLint, `svelte-check`, and the web unit tests (Vitest). Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
 - **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
 Bypass is **FORBIDDEN**.

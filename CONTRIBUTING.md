@@ -57,7 +57,9 @@ Use prefixed branch names:
 Pre-commit hooks run automatically:
 - `cargo fmt` — formatting (auto-applied and staged)
 - `cargo clippy` — pedantic linting with strict denials
-- `cargo test` — full test suite
+- `cargo test` — tests for the modules touched by the commit
+- `cargo deny check` — dependency audit
+- When `web/src/` files are staged: Prettier, ESLint, `svelte-check`, and the web unit tests
 
 Do not bypass hooks. If a hook fails, fix the issue before committing.
 

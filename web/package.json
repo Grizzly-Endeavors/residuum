@@ -13,7 +13,8 @@
     "lint:css": "sh scripts/lint-css.sh",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write 'src/**/*.{ts,svelte,js,json,css}'",
-    "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}'"
+    "format:check": "prettier --check 'src/**/*.{ts,svelte,js,json,css}'",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -34,6 +35,7 @@
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.56.1",
     "vite": "^6.0.0",
+    "vitest": "^5.0.1",
     "ws": "^8.18.1"
   },
   "dependencies": {
