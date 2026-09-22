@@ -54,7 +54,12 @@ fn format_run_transcript(
         format_message_line(&mut parts, idx + 1, msg);
     }
 
-    if start_idx > 0 || end_idx < total {
+    if start_idx >= total && start_idx > 0 {
+        parts.push(format!(
+            "--- line {} is past the end; the transcript has {total} lines ---",
+            start_idx + 1,
+        ));
+    } else if start_idx > 0 || end_idx < total {
         parts.push(format!(
             "--- showing lines {}-{end_idx} of {total} total ---",
             start_idx + 1,
@@ -350,6 +355,43 @@ mod tests {
         assert!(result.output.contains("ep-042"));
         assert!(result.output.contains("[line 1] User: investigate"));
         assert!(result.output.contains("[line 2] Assistant: found it"));
+    }
+
+    #[tokio::test]
+    async fn run_id_from_line_past_the_end_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        let store = SessionStore::new(sessions_dir.clone());
+        let info = sample_session_info("run-test-past-end");
+        store.begin_run(&info).await;
+        store
+            .complete_run(
+                &info,
+                "completed",
+                vec![Message::user("one"), Message::assistant("two", None)],
+                None,
+            )
+            .await;
+
+        let tool = MemoryGetTool::new(dir.path().join("episodes"), sessions_dir);
+        let result = tool
+            .execute(serde_json::json!({"run_id": "run-test-past-end", "from_line": 50}))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "{}", result.output);
+        assert!(
+            result
+                .output
+                .contains("line 50 is past the end; the transcript has 2 lines"),
+            "{}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("showing lines"),
+            "{}",
+            result.output
+        );
     }
 
     #[tokio::test]

@@ -473,7 +473,7 @@ With `conversation`, `{name}` reads `{endpoint} ({conversation label})`, e.g. `t
 
 On error:
 - Neither message nor file → `"at least one of 'message' or 'file_path' is required"`
-- From a session, target reaches the owner directly (the web UI endpoint, or the owner's DM on a chat interface — named explicitly or via the no-conversation default) → `"sessions cannot message the owner directly; message main instead so it can decide what to tell the owner"`
+- From a session, target reaches the owner directly (the web UI endpoint, or the owner's DM on a chat interface — named explicitly or via the no-conversation default, including the default on a chat interface whose owner hasn't been claimed yet) → `"sessions cannot message the owner directly; message main instead so it can decide what to tell the owner"`
 - Unknown endpoint → `"unknown endpoint '{name}'; available: {list}"`
 - Endpoint does not accept messages (e.g. inbox) → `"endpoint '{name}' does not accept messages; available: {list}"`
 - File with notify endpoint → `"endpoint '{name}' does not support file attachments"`

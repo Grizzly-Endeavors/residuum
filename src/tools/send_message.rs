@@ -56,14 +56,19 @@ impl SendMessageTool {
         if endpoint_name == WEB_UI_ENDPOINT {
             return true;
         }
-        match self.registry.conversations().owner_dm(endpoint_name).await {
-            Some(owner_dm_id) => match conversation_id {
-                Some(id) => id == owner_dm_id,
-                None => true,
-            },
-            // Not a chat interface (or no owner claimed yet on one): nothing
-            // to guard against.
-            None => false,
+        let conversations = self.registry.conversations();
+        if conversations.source(endpoint_name).is_none() {
+            // Not a chat interface: it has no owner DM to reach.
+            return false;
+        }
+        match conversations.owner_dm(endpoint_name).await {
+            Some(owner_dm_id) => conversation_id.is_none_or(|id| id == owner_dm_id),
+            // No owner claimed yet on this chat interface. The
+            // no-conversation default would fall back to the owner's DM, so
+            // refuse it rather than report success for a message the
+            // interface can only drop; a named conversation can't be the
+            // owner's DM.
+            None => conversation_id.is_none(),
         }
     }
 
@@ -719,6 +724,64 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error, "the default falls back to the owner's DM");
+    }
+
+    /// A chat interface whose owner hasn't claimed it yet.
+    struct ChannelWithoutOwner;
+
+    #[async_trait]
+    impl crate::interfaces::conversations::ConversationSource for ChannelWithoutOwner {
+        async fn conversations(
+            &self,
+        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
+            Ok(vec![crate::interfaces::conversations::KnownConversation {
+                id: "19:builds".to_string(),
+                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                label: "#builds (Eng Team)".to_string(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn session_default_target_is_refused_before_an_owner_is_claimed() {
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithoutOwner));
+        let tool = SendMessageTool::new(registry, make_publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_error,
+            "the default would fall back to an owner DM, so it must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_can_post_to_a_named_conversation_before_an_owner_is_claimed() {
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithoutOwner));
+        let tool = SendMessageTool::new(registry, make_publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "conversation": "19:builds",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
     }
 
     #[tokio::test]
