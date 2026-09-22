@@ -20,7 +20,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/bin` | [tools](references/tools.md) |
 | MCP | *(none — surfaced as regular tools)* | `config/mcp.json` | [mcp](references/mcp.md) |
 | Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
-| Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
+| Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
 
 ## Workspace Directory Layout
@@ -46,7 +46,7 @@ workspace/
 │   ├── .index/              # Tantivy BM25 search index
 │   ├── .index_manifest.json # Index file tracking
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
-│   └── background/          # Background task transcripts (YYYY-MM/DD/)
+│   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run
 ├── skills/                  # Workspace-level skills (also sub-agent roles)
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
