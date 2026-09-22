@@ -12,8 +12,8 @@ pub mod store;
 pub mod subagent;
 pub mod types;
 
-pub use messaging::{AgentMessenger, DeliveryOutcome};
-pub use registry::SessionRegistry;
+pub use messaging::{AgentMessenger, DeliveryOutcome, SendError};
+pub use registry::{DeliverOutcome, SessionRegistry};
 pub use runtime::SessionRuntime;
 pub use store::SessionStore;
 pub use subagent::{SubAgentResources, build_subagent_resources};

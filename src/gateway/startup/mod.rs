@@ -201,19 +201,17 @@ struct StartupSpawnContextInputs<'a> {
     mcp_registry: &'a SharedMcpRegistry,
     session_observer: &'a Arc<Observer>,
     merge_writer: &'a Arc<MemoryMergeWriter>,
+    /// Built alongside the session registry in `init_session_runtime`, since
+    /// the runtime itself now needs it too (to resume a run whose interrupt
+    /// channel still held messages at teardown) — reused here rather than
+    /// built a second time.
+    messenger: &'a Arc<AgentMessenger>,
 }
 
-/// Build the shared `AgentMessenger` and the `SpawnContext` every session
-/// forks from, at startup. Bundled into one step because the messenger has
-/// to exist before the context that carries it into every fork.
-fn build_startup_spawn_context(
-    inputs: StartupSpawnContextInputs<'_>,
-) -> (Arc<AgentMessenger>, Arc<SpawnContext>) {
-    let messenger = Arc::new(AgentMessenger::new(
-        Arc::clone(inputs.session_registry),
-        inputs.publisher.clone(),
-    ));
-    let spawn_context = Arc::new(SpawnContext {
+/// Build the `SpawnContext` every session forks from, at startup.
+fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<SpawnContext> {
+    let messenger = Arc::clone(inputs.messenger);
+    Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
         main_provider_specs: inputs.cfg.main.clone(),
         http_client: inputs.http_client,
@@ -239,12 +237,16 @@ fn build_startup_spawn_context(
         mcp_registry: Arc::clone(inputs.mcp_registry),
         observer: Arc::clone(inputs.session_observer),
         merge_writer: Arc::clone(inputs.merge_writer),
-        messenger: Arc::clone(&messenger),
-    });
-    (messenger, spawn_context)
+        messenger,
+    })
 }
 
-/// Create the session registry, store, and runtime.
+/// Create the session registry, messenger, store, and runtime.
+///
+/// The messenger is built here (rather than alongside the rest of
+/// `SpawnContext`) because the runtime itself now depends on it too — to
+/// resume a run whose interrupt channel still held messages at teardown —
+/// so it has to exist before `SessionRuntime::new` is called.
 ///
 /// At startup, any run left in the store from a prior process exit goes
 /// through the full completion pipeline (skip check, final observation,
@@ -256,7 +258,11 @@ async fn init_session_runtime(
     session_observer: &Observer,
     merge_writer: &MemoryMergeWriter,
     episode_skip_token_floor: usize,
-) -> (Arc<SessionRegistry>, Arc<SessionRuntime>) {
+) -> (
+    Arc<SessionRegistry>,
+    Arc<AgentMessenger>,
+    Arc<SessionRuntime>,
+) {
     let registry = Arc::new(SessionRegistry::new());
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
 
@@ -275,6 +281,11 @@ async fn init_session_runtime(
         );
     }
 
+    let messenger = Arc::new(AgentMessenger::new(
+        Arc::clone(&registry),
+        publisher.clone(),
+    ));
+
     let runtime = Arc::new(SessionRuntime::new(
         Arc::clone(&registry),
         store,
@@ -282,8 +293,9 @@ async fn init_session_runtime(
         &cfg.background,
         publisher.clone(),
         cfg.timezone,
+        Arc::clone(&messenger),
     ));
-    (registry, runtime)
+    (registry, messenger, runtime)
 }
 
 /// Load and connect workspace MCP servers.
@@ -583,7 +595,7 @@ pub(crate) async fn initialize(
         &mem,
         providers.embedding_provider.clone(),
     )?;
-    let (session_registry, session_runtime) = init_session_runtime(
+    let (session_registry, agent_messenger, session_runtime) = init_session_runtime(
         cfg,
         &layout,
         publisher,
@@ -594,7 +606,7 @@ pub(crate) async fn initialize(
     .await;
     let net = init_networking(cfg, &layout).await;
 
-    let (agent_messenger, spawn_context) = build_startup_spawn_context(StartupSpawnContextInputs {
+    let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg,
         layout: &layout,
         tz,
@@ -610,6 +622,7 @@ pub(crate) async fn initialize(
         mcp_registry: &net.mcp_registry,
         session_observer: &session_observer,
         merge_writer: &merge_writer,
+        messenger: &agent_messenger,
     });
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);

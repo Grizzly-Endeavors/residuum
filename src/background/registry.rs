@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc;
@@ -14,12 +15,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{EventTrigger, SessionAddress, SkillName};
+use crate::config::BackgroundModelTier;
 
 /// Capacity of a session's interrupt channel: agent messages delivered to it
 /// (mid-turn, or to wake it while idle). Sized like the main agent's own
 /// interrupt channel — deliveries are infrequent relative to this, so the
 /// buffer exists to smooth bursts, not as a throughput bound.
-const INTERRUPT_CHANNEL_CAPACITY: usize = 32;
+pub(crate) const INTERRUPT_CHANNEL_CAPACITY: usize = 32;
 
 /// The well-known address of the main agent. Never present in the registry
 /// (main is not a session), but used as the `spawner` value for sessions
@@ -106,6 +108,27 @@ impl std::fmt::Display for SessionState {
     }
 }
 
+/// What happened when [`SessionRegistry::deliver`] tried to hand a message
+/// to a session's interrupt channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliverOutcome {
+    /// Handed to the session's live interrupt channel.
+    Delivered,
+    /// The session exists but its current run is `completing`: it no longer
+    /// accepts messages. The caller should resume it as a new run once this
+    /// run has left the registry (see [`SessionRegistry::wait_until_clear`]).
+    Completing,
+    /// The session is live and accepting messages, but its interrupt
+    /// channel is full. Vanishingly unlikely (32-deep, drained continuously
+    /// by a live run), but distinct from [`Self::NotLive`] on purpose: a
+    /// full channel must never be treated as "no such session" and fall
+    /// through to a resume, which would register a second run at the same
+    /// address.
+    Full,
+    /// No live session at this address.
+    NotLive,
+}
+
 /// A live session's metadata, as tracked by the registry.
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -131,6 +154,9 @@ pub struct SessionInfo {
     pub purpose: String,
     /// Skill the session runs with, if any.
     pub agent_skill: Option<SkillName>,
+    /// Model tier this run executes at, carried onto a resume so a later run
+    /// doesn't silently fall back to the default tier.
+    pub model_tier: BackgroundModelTier,
     /// When this run started.
     pub started_at: DateTime<Utc>,
 }
@@ -163,6 +189,9 @@ pub struct ResumePoint {
     /// Skill the original run executed with, if any, carried over so the
     /// resumed run keeps the same role.
     pub agent_skill: Option<SkillName>,
+    /// Model tier the original run executed at, carried over so the resumed
+    /// run doesn't default back to `Medium`.
+    pub model_tier: BackgroundModelTier,
 }
 
 /// Registry of every live (running, idle, or completing) session, plus a
@@ -215,24 +244,56 @@ impl SessionRegistry {
     /// which, depending on whether it currently owns the receiver inside an
     /// active turn or in its idle wait.
     ///
-    /// Returns `true` if a live session was found and the message was
-    /// handed to its channel. `false` means the address is not currently
-    /// live — the caller should fall back to [`Self::resume_point`] to
-    /// decide between resuming a completed session and reporting an unknown
-    /// address. A full or closed channel is logged and also reported as
-    /// `false` — vanishingly unlikely (32-deep, drained continuously by a
-    /// live run) and not worth a third outcome for callers to handle.
-    pub fn deliver(&self, address: &SessionAddress, message: Interrupt) -> bool {
+    /// See [`DeliverOutcome`] for what each outcome means to the caller.
+    /// A `completing` run is deliberately never handed a message: its
+    /// channel is about to be drained and dropped by its own teardown (see
+    /// `crate::background::runtime::finish_run`), so anything accepted here
+    /// after that point could be silently lost.
+    pub fn deliver(&self, address: &SessionAddress, message: Interrupt) -> DeliverOutcome {
         let guard = self.lock();
         let Some(entry) = guard.get(address) else {
-            return false;
+            return DeliverOutcome::NotLive;
         };
+        if matches!(
+            entry.info.state,
+            SessionState::Completing | SessionState::Completed
+        ) {
+            return DeliverOutcome::Completing;
+        }
         match entry.interrupt_tx.try_send(message) {
-            Ok(()) => true,
+            Ok(()) => DeliverOutcome::Delivered,
             Err(e) => {
-                tracing::warn!(address = %address, error = %e, "failed to deliver agent message to live session");
-                false
+                tracing::warn!(address = %address, error = %e, "session interrupt channel full, refusing to deliver agent message");
+                DeliverOutcome::Full
             }
+        }
+    }
+
+    /// Wait until `address` is no longer registered, in any state.
+    ///
+    /// Used before starting a new run at an address whose previous run is
+    /// still tearing down (`completing`), so the two can never coexist.
+    /// Unbounded: a `completing` run is always guaranteed to eventually
+    /// leave the registry (`finish_run` and panic recovery both end on
+    /// `remove`), so there is no address this could wait on forever absent a
+    /// bug elsewhere. Logs once if the wait runs unusually long, since that
+    /// would mean the previous run's teardown is stuck.
+    pub async fn wait_until_clear(&self, address: &SessionAddress) {
+        const POLL_INTERVAL: Duration = Duration::from_millis(50);
+        const WARN_AFTER: Duration = Duration::from_secs(30);
+
+        let start = std::time::Instant::now();
+        let mut warned = false;
+        while self.get(address).is_some() {
+            if !warned && start.elapsed() > WARN_AFTER {
+                tracing::warn!(
+                    address = %address,
+                    waited_secs = start.elapsed().as_secs(),
+                    "still waiting for a completing session to leave the registry"
+                );
+                warned = true;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
     }
 
@@ -307,9 +368,20 @@ impl SessionRegistry {
         signalled
     }
 
-    /// Remove a session from the registry once it has fully completed.
-    pub fn remove(&self, address: &SessionAddress) -> Option<SessionInfo> {
-        self.lock().remove(address).map(|entry| entry.info)
+    /// Remove a session from the registry once it has fully completed, but
+    /// only if the entry still registered there belongs to `run_id`.
+    ///
+    /// A stale run's teardown (a panic-recovery path, or a run that raced a
+    /// newer one at the same address) must never delete a newer run's live
+    /// entry — checking the run id before removing is what makes that
+    /// impossible. Returns `None` (no-op) if the address is unknown or now
+    /// holds a different run.
+    pub fn remove(&self, address: &SessionAddress, run_id: &str) -> Option<SessionInfo> {
+        let mut guard = self.lock();
+        if guard.get(address).is_none_or(|e| e.info.run_id != run_id) {
+            return None;
+        }
+        guard.remove(address).map(|entry| entry.info)
     }
 
     /// Look up a single session's current info.
@@ -408,6 +480,7 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
+            model_tier: BackgroundModelTier::Medium,
             started_at: Utc::now(),
         }
     }
@@ -533,9 +606,25 @@ mod tests {
         let _rx = registry.register(info.clone(), CancellationToken::new());
 
         assert_eq!(registry.list_live().len(), 1);
-        let removed = registry.remove(&info.address).unwrap();
+        let removed = registry.remove(&info.address, &info.run_id).unwrap();
         assert_eq!(removed.address, info.address);
         assert!(registry.list_live().is_empty());
+    }
+
+    #[test]
+    fn remove_is_a_noop_for_a_stale_run_id() {
+        // A newer run at the same address must never be deleted by an older
+        // run's teardown racing behind it.
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0005b");
+        let _rx = registry.register(info.clone(), CancellationToken::new());
+
+        assert!(registry.remove(&info.address, "run-stale").is_none());
+        assert_eq!(
+            registry.list_live().len(),
+            1,
+            "the live entry must survive a removal attempt naming the wrong run id"
+        );
     }
 
     #[test]
@@ -609,15 +698,79 @@ mod tests {
         let info = sample_info("spawned-researcher-0007");
         let mut rx = registry.register(info.clone(), CancellationToken::new());
 
-        assert!(registry.deliver(&info.address, sample_agent_message()));
+        assert_eq!(
+            registry.deliver(&info.address, sample_agent_message()),
+            DeliverOutcome::Delivered
+        );
         let received = rx.try_recv().expect("message should be queued");
         assert!(matches!(received, Interrupt::AgentMessage(_)));
     }
 
     #[test]
-    fn deliver_returns_false_for_unknown_address() {
+    fn deliver_returns_not_live_for_unknown_address() {
         let registry = SessionRegistry::new();
-        assert!(!registry.deliver(&SessionAddress::from("ghost"), sample_agent_message()));
+        assert_eq!(
+            registry.deliver(&SessionAddress::from("ghost"), sample_agent_message()),
+            DeliverOutcome::NotLive
+        );
+    }
+
+    #[test]
+    fn deliver_returns_completing_for_a_session_tearing_down() {
+        let registry = SessionRegistry::new();
+        let mut info = sample_info("spawned-researcher-0007b");
+        info.state = SessionState::Completing;
+        let _rx = registry.register(info.clone(), CancellationToken::new());
+
+        assert_eq!(
+            registry.deliver(&info.address, sample_agent_message()),
+            DeliverOutcome::Completing,
+            "a completing session must not accept a message into its own run"
+        );
+    }
+
+    #[test]
+    fn deliver_returns_full_when_the_channel_is_saturated() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0007c");
+        let _rx = registry.register(info.clone(), CancellationToken::new());
+
+        for _ in 0..INTERRUPT_CHANNEL_CAPACITY {
+            assert_eq!(
+                registry.deliver(&info.address, sample_agent_message()),
+                DeliverOutcome::Delivered
+            );
+        }
+        assert_eq!(
+            registry.deliver(&info.address, sample_agent_message()),
+            DeliverOutcome::Full,
+            "a saturated channel must be distinguishable from an unknown address"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_until_clear_returns_once_the_entry_is_removed() {
+        let registry = std::sync::Arc::new(SessionRegistry::new());
+        let info = sample_info("spawned-researcher-0007d");
+        let _rx = registry.register(info.clone(), CancellationToken::new());
+
+        let waiter_registry = std::sync::Arc::clone(&registry);
+        let address = info.address.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_registry.wait_until_clear(&address).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "should still be waiting while the entry is live"
+        );
+
+        registry.remove(&info.address, &info.run_id);
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("wait_until_clear should return once the entry is removed")
+            .unwrap();
     }
 
     #[test]
@@ -630,6 +783,7 @@ mod tests {
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
+            model_tier: BackgroundModelTier::Large,
         };
         registry.record_resume_point(&address, point.clone());
 

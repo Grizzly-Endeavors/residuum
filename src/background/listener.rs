@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::background::registry::SessionCategory;
+use crate::background::registry::{SessionCategory, SessionState};
 use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
@@ -64,8 +64,58 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
     tracing::info!("spawn listener shutting down");
 }
 
-/// Handle a single spawn request: build resources, fork the session.
+/// Handle a single spawn request: guard against a live or tearing-down
+/// address, then build resources and fork the session.
+///
+/// Two runs must never be live at the same address at once (see
+/// `SessionRegistry::deliver` and `AgentMessenger::send`, which already wait
+/// for a `completing` target to clear before publishing a resume). This is
+/// the last line of defense against that: a request for an address that is
+/// still `forking`/`running`/`idle` is refused outright (that should only
+/// happen if a caller races the registry itself, since address generation
+/// and `message_agent`'s own resume path both avoid it); a request for one
+/// that is `completing` is deferred, off the listener's own task so it
+/// doesn't block other addresses' spawns, until the address clears.
 async fn handle_spawn_request(
+    ctx: &Arc<SpawnContext>,
+    event: SpawnRequestEvent,
+) -> Result<(), anyhow::Error> {
+    if let Some(existing) = ctx.session_registry.get(&event.address) {
+        match existing.state {
+            SessionState::Completing => {
+                tracing::info!(
+                    address = %event.address,
+                    "spawn target is completing; deferring until it clears the registry"
+                );
+                let ctx = Arc::clone(ctx);
+                tokio::spawn(async move {
+                    ctx.session_registry.wait_until_clear(&event.address).await;
+                    if let Err(e) = fork_and_spawn(&ctx, event).await {
+                        tracing::warn!(error = %e, "failed to fork deferred session resume");
+                    }
+                });
+                return Ok(());
+            }
+            SessionState::Forking | SessionState::Running | SessionState::Idle => {
+                tracing::error!(
+                    address = %event.address,
+                    state = %existing.state,
+                    "refusing to fork a session at an address that is already live"
+                );
+                anyhow::bail!(
+                    "session address {} is already live, refusing spawn/resume",
+                    event.address
+                );
+            }
+            SessionState::Completed => {}
+        }
+    }
+    fork_and_spawn(ctx, event).await
+}
+
+/// Build resources and hand the run to `SessionRuntime`, once
+/// `handle_spawn_request` has confirmed the address is free to take it.
+async fn fork_and_spawn(
     ctx: &Arc<SpawnContext>,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {

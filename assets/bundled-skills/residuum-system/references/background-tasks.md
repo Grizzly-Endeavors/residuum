@@ -12,7 +12,7 @@ Sessions share the MCP registry with the main agent.
 
 ## Categories and Lifecycle
 
-Every session has a category — `scheduled` (pulses, actions), `external` (webhooks), or `spawned` (`subagent_spawn`, the `learner`) — and moves through `forking` → `running` → `idle` → `completing` → `completed`. A run holds a concurrency permit only while `running`; it lingers `idle` for its category's timeout (`idle_timeout_scheduled_minutes` / `_spawned_minutes` / `_external_minutes` in `[background]`, defaulting to 2 / 10 / 30 minutes; a webhook session uses the scheduled timeout) before completing. `stop_agent` cancels a session's stop token: a running turn ends at its next checkpoint with its transcript intact, an idle one completes immediately.
+Every session has a category — `scheduled` (pulses, actions), `external` (webhooks), or `spawned` (`subagent_spawn`, the `learner`) — and moves through `forking` → `running` → `idle` → `completing` → `completed`. A run holds a concurrency permit only while `running`; it lingers `idle` for its category's timeout (`idle_timeout_scheduled_minutes` / `_spawned_minutes` / `_external_minutes` in `[background]`, defaulting to 2 / 10 / 30 minutes; a webhook session uses the scheduled timeout) before completing. A `completing` run no longer accepts messages into itself — see Messaging below. `stop_agent` cancels a session's stop token: a running turn ends at its next checkpoint with its transcript intact, an idle one completes immediately.
 
 Each session has a stable address (e.g. `spawned-researcher-3f9a`) generated at spawn time. Messaging a completed session's address (see Messaging below) resumes it as a new run at the same address.
 
@@ -43,7 +43,7 @@ Pulses and actions route by an `agent` field naming a skill; `agent: "main"` is 
 
 ## Messaging
 
-`message_agent` sends text to an address, available to main and every session. Delivery depends on the target's state: `main` and a running session get it as an interrupt at the next tool-call boundary; an idle session starts another turn in the same run with it as input (so a run can span several turns, and per-turn memory staging runs after each one); a completed session is resumed as a new run at the same address, with a pointer to its previous run's episode (or run id, for `memory_get`) in the new run's context. An address that has never run reports an error pointing at `list_agents`. Every delivered message names the sender's address and category.
+`message_agent` sends text to an address, available to main and every session. Delivery depends on the target's state: `main` and a running session get it as an interrupt at the next tool-call boundary (a saturated channel — vanishingly unlikely — errors back to the sender rather than silently resuming a duplicate run); an idle session starts another turn in the same run with it as input (so a run can span several turns, and per-turn memory staging runs after each one); a completing session's message waits for it to fully leave the registry, then resumes it as a new run, same as below; a completed session is resumed as a new run at the same address carrying the previous run's model tier, with a pointer to its previous run's episode (or run id, for `memory_get`) in the new run's context. An address that has never run reports an error pointing at `list_agents`. Every delivered message names the sender's address and category, and a failed publish (to main, or as a resume) errors back to the sender instead of reporting success.
 
 ## Tools
 

@@ -23,6 +23,7 @@ use crate::bus::{
 };
 use crate::config::BackgroundConfig;
 
+use super::messaging::AgentMessenger;
 use super::registry::{
     MAIN_ADDRESS, ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState,
     generate_run_id,
@@ -98,6 +99,11 @@ pub struct SessionRuntime {
     idle_timeouts: IdleTimeouts,
     publisher: Publisher,
     tz: chrono_tz::Tz,
+    /// Used only to resume a run whose interrupt channel still held agent
+    /// messages at the moment its own teardown drained it — see
+    /// `finish_run`. Ordinary live delivery goes through the registry
+    /// directly and never touches this.
+    messenger: Arc<AgentMessenger>,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -108,6 +114,7 @@ struct RunEnv {
     store: Arc<SessionStore>,
     publisher: Publisher,
     tz: chrono_tz::Tz,
+    messenger: Arc<AgentMessenger>,
 }
 
 impl SessionRuntime {
@@ -120,6 +127,7 @@ impl SessionRuntime {
         idle_timeouts: impl Into<IdleTimeouts>,
         publisher: Publisher,
         tz: chrono_tz::Tz,
+        messenger: Arc<AgentMessenger>,
     ) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -128,6 +136,7 @@ impl SessionRuntime {
             idle_timeouts: idle_timeouts.into(),
             publisher,
             tz,
+            messenger,
         }
     }
 
@@ -144,6 +153,7 @@ impl SessionRuntime {
             .then(|| SessionAddress::from(MAIN_ADDRESS));
         let purpose = truncate_prompt_preview(&req.subagent_config.prompt);
         let idle_timeout = self.idle_timeouts.for_trigger(&req.trigger);
+        let model_tier = req.subagent_config.model_tier;
 
         let info = SessionInfo {
             address: req.address,
@@ -156,6 +166,7 @@ impl SessionRuntime {
             depth: super::registry::MAIN_DEPTH + 1,
             purpose,
             agent_skill: req.agent_skill,
+            model_tier,
             started_at: Utc::now(),
         };
 
@@ -169,6 +180,7 @@ impl SessionRuntime {
             store: Arc::clone(&self.store),
             publisher: self.publisher.clone(),
             tz: self.tz,
+            messenger: Arc::clone(&self.messenger),
         };
         let config = req.subagent_config;
 
@@ -336,7 +348,7 @@ async fn recover_from_panic(
         tracing::warn!(error = %e, "failed to publish panicked session result to bus");
     }
 
-    registry.remove(&info.address);
+    registry.remove(&info.address, &info.run_id);
     tracing::info!("session removed from registry after panic recovery");
 }
 
@@ -350,6 +362,7 @@ fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
         trigger: info.trigger.clone(),
         source_label: info.source_label.clone(),
         agent_skill: info.agent_skill.clone(),
+        model_tier: info.model_tier,
     }
 }
 
@@ -379,7 +392,19 @@ async fn wait_idle(
         tokio::select! {
             biased;
             () = stop_token.cancelled() => return IdleOutcome::Stopped,
-            () = tokio::time::sleep(idle_timeout) => return IdleOutcome::TimedOut,
+            () = tokio::time::sleep(idle_timeout) => {
+                // `biased` means this arm can win even when a message landed
+                // in the channel in the same poll (it's checked ahead of the
+                // `recv()` arm below) — a `try_recv` here catches that exact
+                // race before treating the run as genuinely timed out and
+                // letting its caller move on to completing, which would
+                // otherwise leave the message stranded in a channel about to
+                // be drained and dropped (see `finish_run`).
+                return match interrupt_rx.try_recv() {
+                    Ok(Interrupt::AgentMessage(msg)) => IdleOutcome::Woken(msg),
+                    Ok(_) | Err(_) => IdleOutcome::TimedOut,
+                };
+            }
             received = interrupt_rx.recv() => {
                 match received {
                     Some(Interrupt::AgentMessage(msg)) => return IdleOutcome::Woken(msg),
@@ -494,33 +519,81 @@ async fn run_session(
         }
     }
 
+    // The run is genuinely ending now (stopped, or timed out with the race
+    // above finding nothing) and `interrupt_rx` is about to be dropped —
+    // drain whatever is still queued in it so a message that landed in the
+    // narrow window between the loop's last check and here isn't silently
+    // lost. `finish_run` resumes the session as a new run to deliver these
+    // once this run has fully left the registry.
+    let leftover_messages = drain_pending_agent_messages(&mut interrupt_rx);
+
     finish_run(
         &mut info,
         resources.as_ref(),
-        status,
-        summary,
-        memory,
-        recent_messages,
+        RunOutcome {
+            status,
+            summary,
+            memory,
+            recent_messages,
+            leftover_messages,
+        },
         &env,
     )
     .await;
 }
 
+/// Drain every agent message still queued in a run's interrupt channel,
+/// discarding any other interrupt kind (nothing else is ever sent into a
+/// session's channel — see `wait_idle`).
+fn drain_pending_agent_messages(
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+) -> Vec<AgentMessageEvent> {
+    let mut drained = Vec::new();
+    while let Ok(interrupt) = interrupt_rx.try_recv() {
+        if let Interrupt::AgentMessage(msg) = interrupt {
+            drained.push(msg);
+        }
+    }
+    drained
+}
+
+/// What a run's turn loop produced, once it has ended — everything
+/// [`finish_run`] needs to close it out, grouped to keep that function's
+/// argument count down.
+struct RunOutcome {
+    status: AgentResultStatus,
+    summary: String,
+    memory: SessionMemory,
+    recent_messages: RecentMessages,
+    /// Agent messages still queued in the run's interrupt channel when
+    /// [`drain_pending_agent_messages`] drained it — must be routed to the
+    /// resumed run rather than silently dropped.
+    leftover_messages: Vec<AgentMessageEvent>,
+}
+
 /// Finalize a run once its turn loop has ended: merge whatever it staged
 /// (and a final extraction) into global memory, record the run's resume
-/// point, write its completed store record, and publish its result.
+/// point, write its completed store record, publish its result, and — if
+/// any agent messages were still queued when the run's interrupt channel was
+/// drained (see [`drain_pending_agent_messages`]) — resume the session as a
+/// new run to deliver them, once this run has fully left the registry.
 ///
 /// Split out of [`run_session`] purely to keep that function's line count
 /// down — this is still exclusively its own tail end, not a reusable step.
 async fn finish_run(
     info: &mut SessionInfo,
     resources: Option<&SubAgentResources>,
-    status: AgentResultStatus,
-    summary: String,
-    memory: SessionMemory,
-    recent_messages: RecentMessages,
+    outcome: RunOutcome,
     env: &RunEnv,
 ) {
+    let RunOutcome {
+        status,
+        summary,
+        memory,
+        recent_messages,
+        leftover_messages,
+    } = outcome;
+
     info.state = SessionState::Completing;
     env.registry
         .set_state(&info.address, SessionState::Completing);
@@ -540,8 +613,9 @@ async fn finish_run(
         None
     };
 
+    let point = resume_point(info, episode_id.clone());
     env.registry
-        .record_resume_point(&info.address, resume_point(info, episode_id.clone()));
+        .record_resume_point(&info.address, point.clone());
 
     let transcript_path = env
         .store
@@ -558,8 +632,27 @@ async fn finish_run(
         tracing::warn!(error = %e, "failed to publish session result to bus");
     }
 
-    env.registry.remove(&info.address);
+    env.registry.remove(&info.address, &info.run_id);
     tracing::info!("session completed");
+
+    if !leftover_messages.is_empty() {
+        tracing::warn!(
+            address = %info.address,
+            count = leftover_messages.len(),
+            "agent message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
+        );
+        if let Err(e) = env
+            .messenger
+            .resume_with_messages(&info.address, &point, &leftover_messages)
+            .await
+        {
+            tracing::error!(
+                address = %info.address,
+                error = %e,
+                "failed to resume session to deliver messages queued at teardown"
+            );
+        }
+    }
 }
 
 /// Build a [`SessionMemoryEnv`] borrowing from a run's [`SubAgentResources`],
@@ -708,6 +801,10 @@ mod tests {
             spawned: Duration::from_millis(20),
             external: Duration::from_millis(20),
         };
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
         let runtime = SessionRuntime::new(
             registry,
             store,
@@ -715,6 +812,7 @@ mod tests {
             idle_timeouts,
             bus_handle.publisher(),
             chrono_tz::UTC,
+            messenger,
         );
         (runtime, sub)
     }
@@ -933,6 +1031,97 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn stop_with_a_pending_message_resumes_the_session_to_deliver_it() {
+        // A message delivered while the turn is blocked on the model call
+        // never reaches a tool-call checkpoint to be drained by the turn
+        // itself. Stopping the session then must not let that message
+        // vanish when `interrupt_rx` is dropped — `finish_run` drains it and
+        // resumes the session as a new run instead.
+        let bus_handle = crate::bus::spawn_broker();
+        let mut result_sub: crate::bus::Subscriber<AgentResultEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let mut spawn_sub: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            3,
+            IdleTimeouts {
+                scheduled: Duration::from_secs(60),
+                spawned: Duration::from_secs(60),
+                external: Duration::from_secs(60),
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+
+        let address = SessionAddress::from("spawned-researcher-000t");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(BlockingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+            }),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("session should reach running while blocked on the model call");
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from(MAIN_ADDRESS),
+                    from_category: "main".to_string(),
+                    content: "don't forget this".to_string(),
+                    hop_count: 0,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered
+        );
+
+        assert!(runtime.registry.stop(&address));
+
+        let result_event = tokio::time::timeout(Duration::from_secs(2), result_sub.recv())
+            .await
+            .expect("stopped run should still publish a result")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result_event.status, AgentResultStatus::Cancelled));
+
+        let spawn_event = tokio::time::timeout(Duration::from_secs(2), spawn_sub.recv())
+            .await
+            .expect("the pending message must resume the session as a new run rather than vanish")
+            .unwrap()
+            .unwrap();
+        assert_eq!(spawn_event.address, address);
+        assert!(spawn_event.prompt.contains("don't forget this"));
+    }
+
     struct PanickingProvider;
 
     #[async_trait]
@@ -1025,6 +1214,7 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         };
         store.begin_run(&info).await;
@@ -1179,6 +1369,10 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
         let runtime = SessionRuntime::new(
             registry,
             store,
@@ -1190,6 +1384,7 @@ mod tests {
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
+            messenger,
         );
 
         let first = SessionAddress::from("spawned-first-0001");
@@ -1279,6 +1474,7 @@ mod tests {
             depth: 1,
             purpose: "check things".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         };
         let event = build_result_event(
@@ -1319,6 +1515,7 @@ mod tests {
             depth: 1,
             purpose: "research".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         };
         let event = build_result_event(
@@ -1404,6 +1601,10 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
         let runtime = SessionRuntime::new(
             registry,
             store,
@@ -1415,8 +1616,44 @@ mod tests {
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
+            messenger,
         );
         (runtime, sub)
+    }
+
+    #[tokio::test]
+    async fn wait_idle_treats_a_message_racing_the_timeout_as_a_wake() {
+        // A zero-length idle window is already elapsed the instant the
+        // future is first polled, so the biased select's timeout arm can win
+        // even with a message already sitting in the channel — exactly the
+        // race `wait_idle`'s post-timeout `try_recv` exists to catch.
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
+            from: SessionAddress::from(MAIN_ADDRESS),
+            from_category: "main".to_string(),
+            content: "just in time".to_string(),
+            hop_count: 0,
+        }))
+        .unwrap();
+
+        let stop_token = CancellationToken::new();
+        match wait_idle(&stop_token, Duration::ZERO, &mut rx).await {
+            IdleOutcome::Woken(msg) => assert_eq!(msg.content, "just in time"),
+            IdleOutcome::TimedOut => panic!(
+                "a message already queued when the timeout fired must still wake the session"
+            ),
+            IdleOutcome::Stopped => panic!("stop token was never cancelled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_idle_times_out_when_the_channel_is_genuinely_empty() {
+        let (_tx, mut rx) = mpsc::channel(4);
+        let stop_token = CancellationToken::new();
+        assert!(matches!(
+            wait_idle(&stop_token, Duration::from_millis(5), &mut rx).await,
+            IdleOutcome::TimedOut
+        ));
     }
 
     #[tokio::test]
@@ -1436,7 +1673,7 @@ mod tests {
 
         // Exactly what `AgentMessenger::send` does to deliver to a live
         // session — see `crate::background::messaging`.
-        assert!(
+        assert_eq!(
             runtime.registry.deliver(
                 &address,
                 Interrupt::AgentMessage(AgentMessageEvent {
@@ -1446,6 +1683,7 @@ mod tests {
                     hop_count: 0,
                 }),
             ),
+            crate::background::registry::DeliverOutcome::Delivered,
             "the idle session should still be live in the registry"
         );
 
@@ -1557,15 +1795,18 @@ mod tests {
         .await
         .expect("session should go idle after its first turn");
 
-        assert!(runtime.registry.deliver(
-            &address,
-            Interrupt::AgentMessage(AgentMessageEvent {
-                from: SessionAddress::from(MAIN_ADDRESS),
-                from_category: "main".to_string(),
-                content: "keep going".to_string(),
-                hop_count: 0,
-            }),
-        ));
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from(MAIN_ADDRESS),
+                    from_category: "main".to_string(),
+                    content: "keep going".to_string(),
+                    hop_count: 0,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered
+        );
 
         let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
             .await

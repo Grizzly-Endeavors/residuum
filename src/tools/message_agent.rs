@@ -96,17 +96,20 @@ impl Tool for MessageAgentTool {
             .await;
 
         Ok(match outcome {
-            DeliveryOutcome::Main => ToolResult::success("Message delivered to main.".to_string()),
-            DeliveryOutcome::Live(address) => {
+            Ok(DeliveryOutcome::Main) => {
+                ToolResult::success("Message delivered to main.".to_string())
+            }
+            Ok(DeliveryOutcome::Live(address)) => {
                 ToolResult::success(format!("Message delivered to {address}."))
             }
-            DeliveryOutcome::Resumed(address) => ToolResult::success(format!(
+            Ok(DeliveryOutcome::Resumed(address)) => ToolResult::success(format!(
                 "Session {address} had completed; message delivered by resuming it as a new run."
             )),
-            DeliveryOutcome::Unknown => ToolResult::error(format!(
+            Ok(DeliveryOutcome::Unknown) => ToolResult::error(format!(
                 "no such agent '{to}'. Use list_agents to see live sessions; a completed \
                  session's address only works again once it has run at least once."
             )),
+            Err(e) => ToolResult::error(e.to_string()),
         })
     }
 }

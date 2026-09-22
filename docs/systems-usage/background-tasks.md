@@ -39,7 +39,7 @@ A session run moves through: `forking` → `running` → `idle` → `completing`
 - **forking** — the session is registered and its fork resources (identity, memory snapshot, tools) are being built; no turn has started.
 - **running** — a turn is executing. The run holds one concurrency permit.
 - **idle** — the turn ended; the session is still discoverable via `list_agents` and lingers for its category's idle timeout. A message delivered to it (see [Messaging](#messaging)) starts another turn in the same run instead of waiting out the timeout, so a run can span several turns.
-- **completing** — the idle timeout elapsed, or the session was stopped via `stop_agent`.
+- **completing** — the idle timeout elapsed, or the session was stopped via `stop_agent`. A completing run no longer accepts messages into itself; one addressed to it is queued for the resume that follows once it clears (see [Messaging](#messaging)).
 - **completed** — the run's final transcript and metadata are recorded in the session store, and the result is delivered. The session is no longer listed by `list_agents`, though its address stays meaningful: a message to it starts a new run at the same address (see [Messaging](#messaging)).
 
 Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing.
@@ -65,12 +65,13 @@ A run id, distinct from the address, identifies the specific run within the sess
 Agents message each other by address with the `message_agent` tool, available to the main agent and every session. Delivery depends on the target's current lifecycle state:
 
 - **`main`** — delivered as an interrupt at the next tool-call boundary if a main turn is running, otherwise it starts a main turn.
-- **running session** — delivered as an interrupt at the session's next tool-call boundary, through the same interrupt channel `stop_agent` uses to end a turn.
+- **running session** — delivered as an interrupt at the session's next tool-call boundary, through the same interrupt channel `stop_agent` uses to end a turn. If that channel is saturated (vanishingly unlikely — 32 deep, drained continuously by a live run), the tool returns an error telling the sender to retry shortly, rather than silently falling back to a resume that would double-register the address.
 - **idle session** — starts another turn in the same run, with the message as that turn's input. The run's transcript and per-turn memory staging (see [Memory](#memory)) span every turn this way, not just the first.
-- **completed session** — the session is resumed as a new run at the same address, forked the same way any other session is. The new run's context carries a pointer back to the previous run's episode id, or its run id if that run produced no episode, retrievable with `memory_get`. The sender's tool result says the session had completed and was resumed.
+- **completing session** — the run is tearing down and no longer accepts input; the message waits for it to fully leave the registry (recording its resume point on the way out) and is then delivered by resuming it as a new run, the same as a completed session below. A message still queued in a run's own interrupt channel at the moment its teardown drains it (e.g. one delivered just as a stop lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
+- **completed session** — the session is resumed as a new run at the same address, forked the same way any other session is, carrying the previous run's model tier. The new run's context carries a pointer back to the previous run's episode id, or its run id if that run produced no episode, retrievable with `memory_get`. The sender's tool result says the session had completed and was resumed.
 - **unknown address** — an address that has never run reports an error naming `list_agents` as the way to find live sessions.
 
-Every delivered message names the sender's address and category, so the recipient knows who to reply to.
+Every delivered message names the sender's address and category, so the recipient knows who to reply to. If delivery requires publishing an event (a resume, or handoff to main) and that publish fails, the tool returns an error rather than reporting success — the sender should not assume the message arrived.
 
 ## Tools
 

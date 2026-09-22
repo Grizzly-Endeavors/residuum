@@ -454,6 +454,7 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         }
     }
