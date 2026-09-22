@@ -15,16 +15,6 @@ use super::interrupt;
 use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, TurnResources, execute_turn};
 
-/// Result of a background system turn (pulse or scheduled action).
-pub struct SystemTurnResult {
-    /// The assistant's final text response.
-    pub response: String,
-    /// All messages from the background thread (user prompt + assistant response + tool calls).
-    ///
-    /// Feed these into `run_memory_pipeline()` so background turns contribute to memory.
-    pub messages: Vec<Message>,
-}
-
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
     pub options: CompletionOptions,
@@ -257,73 +247,6 @@ impl Agent {
         }
     }
 
-    /// Run an autonomous wake turn triggered by background results.
-    ///
-    /// Unlike `process_message`, this does NOT update `last_user_message_at`.
-    /// Pushes a user-role kickoff message (required by models that reject
-    /// assistant prefill) so the agent reviews injected background results.
-    ///
-    /// # Errors
-    /// Returns an error if the model call fails or tool execution errors
-    /// are unrecoverable.
-    #[tracing::instrument(skip_all, fields(operation = "wake_turn"))]
-    pub async fn run_wake_turn(
-        &mut self,
-        publisher: &Publisher,
-        output_endpoint: Option<&EndpointName>,
-        tool_activity_endpoint: Option<&EndpointName>,
-        prompt_ctx: &PromptContext<'_>,
-        interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-    ) -> anyhow::Result<Vec<String>> {
-        tracing::debug!("processing wake turn");
-        self.identity = self.load_identity_snapshot().await;
-        let now = crate::time::now_local(self.tz);
-        let status_line = StatusLine {
-            now,
-            last_message_at: self.last_user_message_at,
-            message_source: Some("background".to_string()),
-        };
-
-        // User-role kickoff — models require the conversation to end with a
-        // user message. Tagged as background via the status line.
-        self.recent_messages.push(Message::user(
-            "[Background results require your attention. Review and take action.]",
-        ));
-
-        let memory_ctx =
-            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
-        // Wake turns are background-initiated, not user-facing — nothing can
-        // stop them, so the token is never cancelled.
-        let stop_token = CancellationToken::new();
-        let resources = Self::turn_resources(
-            &*self.provider,
-            &self.tools,
-            &self.mcp_registry,
-            &self.identity,
-            &self.options,
-            &stop_token,
-            &self.hop_counter,
-        );
-        let events = EventContext {
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
-            correlation_id: "",
-        };
-        // Wake turns are background-initiated and are not watched (loop prevention).
-        execute_turn(
-            &resources,
-            &memory_ctx,
-            prompt_ctx,
-            &mut self.recent_messages,
-            &events,
-            Some(&status_line),
-            interrupt_rx,
-            None,
-        )
-        .await
-    }
-
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
@@ -399,84 +322,6 @@ impl Agent {
             subconscious,
         )
         .await
-    }
-
-    /// Run a background agent thread for pulse or scheduled action tasks.
-    ///
-    /// Creates a temporary message buffer that is not added to the main conversation.
-    /// Returns both the response text and the thread messages so the caller
-    /// can feed them into `run_memory_pipeline()`.
-    ///
-    /// If `provider_override` is `Some`, that provider is used instead of the
-    /// agent's default provider for this turn only.
-    ///
-    /// # Errors
-    /// Returns an error if the model call fails.
-    #[tracing::instrument(skip_all, fields(operation = "system_turn"))]
-    pub async fn run_system_turn(
-        &self,
-        prompt: &str,
-        publisher: &Publisher,
-        output_endpoint: Option<&EndpointName>,
-        tool_activity_endpoint: Option<&EndpointName>,
-        provider_override: Option<&dyn InferenceProvider>,
-        prompt_ctx: &PromptContext<'_>,
-    ) -> anyhow::Result<SystemTurnResult> {
-        let mut thread_messages = RecentMessages::new();
-        thread_messages.push(Message::user(prompt));
-
-        let provider: &dyn InferenceProvider = provider_override.unwrap_or(&*self.provider);
-
-        // System turns take `&self` and can't cache the reload, so use a local
-        // snapshot for this turn only.
-        let identity = self.load_identity_snapshot().await;
-
-        let memory_ctx =
-            Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
-
-        // System turns don't participate in interrupts — use a dead-end channel
-        let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
-        // Nothing external can reach a system turn to stop it.
-        let stop_token = CancellationToken::new();
-
-        let resources = Self::turn_resources(
-            provider,
-            &self.tools,
-            &self.mcp_registry,
-            &identity,
-            &self.options,
-            &stop_token,
-            &self.hop_counter,
-        );
-
-        let events = EventContext {
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
-            correlation_id: "",
-        };
-        // System turns don't inject time context (no user-facing timestamps)
-        // and are not watched by the subconscious (loop prevention).
-        let mut texts = execute_turn(
-            &resources,
-            &memory_ctx,
-            prompt_ctx,
-            &mut thread_messages,
-            &events,
-            None,
-            &mut sys_interrupt_rx,
-            None,
-        )
-        .await?;
-
-        let response = texts
-            .pop()
-            .ok_or_else(|| anyhow::anyhow!("system turn returned no text responses"))?;
-
-        Ok(SystemTurnResult {
-            response,
-            messages: thread_messages.messages().to_vec(),
-        })
     }
 
     /// Compute a per-section token breakdown for the current agent context.
@@ -796,50 +641,6 @@ mod tests {
         assert!(result.is_err(), "should error after max iterations");
     }
 
-    #[tokio::test]
-    async fn run_system_turn_ephemeral() {
-        let provider = MockProvider::new(vec![InferenceResponse::new(
-            "HEARTBEAT_OK".to_string(),
-            vec![],
-        )]);
-
-        let agent = Agent::new(
-            Box::new(provider),
-            ToolRegistry::new(),
-            empty_mcp(),
-            IdentityFiles::default(),
-            AgentConfig {
-                options: CompletionOptions::default(),
-                tz: chrono_tz::UTC,
-                layout: None,
-            },
-            crate::agent::HopCounter::new(0),
-        );
-
-        let (publisher, ep) = test_bus();
-        let result = agent
-            .run_system_turn(
-                "check status",
-                &publisher,
-                Some(&ep),
-                None,
-                None,
-                &PromptContext::default(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
-        assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[0].role, crate::inference::Role::User);
-        assert_eq!(result.messages[0].content, "check status");
-        assert_eq!(result.messages[1].content, "HEARTBEAT_OK");
-        assert_eq!(
-            agent.message_count(),
-            0,
-            "main message history should be untouched"
-        );
-    }
-
     #[test]
     fn inject_inbound_message_appears_in_history() {
         let mut agent = Agent::new(
@@ -867,71 +668,6 @@ mod tests {
             msgs[0].role,
             crate::inference::Role::User,
             "injected message should have User role"
-        );
-    }
-
-    #[tokio::test]
-    async fn wake_turn_pushes_user_kickoff_without_updating_timestamp() {
-        let provider = MockProvider::new(vec![InferenceResponse::new(
-            "I'll handle it".to_string(),
-            vec![],
-        )]);
-
-        let mut agent = Agent::new(
-            Box::new(provider),
-            ToolRegistry::new(),
-            empty_mcp(),
-            IdentityFiles::default(),
-            AgentConfig {
-                options: CompletionOptions::default(),
-                tz: chrono_tz::UTC,
-                layout: None,
-            },
-            crate::agent::HopCounter::new(0),
-        );
-
-        // Set a known timestamp so we can verify it doesn't change
-        let fixed_time = chrono::NaiveDateTime::new(
-            chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
-            chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
-        );
-        agent.set_last_user_message_at(Some(fixed_time));
-
-        // Inject a background result first (simulates what the gateway does)
-        agent.inject_system_message("bg result: task completed");
-
-        let (publisher, ep) = test_bus();
-        let mut irx = interrupt::dead_interrupt_rx();
-        let result = agent
-            .run_wake_turn(
-                &publisher,
-                Some(&ep),
-                None,
-                &PromptContext::default(),
-                &mut irx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, vec!["I'll handle it"]);
-
-        // Verify: last_user_message_at should be unchanged
-        assert_eq!(
-            agent.last_user_message_at,
-            Some(fixed_time),
-            "wake turn should not update last_user_message_at"
-        );
-
-        // Verify: kickoff message is present and uses user role (required by models)
-        let msgs = agent.messages_since(0);
-        let kickoff = msgs.iter().find(|m| {
-            m.content
-                .contains("Background results require your attention")
-        });
-        assert!(kickoff.is_some(), "wake turn should push kickoff message");
-        assert_eq!(
-            kickoff.unwrap().role,
-            crate::inference::Role::User,
-            "kickoff must be user-role for model compatibility"
         );
     }
 

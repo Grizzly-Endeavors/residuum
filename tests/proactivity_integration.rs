@@ -7,75 +7,12 @@
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod proactivity_integration {
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
-    use residuum::agent::Agent;
-    use residuum::agent::context::PromptContext;
-    use residuum::bus::{EndpointName, EventTrigger, spawn_broker};
-    use residuum::inference::{
-        CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, Role,
-        ToolDefinition,
-    };
+    use residuum::bus::EventTrigger;
     use residuum::pulse::executor::build_pulse_execution;
     use residuum::pulse::scheduler::PulseScheduler;
     use residuum::pulse::types::{PulseDef, PulseTask};
-    use residuum::tools::ToolRegistry;
-    use residuum::workspace::identity::IdentityFiles;
-
-    /// Mock provider that returns configurable responses in sequence.
-    struct MockProvider {
-        responses: Vec<String>,
-        call_idx: Arc<AtomicUsize>,
-    }
-
-    impl MockProvider {
-        fn new(responses: Vec<String>) -> Self {
-            Self {
-                responses,
-                call_idx: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl InferenceProvider for MockProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<InferenceResponse, InferenceError> {
-            let idx = self.call_idx.fetch_add(1, Ordering::SeqCst);
-            let content = self
-                .responses
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| self.responses.last().cloned().unwrap_or_default());
-            Ok(InferenceResponse::new(content, vec![]))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "mock-proactivity"
-        }
-    }
-
-    fn make_agent(responses: Vec<String>) -> Agent {
-        Agent::new(
-            Box::new(MockProvider::new(responses)),
-            ToolRegistry::new(),
-            residuum::mcp::McpRegistry::new_shared(),
-            IdentityFiles::default(),
-            residuum::agent::AgentConfig {
-                options: CompletionOptions::default(),
-                tz: chrono_tz::UTC,
-                layout: None,
-            },
-            residuum::agent::HopCounter::new(0),
-        )
-    }
 
     fn sample_pulse() -> PulseDef {
         PulseDef {
@@ -335,48 +272,5 @@ mod proactivity_integration {
             !store.remove("action-cancel-me"),
             "should return false for missing"
         );
-    }
-
-    // ── run_system_turn tests ────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn run_system_turn_does_not_modify_main_history() {
-        let agent = make_agent(vec!["I ran a background check.".to_string()]);
-
-        let bus = spawn_broker();
-        let publisher = bus.publisher();
-        let ep = EndpointName::from("test");
-
-        let result = agent
-            .run_system_turn(
-                "background check prompt",
-                &publisher,
-                Some(&ep),
-                None,
-                None,
-                &PromptContext::default(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result.response, "I ran a background check.",
-            "response should match mock"
-        );
-        assert_eq!(
-            agent.message_count(),
-            0,
-            "main message history should be empty"
-        );
-        assert!(
-            !result.messages.is_empty(),
-            "should have ephemeral messages"
-        );
-
-        // Ephemeral messages include at least the user prompt and assistant response
-        let has_user = result.messages.iter().any(|m| m.role == Role::User);
-        let has_assistant = result.messages.iter().any(|m| m.role == Role::Assistant);
-        assert!(has_user, "should have user message in thread");
-        assert!(has_assistant, "should have assistant message in thread");
     }
 }
