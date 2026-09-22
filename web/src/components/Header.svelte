@@ -27,6 +27,13 @@
 
   let menuOpen = $state(false);
 
+  let sessionsToggleLabel = $derived.by(() => {
+    if (!sessionsToggle) return "";
+    const action = sessionsToggle.open ? "Hide sessions" : "Show sessions";
+    const count = sessionsToggle.liveCount;
+    return count > 0 ? `${action} (${count} running)` : action;
+  });
+
   function toggleMenu() {
     menuOpen = !menuOpen;
   }
@@ -78,13 +85,12 @@
       onclick={sessionsToggle.onToggle}
       aria-expanded={sessionsToggle.open}
       aria-controls="sessions-sidebar"
-      aria-label={sessionsToggle.open ? "Hide sessions" : "Show sessions"}
-      title={sessionsToggle.open ? "Hide sessions" : "Show sessions"}
+      aria-label={sessionsToggleLabel}
+      title={sessionsToggleLabel}
     >
       <Icon name="sessions" size={16} />
       {#if sessionsToggle.liveCount > 0}
         <span class="badge badge-live" aria-hidden="true">{sessionsToggle.liveCount}</span>
-        <span class="visually-hidden">{sessionsToggle.liveCount} running</span>
       {/if}
     </button>
   {/if}

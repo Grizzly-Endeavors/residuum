@@ -21,18 +21,45 @@
   const sessions = ws.sessions;
   let selectedRunId = $derived(sessions.view?.runId ?? null);
 
+  let sidebarEl: HTMLElement | undefined = $state();
+
   // As a drawer, take focus when opened so keyboard users land inside it.
   $effect(() => {
     if (!overlay) return;
     void tick().then(() => headingEl?.focus());
   });
+
+  const FOCUSABLE =
+    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  // As a modal drawer, Tab and Shift+Tab cycle within it.
+  function trapFocus(event: KeyboardEvent) {
+    if (!overlay || event.key !== "Tab" || !sidebarEl) return;
+    const focusable = Array.from(sidebarEl.querySelectorAll<HTMLElement>(FOCUSABLE));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) return;
+    const active = document.activeElement;
+    const inside = active instanceof Node && sidebarEl.contains(active);
+    if (event.shiftKey && (active === first || !inside || active === headingEl)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || !inside)) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 </script>
 
 <aside
   id="sessions-sidebar"
   class="sessions-sidebar"
   class:overlay
+  role={overlay ? "dialog" : undefined}
+  aria-modal={overlay ? "true" : undefined}
   aria-labelledby="sessions-sidebar-title"
+  bind:this={sidebarEl}
+  onkeydown={trapFocus}
 >
   <div class="sessions-head">
     <h2 id="sessions-sidebar-title" class="sessions-title" tabindex="-1" bind:this={headingEl}>

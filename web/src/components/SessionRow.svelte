@@ -48,12 +48,14 @@
       {#if finished}
         <span class="session-row-started">{formatStarted(session)}</span>
       {/if}
-      {#if error && !finished}
-        <span class="session-row-error" title={error}>
-          <Icon name="warning" size={12} />
-          <span class="visually-hidden">Last error: {error}</span>
-        </span>
-      {/if}
     </span>
+    {#if error && !finished}
+      <span class="session-row-error">
+        <Icon name="warning" size={12} />
+        <span class="session-row-error-text"
+          ><span class="visually-hidden">Last error: </span>{error}</span
+        >
+      </span>
+    {/if}
   </button>
 </li>

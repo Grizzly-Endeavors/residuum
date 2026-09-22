@@ -214,7 +214,13 @@
           ></button>
         {/if}
       {/if}
-      <div class="app-main emerges" class:with-workspace={activeView === "workspace"}>
+      <!-- Behind the open drawer, the page is inert: no focus, no clicks,
+           hidden from assistive tech, so the drawer behaves as a modal. -->
+      <div
+        class="app-main emerges"
+        class:with-workspace={activeView === "workspace"}
+        inert={narrow && drawerOpen}
+      >
         <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
           {#if workspaceMounted}
             <Workspace

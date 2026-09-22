@@ -3,7 +3,12 @@
   import { ws } from "../lib/ws.svelte";
   import { Icon } from "../lib/icons";
   import type { SessionView } from "../lib/sessions.svelte";
-  import { isStoppableState, runDuration, stateLabel } from "../lib/session-format";
+  import {
+    categoryDescription,
+    isStoppableState,
+    runDuration,
+    stateLabel,
+  } from "../lib/session-format";
   import CategoryBadge from "./CategoryBadge.svelte";
   import SessionFeed from "./SessionFeed.svelte";
 
@@ -102,6 +107,10 @@
         <p class="session-view-purpose">{summary.purpose}</p>
       {/if}
       <dl class="session-view-meta">
+        <div>
+          <dt>Kind</dt>
+          <dd>{categoryDescription(summary.category)}</dd>
+        </div>
         {#if summary.spawner}
           <div>
             <dt>Started by</dt>

@@ -123,8 +123,10 @@
 
 .sessions-close {
   margin-left: auto;
-  width: 28px;
-  height: 28px;
+  width: 40px;
+  height: 40px;
+  margin-block: -6px;
+  margin-right: -6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -338,8 +340,28 @@
 }
 
 .session-row-error {
-  display: inline-flex;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-1);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
   color: #e8a0a0;
+}
+
+.session-row-error > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* Two lines of the latest error; the session view shows it in full. */
+.session-row-error-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 /* ── Finished disclosure ─────────────────────────────────────────────── */
@@ -406,7 +428,8 @@
   inset: 0;
   z-index: 35;
   border: none;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(4, 4, 6, 0.72);
+  backdrop-filter: blur(1.5px);
   cursor: default;
   animation: sessions-backdrop-in var(--dur-default) var(--ease-out-stone);
 }
@@ -445,7 +468,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-  height: 30px;
+  min-height: 40px;
   padding: 0 var(--s-3);
   font-family: var(--font-body);
   font-size: var(--fs-sm);
@@ -576,6 +599,14 @@
   color: var(--text-muted);
 }
 
+.session-feed-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .session-feed {
   /* Room for the floating composer, which has no toolbar here. */
   padding-bottom: 140px;
@@ -642,7 +673,10 @@
 
 .msg-agent-open,
 .msg-agent-toggle {
-  padding: 0 var(--s-2);
+  /* 40px to hit, drawn in the space of a 22px line. */
+  min-height: 40px;
+  margin-block: -9px;
+  padding: 0 var(--s-3);
   font-family: var(--font-body);
   font-size: var(--fs-sm);
   font-weight: 500;
@@ -668,8 +702,8 @@
 }
 
 .msg-agent-toggle {
-  margin-top: 2px;
-  margin-left: -8px;
+  margin-top: -7px;
+  margin-left: -12px;
 }
 
 .msg-agent-body {
