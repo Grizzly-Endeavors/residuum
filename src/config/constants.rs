@@ -110,6 +110,12 @@ pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 2;
 /// Default number of earlier Teams group chat / channel messages handed to the agent on @mention.
 pub(super) const DEFAULT_TEAMS_CONTEXT_MESSAGES: usize = 20;
 
+/// Default number of earlier unmentioned Discord server messages handed to the agent on @mention.
+pub(super) const DEFAULT_DISCORD_CONTEXT_MESSAGES: usize = 20;
+
+/// Default number of earlier unmentioned Telegram group messages handed to the agent when addressed.
+pub(super) const DEFAULT_TELEGRAM_CONTEXT_MESSAGES: usize = 20;
+
 /// Default port for the dedicated Teams messaging listener.
 pub(super) const DEFAULT_TEAMS_PORT: u16 = 7701;
 

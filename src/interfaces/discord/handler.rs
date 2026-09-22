@@ -22,7 +22,8 @@ use crate::interfaces::attachment::{
 };
 use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::context_buffer::{BufferedMessage, render_context};
+use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
 use super::DiscordState;
 use super::channels::{guild_channel_label, strip_bot_mention};
@@ -57,15 +58,15 @@ impl EventHandler for DiscordHandler {
         if msg.author.bot {
             return;
         }
-        let Some((location, text)) = self.addressed_to_agent(&ctx, &msg).await else {
+        let Some(addressed) = self.addressed_to_agent(&ctx, &msg).await else {
             return;
         };
         {
             let _span = tracing::debug_span!("discord_message", author = %msg.author.name, msg_id = %msg.id).entered();
-            tracing::debug!(author = %msg.author.name, location = %location, content_len = text.len(), "discord message received");
+            tracing::debug!(author = %msg.author.name, location = %addressed.location, content_len = addressed.text.len(), "discord message received");
         }
 
-        if let Err(refusal) = self
+        let standing = match self
             .state
             .store
             .admit(
@@ -74,19 +75,22 @@ impl EventHandler for DiscordHandler {
             )
             .await
         {
-            tracing::info!(
-                sender = %msg.author.name,
-                location = %location,
-                "discord message from someone other than the owner; respond_to_others is off"
-            );
-            say_or_warn(&ctx, msg.channel_id, &refusal).await;
-            return;
-        }
+            Ok(standing) => standing,
+            Err(refusal) => {
+                tracing::info!(
+                    sender = %msg.author.name,
+                    location = %addressed.location,
+                    "discord message from someone other than the owner; respond_to_others is off"
+                );
+                say_or_warn(&ctx, msg.channel_id, &refusal).await;
+                return;
+            }
+        };
 
         // Build content with attachment metadata and collect inline images
         let (content, images) = process_discord_attachments(
             &msg.attachments,
-            text,
+            addressed.text,
             &msg.author.name,
             &self.inbox_dir,
             self.tz,
@@ -106,12 +110,17 @@ impl EventHandler for DiscordHandler {
                     name: msg.author.name.clone(),
                     id: msg.author.id.to_string(),
                     interface: super::ENDPOINT.to_string(),
-                    location: Some(location),
+                    location: Some(addressed.location),
+                }),
+                conversation: Some(ConversationContext {
+                    id: addressed.conversation_id,
+                    kind: addressed.kind,
+                    is_owner: matches!(standing, Standing::Owner),
                 }),
             },
             timestamp: crate::time::now_local(self.tz),
             images,
-            context: None,
+            context: addressed.context,
         };
 
         if let Err(e) = self
@@ -193,11 +202,24 @@ impl EventHandler for DiscordHandler {
     }
 }
 
+/// A message the bot has decided to act on: where it happened, its text
+/// (mention stripped), its conversation identity, and any unmentioned
+/// chatter buffered since the last mention there.
+struct Addressed {
+    location: String,
+    text: String,
+    conversation_id: String,
+    kind: ConversationKind,
+    context: Option<String>,
+}
+
 impl DiscordHandler {
     /// Where a message was sent and its text, if it is meant for the agent:
     /// every DM, and server messages that @mention the bot (mention removed).
-    /// DMs are also recorded, and the first one claims ownership.
-    async fn addressed_to_agent(&self, ctx: &Context, msg: &Message) -> Option<(String, String)> {
+    /// DMs are also recorded, and the first one claims ownership. An
+    /// unmentioned server message is buffered as context instead, and `None`
+    /// is returned.
+    async fn addressed_to_agent(&self, ctx: &Context, msg: &Message) -> Option<Addressed> {
         let Some(guild_id) = msg.guild_id else {
             let channel_key = msg.channel_id.to_string();
             if let Err(e) = self
@@ -209,18 +231,49 @@ impl DiscordHandler {
                 tracing::warn!(error = %e, channel_id = %msg.channel_id, "failed to save discord conversation");
             }
             claim_owner_if_unset(&self.state, &msg.author, &channel_key).await;
-            return Some(("direct message".to_string(), msg.content.clone()));
+            return Some(Addressed {
+                location: "direct message".to_string(),
+                text: msg.content.clone(),
+                conversation_id: channel_key,
+                kind: ConversationKind::Personal,
+                context: None,
+            });
         };
         let Some(&bot_id) = self.state.bot_id.get() else {
             tracing::debug!("discord server message before the connection was ready, ignoring");
             return None;
         };
+        let channel_key = msg.channel_id.to_string();
         if !msg.mentions.iter().any(|user| user.id == bot_id) {
+            buffer_unmentioned(&self.state, &channel_key, msg, self.tz);
             return None;
         }
         let label = guild_channel_label(&self.state, &ctx.http, guild_id, msg.channel_id).await;
-        Some((label, strip_bot_mention(&msg.content, bot_id)))
+        let context = render_context(&label, &self.state.context_buffer.drain(&channel_key));
+        Some(Addressed {
+            location: label,
+            text: strip_bot_mention(&msg.content, bot_id),
+            conversation_id: channel_key,
+            kind: ConversationKind::Channel,
+            context,
+        })
     }
+}
+
+/// Hold an unmentioned server message as context for the next @mention in
+/// that channel; empty messages (e.g. attachment-only) are dropped.
+fn buffer_unmentioned(state: &DiscordState, channel_key: &str, msg: &Message, tz: chrono_tz::Tz) {
+    if msg.content.trim().is_empty() {
+        return;
+    }
+    state.context_buffer.record(
+        channel_key,
+        BufferedMessage {
+            sender: msg.author.name.clone(),
+            text: msg.content.clone(),
+            at: crate::time::now_local(tz),
+        },
+    );
 }
 
 async fn say_or_warn(ctx: &Context, channel_id: ChannelId, text: &str) {

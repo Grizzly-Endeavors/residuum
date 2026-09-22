@@ -13,18 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::conversations::KnownConversation;
-
-/// Kind of chat conversation, which decides whether the bot needs an @mention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ConversationKind {
-    /// 1:1 chat between one person and the bot.
-    Personal,
-    /// Group chat with the bot as a member.
-    GroupChat,
-    /// A channel in a team, server, or similar shared space.
-    Channel,
-}
+use super::types::ConversationKind;
 
 /// A conversation reference for interfaces that reach a chat by its ID alone
 /// (Discord channels, Telegram chats); the ID is the store key.

@@ -212,6 +212,7 @@ mod tests {
             origin: MessageOrigin {
                 endpoint: "test".into(),
                 sender: None,
+                conversation: None,
             },
             timestamp: test_timestamp(),
             images: vec![],

@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
-use super::chat_state::ConversationKind;
+use super::types::ConversationKind;
 
 /// A conversation the agent can post into.
 #[derive(Debug, Clone, PartialEq, Eq)]

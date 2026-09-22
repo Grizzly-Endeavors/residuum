@@ -165,6 +165,7 @@ impl AgentMessenger {
             origin: MessageOrigin {
                 endpoint: "background".to_string(),
                 sender: None,
+                conversation: None,
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: Vec::new(),

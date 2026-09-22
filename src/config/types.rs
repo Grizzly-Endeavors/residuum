@@ -127,6 +127,8 @@ pub struct DiscordConfig {
     pub token: String,
     /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
+    /// How many earlier unmentioned server messages to hand the agent on @mention.
+    pub context_messages: usize,
 }
 
 impl std::fmt::Debug for DiscordConfig {
@@ -134,6 +136,7 @@ impl std::fmt::Debug for DiscordConfig {
         f.debug_struct("DiscordConfig")
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
+            .field("context_messages", &self.context_messages)
             .finish()
     }
 }
@@ -145,6 +148,8 @@ pub struct TelegramConfig {
     pub token: String,
     /// Whether people other than the owner can talk to the agent.
     pub respond_to_others: bool,
+    /// How many earlier unmentioned group messages to hand the agent when addressed.
+    pub context_messages: usize,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -152,6 +157,7 @@ impl std::fmt::Debug for TelegramConfig {
         f.debug_struct("TelegramConfig")
             .field("token", &"[redacted]")
             .field("respond_to_others", &self.respond_to_others)
+            .field("context_messages", &self.context_messages)
             .finish()
     }
 }

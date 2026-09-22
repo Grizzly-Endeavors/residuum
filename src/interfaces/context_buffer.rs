@@ -1,11 +1,13 @@
-//! Recent group chat / channel messages held for the next @mention.
+//! Recent unmentioned messages in a shared conversation, held for the next
+//! @mention.
 //!
-//! Teams delivers every message in chats the bot belongs to (via the
-//! resource-specific consent permissions in the app manifest). Messages that
-//! don't mention the bot are kept here, in memory only, and handed to the
-//! agent as background context when it is next mentioned in that
+//! Discord, Telegram, and Teams all receive messages in shared conversations
+//! (server channels, groups, team channels) that don't address the bot.
+//! Those messages are kept here, in memory only, and handed to the agent as
+//! background context the next time the bot is addressed in that
 //! conversation. Draining on mention means each message reaches the agent at
-//! most once.
+//! most once. DMs/private chats are never buffered — the bot always acts on
+//! them directly, so there is nothing to hold.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
@@ -14,20 +16,20 @@ use chrono::NaiveDateTime;
 
 /// One message observed in a shared conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BufferedMessage {
-    pub(super) sender: String,
-    pub(super) text: String,
-    pub(super) at: NaiveDateTime,
+pub(crate) struct BufferedMessage {
+    pub(crate) sender: String,
+    pub(crate) text: String,
+    pub(crate) at: NaiveDateTime,
 }
 
 /// Per-conversation ring buffers, capped at `capacity` messages each.
-pub(super) struct ContextBuffer {
+pub(crate) struct ContextBuffer {
     capacity: usize,
     conversations: std::sync::Mutex<HashMap<String, VecDeque<BufferedMessage>>>,
 }
 
 impl ContextBuffer {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             capacity,
             conversations: std::sync::Mutex::new(HashMap::new()),
@@ -35,7 +37,7 @@ impl ContextBuffer {
     }
 
     /// Remember a message, evicting the oldest once the conversation is full.
-    pub(super) fn record(&self, conversation_id: &str, message: BufferedMessage) {
+    pub(crate) fn record(&self, conversation_id: &str, message: BufferedMessage) {
         if self.capacity == 0 {
             return;
         }
@@ -50,7 +52,7 @@ impl ContextBuffer {
     }
 
     /// Take everything buffered for a conversation, oldest first.
-    pub(super) fn drain(&self, conversation_id: &str) -> Vec<BufferedMessage> {
+    pub(crate) fn drain(&self, conversation_id: &str) -> Vec<BufferedMessage> {
         self.lock()
             .remove(conversation_id)
             .map(Vec::from)
@@ -66,7 +68,7 @@ impl ContextBuffer {
 }
 
 /// Render drained messages as the background note the agent sees before an @mention.
-pub(super) fn render_context(location: &str, messages: &[BufferedMessage]) -> Option<String> {
+pub(crate) fn render_context(location: &str, messages: &[BufferedMessage]) -> Option<String> {
     if messages.is_empty() {
         return None;
     }

@@ -18,9 +18,10 @@ use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::chat_state::{ChatRef, ConversationKind, Owner, Standing};
+use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::context_buffer::{BufferedMessage, render_context};
+use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
@@ -255,9 +256,16 @@ async fn dispatch_message(
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
-    let Some((location, text)) = addressed_to_agent(msg, from, ctx).await else {
+    let Some(addressed) = addressed_to_agent(msg, from, ctx).await else {
         return;
     };
+    let Addressed {
+        location,
+        text,
+        conversation_id,
+        kind,
+        context,
+    } = addressed;
     {
         let _span = tracing::debug_span!("telegram_message",
             sender = %build_sender_name(from),
@@ -321,6 +329,11 @@ async fn dispatch_message(
             interface: ENDPOINT.to_string(),
             location: Some(location),
         }),
+        conversation: Some(ConversationContext {
+            id: conversation_id,
+            kind,
+            is_owner: matches!(standing, Standing::Owner),
+        }),
     };
 
     // Telegram message IDs are only unique within a chat.
@@ -332,7 +345,7 @@ async fn dispatch_message(
         origin,
         timestamp: crate::time::now_local(ctx.tz),
         images,
-        context: None,
+        context,
     };
 
     if let Err(e) = ctx
@@ -350,14 +363,27 @@ async fn dispatch_message(
     }
 }
 
+/// A message the bot has decided to act on: where it happened, its text
+/// (mention stripped), its conversation identity, and any unmentioned
+/// chatter buffered since it was last addressed there.
+struct Addressed {
+    location: String,
+    text: String,
+    conversation_id: String,
+    kind: ConversationKind,
+    context: Option<String>,
+}
+
 /// Where a message was sent and its text (or caption), if it is meant for
 /// the agent. Private chats are also recorded, and the first one claims
-/// ownership; addressed groups are recorded so the agent can post there later.
+/// ownership; addressed groups are recorded so the agent can post there
+/// later. An unaddressed group message is buffered as context instead, and
+/// `None` is returned.
 async fn addressed_to_agent(
     msg: &teloxide::types::Message,
     from: &teloxide::types::User,
     ctx: &TelegramContext<'_>,
-) -> Option<(String, String)> {
+) -> Option<Addressed> {
     let chat = &msg.chat;
     let text = msg.text().or_else(|| msg.caption()).unwrap_or_default();
     let key = chat.id.to_string();
@@ -369,7 +395,10 @@ async fn addressed_to_agent(
             .reply_to_message()
             .and_then(|m| m.from.as_ref())
             .is_some_and(|u| u.id == ctx.bot_id);
-        let text = addressed_text(text, ctx.bot_username, replies_to_bot)?;
+        let Some(text) = addressed_text(text, ctx.bot_username, replies_to_bot) else {
+            buffer_unmentioned(ctx, &key, from, text);
+            return None;
+        };
         let label = group_label(chat.title());
         let reference = ChatRef {
             kind: ConversationKind::GroupChat,
@@ -380,14 +409,47 @@ async fn addressed_to_agent(
         return None;
     };
 
-    let is_private = reference.kind == ConversationKind::Personal;
+    let kind = reference.kind;
+    let is_private = kind == ConversationKind::Personal;
     if let Err(e) = ctx.state.store.remember(&key, reference).await {
         tracing::warn!(error = %e, chat_id = %chat.id, "failed to save telegram conversation");
     }
     if is_private {
         claim_owner_if_unset(ctx.state, from, &key).await;
     }
-    Some((location, text))
+    let context = if is_private {
+        None
+    } else {
+        render_context(&location, &ctx.state.context_buffer.drain(&key))
+    };
+    Some(Addressed {
+        location,
+        text,
+        conversation_id: key,
+        kind,
+        context,
+    })
+}
+
+/// Hold an unaddressed group message as context for the next time the bot is
+/// addressed in that chat; empty messages (e.g. attachment-only) are dropped.
+fn buffer_unmentioned(
+    ctx: &TelegramContext<'_>,
+    chat_key: &str,
+    from: &teloxide::types::User,
+    text: &str,
+) {
+    if text.trim().is_empty() {
+        return;
+    }
+    ctx.state.context_buffer.record(
+        chat_key,
+        BufferedMessage {
+            sender: build_sender_name(from),
+            text: text.to_string(),
+            at: crate::time::now_local(ctx.tz),
+        },
+    );
 }
 
 /// Decide whether the sender may use the bot. Refused senders are told why

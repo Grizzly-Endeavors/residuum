@@ -4,6 +4,7 @@ pub mod attachment;
 pub(crate) mod chat_state;
 pub mod chunking;
 pub mod commands;
+pub(crate) mod context_buffer;
 pub(crate) mod conversations;
 pub mod discord;
 pub(crate) mod reply_targets;
