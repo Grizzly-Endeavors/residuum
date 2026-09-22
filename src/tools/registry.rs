@@ -5,6 +5,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
+use crate::agent::HopCounter;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointRegistry, SessionAddress};
@@ -199,11 +200,13 @@ impl ToolRegistry {
         self_address: SessionAddress,
         self_category: String,
         messenger: Arc<AgentMessenger>,
+        hop_counter: HopCounter,
     ) {
         self.register(Box::new(message_agent::MessageAgentTool::new(
             self_address,
             self_category,
             messenger,
+            hop_counter,
         )));
     }
 
@@ -219,6 +222,7 @@ impl ToolRegistry {
         spawner_address: crate::bus::SessionAddress,
         depth: u32,
         depth_cap: u32,
+        hop_counter: HopCounter,
     ) {
         self.register(Box::new(background::SubagentSpawnTool::new(
             publisher,
@@ -226,6 +230,7 @@ impl ToolRegistry {
             spawner_address,
             depth,
             depth_cap,
+            hop_counter,
         )));
     }
 
@@ -242,7 +247,9 @@ impl ToolRegistry {
     /// messages, alongside `session_category` and the shared `messenger`.
     /// `send_message` from this registry refuses the owner's DM on every
     /// chat interface and the web UI (only the main agent talks to the
-    /// owner).
+    /// owner). `hop_counter` is this session's current-turn hop counter,
+    /// shared with `message_agent`/`subagent_spawn` so they compute outgoing
+    /// hop counts from the same value the session runtime updates.
     #[expect(
         clippy::too_many_arguments,
         reason = "session registry needs all tool dependencies"
@@ -270,6 +277,7 @@ impl ToolRegistry {
         depth_cap: u32,
         session_category: String,
         messenger: Arc<AgentMessenger>,
+        hop_counter: HopCounter,
     ) -> Self {
         let mut registry = Self::new();
 
@@ -300,12 +308,13 @@ impl ToolRegistry {
             own_address.clone(),
             own_depth,
             depth_cap,
+            hop_counter.clone(),
         );
 
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
         registry.register_list_endpoints_tool(endpoint_registry);
-        registry.register_message_agent_tool(own_address, session_category, messenger);
+        registry.register_message_agent_tool(own_address, session_category, messenger, hop_counter);
 
         // Web fetch
         registry.register_web_fetch_tool();

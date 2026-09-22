@@ -42,6 +42,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> SpawnRequestEvent {
         model_tier,
         spawner: None,
         depth: MAIN_DEPTH + 1,
+        hop_count: 0,
     }
 }
 

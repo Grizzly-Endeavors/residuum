@@ -284,6 +284,8 @@ async fn init_session_runtime(
     let messenger = Arc::new(AgentMessenger::new(
         Arc::clone(&registry),
         publisher.clone(),
+        Arc::clone(&store),
+        crate::background::HopLimits::from(&cfg.background),
     ));
 
     let runtime = Arc::new(SessionRuntime::new(
@@ -515,6 +517,9 @@ struct ToolsAndAgentInputs<'a> {
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,
     identity: IdentityFiles,
+    /// Main's current-turn hop counter — the same instance already threaded
+    /// into `tool_deps` for the `message_agent`/`subagent_spawn` tools.
+    hop_counter: crate::agent::HopCounter,
 }
 
 /// Build the tool registry, reserve its names against MCP name collisions,
@@ -554,6 +559,7 @@ async fn build_tools_and_agent(
             options: inputs.options,
             tools,
             identity: inputs.identity,
+            hop_counter: inputs.hop_counter,
         },
         inputs.mcp_registry,
         inputs.tz,
@@ -627,6 +633,11 @@ pub(crate) async fn initialize(
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
 
+    // Main's current-turn hop counter, created once and shared between the
+    // `Agent` and the `message_agent`/`subagent_spawn` tools registered
+    // against it, so they always agree on the current turn's hop count.
+    let hop_counter = crate::agent::HopCounter::new(0);
+
     let (agent, path_policy_for_runtime, output_topic_override_tx) =
         build_tools_and_agent(ToolsAndAgentInputs {
             cfg,
@@ -644,11 +655,13 @@ pub(crate) async fn initialize(
                 tracing_service: &tracing_service,
                 tracing_client_context: &tracing_client_context,
                 agent_messenger: &agent_messenger,
+                hop_counter: &hop_counter,
             },
             mcp_registry: &net.mcp_registry,
             provider: providers.provider,
             options: providers.options,
             identity,
+            hop_counter: hop_counter.clone(),
         })
         .await;
 

@@ -15,6 +15,7 @@ use futures_util::FutureExt;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
@@ -23,9 +24,10 @@ use crate::bus::{
 };
 use crate::config::BackgroundConfig;
 
-use super::messaging::AgentMessenger;
+use super::messaging::{AgentMessenger, DeliveryOutcome};
 use super::registry::{
-    ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState, generate_run_id,
+    DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionCategory, SessionInfo, SessionRegistry,
+    SessionState, generate_run_id,
 };
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
@@ -173,7 +175,13 @@ impl SessionRuntime {
         };
 
         let stop_token = CancellationToken::new();
-        let interrupt_rx = self.registry.register(info.clone(), stop_token.clone());
+        let interrupt_rx = match self.registry.register(info.clone(), stop_token.clone()) {
+            Ok(rx) => rx,
+            Err(e) => {
+                deliver_losing_spawn_input(&self.registry, &info, &req.subagent_config, &e);
+                return;
+            }
+        };
         tracing::info!(address = %info.address, source_label = %info.source_label, "session forking");
 
         let env = RunEnv {
@@ -194,15 +202,19 @@ impl SessionRuntime {
             // is not `Clone`) are moved into `run_session` and gone with it
             // once the panic unwinds past this point.
             let panic_info = info.clone();
-            let registry = Arc::clone(&env.registry);
-            let store = Arc::clone(&env.store);
-            let publisher = env.publisher.clone();
-            let tz = env.tz;
+            let panic_env = PanicRecoveryEnv {
+                registry: Arc::clone(&env.registry),
+                store: Arc::clone(&env.store),
+                publisher: env.publisher.clone(),
+                messenger: Arc::clone(&env.messenger),
+                tz: env.tz,
+            };
             let mem_extras = resources.as_ref().map(|res| PanicMemoryExtras {
                 observer: Arc::clone(&res.observer),
                 merge_writer: Arc::clone(&res.merge_writer),
                 layout: res.layout.clone(),
                 episode_skip_token_floor: res.episode_skip_token_floor,
+                hop_counter: res.hop_counter.clone(),
             });
 
             let outcome = std::panic::AssertUnwindSafe(run_session(
@@ -225,16 +237,7 @@ impl SessionRuntime {
                     panic = msg,
                     "session task panicked"
                 );
-                recover_from_panic(
-                    &panic_info,
-                    &registry,
-                    &store,
-                    &publisher,
-                    tz,
-                    msg,
-                    mem_extras,
-                )
-                .await;
+                recover_from_panic(&panic_info, &panic_env, msg, mem_extras).await;
             }
         });
     }
@@ -269,6 +272,68 @@ impl SessionRuntime {
     }
 }
 
+/// Handle a losing `SessionRegistry::register` call: another attempt already
+/// won the compare-and-swap and registered a live run at `info.address` in
+/// the meantime (see [`SessionRegistry::register`]'s doc comment for when
+/// this can legitimately happen). Rather than drop this run's input on the
+/// floor, deliver it into the run that won, the same way a `message_agent`
+/// call would.
+fn deliver_losing_spawn_input(
+    registry: &SessionRegistry,
+    info: &SessionInfo,
+    config: &SubAgentConfig,
+    register_error: &super::registry::RegisterError,
+) {
+    tracing::error!(
+        address = %info.address,
+        error = %register_error,
+        "refusing to register a session run: address is already live; falling back to \
+         delivering its input into the run that won the race"
+    );
+    // Mirrors `SpawnRequestEvent::kickoff_text` — `config` is already the
+    // internal `SubAgentConfig`, not the bus event, so it's built here
+    // directly from the same fields.
+    let content = match &config.context {
+        Some(ctx) => format!("{ctx}\n\n{}", config.prompt),
+        None => config.prompt.clone(),
+    };
+    let outcome = registry.deliver(
+        &info.address,
+        Interrupt::AgentMessage(AgentMessageEvent {
+            from: info
+                .spawner
+                .clone()
+                .unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
+            from_category: info.category.as_str().to_string(),
+            content,
+            hop_count: config.hop_count,
+        }),
+    );
+    match outcome {
+        DeliverOutcome::Delivered => {}
+        DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive => {
+            tracing::error!(
+                address = %info.address,
+                outcome = ?outcome,
+                "failed to deliver a spawn's input into the run that won the race; input dropped"
+            );
+        }
+    }
+}
+
+/// Handles [`recover_from_panic`] needs beyond a run's own identity, cloned
+/// up front from a run's [`RunEnv`] before it moves into [`run_session`] (a
+/// panic unwinds through and drops the original, and `RunEnv` itself isn't
+/// `Clone`). Grouped into one struct purely to keep `recover_from_panic`'s
+/// argument count down.
+struct PanicRecoveryEnv {
+    registry: Arc<SessionRegistry>,
+    store: Arc<SessionStore>,
+    publisher: Publisher,
+    messenger: Arc<AgentMessenger>,
+    tz: chrono_tz::Tz,
+}
+
 /// Owned copies of the memory subsystem handles a run's completion pipeline
 /// needs, cloned up front (before `resources` moves into [`run_session`])
 /// since a panic unwinds through and drops the original `SubAgentResources`
@@ -280,6 +345,10 @@ struct PanicMemoryExtras {
     merge_writer: Arc<crate::memory::merge_writer::MemoryMergeWriter>,
     layout: crate::workspace::layout::WorkspaceLayout,
     episode_skip_token_floor: usize,
+    /// The run's hop counter at the moment it panicked, cloned so a panicked
+    /// spawned session's relay to its spawner (see [`relay_result_to_spawner`])
+    /// still carries the right outgoing hop count.
+    hop_counter: HopCounter,
 }
 
 /// Finalize a session's record and notify listeners after its task panicked,
@@ -296,20 +365,19 @@ struct PanicMemoryExtras {
 /// even if the panic happened after a merge had already succeeded.
 async fn recover_from_panic(
     info: &SessionInfo,
-    registry: &SessionRegistry,
-    store: &SessionStore,
-    publisher: &Publisher,
-    tz: chrono_tz::Tz,
+    env: &PanicRecoveryEnv,
     panic_msg: &str,
     mem_extras: Option<PanicMemoryExtras>,
 ) {
-    registry.set_state(&info.address, SessionState::Completing);
+    env.registry
+        .set_state(&info.address, SessionState::Completing);
 
-    let transcript = store
+    let mut transcript = env
+        .store
         .read_incremental_transcript(&info.run_id, info.started_at)
         .await;
 
-    let episode_id = if let Some(extras) = mem_extras {
+    let episode_id = if let Some(extras) = mem_extras.as_ref() {
         let summary = transcript
             .last()
             .map(|m| m.content.clone())
@@ -319,7 +387,7 @@ async fn recover_from_panic(
             merge_writer: extras.merge_writer.as_ref(),
             layout: &extras.layout,
             episode_skip_token_floor: extras.episode_skip_token_floor,
-            tz,
+            tz: env.tz,
         };
         let tag = crate::memory::types::SourceTag::session(
             info.address.to_string(),
@@ -331,9 +399,39 @@ async fn recover_from_panic(
         None
     };
 
-    registry.record_resume_point(&info.address, resume_point(info, episode_id.clone()));
+    let status = AgentResultStatus::Failed {
+        error: format!("session task panicked: {panic_msg}"),
+    };
 
-    let transcript_path = store
+    // A panicked turn is exactly the outcome the spawner must never be left
+    // not knowing about — relay it the same status-line way any other
+    // failed/cancelled turn does (see `maybe_relay_result`), folding the note
+    // into the transcript that's about to be finalized rather than a live
+    // `RecentMessages` buffer, since this run's own turn loop is gone.
+    if info.category == SessionCategory::Spawned
+        && let Some(spawner) = info.spawner.clone()
+    {
+        let hop_count = mem_extras.as_ref().map_or(0, |m| m.hop_counter.outgoing());
+        let content = relay_content(&info.address, &status, "");
+        if let Some(note) = relay_result_to_spawner(
+            info,
+            &spawner,
+            &content,
+            hop_count,
+            &env.messenger,
+            &env.store,
+        )
+        .await
+        {
+            transcript.push(note);
+        }
+    }
+
+    env.registry
+        .record_resume_point(&info.address, resume_point(info, episode_id.clone()));
+
+    let transcript_path = env
+        .store
         .complete_run(
             info,
             SessionState::Completed.as_str(),
@@ -342,15 +440,12 @@ async fn recover_from_panic(
         )
         .await;
 
-    let status = AgentResultStatus::Failed {
-        error: format!("session task panicked: {panic_msg}"),
-    };
-    let event = build_result_event(info, status, String::new(), transcript_path, tz);
-    if let Err(e) = publisher.publish(topics::Background, event).await {
+    let event = build_result_event(info, status, String::new(), transcript_path, env.tz);
+    if let Err(e) = env.publisher.publish(topics::Background, event).await {
         tracing::warn!(error = %e, "failed to publish panicked session result to bus");
     }
 
-    registry.remove(&info.address, &info.run_id);
+    env.registry.remove(&info.address, &info.run_id);
     tracing::info!("session removed from registry after panic recovery");
 }
 
@@ -443,6 +538,7 @@ async fn run_session(
     let mut kickoff = TurnKickoff::Initial {
         prompt: config.prompt,
         context: config.context,
+        hop_count: config.hop_count,
     };
     // Assigned on the loop's first iteration, which always runs at least
     // once (the run's initial turn), so both are definitely initialized by
@@ -492,6 +588,22 @@ async fn run_session(
                 .maybe_stage(recent_messages.messages(), &mem_env)
                 .await;
         }
+
+        // Relay this turn's outcome to a spawned session's direct spawner,
+        // after every turn (not only at run completion) — this generalizes
+        // the old one-shot "background task result" relay, and now covers
+        // every status (not just a completed turn with output), so the
+        // spawner is never left not knowing a turn failed, was cancelled, or
+        // produced nothing.
+        maybe_relay_result(
+            &info,
+            &status,
+            &summary,
+            resources.as_ref(),
+            &env,
+            &mut recent_messages,
+        )
+        .await;
 
         // A cancelled run — whether stopped before its turn started or
         // mid-turn — skips lingering idle and goes straight to completing,
@@ -672,6 +784,117 @@ fn session_memory_env(res: &SubAgentResources, tz: chrono_tz::Tz) -> SessionMemo
     }
 }
 
+/// Build the content to relay to a spawned session's direct spawner for one
+/// turn's outcome. A completed turn with output relays that output
+/// verbatim, matching the pre-existing behavior; every other outcome — a
+/// completed turn with no text output, a failed turn, or a cancelled/stopped
+/// one (including a panic, reported as `Failed` — see [`recover_from_panic`])
+/// — relays a clear status line instead, so the spawner is never left simply
+/// not knowing what happened.
+fn relay_content(address: &SessionAddress, status: &AgentResultStatus, summary: &str) -> String {
+    match status {
+        AgentResultStatus::Completed if !summary.is_empty() => summary.to_string(),
+        AgentResultStatus::Completed
+        | AgentResultStatus::Cancelled
+        | AgentResultStatus::Failed { .. } => {
+            format!("[Session Result] {address} — status: {status}")
+        }
+    }
+}
+
+/// Relay this turn's outcome to a spawned session's direct spawner, if this
+/// session is `spawned` and has a spawner. Split out of [`run_session`]
+/// purely to keep that function's line count down.
+async fn maybe_relay_result(
+    info: &SessionInfo,
+    status: &AgentResultStatus,
+    summary: &str,
+    resources: Option<&SubAgentResources>,
+    env: &RunEnv,
+    recent_messages: &mut RecentMessages,
+) {
+    if info.category != SessionCategory::Spawned {
+        return;
+    }
+    let Some(spawner) = info.spawner.clone() else {
+        return;
+    };
+    let content = relay_content(&info.address, status, summary);
+    let hop_count = resources.map_or(0, |res| res.hop_counter.outgoing());
+    if let Some(note) = relay_result_to_spawner(
+        info,
+        &spawner,
+        &content,
+        hop_count,
+        &env.messenger,
+        &env.store,
+    )
+    .await
+    {
+        recent_messages.push(note);
+    }
+}
+
+/// Relay a spawned session's turn outcome to its direct spawner, and make any
+/// delivery failure visible: logged, and appended as a system note to the
+/// run's own durable transcript (via [`SessionStore::append_note`]) so it
+/// survives into this run's completed record — never silently dropped, per
+/// the design's result-relay rules. Treats an unreachable spawner
+/// ([`DeliveryOutcome::Unknown`] — e.g. it restarted and lost its resume
+/// point) as a delivery failure exactly like a hard send error, not a
+/// silent success.
+///
+/// Returns the appended note on failure, so the caller can also fold it into
+/// whatever in-memory transcript buffer it holds for the run — `None` on a
+/// successful relay.
+async fn relay_result_to_spawner(
+    info: &SessionInfo,
+    spawner: &SessionAddress,
+    content: &str,
+    hop_count: u32,
+    messenger: &AgentMessenger,
+    store: &SessionStore,
+) -> Option<crate::inference::Message> {
+    let outcome = messenger
+        .send(
+            spawner.as_ref(),
+            info.address.clone(),
+            info.category.as_str().to_string(),
+            content.to_string(),
+            hop_count,
+        )
+        .await;
+
+    let failure = match outcome {
+        Ok(DeliveryOutcome::Unknown) => {
+            Some("spawner is no longer reachable (it may have restarted)".to_string())
+        }
+        Ok(
+            DeliveryOutcome::Main
+            | DeliveryOutcome::Live(_)
+            | DeliveryOutcome::Resumed(_)
+            | DeliveryOutcome::Queued(_),
+        ) => None,
+        Err(e) => Some(e.to_string()),
+    };
+
+    let reason = failure?;
+    tracing::warn!(
+        address = %info.address,
+        spawner = %spawner,
+        error = %reason,
+        "failed to relay turn result to spawner"
+    );
+    let note_text = format!(
+        "[Result Relay Failed] could not deliver this turn's result to spawner {spawner}: {reason}"
+    );
+    Some(
+        store
+            .append_note(&info.run_id, info.started_at, &note_text)
+            .await,
+    )
+}
+
 /// A run's identity and resources, unchanging across however many turns the
 /// run has — grouped so [`run_turn`] takes one borrow of them plus its own
 /// per-turn arguments (the accumulated history, this turn's kickoff, and the
@@ -790,6 +1013,7 @@ mod tests {
 
     use super::super::registry::MAIN_ADDRESS;
     use super::super::subagent::test_memory_extras;
+    use crate::bus::MessageEvent;
 
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
     /// subscriber for the `AgentResultEvent`s it publishes on completion.
@@ -809,6 +1033,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -860,6 +1086,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         }
     }
 
@@ -875,6 +1102,7 @@ mod tests {
                 prompt: "do the thing".to_string(),
                 context: None,
                 model_tier: crate::config::BackgroundModelTier::Medium,
+                hop_count: 0,
             },
         }
     }
@@ -916,6 +1144,68 @@ mod tests {
             session.spawner,
             Some(SessionAddress::from(MAIN_ADDRESS)),
             "a session spawned by an agent should record main as its spawner in phase 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_delivers_its_input_into_the_run_that_already_won_the_registration_race() {
+        // The compare-and-swap in `SessionRegistry::register` is the last
+        // line of defense against two concurrent forks landing at the same
+        // address (see the spawn listener's own liveness guard, which
+        // avoids this in the ordinary case). A losing `spawn()` call must
+        // never clobber the winner's live entry, and must not silently drop
+        // its own input either.
+        let (runtime, mut sub) = test_runtime(3).await;
+        let address = SessionAddress::from("spawned-researcher-cas-race");
+
+        let winner = SessionInfo {
+            address: address.clone(),
+            run_id: "run-winner".to_string(),
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: SessionState::Idle,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
+            purpose: "already running".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            started_at: Utc::now(),
+        };
+        let mut winner_rx = runtime
+            .registry
+            .register(winner, CancellationToken::new())
+            .unwrap();
+
+        runtime.spawn(sample_request(address.as_ref()), None);
+
+        let delivered = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(msg) = winner_rx.try_recv() {
+                    return msg;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the losing spawn's input must be delivered into the run that won");
+        match delivered {
+            Interrupt::AgentMessage(m) => assert!(m.content.contains("do the thing")),
+            Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!("expected an agent message delivered into the winning run")
+            }
+        }
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), sub.recv())
+                .await
+                .is_err(),
+            "a losing registration attempt must never itself produce a published result"
+        );
+        assert_eq!(
+            runtime.registry.get(&address).map(|i| i.run_id),
+            Some("run-winner".to_string()),
+            "the winner's own entry must be untouched by the losing attempt"
         );
     }
 
@@ -980,12 +1270,80 @@ mod tests {
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
     }
 
+    /// Like `test_runtime`, but also returns the bus handle so a test can
+    /// subscribe to additional topics — namely `UserMessage`, to observe a
+    /// spawned session's turn-result relay to its spawner (`main`).
+    async fn test_runtime_with_bus(
+        max_concurrent: usize,
+    ) -> (
+        SessionRuntime,
+        crate::bus::Subscriber<AgentResultEvent>,
+        crate::bus::BusHandle,
+    ) {
+        let bus_handle = crate::bus::spawn_broker();
+        let sub = bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let idle_timeouts = IdleTimeouts {
+            scheduled: Duration::from_millis(20),
+            spawned: Duration::from_millis(20),
+            external: Duration::from_millis(20),
+        };
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            max_concurrent,
+            idle_timeouts,
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+        (runtime, sub, bus_handle)
+    }
+
     #[tokio::test]
-    async fn stop_before_permit_produces_cancelled_result() {
-        // Zero concurrency: the session can never acquire a permit, so
-        // stopping it must short-circuit straight to a cancelled result.
-        let (runtime, mut sub) = test_runtime(0).await;
-        let address = SessionAddress::from("spawned-researcher-0004");
+    async fn a_failed_turn_still_relays_a_status_line_to_the_spawner() {
+        // Missing resources produces a `Failed` result with an empty summary
+        // — before the fix, `maybe_relay_result` skipped relaying entirely
+        // whenever the summary was empty, silently leaving the spawner (main)
+        // with no idea the run ever happened.
+        let (runtime, mut sub, bus_handle) = test_runtime_with_bus(3).await;
+        let mut main_sub: crate::bus::Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+        runtime.spawn(sample_request("spawned-researcher-fail1"), None);
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
+
+        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+            .await
+            .expect("a failed turn must still relay something to its spawner")
+            .unwrap()
+            .unwrap();
+        assert!(
+            relayed.content.contains("status: failed"),
+            "the relay must say clearly that the turn failed, got: {}",
+            relayed.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_still_relays_a_status_line_to_the_spawner() {
+        let (runtime, mut sub, bus_handle) = test_runtime_with_bus(0).await;
+        let mut main_sub: crate::bus::Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-cancel1");
         runtime.spawn(sample_request(address.as_ref()), None);
         assert!(runtime.registry.stop(&address));
 
@@ -995,6 +1353,76 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
+
+        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+            .await
+            .expect("a cancelled turn must still relay something to its spawner")
+            .unwrap()
+            .unwrap();
+        assert!(
+            relayed.content.contains("status: cancelled"),
+            "the relay must say clearly that the turn was cancelled, got: {}",
+            relayed.content
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_to_an_unreachable_spawner_is_treated_as_a_failure_not_silent_success() {
+        // `DeliveryOutcome::Unknown` (the spawner address is neither live nor
+        // has a resume point — e.g. it restarted and lost its state) must be
+        // treated as a relay failure: logged, and noted in this run's own
+        // transcript. Before the fix, only `Err` was checked, so `Unknown`
+        // was silently swallowed as if the relay had succeeded.
+        let bus_handle = crate::bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        );
+
+        let info = SessionInfo {
+            address: SessionAddress::from("spawned-researcher-unk-spawner"),
+            run_id: "run-unk-spawner".to_string(),
+            category: SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: SessionState::Completing,
+            spawner: Some(SessionAddress::from("spawned-ghost-0000")),
+            depth: 1,
+            purpose: "research".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            started_at: Utc::now(),
+        };
+        store.begin_run(&info).await;
+
+        let note = relay_result_to_spawner(
+            &info,
+            &SessionAddress::from("spawned-ghost-0000"),
+            "done",
+            1,
+            &messenger,
+            &store,
+        )
+        .await;
+        assert!(
+            note.is_some(),
+            "an unreachable spawner must be reported as a relay failure"
+        );
+
+        let transcript = store
+            .read_incremental_transcript(&info.run_id, info.started_at)
+            .await;
+        assert!(
+            transcript
+                .iter()
+                .any(|m| m.content.contains("Result Relay Failed")),
+            "the failure must be recorded in the run's own transcript, got {transcript:?}"
+        );
     }
 
     struct BlockingProvider;
@@ -1039,6 +1467,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1090,6 +1519,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -1123,6 +1554,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1208,6 +1640,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1241,6 +1674,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_panicked_turn_still_relays_a_status_line_to_the_spawner() {
+        // Before the fix, `recover_from_panic` never relayed at all — the
+        // spawner would be left waiting forever for a run that had actually
+        // crashed.
+        let (runtime, mut sub, bus_handle) = test_runtime_with_bus(3).await;
+        let mut main_sub: crate::bus::Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+        let address = SessionAddress::from("spawned-researcher-panic-relay");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(PanickingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
+            }),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .expect("a panicked session must still publish a result")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
+
+        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+            .await
+            .expect("a panicked turn must still relay something to its spawner")
+            .unwrap()
+            .unwrap();
+        assert!(
+            relayed.content.contains("status: failed"),
+            "the relay must say clearly that the turn failed, got: {}",
+            relayed.content
+        );
+        assert!(
+            relayed.content.contains("panicked"),
+            "the relay should surface that this was a panic, got: {}",
+            relayed.content
+        );
+    }
+
+    /// `PanicMemoryExtras` wired to a real (non-disabled) observer that
+    /// always finds one observation, so a panic-recovery test can prove the
+    /// completion memory pipeline actually ran over the backfilled
+    /// transcript rather than always reporting no episode.
+    fn eager_panic_mem_extras(dir: &std::path::Path) -> PanicMemoryExtras {
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir);
+        let search_index = Arc::new(
+            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+        );
+        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = Arc::new(crate::memory::merge_writer::MemoryMergeWriter::new(
+            reflector,
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        ));
+        let observer = Arc::new(crate::memory::observer::Observer::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                r#"{"observations": [{"content": "recovered from a panic", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
+            )),
+            crate::memory::observer::ObserverConfig::default(),
+        ));
+        PanicMemoryExtras {
+            observer,
+            merge_writer,
+            layout,
+            episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
+        }
+    }
+
+    #[tokio::test]
     async fn recover_from_panic_backfills_and_merges_a_substantial_transcript() {
         // Drives `recover_from_panic` directly against a store whose
         // incremental transcript sidecar already holds substantial content —
@@ -1249,7 +1768,7 @@ mod tests {
         // normal completion memory pipeline instead of always reporting an
         // empty transcript with no episode.
         let dir = tempfile::tempdir().unwrap();
-        let store = SessionStore::new(dir.path().to_path_buf());
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
         let info = SessionInfo {
             address: SessionAddress::from("spawned-researcher-0006b"),
             run_id: "run-panic-substantial".to_string(),
@@ -1278,44 +1797,33 @@ mod tests {
             )
             .await;
 
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
-        let search_index = std::sync::Arc::new(
-            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
-        );
-        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
-        let merge_writer = Arc::new(crate::memory::merge_writer::MemoryMergeWriter::new(
-            reflector,
-            layout.clone(),
-            search_index,
-            None,
-            None,
-        ));
-        let observer = Arc::new(crate::memory::observer::Observer::new(
-            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
-                r#"{"observations": [{"content": "recovered from a panic", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
-            )),
-            crate::memory::observer::ObserverConfig::default(),
-        ));
-        let mem_extras = PanicMemoryExtras {
-            observer,
-            merge_writer,
-            layout,
-            episode_skip_token_floor: 2000,
-        };
+        let mem_extras = eager_panic_mem_extras(dir.path());
 
-        let registry = SessionRegistry::new();
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let registry = Arc::new(SessionRegistry::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
         let bus_handle = crate::bus::spawn_broker();
         let mut sub: crate::bus::Subscriber<AgentResultEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         let publisher = bus_handle.publisher();
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::new(SessionRegistry::new()),
+            publisher.clone(),
+            Arc::new(SessionStore::new(dir.path().to_path_buf())),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let panic_env = PanicRecoveryEnv {
+            registry: Arc::clone(&registry),
+            store: Arc::clone(&store),
+            publisher,
+            messenger,
+            tz: chrono_tz::UTC,
+        };
 
         recover_from_panic(
             &info,
-            &registry,
-            &store,
-            &publisher,
-            chrono_tz::UTC,
+            &panic_env,
             "intentional panic for test coverage",
             Some(mem_extras),
         )
@@ -1370,6 +1878,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1419,6 +1928,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -1633,6 +2144,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         }
     }
 
@@ -1651,6 +2163,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -1822,6 +2336,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         };
         (resources, layout)
     }

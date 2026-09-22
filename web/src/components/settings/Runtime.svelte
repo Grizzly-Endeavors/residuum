@@ -184,6 +184,32 @@
           refused when it tries to spawn further.
         </div>
       </div>
+      <div class="settings-field">
+        <label for="rt-bg-hop-soft-limit">Hop Soft Limit</label>
+        <input
+          id="rt-bg-hop-soft-limit"
+          type="number"
+          bind:value={fields.bg_hop_soft_limit}
+          placeholder="Default: 8"
+        />
+        <div class="field-hint">
+          At or above this many hops, a delivered agent message carries a note asking the receiver
+          to reply only if a reply is actually needed.
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="rt-bg-hop-hard-limit">Hop Hard Limit</label>
+        <input
+          id="rt-bg-hop-hard-limit"
+          type="number"
+          bind:value={fields.bg_hop_hard_limit}
+          placeholder="Default: 32"
+        />
+        <div class="field-hint">
+          At or above this many hops, agent message delivery is refused outright, to bound message
+          loops.
+        </div>
+      </div>
     </div>
 
     <div class="settings-group">

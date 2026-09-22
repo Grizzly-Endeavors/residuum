@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
+use crate::agent::HopCounter;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -25,6 +26,11 @@ pub struct SubAgentConfig {
     pub context: Option<String>,
     /// Which model tier to use.
     pub model_tier: BackgroundModelTier,
+    /// Hop count of this run's first turn: `0` for a `scheduled`/`external`
+    /// trigger, one more than the spawning turn's highest input hop count
+    /// for an agent-initiated spawn, or the hop count of the message that
+    /// triggered a resume.
+    pub hop_count: u32,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display
@@ -88,6 +94,12 @@ pub struct SubAgentBuildConfig {
     pub session_category: SessionCategory,
     /// Shared agent-messaging service, for the session's `message_agent` tool.
     pub messenger: std::sync::Arc<AgentMessenger>,
+    /// This session's current-turn hop counter, seeded from the input hop
+    /// count that started its first turn (see [`SubAgentConfig::hop_count`]),
+    /// and shared with the session's `message_agent`/`subagent_spawn` tools
+    /// so they read the same value the runtime updates as the run's turns
+    /// progress.
+    pub hop_counter: HopCounter,
 }
 
 #[cfg(test)]

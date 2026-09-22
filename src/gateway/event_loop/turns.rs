@@ -51,21 +51,43 @@ pub async fn load_prompt_context_strings(skill_state: &SharedSkillState) -> Prom
     }
 }
 
-/// Process leftover interrupts that arrived during an agent turn but weren't consumed.
+/// Process leftover interrupts that arrived during an agent turn but weren't
+/// consumed: inject their content into `agent`'s conversation as context for
+/// whichever turn picks them up next.
 ///
-/// User messages are injected into the agent's conversation for the next turn.
-pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRuntime) {
+/// Also resolves this turn's hop counter to whatever should carry forward
+/// into that next turn: an unconsumed message-bearing leftover (a genuine
+/// user message or an agent message) may still be carrying a hop count this
+/// turn's own reply never actually incorporated, so it must survive into the
+/// next turn's kickoff rather than being discarded — see
+/// `handle_inbound_message`, which folds this counter (via `bump`, not
+/// `set`) into its own kickoff hop instead of overwriting it. A turn that
+/// consumed everything itself resets to zero here, since whatever it bumped
+/// the counter to along the way has already been replied to and has nothing
+/// left to carry.
+pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, agent: &mut Agent) {
+    let mut carried_hop: Option<u32> = None;
     for intr in leftovers {
         match intr {
             Interrupt::UserMessage(leftover_msg) => {
-                rt.agent.inject_inbound_message(leftover_msg);
+                // Its hop, if any — this may be an agent message relayed to
+                // main (see `AgentMessenger::deliver_to_main`), which carries
+                // no hop count of its own in `InboundMessage` — was already
+                // folded into the shared hop counter when it arrived
+                // mid-turn (see `run_agent_turn_with_interrupts`). Carry that
+                // current value forward since this message is still
+                // unconsumed.
+                carried_hop = Some(carried_hop.unwrap_or(0).max(agent.hop_counter().get()));
+                agent.inject_inbound_message(leftover_msg);
             }
             Interrupt::AgentMessage(msg) => {
-                rt.agent.inject_system_message(msg.format_for_agent());
+                carried_hop = Some(carried_hop.unwrap_or(0).max(msg.hop_count));
+                agent.inject_system_message(msg.format_for_agent());
             }
             Interrupt::Subconscious(content) => {
-                // A late mid-turn finding degrades to a note for the next turn.
-                rt.agent.inject_system_message(content);
+                // A late mid-turn finding degrades to a note for the next
+                // turn; it carries no hop count of its own.
+                agent.inject_system_message(content);
             }
             Interrupt::Stopped => {
                 // The turn already ended by the time this was drained — the
@@ -76,6 +98,7 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
             }
         }
     }
+    agent.hop_counter().set(carried_hop.unwrap_or(0));
 }
 
 /// Drain remaining interrupts from an interrupt channel after a turn completes.
@@ -140,6 +163,7 @@ fn apply_observe_action(
 )]
 async fn run_agent_turn_with_interrupts(
     agent: &mut Agent,
+    agent_messenger: &crate::background::messaging::AgentMessenger,
     content: &str,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
@@ -157,6 +181,11 @@ async fn run_agent_turn_with_interrupts(
     Vec<Interrupt>,
     Option<Arc<std::sync::Mutex<crate::subconscious::TurnScratch>>>,
 ) {
+    // Cloned before the mutable borrow below (`agent.hop_counter()` borrows
+    // `agent`, and `process_message` needs it mutably) — a clone still
+    // refers to the same shared cell, so mid-turn bumps below and reads from
+    // the `message_agent`/`subagent_spawn` tools stay in sync regardless.
+    let hop_counter = agent.hop_counter().clone();
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
     let watch =
         subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
@@ -184,6 +213,19 @@ async fn run_agent_turn_with_interrupts(
                 next_msg = agent_subscriber.recv() => {
                     match next_msg {
                         Ok(Some(msg_event)) => {
+                            // A mid-turn message on this topic may be a
+                            // genuine user message (hop 0) or an agent
+                            // message relayed to main (see
+                            // `AgentMessenger::deliver_to_main`) — either
+                            // way, it's one more input driving this turn.
+                            // `take_main_hop` is looked up unconditionally
+                            // (it removes the entry either way, so a message
+                            // this channel refuses shouldn't leave the entry
+                            // stranded), but the counter is only bumped once
+                            // the message is actually queued into the turn —
+                            // bumping on a failed send would claim a hop the
+                            // turn never actually received.
+                            let hop = agent_messenger.take_main_hop(&msg_event.id);
                             let inbound = crate::interfaces::types::InboundMessage {
                                 id: msg_event.id,
                                 content: msg_event.content,
@@ -192,7 +234,9 @@ async fn run_agent_turn_with_interrupts(
                                 images: msg_event.images,
                                 context: msg_event.context,
                             };
-                            if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
+                            if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_ok() {
+                                hop_counter.bump(hop);
+                            } else {
                                 tracing::warn!("interrupt channel full, dropping user message mid-turn");
                             }
                         }
@@ -423,11 +467,23 @@ pub async fn handle_inbound_message(
         rt.agent.inject_system_message(context);
     }
 
+    // This turn's kickoff input's hop count: 0 for a genuine external
+    // message, or the hop count recorded when an agent message was
+    // delivered to main (see `AgentMessenger::deliver_to_main`). Folded in
+    // with `bump`, not overwritten with `set` — the previous turn's
+    // `process_leftover_interrupts` left the counter at whatever an
+    // unconsumed leftover is still carrying (zero if there was none), and
+    // that must survive here rather than being reset to just this turn's own
+    // kickoff hop.
+    let kickoff_hop = rt.agent_messenger.take_main_hop(&message.id);
+    rt.agent.hop_counter().bump(kickoff_hop);
+
     let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
     let (turn_result, leftover_interrupts, subconscious_scratch) = run_agent_turn_with_interrupts(
         &mut rt.agent,
+        &rt.agent_messenger,
         &message.content,
         &rt.publisher,
         output_endpoint.as_ref(),
@@ -474,7 +530,7 @@ pub async fn handle_inbound_message(
         maybe_nudge_learner(rt).await;
     }
 
-    process_leftover_interrupts(leftover_interrupts, rt);
+    process_leftover_interrupts(leftover_interrupts, &mut rt.agent);
 
     // Only update idle timer for user messages, not background turns.
     if !is_background && !rt.cfg.idle.timeout.is_zero() {
@@ -664,5 +720,266 @@ mod tests {
         assert_eq!(error.correlation_id, "corr-5");
         assert_eq!(error.message, "kaboom");
         assert_no_event(&mut lifecycle).await;
+    }
+
+    /// A provider that blocks on a shared `Notify` until the test releases
+    /// it, so a mid-turn message can be reliably injected and observed
+    /// before the turn's model call resolves — no sleep-based timing.
+    struct GatedProvider {
+        gate: Arc<tokio::sync::Notify>,
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::inference::InferenceProvider for GatedProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::inference::Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &crate::inference::CompletionOptions,
+        ) -> Result<crate::inference::InferenceResponse, crate::inference::InferenceError> {
+            self.gate.notified().await;
+            Ok(crate::inference::InferenceResponse::new(
+                self.response.clone(),
+                vec![],
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "gated"
+        }
+    }
+
+    fn test_agent(provider: GatedProvider) -> Agent {
+        Agent::new(
+            Box::new(provider),
+            crate::tools::ToolRegistry::new(),
+            crate::mcp::McpRegistry::new_shared(),
+            crate::workspace::identity::IdentityFiles::default(),
+            crate::agent::AgentConfig {
+                options: crate::inference::CompletionOptions::default(),
+                tz: TEST_TZ,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        )
+    }
+
+    #[tokio::test]
+    async fn main_hop_counter_starts_at_kickoff_and_bumps_on_a_mid_turn_agent_message() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::background::store::SessionStore::new(
+            dir.path().to_path_buf(),
+        ));
+        let messenger = Arc::new(crate::background::messaging::AgentMessenger::new(
+            Arc::new(crate::background::registry::SessionRegistry::new()),
+            publisher.clone(),
+            store,
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut agent = test_agent(GatedProvider {
+            gate: Arc::clone(&gate),
+            response: "done".to_string(),
+        });
+        // The turn's kickoff input's hop count, as `handle_inbound_message`
+        // would set it from a looked-up `take_main_hop`.
+        agent.hop_counter().set(2);
+        let hop_counter = agent.hop_counter().clone();
+
+        let mut agent_subscriber: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
+
+        let prompt_ctx = PromptContext {
+            skills: crate::agent::context::SkillsContext {
+                index: None,
+                active_instructions: None,
+            },
+        };
+
+        let turn_messenger = Arc::clone(&messenger);
+        let turn_task = tokio::spawn(async move {
+            let (turn_result, _leftovers, _scratch) = run_agent_turn_with_interrupts(
+                &mut agent,
+                &turn_messenger,
+                "hello",
+                &publisher,
+                None,
+                None,
+                "corr-hop",
+                None,
+                &prompt_ctx,
+                &[],
+                &mut agent_subscriber,
+                &mut reload_rx,
+                &mut stop_rx,
+                None,
+            )
+            .await;
+            turn_result.expect("gated turn should complete successfully");
+            agent
+        });
+
+        // Deliver an agent message to main with a higher hop count than the
+        // kickoff while the turn is blocked on the (gated) model call — it
+        // must be observed as a mid-turn arrival and bump the counter. Uses
+        // the same `messenger` instance the spawned turn reads hop counts
+        // from (`take_main_hop` state lives on the instance, not the bus).
+        messenger
+            .send(
+                "main",
+                crate::bus::SessionAddress::from("spawned-researcher-0001"),
+                "spawned".to_string(),
+                "still working".to_string(),
+                7,
+            )
+            .await
+            .unwrap();
+
+        // Poll the shared hop counter until the mid-turn bump lands, rather
+        // than sleeping a guessed duration.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while hop_counter.get() < 7 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("hop counter should bump to 7 once the mid-turn message is drained");
+
+        gate.notify_one();
+        let finished_agent = tokio::time::timeout(Duration::from_secs(2), turn_task)
+            .await
+            .expect("turn should complete once the gate releases")
+            .unwrap();
+        assert_eq!(
+            finished_agent.hop_counter().get(),
+            7,
+            "the bump from the mid-turn message must survive to the end of the turn"
+        );
+    }
+
+    /// A cheap `Agent` for exercising `process_leftover_interrupts` directly
+    /// — none of these tests ever run a turn, so the provider is never
+    /// called.
+    fn hop_test_agent() -> Agent {
+        test_agent(GatedProvider {
+            gate: Arc::new(tokio::sync::Notify::new()),
+            response: "unused".to_string(),
+        })
+    }
+
+    fn sample_inbound(content: &str) -> crate::interfaces::types::InboundMessage {
+        crate::interfaces::types::InboundMessage {
+            id: "leftover-1".to_string(),
+            content: content.to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "background".to_string(),
+                sender: None,
+                conversation: None,
+            },
+            timestamp: chrono::Utc::now(),
+            images: vec![],
+            context: None,
+        }
+    }
+
+    #[test]
+    fn no_leftovers_resets_the_hop_counter_for_a_clean_next_turn() {
+        let mut agent = hop_test_agent();
+        // What a turn's own mid-turn bumps left behind for messages it
+        // actually consumed and already replied to — nothing should carry
+        // forward from that once the turn is over.
+        agent.hop_counter().bump(9);
+
+        process_leftover_interrupts(vec![], &mut agent);
+
+        assert_eq!(
+            agent.hop_counter().get(),
+            0,
+            "a turn with nothing left over must not leak its already-answered hop count \
+             into the next turn"
+        );
+    }
+
+    #[test]
+    fn a_leftover_user_message_carries_its_hop_forward_when_the_next_kickoff_is_lower() {
+        // The exact "loop-defeat" scenario the hop-count guard exists to
+        // prevent: a high-hop agent message relayed to main arrives mid-turn
+        // (so it's already been folded into the shared hop counter — see
+        // `run_agent_turn_with_interrupts`) but the turn ends before ever
+        // draining it, so it survives as a leftover `Interrupt::UserMessage`.
+        // If the next turn's kickoff simply overwrote the hop counter from
+        // its own (lower, genuinely external) input, the loop guard would
+        // reset to zero every time a looping message happened to arrive this
+        // way, defeating hop-count enforcement entirely.
+        let mut agent = hop_test_agent();
+        agent.hop_counter().bump(9);
+
+        process_leftover_interrupts(
+            vec![Interrupt::UserMessage(sample_inbound("still looping"))],
+            &mut agent,
+        );
+        assert_eq!(
+            agent.hop_counter().get(),
+            9,
+            "an unconsumed leftover must keep the turn's hop count, not discard it"
+        );
+
+        // The next turn's kickoff arrives with its own, lower hop count.
+        // Folding (`bump`), not overwriting (`set`), is what
+        // `handle_inbound_message` does in production — simulate that here.
+        agent.hop_counter().bump(0);
+        assert_eq!(
+            agent.hop_counter().get(),
+            9,
+            "the next turn must not reset the loop guard's hop count to its own lower kickoff"
+        );
+    }
+
+    #[test]
+    fn a_leftover_agent_message_carries_its_own_hop_count_forward() {
+        let mut agent = hop_test_agent();
+        // The shared counter never got bumped this time (unlike the
+        // relayed-to-main case, an `Interrupt::AgentMessage` carries its hop
+        // count directly, so `process_leftover_interrupts` doesn't need to
+        // rely on the counter already reflecting it).
+        process_leftover_interrupts(
+            vec![Interrupt::AgentMessage(crate::bus::AgentMessageEvent {
+                from: crate::bus::SessionAddress::from("spawned-researcher-0001"),
+                from_category: "spawned".to_string(),
+                content: "still looping".to_string(),
+                hop_count: 12,
+            })],
+            &mut agent,
+        );
+        assert_eq!(
+            agent.hop_counter().get(),
+            12,
+            "a leftover agent message's own hop count must carry forward"
+        );
+    }
+
+    #[test]
+    fn a_leftover_subconscious_note_alone_carries_no_hop() {
+        // A subconscious correction is not a message from another agent and
+        // carries no hop count of its own — it must not force a stale
+        // mid-turn bump to survive when it's the only thing left over.
+        let mut agent = hop_test_agent();
+        agent.hop_counter().bump(9);
+
+        process_leftover_interrupts(
+            vec![Interrupt::Subconscious("[Subconscious] note".to_string())],
+            &mut agent,
+        );
+        assert_eq!(
+            agent.hop_counter().get(),
+            0,
+            "a subconscious-only leftover carries no hop count of its own"
+        );
     }
 }

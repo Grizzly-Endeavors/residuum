@@ -5,15 +5,20 @@
 //! Everything the session runs with — model tier, skill, identity — comes
 //! from the request itself; there is no resolution step in between.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
-use crate::background::registry::{SessionCategory, SessionState};
+use crate::agent::interrupt::Interrupt;
+use crate::background::registry::{DeliverOutcome, MAIN_ADDRESS, SessionCategory, SessionState};
 use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
-use crate::bus::{BusHandle, SpawnRequestEvent, Subscriber, topics};
+use crate::bus::{
+    AgentMessageEvent, BusHandle, SessionAddress, SpawnRequestEvent, Subscriber, topics,
+};
 
 /// Subscribe to the `Background` topic and fork sessions on demand.
 ///
@@ -71,46 +76,102 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
 /// `SessionRegistry::deliver` and `AgentMessenger::send`, which already wait
 /// for a `completing` target to clear before publishing a resume). This is
 /// the last line of defense against that: a request for an address that is
-/// still `forking`/`running`/`idle` is refused outright (that should only
-/// happen if a caller races the registry itself, since address generation
-/// and `message_agent`'s own resume path both avoid it); a request for one
-/// that is `completing` is deferred, off the listener's own task so it
-/// doesn't block other addresses' spawns, until the address clears.
-async fn handle_spawn_request(
-    ctx: &Arc<SpawnContext>,
+/// already `forking`/`running`/`idle` delivers its content into that live
+/// run as a message instead of forking a second one — this is the normal
+/// (not exceptional) outcome when two messages were queued to the same
+/// completing session and both ended up resuming it (see
+/// `AgentMessenger::deferred_resume`), since only one of the two resulting
+/// spawn requests can actually win the fork. A request for an address that
+/// is `completing` is deferred, off the listener's own task so it doesn't
+/// block other addresses' spawns, until the address clears.
+fn handle_spawn_request<'a>(
+    ctx: &'a Arc<SpawnContext>,
     event: SpawnRequestEvent,
-) -> Result<(), anyhow::Error> {
-    if let Some(existing) = ctx.session_registry.get(&event.address) {
-        match existing.state {
-            SessionState::Completing => {
-                tracing::info!(
-                    address = %event.address,
-                    "spawn target is completing; deferring until it clears the registry"
-                );
-                let ctx = Arc::clone(ctx);
-                tokio::spawn(async move {
-                    ctx.session_registry.wait_until_clear(&event.address).await;
-                    if let Err(e) = fork_and_spawn(&ctx, event).await {
-                        tracing::warn!(error = %e, "failed to fork deferred session resume");
+) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+    // Written as a plain fn returning a boxed future, rather than `async
+    // fn`, because the `Completing` branch below recurses into this same
+    // function (via a detached task) — an `async fn` calling itself, even
+    // indirectly through `tokio::spawn`, creates a cyclic `Send`-auto-trait
+    // computation rustc cannot resolve on its own; boxing here gives the
+    // recursive call a concrete, non-opaque type that breaks the cycle.
+    Box::pin(async move {
+        if let Some(existing) = ctx.session_registry.get(&event.address) {
+            match existing.state {
+                SessionState::Completing => {
+                    tracing::info!(
+                        address = %event.address,
+                        "spawn target is completing; deferring until it clears the registry"
+                    );
+                    let ctx = Arc::clone(ctx);
+                    tokio::spawn(async move {
+                        ctx.session_registry.wait_until_clear(&event.address).await;
+                        // Re-run the full guard rather than forking directly:
+                        // by the time the wait ends, another spawn/resume for
+                        // this same address may already have won (this
+                        // detached task has no ordering relative to the
+                        // listener's own sequential processing, or to
+                        // another such detached task), so the address could
+                        // be live again, or even back to `completing` once
+                        // more. `handle_spawn_request` re-checks state fresh
+                        // and recurses through this same deferral if so,
+                        // instead of blindly clobbering a run that won the
+                        // race.
+                        if let Err(e) = handle_spawn_request(&ctx, event).await {
+                            tracing::warn!(error = %e, "failed to fork deferred session resume");
+                        }
+                    });
+                    return Ok(());
+                }
+                SessionState::Forking | SessionState::Running | SessionState::Idle => {
+                    // Two concurrent resume attempts for the same address
+                    // (e.g. two messages queued while a session was
+                    // completing, each deferred separately — see
+                    // `AgentMessenger::deferred_resume`) can both observe the
+                    // address as free and both end up publishing a spawn
+                    // request. By the time this second one is processed, the
+                    // first has already won and registered a live run —
+                    // deliver this request's content into that run as a
+                    // message instead of refusing it outright and losing it.
+                    tracing::warn!(
+                        address = %event.address,
+                        state = %existing.state,
+                        "spawn target is already live; delivering this request's input into it \
+                         instead of forking a second run"
+                    );
+                    let content = event.kickoff_text();
+                    let message = AgentMessageEvent {
+                        from: event
+                            .spawner
+                            .clone()
+                            .unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
+                        from_category: SessionCategory::from_trigger(&event.source)
+                            .as_str()
+                            .to_string(),
+                        content,
+                        hop_count: event.hop_count,
+                    };
+                    match ctx
+                        .session_registry
+                        .deliver(&event.address, Interrupt::AgentMessage(message))
+                    {
+                        DeliverOutcome::Delivered => {}
+                        other @ (DeliverOutcome::Completing
+                        | DeliverOutcome::Full
+                        | DeliverOutcome::NotLive) => {
+                            anyhow::bail!(
+                                "session address {} is already live and delivering this \
+                                 request's input into it failed ({other:?}); input dropped",
+                                event.address
+                            );
+                        }
                     }
-                });
-                return Ok(());
+                    return Ok(());
+                }
+                SessionState::Completed => {}
             }
-            SessionState::Forking | SessionState::Running | SessionState::Idle => {
-                tracing::error!(
-                    address = %event.address,
-                    state = %existing.state,
-                    "refusing to fork a session at an address that is already live"
-                );
-                anyhow::bail!(
-                    "session address {} is already live, refusing spawn/resume",
-                    event.address
-                );
-            }
-            SessionState::Completed => {}
         }
-    }
-    fork_and_spawn(ctx, event).await
+        fork_and_spawn(ctx, event).await
+    })
 }
 
 /// Build resources and hand the run to `SessionRuntime`, once
@@ -129,6 +190,7 @@ async fn fork_and_spawn(
         event.address.clone(),
         event.depth,
         category,
+        event.hop_count,
     )
     .await?;
 
@@ -143,6 +205,7 @@ async fn fork_and_spawn(
             prompt: event.prompt,
             context: event.context,
             model_tier: event.model_tier,
+            hop_count: event.hop_count,
         },
     };
 

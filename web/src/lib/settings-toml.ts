@@ -54,6 +54,8 @@ export interface ConfigFields {
   bg_idle_timeout_external_minutes: string;
   bg_episode_skip_token_floor: string;
   bg_subagent_depth_cap: string;
+  bg_hop_soft_limit: string;
+  bg_hop_hard_limit: string;
   // retry
   retry_max_retries: string;
   retry_initial_delay_ms: string;
@@ -140,6 +142,8 @@ export function defaultConfigFields(): ConfigFields {
     bg_idle_timeout_external_minutes: "",
     bg_episode_skip_token_floor: "",
     bg_subagent_depth_cap: "",
+    bg_hop_soft_limit: "",
+    bg_hop_hard_limit: "",
     retry_max_retries: "",
     retry_initial_delay_ms: "",
     retry_max_delay_ms: "",
@@ -261,6 +265,8 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.bg_idle_timeout_external_minutes = str(bg.idle_timeout_external_minutes);
     fields.bg_episode_skip_token_floor = str(bg.episode_skip_token_floor);
     fields.bg_subagent_depth_cap = str(bg.subagent_depth_cap);
+    fields.bg_hop_soft_limit = str(bg.hop_soft_limit);
+    fields.bg_hop_hard_limit = str(bg.hop_hard_limit);
   }
 
   const retry = doc.retry as Record<string, unknown> | undefined;
@@ -735,7 +741,9 @@ export function serializeConfigToml(f: ConfigFields): string {
     f.bg_idle_timeout_spawned_minutes ||
     f.bg_idle_timeout_external_minutes ||
     f.bg_episode_skip_token_floor ||
-    f.bg_subagent_depth_cap
+    f.bg_subagent_depth_cap ||
+    f.bg_hop_soft_limit ||
+    f.bg_hop_hard_limit
   ) {
     lines.push("");
     lines.push("[background]");
@@ -749,6 +757,8 @@ export function serializeConfigToml(f: ConfigFields): string {
     if (f.bg_episode_skip_token_floor)
       lines.push(`episode_skip_token_floor = ${f.bg_episode_skip_token_floor}`);
     if (f.bg_subagent_depth_cap) lines.push(`subagent_depth_cap = ${f.bg_subagent_depth_cap}`);
+    if (f.bg_hop_soft_limit) lines.push(`hop_soft_limit = ${f.bg_hop_soft_limit}`);
+    if (f.bg_hop_hard_limit) lines.push(`hop_hard_limit = ${f.bg_hop_hard_limit}`);
   }
 
   // agent

@@ -269,8 +269,10 @@ pub struct AgentMessageEvent {
     pub from_category: String,
     /// The message body.
     pub content: String,
-    /// Hop count carried by this message. Always `0` until hop-count limits
-    /// are implemented; carried now so delivery has somewhere to put it.
+    /// Hop count carried by this message: one more than the highest hop
+    /// count among the inputs that drove the sending turn. External-origin
+    /// input (a user message, a pulse/action firing, a webhook, a web
+    /// sidebar message) is hop `0`.
     pub hop_count: u32,
 }
 
@@ -313,6 +315,26 @@ pub struct SpawnRequestEvent {
     /// `scheduled`/`external` session is always depth 1; a spawned session is
     /// its spawner's depth plus 1.
     pub depth: u32,
+    /// Hop count for the new run's first turn: `0` for a `scheduled`/
+    /// `external` trigger (external-origin input), one more than the
+    /// spawning turn's highest input hop count for an agent-initiated spawn,
+    /// or the hop count of the message that triggered a resume.
+    pub hop_count: u32,
+}
+
+impl SpawnRequestEvent {
+    /// Combine this request's context and prompt into a turn's opening
+    /// message, the same way a fresh fork's `TurnKickoff::Initial` does.
+    /// Used when a spawn or resume attempt discovers the target address is
+    /// already live and falls back to delivering this request's content into
+    /// that run as a message instead of forking a second one.
+    #[must_use]
+    pub fn kickoff_text(&self) -> String {
+        match &self.context {
+            Some(ctx) => format!("{ctx}\n\n{}", self.prompt),
+            None => self.prompt.clone(),
+        }
+    }
 }
 
 /// Operational notice broadcast to connected endpoints.
