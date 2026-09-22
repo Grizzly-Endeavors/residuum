@@ -1,6 +1,7 @@
 //! Pulse execution handling and scheduling in the event loop.
 
 use crate::bus::topics;
+use crate::gateway::helpers::publish_notice;
 use crate::gateway::types::GatewayRuntime;
 
 /// Fork a session for a single due pulse.
@@ -25,6 +26,9 @@ pub async fn handle_pulse_tick(rt: &mut GatewayRuntime) {
     let due = rt
         .pulse_scheduler
         .due_pulses(now, &rt.layout.heartbeat_yml());
+    if let Some(notice) = rt.pulse_scheduler.take_rejection_notice() {
+        publish_notice(&rt.publisher, notice).await;
+    }
     if !due.is_empty() {
         tracing::debug!(count = due.len(), "processing due pulses");
     }

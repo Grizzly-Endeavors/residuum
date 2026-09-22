@@ -177,11 +177,13 @@ mod proactivity_integration {
             created_at: now,
         };
 
-        let mut store = ActionStore::load(&path).await.unwrap();
+        let (mut store, rejected_on_first_load) = ActionStore::load(&path).await.unwrap();
+        assert!(rejected_on_first_load.is_empty());
         store.add(action);
         store.save().await.unwrap();
 
-        let reloaded = ActionStore::load(&path).await.unwrap();
+        let (reloaded, rejected_on_reload) = ActionStore::load(&path).await.unwrap();
+        assert!(rejected_on_reload.is_empty());
         assert_eq!(
             reloaded.list().len(),
             1,
@@ -233,7 +235,7 @@ mod proactivity_integration {
             created_at: now,
         };
 
-        let mut store = ActionStore::load(&path).await.unwrap();
+        let (mut store, _rejected) = ActionStore::load(&path).await.unwrap();
         store.add(past_action);
         store.add(future_action);
 
@@ -262,7 +264,7 @@ mod proactivity_integration {
             created_at: now,
         };
 
-        let mut store = ActionStore::load(&path).await.unwrap();
+        let (mut store, _rejected) = ActionStore::load(&path).await.unwrap();
         store.add(action);
         assert_eq!(store.list().len(), 1);
 

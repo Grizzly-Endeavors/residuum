@@ -5,8 +5,8 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    PulseDef, is_within_active_hours, load_heartbeat, parse_active_hours, parse_schedule_duration,
-    read_and_parse,
+    PulseDef, RejectedPulse, is_within_active_hours, load_heartbeat, parse_active_hours,
+    parse_schedule_duration, read_and_parse, rejected_pulses_notice,
 };
 
 /// Tracks per-pulse last-run times and determines which pulses are due.
@@ -24,6 +24,16 @@ pub struct PulseScheduler {
     /// doesn't re-warn on an identical error every tick (ticks run every 60s).
     #[serde(skip)]
     last_heartbeat_parse_error: Option<String>,
+    /// Pulses rejected at load on the most recent successful parse (sorted by
+    /// name), so `due_pulses` only re-logs and re-notifies when this set
+    /// actually changes rather than on every tick of an unchanged file.
+    #[serde(skip)]
+    last_rejected_pulses: Vec<RejectedPulse>,
+    /// Owner-facing notice queued by `due_pulses` when the rejected-pulse set
+    /// changed on the most recent tick; taken (and cleared) by
+    /// `take_rejection_notice`.
+    #[serde(skip)]
+    pending_rejection_notice: Option<String>,
 }
 
 impl Default for PulseScheduler {
@@ -40,6 +50,8 @@ impl PulseScheduler {
             last_run: HashMap::new(),
             state_path: None,
             last_heartbeat_parse_error: None,
+            last_rejected_pulses: Vec::new(),
+            pending_rejection_notice: None,
         }
     }
 
@@ -66,10 +78,15 @@ impl PulseScheduler {
     #[must_use]
     #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
-        let Some(heartbeat) = load_heartbeat(heartbeat_path, &mut self.last_heartbeat_parse_error)
-        else {
+        let mut rejected = Vec::new();
+        let Some(heartbeat) = load_heartbeat(
+            heartbeat_path,
+            &mut self.last_heartbeat_parse_error,
+            &mut rejected,
+        ) else {
             return Vec::new();
         };
+        self.record_rejected_pulses(rejected);
 
         let current_pulse_names: HashSet<String> =
             heartbeat.pulses.iter().map(|p| p.name.clone()).collect();
@@ -148,6 +165,38 @@ impl PulseScheduler {
         }
 
         due
+    }
+
+    /// Record which pulses are currently rejected at load, logging one
+    /// `error!` per rejected pulse and queuing an owner notice — but only
+    /// when this set differs from the last time it was checked, so an
+    /// unchanged HEARTBEAT.yml doesn't re-log or re-notify on every
+    /// once-a-minute scheduler tick.
+    fn record_rejected_pulses(&mut self, mut rejected: Vec<RejectedPulse>) {
+        rejected.sort_by(|a, b| a.name.cmp(&b.name));
+        if rejected == self.last_rejected_pulses {
+            return;
+        }
+        if rejected.is_empty() {
+            tracing::info!(
+                "previously rejected HEARTBEAT.yml pulses now load cleanly after an edit"
+            );
+        } else {
+            for pulse in &rejected {
+                tracing::error!(pulse = %pulse.name, "{}", pulse.message);
+            }
+            self.pending_rejection_notice = Some(rejected_pulses_notice(&rejected));
+        }
+        self.last_rejected_pulses = rejected;
+    }
+
+    /// Take the owner-facing notice queued by the most recent `due_pulses`
+    /// call, if the set of rejected pulses changed on that tick. Returns
+    /// `None` on every tick where nothing new needs telling — including
+    /// every tick of an unchanged, still-broken file.
+    #[must_use]
+    pub fn take_rejection_notice(&mut self) -> Option<String> {
+        self.pending_rejection_notice.take()
     }
 
     /// Remove `last_run` entries for pulses no longer present in
@@ -557,6 +606,152 @@ pulses:
         assert!(
             last_run.contains_key("test_pulse"),
             "current pulse entry should survive save/reload"
+        );
+    }
+
+    // ── Rejected-pulse notice tests ───────────────────────────────────
+
+    const AGENT_MAIN_HEARTBEAT: &str = r#"
+pulses:
+  - name: wake_main
+    schedule: "1h"
+    agent: main
+    tasks: []
+"#;
+
+    #[test]
+    fn due_pulses_queues_a_notice_the_first_time_a_pulse_is_rejected() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), AGENT_MAIN_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let due = scheduler.due_pulses(now, &path);
+        assert!(due.is_empty(), "a rejected pulse should never become due");
+        let notice = scheduler.take_rejection_notice();
+        assert!(
+            notice.is_some(),
+            "the first tick that sees a rejected pulse should queue a notice"
+        );
+        assert!(
+            notice.unwrap().contains("wake_main"),
+            "notice should name the rejected pulse"
+        );
+    }
+
+    #[test]
+    fn due_pulses_does_not_requeue_notice_on_unchanged_ticks() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), AGENT_MAIN_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let first_due = scheduler.due_pulses(now, &path);
+        assert!(
+            first_due.is_empty(),
+            "a rejected pulse should never become due"
+        );
+        assert!(
+            scheduler.take_rejection_notice().is_some(),
+            "first tick should queue a notice"
+        );
+
+        // Several more ticks over an unchanged, still-invalid file: none of
+        // them should queue a fresh notice (this is the ~29x-per-run log
+        // spam this scheduler is meant to prevent).
+        for minute in 1..=5 {
+            let later = now + chrono::Duration::minutes(minute);
+            let later_due = scheduler.due_pulses(later, &path);
+            assert!(
+                later_due.is_empty(),
+                "a rejected pulse should never become due"
+            );
+            assert!(
+                scheduler.take_rejection_notice().is_none(),
+                "tick {minute} over an unchanged file should not requeue the notice"
+            );
+        }
+    }
+
+    #[test]
+    fn due_pulses_requeues_notice_after_the_file_changes_and_is_still_invalid() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), AGENT_MAIN_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let first_due = scheduler.due_pulses(now, &path);
+        assert!(
+            first_due.is_empty(),
+            "a rejected pulse should never become due"
+        );
+        assert!(scheduler.take_rejection_notice().is_some());
+
+        let later = now + chrono::Duration::minutes(1);
+        let second_due = scheduler.due_pulses(later, &path);
+        assert!(
+            second_due.is_empty(),
+            "a rejected pulse should never become due"
+        );
+        assert!(
+            scheduler.take_rejection_notice().is_none(),
+            "sanity check: unchanged file should not requeue"
+        );
+
+        // Edit the file: still invalid overall, but now a second, distinct
+        // pulse is rejected too — a genuinely new problem, so it should
+        // queue a fresh notice even though `wake_main` was already known.
+        let edited = r#"
+pulses:
+  - name: wake_main
+    schedule: "1h"
+    agent: main
+    tasks: []
+  - name: legacy_identity
+    schedule: "1h"
+    include_identity: true
+    tasks: []
+"#;
+        std::fs::write(&path, edited).unwrap();
+        let even_later = now + chrono::Duration::minutes(2);
+        let third_due = scheduler.due_pulses(even_later, &path);
+        assert!(
+            third_due.is_empty(),
+            "a rejected pulse should never become due"
+        );
+        let notice = scheduler.take_rejection_notice();
+        assert!(
+            notice.is_some(),
+            "a changed rejection set should queue a new notice"
+        );
+        let notice = notice.unwrap();
+        assert!(notice.contains("wake_main"));
+        assert!(notice.contains("legacy_identity"));
+    }
+
+    #[test]
+    fn due_pulses_queues_no_notice_when_nothing_is_rejected() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
+        assert_eq!(due.len(), 1, "the valid pulse should still fire normally");
+        assert!(
+            scheduler.take_rejection_notice().is_none(),
+            "a valid HEARTBEAT.yml should never queue a rejection notice"
         );
     }
 }
