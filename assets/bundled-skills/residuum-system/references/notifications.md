@@ -12,7 +12,7 @@ Routing is a match on the disposition the producing agent declared. There is no 
 | `HEARTBEAT_URGENT` | `Urgent` | the inbox **and** every channel in `config/channels.toml` |
 | neither | `Normal` | the inbox |
 
-Results from agent-spawned (`spawned`) sessions never reach this router: each turn's result is relayed directly to the session's **direct spawner** (main, or whichever session spawned it) through the agent-messaging system, tagged with the session's address and carrying the normal hop-count rules — see [background-tasks.md](background-tasks.md#messaging). The agent that asked for the work gets the answer, not necessarily main.
+Results from agent-spawned (`spawned`) sessions never reach this router: every turn's outcome — completed, failed, cancelled, or panicked — is relayed directly to the session's **direct spawner** (main, or whichever session spawned it) through the agent-messaging system, tagged with the session's address and carrying the normal hop-count rules — see [background-tasks.md](background-tasks.md#messaging). The agent that asked for the work gets the answer, not necessarily main, and is never left simply not knowing what happened to a turn it's waiting on.
 
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
@@ -26,7 +26,7 @@ The sentinel is deliberately distinctive so that a summary *about* something urg
 
 No routing target injects into the agent's message feed. Two mechanisms do that job, and both are declared where the work is defined:
 
-- **Agent-spawned sessions** (`subagent_spawn`, the `learner`) have each turn's result relayed automatically to their direct spawner — main, or the session that spawned them.
+- **Agent-spawned sessions** (`subagent_spawn`, the `learner`) have every turn's outcome relayed automatically to their direct spawner — main, or the session that spawned them.
 
 Everything else reaches the agent through the inbox, which it reads with `inbox_list`.
 
