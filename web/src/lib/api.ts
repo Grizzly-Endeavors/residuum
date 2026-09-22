@@ -14,6 +14,7 @@ import type {
   WorkspaceEntry,
   CloudStatusResponse,
   UpdateStatusResponse,
+  SessionCategory,
   SessionListResponse,
   SessionTranscriptResponse,
 } from "./types";
@@ -285,17 +286,20 @@ export async function deleteSecret(name: string): Promise<void> {
 // ── Agent sessions API wrappers ─────────────────────────────────────
 
 /**
- * List live sessions plus one page of completed runs, newest first. Never
- * cached: the listing changes whenever a session starts or finishes.
+ * List live sessions plus one page of completed runs, newest first, both
+ * limited to `category` when given. Never cached: the listing changes
+ * whenever a session starts or finishes.
  *
  * Throws `ApiError` on failure; the caller surfaces it.
  */
 export async function fetchSessions(query: {
+  category?: SessionCategory;
   before?: string;
   limit?: number;
   address?: string;
 }): Promise<SessionListResponse> {
   const params = new URLSearchParams();
+  if (query.category) params.set("category", query.category);
   if (query.before) params.set("before", query.before);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.address) params.set("address", query.address);

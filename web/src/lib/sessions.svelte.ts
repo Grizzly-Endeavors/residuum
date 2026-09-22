@@ -18,6 +18,7 @@ import type {
   ClientMessage,
   FeedItem,
   ServerMessage,
+  SessionCategory,
   SessionRunStatus,
   SessionSummary,
   ToolCallState,
@@ -33,8 +34,11 @@ export function isSessionFrame(msg: ServerMessage): msg is SessionFrame {
   return msg.type.startsWith("session_");
 }
 
-/** Completed runs fetched per page. */
+/** Completed runs fetched per page, per category. */
 const PAGE_SIZE = 25;
+
+/** Every session category, in the order the sidebar groups them. */
+export const SESSION_CATEGORIES: readonly SessionCategory[] = ["external", "scheduled", "spawned"];
 
 /** Coalesces bursts of frames for unknown runs into one listing refresh. */
 const REFRESH_DEBOUNCE_MS = 250;
@@ -191,6 +195,75 @@ export class SessionView {
   }
 }
 
+// ── Completed runs (one category) ───────────────────────────────────
+
+/**
+ * The completed runs of one category loaded so far, paged from the server
+ * independently of the other categories.
+ */
+export class CompletedRuns {
+  /** Runs loaded so far, newest first. */
+  runs = $state<SessionSummary[]>([]);
+  /** Cursor for the next page, or `null` on the last. */
+  nextCursor = $state<string | null>(null);
+  loadingMore = $state(false);
+
+  constructor(readonly category: SessionCategory) {}
+
+  /** Load the next page of this category's completed runs. */
+  async loadMore(): Promise<void> {
+    const cursor = this.nextCursor;
+    if (!cursor || this.loadingMore) return;
+    this.loadingMore = true;
+    try {
+      const page = await fetchSessions({
+        category: this.category,
+        before: cursor,
+        limit: PAGE_SIZE,
+      });
+      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
+      const known = new Set(this.runs.map((s) => s.run_id));
+      this.runs.push(...page.completed.filter((s) => !known.has(s.run_id)));
+      this.nextCursor = page.next_cursor;
+    } catch (err) {
+      notifications.surface(
+        "error",
+        userErrorMessage(err, { action: `Couldn't load more finished ${this.category} sessions.` }),
+      );
+    } finally {
+      this.loadingMore = false;
+    }
+  }
+
+  /** Put a run that just finished at the top. */
+  prepend(run: SessionSummary): void {
+    this.runs = [run, ...this.runs.filter((s) => s.run_id !== run.run_id)];
+  }
+
+  /**
+   * Replace the head of the list with a fresh first page, keeping runs
+   * paged in beyond it. Runs are matched by id and kept only if they sort
+   * after the page's last run in the server's order (newest start first,
+   * ties broken by run id), so runs sharing a start time survive.
+   */
+  mergeFirstPage(first: SessionSummary[], firstCursor: string | null): void {
+    const oldCursor = this.nextCursor;
+    const last = first[first.length - 1];
+    if (firstCursor === null || !last || this.runs.length <= first.length) {
+      this.runs = first;
+      this.nextCursor = firstCursor;
+      return;
+    }
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
+    const inFirst = new Set(first.map((s) => s.run_id));
+    const tail = this.runs.filter(
+      (s) => !inFirst.has(s.run_id) && compareRunsNewestFirst(s, last) > 0,
+    );
+    this.runs = [...first, ...tail];
+    this.nextCursor = tail.length ? oldCursor : firstCursor;
+  }
+}
+
 // ── Sessions store ───────────────────────────────────────────────────
 
 interface PendingCommand {
@@ -208,13 +281,14 @@ export interface SessionsStoreDeps {
 export class SessionsStore {
   /** Live runs (forking, running, idle, completing), newest first. */
   live = $state<SessionSummary[]>([]);
-  /** Completed runs loaded so far, newest first. */
-  completed = $state<SessionSummary[]>([]);
-  /** Cursor for the next page of completed runs, or `null` on the last. */
-  nextCursor = $state<string | null>(null);
+  /** Completed runs loaded so far, per category. */
+  readonly completed: Record<SessionCategory, CompletedRuns> = {
+    external: new CompletedRuns("external"),
+    scheduled: new CompletedRuns("scheduled"),
+    spawned: new CompletedRuns("spawned"),
+  };
   /** The listing has loaded at least once. */
   loaded = $state(false);
-  loadingMore = $state(false);
   listError = $state<string | null>(null);
   /** How runs ended, for those that finished while this page was open. */
   outcomes = new SvelteMap<string, { status: SessionRunStatus; error: string | null }>();
@@ -237,9 +311,9 @@ export class SessionsStore {
   // ── Listing ──────────────────────────────────────────────────────
 
   /**
-   * Reload live sessions and the first page of completed runs. Completed
-   * runs already paged in beyond the first page are kept, so a refresh
-   * doesn't collapse the list the user is reading.
+   * Reload live sessions and the first page of each category's completed
+   * runs. Completed runs already paged in beyond the first page are kept,
+   * so a refresh doesn't collapse the list the user is reading.
    */
   async refresh(): Promise<void> {
     if (this.refreshing) {
@@ -248,9 +322,16 @@ export class SessionsStore {
     }
     this.refreshing = true;
     try {
-      const page = await fetchSessions({ limit: PAGE_SIZE });
-      this.live = page.live;
-      this.mergeFirstPage(page.completed, page.next_cursor);
+      // One request per category, so each category's finished runs page on
+      // their own; together the pages' live lists cover every live session.
+      const pages = await Promise.all(
+        SESSION_CATEGORIES.map((category) => fetchSessions({ category, limit: PAGE_SIZE })),
+      );
+      this.live = pages.flatMap((page) => page.live).sort(compareRunsNewestFirst);
+      SESSION_CATEGORIES.forEach((category, i) => {
+        const page = pages[i];
+        if (page) this.completed[category].mergeFirstPage(page.completed, page.next_cursor);
+      });
       this.listError = null;
       this.loaded = true;
       this.syncViewSummary();
@@ -265,27 +346,6 @@ export class SessionsStore {
     }
   }
 
-  /** Load the next page of completed runs. */
-  async loadMore(): Promise<void> {
-    const cursor = this.nextCursor;
-    if (!cursor || this.loadingMore) return;
-    this.loadingMore = true;
-    try {
-      const page = await fetchSessions({ before: cursor, limit: PAGE_SIZE });
-      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-      const known = new Set(this.completed.map((s) => s.run_id));
-      this.completed.push(...page.completed.filter((s) => !known.has(s.run_id)));
-      this.nextCursor = page.next_cursor;
-    } catch (err) {
-      notifications.surface(
-        "error",
-        userErrorMessage(err, { action: "Couldn't load more finished sessions." }),
-      );
-    } finally {
-      this.loadingMore = false;
-    }
-  }
-
   /** Resynchronize after the WebSocket (re)connects: frames may have been missed. */
   resync(): void {
     void this.refresh();
@@ -295,7 +355,8 @@ export class SessionsStore {
 
   findRun(runId: string): SessionSummary | undefined {
     return (
-      this.live.find((s) => s.run_id === runId) ?? this.completed.find((s) => s.run_id === runId)
+      this.live.find((s) => s.run_id === runId) ??
+      this.completedRuns().find((s) => s.run_id === runId)
     );
   }
 
@@ -303,7 +364,9 @@ export class SessionsStore {
   findByAddress(address: string): SessionSummary | undefined {
     return (
       this.live.find((s) => s.address === address) ??
-      this.completed.find((s) => s.address === address)
+      this.completedRuns()
+        .filter((s) => s.address === address)
+        .sort(compareRunsNewestFirst)[0]
     );
   }
 
@@ -458,7 +521,7 @@ export class SessionsStore {
       completed_at: new Date().toISOString(),
       episode_id: frame.episode_id,
     };
-    this.completed = [finished, ...this.completed.filter((s) => s.run_id !== frame.run_id)];
+    this.completed[finished.category].prepend(finished);
   }
 
   private handleCommandReply(
@@ -502,6 +565,11 @@ export class SessionsStore {
 
   // ── Private ──────────────────────────────────────────────────────
 
+  /** Every completed run loaded so far, across categories. */
+  private completedRuns(): SessionSummary[] {
+    return SESSION_CATEGORIES.flatMap((category) => this.completed[category].runs);
+  }
+
   private viewFor(address: string): SessionView | null {
     const view = this.view;
     return view?.summary?.address === address ? view : null;
@@ -529,29 +597,6 @@ export class SessionsStore {
       this.refreshTimer = null;
       void this.refresh();
     }, REFRESH_DEBOUNCE_MS);
-  }
-
-  /**
-   * Replace the head of the completed list with a fresh first page, keeping
-   * runs paged in beyond it. Runs are matched by id and kept only if they
-   * sort after the page's last run in the server's order (newest start
-   * first, ties broken by run id), so runs sharing a start time survive.
-   */
-  private mergeFirstPage(first: SessionSummary[], firstCursor: string | null): void {
-    const oldCursor = this.nextCursor;
-    const last = first[first.length - 1];
-    if (firstCursor === null || !last || this.completed.length <= first.length) {
-      this.completed = first;
-      this.nextCursor = firstCursor;
-      return;
-    }
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-    const inFirst = new Set(first.map((s) => s.run_id));
-    const tail = this.completed.filter(
-      (s) => !inFirst.has(s.run_id) && compareRunsNewestFirst(s, last) > 0,
-    );
-    this.completed = [...first, ...tail];
-    this.nextCursor = tail.length ? oldCursor : firstCursor;
   }
 }
 
