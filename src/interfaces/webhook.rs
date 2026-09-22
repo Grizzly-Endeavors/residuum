@@ -223,6 +223,8 @@ async fn route_webhook_content(
                 spawner: None,
                 depth: crate::background::registry::MAIN_DEPTH + 1,
                 hop_count: 0,
+                sender: None,
+                conversation: None,
             };
             if let Err(e) = state
                 .publisher

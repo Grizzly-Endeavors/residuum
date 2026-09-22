@@ -169,6 +169,8 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         // more than, so it starts a fresh chain at hop 0, the same as a
         // pulse or scheduled action.
         hop_count: 0,
+        sender: None,
+        conversation: None,
     }
 }
 

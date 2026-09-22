@@ -793,6 +793,7 @@ mod tests {
                 .unwrap(),
             reply_targets: ReplyTargets::default(),
             context_buffer: ContextBuffer::new(context_messages),
+            publisher: bus.publisher(),
         });
         Harness {
             state,

@@ -138,6 +138,13 @@ fn handle_spawn_request<'a>(
                         "spawn target is already live; delivering this request's input into it \
                          instead of forking a second run"
                     );
+                    // Delivered as an agent message even for a `Conversation`
+                    // trigger: this only fires in the narrow race window
+                    // where two spawn/resume attempts for the same address
+                    // land back to back, which is vanishingly rare for a
+                    // single conversation's traffic. The message still
+                    // reaches the session; it just doesn't carry the
+                    // conversation's own sender attribution in that one case.
                     let content = event.kickoff_text();
                     let message = AgentMessageEvent {
                         from: event
@@ -206,7 +213,9 @@ async fn fork_and_spawn(
             context: event.context,
             model_tier: event.model_tier,
             hop_count: event.hop_count,
+            sender: event.sender,
         },
+        conversation_target: event.conversation,
     };
 
     let log_address = request.address.clone();

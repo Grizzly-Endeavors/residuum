@@ -6,7 +6,8 @@
 
 use super::events::{
     AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent,
-    NotificationEvent, ResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent,
+    NotificationEvent, ResponseEvent, SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent,
+    TurnLifecycleEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -46,6 +47,7 @@ impl Carries<ResponseEvent> for Endpoint {}
 impl Carries<ToolActivityEvent> for Endpoint {}
 impl Carries<TurnLifecycleEvent> for Endpoint {}
 impl Carries<IntermediateEvent> for Endpoint {}
+impl Carries<SessionResponseEvent> for Endpoint {}
 
 /// Background task orchestration: spawn requests and task results.
 pub struct Background;

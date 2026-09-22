@@ -164,6 +164,7 @@ fn apply_observe_action(
 async fn run_agent_turn_with_interrupts(
     agent: &mut Agent,
     agent_messenger: &crate::background::messaging::AgentMessenger,
+    conversation_router: &Arc<crate::background::ConversationRouter>,
     content: &str,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
@@ -213,19 +214,6 @@ async fn run_agent_turn_with_interrupts(
                 next_msg = agent_subscriber.recv() => {
                     match next_msg {
                         Ok(Some(msg_event)) => {
-                            // A mid-turn message on this topic may be a
-                            // genuine user message (hop 0) or an agent
-                            // message relayed to main (see
-                            // `AgentMessenger::deliver_to_main`) — either
-                            // way, it's one more input driving this turn.
-                            // `take_main_hop` is looked up unconditionally
-                            // (it removes the entry either way, so a message
-                            // this channel refuses shouldn't leave the entry
-                            // stranded), but the counter is only bumped once
-                            // the message is actually queued into the turn —
-                            // bumping on a failed send would claim a hop the
-                            // turn never actually received.
-                            let hop = agent_messenger.take_main_hop(&msg_event.id);
                             let inbound = crate::interfaces::types::InboundMessage {
                                 id: msg_event.id,
                                 content: msg_event.content,
@@ -234,10 +222,35 @@ async fn run_agent_turn_with_interrupts(
                                 images: msg_event.images,
                                 context: msg_event.context,
                             };
-                            if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_ok() {
-                                hop_counter.bump(hop);
+                            if inbound.origin.belongs_to_main() {
+                                // A mid-turn message on this topic may be a
+                                // genuine user message (hop 0) or an agent
+                                // message relayed to main (see
+                                // `AgentMessenger::deliver_to_main`) — either
+                                // way, it's one more input driving this turn.
+                                // `take_main_hop` is looked up unconditionally
+                                // (it removes the entry either way, so a message
+                                // this channel refuses shouldn't leave the entry
+                                // stranded), but the counter is only bumped once
+                                // the message is actually queued into the turn —
+                                // bumping on a failed send would claim a hop the
+                                // turn never actually received.
+                                let hop = agent_messenger.take_main_hop(&inbound.id);
+                                if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_ok() {
+                                    hop_counter.bump(hop);
+                                } else {
+                                    tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                                }
                             } else {
-                                tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                                // Not main's: a group chat, a channel, or a
+                                // non-owner DM message that arrived while
+                                // main's own turn is running. It must never
+                                // be folded into main's turn — route it to
+                                // its conversation's session instead, off the
+                                // turn's own select loop so a completing
+                                // target's teardown can't stall main.
+                                let router = Arc::clone(conversation_router);
+                                tokio::spawn(async move { router.route(inbound).await });
                             }
                         }
                         Ok(None) => {
@@ -484,6 +497,7 @@ pub async fn handle_inbound_message(
     let (turn_result, leftover_interrupts, subconscious_scratch) = run_agent_turn_with_interrupts(
         &mut rt.agent,
         &rt.agent_messenger,
+        &rt.conversation_router,
         &message.content,
         &rt.publisher,
         output_endpoint.as_ref(),
@@ -779,6 +793,9 @@ mod tests {
             store,
             crate::background::HopLimits { soft: 8, hard: 32 },
         ));
+        let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
+            &messenger,
+        )));
 
         let gate = Arc::new(tokio::sync::Notify::new());
         let mut agent = test_agent(GatedProvider {
@@ -803,10 +820,12 @@ mod tests {
         };
 
         let turn_messenger = Arc::clone(&messenger);
+        let turn_conversation_router = Arc::clone(&conversation_router);
         let turn_task = tokio::spawn(async move {
             let (turn_result, _leftovers, _scratch) = run_agent_turn_with_interrupts(
                 &mut agent,
                 &turn_messenger,
+                &turn_conversation_router,
                 "hello",
                 &publisher,
                 None,
@@ -860,6 +879,134 @@ mod tests {
             finished_agent.hop_counter().get(),
             7,
             "the bump from the mid-turn message must survive to the end of the turn"
+        );
+    }
+
+    /// A group-chat message on "chan-1", sent by the owner — the owner
+    /// speaking in a shared conversation still routes to that conversation's
+    /// session, not to main.
+    fn group_chat_message() -> crate::bus::MessageEvent {
+        crate::bus::MessageEvent {
+            id: "group-msg-1".to_string(),
+            content: "anyone around?".to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "discord".to_string(),
+                sender: None,
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "chan-1".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::GroupChat,
+                    is_owner: true,
+                }),
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            context: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn mid_turn_message_not_belonging_to_main_is_routed_away_not_injected() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::background::store::SessionStore::new(
+            dir.path().to_path_buf(),
+        ));
+        let registry = Arc::new(crate::background::registry::SessionRegistry::new());
+        let messenger = Arc::new(crate::background::messaging::AgentMessenger::new(
+            Arc::clone(&registry),
+            publisher.clone(),
+            store,
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
+            &messenger,
+        )));
+        let mut spawns: Subscriber<crate::bus::SpawnRequestEvent> =
+            handle.subscribe(topics::Background).await.unwrap();
+
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut agent = test_agent(GatedProvider {
+            gate: Arc::clone(&gate),
+            response: "done".to_string(),
+        });
+        agent.hop_counter().set(0);
+        let hop_counter = agent.hop_counter().clone();
+
+        let mut agent_subscriber: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
+
+        let prompt_ctx = PromptContext {
+            skills: crate::agent::context::SkillsContext {
+                index: None,
+                active_instructions: None,
+            },
+        };
+
+        let turn_messenger = Arc::clone(&messenger);
+        let turn_conversation_router = Arc::clone(&conversation_router);
+        let turn_task = tokio::spawn(async move {
+            let (turn_result, _leftovers, _scratch) = run_agent_turn_with_interrupts(
+                &mut agent,
+                &turn_messenger,
+                &turn_conversation_router,
+                "hello",
+                &publisher,
+                None,
+                None,
+                "corr-route",
+                None,
+                &prompt_ctx,
+                &[],
+                &mut agent_subscriber,
+                &mut reload_rx,
+                &mut stop_rx,
+                None,
+            )
+            .await;
+            turn_result.expect("gated turn should complete successfully");
+            agent
+        });
+
+        // A group-chat message — even one the owner sent — must not reach
+        // main's live turn.
+        handle
+            .publisher()
+            .publish(crate::bus::topics::UserMessage, group_chat_message())
+            .await
+            .unwrap();
+
+        // The router should start a session for this conversation instead of
+        // ever reaching main's turn.
+        let address =
+            crate::background::registry::conversation_session_address("discord", "chan-1");
+        let spawn_event = tokio::time::timeout(Duration::from_secs(2), spawns.recv())
+            .await
+            .expect("the group-chat message should have started its own conversation session")
+            .unwrap()
+            .unwrap();
+        assert_eq!(spawn_event.address, address);
+        assert_eq!(spawn_event.prompt, "anyone around?");
+
+        assert_eq!(
+            hop_counter.get(),
+            0,
+            "a message that doesn't belong to main must never bump its hop counter"
+        );
+
+        gate.notify_one();
+        let finished_agent = tokio::time::timeout(Duration::from_secs(2), turn_task)
+            .await
+            .expect("turn should complete once the gate releases")
+            .unwrap();
+        assert!(
+            !finished_agent
+                .messages_since(0)
+                .iter()
+                .any(|m| m.content.contains("anyone around?")),
+            "the group-chat message must never be injected into main's own turn"
         );
     }
 

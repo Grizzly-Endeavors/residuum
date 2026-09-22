@@ -49,6 +49,25 @@ pub struct MessageOrigin {
     pub conversation: Option<ConversationContext>,
 }
 
+impl MessageOrigin {
+    /// Whether this message belongs to the main agent's own conversation.
+    ///
+    /// True for the web UI, background/internal origins (`conversation:
+    /// None`), and the owner's own DM on a chat interface. False for every
+    /// other admitted conversation — a group chat, a channel (including the
+    /// owner speaking in one), or a non-owner DM — which routes to that
+    /// conversation's `external` session instead. Admission (whether the
+    /// message reaches the agent system at all) is decided upstream by each
+    /// interface; this only decides who handles an already-admitted message.
+    #[must_use]
+    pub fn belongs_to_main(&self) -> bool {
+        match &self.conversation {
+            None => true,
+            Some(ctx) => ctx.kind == ConversationKind::Personal && ctx.is_owner,
+        }
+    }
+}
+
 /// A normalized inbound message from any interface.
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
@@ -124,6 +143,54 @@ mod tests {
         assert_eq!(user.role, Role::User);
         assert_eq!(user.content, "can you check the build?");
         assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
+    }
+
+    fn origin_with(kind: ConversationKind, is_owner: bool) -> MessageOrigin {
+        MessageOrigin {
+            endpoint: "discord".to_string(),
+            sender: None,
+            conversation: Some(ConversationContext {
+                id: "conv-1".to_string(),
+                kind,
+                is_owner,
+            }),
+        }
+    }
+
+    #[test]
+    fn owner_personal_dm_belongs_to_main() {
+        assert!(origin_with(ConversationKind::Personal, true).belongs_to_main());
+    }
+
+    #[test]
+    fn owner_speaking_in_a_group_chat_does_not_belong_to_main() {
+        assert!(!origin_with(ConversationKind::GroupChat, true).belongs_to_main());
+    }
+
+    #[test]
+    fn owner_speaking_in_a_channel_does_not_belong_to_main() {
+        assert!(!origin_with(ConversationKind::Channel, true).belongs_to_main());
+    }
+
+    #[test]
+    fn non_owner_personal_dm_does_not_belong_to_main() {
+        assert!(!origin_with(ConversationKind::Personal, false).belongs_to_main());
+    }
+
+    #[test]
+    fn non_owner_group_chat_does_not_belong_to_main() {
+        assert!(!origin_with(ConversationKind::GroupChat, false).belongs_to_main());
+    }
+
+    #[test]
+    fn no_conversation_belongs_to_main() {
+        // The web UI and background/internal origins.
+        let origin = MessageOrigin {
+            endpoint: "ws".to_string(),
+            sender: None,
+            conversation: None,
+        };
+        assert!(origin.belongs_to_main());
     }
 
     #[test]

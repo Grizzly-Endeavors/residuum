@@ -7,7 +7,7 @@ use chrono::NaiveDateTime;
 
 use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
-use crate::inference::ImageData;
+use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
 
@@ -26,6 +26,10 @@ pub enum EventTrigger {
     Agent,
     /// An inbound webhook with the given name.
     Webhook(String),
+    /// A message in a conversation the interfaces admitted but that doesn't
+    /// belong to the main agent's own conversation (a group chat, a channel,
+    /// or a non-owner DM) — routed to that conversation's `external` session.
+    Conversation,
 }
 
 impl EventTrigger {
@@ -37,6 +41,7 @@ impl EventTrigger {
             Self::Action => "action",
             Self::Agent => "agent",
             Self::Webhook(_) => "webhook",
+            Self::Conversation => "conversation",
         }
     }
 }
@@ -45,7 +50,9 @@ impl fmt::Display for EventTrigger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Webhook(name) => write!(f, "webhook:{name}"),
-            other @ (Self::Pulse | Self::Action | Self::Agent) => f.write_str(other.as_str()),
+            other @ (Self::Pulse | Self::Action | Self::Agent | Self::Conversation) => {
+                f.write_str(other.as_str())
+            }
         }
     }
 }
@@ -129,6 +136,30 @@ pub struct MessageEvent {
     pub context: Option<String>,
 }
 
+impl MessageEvent {
+    /// Build a `MessageEvent` addressed to the main agent from an internal,
+    /// non-interface source (an agent-to-main relay, a delivery-failure
+    /// notice). Always carries background origin — `endpoint: "background"`,
+    /// no sender, no conversation — so `MessageOrigin::belongs_to_main`
+    /// is true for it and it always reaches main, never a conversation
+    /// session.
+    #[must_use]
+    pub fn from_background(content: String) -> Self {
+        Self {
+            id: format!("bg-{}", uuid::Uuid::new_v4()),
+            content,
+            origin: MessageOrigin {
+                endpoint: "background".to_string(),
+                sender: None,
+                conversation: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: Vec::new(),
+            context: None,
+        }
+    }
+}
+
 /// Agent response destined for an endpoint.
 #[derive(Debug, Clone)]
 pub struct ResponseEvent {
@@ -144,6 +175,30 @@ pub struct ResponseEvent {
     /// `list_conversations`). When `None` the interface routes by
     /// correlation ID: the conversation that started the turn, else the owner.
     pub conversation: Option<String>,
+}
+
+/// A conversation session's turn output, destined for its own conversation
+/// on a chat interface.
+///
+/// Distinct from [`ResponseEvent`] (the main agent's replies and
+/// `send_message` posts) so an interface's delivery code can enforce the
+/// "never falls back to the owner's DM" rule for a session's own output
+/// without touching the main agent's delivery path, which keeps its existing
+/// owner-DM fallback on an unresolvable target.
+#[derive(Debug, Clone)]
+pub struct SessionResponseEvent {
+    /// Address of the session that produced this output, for the error log
+    /// and failure notice to main when delivery fails.
+    pub session_address: SessionAddress,
+    /// The conversation this output replies to, on the interface subscribed
+    /// to this endpoint.
+    pub conversation_id: String,
+    /// Response body.
+    pub content: String,
+    /// Optional file attachment.
+    pub attachment: Option<FileAttachment>,
+    /// Local timestamp.
+    pub timestamp: NaiveDateTime,
 }
 
 /// Push notification for notify channels.
@@ -320,6 +375,26 @@ pub struct SpawnRequestEvent {
     /// spawning turn's highest input hop count for an agent-initiated spawn,
     /// or the hop count of the message that triggered a resume.
     pub hop_count: u32,
+    /// Who sent this session's kickoff message, for a `Conversation`-triggered
+    /// spawn — carried onto the fork's opening message so the session sees
+    /// the same `[From: name via interface (location)]` attribution the main
+    /// agent shows. `None` for every other trigger.
+    pub sender: Option<MessageSender>,
+    /// The conversation this session replies to, for a `Conversation`-triggered
+    /// spawn. `None` for every other trigger, which have no conversation of
+    /// their own to reply into.
+    pub conversation: Option<ConversationTarget>,
+}
+
+/// The conversation an `external` conversation session replies to: which
+/// interface endpoint, and which conversation on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationTarget {
+    /// Endpoint name the conversation lives on (e.g. `"discord"`).
+    pub endpoint: String,
+    /// Stable conversation id on that endpoint (an id `list_conversations`
+    /// and `send_message` use to reach it).
+    pub conversation_id: String,
 }
 
 impl SpawnRequestEvent {
