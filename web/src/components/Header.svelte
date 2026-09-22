@@ -12,6 +12,7 @@
     onOpenSettings,
     onOpenFeedback,
     onOpenInbox,
+    sessionsToggle,
   }: {
     status: ConnectionStatus;
     activeView: "chat" | "workspace" | "settings";
@@ -20,6 +21,8 @@
     onOpenSettings: () => void;
     onOpenFeedback: () => void;
     onOpenInbox: () => void;
+    /** The sessions sidebar toggle; omitted where the sidebar isn't shown. */
+    sessionsToggle?: { open: boolean; liveCount: number; onToggle: () => void };
   } = $props();
 
   let menuOpen = $state(false);
@@ -68,6 +71,23 @@
       </div>
     {/if}
   </div>
+  {#if sessionsToggle}
+    <button
+      class="header-action-btn sessions-toggle"
+      class:active={sessionsToggle.open}
+      onclick={sessionsToggle.onToggle}
+      aria-expanded={sessionsToggle.open}
+      aria-controls="sessions-sidebar"
+      aria-label={sessionsToggle.open ? "Hide sessions" : "Show sessions"}
+      title={sessionsToggle.open ? "Hide sessions" : "Show sessions"}
+    >
+      <Icon name="sessions" size={16} />
+      {#if sessionsToggle.liveCount > 0}
+        <span class="badge badge-live" aria-hidden="true">{sessionsToggle.liveCount}</span>
+        <span class="visually-hidden">{sessionsToggle.liveCount} running</span>
+      {/if}
+    </button>
+  {/if}
   <div class="header-brand">
     <BrandMark size={26} />
     <span class="header-title">Residuum</span>
@@ -127,6 +147,18 @@
     background: var(--vein-faint);
     border-color: var(--vein-dim);
     box-shadow: 0 0 12px -4px rgba(59, 139, 219, 0.45);
+  }
+
+  .sessions-toggle {
+    margin-left: var(--s-1);
+  }
+
+  .sessions-toggle.active {
+    color: var(--vein);
+  }
+
+  .badge-live {
+    background: var(--vein-dim);
   }
 
   .badge {

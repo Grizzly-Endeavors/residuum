@@ -1,0 +1,707 @@
+/* ── Agent sessions: sidebar, session view, relayed messages ──────────── */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── App body: sidebar beside the main area ──────────────────────────── */
+
+.app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.app-body > .app-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.main-pane {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat-slot {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-slot.is-hidden {
+  display: none;
+}
+
+/* ── Category badge ──────────────────────────────────────────────────── */
+/* Text always names the category; the tint only helps scanning. Spawned
+   work carries the vein (the agent's own energy), scheduled work the moss
+   (what grows on its own over time), outside work plain stone. */
+
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 17px;
+  letter-spacing: 0.04em;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-raised);
+}
+
+.session-badge.badge-spawned {
+  color: var(--vein-bright);
+  border-color: rgba(59, 139, 219, 0.35);
+  background: var(--vein-faint);
+}
+
+.session-badge.badge-scheduled {
+  color: var(--moss-hover);
+  border-color: rgba(107, 122, 74, 0.45);
+  background: rgba(107, 122, 74, 0.1);
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+
+.sessions-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 272px;
+  flex-shrink: 0;
+  min-height: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  animation: sessions-sidebar-in var(--dur-default) var(--ease-out-stone);
+}
+
+@keyframes sessions-sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.sessions-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-3) var(--s-2) var(--s-4);
+  flex-shrink: 0;
+}
+
+.sessions-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+
+.sessions-live-count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--vein-bright);
+}
+
+.sessions-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.sessions-close:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--border);
+}
+
+.sessions-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--s-2) var(--s-4);
+}
+
+.sessions-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sessions-empty {
+  padding: var(--s-2) var(--s-2) var(--s-3);
+  font-size: var(--fs-sm);
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.sessions-error {
+  margin: 0 var(--s-1) var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: #e8a0a0;
+  background: var(--error-bg);
+  border: 1px solid rgba(192, 57, 43, 0.3);
+  border-radius: var(--radius-sm);
+}
+
+.sessions-text-btn {
+  margin-top: var(--s-1);
+  padding: 2px var(--s-2);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--vein-bright);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.sessions-text-btn:hover {
+  border-color: var(--vein-dim);
+}
+
+.sessions-text-btn:disabled {
+  color: var(--disabled-text);
+  cursor: default;
+  border-color: transparent;
+}
+
+.sessions-more {
+  display: block;
+  margin: var(--s-2) auto 0;
+}
+
+/* ── Sidebar row ─────────────────────────────────────────────────────── */
+
+.session-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
+  text-align: left;
+  font-family: var(--font-body);
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.session-row:hover {
+  background: var(--bg-raised);
+}
+
+.session-row.selected {
+  background: var(--vein-faint);
+  border-color: rgba(59, 139, 219, 0.28);
+}
+
+/* The seam: a vein of light down the row's left edge while the session is
+   working, dimmer while it waits, and dark once it's done. */
+.session-row-seam {
+  position: absolute;
+  left: 6px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+
+.session-row.state-running .session-row-seam {
+  background: var(--vein);
+  box-shadow: 0 0 8px rgba(59, 139, 219, calc(0.55 * var(--vein-intensity)));
+  animation: session-seam-breathe var(--dur-geo) ease-in-out infinite;
+}
+
+.session-row.state-idle .session-row-seam {
+  background: var(--vein-dim);
+  opacity: 0.45;
+}
+
+.session-row.state-forking .session-row-seam,
+.session-row.state-completing .session-row-seam {
+  background: var(--moss);
+  opacity: 0.7;
+}
+
+.session-row.failed .session-row-seam {
+  background: var(--error);
+  opacity: 0.6;
+}
+
+@keyframes session-seam-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.session-row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.session-row-source {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.session-row-time {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-feature-settings: "tnum";
+}
+
+.session-row-purpose {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.session-row-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.session-row.state-running .session-row-state-label {
+  color: var(--vein-bright);
+}
+
+.session-row.failed .session-row-state-label {
+  color: #e8a0a0;
+}
+
+.session-row-error {
+  display: inline-flex;
+  color: #e8a0a0;
+}
+
+/* ── Finished disclosure ─────────────────────────────────────────────── */
+
+.sessions-finished {
+  margin-top: var(--s-3);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sessions-disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--dur-quick);
+}
+
+.sessions-disclosure:hover {
+  color: var(--text);
+}
+
+.sessions-disclosure-chevron {
+  display: inline-flex;
+  transform: rotate(-90deg);
+  transition: transform var(--dur-default) var(--ease-out-stone);
+}
+
+.sessions-disclosure-chevron.open {
+  transform: rotate(0deg);
+}
+
+.sessions-disclosure-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0;
+}
+
+/* ── Drawer mode (narrow screens) ────────────────────────────────────── */
+
+.sessions-sidebar.overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  width: min(320px, calc(100vw - 48px));
+  box-shadow: var(--elev-3);
+}
+
+.sessions-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: default;
+  animation: sessions-backdrop-in var(--dur-default) var(--ease-out-stone);
+}
+
+@keyframes sessions-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ── Session view ────────────────────────────────────────────────────── */
+
+.session-view {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.session-view-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-4);
+  flex-shrink: 0;
+}
+
+.session-back,
+.session-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  height: 30px;
+  padding: 0 var(--s-3);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.session-back:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--border);
+}
+
+.session-stop:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--error-bg);
+  border-color: rgba(192, 57, 43, 0.35);
+}
+
+.session-stop:disabled {
+  color: var(--disabled-text);
+  border-color: var(--disabled-border);
+  background: var(--disabled-bg);
+  cursor: not-allowed;
+}
+
+.session-view-intro {
+  width: 100%;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: var(--s-2) var(--s-4) var(--s-3);
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.session-view-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.session-view-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.session-view-source {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.session-view-state.state-running {
+  color: var(--vein-bright);
+}
+
+.session-view-state.failed {
+  color: #e8a0a0;
+}
+
+.session-view-duration {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-feature-settings: "tnum";
+}
+
+.session-view-purpose {
+  margin-top: var(--s-2);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.session-view-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-5);
+  margin-top: var(--s-2);
+  font-size: var(--fs-xs);
+}
+
+.session-view-meta > div {
+  display: flex;
+  gap: var(--s-2);
+  align-items: baseline;
+}
+
+.session-view-meta dt {
+  color: var(--text-muted);
+}
+
+.session-view-meta dd {
+  font-family: var(--font-mono);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.session-meta-link {
+  font: inherit;
+  color: var(--vein-bright);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--vein-dim);
+  text-underline-offset: 3px;
+}
+
+.session-view-note {
+  margin-top: var(--s-2);
+  font-size: var(--fs-sm);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.session-feed {
+  /* Room for the floating composer, which has no toolbar here. */
+  padding-bottom: 140px;
+}
+
+.session-feed-error {
+  padding: var(--s-5) var(--s-4);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: #e8a0a0;
+}
+
+.session-input-area .chat-input-wrap {
+  padding: 8px;
+}
+
+/* ── Status note (inside a session view) ─────────────────────────────── */
+
+.msg-status {
+  align-self: center;
+  max-width: 92%;
+  padding: 4px 12px;
+  font-size: var(--fs-sm);
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.msg-status.tone-error {
+  font-style: normal;
+  color: #e8a0a0;
+  background: var(--error-bg);
+  border: 1px solid rgba(192, 57, 43, 0.25);
+  border-radius: var(--radius-sm);
+}
+
+/* ── Agent message: a session speaking into a conversation ───────────── */
+/* A moss seam, not a card: it reads as something that grew in from
+   elsewhere, quieter than the conversation it sits in. */
+
+.msg-agent {
+  align-self: stretch;
+  padding: 8px 14px 8px 16px;
+  background: linear-gradient(90deg, rgba(107, 122, 74, 0.1), transparent 75%);
+  border-left: 2px solid var(--moss);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.msg-agent-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.msg-agent-from {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.msg-agent-open,
+.msg-agent-toggle {
+  padding: 0 var(--s-2);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--moss-hover);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.msg-agent-open {
+  margin-left: auto;
+}
+
+.msg-agent-open:hover,
+.msg-agent-toggle:hover {
+  color: var(--text);
+  border-color: var(--moss-faint);
+}
+
+.msg-agent-toggle {
+  margin-top: 2px;
+  margin-left: -8px;
+}
+
+.msg-agent-body {
+  font-size: var(--fs-base);
+  color: var(--text-muted);
+}
+
+.msg-agent-body.clamped {
+  max-height: 6.2em;
+  overflow: hidden;
+  mask-image: linear-gradient(180deg, #000 60%, transparent);
+  -webkit-mask-image: linear-gradient(180deg, #000 60%, transparent);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .sessions-sidebar,
+  .sessions-backdrop {
+    animation: none;
+  }
+  .session-row.state-running .session-row-seam {
+    animation: none;
+  }
+}
+
+/* ── Narrow screens ──────────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .session-view-head {
+    padding: var(--s-2) var(--s-3);
+  }
+  .session-view-intro {
+    padding: var(--s-2) var(--s-3) var(--s-3);
+  }
+}

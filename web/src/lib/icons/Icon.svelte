@@ -12,7 +12,9 @@
     | "copy"
     | "check"
     | "inbox"
-    | "stop";
+    | "stop"
+    | "sessions"
+    | "back";
 
   interface Props {
     name: IconName;
@@ -78,6 +80,14 @@
     {:else if name === "inbox"}
       <rect x="2" y="4" width="12" height="8" rx="1" />
       <path d="M2 5l6 4 6-4" />
+    {:else if name === "sessions"}
+      <!-- strata: offset layers, one per running agent -->
+      <path d="M2.5 4h7M5 8h8.5M3.5 12h7" />
+      <circle cx="12" cy="4" r="1" />
+      <circle cx="2.5" cy="8" r="1" />
+      <circle cx="12.5" cy="12" r="1" />
+    {:else if name === "back"}
+      <path d="M13 8H3.5M7 4.5L3.5 8 7 11.5" />
     {/if}
   </g>
   {#if name === "stop"}

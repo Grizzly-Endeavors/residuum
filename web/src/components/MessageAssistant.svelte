@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { renderMarkdown } from "../lib/markdown";
+  import MarkdownContent from "./MarkdownContent.svelte";
 
   let { content }: { content: string } = $props();
 </script>
 
 <div class="msg msg-assistant">
-  <!-- eslint-disable svelte/no-at-html-tags -->
-  <div class="msg-content">{@html renderMarkdown(content)}</div>
+  <div class="msg-content"><MarkdownContent {content} /></div>
 </div>
