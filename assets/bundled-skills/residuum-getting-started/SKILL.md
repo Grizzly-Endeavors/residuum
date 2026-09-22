@@ -99,7 +99,7 @@ Read `workflows/getting-organized.md`. Covers the inbox and memory.
 Read `workflows/monitoring-setup.md`. Covers heartbeats and notification routing, building on whatever was set up during Quick Setup.
 
 ### "I want to extend what you can do"
-Read `workflows/extending-capabilities.md`. Covers skills, MCP servers, background tasks, and subagent presets.
+Read `workflows/extending-capabilities.md`. Covers skills, MCP servers, background tasks, and session roles.
 
 ### "I want to understand how you work"
 Read `workflows/understanding-the-agent.md`. Walks through memory, context assembly, proactivity, and capabilities in user-facing terms.

@@ -50,7 +50,7 @@ impl LearningState {
 
     /// Handle `learn` signals from the subconscious end-of-turn triage.
     ///
-    /// Returns a spawn request for the `learner` preset when the cooldown
+    /// Returns a spawn request for the `learner` skill when the cooldown
     /// allows, batching every signal summary into one prompt. Empty input or a
     /// live cooldown yields `None`. Logs the spawn decision at debug level.
     pub fn on_learn_signals(
