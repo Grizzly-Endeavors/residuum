@@ -281,6 +281,8 @@ pub(super) struct DiscordConfigFile {
     pub(super) token: Option<String>,
     /// Whether people other than the owner can talk to the agent.
     pub(super) respond_to_others: Option<bool>,
+    /// How many earlier unmentioned server messages to hand the agent on @mention.
+    pub(super) context_messages: Option<usize>,
 }
 
 /// Raw TOML `[telegram]` section.
@@ -291,6 +293,8 @@ pub(super) struct TelegramConfigFile {
     pub(super) token: Option<String>,
     /// Whether people other than the owner can talk to the agent.
     pub(super) respond_to_others: Option<bool>,
+    /// How many earlier unmentioned group messages to hand the agent when addressed.
+    pub(super) context_messages: Option<usize>,
 }
 
 /// Raw TOML `[teams]` section.

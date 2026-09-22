@@ -23,6 +23,7 @@ use teloxide::types::ChatId;
 use crate::config::TelegramConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
+use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
 
@@ -36,6 +37,9 @@ pub(super) struct TelegramState {
     store: ChatStateStore<ChatRef>,
     /// Chat each in-flight turn should answer in, by correlation ID.
     reply_targets: ReplyTargets<ChatId>,
+    /// Unaddressed group messages held for the next time the bot is
+    /// addressed, by chat.
+    context_buffer: ContextBuffer,
 }
 
 impl TelegramState {
@@ -117,6 +121,7 @@ impl TelegramInterface {
             respond_to_others: self.cfg.respond_to_others,
             store: ChatStateStore::load(layout.telegram_state_json()).await?,
             reply_targets: ReplyTargets::default(),
+            context_buffer: ContextBuffer::new(self.cfg.context_messages),
         });
         let _registration = self
             .senders

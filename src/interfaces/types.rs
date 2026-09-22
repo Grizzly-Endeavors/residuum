@@ -1,8 +1,38 @@
 //! Normalized message types for all interfaces.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::inference::{ImageData, Message, MessageSender};
+
+/// Kind of chat conversation, which decides whether the bot needs an @mention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationKind {
+    /// 1:1 chat between one person and the bot.
+    Personal,
+    /// Group chat with the bot as a member.
+    GroupChat,
+    /// A channel in a team, server, or similar shared space.
+    Channel,
+}
+
+/// The conversation a message belongs to on its interface.
+///
+/// `None` on [`MessageOrigin`] for the local web UI (which has no
+/// conversation concept and is always treated as the owner's) and for
+/// internal origins such as background and agent messages, so the fields
+/// stay unambiguous rather than carrying a made-up id or kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationContext {
+    /// Stable id for this conversation — the same id `list_conversations`
+    /// and `send_message` use to reach it.
+    pub id: String,
+    /// Personal / group chat / channel.
+    pub kind: ConversationKind,
+    /// Whether the sender is the interface's claimed owner.
+    pub is_owner: bool,
+}
 
 /// Where a message originated from.
 #[derive(Debug, Clone)]
@@ -14,6 +44,9 @@ pub struct MessageOrigin {
     /// `None` for the local web UI (always the owner) and for internal
     /// origins such as background tasks.
     pub sender: Option<MessageSender>,
+    /// The conversation this message belongs to on its interface, when the
+    /// interface has one. See [`ConversationContext`] for what `None` means.
+    pub conversation: Option<ConversationContext>,
 }
 
 /// A normalized inbound message from any interface.
@@ -67,6 +100,11 @@ mod tests {
                     id: "aad-jane".to_string(),
                     interface: "teams".to_string(),
                     location: Some("#builds".to_string()),
+                }),
+                conversation: Some(ConversationContext {
+                    id: "19:abc@thread.tacv2".to_string(),
+                    kind: ConversationKind::Channel,
+                    is_owner: true,
                 }),
             },
             timestamp: Utc::now(),

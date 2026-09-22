@@ -31,6 +31,7 @@ use crate::bus::EndpointName;
 use crate::config::DiscordConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
+use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::reply_targets::ReplyTargets;
 
 use self::handler::DiscordHandler;
@@ -49,6 +50,8 @@ pub(super) struct DiscordState {
     bot_id: OnceLock<UserId>,
     /// Server channel labels already looked up, e.g. `"#builds (Eng Team)"`.
     channel_labels: Mutex<HashMap<ChannelId, String>>,
+    /// Unmentioned server messages held for the next @mention, by channel.
+    context_buffer: ContextBuffer,
 }
 
 impl DiscordState {
@@ -141,6 +144,7 @@ impl DiscordInterface {
             reply_targets: ReplyTargets::default(),
             bot_id: OnceLock::new(),
             channel_labels: Mutex::new(HashMap::new()),
+            context_buffer: ContextBuffer::new(self.cfg.context_messages),
         });
         let subs = crate::interfaces::BaseSubscribers::new(
             &self.senders.bus_handle,

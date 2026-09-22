@@ -880,6 +880,7 @@ mod tests {
             origin: crate::interfaces::types::MessageOrigin {
                 endpoint: "background".to_string(),
                 sender: None,
+                conversation: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

@@ -85,8 +85,10 @@ export interface ConfigFields {
   // integrations
   discord_token: string;
   discord_respond_to_others: boolean;
+  discord_context_messages: string;
   telegram_token: string;
   telegram_respond_to_others: boolean;
+  telegram_context_messages: string;
   teams_app_id: string;
   teams_tenant_id: string;
   teams_app_password: string;
@@ -164,8 +166,10 @@ export function defaultConfigFields(): ConfigFields {
     thinking: "",
     discord_token: "",
     discord_respond_to_others: false,
+    discord_context_messages: "",
     telegram_token: "",
     telegram_respond_to_others: false,
+    telegram_context_messages: "",
     teams_app_id: "",
     teams_tenant_id: "",
     teams_app_password: "",
@@ -306,12 +310,14 @@ export function parseConfigToml(raw: string): ConfigFields {
   if (discord) {
     fields.discord_token = str(discord.token);
     fields.discord_respond_to_others = bool(discord.respond_to_others, false);
+    fields.discord_context_messages = str(discord.context_messages);
   }
 
   const telegram = doc.telegram as Record<string, unknown> | undefined;
   if (telegram) {
     fields.telegram_token = str(telegram.token);
     fields.telegram_respond_to_others = bool(telegram.respond_to_others, false);
+    fields.telegram_context_messages = str(telegram.context_messages);
   }
 
   const teams = doc.teams as Record<string, unknown> | undefined;
@@ -633,6 +639,8 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("[discord]");
     lines.push(`token = "${escapeTomlString(f.discord_token)}"`);
     if (f.discord_respond_to_others) lines.push("respond_to_others = true");
+    if (f.discord_context_messages && f.discord_context_messages !== "20")
+      lines.push(`context_messages = ${f.discord_context_messages}`);
   }
 
   // telegram
@@ -641,6 +649,8 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("[telegram]");
     lines.push(`token = "${escapeTomlString(f.telegram_token)}"`);
     if (f.telegram_respond_to_others) lines.push("respond_to_others = true");
+    if (f.telegram_context_messages && f.telegram_context_messages !== "20")
+      lines.push(`context_messages = ${f.telegram_context_messages}`);
   }
 
   // teams — app_id, tenant_id and app_password are all required together, so

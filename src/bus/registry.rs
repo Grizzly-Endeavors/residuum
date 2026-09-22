@@ -325,6 +325,7 @@ mod tests {
         config.discord = Some(crate::config::DiscordConfig {
             token: "test-token".to_string(),
             respond_to_others: false,
+            context_messages: 20,
         });
 
         let reg = EndpointRegistry::from_config(&config, &[]);
@@ -348,6 +349,7 @@ mod tests {
         config.discord = Some(crate::config::DiscordConfig {
             token: "added-on-reload".to_string(),
             respond_to_others: false,
+            context_messages: 20,
         });
         registry.refresh(&config, &[]);
         assert!(

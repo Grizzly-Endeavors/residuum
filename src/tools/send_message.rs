@@ -578,7 +578,7 @@ mod tests {
         ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
             Ok(vec![crate::interfaces::conversations::KnownConversation {
                 id: "19:builds".to_string(),
-                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                kind: crate::interfaces::types::ConversationKind::Channel,
                 label: "#builds (Eng Team)".to_string(),
             }])
         }
@@ -677,7 +677,7 @@ mod tests {
         ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
             Ok(vec![crate::interfaces::conversations::KnownConversation {
                 id: "19:builds".to_string(),
-                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                kind: crate::interfaces::types::ConversationKind::Channel,
                 label: "#builds (Eng Team)".to_string(),
             }])
         }
@@ -736,7 +736,7 @@ mod tests {
         ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
             Ok(vec![crate::interfaces::conversations::KnownConversation {
                 id: "19:builds".to_string(),
-                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                kind: crate::interfaces::types::ConversationKind::Channel,
                 label: "#builds (Eng Team)".to_string(),
             }])
         }

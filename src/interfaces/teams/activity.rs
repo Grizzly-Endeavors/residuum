@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub(super) use crate::interfaces::chat_state::ConversationKind;
+pub(super) use crate::interfaces::types::ConversationKind;
 
 /// An inbound activity the Bot Connector sends to the messaging endpoint.
 #[derive(Debug, Clone, Deserialize)]

@@ -7,8 +7,8 @@ use serenity::http::Http;
 use serenity::model::channel::{ChannelType, GuildChannel};
 use serenity::model::id::{ChannelId, GuildId, UserId};
 
-use crate::interfaces::chat_state::ConversationKind;
 use crate::interfaces::conversations::{ConversationSource, KnownConversation};
+use crate::interfaces::types::ConversationKind;
 
 use super::DiscordState;
 

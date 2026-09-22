@@ -25,7 +25,17 @@ In a group or supergroup the agent acts only on messages addressed to the bot:
 - a reply to one of the bot's messages;
 - a command, unless it names a different bot (`/status@otherbot`).
 
-With Telegram's default privacy mode these are also the only group messages the bot receives, so everything else in the group stays invisible to Residuum. Photo, document, and video captions count as the message text. Channels (broadcast-only) are not supported.
+With Telegram's default privacy mode these are also the only group messages the bot receives, so everything else in the group stays invisible to Residuum. **To have the bot see and buffer unaddressed group messages, turn off privacy mode for the bot in [@BotFather](https://t.me/BotFather)** (`/mybots` → your bot → *Bot Settings* → *Group Privacy* → *Turn off*), or make the bot a group admin, which grants it the same visibility. This is a platform restriction, not something Residuum can work around from its side.
+
+Once the bot receives them, unaddressed group messages are held in memory — never written to disk, and lost on restart — up to `[telegram] context_messages` per group (default 20; `0` disables), across at most 256 groups at once; past that, the group that went longest without new chatter is dropped. When the bot is next addressed there, the held messages are handed to the agent as a single background message placed just before the addressed one:
+
+```
+Previous conversation in group "Launch prep" since you were last mentioned there. This is background only; the message that mentions you follows.
+[14:05] Sam Lee: build is red again
+[14:06] Priya: looks like the migration step
+```
+
+The buffer for that group is emptied when it is delivered, so each message reaches the agent at most once. Photo, document, and video captions count as the message text. Channels (broadcast-only) are not supported.
 
 ## Where replies go
 
@@ -46,10 +56,11 @@ Telegram gives bots no way to list their chats, so `list_conversations` shows wh
 [telegram]
 token = "${RESIDUUM_TELEGRAM_TOKEN}"   # or secret:telegram; RESIDUUM_TELEGRAM_TOKEN also works on its own
 respond_to_others = false
+context_messages = 20
 ```
 
 Changing any `[telegram]` value restarts the Telegram adapter on reload.
 
 ## Code
 
-`src/interfaces/telegram/`: `mod.rs` (shared state, reply routing, conversation listing), `handler.rs` (long polling, inbound messages, commands, group membership), `groups.rs` (whether a group message is addressed to the bot), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Discord and Teams.
+`src/interfaces/telegram/`: `mod.rs` (shared state, reply routing, conversation listing), `handler.rs` (long polling, inbound messages, commands, group membership), `groups.rs` (whether a group message is addressed to the bot), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Discord and Teams. The unaddressed-message buffer is `src/interfaces/context_buffer.rs`, shared with Discord and Teams.

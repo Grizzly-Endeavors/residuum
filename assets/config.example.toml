@@ -94,6 +94,7 @@ port = 7700
 # [discord]
 # token = "${RESIDUUM_DISCORD_TOKEN}"
 # respond_to_others = false   # true: anyone who can DM or @mention the bot can use the agent
+# context_messages = 20       # earlier unmentioned server messages shared on @mention
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
 # Bot token can be set here or via RESIDUUM_TELEGRAM_TOKEN env var.
@@ -105,6 +106,8 @@ port = 7700
 # [telegram]
 # token = "${RESIDUUM_TELEGRAM_TOKEN}"
 # respond_to_others = false   # true: anyone who can reach the bot can use the agent
+# context_messages = 20       # earlier unmentioned group messages shared when addressed; requires
+#                              # privacy mode off in BotFather (or the bot made a group admin)
 
 # ── Microsoft Teams bot (optional) ───────────────────────────────────────────
 # Setup walkthrough: docs/guides/teams-setup.md.

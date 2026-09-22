@@ -12,8 +12,9 @@ use crate::util::FatalError;
 use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{
-    DEFAULT_CLOUD_RELAY_URL, DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_IDLE_TIMEOUT_MINUTES,
-    DEFAULT_MAX_TOKENS, DEFAULT_TEAMS_CONTEXT_MESSAGES, DEFAULT_TEAMS_PORT, DEFAULT_TIMEOUT_SECS,
+    DEFAULT_CLOUD_RELAY_URL, DEFAULT_DISCORD_CONTEXT_MESSAGES, DEFAULT_FEEDBACK_ENDPOINT,
+    DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TEAMS_CONTEXT_MESSAGES,
+    DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES, DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
@@ -263,6 +264,9 @@ fn resolve_discord_config(
         (_, Some(tok)) => Some(DiscordConfig {
             token: tok,
             respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+            context_messages: section
+                .and_then(|s| s.context_messages)
+                .unwrap_or(DEFAULT_DISCORD_CONTEXT_MESSAGES),
         }),
         (Some(_), None) => {
             tracing::warn!(
@@ -332,6 +336,9 @@ fn resolve_telegram_config(
         (_, Some(tok)) => Some(TelegramConfig {
             token: tok,
             respond_to_others: section.and_then(|s| s.respond_to_others).unwrap_or(false),
+            context_messages: section
+                .and_then(|s| s.context_messages)
+                .unwrap_or(DEFAULT_TELEGRAM_CONTEXT_MESSAGES),
         }),
         (Some(_), None) => {
             tracing::warn!(
@@ -1372,6 +1379,76 @@ main = "anthropic/claude-sonnet-4-6"
             Some("my-bot-token"),
             "token should match"
         );
+        assert_eq!(
+            cfg.discord.as_ref().map(|d| d.context_messages),
+            Some(DEFAULT_DISCORD_CONTEXT_MESSAGES),
+            "context_messages should default"
+        );
+    }
+
+    #[test]
+    fn discord_context_messages_override() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[discord]
+token = "my-bot-token"
+context_messages = 7
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.discord.as_ref().map(|d| d.context_messages), Some(7));
+    }
+
+    #[test]
+    fn telegram_context_messages_defaults() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[telegram]
+token = "tg-token"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.telegram.as_ref().map(|t| t.context_messages),
+            Some(DEFAULT_TELEGRAM_CONTEXT_MESSAGES)
+        );
+    }
+
+    #[test]
+    fn telegram_context_messages_override() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[telegram]
+token = "tg-token"
+context_messages = 3
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.telegram.as_ref().map(|t| t.context_messages), Some(3));
     }
 
     #[test]
