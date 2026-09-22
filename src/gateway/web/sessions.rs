@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::background::registry::{SessionCategory, SessionRegistry};
-use crate::background::store::{RunCursor, SessionStore, is_valid_run_id};
+use crate::background::store::{RunCursor, RunFilter, SessionStore, is_valid_run_id};
 use crate::gateway::protocol::{SessionListResponse, SessionSummary};
 use crate::gateway::sessions::{summary_from_live, summary_from_record};
 use crate::inference::Message;
@@ -61,6 +61,9 @@ pub(crate) struct SessionListQuery {
     /// Only sessions in this category (`scheduled`, `external`, `spawned`).
     #[serde(default)]
     category: Option<SessionCategory>,
+    /// Only runs of the session at this address.
+    #[serde(default)]
+    address: Option<String>,
     /// Continue after a previous page: its `next_cursor`.
     #[serde(default)]
     before: Option<String>,
@@ -70,7 +73,8 @@ pub(crate) struct SessionListQuery {
 }
 
 /// `GET /api/sessions` — every live session plus one page of completed runs,
-/// both newest first and both filtered by `category` when given.
+/// both newest first and both filtered by `category` and `address` when
+/// given.
 ///
 /// Live sessions come from the registry and are always returned in full
 /// (there are only ever as many as are running or lingering idle).
@@ -105,14 +109,23 @@ pub(crate) async fn api_sessions_list(
     };
 
     let mut live_infos = state.registry.list_live();
-    live_infos.retain(|info| query.category.is_none_or(|c| info.category == c));
+    live_infos.retain(|info| {
+        query.category.is_none_or(|c| info.category == c)
+            && query
+                .address
+                .as_deref()
+                .is_none_or(|a| info.address.as_ref() == a)
+    });
     live_infos.reverse();
     let live: Vec<SessionSummary> = live_infos.iter().map(summary_from_live).collect();
 
     let page = state
         .store
         .list_completed_runs(
-            query.category.as_ref().map(SessionCategory::as_str),
+            RunFilter {
+                category: query.category.as_ref().map(SessionCategory::as_str),
+                address: query.address.as_deref(),
+            },
             before.as_ref(),
             limit,
         )
@@ -267,6 +280,7 @@ mod tests {
             State(state.clone()),
             Query(SessionListQuery {
                 category,
+                address: None,
                 before,
                 limit,
             }),
@@ -382,6 +396,46 @@ mod tests {
             .unwrap();
         assert!(spawned.live.is_empty());
         assert_eq!(spawned.completed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn filters_by_address() {
+        let (state, _dir) = state();
+        complete(
+            &state,
+            &info("spawned-a-0001", "run-a1", EventTrigger::Agent, 0),
+        )
+        .await;
+        complete(
+            &state,
+            &info("spawned-b-0001", "run-b", EventTrigger::Agent, 1),
+        )
+        .await;
+        complete(
+            &state,
+            &info("spawned-a-0001", "run-a2", EventTrigger::Agent, 2),
+        )
+        .await;
+        let live = info("spawned-b-0001", "run-b-live", EventTrigger::Agent, 3);
+        let _rx = state
+            .registry
+            .register(live, CancellationToken::new())
+            .unwrap();
+
+        let Json(body) = api_sessions_list(
+            State(state.clone()),
+            Query(SessionListQuery {
+                category: None,
+                address: Some("spawned-a-0001".to_string()),
+                before: None,
+                limit: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(body.live.is_empty(), "the live run is at another address");
+        let completed_ids: Vec<&str> = body.completed.iter().map(|s| s.run_id.as_str()).collect();
+        assert_eq!(completed_ids, vec!["run-a2", "run-a1"]);
     }
 
     #[tokio::test]

@@ -94,6 +94,16 @@ impl RunRecord {
     }
 }
 
+/// Which completed runs [`SessionStore::list_completed_runs`] includes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunFilter<'a> {
+    /// Only runs in this category (a
+    /// [`SessionCategory`](super::registry::SessionCategory) label).
+    pub category: Option<&'a str>,
+    /// Only runs at this session address.
+    pub address: Option<&'a str>,
+}
+
 /// A run record as the listing reads it: every [`RunRecord`] field except
 /// the transcript, which serde skips over without allocating it — a
 /// completed run's record can hold a long transcript, and a listing page
@@ -449,10 +459,8 @@ impl SessionStore {
     }
 
     /// List completed runs newest first (by start time, then run id), one
-    /// page of at most `limit` at a time, optionally only those in
-    /// `category` (a [`SessionCategory`](super::registry::SessionCategory)
-    /// label). `before` continues from a previous page's
-    /// [`CompletedRunPage::next`].
+    /// page of at most `limit` at a time, only those matching `filter`.
+    /// `before` continues from a previous page's [`CompletedRunPage::next`].
     ///
     /// Runs that haven't completed yet are skipped — they are live, and
     /// listed from the registry instead. Walks the date directories newest
@@ -464,7 +472,7 @@ impl SessionStore {
     /// Returns an error if a sessions directory cannot be read.
     pub async fn list_completed_runs(
         &self,
-        category: Option<&str>,
+        filter: RunFilter<'_>,
         before: Option<&RunCursor>,
         limit: usize,
     ) -> anyhow::Result<CompletedRunPage> {
@@ -486,7 +494,7 @@ impl SessionStore {
                     continue;
                 }
                 let mut day_runs = self
-                    .read_completed_day(&month_dir.join(&day), category, before)
+                    .read_completed_day(&month_dir.join(&day), filter, before)
                     .await?;
                 day_runs.sort_unstable_by(|a, b| {
                     (b.started_at, &b.run_id).cmp(&(a.started_at, &a.run_id))
@@ -511,11 +519,11 @@ impl SessionStore {
     }
 
     /// Read every completed run record in one day directory that matches
-    /// `category` and sorts strictly after `before`.
+    /// `filter` and sorts strictly after `before`.
     async fn read_completed_day(
         &self,
         day_dir: &Path,
-        category: Option<&str>,
+        filter: RunFilter<'_>,
         before: Option<&RunCursor>,
     ) -> anyhow::Result<Vec<RunRecord>> {
         let file_names = sorted_dir_names_desc(day_dir, |name| {
@@ -542,7 +550,10 @@ impl SessionStore {
             if header.state != "completed" {
                 continue;
             }
-            if category.is_some_and(|c| header.category != c) {
+            if filter.category.is_some_and(|c| header.category != c) {
+                continue;
+            }
+            if filter.address.is_some_and(|a| header.address != a) {
                 continue;
             }
             if before.is_some_and(|c| (header.started_at, header.run_id.as_str()) >= c.sort_key()) {

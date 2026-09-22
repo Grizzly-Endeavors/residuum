@@ -36,6 +36,12 @@ pub struct Message {
     /// Who sent a user message, when it came from an identifiable person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<MessageSender>,
+    /// The agent that sent a user-role message, when it is a message one
+    /// agent sent another (a session's relayed result, a `message_agent`
+    /// call). Lets readers such as the web UI attribute it without trusting
+    /// the header in its text, which anyone can type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_sender: Option<AgentSender>,
 }
 
 /// The person behind a user message and where they sent it from.
@@ -53,6 +59,15 @@ pub struct MessageSender {
     /// Where on the interface it was sent (e.g. `"direct message"`, `"#general"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+}
+
+/// The agent behind a message one agent sent another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSender {
+    /// Sender's address (`"main"` or a session address).
+    pub address: String,
+    /// Sender's category label (`"main"`, `"scheduled"`, `"external"`, or `"spawned"`).
+    pub category: String,
 }
 
 impl std::fmt::Display for MessageSender {
@@ -76,6 +91,7 @@ impl Message {
             tool_call_id: None,
             images: Vec::new(),
             sender: None,
+            agent_sender: None,
         }
     }
 
@@ -89,6 +105,7 @@ impl Message {
             tool_call_id: None,
             images,
             sender: None,
+            agent_sender: None,
         }
     }
 
@@ -102,6 +119,7 @@ impl Message {
             tool_call_id: None,
             images: Vec::new(),
             sender: None,
+            agent_sender: None,
         }
     }
 
@@ -115,6 +133,7 @@ impl Message {
             tool_call_id: None,
             images: Vec::new(),
             sender: None,
+            agent_sender: None,
         }
     }
 
@@ -128,6 +147,7 @@ impl Message {
             tool_call_id: Some(tool_call_id.into()),
             images: Vec::new(),
             sender: None,
+            agent_sender: None,
         }
     }
 
@@ -145,6 +165,7 @@ impl Message {
             tool_call_id: Some(tool_call_id.into()),
             images,
             sender: None,
+            agent_sender: None,
         }
     }
 
@@ -152,6 +173,13 @@ impl Message {
     #[must_use]
     pub fn with_sender(mut self, sender: Option<MessageSender>) -> Self {
         self.sender = sender;
+        self
+    }
+
+    /// Attach the agent that sent this message.
+    #[must_use]
+    pub fn with_agent_sender(mut self, agent_sender: Option<AgentSender>) -> Self {
+        self.agent_sender = agent_sender;
         self
     }
 

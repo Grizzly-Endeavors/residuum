@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { ApiError, submitBugReport, submitFeedback } from "../lib/api";
+  import { submitBugReport, submitFeedback } from "../lib/api";
   import type { BugSeverity, FeedbackReceipt } from "../lib/api";
   import { Icon } from "../lib/icons";
+  import { userErrorMessage } from "../lib/errors";
   import Modal from "./Modal.svelte";
 
   type Tab = "bug" | "feedback";
@@ -80,25 +81,14 @@
         });
       }
     } catch (err) {
-      errorMsg = formatError(err);
+      errorMsg = userErrorMessage(err, {
+        action: "Couldn't send it.",
+        serverFault:
+          "The feedback service didn't accept it. Nothing was sent; try again in a little while.",
+      });
     } finally {
       submitting = false;
     }
-  }
-
-  function formatError(err: unknown): string {
-    if (err instanceof ApiError) {
-      // Try to surface the upstream { "error": "..." } structure when present.
-      try {
-        const parsed = JSON.parse(err.body) as { error?: string };
-        if (parsed.error) return parsed.error;
-      } catch {
-        // fall through
-      }
-      return err.body || `${err.status} ${err.statusText}`;
-    }
-    if (err instanceof Error) return err.message;
-    return String(err);
   }
 
   async function copyId() {

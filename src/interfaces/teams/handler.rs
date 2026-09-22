@@ -337,6 +337,7 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool)
                 kind: conversation_kind,
                 is_owner,
             }),
+            agent_sender: None,
         },
         timestamp: crate::time::now_local(rt.tz),
         images,

@@ -1,12 +1,17 @@
 // ── WebSocket coordinator (Svelte 5 runes) ──────────────────────────
 //
-// Thin glue layer that wires WsTransport and FeedStore together.
+// Thin glue layer that wires WsTransport to the main chat's FeedStore and
+// the agent sessions store.
 
 import { WsTransport } from "./transport.svelte";
 import { FeedStore } from "./feed.svelte";
+import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
+import { userErrorMessage } from "./errors";
 import {
+  fetchChatHistory,
+  fetchChatSegment,
   CACHE_KEY_STATUS,
   CACHE_KEY_TIMEZONE,
   CACHE_KEY_MCP_CATALOG,
@@ -14,17 +19,21 @@ import {
   CACHE_KEY_PROVIDERS_RAW,
   CACHE_KEY_MCP_RAW,
 } from "./api";
-import type {
-  ClientMessage,
-  RecentHistorySegment,
-  EpisodeHistorySegment,
-  ImageAttachment,
-} from "./types";
+import type { ClientMessage, ImageAttachment } from "./types";
 
 class WsCoordinator {
   transport = new WsTransport();
   store = new FeedStore();
+  sessions = new SessionsStore({
+    send: (msg) => {
+      this.transport.send(msg);
+    },
+    pushToMain: (from, runId, content, category) => {
+      this.store.pushAgentMessage(from, runId, content, category);
+    },
+  });
   private msgCounter = 0;
+  private hasConnected = false;
 
   verbose = $state(false);
 
@@ -39,6 +48,12 @@ class WsCoordinator {
     // surface, then hand the message to the feed store for any chat-state
     // side effects (e.g. clearing the thinking indicator on errors).
     this.transport.onMessage = (msg) => {
+      // Session activity has its own store. It must never reach the main
+      // feed, whose `error` handling would clear the main turn's state.
+      if (isSessionFrame(msg)) {
+        this.sessions.handleFrame(msg);
+        return;
+      }
       if (msg.type === "error") {
         notifications.surface("error", msg.message);
       } else if (msg.type === "notice") {
@@ -62,11 +77,83 @@ class WsCoordinator {
       if (this.verbose) {
         this.transport.send({ type: "set_verbose", enabled: true });
       }
+      // Load the sessions listing, or catch up on frames missed while
+      // disconnected.
+      this.sessions.resync();
+      // After a reconnect, the main chat may have missed messages too (a
+      // session's relayed result, main's reply).
+      if (this.hasConnected) void this.reconcileMainHistory();
+      this.hasConnected = true;
     };
   }
 
-  setLoadingOlder(value: boolean): void {
-    this.store.isLoadingOlder = value;
+  // ── Main chat history ─────────────────────────────────────────────
+
+  /**
+   * Load the main chat's recent history, replacing the feed, then the
+   * newest episode so the chat is never empty after the observer compresses
+   * history and the "compressed history" marker shows from the start.
+   */
+  async loadMainHistory(): Promise<void> {
+    let recent;
+    try {
+      recent = await fetchChatHistory();
+    } catch (err) {
+      notifications.surface(
+        "error",
+        userErrorMessage(err, { action: "Couldn't load the chat history." }),
+      );
+      return;
+    }
+    this.store.loadHistory(recent);
+    await this.loadOlderHistory();
+  }
+
+  /**
+   * Prepend the next older episode to the main chat. The single path for
+   * every caller, so overlapping requests can't load an episode twice.
+   * Returns whether an episode was added.
+   */
+  async loadOlderHistory(): Promise<boolean> {
+    const store = this.store;
+    const cursor = store.oldestEpisodeCursor;
+    if (!store.hasMoreHistory || store.isLoadingOlder || !cursor) return false;
+    store.isLoadingOlder = true;
+    try {
+      store.prependEpisode(await fetchChatSegment(cursor));
+      return true;
+    } catch (err) {
+      notifications.surface(
+        "error",
+        userErrorMessage(err, {
+          action: "Couldn't load earlier messages.",
+          notFound: "That part of the history is no longer available.",
+        }),
+      );
+      return false;
+    } finally {
+      store.isLoadingOlder = false;
+    }
+  }
+
+  /** Catch the main chat up on messages recorded while disconnected. */
+  private async reconcileMainHistory(): Promise<void> {
+    if (!this.store.historyLoaded) return;
+    let recent;
+    try {
+      recent = await fetchChatHistory();
+    } catch (err) {
+      notifications.surface(
+        "error",
+        userErrorMessage(err, {
+          action: "Couldn't check for messages missed while disconnected.",
+        }),
+      );
+      return;
+    }
+    if (this.store.reconcileRecent(recent)) return;
+    this.store.reloadHistory(recent);
+    await this.loadOlderHistory();
   }
 
   // ── Delegated methods ─────────────────────────────────────────────
@@ -114,14 +201,6 @@ class WsCoordinator {
       // localStorage unavailable
     }
     this.transport.send({ type: "set_verbose", enabled });
-  }
-
-  loadHistory(segment: RecentHistorySegment): void {
-    this.store.loadHistory(segment);
-  }
-
-  prependEpisode(segment: EpisodeHistorySegment): void {
-    this.store.prependEpisode(segment);
   }
 }
 

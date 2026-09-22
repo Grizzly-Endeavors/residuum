@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::inference::{ImageData, Message, MessageSender};
+use crate::inference::{AgentSender, ImageData, Message, MessageSender};
 
 /// Kind of chat conversation, which decides whether the bot needs an @mention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -47,6 +47,10 @@ pub struct MessageOrigin {
     /// The conversation this message belongs to on its interface, when the
     /// interface has one. See [`ConversationContext`] for what `None` means.
     pub conversation: Option<ConversationContext>,
+    /// The agent that sent it, for a message one agent sent main. `None`
+    /// for everything else. Boxed because it is rarely set and
+    /// `InboundMessage` is carried inline in several enums.
+    pub agent_sender: Option<Box<AgentSender>>,
 }
 
 impl MessageOrigin {
@@ -98,7 +102,10 @@ impl InboundMessage {
         self.context
             .map(Message::system)
             .into_iter()
-            .chain(std::iter::once(user.with_sender(self.origin.sender)))
+            .chain(std::iter::once(
+                user.with_sender(self.origin.sender)
+                    .with_agent_sender(self.origin.agent_sender.map(|a| *a)),
+            ))
             .collect()
     }
 }
@@ -125,6 +132,7 @@ mod tests {
                     kind: ConversationKind::Channel,
                     is_owner: true,
                 }),
+                agent_sender: None,
             },
             timestamp: Utc::now(),
             images: vec![],
@@ -154,6 +162,7 @@ mod tests {
                 kind,
                 is_owner,
             }),
+            agent_sender: None,
         }
     }
 
@@ -189,8 +198,26 @@ mod tests {
             endpoint: "ws".to_string(),
             sender: None,
             conversation: None,
+            agent_sender: None,
         };
         assert!(origin.belongs_to_main());
+    }
+
+    #[test]
+    fn agent_sender_on_the_origin_reaches_the_history_message() {
+        let mut message = inbound(None);
+        message.origin.agent_sender = Some(Box::new(AgentSender {
+            address: "spawned-a".to_string(),
+            category: "spawned".to_string(),
+        }));
+        let messages = message.into_history_messages();
+        let [user] = messages.as_slice() else {
+            panic!("expected a single user message, got {messages:?}");
+        };
+        assert_eq!(
+            user.agent_sender.as_ref().map(|a| a.address.as_str()),
+            Some("spawned-a")
+        );
     }
 
     #[test]

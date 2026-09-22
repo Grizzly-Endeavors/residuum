@@ -334,6 +334,7 @@ async fn dispatch_message(
             kind,
             is_owner: matches!(standing, Standing::Owner),
         }),
+        agent_sender: None,
     };
 
     // Telegram message IDs are only unique within a chat.

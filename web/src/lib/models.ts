@@ -3,6 +3,7 @@
 // Cached model list fetcher for provider API dropdowns.
 
 import { fetchProviderModels } from "./api";
+import { userErrorReason } from "./errors";
 
 export interface ModelEntry {
   id: string;
@@ -102,10 +103,9 @@ export async function fetchModels(
       error: data.error ?? "no models returned",
     };
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
     return {
       models: FALLBACK_MODELS[provider] ?? [],
-      error: message,
+      error: userErrorReason(err, { action: `Couldn't load ${provider} models.` }),
     };
   }
 }

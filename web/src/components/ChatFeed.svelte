@@ -2,16 +2,9 @@
   import { onMount, onDestroy, tick } from "svelte";
   import type { FeedItem } from "../lib/types";
   import { ws } from "../lib/ws.svelte";
-  import { fetchChatSegment } from "../lib/api";
-  import { notifications } from "../lib/notifications.svelte";
-  import MessageUser from "./MessageUser.svelte";
-  import MessageAssistant from "./MessageAssistant.svelte";
-  import MessageDivider from "./MessageDivider.svelte";
-  import MessageLocalSystem from "./MessageLocalSystem.svelte";
-  import CompressedHistoryMarker from "./CompressedHistoryMarker.svelte";
-  import ToolGroup from "./ToolGroup.svelte";
+  import { FeedScroller } from "../lib/feed-scroll.svelte";
+  import FeedItemView from "./FeedItemView.svelte";
   import ThinkingIndicator from "./ThinkingIndicator.svelte";
-  import FileAttachment from "./FileAttachment.svelte";
 
   let {
     items,
@@ -29,10 +22,13 @@
   let dividerObserver: MutationObserver | undefined;
   let cachedDividers: HTMLElement[] = [];
   let lastTailId: number | undefined;
+  let lastLength = 0;
+  let lastProcessing = false;
+  let detachScroller: (() => void) | undefined;
 
-  // Anchor pill: visible when the user has scrolled up from the bottom.
-  const ANCHOR_THRESHOLD_PX = 400;
-  let scrolledUp = $state(false);
+  // Follows new messages while the reader is at the bottom; the anchor pill
+  // shows once they scroll up.
+  const scroller = new FeedScroller();
   let anchorLabel = $state("");
 
   function refreshDividerCache() {
@@ -45,23 +41,9 @@
     );
   }
 
-  function scrollToBottom() {
-    if (!feedEl) return;
-    window.requestAnimationFrame(() => {
-      if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
-    });
-  }
-
-  function jumpToLatest() {
-    if (!feedEl) return;
-    feedEl.scrollTo({ top: feedEl.scrollHeight, behavior: "smooth" });
-  }
-
   function updateAnchor() {
     if (!feedEl) return;
-    const distFromBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight;
-    scrolledUp = distFromBottom > ANCHOR_THRESHOLD_PX;
-    if (!scrolledUp) {
+    if (!scroller.scrolledUp) {
       anchorLabel = "";
       return;
     }
@@ -99,8 +81,6 @@
   async function loadOlder() {
     if (!feedEl) return;
     if (!ws.store.hasMoreHistory || ws.store.isLoadingOlder) return;
-    const cursor = ws.store.oldestEpisodeCursor;
-    if (!cursor) return;
 
     // Anchor-element pattern: pick a stable, persistent DOM node from the
     // existing feed and remember its viewport-relative offset. After the
@@ -113,23 +93,13 @@
     const feedTop = feedEl.getBoundingClientRect().top;
     const prevAnchorOffset = anchor ? anchor.getBoundingClientRect().top - feedTop : 0;
 
-    ws.setLoadingOlder(true);
-    let prependFailed = false;
-    try {
-      const segment = await fetchChatSegment(cursor);
-      ws.prependEpisode(segment);
-    } catch (err) {
-      prependFailed = true;
-      notifications.surface(
-        "error",
-        `Couldn't load episode ${cursor}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    } finally {
-      ws.setLoadingOlder(false);
-    }
+    const added = await ws.loadOlderHistory();
+    if (!added) return;
 
     await tick();
-    if (feedEl && anchor) {
+    // A reader pinned to the bottom stays there (the scroller handles it);
+    // otherwise keep what they were looking at in place.
+    if (feedEl && anchor && !scroller.isFollowing) {
       const newAnchorOffset =
         anchor.getBoundingClientRect().top - feedEl.getBoundingClientRect().top;
       const target = feedEl.scrollTop + (newAnchorOffset - prevAnchorOffset);
@@ -144,9 +114,9 @@
     // intersection state never *changes* and no further callback fires.
     // Chain another load here so we keep pulling episodes until either
     // the sentinel is pushed offscreen or hasMoreHistory is exhausted.
-    // The `!prependFailed` guard stops the chain on errors so we don't
-    // loop firing the same notification repeatedly.
-    if (!prependFailed && isSentinelNearView()) {
+    // A failed load returned early above, so the chain stops on errors
+    // rather than repeating the same notification.
+    if (isSentinelNearView()) {
       void loadOlder();
     }
   }
@@ -177,6 +147,7 @@
       dividerObserver.observe(inner, { childList: true, subtree: false });
     }
 
+    if (inner instanceof HTMLElement) detachScroller = scroller.attach(feedEl, inner);
     feedEl.addEventListener("scroll", updateAnchor, { passive: true });
     updateAnchor();
   });
@@ -184,21 +155,98 @@
   onDestroy(() => {
     observer?.disconnect();
     dividerObserver?.disconnect();
+    detachScroller?.();
     feedEl?.removeEventListener("scroll", updateAnchor);
   });
 
   $effect(() => {
-    // Only auto-scroll when the tail of the feed changes (a new live
-    // message was appended). Prepends from lazy-loading change the head
-    // and must not drag the viewport to the bottom.
+    // Keep a reader who is at the bottom there as the feed changes — new
+    // live messages at the tail, and episodes prepended at the head (browser
+    // scroll anchoring is off, so a prepend would otherwise push them up).
+    // Their own new message, or a freshly loaded feed, always scrolls down.
     const tail = items[items.length - 1];
-    const tailId = tail?.id;
-    const tailChanged = tailId !== lastTailId;
-    lastTailId = tailId;
-    void isProcessing; // track processing state for thinking indicator scroll
-    if (tailChanged) {
-      void tick().then(scrollToBottom);
+    const tailChanged = tail?.id !== lastTailId;
+    const lengthChanged = items.length !== lastLength;
+    const force =
+      (tailChanged && tail?.kind === "user" && !tail.sender) ||
+      (lastTailId === undefined && tail !== undefined);
+    // The thinking indicator appearing grows the feed too.
+    const processingChanged = isProcessing !== lastProcessing;
+    lastTailId = tail?.id;
+    lastLength = items.length;
+    lastProcessing = isProcessing;
+    if (tailChanged || lengthChanged || processingChanged || force) {
+      void tick().then(() => {
+        scroller.contentChanged(force);
+      });
     }
+  });
+
+  // A reload replaces every item (new DOM nodes), so a reader who has
+  // scrolled up is anchored by content: the topmost visible message is found
+  // again by its text and put back where it was — as soon as it's back in the
+  // feed, which may be only once the episode it now belongs to has loaded.
+  interface ContentAnchor {
+    key: string;
+    nth: number;
+    offset: number;
+  }
+  let reloadAnchor: ContentAnchor | null = null;
+  let seenGeneration = ws.store.generation;
+
+  function messageElements(): HTMLElement[] {
+    return feedEl
+      ? Array.from(feedEl.querySelectorAll<HTMLElement>(".chat-feed-inner > .msg"))
+      : [];
+  }
+
+  function contentKey(el: HTMLElement): string {
+    return `${el.className}\u0000${el.textContent}`;
+  }
+
+  function captureAnchor(): ContentAnchor | null {
+    if (!feedEl) return null;
+    const feedTop = feedEl.getBoundingClientRect().top;
+    const elements = messageElements();
+    const topmost = elements.find((el) => el.getBoundingClientRect().bottom > feedTop);
+    if (!topmost) return null;
+    const key = contentKey(topmost);
+    const nth = elements
+      .slice(0, elements.indexOf(topmost))
+      .filter((el) => contentKey(el) === key).length;
+    return { key, nth, offset: topmost.getBoundingClientRect().top - feedTop };
+  }
+
+  /** Put the anchored message back in place; false if it isn't in the feed. */
+  function restoreAnchor(anchor: ContentAnchor): boolean {
+    if (!feedEl) return false;
+    const match = messageElements().filter((el) => contentKey(el) === anchor.key)[anchor.nth];
+    if (!match) return false;
+    const offset = match.getBoundingClientRect().top - feedEl.getBoundingClientRect().top;
+    feedEl.scrollTo({ top: feedEl.scrollTop + offset - anchor.offset, behavior: "instant" });
+    return true;
+  }
+
+  $effect.pre(() => {
+    const generation = ws.store.generation;
+    if (generation === seenGeneration) return;
+    seenGeneration = generation;
+    reloadAnchor = scroller.isFollowing ? null : captureAnchor();
+    if (reloadAnchor) scroller.hold();
+  });
+
+  $effect(() => {
+    void items.length;
+    const anchor = reloadAnchor;
+    if (!anchor) return;
+    void tick().then(() => {
+      // The reader scrolling by hand meanwhile ends the hunt.
+      if (reloadAnchor !== anchor) return;
+      if (!scroller.isHeld || restoreAnchor(anchor)) {
+        reloadAnchor = null;
+        scroller.release();
+      }
+    });
   });
 
   $effect(() => {
@@ -220,13 +268,13 @@
 </script>
 
 <div class="chat-feed" bind:this={feedEl}>
-  {#if scrolledUp}
+  {#if scroller.scrolledUp}
     <div class="anchor-pill">
       {#if anchorLabel}
         <span class="anchor-pill-label">{anchorLabel}</span>
         <span class="anchor-pill-divider"></span>
       {/if}
-      <button type="button" class="anchor-pill-jump" onclick={jumpToLatest}>
+      <button type="button" class="anchor-pill-jump" onclick={() => scroller.jumpToLatest()}>
         Jump to latest
       </button>
     </div>
@@ -250,21 +298,7 @@
       </div>
     {/if}
     {#each items as item (item.id)}
-      {#if item.kind === "user"}
-        <MessageUser content={item.content} images={item.images} sender={item.sender} />
-      {:else if item.kind === "assistant"}
-        <MessageAssistant content={item.content} />
-      {:else if item.kind === "divider"}
-        <MessageDivider label={item.label} variant={item.variant ?? "day"} />
-      {:else if item.kind === "compressed-marker"}
-        <CompressedHistoryMarker />
-      {:else if item.kind === "tool-group"}
-        <ToolGroup calls={item.calls} {verbose} />
-      {:else if item.kind === "file-attachment"}
-        <FileAttachment {item} />
-      {:else if item.kind === "local-system"}
-        <MessageLocalSystem content={item.content} />
-      {/if}
+      <FeedItemView {item} {verbose} />
     {:else}
       <div class="chat-feed-empty">Nothing here yet — send a message to begin.</div>
     {/each}

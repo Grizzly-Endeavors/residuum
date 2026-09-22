@@ -2,12 +2,18 @@
 
 import { SvelteMap } from "svelte/reactivity";
 import { nextFeedId } from "./feed-id";
+import {
+  appendToolCall,
+  applyToolResult,
+  convertHistory,
+  feedItemSignature,
+  type BackgroundTurnState,
+} from "./feed-items";
 import type {
   ServerMessage,
   RecentMessage,
   FeedItem,
   DividerFeedItem,
-  ToolGroupFeedItem,
   ToolCallState,
   ImageAttachment,
   FileAttachmentFeedItem,
@@ -16,31 +22,73 @@ import type {
 } from "./types";
 
 /**
- * Coerce tool-call arguments to an object, whatever shape they arrived in.
- *
- * Tool arguments reach the UI two ways and they do NOT agree: the history
- * endpoint serializes a Rust `serde_json::Value` (an **object**), while the
- * live socket has carried a JSON **string**. Every reader must go through
- * here — a bare `JSON.parse()` throws `SyntaxError` on the object form
- * (`JSON.parse` stringifies its argument first, yielding "[object Object]"),
- * and because feed building is a single pass, one throw blanks the entire
- * conversation rather than one message.
- *
- * Malformed input degrades to `{}` so a single bad record can't take the
- * feed down with it.
+ * Background messages at the head of a loaded history segment whose turn
+ * began in older history, waiting for that history to decide whether they
+ * are shown. `index` is where their items go in the feed.
  */
-export function normalizeToolArgs(value: unknown): Record<string, unknown> {
-  if (typeof value === "string") {
-    try {
-      const parsed: unknown = JSON.parse(value);
-      return typeof parsed === "object" && parsed !== null
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch {
-      return {};
-    }
+interface PendingHead {
+  messages: RecentMessage[];
+  index: number;
+  /** The head of the recent segment (the one `reconcileRecent` rebuilds). */
+  recent: boolean;
+}
+
+/** Existing items matched against reloaded history when reconciling. */
+const RECONCILE_ANCHOR_ITEMS = 3;
+
+/**
+ * When the signed items of `fresh` begin with exactly `shown`, the index just
+ * past the last of them; otherwise -1.
+ */
+function afterSignedPrefix(fresh: (string | null)[], shown: string[]): number {
+  let matched = 0;
+  for (let i = 0; i < fresh.length; i++) {
+    if (matched === shown.length) return i;
+    const sig = fresh[i];
+    if (sig === null || sig === undefined) continue;
+    if (sig !== shown[matched]) return -1;
+    matched++;
   }
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  return matched === shown.length ? fresh.length : -1;
+}
+
+/**
+ * The index just past the last place the signed items of `fresh` end with
+ * the run `anchor` (consecutive among signed items); 0 for an empty anchor,
+ * -1 when it doesn't occur.
+ */
+function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
+  if (anchor.length === 0) return 0;
+  for (let end = fresh.length - 1; end >= 0; end--) {
+    if (fresh[end] == null) continue;
+    let k = anchor.length - 1;
+    for (let i = end; i >= 0 && k >= 0; i--) {
+      const sig = fresh[i];
+      if (sig == null) continue;
+      if (sig !== anchor[k]) break;
+      k--;
+    }
+    if (k < 0) return end + 1;
+  }
+  return -1;
+}
+
+/**
+ * Whether history `recorded` holds the live turn: the turn's signed items are
+ * non-empty and appear in order from the last place its first one does (a
+ * turn is recorded whole, after anything older with the same text).
+ */
+function isSignedSubsequence(live: FeedItem[], recorded: FeedItem[]): boolean {
+  const wanted = live.map(feedItemSignature).filter((sig) => sig !== null);
+  if (wanted.length === 0) return false;
+  const sigs = recorded.map(feedItemSignature);
+  const start = sigs.lastIndexOf(wanted[0] ?? null);
+  if (start < 0) return false;
+  let next = 0;
+  for (let i = start; i < sigs.length && next < wanted.length; i++) {
+    if (sigs[i] === wanted[next]) next++;
+  }
+  return next === wanted.length;
 }
 
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
@@ -59,6 +107,19 @@ function dayLabel(iso: string): string {
   return DAY_DIVIDER_FORMATTER.format(date);
 }
 
+/** A day-divider callback with its own memory of the last day seen. */
+function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
+  let lastKey: string | null = null;
+  return (iso) => {
+    const key = dayKey(iso);
+    const crossed = lastKey !== null && key !== lastKey;
+    lastKey = key;
+    return crossed
+      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
+      : null;
+  };
+}
+
 /** Manages the chat feed state and processes incoming server messages. */
 export class FeedStore {
   feed = $state<FeedItem[]>([]);
@@ -75,9 +136,30 @@ export class FeedStore {
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
 
+  /** Bumped whenever the whole feed is replaced from history. */
+  generation = $state(0);
+  /** Recent history has been loaded at least once. */
+  historyLoaded = false;
+
   private pendingToolCalls = new SvelteMap<string, ToolCallState>();
   private lastLiveDayKey: string | null = null;
   private compressedMarkerInserted = false;
+  private pendingHeads: PendingHead[] = [];
+  /** Feed index where the recent segment's items begin. */
+  private recentStart = 0;
+  /** Cursor the recent segment pointed at when loaded. */
+  private recentCursor: string | null = null;
+  /** How the turn in progress at the recent segment's start was decided, once known. */
+  private recentCarriedTurn: BackgroundTurnState | undefined;
+  /** Episodes already in the feed, so a segment is never shown twice. */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping only, never rendered
+  private loadedEpisodes = new Set<string>();
+  /**
+   * Feed index where the turn in flight begins (its user message, or the
+   * first item after `turn_started`), or `null` when idle. Its items are
+   * live-only until the turn ends and history records them.
+   */
+  private turnStart: number | null = null;
 
   /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
@@ -85,6 +167,7 @@ export class FeedStore {
       case "turn_started":
         this.isProcessing = true;
         this.activeTurnId = msg.reply_to;
+        this.turnStart ??= this.feed.length;
         break;
 
       case "turn_ended":
@@ -93,14 +176,15 @@ export class FeedStore {
         // one of those paths.
         this.isProcessing = false;
         this.activeTurnId = null;
+        this.turnStart = null;
         break;
 
       case "tool_call":
-        this.handleToolCall(msg);
+        appendToolCall(this.feed, this.pendingToolCalls, msg);
         break;
 
       case "tool_result":
-        this.handleToolResult(msg);
+        applyToolResult(this.pendingToolCalls, msg);
         break;
 
       case "response":
@@ -167,6 +251,7 @@ export class FeedStore {
       case "session_broadcast_response":
       case "session_response":
       case "session_error":
+      case "session_message_to_main":
       case "session_message_delivered":
       case "session_stop_requested":
       case "session_command_failed":
@@ -182,13 +267,94 @@ export class FeedStore {
     this.pendingToolCalls.clear();
     this.lastLiveDayKey = null;
     this.compressedMarkerInserted = false;
+    this.loadedEpisodes.clear();
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
+    this.recentStart = 0;
+    this.turnStart = null;
+    this.generation++;
+    this.recentCursor = segment.next_cursor;
+    // With no older history, a turn can't have begun before this segment.
+    this.recentCarriedTurn = segment.next_cursor === null ? "hidden" : undefined;
+    this.historyLoaded = true;
 
-    const items = this.convertMessages(segment.messages, {
-      withDayDividers: true,
+    const conversion = convertHistory(segment.messages, {
+      mode: "main",
+      dayDivider: (ts) => this.dayDividerFor(ts),
+      carriedTurn: this.recentCarriedTurn,
     });
-    for (const item of items) this.feed.push(item);
+    this.pendingHeads = conversion.undecidedHead.length
+      ? [{ messages: conversion.undecidedHead, index: 0, recent: true }]
+      : [];
+    for (const item of conversion.items) this.feed.push(item);
+  }
+
+  /**
+   * Bring the recent part of the feed up to date with a freshly fetched
+   * Recent segment, adding what the live connection missed (e.g. while it
+   * was down). Lines history up with the settled messages shown (everything
+   * before the turn in flight, which history doesn't hold until it ends);
+   * returns `false` when they can't be lined up (history was compressed into
+   * a new episode, or diverged), in which case the caller should
+   * `reloadHistory`.
+   */
+  reconcileRecent(segment: RecentHistorySegment): boolean {
+    if (!this.historyLoaded || segment.next_cursor !== this.recentCursor) return false;
+    const fresh = convertHistory(segment.messages, {
+      mode: "main",
+      carriedTurn: this.recentCarriedTurn,
+      // Replayed from the segment's start so dividers land where a fresh load
+      // would put them; only those among the added items are kept.
+      dayDivider: dayDividerTracker(),
+    }).items;
+    const liveStart = this.turnStart ?? this.feed.length;
+    const shown: string[] = [];
+    // Tool groups shown after the last signed item: history has them too.
+    let trailingToolGroups = 0;
+    for (const item of this.feed.slice(this.recentStart, liveStart)) {
+      const sig = feedItemSignature(item);
+      if (sig !== null) {
+        shown.push(sig);
+        trailingToolGroups = 0;
+      } else if (item.kind === "tool-group") {
+        trailingToolGroups++;
+      }
+    }
+    const freshSigs = fresh.map(feedItemSignature);
+    // Exactly what was shown, then more: the usual case. Failing that (the
+    // live feed showed something history doesn't hold), line up on the last
+    // few messages shown.
+    let appendFrom = afterSignedPrefix(freshSigs, shown);
+    if (appendFrom < 0) appendFrom = afterLastRun(freshSigs, shown.slice(-RECONCILE_ANCHOR_ITEMS));
+    if (appendFrom < 0) return false;
+    while (trailingToolGroups > 0 && fresh[appendFrom]?.kind === "tool-group") {
+      appendFrom++;
+      trailingToolGroups--;
+    }
+    this.placeRecorded(fresh.slice(appendFrom), liveStart);
+    this.syncDayKey(segment);
+    return true;
+  }
+
+  /**
+   * Replace the feed with a freshly fetched Recent segment, keeping the turn
+   * in flight: its live items are put back after the history unless history
+   * already records the turn (it ended while disconnected).
+   */
+  reloadHistory(segment: RecentHistorySegment): void {
+    const liveStart = this.turnStart;
+    const live = liveStart === null ? [] : this.feed.slice(liveStart);
+    const pendingTools = [...this.pendingToolCalls];
+    this.loadHistory(segment);
+    if (liveStart === null) return;
+    const recent = this.feed.slice(this.recentStart);
+    if (isSignedSubsequence(live, recent)) {
+      this.endLiveTurn();
+      return;
+    }
+    this.turnStart = this.feed.length;
+    for (const item of live) this.feed.push(item);
+    for (const [id, call] of pendingTools) this.pendingToolCalls.set(id, call);
   }
 
   /**
@@ -200,6 +366,12 @@ export class FeedStore {
    * the observer cut.
    */
   prependEpisode(segment: EpisodeHistorySegment): void {
+    if (this.loadedEpisodes.has(segment.episode_id)) return;
+    this.loadedEpisodes.add(segment.episode_id);
+
+    const conversion = convertHistory(segment.messages, { mode: "main" });
+    if (conversion.endTurn !== "unknown") this.resolvePendingHeads(conversion.endTurn);
+
     const block: FeedItem[] = [
       {
         id: nextFeedId(),
@@ -207,7 +379,7 @@ export class FeedStore {
         variant: "episode",
         label: `${segment.episode_id} · ${segment.date}`,
       } satisfies DividerFeedItem,
-      ...this.convertMessages(segment.messages, { withDayDividers: false }),
+      ...conversion.items,
     ];
 
     if (!this.compressedMarkerInserted) {
@@ -216,6 +388,13 @@ export class FeedStore {
     }
 
     this.feed.splice(0, 0, ...block);
+    this.recentStart += block.length;
+    if (this.turnStart !== null) this.turnStart += block.length;
+    for (const head of this.pendingHeads) head.index += block.length;
+    if (conversion.undecidedHead.length) {
+      // Just below this episode's divider.
+      this.pendingHeads.push({ messages: conversion.undecidedHead, index: 1, recent: false });
+    }
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
   }
@@ -230,6 +409,14 @@ export class FeedStore {
     this.feed.push({ id: nextFeedId(), kind: "local-system", content });
   }
 
+  /**
+   * Add a message a session sent the main agent (its relayed result, or a
+   * `message_agent` call), as it arrives live.
+   */
+  pushAgentMessage(from: string, runId: string, content: string, category: string | null): void {
+    this.feed.push({ id: nextFeedId(), kind: "agent-message", from, category, content, runId });
+  }
+
   /** Add a user message to the feed. */
   pushUserMessage(content: string, images?: ImageAttachment[]): void {
     // Live user messages carry an implicit "now" timestamp — inject a day
@@ -237,6 +424,7 @@ export class FeedStore {
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const nowIso = new Date().toISOString();
     this.maybePushDayDivider(nowIso);
+    this.turnStart ??= this.feed.length;
     this.feed.push({ id: nextFeedId(), kind: "user", content, images });
     this.isProcessing = true;
   }
@@ -244,131 +432,66 @@ export class FeedStore {
   // ── Private ──────────────────────────────────────────────────────────
 
   /**
-   * Convert a RecentMessage list into feed items using the same
-   * role-based logic as `loadHistory` used to inline. Optionally emit
-   * day dividers when the per-message timestamp crosses a day boundary.
+   * Older history decided the turn that pending heads continue: insert them
+   * if it's shown, drop them if not.
    */
-  private convertMessages(
-    messages: RecentMessage[],
-    opts: { withDayDividers: boolean },
-  ): FeedItem[] {
-    const out: FeedItem[] = [];
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-    const toolCallItems = new Map<string, ToolCallState>();
-
-    for (const msg of messages.filter((m) => m.visibility !== "background")) {
-      if (opts.withDayDividers && msg.timestamp) {
-        const key = dayKey(msg.timestamp);
-        if (this.lastLiveDayKey !== null && key !== this.lastLiveDayKey) {
-          out.push({
-            id: nextFeedId(),
-            kind: "divider",
-            variant: "day",
-            label: dayLabel(msg.timestamp),
-          } satisfies DividerFeedItem);
-        }
-        this.lastLiveDayKey = key;
-      }
-
-      const content = msg.content;
-      switch (msg.role) {
-        case "user":
-          out.push({ id: nextFeedId(), kind: "user", content, sender: msg.sender });
-          break;
-        case "assistant": {
-          if (content.trim()) {
-            out.push({ id: nextFeedId(), kind: "assistant", content });
-          }
-          if (msg.tool_calls?.length) {
-            const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
-              const args = normalizeToolArgs(tc.arguments);
-              const call: ToolCallState = {
-                id: tc.id,
-                name: tc.name,
-                arguments: args,
-                status: "done",
-              };
-              toolCallItems.set(tc.id, call);
-              return call;
-            });
-            out.push({ id: nextFeedId(), kind: "tool-group", calls });
-          }
-          break;
-        }
-        case "tool": {
-          if (msg.tool_call_id) {
-            const call = toolCallItems.get(msg.tool_call_id);
-            if (call && content) {
-              call.result =
-                (call.result ? call.result + "\n" : "") +
-                "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" +
-                content;
-            }
-            toolCallItems.delete(msg.tool_call_id);
-          }
-          break;
-        }
-        case "system":
-          break;
+  private resolvePendingHeads(turn: "shown" | "hidden"): void {
+    // Highest index first, so inserting doesn't shift the ones still to go.
+    const heads = [...this.pendingHeads].sort((a, b) => b.index - a.index);
+    this.pendingHeads = [];
+    for (const head of heads) {
+      if (head.recent) this.recentCarriedTurn = turn;
+      if (turn === "hidden") continue;
+      const items = convertHistory(head.messages, { mode: "main", carriedTurn: "shown" }).items;
+      this.feed.splice(head.index, 0, ...items);
+      if (head.index < this.recentStart) this.recentStart += items.length;
+      if (this.turnStart !== null && head.index <= this.turnStart) {
+        this.turnStart += items.length;
       }
     }
+  }
 
-    return out;
+  /**
+   * Add history items newer than everything settled in the feed. If they
+   * include the turn in flight (it ended while disconnected), they replace
+   * its live items and the turn is closed; otherwise they go before it.
+   */
+  private placeRecorded(recorded: FeedItem[], liveStart: number): void {
+    const live = this.feed.slice(liveStart);
+    if (this.turnStart !== null && isSignedSubsequence(live, recorded)) {
+      this.feed.splice(liveStart, live.length, ...recorded);
+      this.endLiveTurn();
+      return;
+    }
+    this.feed.splice(liveStart, 0, ...recorded);
+    if (this.turnStart !== null) this.turnStart += recorded.length;
+  }
+
+  /** The turn in flight is over (history records it); clear its live state. */
+  private endLiveTurn(): void {
+    this.turnStart = null;
+    this.isProcessing = false;
+    this.activeTurnId = null;
+    this.pendingToolCalls.clear();
+  }
+
+  /** Continue live day dividers from the newest message in `segment`. */
+  private syncDayKey(segment: RecentHistorySegment): void {
+    const last = segment.messages[segment.messages.length - 1];
+    if (last?.timestamp) this.lastLiveDayKey = dayKey(last.timestamp);
+  }
+
+  private dayDividerFor(iso: string): DividerFeedItem | null {
+    const key = dayKey(iso);
+    const crossed = this.lastLiveDayKey !== null && key !== this.lastLiveDayKey;
+    this.lastLiveDayKey = key;
+    return crossed
+      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
+      : null;
   }
 
   private maybePushDayDivider(iso: string): void {
-    const key = dayKey(iso);
-    if (this.lastLiveDayKey !== null && key !== this.lastLiveDayKey) {
-      this.feed.push({
-        id: nextFeedId(),
-        kind: "divider",
-        variant: "day",
-        label: dayLabel(iso),
-      } satisfies DividerFeedItem);
-    }
-    this.lastLiveDayKey = key;
-  }
-
-  private handleToolCall(msg: Extract<ServerMessage, { type: "tool_call" }>): void {
-    const args = normalizeToolArgs(msg.arguments);
-
-    const call: ToolCallState = {
-      id: msg.id,
-      name: msg.name,
-      arguments: args,
-      status: "running",
-    };
-
-    // Find or create a tool group at the end of the feed
-    const last = this.feed[this.feed.length - 1];
-    if (last?.kind === "tool-group") {
-      last.calls.push(call);
-    } else {
-      this.feed.push({
-        id: nextFeedId(),
-        kind: "tool-group",
-        calls: [call],
-      });
-    }
-
-    // Store the proxied reference from the $state feed so mutations
-    // in handleToolResult go through Svelte's reactivity system
-    const group = this.feed[this.feed.length - 1] as ToolGroupFeedItem;
-    const lastCall = group.calls[group.calls.length - 1];
-    if (lastCall) this.pendingToolCalls.set(msg.id, lastCall);
-  }
-
-  private handleToolResult(msg: Extract<ServerMessage, { type: "tool_result" }>): void {
-    const call = this.pendingToolCalls.get(msg.tool_call_id);
-    if (call) {
-      call.status = msg.is_error ? "error" : "done";
-      if (msg.output) {
-        call.result =
-          (call.result ? call.result + "\n" : "") +
-          "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" +
-          msg.output;
-      }
-      this.pendingToolCalls.delete(msg.tool_call_id);
-    }
+    const divider = this.dayDividerFor(iso);
+    if (divider) this.feed.push(divider);
   }
 }

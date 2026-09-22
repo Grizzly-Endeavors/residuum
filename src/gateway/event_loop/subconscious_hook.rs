@@ -169,6 +169,7 @@ fn build_correction_event(
             endpoint: "background".to_string(),
             sender: None,
             conversation: None,
+            agent_sender: None,
         },
         timestamp,
         images: vec![],

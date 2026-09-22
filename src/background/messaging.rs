@@ -285,6 +285,10 @@ impl AgentMessenger {
     /// for a new turn when it's idle. The hop count is recorded under the
     /// event's id (see [`Self::take_main_hop`]) rather than carried on
     /// `MessageEvent` itself.
+    ///
+    /// Once delivered, the message is also published on the sending run's
+    /// session stream, so the web UI can show it in the main chat as it
+    /// arrives.
     async fn deliver_to_main(
         &self,
         from: SessionAddress,
@@ -292,13 +296,15 @@ impl AgentMessenger {
         content: String,
         hop_count: u32,
     ) -> Result<(), SendError> {
+        let sender = from.clone();
+        let body = content.clone();
         let msg = AgentMessageEvent {
             from,
             from_category,
             content,
             hop_count,
         };
-        let event = MessageEvent::from_background(msg.format_for_agent());
+        let event = MessageEvent::from_agent(&msg);
         let message_id = event.id.clone();
         self.pending_main_hops
             .lock()
@@ -318,7 +324,29 @@ impl AgentMessenger {
                 "failed to deliver message to main".to_string(),
             ));
         }
+        self.publish_message_to_main(&sender, body).await;
         Ok(())
+    }
+
+    /// Publish a message just delivered to main on its sender's session
+    /// stream. The sender is always a live run (sessions only send during a
+    /// turn); if it has somehow left the registry the UI event is skipped and
+    /// logged — main already has the message, so delivery is unaffected.
+    async fn publish_message_to_main(&self, sender: &SessionAddress, content: String) {
+        let Some(info) = self.registry.get(sender) else {
+            tracing::warn!(
+                sender = %sender,
+                "message to main came from an address with no live run; not showing it in the web UI"
+            );
+            return;
+        };
+        publish_session_event(
+            &self.publisher,
+            sender,
+            &info.run_id,
+            SessionEventKind::MessageToMain { content },
+        )
+        .await;
     }
 
     /// Resume a completed session as a new run at the same address, by
@@ -990,6 +1018,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_to_main_publishes_the_message_on_the_senders_session_stream() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut events: Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let sender = sample_live_info(
+            "spawned-researcher-3f9c",
+            crate::background::registry::SessionState::Running,
+        );
+        let run_id = sender.run_id.clone();
+        let _rx = registry.register(sender, CancellationToken::new()).unwrap();
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                SessionAddress::from("spawned-researcher-3f9c"),
+                "spawned".to_string(),
+                "found the answer".to_string(),
+                0,
+            )
+            .await
+            .unwrap();
+
+        let event = events.recv().await.unwrap().unwrap();
+        assert_eq!(event.address.as_ref(), "spawned-researcher-3f9c");
+        assert_eq!(event.run_id, run_id);
+        assert!(
+            matches!(&event.kind, SessionEventKind::MessageToMain { content } if content == "found the answer"),
+            "the UI event should carry the message body without the sender header, got {:?}",
+            event.kind
+        );
+    }
+
+    #[tokio::test]
     async fn take_main_hop_recovers_the_hop_count_and_removes_the_entry() {
         let (messenger, _registry, bus_handle) = messenger();
         let mut sub: Subscriber<MessageEvent> =
@@ -1421,6 +1482,7 @@ mod tests {
                     kind: crate::interfaces::types::ConversationKind::Channel,
                     is_owner: false,
                 }),
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

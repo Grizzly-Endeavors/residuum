@@ -152,11 +152,22 @@ impl MessageEvent {
                 endpoint: "background".to_string(),
                 sender: None,
                 conversation: None,
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now().naive_utc(),
             images: Vec::new(),
             context: None,
         }
+    }
+
+    /// Build a background `MessageEvent` delivering another agent's message
+    /// to main: [`Self::from_background`] with the message's formatted text,
+    /// plus its structured sender so main's history attributes it.
+    #[must_use]
+    pub fn from_agent(msg: &AgentMessageEvent) -> Self {
+        let mut event = Self::from_background(msg.format_for_agent());
+        event.origin.agent_sender = msg.agent_sender().map(Box::new);
+        event
     }
 }
 
@@ -339,6 +350,12 @@ impl AgentMessageEvent {
     /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
     /// to message back, but sees this session's responses directly.
+    ///
+    /// History entries carry the sender as a structured field (see
+    /// [`Self::to_history_message`]), which is what the web UI trusts. It
+    /// still recognizes the `[Agent Message from <address> (<category>)]`
+    /// header for history written before that field existed, so a change to
+    /// it needs a matching change in `web/src/lib/relay.ts`.
     #[must_use]
     pub fn format_for_agent(&self) -> String {
         if self.from.as_ref() == crate::background::registry::OWNER_ADDRESS {
@@ -352,6 +369,27 @@ impl AgentMessageEvent {
             "[Agent Message from {} ({})]\n{}",
             self.from, self.from_category, self.content
         )
+    }
+
+    /// The structured sender for this message's history entry: the sending
+    /// agent, or `None` for a message the owner typed into the web sessions
+    /// sidebar (the owner is not an agent).
+    #[must_use]
+    pub fn agent_sender(&self) -> Option<crate::inference::AgentSender> {
+        (self.from.as_ref() != crate::background::registry::OWNER_ADDRESS).then(|| {
+            crate::inference::AgentSender {
+                address: self.from.to_string(),
+                category: self.from_category.clone(),
+            }
+        })
+    }
+
+    /// This message as the recipient's history records it: the formatted
+    /// text, tagged with its structured sender.
+    #[must_use]
+    pub fn to_history_message(&self) -> crate::inference::Message {
+        crate::inference::Message::user(self.format_for_agent())
+            .with_agent_sender(self.agent_sender())
     }
 }
 
@@ -527,6 +565,14 @@ pub enum SessionEventKind {
         /// Human-readable description.
         message: String,
     },
+    /// The session's message reached the main agent: a turn-result relay to
+    /// its spawner or a `message_agent` call addressed to `main`. Lets the
+    /// web UI show the message in the main chat as it arrives, attributed to
+    /// this run.
+    MessageToMain {
+        /// The message body as main received it (without the sender header).
+        content: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +731,50 @@ mod tests {
             "owner messages should not be framed as agent messages, got {text}"
         );
         assert!(text.ends_with("\nhow's it going?"));
+    }
+
+    #[test]
+    fn agent_message_history_entry_carries_its_structured_sender() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("spawned-researcher-3f9a"),
+            from_category: "spawned".to_string(),
+            content: "found the answer".to_string(),
+            hop_count: 0,
+        };
+        let entry = msg.to_history_message();
+        assert_eq!(entry.content, msg.format_for_agent());
+        assert_eq!(
+            entry.agent_sender,
+            Some(crate::inference::AgentSender {
+                address: "spawned-researcher-3f9a".to_string(),
+                category: "spawned".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn owner_message_history_entry_has_no_agent_sender() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from(crate::background::registry::OWNER_ADDRESS),
+            from_category: "owner".to_string(),
+            content: "how's it going?".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.to_history_message().agent_sender, None);
+    }
+
+    #[test]
+    fn message_event_from_agent_attributes_main_history_entry() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("spawned-researcher-3f9a"),
+            from_category: "spawned".to_string(),
+            content: "found the answer".to_string(),
+            hop_count: 1,
+        };
+        let event = MessageEvent::from_agent(&msg);
+        assert_eq!(event.content, msg.format_for_agent());
+        assert!(event.origin.belongs_to_main());
+        assert_eq!(event.origin.agent_sender.map(|a| *a), msg.agent_sender());
     }
 
     #[test]

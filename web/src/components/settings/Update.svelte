@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type { UpdateStatusResponse } from "../../lib/types";
   import { fetchUpdateStatus, triggerUpdateCheck, applyUpdate } from "../../lib/api";
+  import { userErrorMessage } from "../../lib/errors";
 
   let status = $state<UpdateStatusResponse | null>(null);
   let loading = $state(true);
@@ -31,7 +32,7 @@
     try {
       status = await triggerUpdateCheck();
     } catch (e: unknown) {
-      errorMsg = `Check failed: ${String(e)}`;
+      errorMsg = userErrorMessage(e, { action: "Couldn't check for updates." });
     } finally {
       checking = false;
     }
@@ -45,7 +46,7 @@
       applying = false;
       restarting = true;
     } catch (e: unknown) {
-      errorMsg = `Update failed: ${String(e)}`;
+      errorMsg = userErrorMessage(e, { action: "Couldn't apply the update." });
       applying = false;
     }
   }

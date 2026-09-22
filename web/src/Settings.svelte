@@ -35,6 +35,7 @@
   import Modal from "./components/Modal.svelte";
   import { Icon } from "./lib/icons";
   import { toast } from "./lib/toast.svelte";
+  import { userErrorMessage } from "./lib/errors";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -105,7 +106,7 @@
 
       parseAllToForm();
     } catch (err: unknown) {
-      statusMsg = `Failed to load settings: ${String(err)}`;
+      statusMsg = userErrorMessage(err, { action: "Couldn't load settings." });
       statusKind = "error";
     } finally {
       loading = false;
@@ -185,7 +186,7 @@
       lastSavedSnapshot = currentSnapshot();
       showStatus("Reloaded", "success");
     } catch (err: unknown) {
-      toast.error(`Reload failed. ${String(err)}`);
+      toast.error(userErrorMessage(err, { action: "Couldn't reload settings." }));
     } finally {
       loading = false;
     }
@@ -300,7 +301,7 @@
     } catch (err: unknown) {
       statusMsg = "";
       statusKind = "";
-      toast.error(`Save failed. ${String(err)}`);
+      toast.error(userErrorMessage(err, { action: "Couldn't save settings." }));
     } finally {
       saving = false;
     }

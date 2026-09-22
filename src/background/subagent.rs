@@ -101,7 +101,7 @@ impl TurnKickoff {
                 msgs.push(Message::user(prompt).with_sender(Some(sender)));
                 msgs
             }
-            Self::AgentMessage(msg) => vec![Message::user(msg.format_for_agent())],
+            Self::AgentMessage(msg) => vec![msg.to_history_message()],
             Self::External(inbound) => inbound.into_history_messages(),
         }
     }
@@ -731,6 +731,7 @@ mod tests {
                     kind: crate::interfaces::types::ConversationKind::Channel,
                     is_owner: false,
                 }),
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],
@@ -831,6 +832,7 @@ mod tests {
                     kind: crate::interfaces::types::ConversationKind::Channel,
                     is_owner: false,
                 }),
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],
