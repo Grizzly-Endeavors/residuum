@@ -106,6 +106,10 @@ impl ConversationSource for TeamsRuntime {
     async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>> {
         Ok(self.store.known_conversations().await)
     }
+
+    async fn owner_dm_conversation_id(&self) -> Option<String> {
+        self.store.owner().await.map(|o| o.dm_conversation_id)
+    }
 }
 
 /// The Teams adapter: messaging listener, inbound worker, and outbound subscriber.

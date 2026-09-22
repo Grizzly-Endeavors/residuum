@@ -109,13 +109,16 @@ A wiki result's ID is the page's workspace-relative path (`wiki/homelab/cluster.
 
 ### `memory_get`
 
-Retrieves the full transcript of a specific episode.
+Retrieves the full transcript of a specific episode, or of a session run by its run id — provide exactly one of `episode_id`/`run_id`. The run-id mode reads from the session store rather than the episode store, so a run that produced no episode (skipped as a no-op, or not yet completed) can still be read; a run's own record names its episode id, if any, once merged. See [background-tasks.md](background-tasks.md#session-store) for the session store.
 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
-| `episode_id` | string | yes | e.g. `"ep-001"`. Path traversal rejected. |
+| `episode_id` | string | one of `episode_id`/`run_id` | e.g. `"ep-001"`. Path traversal rejected. |
+| `run_id` | string | one of `episode_id`/`run_id` | e.g. `"run-1234567890-abcd1234"`. Path traversal rejected. Works on a still-running session too, reading its live incremental transcript. |
 | `from_line` | integer | no | 1-indexed line offset. Default: beginning. |
 | `lines` | integer | no | Lines to return. Default 50, max 200. |
+
+An unknown run id returns an error pointing at `list_agents` (live sessions) and `memory_search` (merged episodes).
 
 ## Persistence Across Restarts
 

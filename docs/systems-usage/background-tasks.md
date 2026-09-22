@@ -16,7 +16,9 @@ A session is a fork of the main agent with its own identity, memory snapshot, an
 **What's excluded:**
 - The main agent's live, unobserved conversation. A session never sees what the user and main agent are currently discussing — the spawning agent writes a task prompt with whatever context the session needs.
 
-**Tools excluded from sessions:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `switch_endpoint` (no nesting yet, no action scheduling from a session, and `switch_endpoint` only makes sense for the main agent's own output routing). `message_agent` is available to both main and every session.
+**Tools excluded from sessions:** `switch_endpoint` — it only makes sense for the main agent's own output routing. Everything else, including `subagent_spawn` (subject to the depth cap — see [Nesting](#nesting)), the action-scheduling tools, and `message_agent`, is available to a session too.
+
+**Sessions can talk to other endpoints, but not the owner directly.** A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface — whether named explicitly as `conversation` or reached through the no-conversation default — with an error telling it to message `main` instead. Posting to any other conversation or notification endpoint still works; see [notifications.md](notifications.md).
 
 Sessions share the MCP registry with the main agent.
 
@@ -68,10 +70,16 @@ Agents message each other by address with the `message_agent` tool, available to
 - **running session** — delivered as an interrupt at the session's next tool-call boundary, through the same interrupt channel `stop_agent` uses to end a turn. If that channel is saturated (vanishingly unlikely — 32 deep, drained continuously by a live run), the tool returns an error telling the sender to retry shortly, rather than silently falling back to a resume that would double-register the address.
 - **idle session** — starts another turn in the same run, with the message as that turn's input. The run's transcript and per-turn memory staging (see [Memory](#memory)) span every turn this way, not just the first.
 - **completing session** — the run is tearing down and no longer accepts input; the message waits for it to fully leave the registry (recording its resume point on the way out) and is then delivered by resuming it as a new run, the same as a completed session below. A message still queued in a run's own interrupt channel at the moment its teardown drains it (e.g. one delivered just as a stop lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
-- **completed session** — the session is resumed as a new run at the same address, forked the same way any other session is, carrying the previous run's model tier. The new run's context carries a pointer back to the previous run's episode id, or its run id if that run produced no episode, retrievable with `memory_get`. The sender's tool result says the session had completed and was resumed.
+- **completed session** — the session is resumed as a new run at the same address, forked the same way any other session is, carrying the previous run's model tier, spawner, and depth. The new run's context carries a pointer back to the previous run's episode id, or its run id if that run produced no episode, retrievable with `memory_get`. The sender's tool result says the session had completed and was resumed.
 - **unknown address** — an address that has never run reports an error naming `list_agents` as the way to find live sessions.
 
 Every delivered message names the sender's address and category, so the recipient knows who to reply to. If delivery requires publishing an event (a resume, or handoff to main) and that publish fails, the tool returns an error rather than reporting success — the sender should not assume the message arrived.
+
+## Nesting
+
+Sessions can spawn sessions with their own `subagent_spawn` tool. Depth counts from the main agent: main is depth 0, every `scheduled`/`external` session is depth 1, and a `spawned` session is its spawner's depth plus 1 — whatever the spawner's own category. The spawned session's spawner is recorded as the calling agent's address (`main`, or the calling session's own address). A session resumed via `message_agent` keeps its original spawner and depth rather than resetting to a fresh depth-1 session.
+
+Depth is capped by `subagent_depth_cap` in `[background]` (default 2). Spawning a session that would exceed the cap is refused with an error explaining the limit; the calling agent should either handle the task directly or ask a shallower agent to spawn it.
 
 ## Tools
 
@@ -92,7 +100,7 @@ Sends `message` to `to`, delivered per the rules in [Messaging](#messaging). Mes
 | `skill` | string | no | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. `"main"` is rejected. |
 | `model` | string enum | no | `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
-Returns the session's address immediately. A session's final result is a **self-report** — it describes what the session believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
+Available to the main agent and to every session, subject to the depth cap above. Returns the session's address immediately. A session's final result is a **self-report** — it describes what the session believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
 
 ### `list_agents`
 

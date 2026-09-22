@@ -59,7 +59,7 @@ Use `memory_search` to query past observations, episode chunks, and wiki pages. 
 | `date_to` | string | ISO date upper bound (inclusive). |
 | `episode_ids` | array | Filter to specific episode IDs (excludes wiki pages). |
 
-Use `memory_get` to retrieve the full transcript of a specific episode by ID.
+Use `memory_get` to retrieve the full transcript of a specific episode by ID, or a session run's transcript by run id (exactly one of `episode_id`/`run_id`) — the run-id mode reads from the session store, so it also works on a run that produced no episode, or one that's still in progress. An unknown run id points at `list_agents` and `memory_search`.
 
 Episodes are indexed after each observer extraction and synced on startup. Wiki pages are resynced before every search, so a page you just wrote is searchable immediately; a wiki result's ID is the page path to open with `read_file`. Wiki pages are exempt from temporal decay.
 

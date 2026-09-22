@@ -249,6 +249,11 @@ impl AgentMessenger {
             context: Some(Self::pointer_note(point)),
             source: point.trigger.clone(),
             model_tier: point.model_tier,
+            // A resume keeps the session's original spawner and depth,
+            // rather than resetting it to depth 1 with no spawner — which
+            // would let a resumed session evade the nesting cap.
+            spawner: point.spawner.clone(),
+            depth: point.depth,
         };
 
         self.publisher
@@ -302,6 +307,8 @@ mod tests {
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
             model_tier,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
         }
     }
 
@@ -524,6 +531,15 @@ mod tests {
             crate::config::BackgroundModelTier::Large,
             "a resumed run must carry the previous run's model tier, not default to Medium"
         );
+        assert_eq!(
+            event.spawner,
+            Some(SessionAddress::from(MAIN_ADDRESS)),
+            "a resumed run must keep its original spawner, not lose it"
+        );
+        assert_eq!(
+            event.depth, 1,
+            "a resumed run must keep its original depth, not reset to a fresh depth-1 session"
+        );
         let context = event.context.expect("resume should carry a pointer note");
         assert!(context.contains("ep-42"));
         assert!(context.contains("memory_get"));
@@ -545,6 +561,8 @@ mod tests {
                 source_label: "agent:researcher".to_string(),
                 agent_skill: None,
                 model_tier: crate::config::BackgroundModelTier::Small,
+                spawner: None,
+                depth: 1,
             },
         );
 

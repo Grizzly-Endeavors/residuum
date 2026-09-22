@@ -926,6 +926,9 @@ fn resolve_background_config(
         if let Some(v) = section.episode_skip_token_floor {
             cfg.episode_skip_token_floor = v;
         }
+        if let Some(v) = section.subagent_depth_cap {
+            cfg.subagent_depth_cap = v;
+        }
     }
 
     if let Some(models_section) = models_section {

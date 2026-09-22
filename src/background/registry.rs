@@ -192,6 +192,12 @@ pub struct ResumePoint {
     /// Model tier the original run executed at, carried over so the resumed
     /// run doesn't default back to `Medium`.
     pub model_tier: BackgroundModelTier,
+    /// The agent that spawned the original run, if any, carried over so the
+    /// resumed run keeps the same spawner rather than losing it.
+    pub spawner: Option<SessionAddress>,
+    /// Depth from the main agent the original run had, carried over so the
+    /// resumed run doesn't reset to depth 1 and evade the nesting cap.
+    pub depth: u32,
 }
 
 /// Registry of every live (running, idle, or completing) session, plus a
@@ -784,6 +790,8 @@ mod tests {
             source_label: "agent:researcher".to_string(),
             agent_skill: Some(SkillName::from("researcher")),
             model_tier: BackgroundModelTier::Large,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
         };
         registry.record_resume_point(&address, point.clone());
 
@@ -792,6 +800,8 @@ mod tests {
             .expect("resume point should be recorded");
         assert_eq!(found.previous_run_id, "run-1");
         assert_eq!(found.previous_episode_id.as_deref(), Some("ep-1"));
+        assert_eq!(found.spawner, Some(SessionAddress::from(MAIN_ADDRESS)));
+        assert_eq!(found.depth, 1);
     }
 
     #[test]

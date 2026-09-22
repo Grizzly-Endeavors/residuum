@@ -392,6 +392,8 @@ pub(super) struct BackgroundConfigFile {
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub(super) episode_skip_token_floor: Option<usize>,
+    /// Maximum depth a `subagent_spawn`-created session may have.
+    pub(super) subagent_depth_cap: Option<u32>,
 }
 
 /// Raw TOML `[cloud]` section.

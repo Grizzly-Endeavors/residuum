@@ -11,19 +11,64 @@ use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
 
+/// The web UI's endpoint name — always the owner's own channel, with no
+/// conversation concept to post elsewhere within.
+const WEB_UI_ENDPOINT: &str = "ws";
+
+/// Error returned to a session that tries to reach the owner directly.
+const SESSION_OWNER_TARGET_REFUSED: &str = "sessions cannot message the owner directly; message \
+    main instead so it can decide what to tell the owner";
+
 /// Tool for sending messages to notification or interactive endpoints.
 pub struct SendMessageTool {
     registry: EndpointRegistry,
     publisher: Publisher,
+    /// `true` for a session's tool registry: refuses the owner's DM on every
+    /// chat interface and the web UI. `false` for the main agent, which is
+    /// the only agent allowed to talk to the owner.
+    restrict_owner_targets: bool,
 }
 
 impl SendMessageTool {
     /// Create a new `SendMessageTool`.
     #[must_use]
-    pub fn new(registry: EndpointRegistry, publisher: Publisher) -> Self {
+    pub fn new(
+        registry: EndpointRegistry,
+        publisher: Publisher,
+        restrict_owner_targets: bool,
+    ) -> Self {
         Self {
             registry,
             publisher,
+            restrict_owner_targets,
+        }
+    }
+
+    /// Whether `endpoint_name`/`conversation_id` (the target chosen by a
+    /// call, `None` for the no-conversation default) reaches the owner
+    /// directly: the web UI, or the owner's DM on a chat interface — either
+    /// named explicitly or reached via the default fallback.
+    async fn targets_owner_directly(
+        &self,
+        endpoint_name: &str,
+        conversation_id: Option<&str>,
+    ) -> bool {
+        if endpoint_name == WEB_UI_ENDPOINT {
+            return true;
+        }
+        let conversations = self.registry.conversations();
+        if conversations.source(endpoint_name).is_none() {
+            // Not a chat interface: it has no owner DM to reach.
+            return false;
+        }
+        match conversations.owner_dm(endpoint_name).await {
+            Some(owner_dm_id) => conversation_id.is_none_or(|id| id == owner_dm_id),
+            // No owner claimed yet on this chat interface. The
+            // no-conversation default would fall back to the owner's DM, so
+            // refuse it rather than report success for a message the
+            // interface can only drop; a named conversation can't be the
+            // owner's DM.
+            None => conversation_id.is_none(),
         }
     }
 
@@ -100,16 +145,28 @@ impl Tool for SendMessageTool {
     }
 
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: self.name().to_string(),
-            description: "Send a message and/or file attachment to an endpoint. When sharing \
+        let description = if self.restrict_owner_targets {
+            "Send a message and/or file attachment to an endpoint. When sharing a file with \
+                the user, always use the file_path parameter — the file will be delivered \
+                natively (inline image, audio player, or download link) rather than as a text \
+                path. Use list_endpoints to see available targets. On a chat endpoint (discord, \
+                telegram, teams) the message goes to the owner's direct message unless you pass \
+                a conversation from list_conversations, e.g. to post into a specific channel or \
+                group chat. Running in a session: the owner's DM on every chat interface and the \
+                web UI are refused — message main instead so it can decide what to tell the \
+                owner. Posting to any other conversation or endpoint still works."
+        } else {
+            "Send a message and/or file attachment to an endpoint. When sharing \
                 a file with the user, always use the file_path parameter — the file will be \
                 delivered natively (inline image, audio player, or download link) rather than \
                 as a text path. Use list_endpoints to see available targets. On a chat \
                 endpoint (discord, telegram, teams) the message goes to the owner's direct \
                 message unless you pass a conversation from list_conversations, e.g. to post \
                 into a specific channel or group chat."
-                .to_string(),
+        };
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: description.to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -151,6 +208,14 @@ impl Tool for SendMessageTool {
             return Ok(ToolResult::error(
                 "at least one of 'message' or 'file_path' is required".to_string(),
             ));
+        }
+
+        if self.restrict_owner_targets
+            && self
+                .targets_owner_directly(endpoint_name, conversation_id)
+                .await
+        {
+            return Ok(ToolResult::error(SESSION_OWNER_TARGET_REFUSED.to_string()));
         }
 
         let endpoint_id = EndpointId::from(endpoint_name);
@@ -278,7 +343,7 @@ mod tests {
     async fn tool_name_and_definition() {
         let registry = EndpointRegistry::default();
         let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
         assert_eq!(tool.name(), "send_message");
         assert_eq!(tool.definition().name, "send_message");
     }
@@ -292,7 +357,7 @@ mod tests {
             .subscribe(topics::Notification(NotifyName::from("my-ntfy")))
             .await
             .unwrap();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -320,7 +385,7 @@ mod tests {
             .subscribe(topics::Endpoint(EndpointName::from("ws")))
             .await
             .unwrap();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -340,7 +405,7 @@ mod tests {
     async fn send_to_unknown_endpoint_returns_error() {
         let registry = make_registry();
         let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -358,7 +423,7 @@ mod tests {
     async fn send_missing_endpoint_returns_error() {
         let registry = EndpointRegistry::default();
         let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool.execute(serde_json::json!({"message": "test"})).await;
         assert!(result.is_err(), "should error on missing endpoint");
@@ -377,7 +442,7 @@ mod tests {
             .subscribe(topics::Endpoint(EndpointName::from("ws")))
             .await
             .unwrap();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -414,7 +479,7 @@ mod tests {
             .subscribe(topics::Endpoint(EndpointName::from("ws")))
             .await
             .unwrap();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -436,7 +501,7 @@ mod tests {
     async fn send_no_message_no_file_returns_error() {
         let registry = make_registry();
         let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -457,7 +522,7 @@ mod tests {
     async fn send_file_not_found_returns_error() {
         let registry = make_registry();
         let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -483,7 +548,7 @@ mod tests {
 
         let registry = make_registry();
         let publisher = make_publisher();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -539,7 +604,7 @@ mod tests {
             .subscribe(topics::Endpoint(EndpointName::from("teams")))
             .await
             .unwrap();
-        let tool = SendMessageTool::new(registry, bus_handle.publisher());
+        let tool = SendMessageTool::new(registry, bus_handle.publisher(), false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -566,7 +631,7 @@ mod tests {
         let _guard = registry
             .conversations()
             .register("teams", std::sync::Arc::new(OneChannel));
-        let tool = SendMessageTool::new(registry, make_publisher());
+        let tool = SendMessageTool::new(registry, make_publisher(), false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -587,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversation_on_an_endpoint_without_conversations_is_rejected() {
-        let tool = SendMessageTool::new(make_registry(), make_publisher());
+        let tool = SendMessageTool::new(make_registry(), make_publisher(), false);
         let result = tool
             .execute(serde_json::json!({
                 "endpoint": "my-ntfy",
@@ -597,5 +662,200 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_error);
+    }
+
+    // ── Session owner-target guard ───────────────────────────────────────
+
+    /// A chat interface with a claimed owner and one non-owner conversation,
+    /// for exercising the session owner-target guard.
+    struct ChannelWithOwner;
+
+    #[async_trait]
+    impl crate::interfaces::conversations::ConversationSource for ChannelWithOwner {
+        async fn conversations(
+            &self,
+        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
+            Ok(vec![crate::interfaces::conversations::KnownConversation {
+                id: "19:builds".to_string(),
+                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                label: "#builds (Eng Team)".to_string(),
+            }])
+        }
+
+        async fn owner_dm_conversation_id(&self) -> Option<String> {
+            Some("19:owner-dm".to_string())
+        }
+    }
+
+    fn registry_with_owner_aware_teams() -> EndpointRegistry {
+        registry_with_teams()
+    }
+
+    #[tokio::test]
+    async fn session_cannot_message_the_web_ui_endpoint() {
+        let tool = SendMessageTool::new(make_registry(), make_publisher(), true);
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "ws",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "the web UI is always the owner's channel");
+        assert!(result.output.contains("message main"), "{}", result.output);
+    }
+
+    #[tokio::test]
+    async fn session_cannot_message_a_chat_endpoint_with_no_conversation() {
+        // Omitting `conversation` falls back to the owner's DM by design.
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithOwner));
+        let tool = SendMessageTool::new(registry, make_publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "the default falls back to the owner's DM");
+    }
+
+    /// A chat interface whose owner hasn't claimed it yet.
+    struct ChannelWithoutOwner;
+
+    #[async_trait]
+    impl crate::interfaces::conversations::ConversationSource for ChannelWithoutOwner {
+        async fn conversations(
+            &self,
+        ) -> anyhow::Result<Vec<crate::interfaces::conversations::KnownConversation>> {
+            Ok(vec![crate::interfaces::conversations::KnownConversation {
+                id: "19:builds".to_string(),
+                kind: crate::interfaces::chat_state::ConversationKind::Channel,
+                label: "#builds (Eng Team)".to_string(),
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn session_default_target_is_refused_before_an_owner_is_claimed() {
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithoutOwner));
+        let tool = SendMessageTool::new(registry, make_publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_error,
+            "the default would fall back to an owner DM, so it must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_can_post_to_a_named_conversation_before_an_owner_is_claimed() {
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithoutOwner));
+        let tool = SendMessageTool::new(registry, make_publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "conversation": "19:builds",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn session_cannot_message_the_owners_dm_explicitly() {
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithOwner));
+        let tool = SendMessageTool::new(registry, make_publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "conversation": "19:owner-dm",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn session_can_still_post_to_a_non_owner_conversation() {
+        let registry = registry_with_owner_aware_teams();
+        let _guard = registry
+            .conversations()
+            .register("teams", std::sync::Arc::new(ChannelWithOwner));
+        let bus_handle = crate::bus::spawn_broker();
+        let mut subscriber = bus_handle
+            .subscribe(topics::Endpoint(EndpointName::from("teams")))
+            .await
+            .unwrap();
+        let tool = SendMessageTool::new(registry, bus_handle.publisher(), true);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "teams",
+                "conversation": "19:builds",
+                "message": "nightly build is green"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+        let event: crate::bus::ResponseEvent = subscriber.recv().await.unwrap().unwrap();
+        assert_eq!(event.conversation.as_deref(), Some("19:builds"));
+    }
+
+    #[tokio::test]
+    async fn session_can_still_post_to_a_notify_only_endpoint() {
+        let tool = SendMessageTool::new(make_registry(), make_publisher(), true);
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "my-ntfy",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn main_agent_is_unaffected_by_the_owner_target_guard() {
+        let tool = SendMessageTool::new(make_registry(), make_publisher(), false);
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "ws",
+                "message": "hi"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "main can always message the owner");
     }
 }

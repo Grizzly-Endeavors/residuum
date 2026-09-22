@@ -73,10 +73,12 @@ pub(crate) struct SpawnContext {
 /// narrative at fork time, per the design's "Fork contents": a session never
 /// sees merges that happen after it forked.
 ///
-/// `address` and `category` identify the session itself (not its
-/// spawner) — carried into `SubAgentBuildConfig` so the fork's
-/// `message_agent` tool can name itself as the sender of any message it
-/// sends.
+/// `own_address` and `own_depth` are this new session's own address and
+/// depth, threaded into its `subagent_spawn` tool so any session it spawns in
+/// turn records the right spawner and depth (see "Nesting" in the design).
+/// `own_address` and `category` are also carried into `SubAgentBuildConfig`
+/// so the fork's `message_agent` tool can name itself as the sender of any
+/// message it sends.
 ///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key), the
@@ -86,7 +88,8 @@ pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
     skill: Option<&str>,
-    address: &SessionAddress,
+    own_address: SessionAddress,
+    own_depth: u32,
     category: SessionCategory,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let specs = ctx
@@ -161,7 +164,9 @@ pub(crate) async fn build_spawn_resources(
         observer: Arc::clone(&ctx.observer),
         merge_writer: Arc::clone(&ctx.merge_writer),
         episode_skip_token_floor: ctx.background_config.episode_skip_token_floor,
-        session_address: address.clone(),
+        own_address,
+        own_depth,
+        subagent_depth_cap: ctx.background_config.subagent_depth_cap,
         session_category: category,
         messenger: Arc::clone(&ctx.messenger),
     };

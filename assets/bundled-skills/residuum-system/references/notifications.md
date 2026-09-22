@@ -79,3 +79,5 @@ Input-only. The agent cannot write to inbox. Items arrive from:
 - The `inbox` topic is not available as a `send_message` target — inbox is input-only.
 - A `conversation` is checked before sending: an ID `list_conversations` doesn't show is rejected. If the platform then refuses the post (the bot was removed, lacks permission), the owner gets an error message on that interface.
 - Background results from agent-spawned tasks are injected mid-turn if the agent is active, or start a new turn if idle.
+- Only the main agent talks to the owner. A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface (named explicitly, or reached through the no-conversation default) — it must message `main` instead. `switch_endpoint` is main-only too.
+- A session's `subagent_spawn` records the session as the spawner and its depth plus one on the new session; spawning past the configured `subagent_depth_cap` (default 2) is refused.

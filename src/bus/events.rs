@@ -305,6 +305,14 @@ pub struct SpawnRequestEvent {
     pub source: EventTrigger,
     /// Model tier to run the session at.
     pub model_tier: BackgroundModelTier,
+    /// The agent that requested this spawn: `Some(address)` for a `spawned`
+    /// session (main or another session), `None` for `scheduled` and
+    /// `external` sessions, which have no spawner.
+    pub spawner: Option<SessionAddress>,
+    /// Depth from the main agent this session will run at (main = 0). A
+    /// `scheduled`/`external` session is always depth 1; a spawned session is
+    /// its spawner's depth plus 1.
+    pub depth: u32,
 }
 
 /// Operational notice broadcast to connected endpoints.

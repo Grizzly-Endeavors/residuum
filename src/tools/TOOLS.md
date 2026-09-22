@@ -180,25 +180,31 @@ On error: `"search failed: {reason}"`
 **Source:** `memory_get.rs` · `MemoryGetTool`
 
 **Description sent to LLM:**
-> Retrieve a raw episode transcript by ID. Use after memory_search to drill into the full conversation transcript of a specific episode. Returns formatted message lines with role labels and line numbers.
+> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers.
 
 ### Input
 
 | Parameter    | Type    | Required | Description                                              |
 |--------------|---------|----------|----------------------------------------------------------|
-| `episode_id` | string  | yes      | The episode ID to retrieve (e.g., `"ep-001"`)            |
+| `episode_id` | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
+| `run_id`     | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
 | `from_line`  | integer | no       | Start reading from this line offset (1-indexed, default: start) |
 | `lines`      | integer | no       | Number of message lines to return (default: 50, max: 200) |
 
-**Security:** `episode_id` containing `/`, `\`, or `..` is rejected with a path-traversal error.
+**Security:** `episode_id`/`run_id` containing `/`, `\`, or `..` is rejected with a path-traversal error.
 
 ### Output
 
-On success: formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used.
+On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used.
+
+On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
 
 On error:
-- Episode not found
-- `episode_id` is empty or contains invalid characters
+- Both `episode_id` and `run_id` given → `"provide exactly one of 'episode_id' or 'run_id', not both"`
+- Neither given → `"missing required 'episode_id' or 'run_id' argument"`
+- Episode not found → `"episode '{id}' not found"`
+- Run not found → `"run '{id}' not found; use list_agents to find live session addresses, or memory_search for merged episodes"`
+- `episode_id`/`run_id` is empty or contains invalid characters
 - Failed to read transcript file
 
 ---
@@ -441,6 +447,8 @@ On error:
 
 **Description sent to LLM:**
 > Send a message and/or file attachment to an endpoint. When sharing a file with the user, always use the file_path parameter — the file will be delivered natively (inline image, audio player, or download link) rather than as a text path. Use list_endpoints to see available targets. On a chat endpoint (discord, telegram, teams) the message goes to the owner's direct message unless you pass a conversation from list_conversations, e.g. to post into a specific channel or group chat.
+>
+> From a session's registry, the description carries one more sentence: "Running in a session: the owner's DM on every chat interface and the web UI are refused — message main instead so it can decide what to tell the owner. Posting to any other conversation or endpoint still works."
 
 ### Input
 
@@ -465,6 +473,7 @@ With `conversation`, `{name}` reads `{endpoint} ({conversation label})`, e.g. `t
 
 On error:
 - Neither message nor file → `"at least one of 'message' or 'file_path' is required"`
+- From a session, target reaches the owner directly (the web UI endpoint, or the owner's DM on a chat interface — named explicitly or via the no-conversation default, including the default on a chat interface whose owner hasn't been claimed yet) → `"sessions cannot message the owner directly; message main instead so it can decide what to tell the owner"`
 - Unknown endpoint → `"unknown endpoint '{name}'; available: {list}"`
 - Endpoint does not accept messages (e.g. inbox) → `"endpoint '{name}' does not accept messages; available: {list}"`
 - File with notify endpoint → `"endpoint '{name}' does not support file attachments"`
@@ -646,17 +655,20 @@ On success: `"Session {address} spawned with skill '{name}'."`, or `"Session {ad
 
 The session runs in the background via the session runtime. Its result from each turn is relayed back to the main agent, tagged with its address.
 
+### Nesting and the depth cap
+
+`subagent_spawn` is registered both for the main agent and for every session, so sessions can spawn sessions. The tool instance carries the caller's own address and depth (main is `MAIN_ADDRESS`/`MAIN_DEPTH`; a session's own registry carries its own address/depth): a new spawn is refused once `depth + 1` would exceed the configured `subagent_depth_cap` (default 2, `[background]` config). The spawned session's `spawner` field records the calling agent's address, and its `depth` is the caller's depth plus one.
+
 ### Errors
 
 - Missing or empty `task` → `InvalidArguments`
 - `skill` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
 - Invalid `model` value → `InvalidArguments`
 - Unknown `skill` (not in the skill index) → `is_error = true` with the available skill list
+- Spawning past the depth cap → `is_error = true`, e.g. `"cannot spawn: nesting depth cap (2) reached at depth 2 — handle this task directly instead of spawning further, or have a shallower agent spawn it"`
 - Bus publish failure → `Execution` error
 
-**Side effects:** Publishes a `SpawnRequestEvent` (carrying the pre-generated address) to the bus. The spawn listener picks it up, builds the session's fork resources, and hands it to the session runtime (visible via `list_agents`, cancellable via `stop_agent`). Each turn's result is delivered through the bus notification system.
-
-**Not available to sessions:** this tool is only registered in the main agent's registry, not in `build_subagent_registry()` — nesting arrives in a later phase.
+**Side effects:** Publishes a `SpawnRequestEvent` (carrying the pre-generated address, the caller's address as `spawner`, and the computed `depth`) to the bus. The spawn listener picks it up, builds the session's fork resources, and hands it to the session runtime (visible via `list_agents`, cancellable via `stop_agent`). Each turn's result is delivered through the bus notification system.
 
 ---
 

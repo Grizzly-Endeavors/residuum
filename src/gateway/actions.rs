@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
-use crate::background::registry::generate_address;
+use crate::background::registry::{MAIN_DEPTH, generate_address};
 use crate::bus::{EventTrigger, Publisher, SkillName, SpawnRequestEvent, topics};
 use crate::config::BackgroundModelTier;
 
@@ -53,6 +53,8 @@ async fn publish_action_spawn(
         context: None,
         source: trigger,
         model_tier: tier,
+        spawner: None,
+        depth: MAIN_DEPTH + 1,
     };
 
     if let Err(e) = publisher.publish(topics::Background, spawn_event).await {

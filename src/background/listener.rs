@@ -126,7 +126,8 @@ async fn fork_and_spawn(
         ctx,
         &event.model_tier,
         skill.as_deref(),
-        &event.address,
+        event.address.clone(),
+        event.depth,
         category,
     )
     .await?;
@@ -136,6 +137,8 @@ async fn fork_and_spawn(
         source_label: event.source_label,
         trigger: event.source,
         agent_skill: event.skill,
+        spawner: event.spawner,
+        depth: event.depth,
         subagent_config: SubAgentConfig {
             prompt: event.prompt,
             context: event.context,

@@ -74,10 +74,17 @@ pub struct SubAgentBuildConfig {
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub episode_skip_token_floor: usize,
-    /// This session's own address, so its `message_agent` tool can identify
-    /// itself as the sender.
-    pub session_address: SessionAddress,
-    /// This session's category, for the same reason.
+    /// This new session's own address, recorded as the spawner on any
+    /// session it forks in turn via its own `subagent_spawn` tool, and
+    /// reused as the identity its `message_agent` tool reports to the
+    /// agents it messages.
+    pub own_address: SessionAddress,
+    /// This new session's own depth from the main agent (main = 0).
+    pub own_depth: u32,
+    /// Maximum depth a `subagent_spawn`-created session may have.
+    pub subagent_depth_cap: u32,
+    /// This session's category, for `message_agent` to report alongside
+    /// `own_address`.
     pub session_category: SessionCategory,
     /// Shared agent-messaging service, for the session's `message_agent` tool.
     pub messenger: std::sync::Arc<AgentMessenger>,

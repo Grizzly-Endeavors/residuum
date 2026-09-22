@@ -104,9 +104,13 @@ impl ToolRegistry {
         self.register(Box::new(memory_search::MemorySearchTool::new(searcher)));
     }
 
-    /// Register the `memory_get` tool for episode transcript retrieval.
-    pub fn register_memory_get_tool(&mut self, episodes_dir: PathBuf) {
-        self.register(Box::new(memory_get::MemoryGetTool::new(episodes_dir)));
+    /// Register the `memory_get` tool for episode and session-run transcript
+    /// retrieval.
+    pub fn register_memory_get_tool(&mut self, episodes_dir: PathBuf, sessions_dir: PathBuf) {
+        self.register(Box::new(memory_get::MemoryGetTool::new(
+            episodes_dir,
+            sessions_dir,
+        )));
     }
 
     /// Register skill management tools (`skill_activate`, `skill_deactivate`).
@@ -163,13 +167,20 @@ impl ToolRegistry {
     }
 
     /// Register the `send_message` tool for proactive message delivery.
+    ///
+    /// `restrict_owner_targets` is `true` for a session's registry: a session
+    /// refuses the owner's DM on every chat interface and the web UI (only
+    /// the main agent talks to the owner). Pass `false` for the main agent.
     pub fn register_send_message_tool(
         &mut self,
         registry: EndpointRegistry,
         publisher: crate::bus::Publisher,
+        restrict_owner_targets: bool,
     ) {
         self.register(Box::new(send_message::SendMessageTool::new(
-            registry, publisher,
+            registry,
+            publisher,
+            restrict_owner_targets,
         )));
     }
 
@@ -197,22 +208,41 @@ impl ToolRegistry {
     }
 
     /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
+    ///
+    /// `spawner_address` and `depth` are the caller's own address and depth
+    /// (main is `MAIN_ADDRESS`/`MAIN_DEPTH`; a session passes its own). A
+    /// spawn is refused once `depth + 1` exceeds `depth_cap`.
     pub(crate) fn register_spawn_tool(
         &mut self,
         publisher: crate::bus::Publisher,
         skill_state: crate::skills::SharedSkillState,
+        spawner_address: crate::bus::SessionAddress,
+        depth: u32,
+        depth_cap: u32,
     ) {
         self.register(Box::new(background::SubagentSpawnTool::new(
             publisher,
             skill_state,
+            spawner_address,
+            depth,
+            depth_cap,
         )));
     }
 
     /// Build a tool registry for a session.
     ///
-    /// Includes all tools available to the main agent except `switch_endpoint`
-    /// and `subagent_spawn`. Sessions get their own isolated skill state but
-    /// share the same endpoint registry, action store, etc.
+    /// Includes all tools available to the main agent except `switch_endpoint`,
+    /// which stays main-only. Sessions get their own isolated skill state but
+    /// share the same endpoint registry, action store, etc. `own_address` and
+    /// `own_depth` are this session's own address and depth, and `depth_cap`
+    /// the configured nesting limit — together they let this session's own
+    /// `subagent_spawn` record the right spawner/depth on anything it forks
+    /// and refuse spawning once the cap is reached. `own_address` is reused
+    /// (cloned) as the identity `message_agent` reports to the agents it
+    /// messages, alongside `session_category` and the shared `messenger`.
+    /// `send_message` from this registry refuses the owner's DM on every
+    /// chat interface and the web UI (only the main agent talks to the
+    /// owner).
     #[expect(
         clippy::too_many_arguments,
         reason = "session registry needs all tool dependencies"
@@ -225,6 +255,7 @@ impl ToolRegistry {
         tz: chrono_tz::Tz,
         hybrid_searcher: Arc<HybridSearcher>,
         episodes_dir: std::path::PathBuf,
+        sessions_dir: std::path::PathBuf,
         agent_inbox_dir: std::path::PathBuf,
         agent_inbox_archive_dir: std::path::PathBuf,
         user_inbox_dir: std::path::PathBuf,
@@ -234,7 +265,9 @@ impl ToolRegistry {
         publisher: crate::bus::Publisher,
         action_store: Arc<Mutex<ActionStore>>,
         action_notify: Arc<Notify>,
-        session_address: SessionAddress,
+        own_address: SessionAddress,
+        own_depth: u32,
+        depth_cap: u32,
         session_category: String,
         messenger: Arc<AgentMessenger>,
     ) -> Self {
@@ -244,11 +277,11 @@ impl ToolRegistry {
         registry.register_defaults(tracker, path_policy);
 
         // Skill tools: activate, deactivate
-        registry.register_skill_tools(skill_state);
+        registry.register_skill_tools(Arc::clone(&skill_state));
 
         // Memory tools
         registry.register_search_tool(hybrid_searcher);
-        registry.register_memory_get_tool(episodes_dir);
+        registry.register_memory_get_tool(episodes_dir, sessions_dir);
 
         // Inbox tools
         registry.register_inbox_tools(
@@ -259,13 +292,20 @@ impl ToolRegistry {
             tz,
         );
 
-        // Session management (stop_agent, list_agents — NOT subagent_spawn)
+        // Session management (stop_agent, list_agents, subagent_spawn)
         registry.register_background_tools(session_registry);
+        registry.register_spawn_tool(
+            publisher.clone(),
+            skill_state,
+            own_address.clone(),
+            own_depth,
+            depth_cap,
+        );
 
         // Messaging tools
-        registry.register_send_message_tool(endpoint_registry.clone(), publisher);
+        registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
         registry.register_list_endpoints_tool(endpoint_registry);
-        registry.register_message_agent_tool(session_address, session_category, messenger);
+        registry.register_message_agent_tool(own_address, session_category, messenger);
 
         // Web fetch
         registry.register_web_fetch_tool();
