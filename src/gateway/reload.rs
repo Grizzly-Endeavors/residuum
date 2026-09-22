@@ -12,6 +12,7 @@ use crate::inference::CompletionOptions;
 use crate::inference::InferenceError;
 use crate::inference::SharedHttpClient;
 
+use crate::config::ProviderSpec;
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::GatewayState;
 use crate::tunnel::TunnelStatus;
@@ -44,6 +45,14 @@ pub(super) enum IdleAction {
 /// unconditional provider rebuild, `standalone_backend` naming `"ollama"`
 /// reloads the native tool in place, and a `"brave"`/`"tavily"` backend
 /// reconnects its MCP server — see `reload_web_search`.
+///
+/// A credential-only change (a provider's resolved `api_key` differs while
+/// its name, model, and URL stay the same) already flips `changed` through
+/// the same per-role equality checks as any other provider edit, but the
+/// generic "providers"/"background"/"subconscious" label doesn't say *which*
+/// provider rotated. `summary` calls that out by name (never by value) —
+/// see `provider_credential_changes` — so the reload log/notice reflects
+/// what actually happened instead of reading like a no-op.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "diff struct deliberately uses bool flags for each subsystem that needs gating"
@@ -157,11 +166,19 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     }
 
     let changed = !parts.is_empty();
-    let summary = if changed {
+    let mut summary = if changed {
         parts.join(", ")
     } else {
         "no changes detected".to_string()
     };
+
+    let credential_changes = provider_credential_changes(old, new);
+    if !credential_changes.is_empty() {
+        summary = format!(
+            "{summary}; credential changed for {}",
+            credential_changes.join(", ")
+        );
+    }
 
     ConfigDiff {
         changed,
@@ -173,6 +190,79 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         idle_changed,
         summary,
     }
+}
+
+/// Provider names (each tagged with its role) whose resolved credential
+/// differs between `old` and `new`, across every role that carries a
+/// provider chain.
+///
+/// Reports only that a named provider's credential changed, never the
+/// credential values themselves — those stay behind `ProviderSpec`'s
+/// redacting `Debug` impl and are never compared by content here beyond a
+/// `!=` check.
+fn provider_credential_changes(old: &Config, new: &Config) -> Vec<String> {
+    let mut changes = Vec::new();
+    changes.extend(credential_change_labels("main", &old.main, &new.main));
+    changes.extend(credential_change_labels(
+        "observer",
+        &old.observer,
+        &new.observer,
+    ));
+    changes.extend(credential_change_labels(
+        "reflector",
+        &old.reflector,
+        &new.reflector,
+    ));
+    changes.extend(credential_change_labels("pulse", &old.pulse, &new.pulse));
+    changes.extend(credential_change_labels(
+        "subconscious",
+        &old.subconscious,
+        &new.subconscious,
+    ));
+
+    if let (Some(o), Some(n)) = (&old.embedding, &new.embedding)
+        && o.name == n.name
+        && o.api_key != n.api_key
+    {
+        changes.push(format!("{} (embedding)", o.name));
+    }
+
+    changes.extend(credential_change_labels(
+        "background:small",
+        old.background.models.small.as_deref().unwrap_or_default(),
+        new.background.models.small.as_deref().unwrap_or_default(),
+    ));
+    changes.extend(credential_change_labels(
+        "background:medium",
+        old.background.models.medium.as_deref().unwrap_or_default(),
+        new.background.models.medium.as_deref().unwrap_or_default(),
+    ));
+    changes.extend(credential_change_labels(
+        "background:large",
+        old.background.models.large.as_deref().unwrap_or_default(),
+        new.background.models.large.as_deref().unwrap_or_default(),
+    ));
+
+    changes
+}
+
+/// Provider names whose credential (only) differs between two same-length,
+/// same-order provider chains for one role.
+///
+/// Skips chains that differ in length or provider identity at a position —
+/// that's a structural change the per-role equality check already folds
+/// into the generic summary label, and pairing by position across a
+/// resized or reordered chain would misattribute the change to the wrong
+/// provider.
+fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpec]) -> Vec<String> {
+    if old.len() != new.len() {
+        return Vec::new();
+    }
+    old.iter()
+        .zip(new.iter())
+        .filter(|(o, n)| o.name == n.name && o.api_key != n.api_key)
+        .map(|(o, _)| format!("{} ({role})", o.name))
+        .collect()
 }
 
 /// Backup `config.toml` and `providers.toml` before reload.
@@ -1323,6 +1413,80 @@ mod tests {
             !dir.path().join("config.toml.bak").exists(),
             "no backup should be created when source is missing"
         );
+    }
+
+    fn fireworks_spec(api_key: &str) -> ProviderSpec {
+        ProviderSpec {
+            name: "fireworks".to_string(),
+            model: crate::config::ModelSpec {
+                kind: crate::config::ProviderKind::Fireworks,
+                model: "accounts/fireworks/models/some-model".to_string(),
+            },
+            provider_url: "https://api.fireworks.ai".to_string(),
+            api_key: Some(api_key.to_string()),
+            keep_alive: None,
+            session_affinity: None,
+        }
+    }
+
+    #[test]
+    fn diff_config_credential_only_change_names_the_provider() {
+        let mut old = test_config();
+        old.main = vec![fireworks_spec("real-key")];
+        let mut new = old.clone();
+        // Simulates a settings save corrupting the credential into an
+        // unexpanded env reference: same provider/model/url, different key.
+        new.main = vec![fireworks_spec("${FIREWORKS_API_KEY}")];
+
+        let diff = diff_config(&old, &new);
+
+        assert!(
+            diff.changed,
+            "a credential-only change must still flip `changed`"
+        );
+        assert!(
+            diff.summary().contains("providers"),
+            "the generic per-role label should still fire"
+        );
+        assert!(
+            diff.summary()
+                .contains("credential changed for fireworks (main)"),
+            "summary should name the provider whose credential changed: {}",
+            diff.summary()
+        );
+        assert!(
+            !diff.summary().contains("real-key") && !diff.summary().contains("FIREWORKS_API_KEY"),
+            "summary must never contain credential values: {}",
+            diff.summary()
+        );
+    }
+
+    #[test]
+    fn diff_config_credential_change_ignored_across_resized_chain() {
+        let mut old = test_config();
+        old.main = vec![fireworks_spec("real-key")];
+        let mut new = old.clone();
+        new.main = vec![fireworks_spec("real-key"), fireworks_spec("second-key")];
+
+        let diff = diff_config(&old, &new);
+
+        assert!(diff.changed, "adding a failover provider is still a change");
+        assert!(
+            !diff.summary().contains("credential changed for"),
+            "a resized chain is a structural change, not attributable to one provider's credential: {}",
+            diff.summary()
+        );
+    }
+
+    #[test]
+    fn diff_config_no_credential_change_when_keys_match() {
+        let mut old = test_config();
+        old.main = vec![fireworks_spec("same-key")];
+        let new = old.clone();
+
+        let diff = diff_config(&old, &new);
+        assert!(!diff.changed);
+        assert!(!diff.summary().contains("credential changed for"));
     }
 
     #[test]

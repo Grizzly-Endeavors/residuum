@@ -409,12 +409,7 @@ fn resolve_teams_config(
 /// Returns `Some(value)` if expansion succeeds or the string contains no `${...}`.
 /// Returns `None` if the referenced env var is not set.
 fn expand_env_token(raw: &str) -> Option<String> {
-    let inner = raw
-        .strip_prefix("${")
-        .and_then(|s| s.strip_suffix('}'))
-        .filter(|s| !s.is_empty());
-
-    match inner {
+    match super::secrets::env_var_name(raw) {
         Some(var_name) => std::env::var(var_name).ok(),
         None => Some(raw.to_string()),
     }

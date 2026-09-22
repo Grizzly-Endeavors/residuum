@@ -11,7 +11,10 @@
 #   Env var:       api_key = "${ANTHROPIC_API_KEY}"
 #   Secret store:  api_key = "secret:anthropic_key"
 #
-# Use 'residuum secret set anthropic_key' to store encrypted secrets.
+# Use 'residuum secret set anthropic_key' to store encrypted secrets. The web
+# settings page preserves a "${ANTHROPIC_API_KEY}" or "secret:anthropic_key"
+# reference as-is on save — it only ever sends a plain literal value to the
+# secret store, never a reference to something else.
 #
 # [providers]
 # cerebras = { type = "openai", api_key = "csk-...", url = "https://api.cerebras.ai/v1" }
