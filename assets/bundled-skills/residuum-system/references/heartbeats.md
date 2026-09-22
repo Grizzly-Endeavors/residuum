@@ -66,11 +66,11 @@ The `agent` field controls how the pulse executes:
 | `~` (null) | Session with no skill | Small |
 | `"<skill-name>"` | Session with that skill from `skills/` | The pulse's `model_tier` (default: small) |
 
-`agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse.
+`agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
 ## Behavior
 
-- The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart.
+- The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. It's also fully re-validated on every tick — a rejected pulse, a duplicate pulse name, or an unparseable `schedule`/`active_hours` string — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged file. A removed-option rejection links `migrating-to-agent-sessions.md`; a duplicate name or bad schedule/active_hours links this doc instead.
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
 - Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.

@@ -24,12 +24,16 @@ impl ActionStore {
     ///
     /// A stored action left over from before `agent: "main"` was removed is
     /// dropped — never silently reinterpreted as a plain session — with an
-    /// error naming it, while the rest of the store still loads.
+    /// error naming it, while the rest of the store still loads. Every such
+    /// action is also returned alongside the store so the caller can raise an
+    /// owner-facing notice; this only ever runs once, at startup, so unlike
+    /// `HEARTBEAT.yml`'s hot-reloaded pulses there's no repeat-tick spam to
+    /// guard against here.
     ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or is not valid JSON.
     #[tracing::instrument(skip_all)]
-    pub async fn load(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
+    pub async fn load(path: impl Into<PathBuf>) -> anyhow::Result<(Self, Vec<RejectedAction>)> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
@@ -37,14 +41,17 @@ impl ActionStore {
                     .with_context(|| {
                         format!("failed to parse scheduled actions at {}", path.display())
                     })?;
-                reject_agent_main(&mut actions);
+                let rejected = reject_agent_main(&mut actions);
                 debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
-                Ok(Self { actions, path })
+                Ok((Self { actions, path }, rejected))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
-                actions: Vec::new(),
-                path,
-            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((
+                Self {
+                    actions: Vec::new(),
+                    path,
+                },
+                Vec::new(),
+            )),
             Err(e) => Err(e)
                 .with_context(|| format!("failed to read scheduled actions at {}", path.display())),
         }
@@ -139,11 +146,21 @@ impl ActionStore {
     }
 }
 
+/// A stored scheduled action dropped at load because it used the removed
+/// `agent: "main"` routing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedAction {
+    pub id: String,
+    pub name: String,
+}
+
 /// Drop stored actions that still use the removed `agent: "main"` routing,
-/// logging an actionable error naming each offender. Never silently
+/// logging an actionable error naming each offender and returning what was
+/// dropped so the caller can raise an owner-facing notice. Never silently
 /// reinterpreted as a plain session — the owner needs to know this action
 /// will no longer fire the way it used to.
-fn reject_agent_main(actions: &mut Vec<ScheduledAction>) {
+fn reject_agent_main(actions: &mut Vec<ScheduledAction>) -> Vec<RejectedAction> {
+    let mut rejected = Vec::new();
     actions.retain(|action| {
         let uses_main = action
             .agent
@@ -158,9 +175,36 @@ fn reject_agent_main(actions: &mut Vec<ScheduledAction>) {
                  dropping it rather than silently running it as a plain session. Re-create it \
                  with a skill name, or without agent_name, if it's still needed."
             );
+            rejected.push(RejectedAction {
+                id: action.id.clone(),
+                name: action.name.clone(),
+            });
         }
         !uses_main
     });
+    rejected
+}
+
+/// Build an owner-facing notice naming every scheduled action dropped at load
+/// for using the removed `agent: "main"` routing, pointing at the migration
+/// guide. This is only ever called once, right after startup load, so unlike
+/// the HEARTBEAT.yml pulse notice there's no repeat-tick dedup to do here.
+#[must_use]
+pub fn rejected_actions_notice(rejected: &[RejectedAction]) -> String {
+    let details = rejected
+        .iter()
+        .map(|a| format!("- \"{}\" (id {})", a.name, a.id))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Dropped {count} scheduled action{plural} using the removed agent: \"main\" routing \
+         (every session now carries the main agent's identity automatically, so this option is \
+         gone):\n{details}\nRe-create with a skill name, or without agent_name, if still needed. \
+         See {guide}.",
+        count = rejected.len(),
+        plural = if rejected.len() == 1 { "" } else { "s" },
+        guide = crate::util::MIGRATION_GUIDE_URL,
+    )
 }
 
 #[cfg(test)]
@@ -185,10 +229,14 @@ mod tests {
     async fn load_missing_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
-        let store = ActionStore::load(path).await.unwrap();
+        let (store, rejected) = ActionStore::load(path).await.unwrap();
         assert!(
             store.list().is_empty(),
             "missing file should give empty store"
+        );
+        assert!(
+            rejected.is_empty(),
+            "missing file should report no rejections"
         );
     }
 
@@ -198,11 +246,13 @@ mod tests {
         let path = dir.path().join("scheduled_actions.json");
 
         let original = make_action("action-00000001", 60);
-        let mut store = ActionStore::load(&path).await.unwrap();
+        let (mut store, rejected_on_first_load) = ActionStore::load(&path).await.unwrap();
+        assert!(rejected_on_first_load.is_empty());
         store.add(original.clone());
         store.save().await.unwrap();
 
-        let loaded = ActionStore::load(&path).await.unwrap();
+        let (loaded, rejected_on_reload) = ActionStore::load(&path).await.unwrap();
+        assert!(rejected_on_reload.is_empty());
         assert_eq!(loaded.list().len(), 1, "should load one action");
         assert_eq!(
             loaded.list().first().unwrap(),
@@ -231,7 +281,7 @@ mod tests {
         store.add(original.clone());
         store.save().await.unwrap();
 
-        let loaded = ActionStore::load(&path).await.unwrap();
+        let (loaded, _rejected) = ActionStore::load(&path).await.unwrap();
         assert_eq!(loaded.list().len(), 1);
         assert_eq!(
             loaded.list().first().unwrap(),
@@ -313,13 +363,21 @@ mod tests {
         let json = serde_json::to_string(&vec![legacy, make_action("keep-me", 120)]).unwrap();
         std::fs::write(&path, json).unwrap();
 
-        let loaded = ActionStore::load(&path).await.unwrap();
+        let (loaded, rejected) = ActionStore::load(&path).await.unwrap();
         assert_eq!(
             loaded.list().len(),
             1,
             "the agent: main action should be dropped, the other kept"
         );
         assert_eq!(loaded.list().first().unwrap().id, "keep-me");
+        assert_eq!(
+            rejected,
+            vec![RejectedAction {
+                id: "action-legacy1".to_string(),
+                name: "legacy main action".to_string(),
+            }],
+            "the dropped action should be reported for the owner notice"
+        );
     }
 
     #[tokio::test]
@@ -340,8 +398,36 @@ mod tests {
         let json = serde_json::to_string(&vec![legacy]).unwrap();
         std::fs::write(&path, json).unwrap();
 
-        let loaded = ActionStore::load(&path).await.unwrap();
+        let (loaded, rejected) = ActionStore::load(&path).await.unwrap();
         assert!(loaded.list().is_empty());
+        assert_eq!(rejected.len(), 1, "the dropped action should be reported");
+    }
+
+    #[test]
+    fn rejected_actions_notice_names_each_action_and_links_the_guide() {
+        let rejected = vec![
+            RejectedAction {
+                id: "action-aaaaaaaa".to_string(),
+                name: "old plan review".to_string(),
+            },
+            RejectedAction {
+                id: "action-bbbbbbbb".to_string(),
+                name: "nightly digest".to_string(),
+            },
+        ];
+        let notice = rejected_actions_notice(&rejected);
+        assert!(notice.contains("old plan review"));
+        assert!(notice.contains("action-aaaaaaaa"));
+        assert!(notice.contains("nightly digest"));
+        assert!(notice.contains("action-bbbbbbbb"));
+        assert!(
+            notice.contains("migrating-to-agent-sessions.md"),
+            "notice should point at the migration guide"
+        );
+        assert!(
+            notice.contains('2'),
+            "notice should mention how many actions were dropped"
+        );
     }
 
     #[test]
@@ -355,7 +441,7 @@ mod tests {
     async fn atomic_write_no_tmp_remains() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
-        let store = ActionStore::load(&path).await.unwrap();
+        let (store, _rejected) = ActionStore::load(&path).await.unwrap();
         store.save().await.unwrap();
 
         assert!(path.exists(), "saved file should exist");

@@ -67,6 +67,72 @@ fn default_enabled() -> bool {
     true
 }
 
+/// What kind of problem a `HeartbeatProblem` represents, which decides both
+/// the log level and which doc a notice about it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProblemKind {
+    /// A pulse used an option removed by the agent sessions overhaul
+    /// (`agent: "main"` or `include_identity`). Logged at `error!`; the
+    /// owner notice links the migration guide.
+    RemovedOption,
+    /// Anything else wrong with the file that isn't about a removed option
+    /// (a duplicate pulse name, an unparseable `schedule` or
+    /// `active_hours`). Logged at `warn!`; the owner notice links the
+    /// heartbeats reference doc instead.
+    Malformed,
+}
+
+/// A single problem found while loading or evaluating a HEARTBEAT.yml pulse
+/// — a pulse using a removed option, a duplicate pulse name, or an
+/// unparseable `schedule`/`active_hours` string.
+///
+/// Carries the already-formatted message so the log line and the owner
+/// notice built from it stay in sync with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeartbeatProblem {
+    pub name: String,
+    pub message: String,
+    pub kind: ProblemKind,
+}
+
+/// Build an owner-facing notice naming every current HEARTBEAT.yml problem.
+///
+/// Links the migration guide if any problem is a removed option, or the
+/// heartbeats reference doc otherwise (a duplicate name or bad
+/// `schedule`/`active_hours` string has nothing to do with the migration).
+///
+/// Callers are responsible for only calling this when the problem set has
+/// actually changed since the last check — see `PulseScheduler` — so the
+/// notice fires once per distinct problem rather than on every reload of an
+/// unchanged file.
+#[must_use]
+pub(crate) fn heartbeat_problems_notice(problems: &[HeartbeatProblem]) -> String {
+    let details = problems
+        .iter()
+        .map(|p| format!("- {}", p.message))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let guide = if problems
+        .iter()
+        .any(|p| p.kind == ProblemKind::RemovedOption)
+    {
+        format!(
+            "See {} for how to update them.",
+            crate::util::MIGRATION_GUIDE_URL
+        )
+    } else {
+        format!(
+            "See {} for the HEARTBEAT.yml format.",
+            crate::util::HEARTBEATS_REFERENCE_URL
+        )
+    };
+    format!(
+        "HEARTBEAT.yml: {count} problem{plural} found and will not run until fixed:\n{details}\n{guide}",
+        count = problems.len(),
+        plural = if problems.len() == 1 { "" } else { "s" },
+    )
+}
+
 /// One task within a pulse.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PulseTask {
@@ -180,11 +246,20 @@ where
 /// Duplicate pulse names are dropped, keeping the first occurrence: `PulseScheduler`
 /// keys its per-pulse state by name, so two pulses sharing a name would otherwise
 /// silently collapse into one scheduler-state entry.
+///
+/// `problems` is cleared and refilled with every pulse dropped this call — for using
+/// a removed option (see `validate_pulse`) or for duplicating an earlier pulse's name.
+/// This function itself doesn't log or notify about them — every call re-validates
+/// the whole file, so a caller hot-reloading on a timer (`PulseScheduler`) is
+/// responsible for comparing against the previous call's result and only
+/// logging/notifying when it actually changed.
 #[must_use]
 pub(crate) fn load_heartbeat(
     path: &Path,
     last_parse_error: &mut Option<String>,
+    problems: &mut Vec<HeartbeatProblem>,
 ) -> Option<HeartbeatConfig> {
+    problems.clear();
     let mut cfg = match std::fs::read_to_string(path) {
         Ok(contents) => match serde_yaml_ng::from_str::<HeartbeatConfig>(&contents) {
             Ok(cfg) => {
@@ -214,43 +289,62 @@ pub(crate) fn load_heartbeat(
         }
     };
 
-    dedupe_pulse_names(&mut cfg.pulses);
-    reject_invalid_pulses(&mut cfg.pulses);
+    problems.extend(dedupe_pulse_names(&mut cfg.pulses));
+    problems.extend(reject_invalid_pulses(&mut cfg.pulses));
 
     tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
     Some(cfg)
 }
 
 /// Drop pulses that use a removed option (`agent: "main"` or
-/// `include_identity`), logging an actionable error per offender.
+/// `include_identity`), returning what was dropped and why.
 ///
 /// Never silently reinterpreted: the pulse is skipped entirely, not routed
-/// as if the option were absent, so the owner notices and fixes it.
-fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) {
+/// as if the option were absent. Logging and owner notification are the
+/// caller's responsibility (see `load_heartbeat`'s doc comment).
+fn reject_invalid_pulses(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
+    let mut problems = Vec::new();
     pulses.retain(|pulse| match validate_pulse(pulse) {
         Ok(()) => true,
         Err(message) => {
-            tracing::error!(pulse = %pulse.name, "{message}");
+            problems.push(HeartbeatProblem {
+                name: pulse.name.clone(),
+                message,
+                kind: ProblemKind::RemovedOption,
+            });
             false
         }
     });
+    problems
 }
 
-/// Drop pulses whose name duplicates an earlier one in the list, keeping the first.
+/// Drop pulses whose name duplicates an earlier one in the list, keeping the
+/// first, and return one problem per dropped duplicate.
 ///
-/// Logs a warning per duplicate so a HEARTBEAT.yml typo (copy-pasted pulse block
-/// with an unchanged `name`) is visible rather than silently overwriting scheduler
-/// state for the earlier pulse of the same name.
-fn dedupe_pulse_names(pulses: &mut Vec<PulseDef>) {
+/// A HEARTBEAT.yml typo (copy-pasted pulse block with an unchanged `name`)
+/// should be visible rather than silently overwriting scheduler state for
+/// the earlier pulse of the same name. Logging and owner notification are
+/// the caller's responsibility (see `load_heartbeat`'s doc comment).
+fn dedupe_pulse_names(pulses: &mut Vec<PulseDef>) -> Vec<HeartbeatProblem> {
     let mut seen = HashSet::new();
+    let mut problems = Vec::new();
     pulses.retain(|pulse| {
         if seen.insert(pulse.name.clone()) {
             true
         } else {
-            tracing::warn!(pulse = %pulse.name, "duplicate pulse name in HEARTBEAT.yml, skipping");
+            problems.push(HeartbeatProblem {
+                name: pulse.name.clone(),
+                message: format!(
+                    "pulse '{}' is defined more than once in HEARTBEAT.yml; only the first \
+                     definition is used, the later one is ignored",
+                    pulse.name
+                ),
+                kind: ProblemKind::Malformed,
+            });
             false
         }
     });
+    problems
 }
 
 #[cfg(test)]
@@ -568,8 +662,9 @@ pulses:
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
         let mut last_error = None;
+        let mut problems = Vec::new();
         assert!(
-            load_heartbeat(&path, &mut last_error).is_none(),
+            load_heartbeat(&path, &mut last_error, &mut problems).is_none(),
             "missing file should return None"
         );
     }
@@ -603,8 +698,9 @@ pulses:
         let path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let mut last_error = None;
+        let mut problems = Vec::new();
         assert!(
-            load_heartbeat(&path, &mut last_error).is_none(),
+            load_heartbeat(&path, &mut last_error, &mut problems).is_none(),
             "invalid YAML should return None"
         );
     }
@@ -615,8 +711,9 @@ pulses:
         let path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let mut last_error = None;
+        let mut problems = Vec::new();
 
-        assert!(load_heartbeat(&path, &mut last_error).is_none());
+        assert!(load_heartbeat(&path, &mut last_error, &mut problems).is_none());
         assert!(
             last_error.is_some(),
             "first parse failure should record the error text"
@@ -626,7 +723,7 @@ pulses:
         // Same broken file parsed again on a later tick: the recorded error is
         // unchanged, so the caller can tell this isn't a new failure worth a
         // fresh warning (see load_heartbeat's dedup behavior).
-        assert!(load_heartbeat(&path, &mut last_error).is_none());
+        assert!(load_heartbeat(&path, &mut last_error, &mut problems).is_none());
         assert_eq!(
             last_error, recorded,
             "identical repeated parse error should not change the recorded message"
@@ -639,11 +736,12 @@ pulses:
         let path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let mut last_error = None;
-        assert!(load_heartbeat(&path, &mut last_error).is_none());
+        let mut problems = Vec::new();
+        assert!(load_heartbeat(&path, &mut last_error, &mut problems).is_none());
         assert!(last_error.is_some(), "broken file should record an error");
 
         std::fs::write(&path, SIMPLE_VALID_HEARTBEAT).unwrap();
-        let cfg = load_heartbeat(&path, &mut last_error);
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems);
         assert!(cfg.is_some(), "fixed file should parse successfully");
         assert!(
             last_error.is_none(),
@@ -680,7 +778,8 @@ pulses:
 "#;
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
-        let cfg = load_heartbeat(&path, &mut last_error).unwrap();
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
@@ -710,13 +809,25 @@ pulses:
 "#;
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
-        let cfg = load_heartbeat(&path, &mut last_error).unwrap();
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
             ["keep_me"],
             "the agent: main pulse should be dropped, never silently reinterpreted, \
              while the rest of the file still loads"
+        );
+        assert_eq!(
+            problems.len(),
+            1,
+            "load_heartbeat should report exactly the one rejected pulse"
+        );
+        assert_eq!(problems.first().unwrap().name, "wake_main");
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::RemovedOption);
+        assert!(
+            problems.first().unwrap().message.contains("agent: main"),
+            "rejected pulse message should name the offending option"
         );
     }
 
@@ -733,10 +844,141 @@ pulses:
 "#;
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
-        let cfg = load_heartbeat(&path, &mut last_error).unwrap();
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
         assert!(
             cfg.pulses.is_empty(),
             "a pulse setting include_identity (removed) must not load"
         );
+        assert_eq!(problems.len(), 1, "the rejection should be reported");
+        assert_eq!(problems.first().unwrap().name, "legacy_identity");
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::RemovedOption);
+        assert!(
+            problems
+                .first()
+                .unwrap()
+                .message
+                .contains("include_identity"),
+            "rejected pulse message should name the offending option"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_valid_pulse_reports_no_rejections() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat_for_test(dir.path(), SIMPLE_VALID_HEARTBEAT);
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        assert!(
+            problems.is_empty(),
+            "a valid HEARTBEAT.yml should report no problems"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_reports_duplicate_pulse_name_as_malformed_problem() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+pulses:
+  - name: dup
+    schedule: "1h"
+    tasks: []
+  - name: dup
+    schedule: "2h"
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        assert_eq!(problems.len(), 1, "the duplicate should be reported");
+        assert_eq!(problems.first().unwrap().name, "dup");
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
+    }
+
+    #[test]
+    fn heartbeat_problems_notice_names_each_pulse_and_links_the_migration_guide() {
+        let problems = vec![
+            HeartbeatProblem {
+                name: "wake_main".to_string(),
+                message: "pulse 'wake_main' uses agent: \"main\", which is no longer supported"
+                    .to_string(),
+                kind: ProblemKind::RemovedOption,
+            },
+            HeartbeatProblem {
+                name: "legacy_identity".to_string(),
+                message: "pulse 'legacy_identity' sets include_identity, which has been removed"
+                    .to_string(),
+                kind: ProblemKind::RemovedOption,
+            },
+        ];
+        let notice = heartbeat_problems_notice(&problems);
+        assert!(
+            notice.contains("wake_main"),
+            "notice should name the first rejected pulse"
+        );
+        assert!(
+            notice.contains("legacy_identity"),
+            "notice should name the second rejected pulse"
+        );
+        assert!(
+            notice.contains("migrating-to-agent-sessions.md"),
+            "notice should point at the migration guide when a removed option is involved"
+        );
+        assert!(
+            notice.contains('2'),
+            "notice should mention how many problems were found"
+        );
+    }
+
+    #[test]
+    fn heartbeat_problems_notice_links_the_heartbeats_doc_when_nothing_is_a_removed_option() {
+        let problems = vec![HeartbeatProblem {
+            name: "dup".to_string(),
+            message: "pulse 'dup' is defined more than once in HEARTBEAT.yml".to_string(),
+            kind: ProblemKind::Malformed,
+        }];
+        let notice = heartbeat_problems_notice(&problems);
+        assert!(notice.contains("dup"));
+        assert!(
+            !notice.contains("migrating-to-agent-sessions.md"),
+            "a malformed-only notice shouldn't point at the unrelated migration guide"
+        );
+        assert!(
+            notice.contains("heartbeats.md"),
+            "notice should point at the heartbeats reference doc instead"
+        );
+    }
+
+    #[test]
+    fn heartbeat_problems_notice_links_the_migration_guide_when_problems_are_mixed() {
+        let problems = vec![
+            HeartbeatProblem {
+                name: "dup".to_string(),
+                message: "pulse 'dup' is defined more than once in HEARTBEAT.yml".to_string(),
+                kind: ProblemKind::Malformed,
+            },
+            HeartbeatProblem {
+                name: "wake_main".to_string(),
+                message: "pulse 'wake_main' uses agent: \"main\", which is no longer supported"
+                    .to_string(),
+                kind: ProblemKind::RemovedOption,
+            },
+        ];
+        let notice = heartbeat_problems_notice(&problems);
+        assert!(notice.contains("dup"));
+        assert!(notice.contains("wake_main"));
+        assert!(
+            notice.contains("migrating-to-agent-sessions.md"),
+            "one removed-option problem should be enough to link the migration guide"
+        );
+    }
+
+    fn write_heartbeat_for_test(dir: &Path, content: &str) -> std::path::PathBuf {
+        let path = dir.join("HEARTBEAT.yml");
+        std::fs::write(&path, content).unwrap();
+        path
     }
 }

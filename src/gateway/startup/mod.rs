@@ -121,15 +121,29 @@ pub(crate) fn init_session_observer(
 }
 
 /// Load the scheduled action store and create the notification handle.
+///
+/// A stored action left over from before `agent: "main"` was removed is
+/// dropped by `ActionStore::load` itself; this only raises the owner-facing
+/// notice for whatever it reports, once, at startup.
 async fn init_action_store(
     layout: &WorkspaceLayout,
+    publisher: &crate::bus::Publisher,
 ) -> (
     Arc<tokio::sync::Mutex<ActionStore>>,
     Arc<tokio::sync::Notify>,
 ) {
     let actions_path = layout.scheduled_actions_json();
     let action_store = match ActionStore::load(&actions_path).await {
-        Ok(store) => Arc::new(tokio::sync::Mutex::new(store)),
+        Ok((store, rejected)) => {
+            if !rejected.is_empty() {
+                super::helpers::publish_notice(
+                    publisher,
+                    crate::actions::store::rejected_actions_notice(&rejected),
+                )
+                .await;
+            }
+            Arc::new(tokio::sync::Mutex::new(store))
+        }
         Err(err) => {
             tracing::warn!(error = %err, "action store degraded: starting empty");
             Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
@@ -689,7 +703,7 @@ pub(crate) async fn initialize(
     let mem = memory::init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
     let subconscious = crate::subconscious::Subconscious::build(cfg, &layout, http.clone());
 
-    let (action_store, action_notify) = init_action_store(&layout).await;
+    let (action_store, action_notify) = init_action_store(&layout, publisher).await;
     let skill_state = init_skills(cfg).await;
 
     let (session_observer, merge_writer) = build_session_memory_components(

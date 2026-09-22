@@ -46,3 +46,4 @@ See [notifications.md](notifications.md) for the full routing model.
 - `ActionStore` handles concurrent access
 - IDs generated as `action-{8 hex chars}`
 - Managed exclusively via tools — the agent should not edit `scheduled_actions.json` directly
+- A stored action left over from before `agent: "main"` was removed is dropped at startup load — never silently reinterpreted as a plain session — logged as an error naming the action, and also raised as an owner-facing notice (a web UI toast, and the same message on any chat interface) naming every dropped action and linking to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). This only happens once, right after the store loads at startup, since actions (unlike heartbeat pulses) aren't re-validated on a running tick.
