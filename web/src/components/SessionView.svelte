@@ -28,10 +28,12 @@
   });
   let spawnerIsSession = $derived(summary?.spawner != null && summary.spawner !== "main");
 
-  // Move focus to the heading whenever a different run is opened, so screen
-  // reader and keyboard users land at the top of what just replaced the chat.
+  // Move focus to the heading whenever a different session is opened, so
+  // screen reader and keyboard users land at the top of what just replaced
+  // the chat. Following the same session into a new run keeps focus where it
+  // is (usually the message box).
   $effect(() => {
-    void view.runId;
+    void view;
     void tick().then(() => headingEl?.focus());
   });
 

@@ -27,7 +27,7 @@
 
 <div class="msg msg-agent" role="group" aria-label="Message from {item.from}">
   <div class="msg-agent-head">
-    {#if category}
+    {#if category && isSession}
       <CategoryBadge {category} />
     {/if}
     <span class="msg-agent-from">

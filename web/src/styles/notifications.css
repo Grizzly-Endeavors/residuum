@@ -255,3 +255,12 @@
 .notif-dropdown-clear.confirm {
   color: var(--error);
 }
+
+@media (max-width: 600px) {
+  /* The composer spans the full width on phones; lift the corner above it
+     so it never covers the message box or its toolbar. */
+  .notif-corner {
+    bottom: 136px;
+    left: var(--s-3);
+  }
+}

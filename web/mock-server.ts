@@ -23,6 +23,128 @@ interface MockState {
   workspaceFiles: Record<string, Array<{ name: string; entry_type: string; size: number | null }>>;
   workspaceFileContents: Record<string, string>;
   inboxItems: Array<{ id: string; title: string; body: string; source: string; timestamp: string; read: boolean; attachments: string[] }>;
+  sessions: MockSessions;
+}
+
+// ─── Agent sessions ────────────────────────────────────────────────────────────
+
+interface MockSession {
+  address: string;
+  run_id: string;
+  category: "scheduled" | "external" | "spawned";
+  source_label: string;
+  state: "forking" | "running" | "idle" | "completing" | "completed";
+  spawner: string | null;
+  depth: number;
+  purpose: string;
+  started_at: string;
+  completed_at: string | null;
+  episode_id: string | null;
+  interrupted: boolean;
+}
+
+interface MockSessions {
+  live: MockSession[];
+  completed: MockSession[];
+  transcripts: Map<string, Array<Record<string, unknown>>>;
+  runCounter: number;
+}
+
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
+function createSessions(): MockSessions {
+  const live: MockSession[] = [
+    {
+      address: "spawned-research-3f9a",
+      run_id: "run-live-research",
+      category: "spawned",
+      source_label: "agent:researcher",
+      state: "running",
+      spawner: "main",
+      depth: 1,
+      purpose: "Compare fallback strategies for notification delivery",
+      started_at: minutesAgo(4),
+      completed_at: null,
+      episode_id: null,
+      interrupted: false,
+    },
+    {
+      address: "external-discord-builds-91c2",
+      run_id: "run-live-discord",
+      category: "external",
+      source_label: "discord:#builds",
+      state: "idle",
+      spawner: null,
+      depth: 1,
+      purpose: "Conversation in #builds",
+      started_at: minutesAgo(26),
+      completed_at: null,
+      episode_id: null,
+      interrupted: false,
+    },
+  ];
+  const completed: MockSession[] = [];
+  const labels: Array<[MockSession["category"], string, string]> = [
+    ["scheduled", "pulse:inbox_check", "Review the inbox for anything urgent"],
+    ["spawned", "agent:subagent", "Summarize yesterday's build failures"],
+    ["scheduled", "action:weekly_digest", "Write the weekly digest"],
+    ["external", "webhook:github", "Triage a new GitHub issue"],
+    ["spawned", "learner", "Review recent corrections for lasting lessons"],
+  ];
+  for (let i = 0; i < 32; i++) {
+    const [category, source, purpose] = labels[i % labels.length];
+    const start = 60 + i * 95;
+    completed.push({
+      address: `${category}-${source.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-${(0x1a2b + i).toString(16)}`,
+      run_id: `run-done-${i}`,
+      category,
+      source_label: source,
+      state: "completed",
+      spawner: category === "spawned" ? "main" : null,
+      depth: 1,
+      purpose,
+      started_at: minutesAgo(start),
+      completed_at: minutesAgo(start - 3 - (i % 7)),
+      episode_id: i % 3 === 0 ? null : `ep-${String(200 - i).padStart(3, "0")}`,
+      interrupted: i === 4,
+    });
+  }
+  const transcripts = new Map<string, Array<Record<string, unknown>>>();
+  transcripts.set("run-live-research", [
+    {
+      role: "user",
+      content: "Research how notification systems fall back when a channel is unreachable. Report the main strategies and a recommended default.",
+      timestamp: minutesAgo(4),
+      visibility: "user",
+    },
+    {
+      role: "assistant",
+      content: "Starting with what's already in the wiki.",
+      tool_calls: [{ id: "tc_r1", name: "memory_search", arguments: { query: "notification fallback" } }],
+      timestamp: minutesAgo(4),
+      visibility: "user",
+    },
+    { role: "tool", content: "2 results: notification-routing.md, channels.md", tool_call_id: "tc_r1", timestamp: minutesAgo(4), visibility: "user" },
+    {
+      role: "user",
+      content: "[Agent Message from main (main)]\nThe owner prefers not to lose anything, so weigh safety over speed.",
+      timestamp: minutesAgo(3),
+      visibility: "user",
+    },
+  ]);
+  transcripts.set("run-live-discord", [
+    { role: "user", content: "@agent is the nightly build green again?", timestamp: minutesAgo(26), visibility: "user", sender: { name: "Jane", id: "j1", interface: "discord", location: "#builds" } },
+    { role: "assistant", content: "Yes. Last night's build passed after the cache fix landed.", timestamp: minutesAgo(26), visibility: "user" },
+  ]);
+  for (const run of completed) {
+    transcripts.set(run.run_id, [
+      { role: "user", content: run.purpose + ".", timestamp: run.started_at, visibility: "user" },
+      { role: "assistant", content: "Done. Nothing needed your attention.", timestamp: run.started_at, visibility: "user" },
+    ]);
+  }
+  return { live, completed, transcripts, runCounter: 0 };
 }
 
 function loadAsset(filename: string): string {
@@ -110,6 +232,7 @@ function createState(): MockState {
       "memory/observations.jsonl": '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
       "memory/reflections.jsonl": '{"text":"User is building a personal agent framework focused on genuine autonomy and persistent memory","timestamp":"2026-03-09T12:00:00Z","observations":5}\n',
     },
+    sessions: createSessions(),
     inboxItems: [
       { id: "mock_1", title: "Deploy tomorrow", body: "Reminder to trigger the deployment pipeline tomorrow morning.", source: "agent:pulse", timestamp: new Date().toISOString(), read: false, attachments: [] },
       { id: "mock_2", title: "Daily Digest", body: "Here is your daily summary.", source: "agent:digest", timestamp: new Date(Date.now() - 3600000).toISOString(), read: true, attachments: [] },
@@ -207,6 +330,41 @@ function sampleRecentMessages() {
         "is unreachable. Want me to start there?",
       timestamp: daysAgoAt(0, 10, 6),
       visibility: "user",
+    },
+    // Background noise from before sessions existed: stays hidden.
+    {
+      role: "user",
+      content: "Pulse check: inbox_check. Review the inbox for anything urgent.",
+      timestamp: daysAgoAt(0, 10, 30),
+      visibility: "background",
+    },
+    {
+      role: "assistant",
+      content: "HEARTBEAT_OK",
+      timestamp: daysAgoAt(0, 10, 30),
+      visibility: "background",
+    },
+    // A spawned session's relayed result and main's reply: shown.
+    {
+      role: "user",
+      content:
+        "[Agent Message from spawned-research-3f9a (spawned)]\n" +
+        "Found three fallback strategies worth comparing:\n\n" +
+        "1. **Retry with backoff** on the same channel, capped at 3 attempts.\n" +
+        "2. **Cascade** to the next channel in the priority list.\n" +
+        "3. **Park** the notification in the inbox and surface it on next contact.\n\n" +
+        "Cascade is what most setups expect; parking is the safest default when every channel is down. " +
+        "Sources and notes are in `wiki/notification-fallbacks.md`.",
+      timestamp: daysAgoAt(0, 10, 41),
+      visibility: "background",
+    },
+    {
+      role: "assistant",
+      content:
+        "The research session came back: cascade first, then park in the inbox if every " +
+        "channel is down. I'll draft the fallback section that way.",
+      timestamp: daysAgoAt(0, 10, 42),
+      visibility: "background",
     },
   ];
 }
@@ -466,6 +624,38 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      // ── Sessions ───────────────────────────────────────────────────────
+      if (path === "/api/sessions" && method === "GET") {
+        const address = query.get("address");
+        const limit = Number(query.get("limit") ?? "50");
+        const before = query.get("before");
+        const match = (s: MockSession) => !address || s.address === address;
+        const done = state.sessions.completed.filter(match);
+        const startIdx = before ? done.findIndex((s) => s.run_id === before) + 1 : 0;
+        const page = done.slice(startIdx, startIdx + limit);
+        const hasMore = startIdx + limit < done.length;
+        json(res, 200, {
+          live: state.sessions.live.filter(match),
+          completed: page,
+          next_cursor: hasMore ? (page[page.length - 1]?.run_id ?? null) : null,
+        });
+        return;
+      }
+
+      const transcriptMatch = /^\/api\/sessions\/runs\/([^/]+)\/transcript$/.exec(path);
+      if (transcriptMatch && method === "GET") {
+        const runId = decodeURIComponent(transcriptMatch[1]);
+        const session =
+          state.sessions.live.find((s) => s.run_id === runId) ??
+          state.sessions.completed.find((s) => s.run_id === runId);
+        if (!session) {
+          text(res, 404, "no such run");
+          return;
+        }
+        json(res, 200, { session, messages: state.sessions.transcripts.get(runId) ?? [] });
+        return;
+      }
+
       // ── Config ─────────────────────────────────────────────────────────
       if (path === "/api/config/raw" && method === "GET") {
         text(res, 200, state.configToml);
@@ -669,7 +859,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
 // ─── WebSocket handler ─────────────────────────────────────────────────────────
 
-function setupWebSocket(server: ViteDevServer) {
+function setupWebSocket(server: ViteDevServer, state: MockState) {
   const httpServer = server.httpServer;
   if (!httpServer) return;
 
@@ -688,6 +878,103 @@ function setupWebSocket(server: ViteDevServer) {
     // Let other upgrades (Vite HMR) pass through — don't call socket.destroy()
   });
 
+  const broadcast = (frame: Record<string, unknown>) => {
+    const data = JSON.stringify(frame);
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(data);
+    }
+  };
+  const sessions = state.sessions;
+
+  function setState(session: MockSession, next: MockSession["state"]) {
+    session.state = next;
+    broadcast({ type: "session_state_changed", address: session.address, run_id: session.run_id, state: next });
+  }
+
+  function record(session: MockSession, message: Record<string, unknown>) {
+    const list = sessions.transcripts.get(session.run_id) ?? [];
+    list.push({ timestamp: session.started_at, visibility: "user", ...message });
+    sessions.transcripts.set(session.run_id, list);
+  }
+
+  function complete(session: MockSession, status: "completed" | "cancelled" | "failed", error: string | null) {
+    setState(session, "completing");
+    setTimeout(() => {
+      sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
+      session.state = "completed";
+      session.completed_at = new Date().toISOString();
+      session.episode_id = status === "completed" ? "ep-301" : null;
+      sessions.completed.unshift(session);
+      broadcast({ type: "session_completed", address: session.address, run_id: session.run_id, status, error, episode_id: session.episode_id });
+    }, 800);
+  }
+
+  // One turn: running → tool → reply → idle, relaying to main when spawned by it.
+  function runTurn(session: MockSession, reply: string) {
+    const turnId = `${session.run_id}-t${Date.now()}`;
+    const toolId = `tc_s_${Date.now()}`;
+    setState(session, "running");
+    broadcast({ type: "session_turn_started", address: session.address, run_id: session.run_id, turn_id: turnId });
+    setTimeout(() => {
+      broadcast({ type: "session_broadcast_response", address: session.address, run_id: session.run_id, content: "Checking the notes first." });
+      broadcast({ type: "session_tool_call", address: session.address, run_id: session.run_id, id: toolId, name: "memory_search", arguments: { query: "fallback" } });
+    }, 500);
+    setTimeout(() => {
+      broadcast({ type: "session_tool_result", address: session.address, run_id: session.run_id, tool_call_id: toolId, name: "memory_search", output: "1 result: notification-routing.md", is_error: false });
+    }, 1200);
+    setTimeout(() => {
+      if (!sessions.live.includes(session) || session.state !== "running") return;
+      record(session, { role: "assistant", content: reply });
+      broadcast({ type: "session_response", address: session.address, run_id: session.run_id, turn_id: turnId, content: reply });
+      broadcast({ type: "session_turn_ended", address: session.address, run_id: session.run_id, turn_id: turnId });
+      setState(session, "idle");
+      if (session.spawner === "main") {
+        broadcast({ type: "session_message_to_main", address: session.address, run_id: session.run_id, content: reply });
+      }
+    }, 2400);
+  }
+
+  function spawnSession(purpose: string): MockSession {
+    sessions.runCounter++;
+    const session: MockSession = {
+      address: `spawned-subagent-${(0xa000 + sessions.runCounter).toString(16)}`,
+      run_id: `run-new-${sessions.runCounter}`,
+      category: "spawned",
+      source_label: "agent:subagent",
+      state: "forking",
+      spawner: "main",
+      depth: 1,
+      purpose,
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      episode_id: null,
+      interrupted: false,
+    };
+    sessions.live.unshift(session);
+    record(session, { role: "user", content: purpose });
+    broadcast({ type: "session_started", session });
+    setTimeout(() => runTurn(session, `Finished: ${purpose}. Two items need a look; details are in the transcript.`), 400);
+    return session;
+  }
+
+  function resumeSession(prev: MockSession, content: string): MockSession {
+    sessions.runCounter++;
+    const session: MockSession = {
+      ...prev,
+      run_id: `run-resumed-${sessions.runCounter}`,
+      state: "forking",
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      episode_id: null,
+      interrupted: false,
+    };
+    sessions.live.unshift(session);
+    record(session, { role: "user", content: `[Message from the owner via the web UI — your response in this turn is shown to them directly]\n${content}` });
+    broadcast({ type: "session_started", session });
+    setTimeout(() => runTurn(session, "Picking this back up. Here's where it stands now."), 400);
+    return session;
+  }
+
   wss.on("connection", (ws: WebSocket) => {
     ws.on("message", (raw: Buffer) => {
       let msg: { type: string; [key: string]: unknown };
@@ -704,12 +991,53 @@ function setupWebSocket(server: ViteDevServer) {
           break;
 
         case "send_message":
+          if (String(msg.content).toLowerCase().startsWith("spawn")) {
+            spawnSession(String(msg.content).replace(/^spawn\s*/i, "") || "Look into something");
+          }
           simulateConversation(ws, msg);
           break;
 
         case "set_verbose":
           // Silent acknowledge — no response needed
           break;
+
+        case "session_send_message": {
+          const id = String(msg.id);
+          const address = String(msg.address);
+          const content = String(msg.content);
+          const live = sessions.live.find((s) => s.address === address);
+          if (content.includes("busy")) {
+            ws.send(JSON.stringify({ type: "session_command_failed", id, address, code: "busy", message: `${address} is busy and can't take another message yet. Try again shortly.` }));
+            break;
+          }
+          if (live) {
+            record(live, { role: "user", content: `[Message from the owner via the web UI — your response in this turn is shown to them directly]\n${content}` });
+            ws.send(JSON.stringify({ type: "session_message_delivered", id, address, outcome: "live" }));
+            runTurn(live, `Understood: "${content.slice(0, 60)}". Adjusting course.`);
+            break;
+          }
+          const prev = sessions.completed.find((s) => s.address === address);
+          if (!prev) {
+            ws.send(JSON.stringify({ type: "session_command_failed", id, address, code: "unknown_address", message: `There's no session called ${address}. It may have been from before a restart.` }));
+            break;
+          }
+          ws.send(JSON.stringify({ type: "session_message_delivered", id, address, outcome: "resumed" }));
+          setTimeout(() => resumeSession(prev, content), 300);
+          break;
+        }
+
+        case "session_stop": {
+          const id = String(msg.id);
+          const address = String(msg.address);
+          const live = sessions.live.find((s) => s.address === address);
+          if (!live || live.state === "completing") {
+            ws.send(JSON.stringify({ type: "session_command_failed", id, address, code: "not_live", message: `${address} isn't running, so there's nothing to stop.` }));
+            break;
+          }
+          ws.send(JSON.stringify({ type: "session_stop_requested", id, address }));
+          complete(live, "cancelled", null);
+          break;
+        }
 
         case "reload":
           ws.send(JSON.stringify({ type: "reloading" }));
@@ -824,7 +1152,7 @@ export function mockServerPlugin(): Plugin {
       const state = createState();
 
       setupRestMiddleware(server, state);
-      setupWebSocket(server);
+      setupWebSocket(server, state);
 
       const modeLabel = state.mode === "setup" ? "setup" : "running";
       console.log("");

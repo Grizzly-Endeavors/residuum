@@ -43,10 +43,12 @@
   }
 
   function setSidebarOpen(open: boolean) {
+    // Closing removes the focused control, so hand focus back to the toggle.
+    if (!open) {
+      void tick().then(() => document.querySelector<HTMLElement>(".sessions-toggle")?.focus());
+    }
     if (narrow) {
       drawerOpen = open;
-      if (!open)
-        void tick().then(() => document.querySelector<HTMLElement>(".sessions-toggle")?.focus());
       return;
     }
     sidebarPreferredOpen = open;

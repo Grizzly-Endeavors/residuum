@@ -124,3 +124,21 @@
     top: 0;
   }
 }
+
+@media (max-width: 480px) {
+  /* Phone widths: tighten spacing so every header control stays on screen. */
+  .header {
+    gap: var(--s-2);
+    padding: 0 var(--s-3);
+  }
+  .header-title {
+    letter-spacing: 0.08em;
+  }
+}
+
+@media (max-width: 400px) {
+  /* The brand mark alone carries the identity at the narrowest widths. */
+  .header-title {
+    display: none;
+  }
+}

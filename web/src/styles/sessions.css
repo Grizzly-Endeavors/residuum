@@ -149,7 +149,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 var(--s-2) var(--s-4);
+  /* Bottom room so the notification corner never covers the last row. */
+  padding: 0 var(--s-2) 72px;
 }
 
 .sessions-list {
