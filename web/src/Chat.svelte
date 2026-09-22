@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ws } from "./lib/ws.svelte";
-  import { fetchChatHistory, fetchChatSegment } from "./lib/api";
   import { parseCommand } from "./lib/commands";
   import { notifications } from "./lib/notifications.svelte";
   import ChatFeed from "./components/ChatFeed.svelte";
@@ -10,32 +9,8 @@
 
   let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
 
-  onMount(async () => {
-    let recent;
-    try {
-      recent = await fetchChatHistory();
-    } catch (err) {
-      notifications.surface(
-        "error",
-        `Couldn't load chat history: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return;
-    }
-    ws.loadHistory(recent);
-    // Always prefetch the most recent episode so the chat is never
-    // empty after the observer compresses history, and the
-    // "compressed history" marker shows up from the start.
-    if (recent.next_cursor) {
-      try {
-        const episode = await fetchChatSegment(recent.next_cursor);
-        ws.prependEpisode(episode);
-      } catch (err) {
-        notifications.surface(
-          "error",
-          `Couldn't load episode ${recent.next_cursor}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
+  onMount(() => {
+    void ws.loadMainHistory();
   });
 
   function handleSend(text: string, images?: ImageAttachment[]) {

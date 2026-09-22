@@ -1,7 +1,7 @@
 // ── Feed item building shared by the main chat and session views ─────
 
 import { nextFeedId } from "./feed-id";
-import { parseAgentMessage, parseOwnerMessage } from "./relay";
+import { historyAgentMessage, parseOwnerMessage } from "./relay";
 import type { DividerFeedItem, FeedItem, RecentMessage, ToolCallState } from "./types";
 
 /**
@@ -38,35 +38,64 @@ function appendResult(call: ToolCallState, output: string): void {
   call.result = (call.result ? call.result + "\n" : "") + RESULT_SEPARATOR + output;
 }
 
+/**
+ * Whether the background turn in progress at some point in main's history is
+ * shown: `shown` when an agent message kicked it off (a session's relayed
+ * result and main's reply to it, which was shown live), `hidden` for other
+ * background turns (pulses, scheduled work), `unknown` when the turn began in
+ * older history that hasn't been converted.
+ */
+export type BackgroundTurnState = "shown" | "hidden" | "unknown";
+
 export interface HistoryConversionOptions {
   /**
    * `main`: the main agent's history. Background-visibility turns are
-   * hidden, except one an agent message kicked off (a session's relayed
-   * result and main's reply to it, which was shown live). `session`: a
-   * session's transcript, where every message is shown.
+   * hidden, except one an agent message kicked off. `session`: a session's
+   * transcript, where every message is shown.
    */
   mode: "main" | "session";
   /** Called with each message's timestamp; returns a day divider to insert before it, if any. */
   dayDivider?: (timestamp: string) => DividerFeedItem | null;
+  /**
+   * `main` mode: the state of the background turn in progress where these
+   * messages begin, when the older history before them is known.
+   */
+  carriedTurn?: BackgroundTurnState;
+}
+
+export interface HistoryConversion {
+  items: FeedItem[];
+  /**
+   * `main` mode: leading background messages that continue a turn begun in
+   * older history, left out of `items` until that history decides whether
+   * the turn is shown. Empty when `carriedTurn` is known.
+   */
+  undecidedHead: RecentMessage[];
+  /** `main` mode: the state of the background turn in progress where these messages end. */
+  endTurn: BackgroundTurnState;
 }
 
 /** Convert chat-history-shaped messages into feed items. */
-export function convertHistoryMessages(
+export function convertHistory(
   messages: RecentMessage[],
   opts: HistoryConversionOptions,
-): FeedItem[] {
+): HistoryConversion {
   const out: FeedItem[] = [];
+  const undecidedHead: RecentMessage[] = [];
   const toolCallItems = new Map<string, ToolCallState>();
-  // Whether the background turn in progress was started by an agent message.
-  let showingBackgroundTurn = false;
+  let turn: BackgroundTurnState = opts.carriedTurn ?? "unknown";
 
   for (const msg of messages) {
-    const agentMessage = msg.role === "user" ? parseAgentMessage(msg.content) : null;
+    const agentMessage = historyAgentMessage(msg, opts.mode);
     if (opts.mode === "main") {
-      if (msg.role === "user") {
-        showingBackgroundTurn = msg.visibility === "background" && agentMessage !== null;
+      if (msg.role === "user") turn = agentMessage ? "shown" : "hidden";
+      if (msg.visibility === "background") {
+        if (turn === "unknown") {
+          undecidedHead.push(msg);
+          continue;
+        }
+        if (turn === "hidden") continue;
       }
-      if (msg.visibility === "background" && !showingBackgroundTurn) continue;
     }
 
     if (opts.dayDivider && msg.timestamp) {
@@ -129,7 +158,28 @@ export function convertHistoryMessages(
     }
   }
 
-  return out;
+  return { items: out, undecidedHead, endTurn: turn };
+}
+
+/** Convert chat-history-shaped messages into feed items, showing every message. */
+export function convertHistoryMessages(
+  messages: RecentMessage[],
+  opts: HistoryConversionOptions,
+): FeedItem[] {
+  return convertHistory(messages, opts).items;
+}
+
+/**
+ * The text identity of a feed item that both live frames and history
+ * produce the same way, used to line the two up. `null` for items whose
+ * shape differs between them (tool groups, dividers) or that history never
+ * holds (local notes, status lines).
+ */
+export function feedItemSignature(item: FeedItem): string | null {
+  if (item.kind === "user" || item.kind === "assistant" || item.kind === "agent-message") {
+    return `${item.kind}\u0000${item.content}`;
+  }
+  return null;
 }
 
 /**

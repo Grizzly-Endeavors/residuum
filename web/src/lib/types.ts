@@ -56,6 +56,16 @@ export interface RecentMessage {
   timestamp: string;
   visibility: "user" | "background";
   sender?: MessageSender;
+  /** The agent that sent this message, for one agent's message to another. */
+  agent_sender?: AgentSender;
+}
+
+/** The agent behind a message one agent sent another. */
+export interface AgentSender {
+  /** Sender's address (`main` or a session address). */
+  address: string;
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`). */
+  category: string;
 }
 
 // ── Agent sessions ───────────────────────────────────────────────────

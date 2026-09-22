@@ -2,7 +2,13 @@
 
 import { SvelteMap } from "svelte/reactivity";
 import { nextFeedId } from "./feed-id";
-import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
+import {
+  appendToolCall,
+  applyToolResult,
+  convertHistory,
+  feedItemSignature,
+  type BackgroundTurnState,
+} from "./feed-items";
 import type {
   ServerMessage,
   RecentMessage,
@@ -14,6 +20,21 @@ import type {
   RecentHistorySegment,
   EpisodeHistorySegment,
 } from "./types";
+
+/**
+ * Background messages at the head of a loaded history segment whose turn
+ * began in older history, waiting for that history to decide whether they
+ * are shown. `index` is where their items go in the feed.
+ */
+interface PendingHead {
+  messages: RecentMessage[];
+  index: number;
+  /** The head of the recent segment (the one `reconcileRecent` rebuilds). */
+  recent: boolean;
+}
+
+/** Existing items matched against reloaded history when reconciling. */
+const RECONCILE_ANCHOR_ITEMS = 3;
 
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "long",
@@ -47,9 +68,22 @@ export class FeedStore {
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
 
+  /** Recent history has been loaded at least once. */
+  historyLoaded = false;
+
   private pendingToolCalls = new SvelteMap<string, ToolCallState>();
   private lastLiveDayKey: string | null = null;
   private compressedMarkerInserted = false;
+  private pendingHeads: PendingHead[] = [];
+  /** Feed index where the recent segment's items begin. */
+  private recentStart = 0;
+  /** Cursor the recent segment pointed at when loaded. */
+  private recentCursor: string | null = null;
+  /** How the turn in progress at the recent segment's start was decided, once known. */
+  private recentCarriedTurn: BackgroundTurnState | undefined;
+  /** Episodes already in the feed, so a segment is never shown twice. */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping only, never rendered
+  private loadedEpisodes = new Set<string>();
 
   /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
@@ -155,11 +189,76 @@ export class FeedStore {
     this.pendingToolCalls.clear();
     this.lastLiveDayKey = null;
     this.compressedMarkerInserted = false;
+    this.loadedEpisodes.clear();
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
+    this.recentStart = 0;
+    this.recentCursor = segment.next_cursor;
+    // With no older history, a turn can't have begun before this segment.
+    this.recentCarriedTurn = segment.next_cursor === null ? "hidden" : undefined;
+    this.historyLoaded = true;
 
-    const items = this.convertMessages(segment.messages, { withDayDividers: true });
-    for (const item of items) this.feed.push(item);
+    const conversion = convertHistory(segment.messages, {
+      mode: "main",
+      dayDivider: (ts) => this.dayDividerFor(ts),
+      carriedTurn: this.recentCarriedTurn,
+    });
+    this.pendingHeads = conversion.undecidedHead.length
+      ? [{ messages: conversion.undecidedHead, index: 0, recent: true }]
+      : [];
+    for (const item of conversion.items) this.feed.push(item);
+  }
+
+  /**
+   * Bring the recent part of the feed up to date with a freshly fetched
+   * Recent segment, appending what the live connection missed (e.g. while it
+   * was down). Lines the two up by the last few messages shown; returns
+   * `false` when they can't be lined up (history was compressed into a new
+   * episode, or diverged), in which case the caller should reload.
+   */
+  reconcileRecent(segment: RecentHistorySegment): boolean {
+    if (!this.historyLoaded || segment.next_cursor !== this.recentCursor) return false;
+    const fresh = convertHistory(segment.messages, {
+      mode: "main",
+      carriedTurn: this.recentCarriedTurn,
+    }).items;
+    const shown: string[] = [];
+    // Tool groups shown after the last signed item: history has them too.
+    let trailingToolGroups = 0;
+    for (const item of this.feed.slice(this.recentStart)) {
+      const sig = feedItemSignature(item);
+      if (sig !== null) {
+        shown.push(sig);
+        trailingToolGroups = 0;
+      } else if (item.kind === "tool-group") {
+        trailingToolGroups++;
+      }
+    }
+    const anchor = shown.slice(-RECONCILE_ANCHOR_ITEMS);
+    const freshSigs = fresh.map(feedItemSignature);
+
+    let appendFrom = anchor.length === 0 ? 0 : -1;
+    for (let end = fresh.length - 1; end >= 0 && appendFrom < 0; end--) {
+      // Walk back from `end` over signed items, comparing with the anchor.
+      let k = anchor.length - 1;
+      for (let i = end; i >= 0 && k >= 0; i--) {
+        const sig = freshSigs[i];
+        if (sig === null || sig === undefined) {
+          if (i === end) break;
+          continue;
+        }
+        if (sig !== anchor[k]) break;
+        k--;
+      }
+      if (k < 0) appendFrom = end + 1;
+    }
+    if (appendFrom < 0) return false;
+    while (trailingToolGroups > 0 && fresh[appendFrom]?.kind === "tool-group") {
+      appendFrom++;
+      trailingToolGroups--;
+    }
+    for (const item of fresh.slice(appendFrom)) this.feed.push(item);
+    return true;
   }
 
   /**
@@ -171,6 +270,12 @@ export class FeedStore {
    * the observer cut.
    */
   prependEpisode(segment: EpisodeHistorySegment): void {
+    if (this.loadedEpisodes.has(segment.episode_id)) return;
+    this.loadedEpisodes.add(segment.episode_id);
+
+    const conversion = convertHistory(segment.messages, { mode: "main" });
+    if (conversion.endTurn !== "unknown") this.resolvePendingHeads(conversion.endTurn);
+
     const block: FeedItem[] = [
       {
         id: nextFeedId(),
@@ -178,7 +283,7 @@ export class FeedStore {
         variant: "episode",
         label: `${segment.episode_id} · ${segment.date}`,
       } satisfies DividerFeedItem,
-      ...this.convertMessages(segment.messages, { withDayDividers: false }),
+      ...conversion.items,
     ];
 
     if (!this.compressedMarkerInserted) {
@@ -187,6 +292,12 @@ export class FeedStore {
     }
 
     this.feed.splice(0, 0, ...block);
+    this.recentStart += block.length;
+    for (const head of this.pendingHeads) head.index += block.length;
+    if (conversion.undecidedHead.length) {
+      // Just below this episode's divider.
+      this.pendingHeads.push({ messages: conversion.undecidedHead, index: 1, recent: false });
+    }
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
   }
@@ -223,17 +334,20 @@ export class FeedStore {
   // ── Private ──────────────────────────────────────────────────────────
 
   /**
-   * Convert main-agent history messages into feed items, optionally emitting
-   * day dividers when the per-message timestamp crosses a day boundary.
+   * Older history decided the turn that pending heads continue: insert them
+   * if it's shown, drop them if not.
    */
-  private convertMessages(
-    messages: RecentMessage[],
-    opts: { withDayDividers: boolean },
-  ): FeedItem[] {
-    return convertHistoryMessages(messages, {
-      mode: "main",
-      dayDivider: opts.withDayDividers ? (ts) => this.dayDividerFor(ts) : undefined,
-    });
+  private resolvePendingHeads(turn: "shown" | "hidden"): void {
+    // Highest index first, so inserting doesn't shift the ones still to go.
+    const heads = [...this.pendingHeads].sort((a, b) => b.index - a.index);
+    this.pendingHeads = [];
+    for (const head of heads) {
+      if (head.recent) this.recentCarriedTurn = turn;
+      if (turn === "hidden") continue;
+      const items = convertHistory(head.messages, { mode: "main", carriedTurn: "shown" }).items;
+      this.feed.splice(head.index, 0, ...items);
+      if (head.index < this.recentStart) this.recentStart += items.length;
+    }
   }
 
   private dayDividerFor(iso: string): DividerFeedItem | null {

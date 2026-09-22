@@ -9,6 +9,7 @@
 
 import { SvelteMap } from "svelte/reactivity";
 import { fetchSessionTranscript, fetchSessions } from "./api";
+import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
 import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
 import { notifications } from "./notifications.svelte";
@@ -38,10 +39,6 @@ const PAGE_SIZE = 25;
 /** Coalesces bursts of frames for unknown runs into one listing refresh. */
 const REFRESH_DEBOUNCE_MS = 250;
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 // ── Session view ─────────────────────────────────────────────────────
 
 /** One run shown in the main pane: its transcript plus live frames. */
@@ -60,33 +57,43 @@ export class SessionView {
   followAddress: string | null = null;
 
   private pendingTools = new SvelteMap<string, ToolCallState>();
-  /** Frames that arrived while the transcript was loading. */
+  /** Frames for the run being loaded that arrived while its transcript was loading. */
   private buffered: RunFrame[] = [];
+  /** Identifies the latest load; an older one finishing late is ignored. */
+  private loadToken = 0;
 
   constructor(runId: string, summary: SessionSummary | null) {
     this.runId = runId;
     this.summary = summary;
   }
 
-  /** Load (or reload) the transcript, then replay frames that raced it. */
+  /** Load (or reload) the current run's transcript, then replay frames that raced it. */
   async load(): Promise<void> {
+    const token = ++this.loadToken;
+    const runId = this.runId;
     this.loading = true;
     this.loadError = null;
-    this.buffered = [];
-    const runId = this.runId;
+    // Frames already buffered for this run may postdate what the transcript
+    // holds; frames for any other run no longer belong to this view.
+    this.buffered = this.buffered.filter((frame) => frame.run_id === runId);
+    let transcript;
     try {
-      const transcript = await fetchSessionTranscript(runId);
-      if (runId !== this.runId) return;
-      this.summary = transcript.session;
-      this.pendingTools.clear();
-      this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
+      transcript = await fetchSessionTranscript(runId);
     } catch (err) {
-      if (runId !== this.runId) return;
-      this.loadError = `Couldn't load this session's transcript. ${errorText(err)}`;
+      if (token !== this.loadToken) return;
+      this.loadError = userErrorMessage(err, {
+        action: "Couldn't load this session's transcript.",
+        notFound: "Its history isn't available. It may be from before a restart.",
+      });
+      this.buffered = [];
+      this.loading = false;
       return;
-    } finally {
-      if (runId === this.runId) this.loading = false;
     }
+    if (token !== this.loadToken) return;
+    this.summary = transcript.session;
+    this.pendingTools.clear();
+    this.items = convertHistoryMessages(transcript.messages, { mode: "session" });
+    this.loading = false;
     const raced = this.buffered;
     this.buffered = [];
     for (const frame of raced) this.applyFrame(frame, { dedupe: true });
@@ -148,13 +155,21 @@ export class SessionView {
     this.items.push({ id: nextFeedId(), kind: "user", content });
   }
 
-  /** Continue this view in a new run of the same session. */
+  /**
+   * Continue this view in a new run of the same session. Mid-load, the
+   * pending load is superseded by one for the new run, whose transcript
+   * holds everything that started it.
+   */
   follow(summary: SessionSummary): void {
     this.followAddress = null;
     this.runId = summary.run_id;
     this.summary = summary;
     this.stopRequested = false;
     this.pendingTools.clear();
+    if (this.loading) {
+      void this.load();
+      return;
+    }
     this.items.push({ id: nextFeedId(), kind: "divider", variant: "day", label: "new run" });
   }
 
@@ -240,7 +255,7 @@ export class SessionsStore {
       this.loaded = true;
       this.syncViewSummary();
     } catch (err) {
-      this.listError = `Couldn't load sessions. ${errorText(err)}`;
+      this.listError = userErrorMessage(err, { action: "Couldn't load sessions." });
     } finally {
       this.refreshing = false;
     }
@@ -262,7 +277,10 @@ export class SessionsStore {
       this.completed.push(...page.completed.filter((s) => !known.has(s.run_id)));
       this.nextCursor = page.next_cursor;
     } catch (err) {
-      notifications.surface("error", `Couldn't load more finished sessions. ${errorText(err)}`);
+      notifications.surface(
+        "error",
+        userErrorMessage(err, { action: "Couldn't load more finished sessions." }),
+      );
     } finally {
       this.loadingMore = false;
     }
@@ -322,7 +340,10 @@ export class SessionsStore {
         notifications.surface("error", `There's no record of the session ${address}.`);
       }
     } catch (err) {
-      notifications.surface("error", `Couldn't open the session ${address}. ${errorText(err)}`);
+      notifications.surface(
+        "error",
+        userErrorMessage(err, { action: `Couldn't open the session ${address}.` }),
+      );
     }
   }
 
@@ -510,6 +531,12 @@ export class SessionsStore {
     }, REFRESH_DEBOUNCE_MS);
   }
 
+  /**
+   * Replace the head of the completed list with a fresh first page, keeping
+   * runs paged in beyond it. Runs are matched by id and kept only if they
+   * sort after the page's last run in the server's order (newest start
+   * first, ties broken by run id), so runs sharing a start time survive.
+   */
   private mergeFirstPage(first: SessionSummary[], firstCursor: string | null): void {
     const oldCursor = this.nextCursor;
     const last = first[first.length - 1];
@@ -518,13 +545,23 @@ export class SessionsStore {
       this.nextCursor = firstCursor;
       return;
     }
-    const lastStart = Date.parse(last.started_at);
     // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
     const inFirst = new Set(first.map((s) => s.run_id));
     const tail = this.completed.filter(
-      (s) => !inFirst.has(s.run_id) && Date.parse(s.started_at) < lastStart,
+      (s) => !inFirst.has(s.run_id) && compareRunsNewestFirst(s, last) > 0,
     );
     this.completed = [...first, ...tail];
     this.nextCursor = tail.length ? oldCursor : firstCursor;
   }
+}
+
+/**
+ * Order runs as the server lists completed runs: newest start first, then
+ * run id descending. Negative when `a` comes before `b`.
+ */
+export function compareRunsNewestFirst(a: SessionSummary, b: SessionSummary): number {
+  const byStart = Date.parse(b.started_at) - Date.parse(a.started_at);
+  if (byStart !== 0) return byStart;
+  if (a.run_id === b.run_id) return 0;
+  return a.run_id > b.run_id ? -1 : 1;
 }

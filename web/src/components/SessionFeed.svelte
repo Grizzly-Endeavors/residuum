@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { FeedScroller } from "../lib/feed-scroll.svelte";
   import type { FeedItem } from "../lib/types";
   import FeedItemView from "./FeedItemView.svelte";
   import ThinkingIndicator from "./ThinkingIndicator.svelte";
@@ -21,22 +22,40 @@
   } = $props();
 
   let feedEl: HTMLDivElement | undefined = $state();
+  let innerEl: HTMLDivElement | undefined = $state();
   let lastTailId: number | undefined;
 
-  // Follow the tail as frames stream in, like the main chat.
+  // Follow the tail as frames stream in while the reader is at the bottom;
+  // once they scroll up to read, leave them there and offer the way back.
+  const scroller = new FeedScroller();
+
   $effect(() => {
-    const tailId = items[items.length - 1]?.id;
+    if (!feedEl || !innerEl) return;
+    return scroller.attach(feedEl, innerEl);
+  });
+
+  $effect(() => {
+    const tail = items[items.length - 1];
+    const tailChanged = tail?.id !== lastTailId;
+    lastTailId = tail?.id;
     void working;
-    if (tailId === lastTailId && !working) return;
-    lastTailId = tailId;
+    // Opening the transcript, or the owner's own message, always scrolls down.
+    const force = (tailChanged && tail?.kind === "user") || loading;
     void tick().then(() => {
-      if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+      scroller.contentChanged(force);
     });
   });
 </script>
 
 <div class="chat-feed session-feed" bind:this={feedEl}>
-  <div class="chat-feed-inner" aria-busy={loading}>
+  {#if scroller.scrolledUp && !loading}
+    <div class="anchor-pill">
+      <button type="button" class="anchor-pill-jump" onclick={() => scroller.jumpToLatest()}>
+        Jump to latest
+      </button>
+    </div>
+  {/if}
+  <div class="chat-feed-inner" aria-busy={loading} bind:this={innerEl}>
     {#if loading}
       <p class="chat-feed-empty">Loading transcript…</p>
     {:else if loadError}
