@@ -4,7 +4,11 @@
 //! Routing is a match on `ResultDisposition`, decided upstream by the agent that
 //! ran the task:
 //! - `Silent` → discard
-//! - agent-spawned → relay to the main agent
+//! - agent-spawned (`spawned` sessions) → discard here; each turn's result is
+//!   already relayed to the session's direct spawner as it happens, via
+//!   `AgentMessenger` from the session runtime (see
+//!   `crate::background::runtime::relay_result_to_spawner`), not through this
+//!   router
 //! - `Normal` → inbox
 //! - `Urgent` → inbox and every configured notification channel
 
@@ -74,18 +78,20 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
         return;
     }
 
+    // A `spawned` session's result is relayed to its direct spawner as each
+    // turn happens (see `crate::background::runtime::relay_result_to_spawner`),
+    // not through this router — the disposition rules below (inbox, urgent
+    // fanout) are for `scheduled` results only.
+    if matches!(event.source, EventTrigger::Agent) {
+        tracing::trace!("spawned session result: already relayed per-turn, nothing to do here");
+        return;
+    }
+
     tracing::info!(
         source = %event.source,
         disposition = ?event.disposition,
         "notification router received result"
     );
-
-    // Agent-spawned results are relayed to the agent that asked for them.
-    if matches!(event.source, EventTrigger::Agent) {
-        tracing::info!("routing agent-spawned result to main agent");
-        publish_to_agent_main(event, &router.publisher).await;
-        return;
-    }
 
     let urgent = event.disposition == ResultDisposition::Urgent;
     let targets = delivery_targets(&router.endpoint_registry, urgent);
@@ -108,57 +114,6 @@ fn delivery_targets(registry: &EndpointRegistry, urgent: bool) -> Vec<String> {
 }
 
 const INBOX_TARGET: &str = "inbox";
-
-/// Publish a result as a `MessageEvent` to the `UserMessage` topic.
-async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) {
-    let content = format_agent_result_message(event);
-
-    let msg_event = crate::bus::MessageEvent {
-        id: format!("bg-result-{}", event.run_id),
-        content,
-        origin: crate::interfaces::types::MessageOrigin {
-            endpoint: "background".to_string(),
-            sender: None,
-        },
-        timestamp: event.timestamp,
-        images: vec![],
-        context: None,
-    };
-
-    if let Err(e) = publisher.publish(topics::UserMessage, msg_event).await {
-        tracing::warn!(
-            run_id = %event.run_id,
-            error = %e,
-            "failed to publish background result to user:message"
-        );
-    }
-}
-
-/// Format an `AgentResultEvent` into a human-readable message for the main agent.
-fn format_agent_result_message(event: &AgentResultEvent) -> String {
-    let source_kind = event.source.as_str();
-    let status = match &event.status {
-        crate::bus::AgentResultStatus::Completed => "completed".to_string(),
-        crate::bus::AgentResultStatus::Cancelled => "cancelled".to_string(),
-        crate::bus::AgentResultStatus::Failed { error } => format!("failed: {error}"),
-    };
-
-    let mut parts = vec![format!(
-        "[Session Result]\nSession: {} ({})\nTask: {}\nSource: {}\nStatus: {}",
-        event.session_address, event.run_id, event.source_label, source_kind, status
-    )];
-
-    if !event.summary.is_empty() {
-        parts.push(format!("Output:\n{}", event.summary));
-    }
-
-    match &event.transcript_path {
-        Some(path) => parts.push(format!("Transcript: {}", path.display())),
-        None => parts.push("Transcript: unavailable (failed to save)".to_string()),
-    }
-
-    parts.join("\n")
-}
 
 /// Publish notifications to the specified targets.
 async fn publish_to_targets(
@@ -286,53 +241,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn format_agent_result_message_completed() {
-        let event = sample_event(ResultDisposition::Normal);
-        let msg = format_agent_result_message(&event);
-        assert!(msg.contains("[Session Result]"));
-        assert!(msg.contains("pulse:email_check"));
-        assert!(msg.contains("completed"));
-        assert!(msg.contains("3 new emails found"));
-    }
-
-    #[test]
-    fn format_agent_result_message_failed() {
-        let mut event = sample_event(ResultDisposition::Normal);
-        event.status = AgentResultStatus::Failed {
-            error: "connection refused".into(),
-        };
-        event.summary = String::new();
-
-        let msg = format_agent_result_message(&event);
-        assert!(msg.contains("failed: connection refused"));
-        assert!(
-            !msg.contains("Error: connection refused"),
-            "error should not be duplicated in a separate Error: line"
-        );
-    }
-
-    #[test]
-    fn format_agent_result_message_cancelled() {
-        let mut event = sample_event(ResultDisposition::Normal);
-        event.status = AgentResultStatus::Cancelled;
-        event.summary = String::new();
-
-        let msg = format_agent_result_message(&event);
-        assert!(msg.contains("[Session Result]"));
-        assert!(msg.contains("cancelled"));
-    }
-
-    #[test]
-    fn format_agent_result_message_with_transcript() {
-        let mut event = sample_event(ResultDisposition::Normal);
-        event.transcript_path = Some(std::path::PathBuf::from("/var/log/residuum/t1.transcript"));
-
-        let msg = format_agent_result_message(&event);
-        assert!(msg.contains("Transcript:"));
-        assert!(msg.contains("t1.transcript"));
-    }
-
     #[tokio::test]
     async fn silent_result_is_delivered_nowhere() {
         let handle = crate::bus::spawn_broker();
@@ -403,9 +311,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_spawned_result_relays_to_the_main_agent() {
+    async fn agent_spawned_result_is_discarded_here_not_relayed_to_main() {
+        // The per-turn relay to a spawned session's direct spawner now
+        // happens straight from the session runtime via `AgentMessenger` —
+        // this router must not also relay it to main (which would double up
+        // for main-spawned sessions, and be outright wrong for a session
+        // spawned by another session).
         let handle = crate::bus::spawn_broker();
         let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
         let router = NotificationRouter {
             endpoint_registry: registry_with_channels(&["ntfy_phone"]),
             publisher: handle.publisher(),
@@ -415,11 +329,17 @@ mod tests {
         event.source = EventTrigger::Agent;
         route_agent_result(&event, &router).await;
 
-        let msg = tokio::time::timeout(std::time::Duration::from_millis(200), user_sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(msg.content.contains("[Session Result]"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), user_sub.recv())
+                .await
+                .is_err(),
+            "an agent-spawned result must not be relayed to main by this router"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
+                .await
+                .is_err(),
+            "an agent-spawned result must not leak into the inbox either"
+        );
     }
 }

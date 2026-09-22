@@ -129,6 +129,7 @@ async fn fork_and_spawn(
         event.address.clone(),
         event.depth,
         category,
+        event.hop_count,
     )
     .await?;
 
@@ -143,6 +144,7 @@ async fn fork_and_spawn(
             prompt: event.prompt,
             context: event.context,
             model_tier: event.model_tier,
+            hop_count: event.hop_count,
         },
     };
 

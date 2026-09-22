@@ -443,6 +443,7 @@ async fn run_session(
     let mut kickoff = TurnKickoff::Initial {
         prompt: config.prompt,
         context: config.context,
+        hop_count: config.hop_count,
     };
     // Assigned on the loop's first iteration, which always runs at least
     // once (the run's initial turn), so both are definitely initialized by
@@ -492,6 +493,18 @@ async fn run_session(
                 .maybe_stage(recent_messages.messages(), &mem_env)
                 .await;
         }
+
+        // Relay this turn's final response to a spawned session's direct
+        // spawner, after every turn (not only at run completion) — this
+        // generalizes the old one-shot "background task result" relay.
+        maybe_relay_result(
+            &info,
+            &summary,
+            resources.as_ref(),
+            &env,
+            &mut recent_messages,
+        )
+        .await;
 
         // A cancelled run — whether stopped before its turn started or
         // mid-turn — skips lingering idle and goes straight to completing,
@@ -672,6 +685,77 @@ fn session_memory_env(res: &SubAgentResources, tz: chrono_tz::Tz) -> SessionMemo
     }
 }
 
+/// Relay this turn's result to a spawned session's direct spawner, if this
+/// session is `spawned`, has a spawner, and the turn actually produced a
+/// non-empty response — a failed or cancelled turn leaves `summary` empty,
+/// so there is nothing to relay in those cases. Split out of [`run_session`]
+/// purely to keep that function's line count down.
+async fn maybe_relay_result(
+    info: &SessionInfo,
+    summary: &str,
+    resources: Option<&SubAgentResources>,
+    env: &RunEnv,
+    recent_messages: &mut RecentMessages,
+) {
+    if info.category != SessionCategory::Spawned || summary.is_empty() {
+        return;
+    }
+    let Some(spawner) = info.spawner.clone() else {
+        return;
+    };
+    let hop_count = resources.map_or(0, |res| res.hop_counter.outgoing());
+    relay_result_to_spawner(
+        info,
+        &spawner,
+        summary,
+        hop_count,
+        &env.messenger,
+        recent_messages,
+        &env.store,
+    )
+    .await;
+}
+
+/// Relay a spawned session's turn result to its direct spawner, and make any
+/// delivery failure visible: logged, and recorded as a system note in
+/// `recent_messages` so it survives into this run's own completed transcript
+/// (never silently dropped, per the design's result-relay rules).
+async fn relay_result_to_spawner(
+    info: &SessionInfo,
+    spawner: &SessionAddress,
+    summary: &str,
+    hop_count: u32,
+    messenger: &AgentMessenger,
+    recent_messages: &mut RecentMessages,
+    store: &SessionStore,
+) {
+    let outcome = messenger
+        .send(
+            spawner.as_ref(),
+            info.address.clone(),
+            info.category.as_str().to_string(),
+            summary.to_string(),
+            hop_count,
+        )
+        .await;
+
+    if let Err(e) = outcome {
+        tracing::warn!(
+            address = %info.address,
+            spawner = %spawner,
+            error = %e,
+            "failed to relay turn result to spawner"
+        );
+        let note = crate::inference::Message::system(format!(
+            "[Result Relay Failed] could not deliver this turn's result to spawner {spawner}: {e}"
+        ));
+        recent_messages.push(note.clone());
+        store
+            .append_transcript(&info.run_id, info.started_at, &[note])
+            .await;
+    }
+}
+
 /// A run's identity and resources, unchanging across however many turns the
 /// run has — grouped so [`run_turn`] takes one borrow of them plus its own
 /// per-turn arguments (the accumulated history, this turn's kickoff, and the
@@ -809,6 +893,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -860,6 +946,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         }
     }
 
@@ -875,6 +962,7 @@ mod tests {
                 prompt: "do the thing".to_string(),
                 context: None,
                 model_tier: crate::config::BackgroundModelTier::Medium,
+                hop_count: 0,
             },
         }
     }
@@ -1039,6 +1127,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1090,6 +1179,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -1123,6 +1214,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1208,6 +1300,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1370,6 +1463,7 @@ mod tests {
                 observer,
                 merge_writer,
                 episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
             }),
         );
 
@@ -1419,6 +1513,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -1633,6 +1729,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         }
     }
 
@@ -1651,6 +1748,8 @@ mod tests {
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
         ));
         let runtime = SessionRuntime::new(
             registry,
@@ -1822,6 +1921,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         };
         (resources, layout)
     }

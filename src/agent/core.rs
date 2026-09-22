@@ -10,6 +10,7 @@ use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{MemoryContext, PromptContext, StatusLine};
+use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, TurnResources, execute_turn};
@@ -54,6 +55,13 @@ pub struct Agent {
     /// the construction-time snapshot (test constructors).
     layout: Option<crate::workspace::layout::WorkspaceLayout>,
     last_user_message_at: Option<chrono::NaiveDateTime>,
+    /// Main's current-turn hop count: the highest hop count among the
+    /// inputs (kickoff message, agent-message interrupts drained mid-turn)
+    /// driving whichever turn is currently running. Shared with the
+    /// `message_agent`/`subagent_spawn` tools registered against this agent,
+    /// so they can compute the hop count an outgoing message or spawn
+    /// carries without a separate side channel.
+    hop_counter: HopCounter,
 }
 
 impl Agent {
@@ -65,6 +73,7 @@ impl Agent {
         mcp_registry: SharedMcpRegistry,
         identity: IdentityFiles,
         config: AgentConfig,
+        hop_counter: HopCounter,
     ) -> Self {
         Self {
             provider,
@@ -78,6 +87,7 @@ impl Agent {
             tz: config.tz,
             layout: config.layout,
             last_user_message_at: None,
+            hop_counter,
         }
     }
 
@@ -100,6 +110,17 @@ impl Agent {
     #[must_use]
     pub fn mcp_registry(&self) -> &SharedMcpRegistry {
         &self.mcp_registry
+    }
+
+    /// This agent's current-turn hop counter. Interior-mutable (an `Arc`
+    /// around an atomic), so the gateway event loop updates it directly
+    /// through this shared reference as a turn starts and as agent-message
+    /// interrupts arrive mid-turn, and the `message_agent`/`subagent_spawn`
+    /// tools (holding their own clone from construction time) read the same
+    /// value when computing an outgoing hop count.
+    #[must_use]
+    pub fn hop_counter(&self) -> &HopCounter {
+        &self.hop_counter
     }
 
     /// Replace the model provider and completion options in-place (e.g. after a config reload).
@@ -220,6 +241,7 @@ impl Agent {
         identity: &'a IdentityFiles,
         options: &'a CompletionOptions,
         stop_token: &'a CancellationToken,
+        hop_counter: &'a HopCounter,
     ) -> TurnResources<'a> {
         TurnResources {
             provider,
@@ -231,6 +253,7 @@ impl Agent {
             // The main agent persists its transcript separately
             // (`recent_messages.json`, written after the whole turn).
             transcript_sink: None,
+            hop_counter,
         }
     }
 
@@ -279,6 +302,7 @@ impl Agent {
             &self.identity,
             &self.options,
             &stop_token,
+            &self.hop_counter,
         );
         let events = EventContext {
             publisher,
@@ -356,6 +380,7 @@ impl Agent {
             &self.identity,
             &self.options,
             stop_token,
+            &self.hop_counter,
         );
         let events = EventContext {
             publisher,
@@ -421,6 +446,7 @@ impl Agent {
             &identity,
             &self.options,
             &stop_token,
+            &self.hop_counter,
         );
 
         let events = EventContext {
@@ -583,6 +609,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -633,6 +660,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -688,6 +716,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -744,6 +773,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -783,6 +813,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -821,6 +852,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         agent.inject_inbound_message(make_inbound("m1", "leftover interrupt message"));
@@ -855,6 +887,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         // Set a known timestamp so we can verify it doesn't change
@@ -914,6 +947,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         agent.inject_system_message("background task completed: report-gen");
@@ -943,6 +977,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         // Inject a background message before the "turn"
@@ -981,6 +1016,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         // Simulate a conversation with 5 exchanges
@@ -1030,6 +1066,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
         agent.inject_inbound_message(make_inbound("m1", "hello"));
         agent.inject_inbound_message(make_inbound("m2", "world"));
@@ -1168,6 +1205,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1241,6 +1279,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1305,6 +1344,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1357,6 +1397,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1439,6 +1480,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1500,6 +1542,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1540,6 +1583,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         // Only 2 exchanges — fewer than the 3-exchange retention window
@@ -1574,6 +1618,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let messages = vec![
@@ -1628,6 +1673,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         assert_eq!(agent.provider.model_name(), "model-a");
@@ -1652,6 +1698,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            crate::agent::HopCounter::new(0),
         );
 
         // Inject some messages into history
@@ -1705,6 +1752,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: Some(layout.clone()),
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1792,6 +1840,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: Some(layout.clone()),
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();
@@ -1873,6 +1922,7 @@ mod tests {
                 tz: chrono_tz::UTC,
                 layout: Some(layout.clone()),
             },
+            crate::agent::HopCounter::new(0),
         );
 
         let (publisher, ep) = test_bus();

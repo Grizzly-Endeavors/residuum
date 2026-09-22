@@ -7,6 +7,7 @@ use anyhow::Context as _;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
+use crate::agent::HopCounter;
 use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
 use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::runtime::SessionRuntime;
@@ -91,6 +92,7 @@ pub(crate) async fn build_spawn_resources(
     own_address: SessionAddress,
     own_depth: u32,
     category: SessionCategory,
+    hop_count: u32,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let specs = ctx
         .background_config
@@ -169,6 +171,7 @@ pub(crate) async fn build_spawn_resources(
         subagent_depth_cap: ctx.background_config.subagent_depth_cap,
         session_category: category,
         messenger: Arc::clone(&ctx.messenger),
+        hop_counter: HopCounter::new(hop_count),
     };
 
     build_subagent_resources(

@@ -30,6 +30,9 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     pub tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     pub agent_messenger: &'a Arc<AgentMessenger>,
+    /// Main's current-turn hop counter, shared with the `Agent` these tools
+    /// end up registered against (see `CreateAgentArgs::hop_counter`).
+    pub hop_counter: &'a crate::agent::HopCounter,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -38,6 +41,11 @@ pub(super) struct CreateAgentArgs {
     pub options: crate::inference::CompletionOptions,
     pub tools: ToolRegistry,
     pub identity: IdentityFiles,
+    /// Main's current-turn hop counter — the same instance already handed to
+    /// the `message_agent`/`subagent_spawn` tools in `args.tools` at
+    /// registration time, so the agent and its tools always agree on the
+    /// current turn's hop count.
+    pub hop_counter: crate::agent::HopCounter,
 }
 
 /// Build the tool registry with all default and domain-specific tools.
@@ -95,6 +103,7 @@ pub(super) fn init_tool_registry(
         SessionAddress::from(MAIN_ADDRESS),
         MAIN_DEPTH,
         cfg.background.subagent_depth_cap,
+        deps.hop_counter.clone(),
     );
 
     tools.register_send_message_tool(
@@ -107,6 +116,7 @@ pub(super) fn init_tool_registry(
         SessionAddress::from(MAIN_ADDRESS),
         MAIN_ADDRESS.to_string(),
         Arc::clone(deps.agent_messenger),
+        deps.hop_counter.clone(),
     );
 
     let override_tx = tokio::sync::watch::Sender::new(None);
@@ -157,6 +167,7 @@ pub(super) async fn create_agent(
             tz,
             layout: Some(layout.clone()),
         },
+        args.hop_counter,
     );
     if let Err(err) = agent.reload_observations(layout).await {
         tracing::warn!(error = %err, "observation loading degraded");

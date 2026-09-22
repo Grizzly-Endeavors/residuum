@@ -55,6 +55,7 @@ async fn publish_action_spawn(
         model_tier: tier,
         spawner: None,
         depth: MAIN_DEPTH + 1,
+        hop_count: 0,
     };
 
     if let Err(e) = publisher.publish(topics::Background, spawn_event).await {

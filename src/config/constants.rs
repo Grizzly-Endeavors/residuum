@@ -107,6 +107,14 @@ pub(super) const DEFAULT_EPISODE_SKIP_TOKEN_FLOOR: usize = 2_000;
 /// depth 0; a `scheduled`/`external` session is depth 1).
 pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 2;
 
+/// Default hop count at or above which a delivered agent message carries a
+/// note asking the receiver to reply only if a reply is actually needed.
+pub(super) const DEFAULT_HOP_SOFT_LIMIT: u32 = 8;
+
+/// Default hop count at or above which agent message delivery is refused
+/// outright, to bound message loops.
+pub(super) const DEFAULT_HOP_HARD_LIMIT: u32 = 32;
+
 /// Default number of earlier Teams group chat / channel messages handed to the agent on @mention.
 pub(super) const DEFAULT_TEAMS_CONTEXT_MESSAGES: usize = 20;
 

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::HopCounter;
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
 use crate::bus::SessionAddress;
 use crate::inference::ToolDefinition;
@@ -19,6 +20,10 @@ pub struct MessageAgentTool {
     /// This agent's own category label (`"main"` for the main agent).
     self_category: String,
     messenger: Arc<AgentMessenger>,
+    /// This agent's current-turn hop counter — the outgoing message carries
+    /// one more than the highest hop count among the inputs driving this
+    /// turn.
+    hop_counter: HopCounter,
 }
 
 impl MessageAgentTool {
@@ -29,11 +34,13 @@ impl MessageAgentTool {
         self_address: SessionAddress,
         self_category: String,
         messenger: Arc<AgentMessenger>,
+        hop_counter: HopCounter,
     ) -> Self {
         Self {
             self_address,
             self_category,
             messenger,
+            hop_counter,
         }
     }
 }
@@ -92,6 +99,7 @@ impl Tool for MessageAgentTool {
                 self.self_address.clone(),
                 self.self_category.clone(),
                 message.to_string(),
+                self.hop_counter.outgoing(),
             )
             .await;
 
@@ -105,6 +113,10 @@ impl Tool for MessageAgentTool {
             Ok(DeliveryOutcome::Resumed(address)) => ToolResult::success(format!(
                 "Session {address} had completed; message delivered by resuming it as a new run."
             )),
+            Ok(DeliveryOutcome::Queued(address)) => ToolResult::success(format!(
+                "Session {address} is completing; your message will be delivered once it \
+                 finishes, resuming it as a new run."
+            )),
             Ok(DeliveryOutcome::Unknown) => ToolResult::error(format!(
                 "no such agent '{to}'. Use list_agents to see live sessions; a completed \
                  session's address only works again once it has run at least once."
@@ -117,16 +129,26 @@ impl Tool for MessageAgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::HopLimits;
     use crate::background::registry::SessionRegistry;
+    use crate::background::store::SessionStore;
 
     fn make_tool(self_address: &str, self_category: &str) -> MessageAgentTool {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
-        let messenger = Arc::new(AgentMessenger::new(registry, bus_handle.publisher()));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            registry,
+            bus_handle.publisher(),
+            store,
+            HopLimits { soft: 8, hard: 32 },
+        ));
         MessageAgentTool::new(
             SessionAddress::from(self_address),
             self_category.to_string(),
             messenger,
+            HopCounter::new(0),
         )
     }
 

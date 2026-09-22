@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::interrupt::Interrupt;
@@ -210,6 +210,12 @@ pub struct ResumePoint {
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<SessionAddress, SessionEntry>>,
     resume_points: Mutex<HashMap<SessionAddress, ResumePoint>>,
+    /// Notified whenever any session is removed, so [`Self::wait_until_clear`]
+    /// can wake without polling. A single registry-wide `Notify` rather than
+    /// one per address: removals are infrequent, and a waiter re-checks its
+    /// own address after waking, so a notification meant for a different
+    /// address just costs a cheap recheck.
+    cleared: Notify,
 }
 
 impl SessionRegistry {
@@ -282,16 +288,26 @@ impl SessionRegistry {
     /// Unbounded: a `completing` run is always guaranteed to eventually
     /// leave the registry (`finish_run` and panic recovery both end on
     /// `remove`), so there is no address this could wait on forever absent a
-    /// bug elsewhere. Logs once if the wait runs unusually long, since that
-    /// would mean the previous run's teardown is stuck.
+    /// bug elsewhere.
+    ///
+    /// Driven by [`Self::cleared`] rather than polling: the `Notify` future
+    /// is obtained *before* the address is checked, per `tokio::sync::Notify`'s
+    /// documented check-then-wait pattern, so a removal that races between
+    /// the check and the `.await` is never missed. A notification meant for a
+    /// different address just costs a cheap recheck and another wait. Logs
+    /// once if the wait runs unusually long, since that would mean the
+    /// previous run's teardown is stuck.
     pub async fn wait_until_clear(&self, address: &SessionAddress) {
-        const POLL_INTERVAL: Duration = Duration::from_millis(50);
         const WARN_AFTER: Duration = Duration::from_secs(30);
 
         let start = std::time::Instant::now();
         let mut warned = false;
-        while self.get(address).is_some() {
-            if !warned && start.elapsed() > WARN_AFTER {
+        loop {
+            let notified = self.cleared.notified();
+            if self.get(address).is_none() {
+                return;
+            }
+            if tokio::time::timeout(WARN_AFTER, notified).await.is_err() && !warned {
                 tracing::warn!(
                     address = %address,
                     waited_secs = start.elapsed().as_secs(),
@@ -299,7 +315,6 @@ impl SessionRegistry {
                 );
                 warned = true;
             }
-            tokio::time::sleep(POLL_INTERVAL).await;
         }
     }
 
@@ -383,11 +398,18 @@ impl SessionRegistry {
     /// impossible. Returns `None` (no-op) if the address is unknown or now
     /// holds a different run.
     pub fn remove(&self, address: &SessionAddress, run_id: &str) -> Option<SessionInfo> {
-        let mut guard = self.lock();
-        if guard.get(address).is_none_or(|e| e.info.run_id != run_id) {
-            return None;
-        }
-        guard.remove(address).map(|entry| entry.info)
+        let removed = {
+            let mut guard = self.lock();
+            if guard.get(address).is_none_or(|e| e.info.run_id != run_id) {
+                return None;
+            }
+            guard.remove(address).map(|entry| entry.info)
+        };
+        // Notified after the lock is dropped, and unconditionally on every
+        // removal (not just ones a waiter is known to care about) — cheap,
+        // and it keeps this method from needing to track who's waiting.
+        self.cleared.notify_waiters();
+        removed
     }
 
     /// Look up a single session's current info.

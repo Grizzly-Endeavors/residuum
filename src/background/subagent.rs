@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
+use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
@@ -35,6 +36,8 @@ pub(crate) enum TurnKickoff {
     Initial {
         prompt: String,
         context: Option<String>,
+        /// Hop count of this run's first turn (see [`super::types::SubAgentConfig::hop_count`]).
+        hop_count: u32,
     },
     /// A later turn, started because a message reached this session while it
     /// was idle.
@@ -42,10 +45,21 @@ pub(crate) enum TurnKickoff {
 }
 
 impl TurnKickoff {
+    /// This turn's driving hop count, before it's consumed into message text
+    /// — the session's hop counter is set to this at the top of the turn.
+    fn hop_count(&self) -> u32 {
+        match self {
+            Self::Initial { hop_count, .. } => *hop_count,
+            Self::AgentMessage(msg) => msg.hop_count,
+        }
+    }
+
     /// Render this kickoff as the turn's opening user message.
     fn into_message_text(self) -> String {
         match self {
-            Self::Initial { prompt, context } => {
+            Self::Initial {
+                prompt, context, ..
+            } => {
                 let mut parts = Vec::new();
                 if let Some(ctx) = context {
                     parts.push(ctx);
@@ -85,6 +99,10 @@ pub struct SubAgentResources {
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub(crate) episode_skip_token_floor: usize,
+    /// This session's current-turn hop counter, shared with its
+    /// `message_agent`/`subagent_spawn` tools (see
+    /// [`super::types::SubAgentBuildConfig::hop_counter`]).
+    pub(crate) hop_counter: HopCounter,
 }
 
 /// Build isolated session resources from the main agent's shared state.
@@ -130,6 +148,7 @@ pub async fn build_subagent_resources(
         subagent_depth_cap,
         session_category,
         messenger,
+        hop_counter,
     } = config;
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
@@ -186,6 +205,7 @@ pub async fn build_subagent_resources(
         subagent_depth_cap,
         session_category.as_str().to_string(),
         messenger,
+        hop_counter.clone(),
     );
 
     Ok(SubAgentResources {
@@ -202,6 +222,7 @@ pub async fn build_subagent_resources(
         observer,
         merge_writer,
         episode_skip_token_floor,
+        hop_counter,
     })
 }
 
@@ -256,6 +277,11 @@ pub(crate) async fn execute_subagent(
         active_instructions: active_instructions.as_deref(),
     };
 
+    // Reset the run's hop counter to this turn's driving input before it's
+    // consumed into message text — later `Interrupt::AgentMessage`s drained
+    // during the turn raise it further (see `agent::turn::drain_interrupts`).
+    resources.hop_counter.set(kickoff.hop_count());
+
     // No identity/wiki/skills content here — that lives in the system message.
     let kickoff_message = Message::user(kickoff.into_message_text());
     recent_messages.push(kickoff_message.clone());
@@ -283,6 +309,7 @@ pub(crate) async fn execute_subagent(
         options: &resources.options,
         stop_token,
         transcript_sink,
+        hop_counter: &resources.hop_counter,
     };
 
     let events = EventContext {
@@ -350,6 +377,7 @@ mod tests {
         TurnKickoff::Initial {
             prompt: prompt.to_string(),
             context: context.map(str::to_string),
+            hop_count: 0,
         }
     }
 
@@ -393,6 +421,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         }
     }
 
@@ -606,6 +635,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         };
 
         let mut recent_messages = RecentMessages::new();
@@ -695,6 +725,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         };
         let stop_token = CancellationToken::new();
         stop_token.cancel();
@@ -763,6 +794,7 @@ mod tests {
             observer,
             merge_writer,
             episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
         };
         let store_dir = tempfile::tempdir().unwrap();
         let store = crate::background::store::SessionStore::new(store_dir.path().to_path_buf());

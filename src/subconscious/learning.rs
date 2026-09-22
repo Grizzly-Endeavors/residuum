@@ -163,6 +163,12 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         // something a session spawned, so it runs at main's own spawn depth.
         spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
         depth: MAIN_DEPTH + 1,
+        // The learner is triggered by the gateway event loop's own
+        // turn-count/signal logic, not from within a live turn of main's —
+        // there is no "spawning turn" whose hop count it could carry one
+        // more than, so it starts a fresh chain at hop 0, the same as a
+        // pulse or scheduled action.
+        hop_count: 0,
     }
 }
 

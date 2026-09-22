@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
+use crate::agent::HopCounter;
 use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::BackgroundModelTier;
@@ -158,6 +159,10 @@ pub struct SubagentSpawnTool {
     /// Maximum depth a spawned session may have. Spawning is refused once
     /// `depth + 1` would exceed this.
     depth_cap: u32,
+    /// This agent's current-turn hop counter — the new session's first turn
+    /// carries one more than the highest hop count among the inputs driving
+    /// this (the spawning) turn.
+    hop_counter: HopCounter,
 }
 
 impl SubagentSpawnTool {
@@ -169,6 +174,7 @@ impl SubagentSpawnTool {
         spawner_address: SessionAddress,
         depth: u32,
         depth_cap: u32,
+        hop_counter: HopCounter,
     ) -> Self {
         Self {
             publisher,
@@ -176,6 +182,7 @@ impl SubagentSpawnTool {
             spawner_address,
             depth,
             depth_cap,
+            hop_counter,
         }
     }
 }
@@ -284,6 +291,7 @@ impl Tool for SubagentSpawnTool {
             model_tier,
             spawner: Some(self.spawner_address.clone()),
             depth: new_depth,
+            hop_count: self.hop_counter.outgoing(),
         };
 
         self.publisher
@@ -325,6 +333,7 @@ mod tests {
             SessionAddress::from(spawner),
             depth,
             depth_cap,
+            HopCounter::new(0),
         )
     }
 
@@ -462,6 +471,7 @@ mod tests {
             SessionAddress::from(MAIN_ADDRESS),
             0,
             2,
+            HopCounter::new(0),
         );
 
         let res = tool
@@ -525,6 +535,7 @@ mod tests {
             SessionAddress::from("spawned-parent-0001"),
             1,
             2,
+            HopCounter::new(3),
         );
 
         tool.execute(serde_json::json!({ "task": "do something" }))
@@ -537,6 +548,10 @@ mod tests {
             Some(SessionAddress::from("spawned-parent-0001"))
         );
         assert_eq!(event.depth, 2);
+        assert_eq!(
+            event.hop_count, 4,
+            "the new session's first turn must carry one more than the spawning turn's hop count"
+        );
     }
 
     #[tokio::test]

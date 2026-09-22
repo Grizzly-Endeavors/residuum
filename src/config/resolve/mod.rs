@@ -929,6 +929,12 @@ fn resolve_background_config(
         if let Some(v) = section.subagent_depth_cap {
             cfg.subagent_depth_cap = v;
         }
+        if let Some(v) = section.hop_soft_limit {
+            cfg.hop_soft_limit = v;
+        }
+        if let Some(v) = section.hop_hard_limit {
+            cfg.hop_hard_limit = v;
+        }
     }
 
     if let Some(models_section) = models_section {

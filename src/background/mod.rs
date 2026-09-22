@@ -12,6 +12,7 @@ pub mod store;
 pub mod subagent;
 pub mod types;
 
+pub use crate::agent::hop::{HopCounter, HopLimits};
 pub use messaging::{AgentMessenger, DeliveryOutcome, SendError};
 pub use registry::{DeliverOutcome, SessionRegistry};
 pub use runtime::SessionRuntime;

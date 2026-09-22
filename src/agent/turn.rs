@@ -16,6 +16,7 @@ use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
 use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
+use super::hop::HopCounter;
 use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 
@@ -76,6 +77,11 @@ pub(crate) struct TurnResources<'a> {
     /// Incremental transcript persistence, or `None` when the caller
     /// persists the transcript some other way (the main agent).
     pub transcript_sink: Option<&'a dyn TranscriptSink>,
+    /// This turn's current hop count: set by the caller to the kickoff
+    /// input's hop count before the turn starts, and raised here whenever an
+    /// `Interrupt::AgentMessage` is drained mid-turn — that message becomes
+    /// one more input driving the turn, alongside the kickoff.
+    pub hop_counter: &'a HopCounter,
 }
 
 /// System note injected into the conversation when a turn is stopped
@@ -146,11 +152,7 @@ pub(crate) async fn execute_turn(
     let turn_start = recent_messages.len().saturating_sub(1);
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
-        if drain_interrupts(interrupt_rx, recent_messages, resources.transcript_sink).await {
-            tracing::info!(
-                iterations = iteration,
-                "turn stopped by user before next model call"
-            );
+        if check_interrupts_and_stop(interrupt_rx, recent_messages, resources, iteration).await {
             return Ok(texts);
         }
 
@@ -261,6 +263,31 @@ pub(crate) async fn execute_turn(
     anyhow::bail!("agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})")
 }
 
+/// Drain interrupts at a tool-loop checkpoint and report whether the turn
+/// should stop, logging the reason. Split out of [`execute_turn`] purely to
+/// keep that function's line count down.
+async fn check_interrupts_and_stop(
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    recent_messages: &mut RecentMessages,
+    resources: &TurnResources<'_>,
+    iteration: usize,
+) -> bool {
+    let stopped = drain_interrupts(
+        interrupt_rx,
+        recent_messages,
+        resources.transcript_sink,
+        resources.hop_counter,
+    )
+    .await;
+    if stopped {
+        tracing::info!(
+            iterations = iteration,
+            "turn stopped by user before next model call"
+        );
+    }
+    stopped
+}
+
 /// Drain any interrupt messages that arrived while tools were executing.
 ///
 /// Returns `true` if a stop was observed among the drained interrupts, so
@@ -271,6 +298,7 @@ async fn drain_interrupts(
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
     recent_messages: &mut RecentMessages,
     sink: Option<&dyn TranscriptSink>,
+    hop_counter: &HopCounter,
 ) -> bool {
     let mut stopped = false;
     while let Ok(interrupt) = interrupt_rx.try_recv() {
@@ -283,8 +311,10 @@ async fn drain_interrupts(
                 tracing::info!(
                     from = %msg.from,
                     category = %msg.from_category,
+                    hop_count = msg.hop_count,
                     "injecting agent message mid-turn"
                 );
+                hop_counter.bump(msg.hop_count);
                 push_and_record(recent_messages, sink, Message::user(msg.format_for_agent())).await;
             }
             Interrupt::Subconscious(content) => {
@@ -426,7 +456,8 @@ mod tests {
             "[Subconscious] Save the preference.".to_string(),
         ))
         .ok();
-        let stopped = drain_interrupts(&mut rx, &mut recent, Some(&sink)).await;
+        let stopped =
+            drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
 
         assert!(!stopped, "a subconscious correction is not a stop");
         assert_eq!(recent.len(), 1, "one message should be injected");
@@ -451,7 +482,8 @@ mod tests {
         let sink = MockSink::default();
 
         tx.try_send(Interrupt::Stopped).ok();
-        let stopped = drain_interrupts(&mut rx, &mut recent, Some(&sink)).await;
+        let stopped =
+            drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
 
         assert!(stopped, "a queued Stopped interrupt should report true");
         assert_eq!(recent.len(), 1, "the stop note should be injected");
@@ -476,7 +508,7 @@ mod tests {
         let (_tx, mut rx) = mpsc::channel::<Interrupt>(4);
         let mut recent = RecentMessages::new();
 
-        let stopped = drain_interrupts(&mut rx, &mut recent, None).await;
+        let stopped = drain_interrupts(&mut rx, &mut recent, None, &HopCounter::new(0)).await;
 
         assert!(!stopped, "an empty channel should never report a stop");
         assert_eq!(recent.len(), 0, "nothing should be injected");
@@ -502,7 +534,8 @@ mod tests {
             context: None,
         };
         tx.try_send(Interrupt::UserMessage(inbound)).ok();
-        let stopped = drain_interrupts(&mut rx, &mut recent, Some(&sink)).await;
+        let stopped =
+            drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
 
         assert!(!stopped);
         assert!(!recent.messages().is_empty());

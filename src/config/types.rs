@@ -10,8 +10,8 @@ use crate::inference::retry::RetryConfig;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
-    DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT,
-    DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES, DEFAULT_IDLE_TIMEOUT_MINUTES,
+    DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_HOP_HARD_LIMIT,
+    DEFAULT_HOP_SOFT_LIMIT, DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES, DEFAULT_IDLE_TIMEOUT_MINUTES,
     DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES, DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES,
     DEFAULT_LEARNING_COOLDOWN_MINUTES, DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
     DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
@@ -441,6 +441,12 @@ pub struct BackgroundConfig {
     /// session is its spawner's depth plus 1; spawning past this cap is
     /// refused.
     pub subagent_depth_cap: u32,
+    /// Hop count at or above which a delivered agent message carries a note
+    /// asking the receiver to reply only if a reply is actually needed.
+    pub hop_soft_limit: u32,
+    /// Hop count at or above which agent message delivery is refused
+    /// outright, to bound message loops.
+    pub hop_hard_limit: u32,
 }
 
 impl Default for BackgroundConfig {
@@ -455,6 +461,8 @@ impl Default for BackgroundConfig {
             idle_timeout_external: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES * 60),
             episode_skip_token_floor: DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
             subagent_depth_cap: DEFAULT_SUBAGENT_DEPTH_CAP,
+            hop_soft_limit: DEFAULT_HOP_SOFT_LIMIT,
+            hop_hard_limit: DEFAULT_HOP_HARD_LIMIT,
         }
     }
 }

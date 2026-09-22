@@ -394,6 +394,12 @@ pub(super) struct BackgroundConfigFile {
     pub(super) episode_skip_token_floor: Option<usize>,
     /// Maximum depth a `subagent_spawn`-created session may have.
     pub(super) subagent_depth_cap: Option<u32>,
+    /// Hop count at or above which a delivered agent message carries a
+    /// "reply only if needed" note.
+    pub(super) hop_soft_limit: Option<u32>,
+    /// Hop count at or above which agent message delivery is refused
+    /// outright.
+    pub(super) hop_hard_limit: Option<u32>,
 }
 
 /// Raw TOML `[cloud]` section.

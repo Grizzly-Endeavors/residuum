@@ -222,6 +222,7 @@ async fn route_webhook_content(
                 model_tier: crate::config::BackgroundModelTier::Medium,
                 spawner: None,
                 depth: crate::background::registry::MAIN_DEPTH + 1,
+                hop_count: 0,
             };
             if let Err(e) = state
                 .publisher

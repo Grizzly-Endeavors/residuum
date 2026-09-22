@@ -73,6 +73,7 @@ mod proactivity_integration {
                 tz: chrono_tz::UTC,
                 layout: None,
             },
+            residuum::agent::HopCounter::new(0),
         )
     }
 
