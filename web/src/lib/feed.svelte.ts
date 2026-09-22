@@ -36,6 +36,43 @@ interface PendingHead {
 /** Existing items matched against reloaded history when reconciling. */
 const RECONCILE_ANCHOR_ITEMS = 3;
 
+/**
+ * When the signed items of `fresh` begin with exactly `shown`, the index just
+ * past the last of them; otherwise -1.
+ */
+function afterSignedPrefix(fresh: (string | null)[], shown: string[]): number {
+  let matched = 0;
+  for (let i = 0; i < fresh.length; i++) {
+    if (matched === shown.length) return i;
+    const sig = fresh[i];
+    if (sig === null || sig === undefined) continue;
+    if (sig !== shown[matched]) return -1;
+    matched++;
+  }
+  return matched === shown.length ? fresh.length : -1;
+}
+
+/**
+ * The index just past the last place the signed items of `fresh` end with
+ * the run `anchor` (consecutive among signed items); 0 for an empty anchor,
+ * -1 when it doesn't occur.
+ */
+function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
+  if (anchor.length === 0) return 0;
+  for (let end = fresh.length - 1; end >= 0; end--) {
+    if (fresh[end] == null) continue;
+    let k = anchor.length - 1;
+    for (let i = end; i >= 0 && k >= 0; i--) {
+      const sig = fresh[i];
+      if (sig == null) continue;
+      if (sig !== anchor[k]) break;
+      k--;
+    }
+    if (k < 0) return end + 1;
+  }
+  return -1;
+}
+
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "long",
   day: "numeric",
@@ -234,24 +271,12 @@ export class FeedStore {
         trailingToolGroups++;
       }
     }
-    const anchor = shown.slice(-RECONCILE_ANCHOR_ITEMS);
     const freshSigs = fresh.map(feedItemSignature);
-
-    let appendFrom = anchor.length === 0 ? 0 : -1;
-    for (let end = fresh.length - 1; end >= 0 && appendFrom < 0; end--) {
-      // Walk back from `end` over signed items, comparing with the anchor.
-      let k = anchor.length - 1;
-      for (let i = end; i >= 0 && k >= 0; i--) {
-        const sig = freshSigs[i];
-        if (sig === null || sig === undefined) {
-          if (i === end) break;
-          continue;
-        }
-        if (sig !== anchor[k]) break;
-        k--;
-      }
-      if (k < 0) appendFrom = end + 1;
-    }
+    // Exactly what was shown, then more: the usual case. Failing that (the
+    // live feed showed something history doesn't hold), line up on the last
+    // few messages shown.
+    let appendFrom = afterSignedPrefix(freshSigs, shown);
+    if (appendFrom < 0) appendFrom = afterLastRun(freshSigs, shown.slice(-RECONCILE_ANCHOR_ITEMS));
     if (appendFrom < 0) return false;
     while (trailingToolGroups > 0 && fresh[appendFrom]?.kind === "tool-group") {
       appendFrom++;

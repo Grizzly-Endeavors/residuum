@@ -38,7 +38,6 @@ export function historyAgentMessage(
   mode: "main" | "session",
 ): ParsedAgentMessage | null {
   if (msg.role !== "user") return null;
-  if (mode === "main" && msg.visibility !== "background") return null;
   const parsed = parseAgentMessage(msg.content);
   if (msg.agent_sender) {
     return {
@@ -47,8 +46,8 @@ export function historyAgentMessage(
       body: parsed ? parsed.body : msg.content,
     };
   }
-  if (mode === "session" && msg.sender) return null;
-  return parsed;
+  const typedByPerson = mode === "main" ? msg.visibility !== "background" : msg.sender != null;
+  return typedByPerson ? null : parsed;
 }
 
 /**
