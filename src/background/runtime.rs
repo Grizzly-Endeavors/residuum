@@ -1061,7 +1061,18 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    // `start_paused` isn't about idle-timeout logic here (the one-minute
+    // idle timeouts below are never actually reached) — it protects the
+    // `tokio::time::timeout` backstops from firing spuriously. Those wrap a
+    // *real* timer: if the OS starves this test's single worker thread for
+    // longer than the backstop under heavy contention (many parallel test
+    // threads plus a concurrent build reproduces this locally), the timer
+    // has already elapsed the instant the thread resumes, even though the
+    // awaited event was sitting ready the whole time — a false failure, not
+    // a hang. A paused/virtual clock only "elapses" via explicit advancement
+    // when nothing else can make progress, so a stalled OS thread can never
+    // cause it to expire out from under a message that already arrived.
+    #[tokio::test(start_paused = true)]
     async fn stop_with_a_pending_message_resumes_the_session_to_deliver_it() {
         // A message delivered while the turn is blocked on the model call
         // never reaches a tool-call checkpoint to be drained by the turn
@@ -1115,11 +1126,13 @@ mod tests {
             }),
         );
 
-        // Generous timeouts throughout: this test has proven flaky on the
-        // self-hosted CI runner under load even at several seconds, despite
-        // passing reliably (and quickly) locally under equivalent or heavier
-        // simulated CPU contention.
-        wait_for(&runtime, &address, Duration::from_secs(15), |info| {
+        // `wait_for` polls observable registry state rather than sleeping a
+        // guessed duration; the recv() timeouts below are a bounded backstop
+        // against a genuine hang, not the primary means of pacing the test —
+        // both events are driven by BlockingProvider's deterministic
+        // never-resolves-until-cancelled gate and the bus's own delivery,
+        // neither of which depends on wall-clock timing.
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Running
         })
         .await
@@ -1140,14 +1153,14 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let result_event = tokio::time::timeout(Duration::from_secs(30), result_sub.recv())
+        let result_event = tokio::time::timeout(Duration::from_secs(10), result_sub.recv())
             .await
             .expect("stopped run should still publish a result")
             .unwrap()
             .unwrap();
         assert!(matches!(result_event.status, AgentResultStatus::Cancelled));
 
-        let spawn_event = tokio::time::timeout(Duration::from_secs(30), spawn_sub.recv())
+        let spawn_event = tokio::time::timeout(Duration::from_secs(10), spawn_sub.recv())
             .await
             .expect("the pending message must resume the session as a new run rather than vanish")
             .unwrap()
@@ -1813,8 +1826,17 @@ mod tests {
         (resources, layout)
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn staging_runs_after_every_turn_not_just_once() {
+        // Unlike the other idle-wake tests, this run's completion genuinely
+        // depends on its *second* idle wait timing out with no further input
+        // — there's no explicit stop here, so the idle timeout is the only
+        // thing that ever moves the run from `idle` to `completing`. Pausing
+        // the clock (`start_paused = true`) makes that wait resolve the
+        // instant nothing else is progressing, regardless of host speed,
+        // instead of requiring a real sleep to survive a slow or throttled
+        // CI runner. The 300ms window itself is unchanged; only the wait
+        // for it is now driven by virtual, not wall-clock, time.
         let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
         let address = SessionAddress::from("spawned-researcher-0009");
         let (resources, layout) = make_sequenced_resources_with_eager_observer(vec![
@@ -1823,12 +1845,7 @@ mod tests {
         ]);
         runtime.spawn(sample_request(address.as_ref()), Some(resources));
 
-        // Generous timeouts: unlike the other idle-wake tests, this one uses
-        // a real (disk-backed) search index and merge writer per turn (see
-        // `make_sequenced_resources_with_eager_observer`), which is
-        // meaningfully slower under CI load than the disabled-observer path
-        // most other tests here use.
-        wait_for(&runtime, &address, Duration::from_secs(15), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -1847,7 +1864,11 @@ mod tests {
             crate::background::registry::DeliverOutcome::Delivered
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(30), sub.recv())
+        // This recv() is a bounded backstop against a genuine hang, not the
+        // primary pacing mechanism — the run's completion is driven by the
+        // (instant) SequencedProvider and the bus's own delivery, both
+        // independent of wall-clock timing.
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
