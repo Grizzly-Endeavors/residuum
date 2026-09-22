@@ -16,6 +16,8 @@ Every session has a category — `scheduled` (pulses, actions), `external` (webh
 
 Each session has a stable address (e.g. `spawned-researcher-3f9a`) generated at spawn time.
 
+**Nesting**: sessions can spawn sessions via their own `subagent_spawn`, up to `subagent_depth_cap` (default 2; main is depth 0). See `subagent_spawn` Details below.
+
 ## Model Tiers
 
 Sessions specify a model tier that maps to configured models in `[background]`:
@@ -55,6 +57,8 @@ Pulses and actions route by an `agent` field naming a skill; `agent: "main"` is 
 - **`skill`**: Name of a skill to activate as the session's role. Omit to run on the task prompt alone. `"main"` is rejected. An unknown name fails immediately with the available list.
 - **`model`**: `"small"`, `"medium"`, or `"large"`. Default: `"medium"`.
 
+Available to the main agent and to every session — sessions can spawn sessions. Depth counts from main (depth 0); a `scheduled`/`external` session is depth 1; a spawned session is its spawner's depth plus 1, whatever the spawner's category, and its spawner is recorded as the calling agent's address. Depth is capped by `subagent_depth_cap` in `[background]` (default 2) — spawning past the cap is refused with an explanatory error.
+
 A session's result is a **self-report**, not a verified outcome. When the task is checkable, ask for concrete handles in the prompt (file paths, commit SHAs, URLs) and don't take "done" at face value until they check out.
 
 ## Result Routing
@@ -76,6 +80,7 @@ Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json
 ## Gotchas
 
 - A session's fork always carries the main agent's full identity now — there is no minimal-context mode and no `include_identity` flag to opt in or out of.
-- Tools excluded from sessions: `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `switch_endpoint` (no nesting yet, no action scheduling from a session).
+- The only tool excluded from sessions is `switch_endpoint` — it only makes sense for the main agent's own output routing. `subagent_spawn` and the action-scheduling tools are available to sessions.
+- A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface (named explicitly, or reached through the no-conversation default) — only `main` talks to the owner. See [notifications.md](notifications.md).
 - The `memory/sessions/` directory is not created at bootstrap — it appears only after the first session run.
 - A completed session is no longer listed by `list_agents`, but its address and transcript remain in the session store.
