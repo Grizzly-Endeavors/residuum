@@ -70,6 +70,21 @@ pub const HEARTBEAT_OK: &str = "HEARTBEAT_OK";
 /// something urgent does not escalate itself by accident.
 pub const HEARTBEAT_URGENT: &str = "HEARTBEAT_URGENT";
 
+/// True when `summary` ends with `sentinel` (ignoring trailing whitespace),
+/// rather than merely mentioning it somewhere in the middle.
+///
+/// A plain substring check misfires whenever a longer summary happens to
+/// discuss the sentinel itself — e.g. an assistant explaining that it
+/// deliberately did *not* end its reply with `HEARTBEAT_OK` still contains
+/// that literal text. Both sentinels are meant to be read off the end of a
+/// summary (a pulse instruction says "respond with exactly `HEARTBEAT_OK`";
+/// a `HEARTBEAT.yml` template says "end a summary with `HEARTBEAT_URGENT`"),
+/// so anchoring the check there is what those instructions actually mean.
+#[must_use]
+pub fn ends_with_sentinel(summary: &str, sentinel: &str) -> bool {
+    summary.trim_end().ends_with(sentinel)
+}
+
 /// What the producing agent signalled should happen with its result.
 ///
 /// The agent that ran the task is the only participant with the full
@@ -630,6 +645,31 @@ mod tests {
                 .and_hms_opt(12, 0, 0)
                 .unwrap(),
         }
+    }
+
+    #[test]
+    fn ends_with_sentinel_matches_exact_and_trailing() {
+        assert!(ends_with_sentinel("HEARTBEAT_OK", HEARTBEAT_OK));
+        assert!(ends_with_sentinel("HEARTBEAT_OK\n", HEARTBEAT_OK));
+        assert!(ends_with_sentinel(
+            "Nothing to report today. HEARTBEAT_OK",
+            HEARTBEAT_OK
+        ));
+    }
+
+    #[test]
+    fn ends_with_sentinel_rejects_mid_text_mention() {
+        // The sentinel appearing anywhere other than the end is a summary
+        // *about* the sentinel, not a summary ending with it.
+        assert!(!ends_with_sentinel(
+            "The instruction to omit HEARTBEAT_OK was honored — this note \
+             ends without it, since a sentinel was not appropriate here.",
+            HEARTBEAT_OK
+        ));
+        assert!(!ends_with_sentinel(
+            "HEARTBEAT_URGENT wasn't warranted this time, just a routine update.",
+            HEARTBEAT_URGENT
+        ));
     }
 
     #[test]

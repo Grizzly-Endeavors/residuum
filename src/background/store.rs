@@ -723,9 +723,9 @@ impl SessionStore {
     /// routinely contains the literal string `HEARTBEAT_OK` itself — every
     /// pulse and action prompt template tells the model to return it when
     /// there's nothing to report. Treating that prompt text as the summary
-    /// would make the skip check's `summary.contains(HEARTBEAT_OK)` check
-    /// see a false positive and silently drop a run that never got to do
-    /// any work at all.
+    /// would make the skip check's `ends_with_sentinel` check see a false
+    /// positive and silently drop a run that never got to do any work at
+    /// all.
     async fn run_completion_pipeline(
         &self,
         record: &RunRecord,

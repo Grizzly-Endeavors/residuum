@@ -9,7 +9,7 @@
 
 use chrono_tz::Tz;
 
-use crate::bus::HEARTBEAT_OK;
+use crate::bus::{HEARTBEAT_OK, ends_with_sentinel};
 use crate::inference::Message;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::{ExtractedObservation, Extraction, ObserveAction, Observer};
@@ -124,7 +124,7 @@ pub(crate) async fn complete_session_memory(
     env: &SessionMemoryEnv<'_>,
 ) -> Option<String> {
     let has_staged = memory.has_staged();
-    let ended_with_heartbeat_ok = summary.contains(HEARTBEAT_OK);
+    let ended_with_heartbeat_ok = ends_with_sentinel(summary, HEARTBEAT_OK);
     let total_tokens = estimate_message_tokens(transcript);
     let below_floor = total_tokens < env.episode_skip_token_floor;
 
@@ -257,6 +257,51 @@ mod tests {
         .await;
 
         assert!(id.is_none(), "a HEARTBEAT_OK run should produce no episode");
+    }
+
+    #[tokio::test]
+    async fn summary_merely_mentioning_heartbeat_ok_still_merges() {
+        // A substantial reply that discusses the HEARTBEAT_OK sentinel in
+        // prose (e.g. explaining that it deliberately did not end with one)
+        // contains the literal text without meaning "nothing to report". A
+        // plain substring check on the summary misdetects this the same way
+        // a HEARTBEAT_OK ending does; only a summary that actually *ends*
+        // with the sentinel should skip the episode.
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let observer = observer_with_thresholds(100_000, 200_000);
+        let mw = merge_writer(dir.path());
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &mw,
+            layout: &layout,
+            // Isolate the heartbeat-ok check from the separate below-floor
+            // skip: this transcript is short, so a non-trivial floor would
+            // skip it for that reason regardless of the sentinel check.
+            episode_skip_token_floor: 1,
+            tz: chrono_tz::UTC,
+        };
+        let summary = "All steps completed. The instruction to omit HEARTBEAT_OK was honored \
+             — this note ends without it, since the sentinel was not appropriate here."
+            .to_string();
+        let transcript = vec![
+            Message::user("run the steps"),
+            Message::assistant(summary.as_str(), None),
+        ];
+
+        let id = complete_session_memory(
+            sample_tag(),
+            &summary,
+            &transcript,
+            SessionMemory::new(),
+            &env,
+        )
+        .await;
+
+        assert!(
+            id.is_some(),
+            "a substantial reply that merely mentions HEARTBEAT_OK mid-text must still merge"
+        );
     }
 
     #[tokio::test]
