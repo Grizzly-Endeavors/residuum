@@ -4,8 +4,12 @@
 // while the reader is at the bottom. Once they scroll up to read, new items
 // leave them where they are and a "Jump to latest" pill offers the way back.
 
-/** Within this distance of the bottom, the feed keeps following new content. */
-const FOLLOW_THRESHOLD_PX = 120;
+/**
+ * Within this distance of the bottom, the feed keeps following new content
+ * and the pill stays hidden. Generous, because the feeds' bottom padding
+ * (room for the floating composer) already counts toward it.
+ */
+const FOLLOW_THRESHOLD_PX = 400;
 
 /** Input that means the reader is scrolling by hand. */
 const READER_SCROLL_EVENTS = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
@@ -24,6 +28,11 @@ export class FeedScroller {
   private following = true;
   /** A "Jump to latest" glide is under way; its passing scroll events don't unstick. */
   private jumping = false;
+  /**
+   * The feed is being rebuilt under a reader who had scrolled up; the scroll
+   * position it passes through meanwhile isn't theirs, so it doesn't count.
+   */
+  private held = false;
 
   private readonly onScroll = (): void => {
     this.measure();
@@ -32,6 +41,7 @@ export class FeedScroller {
   // The reader taking over the scroll cancels a glide in progress.
   private readonly onReaderScroll = (): void => {
     this.jumping = false;
+    this.held = false;
   };
 
   /**
@@ -73,11 +83,34 @@ export class FeedScroller {
     this.pinToBottom();
   }
 
+  /**
+   * Keep the reader counted as scrolled up while the feed is rebuilt under
+   * them, until `release()` or they scroll by hand.
+   */
+  hold(): void {
+    this.held = true;
+    this.following = false;
+    this.scrolledUp = true;
+  }
+
+  /** The rebuild is done; judge the scroll position afresh. */
+  release(): void {
+    if (!this.held) return;
+    this.held = false;
+    this.measure();
+  }
+
+  /** Whether a `hold()` is still in effect. */
+  get isHeld(): boolean {
+    return this.held;
+  }
+
   /** The pill's action: glide back to the newest content and follow it again. */
   jumpToLatest(): void {
     const el = this.el;
     if (!el) return;
     this.following = true;
+    this.held = false;
     this.jumping = true;
     this.scrolledUp = false;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
@@ -96,7 +129,7 @@ export class FeedScroller {
     const el = this.el;
     // A hidden feed (the chat under a session view) reports no size; keep the
     // reader's state for when it's shown again.
-    if (!el || isHidden(el)) return;
+    if (!el || isHidden(el) || this.held) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const nearBottom = distFromBottom <= FOLLOW_THRESHOLD_PX;
     if (this.jumping) {

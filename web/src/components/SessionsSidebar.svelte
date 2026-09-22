@@ -32,6 +32,50 @@
   const FOCUSABLE =
     'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+  // A list update can remove the focused row out from under a keyboard
+  // user, and focus falls to <body>, outside the modal drawer. Put it on the
+  // row now in that spot (or the one before, at the end), else the heading.
+  $effect(() => {
+    const el = sidebarEl;
+    if (!overlay || !el) return;
+    let focused: { el: HTMLElement; list: HTMLElement | null; index: number } | null = null;
+    const rowButtons = (list: HTMLElement | null): HTMLButtonElement[] =>
+      list?.isConnected ? Array.from(list.querySelectorAll("button")) : [];
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const list = target.closest<HTMLElement>(".sessions-list");
+      focused = { el: target, list, index: rowButtons(list).findIndex((b) => b === target) };
+    };
+    // Focus leaving an element that's still there was the user's doing;
+    // only a removal needs rescuing.
+    const onFocusOut = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      // Chrome fires this while a focused element is being removed, so judge
+      // once the removal is done.
+      queueMicrotask(() => {
+        if (target.isConnected && focused?.el === target) focused = null;
+      });
+    };
+    const observer = new MutationObserver(() => {
+      if (!focused || (document.activeElement && document.activeElement !== document.body)) {
+        return;
+      }
+      const rows = rowButtons(focused.list);
+      const next = focused.index >= 0 ? rows[Math.min(focused.index, rows.length - 1)] : undefined;
+      (next ?? headingEl)?.focus();
+    });
+    el.addEventListener("focusin", onFocusIn);
+    el.addEventListener("focusout", onFocusOut);
+    observer.observe(el, { childList: true, subtree: true });
+    return () => {
+      el.removeEventListener("focusin", onFocusIn);
+      el.removeEventListener("focusout", onFocusOut);
+      observer.disconnect();
+    };
+  });
+
   // As a modal drawer, Tab and Shift+Tab cycle within it.
   function trapFocus(event: KeyboardEvent) {
     if (!overlay || event.key !== "Tab" || !sidebarEl) return;

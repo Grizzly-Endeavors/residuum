@@ -28,6 +28,12 @@ interface MockState {
   extraRecent: Array<Record<string, unknown>>;
   /** Close every WebSocket, as if the connection dropped. Set by `setupWebSocket`. */
   dropSockets: () => void;
+  /**
+   * Set once a "drop compress" chat message has simulated the observer
+   * compressing history into `ep-004`: how many `extraRecent` entries went
+   * into that episode.
+   */
+  compressedAt: number | null;
 }
 
 /**
@@ -269,6 +275,7 @@ function createState(): MockState {
     sessions: createSessions(),
     extraRecent: [],
     dropSockets: () => {},
+    compressedAt: null,
     inboxItems: [
       { id: "mock_1", title: "Deploy tomorrow", body: "Reminder to trigger the deployment pipeline tomorrow morning.", source: "agent:pulse", timestamp: new Date().toISOString(), read: false, attachments: [] },
       { id: "mock_2", title: "Daily Digest", body: "Here is your daily summary.", source: "agent:digest", timestamp: new Date(Date.now() - 3600000).toISOString(), read: true, attachments: [] },
@@ -541,6 +548,27 @@ function sampleEpisodes(): SampleEpisode[] {
 // `ChatHistorySegment` tagged union (see gateway/web/config.rs).
 function sampleChatHistorySegment(state: MockState, cursor: string | null) {
   const episodes = sampleEpisodes();
+
+  if (state.compressedAt !== null) {
+    if (cursor === null) {
+      return {
+        kind: "recent",
+        messages: state.extraRecent.slice(state.compressedAt),
+        next_cursor: "ep-004",
+      };
+    }
+    if (cursor === "ep-004") {
+      const compressed = [...sampleRecentMessages(), ...state.extraRecent.slice(0, state.compressedAt)];
+      return {
+        kind: "episode",
+        episode_id: "ep-004",
+        date: isoDateDaysAgo(0),
+        // Episodes don't record visibility.
+        messages: compressed.map((m) => ({ ...m, visibility: "user" })),
+        next_cursor: episodes[0]?.id ?? null,
+      };
+    }
+  }
 
   if (cursor === null) {
     return {
@@ -1089,7 +1117,7 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
           if (String(msg.content).toLowerCase().startsWith("spawn")) {
             spawnSession(String(msg.content).replace(/^spawn\s*/i, "") || "Look into something");
           }
-          simulateConversation(ws, msg);
+          simulateConversation(msg);
           break;
 
         case "set_verbose":
@@ -1176,65 +1204,76 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
     });
   });
 
-  function simulateConversation(
-    ws: WebSocket,
-    msg: { type: string; [key: string]: unknown },
-  ) {
+  /**
+   * Run a main-agent turn: live frames to every connected page, then the
+   * whole turn recorded in history when it ends, as the real gateway does.
+   *
+   * A message starting with "drop" loses the connection mid-turn:
+   * - "drop finish": the turn ends while disconnected; history has it on reconnect.
+   * - "drop compress": as "drop", and the observer compresses history into a
+   *   new episode meanwhile, so the page has to reload history.
+   * - "drop" (anything else): the turn is still running at reconnect and
+   *   finishes live afterwards.
+   */
+  function simulateConversation(msg: { type: string; [key: string]: unknown }) {
     const replyTo = String(msg.id ?? "unknown");
-
-    // 1. turn_started (immediate)
-    ws.send(JSON.stringify({ type: "turn_started", reply_to: replyTo }));
-
-    // 2. tool_call (300ms)
+    const content = String(msg.content ?? "");
+    const lower = content.toLowerCase();
+    const drop = lower.startsWith("drop");
+    const finishWhileDown = lower.startsWith("drop finish");
+    const compress = lower.startsWith("drop compress");
     const toolCallId = `tc_mock_${Date.now()}`;
+    const toolArgs = { query: content.slice(0, 100), limit: 5 };
+    const toolOutput = JSON.stringify([
+      { text: "Found 3 relevant observations from recent conversations.", score: 0.87, timestamp: new Date().toISOString() },
+    ]);
+    const response = cannedResponses[responseIndex % cannedResponses.length];
+    responseIndex++;
+    // Live frames stop while the connection is down.
+    let down = false;
+    const send = (frame: Record<string, unknown>) => {
+      if (!down) broadcast(frame);
+    };
+
+    send({ type: "turn_started", reply_to: replyTo });
     setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(
-        JSON.stringify({
-          type: "tool_call",
-          id: toolCallId,
-          name: "memory_search",
-          arguments: JSON.stringify({
-            query: String(msg.content).slice(0, 100),
-            limit: 5,
-          }),
-        }),
-      );
+      send({ type: "broadcast_response", content: "Looking through recent notes first." });
+      send({ type: "tool_call", id: toolCallId, name: "memory_search", arguments: JSON.stringify(toolArgs) });
     }, 300);
 
-    // 3. tool_result (800ms)
-    setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(
-        JSON.stringify({
-          type: "tool_result",
-          tool_call_id: toolCallId,
-          name: "memory_search",
-          output: JSON.stringify([
-            {
-              text: "Found 3 relevant observations from recent conversations.",
-              score: 0.87,
-              timestamp: new Date().toISOString(),
-            },
-          ]),
-          is_error: false,
-        }),
-      );
-    }, 800);
+    if (drop) {
+      setTimeout(() => {
+        down = true;
+        if (compress) state.compressedAt = state.extraRecent.length;
+        state.dropSockets();
+      }, 600);
+      // Reconnected by the time a still-running turn finishes.
+      if (!finishWhileDown) {
+        setTimeout(() => {
+          down = false;
+        }, 3500);
+      }
+    }
 
-    // 4. response (1500ms)
+    const finishAt = drop ? (finishWhileDown ? 900 : 4000) : 1500;
     setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const response = cannedResponses[responseIndex % cannedResponses.length];
-      responseIndex++;
-      ws.send(
-        JSON.stringify({
-          type: "response",
-          reply_to: replyTo,
-          content: response,
-        }),
+      send({ type: "tool_result", tool_call_id: toolCallId, name: "memory_search", output: toolOutput, is_error: false });
+      send({ type: "response", reply_to: replyTo, content: response });
+      send({ type: "turn_ended", reply_to: replyTo });
+      const now = new Date().toISOString();
+      state.extraRecent.push(
+        { role: "user", content, timestamp: now, visibility: "user" },
+        {
+          role: "assistant",
+          content: "Looking through recent notes first.",
+          tool_calls: [{ id: toolCallId, name: "memory_search", arguments: toolArgs }],
+          timestamp: now,
+          visibility: "user",
+        },
+        { role: "tool", content: toolOutput, tool_call_id: toolCallId, timestamp: now, visibility: "user" },
+        { role: "assistant", content: response, timestamp: now, visibility: "user" },
       );
-    }, 1500);
+    }, finishAt);
   }
 }
 

@@ -152,7 +152,7 @@ class WsCoordinator {
       return;
     }
     if (this.store.reconcileRecent(recent)) return;
-    this.store.loadHistory(recent);
+    this.store.reloadHistory(recent);
     await this.loadOlderHistory();
   }
 

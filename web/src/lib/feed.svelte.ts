@@ -73,6 +73,24 @@ function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
   return -1;
 }
 
+/**
+ * Whether history `recorded` holds the live turn: the turn's signed items are
+ * non-empty and appear in order from the last place its first one does (a
+ * turn is recorded whole, after anything older with the same text).
+ */
+function isSignedSubsequence(live: FeedItem[], recorded: FeedItem[]): boolean {
+  const wanted = live.map(feedItemSignature).filter((sig) => sig !== null);
+  if (wanted.length === 0) return false;
+  const sigs = recorded.map(feedItemSignature);
+  const start = sigs.lastIndexOf(wanted[0] ?? null);
+  if (start < 0) return false;
+  let next = 0;
+  for (let i = start; i < sigs.length && next < wanted.length; i++) {
+    if (sigs[i] === wanted[next]) next++;
+  }
+  return next === wanted.length;
+}
+
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "long",
   day: "numeric",
@@ -87,6 +105,19 @@ function dayLabel(iso: string): string {
   const date = new Date(iso.length === 10 ? `${iso}T00:00` : iso);
   if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
   return DAY_DIVIDER_FORMATTER.format(date);
+}
+
+/** A day-divider callback with its own memory of the last day seen. */
+function dayDividerTracker(): (iso: string) => DividerFeedItem | null {
+  let lastKey: string | null = null;
+  return (iso) => {
+    const key = dayKey(iso);
+    const crossed = lastKey !== null && key !== lastKey;
+    lastKey = key;
+    return crossed
+      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
+      : null;
+  };
 }
 
 /** Manages the chat feed state and processes incoming server messages. */
@@ -105,6 +136,8 @@ export class FeedStore {
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
 
+  /** Bumped whenever the whole feed is replaced from history. */
+  generation = $state(0);
   /** Recent history has been loaded at least once. */
   historyLoaded = false;
 
@@ -121,6 +154,12 @@ export class FeedStore {
   /** Episodes already in the feed, so a segment is never shown twice. */
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- bookkeeping only, never rendered
   private loadedEpisodes = new Set<string>();
+  /**
+   * Feed index where the turn in flight begins (its user message, or the
+   * first item after `turn_started`), or `null` when idle. Its items are
+   * live-only until the turn ends and history records them.
+   */
+  private turnStart: number | null = null;
 
   /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
@@ -128,6 +167,7 @@ export class FeedStore {
       case "turn_started":
         this.isProcessing = true;
         this.activeTurnId = msg.reply_to;
+        this.turnStart ??= this.feed.length;
         break;
 
       case "turn_ended":
@@ -136,6 +176,7 @@ export class FeedStore {
         // one of those paths.
         this.isProcessing = false;
         this.activeTurnId = null;
+        this.turnStart = null;
         break;
 
       case "tool_call":
@@ -230,6 +271,8 @@ export class FeedStore {
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
     this.recentStart = 0;
+    this.turnStart = null;
+    this.generation++;
     this.recentCursor = segment.next_cursor;
     // With no older history, a turn can't have begun before this segment.
     this.recentCarriedTurn = segment.next_cursor === null ? "hidden" : undefined;
@@ -248,21 +291,27 @@ export class FeedStore {
 
   /**
    * Bring the recent part of the feed up to date with a freshly fetched
-   * Recent segment, appending what the live connection missed (e.g. while it
-   * was down). Lines the two up by the last few messages shown; returns
-   * `false` when they can't be lined up (history was compressed into a new
-   * episode, or diverged), in which case the caller should reload.
+   * Recent segment, adding what the live connection missed (e.g. while it
+   * was down). Lines history up with the settled messages shown (everything
+   * before the turn in flight, which history doesn't hold until it ends);
+   * returns `false` when they can't be lined up (history was compressed into
+   * a new episode, or diverged), in which case the caller should
+   * `reloadHistory`.
    */
   reconcileRecent(segment: RecentHistorySegment): boolean {
     if (!this.historyLoaded || segment.next_cursor !== this.recentCursor) return false;
     const fresh = convertHistory(segment.messages, {
       mode: "main",
       carriedTurn: this.recentCarriedTurn,
+      // Replayed from the segment's start so dividers land where a fresh load
+      // would put them; only those among the added items are kept.
+      dayDivider: dayDividerTracker(),
     }).items;
+    const liveStart = this.turnStart ?? this.feed.length;
     const shown: string[] = [];
     // Tool groups shown after the last signed item: history has them too.
     let trailingToolGroups = 0;
-    for (const item of this.feed.slice(this.recentStart)) {
+    for (const item of this.feed.slice(this.recentStart, liveStart)) {
       const sig = feedItemSignature(item);
       if (sig !== null) {
         shown.push(sig);
@@ -282,8 +331,30 @@ export class FeedStore {
       appendFrom++;
       trailingToolGroups--;
     }
-    for (const item of fresh.slice(appendFrom)) this.feed.push(item);
+    this.placeRecorded(fresh.slice(appendFrom), liveStart);
+    this.syncDayKey(segment);
     return true;
+  }
+
+  /**
+   * Replace the feed with a freshly fetched Recent segment, keeping the turn
+   * in flight: its live items are put back after the history unless history
+   * already records the turn (it ended while disconnected).
+   */
+  reloadHistory(segment: RecentHistorySegment): void {
+    const liveStart = this.turnStart;
+    const live = liveStart === null ? [] : this.feed.slice(liveStart);
+    const pendingTools = [...this.pendingToolCalls];
+    this.loadHistory(segment);
+    if (liveStart === null) return;
+    const recent = this.feed.slice(this.recentStart);
+    if (isSignedSubsequence(live, recent)) {
+      this.endLiveTurn();
+      return;
+    }
+    this.turnStart = this.feed.length;
+    for (const item of live) this.feed.push(item);
+    for (const [id, call] of pendingTools) this.pendingToolCalls.set(id, call);
   }
 
   /**
@@ -318,6 +389,7 @@ export class FeedStore {
 
     this.feed.splice(0, 0, ...block);
     this.recentStart += block.length;
+    if (this.turnStart !== null) this.turnStart += block.length;
     for (const head of this.pendingHeads) head.index += block.length;
     if (conversion.undecidedHead.length) {
       // Just below this episode's divider.
@@ -352,6 +424,7 @@ export class FeedStore {
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const nowIso = new Date().toISOString();
     this.maybePushDayDivider(nowIso);
+    this.turnStart ??= this.feed.length;
     this.feed.push({ id: nextFeedId(), kind: "user", content, images });
     this.isProcessing = true;
   }
@@ -372,7 +445,40 @@ export class FeedStore {
       const items = convertHistory(head.messages, { mode: "main", carriedTurn: "shown" }).items;
       this.feed.splice(head.index, 0, ...items);
       if (head.index < this.recentStart) this.recentStart += items.length;
+      if (this.turnStart !== null && head.index <= this.turnStart) {
+        this.turnStart += items.length;
+      }
     }
+  }
+
+  /**
+   * Add history items newer than everything settled in the feed. If they
+   * include the turn in flight (it ended while disconnected), they replace
+   * its live items and the turn is closed; otherwise they go before it.
+   */
+  private placeRecorded(recorded: FeedItem[], liveStart: number): void {
+    const live = this.feed.slice(liveStart);
+    if (this.turnStart !== null && isSignedSubsequence(live, recorded)) {
+      this.feed.splice(liveStart, live.length, ...recorded);
+      this.endLiveTurn();
+      return;
+    }
+    this.feed.splice(liveStart, 0, ...recorded);
+    if (this.turnStart !== null) this.turnStart += recorded.length;
+  }
+
+  /** The turn in flight is over (history records it); clear its live state. */
+  private endLiveTurn(): void {
+    this.turnStart = null;
+    this.isProcessing = false;
+    this.activeTurnId = null;
+    this.pendingToolCalls.clear();
+  }
+
+  /** Continue live day dividers from the newest message in `segment`. */
+  private syncDayKey(segment: RecentHistorySegment): void {
+    const last = segment.messages[segment.messages.length - 1];
+    if (last?.timestamp) this.lastLiveDayKey = dayKey(last.timestamp);
   }
 
   private dayDividerFor(iso: string): DividerFeedItem | null {

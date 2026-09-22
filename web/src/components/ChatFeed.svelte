@@ -182,6 +182,73 @@
     }
   });
 
+  // A reload replaces every item (new DOM nodes), so a reader who has
+  // scrolled up is anchored by content: the topmost visible message is found
+  // again by its text and put back where it was — as soon as it's back in the
+  // feed, which may be only once the episode it now belongs to has loaded.
+  interface ContentAnchor {
+    key: string;
+    nth: number;
+    offset: number;
+  }
+  let reloadAnchor: ContentAnchor | null = null;
+  let seenGeneration = ws.store.generation;
+
+  function messageElements(): HTMLElement[] {
+    return feedEl
+      ? Array.from(feedEl.querySelectorAll<HTMLElement>(".chat-feed-inner > .msg"))
+      : [];
+  }
+
+  function contentKey(el: HTMLElement): string {
+    return `${el.className}\u0000${el.textContent}`;
+  }
+
+  function captureAnchor(): ContentAnchor | null {
+    if (!feedEl) return null;
+    const feedTop = feedEl.getBoundingClientRect().top;
+    const elements = messageElements();
+    const topmost = elements.find((el) => el.getBoundingClientRect().bottom > feedTop);
+    if (!topmost) return null;
+    const key = contentKey(topmost);
+    const nth = elements
+      .slice(0, elements.indexOf(topmost))
+      .filter((el) => contentKey(el) === key).length;
+    return { key, nth, offset: topmost.getBoundingClientRect().top - feedTop };
+  }
+
+  /** Put the anchored message back in place; false if it isn't in the feed. */
+  function restoreAnchor(anchor: ContentAnchor): boolean {
+    if (!feedEl) return false;
+    const match = messageElements().filter((el) => contentKey(el) === anchor.key)[anchor.nth];
+    if (!match) return false;
+    const offset = match.getBoundingClientRect().top - feedEl.getBoundingClientRect().top;
+    feedEl.scrollTo({ top: feedEl.scrollTop + offset - anchor.offset, behavior: "instant" });
+    return true;
+  }
+
+  $effect.pre(() => {
+    const generation = ws.store.generation;
+    if (generation === seenGeneration) return;
+    seenGeneration = generation;
+    reloadAnchor = scroller.isFollowing ? null : captureAnchor();
+    if (reloadAnchor) scroller.hold();
+  });
+
+  $effect(() => {
+    void items.length;
+    const anchor = reloadAnchor;
+    if (!anchor) return;
+    void tick().then(() => {
+      // The reader scrolling by hand meanwhile ends the hunt.
+      if (reloadAnchor !== anchor) return;
+      if (!scroller.isHeld || restoreAnchor(anchor)) {
+        reloadAnchor = null;
+        scroller.release();
+      }
+    });
+  });
+
   $effect(() => {
     // The IntersectionObserver fires once when the sentinel first mounts
     // — which is BEFORE Chat.svelte's async fetchChatHistory resolves, so
