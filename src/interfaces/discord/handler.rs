@@ -397,6 +397,7 @@ mod tests {
             bot_id: OnceLock::new(),
             channel_labels: Mutex::new(HashMap::new()),
             context_buffer: ContextBuffer::new(context_messages),
+            publisher: crate::bus::spawn_broker().publisher(),
         });
         (state, dir)
     }

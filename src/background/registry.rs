@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::agent::interrupt::Interrupt;
-use crate::bus::{EventTrigger, SessionAddress, SkillName};
+use crate::bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
 
 /// Capacity of a session's interrupt channel: agent messages delivered to it
@@ -58,7 +58,7 @@ impl SessionCategory {
         match trigger {
             EventTrigger::Pulse | EventTrigger::Action => Self::Scheduled,
             EventTrigger::Agent => Self::Spawned,
-            EventTrigger::Webhook(_) => Self::External,
+            EventTrigger::Webhook(_) | EventTrigger::Conversation => Self::External,
         }
     }
 
@@ -214,6 +214,11 @@ pub struct SessionInfo {
     /// Model tier this run executes at, carried onto a resume so a later run
     /// doesn't silently fall back to the default tier.
     pub model_tier: BackgroundModelTier,
+    /// The conversation this session's turn output replies to, for an
+    /// `external` session started by a conversation message. `None` for
+    /// `scheduled`/`spawned` sessions and webhook-triggered `external` ones,
+    /// which have no conversation of their own to reply into.
+    pub conversation_target: Option<ConversationTarget>,
     /// When this run started.
     pub started_at: DateTime<Utc>,
 }
@@ -255,6 +260,9 @@ pub struct ResumePoint {
     /// Depth from the main agent the original run had, carried over so the
     /// resumed run doesn't reset to depth 1 and evade the nesting cap.
     pub depth: u32,
+    /// The conversation the original run replied to, carried over so a
+    /// resumed conversation session still knows where to send its output.
+    pub conversation_target: Option<ConversationTarget>,
 }
 
 /// Registry of every live (running, idle, or completing) session, plus a
@@ -550,6 +558,42 @@ pub fn generate_address(trigger: &EventTrigger, qualifier: &str) -> SessionAddre
     SessionAddress::from(format!("{category}-{slug}-{suffix:04x}"))
 }
 
+/// Deterministic, URL/filename-safe address for an external conversation
+/// session, derived from its interface endpoint and its stable conversation
+/// id.
+///
+/// Every message in the same conversation resolves to this same address,
+/// whether or not a run is currently live there — and the address is stable
+/// across restarts, since it depends only on its inputs, not on random state
+/// or process-lifetime counters. Conversation ids vary wildly in shape
+/// across interfaces (Teams ids like `19:abc@thread.tacv2` carry characters
+/// that are unsafe in a URL path segment or a filename, especially on
+/// Windows), so the id is hashed rather than embedded directly.
+#[must_use]
+pub fn conversation_session_address(endpoint: &str, conversation_id: &str) -> SessionAddress {
+    let mut input = endpoint.as_bytes().to_vec();
+    input.push(0);
+    input.extend_from_slice(conversation_id.as_bytes());
+    let hash = fnv1a64(&input);
+    SessionAddress::from(format!("external-{}-{hash:016x}", slugify(endpoint)))
+}
+
+/// FNV-1a 64-bit hash. Not cryptographic — just a small, dependency-free,
+/// deterministic hash for turning an arbitrary conversation id into a
+/// fixed-width, filename-safe tag. Deterministic across processes, restarts,
+/// and platforms, unlike `std`'s `DefaultHasher` (whose algorithm and output
+/// are documented as unspecified and may change between Rust releases).
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 /// Lowercase, hyphenate, and cap a free-text qualifier for use in an address.
 fn slugify(s: &str) -> String {
     let mut slug: String = s
@@ -591,6 +635,7 @@ mod tests {
             purpose: "research the thing".to_string(),
             agent_skill: None,
             model_tier: BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         }
     }
@@ -613,6 +658,56 @@ mod tests {
             SessionCategory::from_trigger(&EventTrigger::Webhook("gh".into())),
             SessionCategory::External
         );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Conversation),
+            SessionCategory::External
+        );
+    }
+
+    #[test]
+    fn conversation_session_address_is_stable_for_the_same_conversation() {
+        let a = conversation_session_address("discord", "12345");
+        let b = conversation_session_address("discord", "12345");
+        assert_eq!(
+            a, b,
+            "the same conversation must always resolve to the same address"
+        );
+    }
+
+    #[test]
+    fn conversation_session_address_differs_by_conversation_id() {
+        let a = conversation_session_address("discord", "12345");
+        let b = conversation_session_address("discord", "67890");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn conversation_session_address_differs_by_endpoint() {
+        let a = conversation_session_address("discord", "12345");
+        let b = conversation_session_address("telegram", "12345");
+        assert_ne!(
+            a, b,
+            "the same conversation id on two different interfaces must not collide"
+        );
+    }
+
+    #[test]
+    fn conversation_session_address_is_url_and_filename_safe() {
+        // Teams conversation ids carry characters unsafe in a URL path
+        // segment or a filename (colons, `@`), which is exactly why the id
+        // is hashed rather than embedded.
+        let addr = conversation_session_address("teams", "19:abc@thread.tacv2");
+        let s = addr.as_ref();
+        assert!(
+            s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "address must contain only URL/filename-safe characters, got {s}"
+        );
+    }
+
+    #[test]
+    fn conversation_session_address_is_prefixed_by_endpoint() {
+        let addr = conversation_session_address("discord", "12345");
+        assert!(addr.as_ref().starts_with("external-discord-"));
     }
 
     #[test]
@@ -964,6 +1059,7 @@ mod tests {
             model_tier: BackgroundModelTier::Large,
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
+            conversation_target: None,
         };
         registry.record_resume_point(&address, point.clone());
 

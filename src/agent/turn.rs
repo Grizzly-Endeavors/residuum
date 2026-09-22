@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
-    EndpointName, Publisher, SessionAddress, SessionEventKind, ToolActivityEvent, ToolCallEvent,
-    ToolResultEvent, topics,
+    EndpointName, Publisher, SessionAddress, SessionEventKind, SessionResponseEvent,
+    ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
 use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
@@ -28,6 +28,16 @@ pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
 pub(crate) struct EventContext<'a> {
     pub publisher: &'a Publisher,
     pub target: EventTarget<'a>,
+    /// When this turn belongs to a conversation session, its own address and
+    /// the conversation it replies to on its interface. Intermediate
+    /// (pre-tool-call) text is then *additionally* published as a
+    /// [`SessionResponseEvent`] to that conversation — the same event, and
+    /// the same "never falls back to the owner's DM" delivery, its turn
+    /// responses use — alongside the ordinary session-stream event every
+    /// [`EventTarget::Session`] turn publishes. `None` for the main agent's
+    /// own turns and for a session with no conversation of its own to reply
+    /// to.
+    pub session_conversation: Option<SessionConversationTarget<'a>>,
 }
 
 /// Where a turn's streaming events (tool activity, intermediate text) go.
@@ -46,6 +56,17 @@ pub(crate) enum EventTarget<'a> {
         address: &'a SessionAddress,
         run_id: &'a str,
     },
+}
+
+/// Where a conversation session's intermediate turn text is *additionally*
+/// delivered, alongside the ordinary session-stream event — the interface
+/// endpoint its conversation lives on, and the conversation id itself. See
+/// [`EventContext::session_conversation`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionConversationTarget<'a> {
+    pub(crate) session_address: &'a SessionAddress,
+    pub(crate) endpoint: &'a str,
+    pub(crate) conversation_id: &'a str,
 }
 
 impl EventContext<'_> {
@@ -93,6 +114,13 @@ impl EventContext<'_> {
         }
     }
 
+    /// Publish this turn's intermediate (pre-tool-call) text: to the
+    /// session-stream topic for [`EventTarget::Session`] (or main's own
+    /// endpoint topic for [`EventTarget::Endpoint`]), and — when
+    /// [`Self::session_conversation`] is set — additionally as a
+    /// [`SessionResponseEvent`] to the conversation session's own
+    /// conversation, never falling back to the owner's DM, the same rule its
+    /// turn responses follow.
     async fn publish_intermediate(&self, content: &str) {
         match self.target {
             EventTarget::Endpoint {
@@ -129,6 +157,24 @@ impl EventContext<'_> {
                 )
                 .await;
             }
+        }
+
+        if let Some(target) = self.session_conversation
+            && let Err(e) = self
+                .publisher
+                .publish(
+                    topics::Endpoint(EndpointName::from(target.endpoint)),
+                    SessionResponseEvent {
+                        session_address: target.session_address.clone(),
+                        conversation_id: target.conversation_id.to_string(),
+                        content: content.to_string(),
+                        attachment: None,
+                        timestamp: chrono::Utc::now().naive_utc(),
+                    },
+                )
+                .await
+        {
+            tracing::debug!(error = %e, "failed to publish intermediate text to conversation");
         }
     }
 }
@@ -628,5 +674,137 @@ mod tests {
     /// requiring `Message: PartialEq`.
     fn contents(messages: &[Message]) -> Vec<&str> {
         messages.iter().map(|m| m.content.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn publish_intermediate_for_a_conversation_session_also_uses_session_response_event() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("discord");
+        let mut conv_sub: crate::bus::Subscriber<SessionResponseEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let mut intermediate_sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> =
+            bus_handle
+                .subscribe(topics::Endpoint(ep.clone()))
+                .await
+                .unwrap();
+        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-chan-1");
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Session {
+                address: &address,
+                run_id: "run-1",
+            },
+            session_conversation: Some(SessionConversationTarget {
+                session_address: &address,
+                endpoint: "discord",
+                conversation_id: "chan-1",
+            }),
+        };
+
+        events.publish_intermediate("checking the build now").await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
+            .await
+            .expect("a SessionResponseEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.content, "checking the build now");
+        assert_eq!(event.session_address, address);
+        assert_eq!(event.conversation_id, "chan-1");
+        assert!(event.attachment.is_none());
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                intermediate_sub.recv()
+            )
+            .await
+            .is_err(),
+            "a conversation session's intermediate text must never publish IntermediateEvent, \
+             which would route through main's correlation-id target lookup and log the \
+             misleading \"owner has not messaged the bot yet\" line"
+        );
+
+        let session_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
+                .await
+                .expect(
+                    "the session-stream event should still be published, same as any other session",
+                )
+                .unwrap()
+                .unwrap();
+        assert_eq!(session_event.address, address);
+        assert_eq!(session_event.run_id, "run-1");
+        assert!(
+            matches!(
+                session_event.kind,
+                crate::bus::SessionEventKind::Intermediate { ref content } if content == "checking the build now"
+            ),
+            "a conversation session's intermediate text must reach the web sessions stream too"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_intermediate_without_a_session_conversation_uses_intermediate_event() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        events.publish_intermediate("thinking...").await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("an IntermediateEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.content, "thinking...");
+        assert_eq!(event.correlation_id, "corr-1");
+    }
+
+    #[tokio::test]
+    async fn publish_intermediate_with_no_output_endpoint_is_a_noop() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<crate::bus::IntermediateEvent> =
+            bus_handle.subscribe(topics::Endpoint(ep)).await.unwrap();
+
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        events.publish_intermediate("nothing to see").await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
+                .await
+                .is_err(),
+            "with no output endpoint there is nowhere to publish intermediate text"
+        );
     }
 }

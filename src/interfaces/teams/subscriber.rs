@@ -4,8 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bus::{ErrorEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent};
+use crate::bus::{
+    ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent, TurnLifecycleEvent,
+};
 use crate::interfaces::BaseSubscribers;
+use crate::interfaces::notify_main_of_undeliverable_session_output;
 
 use super::TeamsRuntime;
 use super::connector::typing_activity;
@@ -44,6 +47,14 @@ pub(super) async fn run_teams_subscriber(rt: Arc<TeamsRuntime>, mut subs: BaseSu
                 Ok(None) => break,
                 Err(e) => {
                     tracing::warn!(error = %e, "teams response subscription failed");
+                    break;
+                }
+            },
+            event = subs.session_response.recv() => match event {
+                Ok(Some(response)) => deliver_session_response(&rt, response).await,
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!(error = %e, "teams session response subscription failed");
                     break;
                 }
             },
@@ -142,6 +153,54 @@ async fn deliver_response(rt: &TeamsRuntime, response: ResponseEvent) {
         if response.conversation.is_some() {
             notify_owner_of_failure(rt, &target.label, &e.to_string()).await;
         }
+    }
+}
+
+/// Deliver a conversation session's turn output to its own Teams conversation.
+///
+/// Never falls back to the owner's DM on an unresolvable target — unlike
+/// [`deliver_response`], which the main agent's own delivery still uses.
+/// Either failure mode here (an unknown conversation, or the send itself
+/// failing) drops the output and notifies main instead, per the design's
+/// "only main talks to the owner" rule.
+async fn deliver_session_response(rt: &TeamsRuntime, resp: SessionResponseEvent) {
+    let Some(target) = rt.store.conversation(&resp.conversation_id).await else {
+        notify_main_of_undeliverable_session_output(
+            &rt.publisher,
+            &resp.session_address,
+            &resp.conversation_id,
+            "the bot no longer knows that conversation",
+        )
+        .await;
+        return;
+    };
+    let text = match &resp.attachment {
+        Some(attachment) => {
+            tracing::warn!(
+                file = %attachment.path.display(),
+                "teams cannot deliver file attachments; sending the text with a note"
+            );
+            format!(
+                "{}\n\n_I made a file for you ({}), but I can't send files over Teams yet. \
+                 It's saved at `{}` and available in the web UI._",
+                resp.content,
+                attachment.filename,
+                attachment.path.display()
+            )
+            .trim_start()
+            .to_string()
+        }
+        None if resp.content.is_empty() => return,
+        None => resp.content,
+    };
+    if let Err(e) = rt.try_send_text(&target, &text).await {
+        notify_main_of_undeliverable_session_output(
+            &rt.publisher,
+            &resp.session_address,
+            &resp.conversation_id,
+            &e.to_string(),
+        )
+        .await;
     }
 }
 

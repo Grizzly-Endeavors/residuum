@@ -224,6 +224,10 @@ pub(crate) struct GatewayRuntime {
     /// Routes `message_agent` deliveries by address. Constant for the
     /// process lifetime — cloned into `spawn_context` on every reload.
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
+    /// Routes admitted inbound conversation messages that aren't the owner's
+    /// own DM to their conversation's session. Constant for the process
+    /// lifetime, like `agent_messenger`.
+    pub conversation_router: Arc<crate::background::ConversationRouter>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,

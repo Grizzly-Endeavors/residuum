@@ -292,6 +292,9 @@ impl Tool for SubagentSpawnTool {
             spawner: Some(self.spawner_address.clone()),
             depth: new_depth,
             hop_count: self.hop_counter.outgoing(),
+            sender: None,
+            conversation: None,
+            inbound: None,
         };
 
         self.publisher

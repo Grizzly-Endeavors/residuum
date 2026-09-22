@@ -289,6 +289,7 @@ mod tests {
             purpose: "research".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         }
     }
@@ -349,6 +350,7 @@ mod tests {
                 model_tier: crate::config::BackgroundModelTier::Medium,
                 spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
                 depth: 1,
+                conversation_target: None,
             },
         );
         let (messenger, bus, _dir) = messenger(&registry);

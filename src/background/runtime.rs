@@ -19,17 +19,18 @@ use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
-    AgentMessageEvent, AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK,
-    HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress, SessionEventKind, SkillName,
-    topics,
+    AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
+    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress,
+    SessionEventKind, SessionResponseEvent, SkillName, topics,
 };
 use crate::config::BackgroundConfig;
+use crate::interfaces::types::InboundMessage;
 
 use super::events::publish_session_event;
-use super::messaging::{AgentMessenger, DeliveryOutcome};
+use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
 use super::registry::{
-    DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionCategory, SessionInfo, SessionRegistry,
-    SessionState, generate_run_id,
+    DeliverOutcome, ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState,
+    generate_run_id,
 };
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
@@ -96,6 +97,9 @@ pub(crate) struct SessionSpawnRequest {
     pub depth: u32,
     /// The session's turn configuration.
     pub subagent_config: SubAgentConfig,
+    /// The conversation this session replies to, for a conversation-triggered
+    /// session. `None` for every other trigger.
+    pub conversation_target: Option<ConversationTarget>,
 }
 
 /// Executes session turns with bounded concurrency, tracking each session's
@@ -173,6 +177,7 @@ impl SessionRuntime {
             purpose,
             agent_skill: req.agent_skill,
             model_tier,
+            conversation_target: req.conversation_target,
             started_at: Utc::now(),
         };
 
@@ -306,17 +311,23 @@ fn deliver_losing_spawn_input(
         Some(ctx) => format!("{ctx}\n\n{}", config.prompt),
         None => config.prompt.clone(),
     };
+    // Shares `race_guard_interrupt` with `listener::handle_spawn_request`'s
+    // own live-address guard: this is the same situation (a spawn/resume's
+    // content losing the race for its address), just found in a narrower
+    // window — after `handle_spawn_request`'s own check found the address
+    // free, but before this run actually won `SessionRegistry::register`. A
+    // `Conversation`-triggered run must still deliver its carried inbound
+    // message as `Interrupt::UserMessage`, not misattribute it to `main`.
     let outcome = registry.deliver(
         &info.address,
-        Interrupt::AgentMessage(AgentMessageEvent {
-            from: info
-                .spawner
-                .clone()
-                .unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
-            from_category: info.category.as_str().to_string(),
+        super::listener::race_guard_interrupt(
+            &info.trigger,
+            config.inbound.clone(),
+            info.spawner.clone(),
+            info.category,
             content,
-            hop_count: config.hop_count,
-        }),
+            config.hop_count,
+        ),
     );
     match outcome {
         DeliverOutcome::Delivered => {}
@@ -490,6 +501,7 @@ fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
         model_tier: info.model_tier,
         spawner: info.spawner.clone(),
         depth: info.depth,
+        conversation_target: info.conversation_target.clone(),
     }
 }
 
@@ -520,15 +532,18 @@ enum IdleOutcome {
     TimedOut,
     /// An agent message arrived; it becomes the next turn's kickoff.
     Woken(AgentMessageEvent),
+    /// A new message arrived in this session's conversation; it becomes the
+    /// next turn's kickoff.
+    WokenExternal(InboundMessage),
 }
 
-/// Wait for a session's idle period to end: a stop, the idle timeout, or an
-/// agent message delivered through the run's own interrupt channel (the
-/// same channel a running turn drains at its tool-call checkpoints — see
+/// Wait for a session's idle period to end: a stop, the idle timeout, or a
+/// message delivered through the run's own interrupt channel (the same
+/// channel a running turn drains at its tool-call checkpoints — see
 /// `crate::background::messaging`). An interrupt kind other than
-/// `AgentMessage` is not expected while idle (nothing else is ever sent into
-/// a session's channel) but is ignored defensively rather than treated as a
-/// wake, so the idle wait keeps going.
+/// `AgentMessage`/`UserMessage` is not expected while idle (nothing else is
+/// ever sent into a session's channel) but is ignored defensively rather
+/// than treated as a wake, so the idle wait keeps going.
 async fn wait_idle(
     stop_token: &CancellationToken,
     idle_timeout: Duration,
@@ -548,18 +563,58 @@ async fn wait_idle(
                 // be drained and dropped (see `finish_run`).
                 return match interrupt_rx.try_recv() {
                     Ok(Interrupt::AgentMessage(msg)) => IdleOutcome::Woken(msg),
+                    Ok(Interrupt::UserMessage(msg)) => IdleOutcome::WokenExternal(msg),
                     Ok(_) | Err(_) => IdleOutcome::TimedOut,
                 };
             }
             received = interrupt_rx.recv() => {
                 match received {
                     Some(Interrupt::AgentMessage(msg)) => return IdleOutcome::Woken(msg),
+                    Some(Interrupt::UserMessage(msg)) => return IdleOutcome::WokenExternal(msg),
                     Some(_) => {}
                     None => return IdleOutcome::TimedOut,
                 }
             }
         }
     }
+}
+
+/// Everything that happens after a turn finishes, before the run decides
+/// whether to linger idle: stage observations past threshold, relay the
+/// outcome to a spawned session's spawner, and deliver output to a
+/// conversation session's own conversation. Split out of [`run_session`]
+/// purely to keep that function's line count down.
+async fn after_turn(
+    info: &SessionInfo,
+    status: &AgentResultStatus,
+    summary: &str,
+    resources: Option<&SubAgentResources>,
+    env: &RunEnv,
+    memory: &mut SessionMemory,
+    recent_messages: &mut RecentMessages,
+) {
+    // Per-turn threshold check: mirrors the main agent's own rotation, run
+    // after every turn (not just once) since a run can now span several.
+    // Staged observations are held locally and merged alongside the final
+    // observation on completion.
+    if let Some(res) = resources {
+        let mem_env = session_memory_env(res, env.tz);
+        memory
+            .maybe_stage(recent_messages.messages(), &mem_env)
+            .await;
+    }
+
+    // Relay this turn's outcome to a spawned session's direct spawner, after
+    // every turn (not only at run completion) — this generalizes the old
+    // one-shot "background task result" relay, and now covers every status
+    // (not just a completed turn with output), so the spawner is never left
+    // not knowing a turn failed, was cancelled, or produced nothing.
+    maybe_relay_result(info, status, summary, resources, env, recent_messages).await;
+
+    // Deliver this turn's output to its own conversation, for a session
+    // started by a conversation message. Every other session category has
+    // `conversation_target: None` and this is a no-op.
+    maybe_output_to_conversation(info, status, summary, env).await;
 }
 
 /// Drive one session run from permit acquisition through completion.
@@ -586,6 +641,7 @@ async fn run_session(
         prompt: config.prompt,
         context: config.context,
         hop_count: config.hop_count,
+        sender: config.sender,
     };
     // Assigned on the loop's first iteration, which always runs at least
     // once (the run's initial turn), so both are definitely initialized by
@@ -630,29 +686,13 @@ async fn run_session(
             }
         };
 
-        // Per-turn threshold check: mirrors the main agent's own rotation,
-        // run after every turn (not just once) since a run can now span
-        // several. Staged observations are held locally and merged alongside
-        // the final observation on completion.
-        if let Some(res) = resources.as_ref() {
-            let mem_env = session_memory_env(res, env.tz);
-            memory
-                .maybe_stage(recent_messages.messages(), &mem_env)
-                .await;
-        }
-
-        // Relay this turn's outcome to a spawned session's direct spawner,
-        // after every turn (not only at run completion) — this generalizes
-        // the old one-shot "background task result" relay, and now covers
-        // every status (not just a completed turn with output), so the
-        // spawner is never left not knowing a turn failed, was cancelled, or
-        // produced nothing.
-        maybe_relay_result(
+        after_turn(
             &info,
             &status,
             &summary,
             resources.as_ref(),
             &env,
+            &mut memory,
             &mut recent_messages,
         )
         .await;
@@ -688,6 +728,10 @@ async fn run_session(
                 tracing::info!(from = %msg.from, "session woken by an agent message, starting another turn");
                 kickoff = TurnKickoff::AgentMessage(msg);
             }
+            IdleOutcome::WokenExternal(msg) => {
+                tracing::info!(msg_id = %msg.id, "session woken by a conversation message, starting another turn");
+                kickoff = TurnKickoff::External(msg);
+            }
         }
     }
 
@@ -697,7 +741,7 @@ async fn run_session(
     // narrow window between the loop's last check and here isn't silently
     // lost. `finish_run` resumes the session as a new run to deliver these
     // once this run has fully left the registry.
-    let leftover_messages = drain_pending_agent_messages(&mut interrupt_rx);
+    let leftover_messages = drain_pending_interrupts(&mut interrupt_rx);
 
     finish_run(
         &mut info,
@@ -714,16 +758,16 @@ async fn run_session(
     .await;
 }
 
-/// Drain every agent message still queued in a run's interrupt channel,
-/// discarding any other interrupt kind (nothing else is ever sent into a
-/// session's channel — see `wait_idle`).
-fn drain_pending_agent_messages(
-    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
-) -> Vec<AgentMessageEvent> {
+/// Drain every agent message or conversation message still queued in a run's
+/// interrupt channel, discarding any other interrupt kind (nothing else is
+/// ever sent into a session's channel — see `wait_idle`).
+fn drain_pending_interrupts(interrupt_rx: &mut mpsc::Receiver<Interrupt>) -> Vec<PendingInput> {
     let mut drained = Vec::new();
     while let Ok(interrupt) = interrupt_rx.try_recv() {
-        if let Interrupt::AgentMessage(msg) = interrupt {
-            drained.push(msg);
+        match interrupt {
+            Interrupt::AgentMessage(msg) => drained.push(PendingInput::Agent(msg)),
+            Interrupt::UserMessage(msg) => drained.push(PendingInput::External(msg)),
+            Interrupt::Subconscious(_) | Interrupt::Stopped => {}
         }
     }
     drained
@@ -737,18 +781,18 @@ struct RunOutcome {
     summary: String,
     memory: SessionMemory,
     recent_messages: RecentMessages,
-    /// Agent messages still queued in the run's interrupt channel when
-    /// [`drain_pending_agent_messages`] drained it — must be routed to the
-    /// resumed run rather than silently dropped.
-    leftover_messages: Vec<AgentMessageEvent>,
+    /// Agent messages and conversation messages still queued in the run's
+    /// interrupt channel when [`drain_pending_interrupts`] drained it — must
+    /// be routed to the resumed run rather than silently dropped.
+    leftover_messages: Vec<PendingInput>,
 }
 
 /// Finalize a run once its turn loop has ended: merge whatever it staged
 /// (and a final extraction) into global memory, record the run's resume
 /// point, write its completed store record, publish its result, and — if
-/// any agent messages were still queued when the run's interrupt channel was
-/// drained (see [`drain_pending_agent_messages`]) — resume the session as a
-/// new run to deliver them, once this run has fully left the registry.
+/// any messages were still queued when the run's interrupt channel was
+/// drained (see [`drain_pending_interrupts`]) — resume the session as a new
+/// run to deliver them, once this run has fully left the registry.
 ///
 /// Split out of [`run_session`] purely to keep that function's line count
 /// down — this is still exclusively its own tail end, not a reusable step.
@@ -823,11 +867,11 @@ async fn finish_run(
         tracing::warn!(
             address = %info.address,
             count = leftover_messages.len(),
-            "agent message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
+            "message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
         );
         if let Err(e) = env
             .messenger
-            .resume_with_messages(&info.address, &point, &leftover_messages)
+            .resume_with_pending(&info.address, &point, &leftover_messages)
             .await
         {
             tracing::error!(
@@ -973,6 +1017,55 @@ async fn relay_result_to_spawner(
     )
 }
 
+/// Deliver this turn's output to a conversation session's own conversation.
+/// A no-op for every other session (`info.conversation_target` is `None`).
+///
+/// Only a completed turn with real text output is delivered — a cancelled,
+/// failed, or empty-output turn produces nothing to say into the
+/// conversation and is left to the run's other visibility (logs, the
+/// session's transcript) rather than posting an internal status line into a
+/// shared chat.
+async fn maybe_output_to_conversation(
+    info: &SessionInfo,
+    status: &AgentResultStatus,
+    summary: &str,
+    env: &RunEnv,
+) {
+    let Some(target) = info.conversation_target.as_ref() else {
+        return;
+    };
+    if !matches!(status, AgentResultStatus::Completed) || summary.is_empty() {
+        tracing::debug!(
+            address = %info.address,
+            status = %status,
+            "conversation session turn produced no output to deliver"
+        );
+        return;
+    }
+    let event = SessionResponseEvent {
+        session_address: info.address.clone(),
+        conversation_id: target.conversation_id.clone(),
+        content: summary.to_string(),
+        attachment: None,
+        timestamp: crate::time::now_local(env.tz),
+    };
+    if let Err(e) = env
+        .publisher
+        .publish(
+            topics::Endpoint(EndpointName::from(target.endpoint.as_str())),
+            event,
+        )
+        .await
+    {
+        tracing::error!(
+            address = %info.address,
+            conversation = %target.conversation_id,
+            error = %e,
+            "failed to publish conversation session output to the bus"
+        );
+    }
+}
+
 /// What [`relay_result_to_spawner`] needs besides the run and the relay
 /// itself, grouped to keep its argument count down.
 struct RelayEnv<'a> {
@@ -990,6 +1083,12 @@ struct TurnCtx<'a> {
     resources: Option<&'a SubAgentResources>,
     stop_token: &'a CancellationToken,
     store: &'a SessionStore,
+    /// The run's own bus publisher: every turn's lifecycle and streaming
+    /// events publish through it unconditionally (the session-stream topic
+    /// the web UI follows), and — via `execute_subagent`'s
+    /// `conversation_output` — a conversation session's intermediate turn
+    /// text additionally reaches its own conversation the same way its
+    /// final output does.
     publisher: &'a Publisher,
 }
 
@@ -1059,6 +1158,14 @@ async fn execute_turn_outcome(
         run_id: &ctx.info.run_id,
         started_at: ctx.info.started_at,
     };
+    let conversation_output =
+        ctx.info
+            .conversation_target
+            .as_ref()
+            .map(|target| super::subagent::ConversationOutput {
+                endpoint: target.endpoint.as_str(),
+                conversation_id: target.conversation_id.as_str(),
+            });
     let outcome = async {
         let res = ctx
             .resources
@@ -1073,9 +1180,12 @@ async fn execute_turn_outcome(
             kickoff,
             recent_messages,
             res,
-            ctx.stop_token,
-            Some(&sink),
-            interrupt_rx,
+            super::subagent::TurnExecution {
+                stop_token: ctx.stop_token,
+                transcript_sink: Some(&sink),
+                interrupt_rx,
+            },
+            conversation_output,
         )
         .await
     }
@@ -1148,7 +1258,7 @@ mod tests {
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
 
-    use super::super::registry::MAIN_ADDRESS;
+    use super::super::registry::{MAIN_ADDRESS, MAIN_DEPTH};
     use super::super::subagent::test_memory_extras;
     use crate::bus::MessageEvent;
 
@@ -1240,7 +1350,119 @@ mod tests {
                 context: None,
                 model_tier: crate::config::BackgroundModelTier::Medium,
                 hop_count: 0,
+                sender: None,
+                inbound: None,
             },
+            conversation_target: None,
+        }
+    }
+
+    /// A minimal inbound conversation message for interrupt-channel tests.
+    fn sample_inbound_message(content: &str) -> InboundMessage {
+        InboundMessage {
+            id: "conv-msg-1".to_string(),
+            content: content.to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "discord".to_string(),
+                sender: None,
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "chan-1".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    is_owner: false,
+                }),
+            },
+            timestamp: chrono::Utc::now(),
+            images: vec![],
+            context: None,
+        }
+    }
+
+    /// A conversation-triggered spawn request at a deterministic-style
+    /// address, wired with a conversation target so its turn output routes
+    /// back to it.
+    fn sample_conversation_request(address: &str) -> SessionSpawnRequest {
+        SessionSpawnRequest {
+            address: SessionAddress::from(address),
+            source_label: "discord:#builds".to_string(),
+            trigger: EventTrigger::Conversation,
+            agent_skill: None,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            subagent_config: SubAgentConfig {
+                prompt: "can you check the build?".to_string(),
+                context: None,
+                model_tier: crate::config::BackgroundModelTier::Medium,
+                hop_count: 0,
+                sender: None,
+                inbound: None,
+            },
+            conversation_target: Some(ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn deliver_losing_spawn_input_for_a_conversation_trigger_preserves_sender_attribution() {
+        // Mirrors `listener::two_conversation_messages_...`: this is the
+        // same race-guard misattribution bug, just hit through the narrower
+        // window between `handle_spawn_request`'s own live-address check
+        // passing and this run actually winning `SessionRegistry::register`.
+        let registry = SessionRegistry::new();
+        let address = SessionAddress::from("external-discord-race");
+        let winner = SessionInfo {
+            address: address.clone(),
+            run_id: "run-winner".to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: SessionState::Idle,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: Some(ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+            started_at: Utc::now(),
+        };
+        let mut rx = registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let losing_inbound = sample_inbound_message("any updates?");
+        let config = SubAgentConfig {
+            prompt: "any updates?".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            hop_count: 0,
+            sender: None,
+            inbound: Some(losing_inbound),
+        };
+        let register_error = super::super::registry::RegisterError {
+            address: address.clone(),
+        };
+
+        deliver_losing_spawn_input(&registry, &losing_info, &config, &register_error);
+
+        let delivered = rx
+            .try_recv()
+            .expect("the losing run's content must be delivered into the winning run");
+        match delivered {
+            Interrupt::UserMessage(m) => assert_eq!(m.content, "any updates?"),
+            Interrupt::AgentMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!(
+                    "expected a UserMessage interrupt for a conversation trigger, not an agent \
+                     message misattributed to main"
+                )
+            }
         }
     }
 
@@ -1307,6 +1529,7 @@ mod tests {
             purpose: "already running".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         };
         let mut winner_rx = runtime
@@ -1533,6 +1756,7 @@ mod tests {
             purpose: "research".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         };
         store.begin_run(&info).await;
@@ -1934,6 +2158,7 @@ mod tests {
             purpose: "research the thing".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         };
         store.begin_run(&info).await;
@@ -2186,6 +2411,7 @@ mod tests {
             purpose: "check things".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         };
         let event = build_result_event(
@@ -2227,6 +2453,7 @@ mod tests {
             purpose: "research".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         };
         let event = build_result_event(
@@ -2357,6 +2584,28 @@ mod tests {
                 "a message already queued when the timeout fired must still wake the session"
             ),
             IdleOutcome::Stopped => panic!("stop token was never cancelled"),
+            IdleOutcome::WokenExternal(_) => {
+                panic!("this test only ever queues an agent message")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_idle_treats_a_conversation_message_racing_the_timeout_as_a_wake() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Interrupt::UserMessage(sample_inbound_message(
+            "still here?",
+        )))
+        .unwrap();
+
+        let stop_token = CancellationToken::new();
+        match wait_idle(&stop_token, Duration::ZERO, &mut rx).await {
+            IdleOutcome::WokenExternal(msg) => assert_eq!(msg.content, "still here?"),
+            IdleOutcome::TimedOut => panic!(
+                "a message already queued when the timeout fired must still wake the session"
+            ),
+            IdleOutcome::Stopped => panic!("stop token was never cancelled"),
+            IdleOutcome::Woken(_) => panic!("this test only ever queues a conversation message"),
         }
     }
 
@@ -2442,6 +2691,135 @@ mod tests {
                 .await
                 .is_err(),
             "a single message-driven wake should not produce a second run"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_conversation_session_wakes_for_a_new_message_and_runs_a_second_turn() {
+        let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        let address = SessionAddress::from("external-discord-idle-wake");
+        runtime.spawn(
+            sample_conversation_request(address.as_ref()),
+            Some(make_sequenced_resources(vec!["first done", "second done"])),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+            info.state == SessionState::Idle
+        })
+        .await
+        .expect("session should go idle after its first turn");
+
+        // Exactly what `AgentMessenger::deliver_conversation` does to deliver
+        // to a live session.
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::UserMessage(sample_inbound_message("any updates?")),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered,
+            "the idle session should still be live in the registry"
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .expect("the run should eventually complete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.summary, "second done",
+            "the run should complete with its second turn's own summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_session_turn_output_is_published_to_its_conversation() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
+            bus_handle
+                .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+                .await
+                .unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            3,
+            IdleTimeouts {
+                scheduled: Duration::from_millis(50),
+                spawned: Duration::from_millis(50),
+                external: Duration::from_millis(50),
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+
+        let address = SessionAddress::from("external-discord-output");
+        runtime.spawn(
+            sample_conversation_request(address.as_ref()),
+            Some(make_resources("the build is green")),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(2), session_output.recv())
+            .await
+            .expect("the session's turn output should be published")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.session_address, address);
+        assert_eq!(event.conversation_id, "chan-1");
+        assert_eq!(event.content, "the build is green");
+    }
+
+    #[tokio::test]
+    async fn non_conversation_session_publishes_no_session_response_event() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut session_output: crate::bus::Subscriber<crate::bus::SessionResponseEvent> =
+            bus_handle
+                .subscribe(topics::Endpoint(crate::bus::EndpointName::from("discord")))
+                .await
+                .unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            3,
+            IdleTimeouts {
+                scheduled: Duration::from_millis(50),
+                spawned: Duration::from_millis(50),
+                external: Duration::from_millis(50),
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+
+        let address = SessionAddress::from("spawned-researcher-no-output");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(make_resources("found the answer")),
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), session_output.recv())
+                .await
+                .is_err(),
+            "a spawned session with no conversation target must never publish session output"
         );
     }
 

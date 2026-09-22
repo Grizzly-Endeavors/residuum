@@ -9,7 +9,7 @@ A session is a fork of the main agent with its own identity, memory snapshot, an
 **What's included in a session's fork:**
 - The main agent's full identity and system prompt content — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki root index, the skills index — assembled once in the system message, exactly as it is for the main agent.
 - A snapshot of the global observation log and the recent-context narrative, taken at fork time. A session never sees observations merged after it forked.
-- Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), or the webhook payload (webhook). A session resumed by a message to a completed address (see [Messaging](#messaging)) gets that message instead, plus a pointer back to its previous run's episode.
+- Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), the webhook payload (webhook), or the inbound message plus any buffered chatter since the conversation's last mention (conversation — see [Conversation Routing](#conversation-routing)). A session resumed by a message to a completed address (see [Messaging](#messaging)) gets that message instead, plus a pointer back to its previous run's episode.
 - The requested skill activated, when one was given. A resumed session keeps the skill its previous run used.
 - The requested model tier.
 
@@ -31,7 +31,7 @@ Every session has a category, derived from what started it:
 | Category | Started by | Address prefix |
 |----------|-----------|-----------------|
 | `scheduled` | Pulses and scheduled actions | `scheduled-` |
-| `external` | Webhooks | `external-` |
+| `external` | Webhooks, and non-owner-DM conversations on Discord/Telegram/Teams (see [Conversation Routing](#conversation-routing)) | `external-` |
 | `spawned` | `subagent_spawn`, the subconscious `learner` | `spawned-` |
 
 ## Lifecycle
@@ -58,7 +58,9 @@ Configurable in the `[background]` config section:
 
 ## Addresses
 
-Every session has a stable, human-readable address, e.g. `spawned-researcher-3f9a`: the category, a slugified qualifier (skill, pulse, action, or webhook name), and a short random suffix. `subagent_spawn` generates the address synchronously and returns it immediately, before the session has actually started running.
+Every `scheduled`, `spawned`, or webhook `external` session has a stable, human-readable address, e.g. `spawned-researcher-3f9a`: the category, a slugified qualifier (skill, pulse, action, or webhook name), and a short random suffix. `subagent_spawn` generates the address synchronously and returns it immediately, before the session has actually started running.
+
+A conversation's `external` session instead gets a **deterministic** address, derived from its interface endpoint and its stable conversation id (e.g. `external-discord-3f9a2c1b0d4e5f6a`), so every message in that conversation resolves to the same session whether or not a run is currently live there. The conversation id is hashed rather than embedded — some interfaces' ids (Teams, in particular) carry characters that aren't safe in a URL path segment or a filename.
 
 A run id, distinct from the address, identifies the specific run within the session's lifecycle.
 
@@ -87,6 +89,16 @@ Two limits, both configurable in `[background]`:
 | Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session, and shown as an error on that session in the web UI. |
 
 A hard-limit refusal never reaches the target — the tool result is the only thing the sender sees.
+
+## Conversation Routing
+
+The main agent handles only the owner's own direct messages and the web UI. Every other conversation that Discord, Telegram, or Teams admits — a group chat, a channel, or a non-owner's DM — is routed to that conversation's own `external` session instead, so the owner's private context is never shared with whoever else talks to the bot. This holds even when the owner is the one speaking in a shared conversation: a group chat or channel always gets a session, never main. Admission (owner claim, `respond_to_others`, standing) is unchanged and happens first, per interface; routing only decides who handles a message the interface has already admitted.
+
+Delivery into a conversation's session follows the same lifecycle rules as [Messaging](#messaging) — interrupt if running, new turn if idle, deferred resume if completing — with two differences: a conversation message is always hop `0` (it's external input, like a user message, not an agent-to-agent message), and an address with **no prior run at all** starts a brand-new session instead of reporting an unknown address, since a conversation's first-ever message is exactly when that happens.
+
+The session sees the inbound message with the same sender attribution the main agent shows (`[From: name via interface (location)]`), plus any chatter buffered since the conversation's last mention, exactly as described in each interface's own systems-usage page. Its source label follows `<endpoint>:<location>`, e.g. `discord:#builds (Eng Team)`. A message that arrives while its target session's interrupt channel is saturated (vanishingly unlikely — 32 deep, drained continuously by a live run) is not delivered: an `error` is logged and a notice naming the session and conversation reaches `main`, the same visibility a busy `message_agent` send gets.
+
+**Output never falls back to the owner's DM.** A conversation session's turn output — both its final response and any intermediate (pre-tool-call) text along the way, the same as main posts to its own conversation mid-turn — is delivered straight to its own conversation. If the interface can't resolve or deliver to that conversation (the bot was removed, the channel was deleted), the output is dropped, an `error` is logged naming the session and conversation, and a failure notice reaches `main` as an agent message — main decides whether the owner needs to hear about it. This is deliberately different from the main agent's own proactive-output fallback (see each interface's "Where replies go"), which still falls back to the owner's DM: only main talks to the owner, so a session's output has nowhere else meaningful to fall back to.
 
 ## Nesting
 
@@ -216,7 +228,7 @@ Every session publishes the same turn events the main agent does, as their own `
 | `session_turn_started` / `session_turn_ended` | `address`, `run_id`, `turn_id` | Brackets each turn. `turn_ended` is sent whatever the outcome. `turn_id` is `<run_id>-t<n>`, numbering the run's turns from 1. |
 | `session_tool_call` | `address`, `run_id`, `id`, `name`, `arguments` | Verbose only. |
 | `session_tool_result` | `address`, `run_id`, `tool_call_id`, `name`, `output`, `is_error` | Verbose only. |
-| `session_broadcast_response` | `address`, `run_id`, `content` | Intermediate text the session emitted alongside tool calls. |
+| `session_broadcast_response` | `address`, `run_id`, `content` | Intermediate text the session emitted alongside tool calls. For a conversation session, the same text is also delivered to its own conversation (see [Conversation Routing](#conversation-routing)). |
 | `session_response` | `address`, `run_id`, `turn_id`, `content` | A turn's final text response (not sent for a turn with no text, or one that was stopped). |
 | `session_error` | `address`, `run_id`, `message` | A failed turn, a message refused at the hop limit (on both the sender's and the receiver's stream, when each is a live session), a result relay that couldn't be delivered, a deferred delivery that failed, or a panicked session task. |
 

@@ -7,8 +7,11 @@ use serenity::model::id::ChannelId;
 
 use serenity::http::Http;
 
-use crate::bus::{ErrorEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent};
+use crate::bus::{
+    ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent, TurnLifecycleEvent,
+};
 use crate::interfaces::chunking::chunk_text;
+use crate::interfaces::notify_main_of_undeliverable_session_output;
 
 use super::DiscordState;
 
@@ -50,6 +53,13 @@ pub(super) async fn run_discord_subscriber(
             event = subs.response.recv() => {
                 match event {
                     Ok(Some(resp)) => deliver_response(&http, &state, resp).await,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
+                }
+            }
+            event = subs.session_response.recv() => {
+                match event {
+                    Ok(Some(resp)) => deliver_session_response(&http, &state, resp).await,
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
                 }
@@ -160,6 +170,45 @@ async fn deliver_response(http: &Http, state: &DiscordState, resp: ResponseEvent
                 .unwrap_or_else(|| format!("channel {target}"));
             notify_owner_of_failure(http, state, &place, &e.to_string()).await;
         }
+    }
+}
+
+/// Deliver a conversation session's turn output to its own Discord channel.
+///
+/// Never falls back to the owner's DM on an unresolvable target — unlike
+/// [`deliver_response`], which the main agent's own delivery still uses.
+/// Either failure mode here (an invalid channel id, or the send itself
+/// failing) drops the output and notifies main instead, per the design's
+/// "only main talks to the owner" rule.
+async fn deliver_session_response(http: &Http, state: &DiscordState, resp: SessionResponseEvent) {
+    let target = match resp.conversation_id.parse::<u64>() {
+        Ok(n) if n != 0 => ChannelId::new(n),
+        _ => {
+            notify_main_of_undeliverable_session_output(
+                &state.publisher,
+                &resp.session_address,
+                &resp.conversation_id,
+                "that is not a Discord channel ID",
+            )
+            .await;
+            return;
+        }
+    };
+    let sent = if let Some(ref att) = resp.attachment {
+        send_file_attachment(http, target, att, &resp.content).await
+    } else if resp.content.is_empty() {
+        Ok(())
+    } else {
+        send_chunks(http, target, &resp.content).await
+    };
+    if let Err(e) = sent {
+        notify_main_of_undeliverable_session_output(
+            &state.publisher,
+            &resp.session_address,
+            &resp.conversation_id,
+            &e.to_string(),
+        )
+        .await;
     }
 }
 

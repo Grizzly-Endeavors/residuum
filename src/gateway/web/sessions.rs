@@ -227,6 +227,7 @@ mod tests {
             purpose: "research".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap()
                 + Duration::minutes(minutes),
         }

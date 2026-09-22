@@ -56,6 +56,9 @@ async fn publish_action_spawn(
         spawner: None,
         depth: MAIN_DEPTH + 1,
         hop_count: 0,
+        sender: None,
+        conversation: None,
+        inbound: None,
     };
 
     if let Err(e) = publisher.publish(topics::Background, spawn_event).await {

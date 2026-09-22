@@ -27,7 +27,7 @@ use anyhow::Context as _;
 use serenity::model::id::{ChannelId, UserId};
 use serenity::prelude::*;
 
-use crate::bus::EndpointName;
+use crate::bus::{EndpointName, Publisher};
 use crate::config::DiscordConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
@@ -52,6 +52,9 @@ pub(super) struct DiscordState {
     channel_labels: Mutex<HashMap<ChannelId, String>>,
     /// Unmentioned server messages held for the next @mention, by channel.
     context_buffer: ContextBuffer,
+    /// For notifying main when a conversation session's output can't be
+    /// delivered (see `subscriber::deliver_session_response`).
+    publisher: Publisher,
 }
 
 impl DiscordState {
@@ -145,6 +148,7 @@ impl DiscordInterface {
             bot_id: OnceLock::new(),
             channel_labels: Mutex::new(HashMap::new()),
             context_buffer: ContextBuffer::new(self.cfg.context_messages),
+            publisher: self.senders.publisher.clone(),
         });
         let subs = crate::interfaces::BaseSubscribers::new(
             &self.senders.bus_handle,
