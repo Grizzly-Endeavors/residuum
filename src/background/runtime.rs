@@ -1085,9 +1085,9 @@ mod tests {
             store,
             3,
             IdleTimeouts {
-                scheduled: Duration::from_secs(60),
-                spawned: Duration::from_secs(60),
-                external: Duration::from_secs(60),
+                scheduled: Duration::from_mins(1),
+                spawned: Duration::from_mins(1),
+                external: Duration::from_mins(1),
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
