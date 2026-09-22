@@ -2629,6 +2629,7 @@ mod tests {
             SessionEventKind::Intermediate { content } => format!("intermediate:{content}"),
             SessionEventKind::Response { content, .. } => format!("response:{content}"),
             SessionEventKind::Error { .. } => "error".to_string(),
+            SessionEventKind::MessageToMain { .. } => "message_to_main".to_string(),
         }
     }
 
@@ -2702,7 +2703,8 @@ mod tests {
                 | SessionEventKind::ToolCall(_)
                 | SessionEventKind::ToolResult(_)
                 | SessionEventKind::Intermediate { .. }
-                | SessionEventKind::Error { .. } => None,
+                | SessionEventKind::Error { .. }
+                | SessionEventKind::MessageToMain { .. } => None,
             })
             .collect();
         let expected_turn_id = format!("{run_id}-t1");

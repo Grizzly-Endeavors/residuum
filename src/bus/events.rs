@@ -284,6 +284,11 @@ impl AgentMessageEvent {
     /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
     /// to message back, but sees this session's responses directly.
+    ///
+    /// The web UI recognizes the `[Agent Message from <address> (<category>)]`
+    /// header in main's chat history to show these messages as items linking
+    /// to the sending session, so a change to it needs a matching change in
+    /// `web/src/lib/relay.ts`.
     #[must_use]
     pub fn format_for_agent(&self) -> String {
         if self.from.as_ref() == crate::background::registry::OWNER_ADDRESS {
@@ -441,6 +446,14 @@ pub enum SessionEventKind {
     Error {
         /// Human-readable description.
         message: String,
+    },
+    /// The session's message reached the main agent: a turn-result relay to
+    /// its spawner or a `message_agent` call addressed to `main`. Lets the
+    /// web UI show the message in the main chat as it arrives, attributed to
+    /// this run.
+    MessageToMain {
+        /// The message body as main received it (without the sender header).
+        content: String,
     },
 }
 

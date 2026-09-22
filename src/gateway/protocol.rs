@@ -368,6 +368,17 @@ pub enum ServerMessage {
         /// Error description.
         message: String,
     },
+    /// A session's message reached the main agent (a turn-result relay or a
+    /// `message_agent` call to `main`). The main chat shows it as a compact
+    /// item linking to the session.
+    SessionMessageToMain {
+        /// Sending session's address.
+        address: String,
+        /// Sending run's id.
+        run_id: String,
+        /// The message body as main received it.
+        content: String,
+    },
     /// Reply to `SessionSendMessage`: the message was handed to the session.
     SessionMessageDelivered {
         /// The `id` from the `SessionSendMessage`.

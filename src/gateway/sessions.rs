@@ -145,6 +145,11 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             run_id,
             message,
         },
+        SessionEventKind::MessageToMain { content } => ServerMessage::SessionMessageToMain {
+            address,
+            run_id,
+            content,
+        },
     }
 }
 
