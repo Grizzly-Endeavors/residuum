@@ -70,13 +70,22 @@ async fn handle_spawn_request(
 ) -> Result<(), anyhow::Error> {
     let skill = event.skill.as_ref().map(|s| s.as_ref().to_string());
 
-    let resources = build_spawn_resources(ctx, &event.model_tier, skill.as_deref()).await?;
+    let resources = build_spawn_resources(
+        ctx,
+        &event.model_tier,
+        skill.as_deref(),
+        event.address.clone(),
+        event.depth,
+    )
+    .await?;
 
     let request = SessionSpawnRequest {
         address: event.address,
         source_label: event.source_label,
         trigger: event.source,
         agent_skill: event.skill,
+        spawner: event.spawner,
+        depth: event.depth,
         subagent_config: SubAgentConfig {
             prompt: event.prompt,
             context: event.context,

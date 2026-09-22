@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
 use crate::agent::{Agent, AgentConfig};
-use crate::background::registry::SessionRegistry;
+use crate::background::registry::{MAIN_ADDRESS, MAIN_DEPTH, SessionRegistry};
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
 
-use crate::bus::EndpointRegistry;
+use crate::bus::{EndpointRegistry, SessionAddress};
 use crate::skills::SharedSkillState;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
@@ -71,7 +71,7 @@ pub(super) fn init_tool_registry(
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
-    tools.register_memory_get_tool(layout.episodes_dir());
+    tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
     tools.register_action_tools(
         Arc::clone(deps.action_store),
         Arc::clone(deps.action_notify),
@@ -87,9 +87,19 @@ pub(super) fn init_tool_registry(
         tz,
     );
     tools.register_background_tools(Arc::clone(deps.session_registry));
-    tools.register_spawn_tool(deps.publisher.clone(), Arc::clone(deps.skill_state));
+    tools.register_spawn_tool(
+        deps.publisher.clone(),
+        Arc::clone(deps.skill_state),
+        SessionAddress::from(MAIN_ADDRESS),
+        MAIN_DEPTH,
+        cfg.background.subagent_depth_cap,
+    );
 
-    tools.register_send_message_tool(deps.endpoint_registry.clone(), deps.publisher.clone());
+    tools.register_send_message_tool(
+        deps.endpoint_registry.clone(),
+        deps.publisher.clone(),
+        false,
+    );
     tools.register_list_endpoints_tool(deps.endpoint_registry.clone());
 
     let override_tx = tokio::sync::watch::Sender::new(None);

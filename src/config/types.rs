@@ -18,8 +18,9 @@ use super::constants::{
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
     DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
-    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBAGENT_DEPTH_CAP,
+    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
+    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
 use super::provider::ProviderSpec;
 
@@ -435,6 +436,11 @@ pub struct BackgroundConfig {
     /// Token floor below which a completed run with nothing staged produces
     /// no episode (its transcript is still kept in the session store).
     pub episode_skip_token_floor: usize,
+    /// Maximum depth a `subagent_spawn`-created session may have. Main is
+    /// depth 0, a `scheduled`/`external` session is depth 1, and a spawned
+    /// session is its spawner's depth plus 1; spawning past this cap is
+    /// refused.
+    pub subagent_depth_cap: u32,
 }
 
 impl Default for BackgroundConfig {
@@ -448,6 +454,7 @@ impl Default for BackgroundConfig {
             idle_timeout_spawned: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES * 60),
             idle_timeout_external: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES * 60),
             episode_skip_token_floor: DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
+            subagent_depth_cap: DEFAULT_SUBAGENT_DEPTH_CAP,
         }
     }
 }

@@ -11,8 +11,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::background::registry::generate_address;
-use crate::bus::{EventTrigger, SkillName, SpawnRequestEvent};
+use crate::background::registry::{MAIN_ADDRESS, MAIN_DEPTH, generate_address};
+use crate::bus::{EventTrigger, SessionAddress, SkillName, SpawnRequestEvent};
 
 use super::LearnSignal;
 
@@ -159,6 +159,10 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         context: None,
         source: trigger,
         model_tier: crate::config::BackgroundModelTier::Large,
+        // The learner is part of the main agent's own subconscious, not
+        // something a session spawned, so it runs at main's own spawn depth.
+        spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+        depth: MAIN_DEPTH + 1,
     }
 }
 

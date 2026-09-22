@@ -171,6 +171,19 @@
           no episode. Its transcript is still kept.
         </div>
       </div>
+      <div class="settings-field">
+        <label for="rt-bg-subagent-depth-cap">Subagent Nesting Depth Cap</label>
+        <input
+          id="rt-bg-subagent-depth-cap"
+          type="number"
+          bind:value={fields.bg_subagent_depth_cap}
+          placeholder="Default: 2"
+        />
+        <div class="field-hint">
+          Maximum nesting depth for subagent_spawn (main is depth 0). A session at the cap is
+          refused when it tries to spawn further.
+        </div>
+      </div>
     </div>
 
     <div class="settings-group">

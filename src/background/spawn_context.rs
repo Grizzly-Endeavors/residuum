@@ -10,7 +10,7 @@ use crate::actions::store::ActionStore;
 use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
 use crate::background::registry::SessionRegistry;
 use crate::background::runtime::SessionRuntime;
-use crate::bus::{EndpointRegistry, Publisher};
+use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
 use crate::config::{BackgroundConfig, BackgroundModelTier};
 use crate::inference::retry::RetryConfig;
@@ -69,6 +69,10 @@ pub(crate) struct SpawnContext {
 /// narrative at fork time, per the design's "Fork contents": a session never
 /// sees merges that happen after it forked.
 ///
+/// `own_address` and `own_depth` are this new session's own address and
+/// depth, threaded into its `subagent_spawn` tool so any session it spawns in
+/// turn records the right spawner and depth (see "Nesting" in the design).
+///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key), the
 /// identity files cannot be read, or `skill` names a skill that does not resolve.
@@ -77,6 +81,8 @@ pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
     skill: Option<&str>,
+    own_address: SessionAddress,
+    own_depth: u32,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let specs = ctx
         .background_config
@@ -150,6 +156,9 @@ pub(crate) async fn build_spawn_resources(
         observer: Arc::clone(&ctx.observer),
         merge_writer: Arc::clone(&ctx.merge_writer),
         episode_skip_token_floor: ctx.background_config.episode_skip_token_floor,
+        own_address,
+        own_depth,
+        subagent_depth_cap: ctx.background_config.subagent_depth_cap,
     };
 
     build_subagent_resources(

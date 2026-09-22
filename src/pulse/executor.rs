@@ -1,6 +1,6 @@
 //! Pulse task builder: converts a pulse definition into a spawn request.
 
-use crate::background::registry::generate_address;
+use crate::background::registry::{MAIN_DEPTH, generate_address};
 use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, SpawnRequestEvent};
 
 use super::types::PulseDef;
@@ -40,6 +40,8 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> SpawnRequestEvent {
         context: None,
         source: trigger,
         model_tier,
+        spawner: None,
+        depth: MAIN_DEPTH + 1,
     }
 }
 
