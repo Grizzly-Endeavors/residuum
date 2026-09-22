@@ -438,7 +438,7 @@ async fn drain_interrupts(
                     "injecting agent message mid-turn"
                 );
                 hop_counter.bump(msg.hop_count);
-                push_and_record(recent_messages, sink, Message::user(msg.format_for_agent())).await;
+                push_and_record(recent_messages, sink, msg.to_history_message()).await;
             }
             Interrupt::Subconscious(content) => {
                 tracing::info!("injecting subconscious correction mid-turn");
@@ -652,6 +652,7 @@ mod tests {
                 endpoint: "test".to_string(),
                 sender: None,
                 conversation: None,
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

@@ -166,6 +166,7 @@ async fn handle_client_message(
                 endpoint: "ws".to_string(),
                 sender: None,
                 conversation: None,
+                agent_sender: None,
             };
             let msg_event = crate::bus::MessageEvent {
                 id: id.clone(),

@@ -304,7 +304,7 @@ impl AgentMessenger {
             content,
             hop_count,
         };
-        let event = MessageEvent::from_background(msg.format_for_agent());
+        let event = MessageEvent::from_agent(&msg);
         let message_id = event.id.clone();
         self.pending_main_hops
             .lock()
@@ -1482,6 +1482,7 @@ mod tests {
                     kind: crate::interfaces::types::ConversationKind::Channel,
                     is_owner: false,
                 }),
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

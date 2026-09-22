@@ -118,6 +118,7 @@ impl EventHandler for DiscordHandler {
                     kind: addressed.kind,
                     is_owner: matches!(standing, Standing::Owner),
                 }),
+                agent_sender: None,
             },
             timestamp: crate::time::now_local(self.tz),
             images,

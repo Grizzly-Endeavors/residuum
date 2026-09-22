@@ -896,6 +896,7 @@ mod tests {
                 endpoint: "test".to_string(),
                 sender: None,
                 conversation: None,
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

@@ -132,6 +132,7 @@ mod tests {
                     kind: ConversationKind::Channel,
                     is_owner: false,
                 }),
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

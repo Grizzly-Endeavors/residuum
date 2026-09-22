@@ -1370,6 +1370,7 @@ mod tests {
                     kind: crate::interfaces::types::ConversationKind::Channel,
                     is_owner: false,
                 }),
+                agent_sender: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

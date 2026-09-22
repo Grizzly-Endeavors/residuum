@@ -15,7 +15,7 @@ pub use error::InferenceError;
 pub(crate) use factory::build_provider_chain;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use types::{
-    CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message, MessageSender,
-    ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
-    WebSearchNativeConfig,
+    AgentSender, CompletionOptions, ImageData, InferenceProvider, InferenceResponse, Message,
+    MessageSender, ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition,
+    Usage, WebSearchNativeConfig,
 };

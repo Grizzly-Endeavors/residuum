@@ -213,6 +213,7 @@ mod tests {
                 endpoint: "test".into(),
                 sender: None,
                 conversation: None,
+                agent_sender: None,
             },
             timestamp: test_timestamp(),
             images: vec![],
