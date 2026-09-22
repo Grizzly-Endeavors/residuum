@@ -209,6 +209,14 @@ struct StartupSpawnContextInputs<'a> {
     /// channel still held messages at teardown) — reused here rather than
     /// built a second time.
     messenger: &'a Arc<AgentMessenger>,
+    /// Shared tracing service, built alongside the main agent's feedback
+    /// tools — reused here so a session's own feedback tools register
+    /// against the same instance.
+    tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    /// Runtime client context snapshot, built alongside `tracing_service`.
+    tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    /// Standalone web search backend config, mirroring `cfg.web_search.standalone_backend`.
+    web_search_backend: Option<crate::config::StandaloneBackendConfig>,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
@@ -241,6 +249,9 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         observer: Arc::clone(inputs.session_observer),
         merge_writer: Arc::clone(inputs.merge_writer),
         messenger,
+        tracing_service: Arc::clone(inputs.tracing_service),
+        tracing_client_context: Arc::clone(inputs.tracing_client_context),
+        web_search_backend: inputs.web_search_backend,
     })
 }
 
@@ -673,6 +684,7 @@ pub(crate) async fn initialize(
     let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
         init_session_runtime(cfg, &layout, publisher, &session_observer, &merge_writer).await;
     let net = init_networking(cfg, &layout).await;
+    let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
 
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg,
@@ -691,9 +703,11 @@ pub(crate) async fn initialize(
         session_observer: &session_observer,
         merge_writer: &merge_writer,
         messenger: &agent_messenger,
+        tracing_service: &tracing_service,
+        tracing_client_context: &tracing_client_context,
+        web_search_backend: cfg.web_search.standalone_backend.clone(),
     });
 
-    let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
     let (agent, path_policy_for_runtime, output_topic_override_tx) =
         build_main_agent(MainAgentInputs {
             cfg,

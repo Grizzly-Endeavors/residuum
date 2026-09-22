@@ -415,6 +415,17 @@ fn build_spawn_context(
         observer,
         merge_writer: Arc::clone(&rt.merge_writer),
         messenger: Arc::clone(&rt.agent_messenger),
+        // Shared `Arc`, same instance `reload_tracing` updates in place —
+        // sessions forked after this reload see the same config, no rebuild
+        // needed here.
+        tracing_service: Arc::clone(&rt.tracing_service),
+        // Rebuilt fresh from `new_cfg`, mirroring the snapshot `reload_gateway`
+        // builds for the HTTP tracing API, so a session forked after this
+        // reload reports the currently active model/provider.
+        tracing_client_context: Arc::new(
+            crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
+        ),
+        web_search_backend: new_cfg.web_search.standalone_backend.clone(),
     })
 }
 

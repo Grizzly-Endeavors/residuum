@@ -184,6 +184,9 @@ pub async fn build_subagent_resources(
         session_category,
         messenger,
         hop_counter,
+        tracing_service,
+        tracing_client_context,
+        web_search_backend,
     } = config;
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
@@ -241,6 +244,9 @@ pub async fn build_subagent_resources(
         session_category.as_str().to_string(),
         messenger,
         hop_counter.clone(),
+        tracing_service,
+        tracing_client_context,
+        web_search_backend.as_ref(),
     );
 
     Ok(SubAgentResources {

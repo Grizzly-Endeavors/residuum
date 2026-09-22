@@ -578,6 +578,8 @@ On error:
 
 **Side effects:** Sets the output topic override via a `watch` channel. The gateway reads this before each turn and routes agent responses to the overridden endpoint. The switch takes effect on the **next turn**, not mid-turn — the confirmation response goes to the current endpoint.
 
+**Not available to sessions:** the one tool registered only on the main agent's registry — it redirects main's background-turn output, which is meaningless for a session.
+
 ---
 
 ## `stop_agent`
@@ -749,7 +751,7 @@ On execution error:
 
 **Source:** `ollama_web_search.rs` · `OllamaWebSearchTool`
 
-**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config.
+**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config. Registered on both the main agent's registry and every session's (`build_subagent_registry()`), gated by the same check.
 
 **Description sent to LLM:**
 > Search the web using Ollama Cloud. Returns search results with titles, URLs, and snippets.
@@ -808,7 +810,7 @@ On submission failure (network issue, upstream rejection, rate limit): `is_error
 
 **Side effects:** Submits a sanitized OTLP trace dump and the runtime client context (version, OS, model) to the developer ingest service via `agent-residuum.com/api/v1/bug-report`. Span content is forcibly sanitized regardless of the runtime `sanitize_content` toggle.
 
-**Not available to sub-agents:** registered only on the main agent's tool registry (sub-agent registry omitted in v1).
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService` and a runtime client context snapshot taken at fork time.
 
 ---
 
@@ -834,4 +836,4 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 
 **Side effects:** Submits the message + version-only client context to `agent-residuum.com/api/v1/feedback`. No trace dump is attached.
 
-**Not available to sub-agents:** registered only on the main agent's tool registry (sub-agent registry omitted in v1).
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService`.

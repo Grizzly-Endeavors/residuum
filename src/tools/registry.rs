@@ -236,20 +236,32 @@ impl ToolRegistry {
 
     /// Build a tool registry for a session.
     ///
-    /// Includes all tools available to the main agent except `switch_endpoint`,
-    /// which stays main-only. Sessions get their own isolated skill state but
-    /// share the same endpoint registry, action store, etc. `own_address` and
-    /// `own_depth` are this session's own address and depth, and `depth_cap`
-    /// the configured nesting limit — together they let this session's own
-    /// `subagent_spawn` record the right spawner/depth on anything it forks
-    /// and refuse spawning once the cap is reached. `own_address` is reused
-    /// (cloned) as the identity `message_agent` reports to the agents it
-    /// messages, alongside `session_category` and the shared `messenger`.
+    /// Includes every tool available to the main agent, with the same config
+    /// gating, except `switch_endpoint` — the one tool that stays main-only,
+    /// because it redirects main's background-turn output and is meaningless
+    /// for a session. `tests::session_registry_matches_main_minus_documented_allowlist`
+    /// enforces this: it builds both registries from equivalent config and
+    /// asserts the session registry's tool names equal main's minus that one
+    /// documented exclusion, so a tool added to one registration surface but
+    /// not the other fails the build instead of drifting silently. Sessions
+    /// get their own isolated skill state but share the same endpoint
+    /// registry, action store, etc. `own_address` and `own_depth` are this
+    /// session's own address and depth, and `depth_cap` the configured
+    /// nesting limit — together they let this session's own `subagent_spawn`
+    /// record the right spawner/depth on anything it forks and refuse
+    /// spawning once the cap is reached. `own_address` is reused (cloned) as
+    /// the identity `message_agent` reports to the agents it messages,
+    /// alongside `session_category` and the shared `messenger`.
     /// `send_message` from this registry refuses the owner's DM on every
     /// chat interface and the web UI (only the main agent talks to the
     /// owner). `hop_counter` is this session's current-turn hop counter,
     /// shared with `message_agent`/`subagent_spawn` so they compute outgoing
     /// hop counts from the same value the session runtime updates.
+    /// `tracing_service` and `tracing_client_context` back this session's own
+    /// `file_bug_report`/`submit_feedback` tools, the same as main's.
+    /// `web_search_backend` mirrors main's `cfg.web_search.standalone_backend`
+    /// check: `ollama_web_search` is registered only when it names the
+    /// `"ollama"` backend, exactly like `gateway::startup::tools::init_tool_registry`.
     #[expect(
         clippy::too_many_arguments,
         reason = "session registry needs all tool dependencies"
@@ -278,6 +290,9 @@ impl ToolRegistry {
         session_category: String,
         messenger: Arc<AgentMessenger>,
         hop_counter: HopCounter,
+        tracing_service: Arc<crate::tracing_service::TracingService>,
+        tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+        web_search_backend: Option<&crate::config::StandaloneBackendConfig>,
     ) -> Self {
         let mut registry = Self::new();
 
@@ -298,6 +313,13 @@ impl ToolRegistry {
             user_inbox_dir,
             user_inbox_attachments_dir,
             tz,
+        );
+
+        // Feedback tools (file_bug_report, submit_feedback)
+        registry.register_feedback_tools(
+            tracing_service,
+            tracing_client_context,
+            Arc::clone(&session_registry),
         );
 
         // Session management (stop_agent, list_agents, subagent_spawn)
@@ -321,6 +343,19 @@ impl ToolRegistry {
 
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
+
+        // Ollama Cloud web search tool, gated the same way as main's
+        // (see `gateway::startup::tools::init_tool_registry`).
+        if let Some(backend) = web_search_backend
+            && backend.name == "ollama"
+        {
+            let base_url = backend
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.ollama.com".to_string());
+            registry.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+            tracing::info!("registered ollama_web_search tool for session");
+        }
 
         registry
     }

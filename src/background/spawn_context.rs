@@ -63,6 +63,22 @@ pub(crate) struct SpawnContext {
     /// Shared agent-messaging service, threaded into every fork so its
     /// `message_agent` tool can identify itself as the sender.
     pub(crate) messenger: Arc<AgentMessenger>,
+    /// Shared tracing service, threaded into every fork's own
+    /// `file_bug_report`/`submit_feedback` tools — the same instance the
+    /// main agent's tools register against, so config updates (see
+    /// `crate::gateway::reload::reload_tracing`) reach sessions too since
+    /// they share the `Arc`.
+    pub(crate) tracing_service: Arc<crate::tracing_service::TracingService>,
+    /// Runtime client context snapshot for forks' bug-report submissions,
+    /// rebuilt alongside the rest of `SpawnContext` on every config reload
+    /// (see `crate::gateway::reload::build_spawn_context`) so it reflects
+    /// the currently active model/provider.
+    pub(crate) tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+    /// Standalone web search backend config, if one is configured — mirrors
+    /// `cfg.web_search.standalone_backend`, rebuilt on every config reload so
+    /// a newly forked session gates `ollama_web_search` the same way the
+    /// main agent's own (startup-time) check does.
+    pub(crate) web_search_backend: Option<crate::config::StandaloneBackendConfig>,
 }
 
 /// Build isolated `SubAgentResources` for a new session run at a given tier.
@@ -172,6 +188,9 @@ pub(crate) async fn build_spawn_resources(
         session_category: category,
         messenger: Arc::clone(&ctx.messenger),
         hop_counter: HopCounter::new(hop_count),
+        tracing_service: Arc::clone(&ctx.tracing_service),
+        tracing_client_context: Arc::clone(&ctx.tracing_client_context),
+        web_search_backend: ctx.web_search_backend.clone(),
     };
 
     build_subagent_resources(
