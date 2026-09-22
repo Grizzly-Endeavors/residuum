@@ -188,6 +188,27 @@ impl SessionStore {
         }
     }
 
+    /// Build a system note and append it to `run_id`'s durable transcript
+    /// sidecar, returning the message so the caller can also fold it into
+    /// whatever in-memory buffer it holds for the run — a live turn's
+    /// `RecentMessages`, or a freshly reloaded transcript `Vec` (panic
+    /// recovery) — or discard it, when the note is a best-effort addition to
+    /// a *different* session's transcript the caller doesn't own a buffer
+    /// for. Shared by every place a relay/delivery failure needs to leave a
+    /// visible trace in a run's own record, rather than each duplicating the
+    /// append.
+    pub(crate) async fn append_note(
+        &self,
+        run_id: &str,
+        started_at: DateTime<Utc>,
+        note: &str,
+    ) -> Message {
+        let message = Message::system(note.to_string());
+        self.append_transcript(run_id, started_at, std::slice::from_ref(&message))
+            .await;
+        message
+    }
+
     /// Read back a run's incrementally-appended transcript, for recovering a
     /// run that never reached a terminal state on its own — whether that's
     /// startup recovery after a prior process exit, or backfilling a run

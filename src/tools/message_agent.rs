@@ -129,7 +129,7 @@ impl Tool for MessageAgentTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::HopLimits;
+    use crate::background::HopLimits;
     use crate::background::registry::SessionRegistry;
     use crate::background::store::SessionStore;
 

@@ -322,6 +322,21 @@ pub struct SpawnRequestEvent {
     pub hop_count: u32,
 }
 
+impl SpawnRequestEvent {
+    /// Combine this request's context and prompt into a turn's opening
+    /// message, the same way a fresh fork's `TurnKickoff::Initial` does.
+    /// Used when a spawn or resume attempt discovers the target address is
+    /// already live and falls back to delivering this request's content into
+    /// that run as a message instead of forking a second one.
+    #[must_use]
+    pub fn kickoff_text(&self) -> String {
+        match &self.context {
+            Some(ctx) => format!("{ctx}\n\n{}", self.prompt),
+            None => self.prompt.clone(),
+        }
+    }
+}
+
 /// Operational notice broadcast to connected endpoints.
 #[derive(Debug, Clone)]
 pub struct NoticeEvent {

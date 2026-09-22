@@ -129,6 +129,26 @@ pub enum DeliverOutcome {
     NotLive,
 }
 
+/// [`SessionRegistry::register`] refused because `address` already names a
+/// live run.
+#[derive(Debug, Clone)]
+pub struct RegisterError {
+    /// The address that was already live.
+    pub address: SessionAddress,
+}
+
+impl std::fmt::Display for RegisterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "address {} is already registered to a live run",
+            self.address
+        )
+    }
+}
+
+impl std::error::Error for RegisterError {}
+
 /// A live session's metadata, as tracked by the registry.
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -225,20 +245,36 @@ impl SessionRegistry {
         Self::default()
     }
 
-    /// Register a new session run, replacing any existing entry at the same
-    /// address (a resumed run lands here the same way a fresh one does).
+    /// Register a new session run, refusing if the address already names a
+    /// live run.
+    ///
+    /// This is a compare-and-swap: the liveness check and the insert happen
+    /// under the same lock, so two concurrent registration attempts for the
+    /// same address can never both succeed and one silently clobber the
+    /// other's live entry (its interrupt channel, its stop token) out from
+    /// under it. A legitimate resume only ever calls this after
+    /// [`Self::wait_until_clear`] confirms the address is empty, so refusal
+    /// here means a second attempt genuinely raced in in the meantime — the
+    /// loser must fall back to delivering its own input into whichever run
+    /// won (see `SessionRuntime::spawn` and the spawn listener's liveness
+    /// guard, both of which do exactly that).
     ///
     /// Returns the receiver half of the session's interrupt channel, for the
     /// runtime to drive the run's turns with.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns [`RegisterError`] if the address is already registered.
     pub fn register(
         &self,
         info: SessionInfo,
         stop_token: CancellationToken,
-    ) -> mpsc::Receiver<Interrupt> {
+    ) -> Result<mpsc::Receiver<Interrupt>, RegisterError> {
         let (interrupt_tx, interrupt_rx) = mpsc::channel(INTERRUPT_CHANNEL_CAPACITY);
         let address = info.address.clone();
         let mut guard = self.lock();
+        if guard.contains_key(&address) {
+            return Err(RegisterError { address });
+        }
         guard.insert(
             address,
             SessionEntry {
@@ -247,7 +283,7 @@ impl SessionRegistry {
                 interrupt_tx,
             },
         );
-        interrupt_rx
+        Ok(interrupt_rx)
     }
 
     /// Deliver a message to a live session by address: an interrupt at its
@@ -537,7 +573,9 @@ mod tests {
     fn register_and_get_round_trips() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0001");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         let got = registry.get(&info.address).unwrap();
         assert_eq!(got.address, info.address);
@@ -545,10 +583,52 @@ mod tests {
     }
 
     #[test]
+    fn register_refuses_a_second_run_at_an_address_already_live() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-cas0001");
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let mut other = sample_info("spawned-researcher-cas0001");
+        other.run_id = "run-2".to_string();
+        let err = registry
+            .register(other, CancellationToken::new())
+            .expect_err("a second registration at a live address must be refused");
+        assert_eq!(err.address, info.address);
+
+        // The compare-and-swap must leave the original entry untouched.
+        assert_eq!(
+            registry.get(&info.address).unwrap().run_id,
+            info.run_id,
+            "a refused registration must not clobber the live entry it lost to"
+        );
+    }
+
+    #[test]
+    fn register_succeeds_again_once_the_address_has_been_removed() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-cas0002");
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+        registry.remove(&info.address, &info.run_id);
+
+        let mut resumed = sample_info("spawned-researcher-cas0002");
+        resumed.run_id = "run-resumed".to_string();
+        assert!(
+            registry.register(resumed, CancellationToken::new()).is_ok(),
+            "a legitimate resume, registering after the old run cleared, must still succeed"
+        );
+    }
+
+    #[test]
     fn set_state_updates_existing_session() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0002");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         registry.set_state(&info.address, SessionState::Idle);
         assert_eq!(
@@ -569,7 +649,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0003");
         let token = CancellationToken::new();
-        let _rx = registry.register(info.clone(), token.clone());
+        let _rx = registry.register(info.clone(), token.clone()).unwrap();
 
         assert!(registry.stop(&info.address));
         assert!(token.is_cancelled());
@@ -586,7 +666,9 @@ mod tests {
         let registry = SessionRegistry::new();
         let mut info = sample_info("spawned-researcher-0004");
         info.state = SessionState::Completing;
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         assert!(!registry.stop(&info.address));
     }
@@ -603,9 +685,13 @@ mod tests {
         let running_token = CancellationToken::new();
         let idle_token = CancellationToken::new();
         let completing_token = CancellationToken::new();
-        let _running_rx = registry.register(running.clone(), running_token.clone());
-        let _idle_rx = registry.register(idle.clone(), idle_token.clone());
-        let _completing_rx = registry.register(completing.clone(), completing_token.clone());
+        let _running_rx = registry
+            .register(running.clone(), running_token.clone())
+            .unwrap();
+        let _idle_rx = registry.register(idle.clone(), idle_token.clone()).unwrap();
+        let _completing_rx = registry
+            .register(completing.clone(), completing_token.clone())
+            .unwrap();
 
         let signalled = registry.stop_all();
 
@@ -631,7 +717,9 @@ mod tests {
     fn remove_takes_session_out_of_live_list() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0005");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         assert_eq!(registry.list_live().len(), 1);
         let removed = registry.remove(&info.address, &info.run_id).unwrap();
@@ -645,7 +733,9 @@ mod tests {
         // run's teardown racing behind it.
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0005b");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         assert!(registry.remove(&info.address, "run-stale").is_none());
         assert_eq!(
@@ -662,8 +752,12 @@ mod tests {
         earlier.started_at = Utc::now() - chrono::Duration::seconds(60);
         let later = sample_info("spawned-b-0002");
 
-        let _later_rx = registry.register(later.clone(), CancellationToken::new());
-        let _earlier_rx = registry.register(earlier.clone(), CancellationToken::new());
+        let _later_rx = registry
+            .register(later.clone(), CancellationToken::new())
+            .unwrap();
+        let _earlier_rx = registry
+            .register(earlier.clone(), CancellationToken::new())
+            .unwrap();
 
         let mut live = registry.list_live().into_iter();
         assert_eq!(live.next().unwrap().address, earlier.address);
@@ -675,7 +769,9 @@ mod tests {
     fn subagent_snapshot_reflects_live_sessions() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0006");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         let snapshot = registry.subagent_snapshot();
         assert_eq!(snapshot.len(), 1);
@@ -724,7 +820,9 @@ mod tests {
     fn deliver_sends_to_a_live_session_channel() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0007");
-        let mut rx = registry.register(info.clone(), CancellationToken::new());
+        let mut rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         assert_eq!(
             registry.deliver(&info.address, sample_agent_message()),
@@ -748,7 +846,9 @@ mod tests {
         let registry = SessionRegistry::new();
         let mut info = sample_info("spawned-researcher-0007b");
         info.state = SessionState::Completing;
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         assert_eq!(
             registry.deliver(&info.address, sample_agent_message()),
@@ -761,7 +861,9 @@ mod tests {
     fn deliver_returns_full_when_the_channel_is_saturated() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0007c");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         for _ in 0..INTERRUPT_CHANNEL_CAPACITY {
             assert_eq!(
@@ -780,7 +882,9 @@ mod tests {
     async fn wait_until_clear_returns_once_the_entry_is_removed() {
         let registry = std::sync::Arc::new(SessionRegistry::new());
         let info = sample_info("spawned-researcher-0007d");
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         let waiter_registry = std::sync::Arc::clone(&registry);
         let address = info.address.clone();

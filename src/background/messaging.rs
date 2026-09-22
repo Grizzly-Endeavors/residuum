@@ -31,7 +31,6 @@ use std::sync::{Arc, Mutex};
 use crate::agent::hop::HopLimits;
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{AgentMessageEvent, MessageEvent, Publisher, SessionAddress, topics};
-use crate::inference::Message;
 use crate::interfaces::types::MessageOrigin;
 
 use super::registry::{DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry};
@@ -116,7 +115,7 @@ impl AgentMessenger {
     /// session store (used to record a best-effort note in a session's
     /// transcript when a hop-limit refusal involves it), enforcing `hop_limits`.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         registry: Arc<SessionRegistry>,
         publisher: Publisher,
         store: Arc<SessionStore>,
@@ -209,9 +208,10 @@ impl AgentMessenger {
                 // the registry.
                 let registry = Arc::clone(&self.registry);
                 let publisher = self.publisher.clone();
+                let store = Arc::clone(&self.store);
                 let deferred_address = address.clone();
                 tokio::spawn(async move {
-                    deferred_resume(registry, publisher, deferred_address, message).await;
+                    deferred_resume(registry, publisher, store, deferred_address, message).await;
                 });
                 return Ok(DeliveryOutcome::Queued(address));
             }
@@ -256,28 +256,14 @@ impl AgentMessenger {
              ({hop_count} >= {}); it was not delivered.",
             self.hop_limits.hard
         );
-        self.record_note_if_live_session(from, &note).await;
-        self.record_note_if_live_session(&SessionAddress::from(to), &note)
-            .await;
-    }
-
-    /// Best-effort: append `note` to `address`'s live transcript sidecar, if
-    /// it names a currently-registered session. A no-op for `main` (which
-    /// has no session-store transcript) and for an address with no live
-    /// entry (nothing to append into that would actually surface).
-    async fn record_note_if_live_session(&self, address: &SessionAddress, note: &str) {
-        if address.as_ref() == MAIN_ADDRESS {
-            return;
-        }
-        if let Some(info) = self.registry.get(address) {
-            self.store
-                .append_transcript(
-                    &info.run_id,
-                    info.started_at,
-                    &[Message::system(note.to_string())],
-                )
-                .await;
-        }
+        record_note_if_live_session(&self.registry, &self.store, from, &note).await;
+        record_note_if_live_session(
+            &self.registry,
+            &self.store,
+            &SessionAddress::from(to),
+            &note,
+        )
+        .await;
     }
 
     /// Deliver to the main agent by publishing a `MessageEvent` on the
@@ -311,17 +297,26 @@ impl AgentMessenger {
             images: Vec::new(),
             context: None,
         };
+        let message_id = event.id.clone();
         self.pending_main_hops
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(event.id.clone(), hop_count);
-        self.publisher
-            .publish(topics::UserMessage, event)
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "failed to deliver agent message to main");
-                SendError::PublishFailed("failed to deliver message to main".to_string())
-            })
+            .insert(message_id.clone(), hop_count);
+        if let Err(e) = self.publisher.publish(topics::UserMessage, event).await {
+            // The message never reached main, so this hop count will never
+            // be looked up via `take_main_hop` — remove it rather than
+            // leaving a permanent entry behind for an id nothing will ever
+            // read.
+            self.pending_main_hops
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&message_id);
+            tracing::warn!(error = %e, "failed to deliver agent message to main");
+            return Err(SendError::PublishFailed(
+                "failed to deliver message to main".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Resume a completed session as a new run at the same address, by
@@ -380,39 +375,139 @@ impl AgentMessenger {
     }
 }
 
-/// Wait for `address` to leave the registry, then resume it as a new run
-/// carrying `msg` as the opening input — the deferred half of [`AgentMessenger::send`]'s
-/// `Completing` branch, run on its own detached task so the original sender
-/// never blocks on it.
+/// Best-effort: append `note` to `address`'s live transcript sidecar, if it
+/// names a currently-registered session. A no-op for `main` (which has no
+/// session-store transcript) and for an address with no live entry (nothing
+/// to append into that would actually surface). Free function (not a
+/// method) so it can be shared between [`AgentMessenger::refuse_hop_limit`]
+/// and [`deferred_resume`], which runs on a detached task with no
+/// `&AgentMessenger` to call through.
+async fn record_note_if_live_session(
+    registry: &SessionRegistry,
+    store: &SessionStore,
+    address: &SessionAddress,
+    note: &str,
+) {
+    if address.as_ref() == MAIN_ADDRESS {
+        return;
+    }
+    if let Some(info) = registry.get(address) {
+        store.append_note(&info.run_id, info.started_at, note).await;
+    }
+}
+
+/// Wait for `address` to leave the registry, then re-run the same
+/// live-vs-resume decision [`AgentMessenger::send`] makes for a fresh call —
+/// the deferred half of `send`'s `Completing` branch, run on its own
+/// detached task so the original sender never blocks on it.
+///
+/// By the time the wait ends, another deferred message queued at the same
+/// address may already have resumed it (a live run now exists to deliver
+/// into), so re-checking liveness here — rather than blindly publishing
+/// another resume — is what keeps two messages queued to one completing
+/// session from producing two runs, with the second silently dropped once
+/// the spawn listener's own liveness guard refuses it. A `Completing` result
+/// here (another resume raced in and is *already* tearing down again) waits
+/// once more rather than giving up.
 async fn deferred_resume(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
+    store: Arc<SessionStore>,
     address: SessionAddress,
     msg: AgentMessageEvent,
 ) {
-    registry.wait_until_clear(&address).await;
-    // By the time the entry clears, a resume point for this exact run is
-    // guaranteed to exist (`finish_run` always records one before removing
-    // the entry — see its doc comment), so a missing point here would be an
-    // internal inconsistency, not a genuinely unknown address.
-    let Some(point) = registry.resume_point(&address) else {
-        tracing::error!(
-            address = %address,
-            "session left the registry with no resume point recorded; deferred message not delivered"
-        );
-        return;
-    };
-    let hop_count = msg.hop_count;
-    if let Err(e) = publish_resume(
-        &publisher,
-        &address,
-        &point,
-        msg.format_for_agent(),
-        hop_count,
-    )
-    .await
-    {
-        tracing::error!(error = %e, address = %address, "failed to deliver deferred resume");
+    loop {
+        registry.wait_until_clear(&address).await;
+        let done =
+            resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
+        if done {
+            return;
+        }
+        // Falling through loops back to `wait_until_clear` again — another
+        // resume raced in and is already tearing down once more.
+    }
+}
+
+/// The decision `deferred_resume` makes once `address` has been observed
+/// clear: if a run is now live there (another deferred message queued at the
+/// same address already resumed it before this one got a chance to check),
+/// deliver `msg` into it directly instead of blindly publishing a second
+/// resume; otherwise resume it. Returns `false` only for
+/// [`DeliverOutcome::Completing`] (another resume raced in and is *already*
+/// tearing down again), telling the caller to wait and retry — every other
+/// outcome, success or failure, is final.
+async fn resume_or_deliver_after_clear(
+    registry: &SessionRegistry,
+    publisher: &Publisher,
+    store: &SessionStore,
+    address: &SessionAddress,
+    msg: &AgentMessageEvent,
+) -> bool {
+    match registry.deliver(address, Interrupt::AgentMessage(msg.clone())) {
+        DeliverOutcome::Delivered => true,
+        DeliverOutcome::Completing => false,
+        DeliverOutcome::Full => {
+            let reason = "the resumed session's interrupt channel is saturated";
+            tracing::error!(address = %address, from = %msg.from, reason, "deferred delivery failed");
+            record_note_if_live_session(
+                registry,
+                store,
+                &msg.from,
+                &format!(
+                    "[Deferred Delivery Failed] your message to {address} could not be \
+                     delivered: {reason}"
+                ),
+            )
+            .await;
+            true
+        }
+        DeliverOutcome::NotLive => {
+            // By the time the entry clears, a resume point for this exact
+            // run is guaranteed to exist (`finish_run` always records one
+            // before removing the entry — see its doc comment), so a
+            // missing point here would be an internal inconsistency, not a
+            // genuinely unknown address.
+            let Some(point) = registry.resume_point(address) else {
+                tracing::error!(
+                    address = %address,
+                    "session left the registry with no resume point recorded; deferred message not delivered"
+                );
+                record_note_if_live_session(
+                    registry,
+                    store,
+                    &msg.from,
+                    &format!(
+                        "[Deferred Delivery Failed] your message to {address} could not be \
+                         delivered: no resume point recorded"
+                    ),
+                )
+                .await;
+                return true;
+            };
+            let hop_count = msg.hop_count;
+            if let Err(e) = publish_resume(
+                publisher,
+                address,
+                &point,
+                msg.format_for_agent(),
+                hop_count,
+            )
+            .await
+            {
+                tracing::error!(error = %e, address = %address, "failed to deliver deferred resume");
+                record_note_if_live_session(
+                    registry,
+                    store,
+                    &msg.from,
+                    &format!(
+                        "[Deferred Delivery Failed] your message to {address} could not be \
+                         delivered: {e}"
+                    ),
+                )
+                .await;
+            }
+            true
+        }
     }
 }
 
@@ -595,7 +690,9 @@ mod tests {
             "spawned-researcher-0001",
             crate::background::registry::SessionState::Idle,
         );
-        let mut rx = registry.register(info.clone(), CancellationToken::new());
+        let mut rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
 
         let outcome = messenger
             .send(
@@ -638,7 +735,9 @@ mod tests {
             "spawned-researcher-000f",
             crate::background::registry::SessionState::Idle,
         );
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
         // A resume point existing here would be wrong to use — a busy
         // channel must error, never fall through to a resume.
         registry.record_resume_point(
@@ -698,7 +797,9 @@ mod tests {
             "spawned-researcher-000c",
             crate::background::registry::SessionState::Completing,
         );
-        let _rx = registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
         registry.record_resume_point(
             &info.address,
             sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
@@ -741,6 +842,97 @@ mod tests {
         assert_eq!(event.address, address);
         assert!(event.prompt.contains("any updates?"));
         assert_eq!(event.model_tier, crate::config::BackgroundModelTier::Large);
+    }
+
+    #[tokio::test]
+    async fn resume_or_deliver_after_clear_delivers_into_a_run_that_already_won_the_race() {
+        // The exact "loop-defeat" scenario item 3 exists to prevent: two
+        // messages queued to one completing session must never produce two
+        // runs. `wait_until_clear` only tells the caller the address *was*
+        // empty; a completely separate run may already be live there by the
+        // time this decision actually runs (e.g. another deferred message
+        // won the race and got itself resumed first) — this must deliver
+        // into that live run rather than blindly publishing a second resume.
+        let bus_handle = crate::bus::spawn_broker();
+        let mut spawn_sub: Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let publisher = bus_handle.publisher();
+
+        let winner = sample_live_info(
+            "spawned-researcher-race1",
+            crate::background::registry::SessionState::Idle,
+        );
+        let mut winner_rx = registry.register(winner, CancellationToken::new()).unwrap();
+
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from(MAIN_ADDRESS),
+            from_category: "main".to_string(),
+            content: "second message".to_string(),
+            hop_count: 0,
+        };
+        let done = resume_or_deliver_after_clear(
+            &registry,
+            &publisher,
+            &store,
+            &SessionAddress::from("spawned-researcher-race1"),
+            &msg,
+        )
+        .await;
+        assert!(done, "delivering into a live run is a final outcome");
+
+        let delivered = winner_rx
+            .try_recv()
+            .expect("the message should be delivered into the run that already won");
+        match delivered {
+            Interrupt::AgentMessage(m) => assert!(m.content.contains("second message")),
+            Interrupt::UserMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!("expected an agent message delivered into the winning run")
+            }
+        }
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), spawn_sub.recv())
+                .await
+                .is_err(),
+            "no resume should ever be published once the address is already live"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_or_deliver_after_clear_resumes_when_the_address_is_genuinely_free() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut spawn_sub: Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let publisher = bus_handle.publisher();
+        let address = SessionAddress::from("spawned-researcher-race2");
+        registry.record_resume_point(
+            &address,
+            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+        );
+
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from(MAIN_ADDRESS),
+            from_category: "main".to_string(),
+            content: "still there?".to_string(),
+            hop_count: 0,
+        };
+        let done =
+            resume_or_deliver_after_clear(&registry, &publisher, &store, &address, &msg).await;
+        assert!(done, "resuming is a final outcome");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), spawn_sub.recv())
+            .await
+            .expect("a genuinely free address must be resumed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.address, address);
+        assert!(event.prompt.contains("still there?"));
     }
 
     #[tokio::test]
@@ -895,6 +1087,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deliver_to_main_does_not_leak_a_pending_hop_entry_when_publish_fails() {
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = AgentMessenger::new(registry, Publisher::noop(), store, NO_LIMIT);
+
+        messenger
+            .send(
+                MAIN_ADDRESS,
+                SessionAddress::from("spawned-researcher-leak"),
+                "spawned".to_string(),
+                "hello".to_string(),
+                3,
+            )
+            .await
+            .expect_err("a noop publisher must surface as a delivery failure");
+
+        assert!(
+            messenger.pending_main_hops.lock().unwrap().is_empty(),
+            "a failed publish must not leave a stale hop-count entry behind for an id \
+             main will never actually receive and look up"
+        );
+    }
+
+    #[tokio::test]
     async fn hop_count_at_or_above_soft_limit_appends_a_reply_only_if_needed_note() {
         let (messenger, _registry, bus_handle) =
             messenger_with_limits(HopLimits { soft: 5, hard: 32 });
@@ -987,8 +1204,12 @@ mod tests {
             "spawned-receiver-0001",
             crate::background::registry::SessionState::Idle,
         );
-        let _sender_rx = registry.register(sender_info.clone(), CancellationToken::new());
-        let _receiver_rx = registry.register(receiver_info.clone(), CancellationToken::new());
+        let _sender_rx = registry
+            .register(sender_info.clone(), CancellationToken::new())
+            .unwrap();
+        let _receiver_rx = registry
+            .register(receiver_info.clone(), CancellationToken::new())
+            .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
