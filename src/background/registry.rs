@@ -10,8 +10,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{EventTrigger, SessionAddress, SkillName};
@@ -31,8 +33,15 @@ pub const MAIN_ADDRESS: &str = "main";
 /// The main agent's depth in the spawn tree.
 pub const MAIN_DEPTH: u32 = 0;
 
+/// Sender address for a message the owner types into a session from the web
+/// UI's sessions sidebar. Not a session and never present in the registry:
+/// the owner is not an agent, so a message to this address does not resolve.
+pub const OWNER_ADDRESS: &str = "owner";
+
 /// How a session was started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum SessionCategory {
     /// Pulses and scheduled actions.
     Scheduled,
@@ -62,6 +71,18 @@ impl SessionCategory {
             Self::Spawned => "spawned",
         }
     }
+
+    /// Parse the label [`Self::as_str`] produces, as recorded in the session
+    /// store. `None` for anything else.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "scheduled" => Some(Self::Scheduled),
+            "external" => Some(Self::External),
+            "spawned" => Some(Self::Spawned),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for SessionCategory {
@@ -71,7 +92,9 @@ impl std::fmt::Display for SessionCategory {
 }
 
 /// A session's lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum SessionState {
     /// The session is being forked (resources are being built); no turn has
     /// started yet.
@@ -446,6 +469,15 @@ impl SessionRegistry {
         // and it keeps this method from needing to track who's waiting.
         self.cleared.notify_waiters();
         removed
+    }
+
+    /// Look up a live session's current info by run id rather than address.
+    #[must_use]
+    pub fn get_by_run_id(&self, run_id: &str) -> Option<SessionInfo> {
+        self.lock()
+            .values()
+            .find(|entry| entry.info.run_id == run_id)
+            .map(|entry| entry.info.clone())
     }
 
     /// Look up a single session's current info.

@@ -6,7 +6,8 @@
 
 use super::events::{
     AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent,
-    NotificationEvent, ResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent,
+    NotificationEvent, ResponseEvent, SessionEvent, SpawnRequestEvent, ToolActivityEvent,
+    TurnLifecycleEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -58,6 +59,18 @@ impl Topic for Background {
 
 impl Carries<AgentResultEvent> for Background {}
 impl Carries<SpawnRequestEvent> for Background {}
+
+/// Agent session activity: lifecycle transitions and session-tagged turn
+/// events, for surfaces that follow sessions live (the web UI).
+pub struct Sessions;
+
+impl Topic for Sessions {
+    fn topic_id(&self) -> TopicId {
+        TopicId::Sessions
+    }
+}
+
+impl Carries<SessionEvent> for Sessions {}
 
 /// Inbound user messages destined for the main agent loop.
 pub struct UserMessage;
@@ -129,6 +142,11 @@ mod tests {
     #[test]
     fn background_topic_id() {
         assert_eq!(Background.topic_id(), TopicId::Background);
+    }
+
+    #[test]
+    fn sessions_topic_id() {
+        assert_eq!(Sessions.topic_id(), TopicId::Sessions);
     }
 
     #[test]

@@ -9,8 +9,8 @@ use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{EventContext, TurnResources, execute_turn};
-use crate::bus::{AgentMessageEvent, Publisher};
+use crate::agent::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -226,6 +226,15 @@ pub async fn build_subagent_resources(
     })
 }
 
+/// Which run a session turn belongs to, and the publisher its streaming
+/// events (tool activity, intermediate text) go out on, tagged with the
+/// session's address and run id.
+pub(crate) struct SessionTurnIdentity<'a> {
+    pub(crate) publisher: &'a Publisher,
+    pub(crate) address: &'a SessionAddress,
+    pub(crate) run_id: &'a str,
+}
+
 /// Execute one turn of a session's run.
 ///
 /// `recent_messages` is the run's whole history so far — empty on the run's
@@ -257,9 +266,9 @@ pub async fn build_subagent_resources(
 ///
 /// # Errors
 /// Returns an error if the model call fails.
-#[tracing::instrument(skip_all, fields(run.id = %run_id))]
+#[tracing::instrument(skip_all, fields(run.id = %identity.run_id))]
 pub(crate) async fn execute_subagent(
-    run_id: &str,
+    identity: &SessionTurnIdentity<'_>,
     kickoff: TurnKickoff,
     recent_messages: &mut RecentMessages,
     resources: &SubAgentResources,
@@ -289,11 +298,6 @@ pub(crate) async fn execute_subagent(
         sink.append(&[kickoff_message]).await;
     }
 
-    // No broker needed: sessions pass `None` for both endpoints, so
-    // streaming events are never published. A noop publisher satisfies
-    // the type without spawning a background task.
-    let publisher = Publisher::noop();
-
     let memory_ctx = MemoryContext {
         observations: resources.observations.as_deref(),
         recent_context: resources.recent_context.as_deref(),
@@ -313,10 +317,11 @@ pub(crate) async fn execute_subagent(
     };
 
     let events = EventContext {
-        publisher: &publisher,
-        output_endpoint: None,
-        tool_activity_endpoint: None,
-        correlation_id: "",
+        publisher: identity.publisher,
+        target: EventTarget::Session {
+            address: identity.address,
+            run_id: identity.run_id,
+        },
     };
     // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
@@ -332,7 +337,7 @@ pub(crate) async fn execute_subagent(
     .await?;
 
     if texts.is_empty() {
-        tracing::warn!(run_id = %run_id, "session turn produced no text output");
+        tracing::warn!(run_id = %identity.run_id, "session turn produced no text output");
     }
     Ok(texts.pop().unwrap_or_default())
 }
@@ -372,6 +377,16 @@ mod tests {
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
     use async_trait::async_trait;
+
+    /// A turn identity with no broker behind it: these tests exercise the
+    /// turn itself, not the events it publishes (see the runtime's tests).
+    fn test_identity(run_id: &'static str) -> SessionTurnIdentity<'static> {
+        SessionTurnIdentity {
+            publisher: Box::leak(Box::new(Publisher::noop())),
+            address: Box::leak(Box::new(SessionAddress::from("spawned-test-0001"))),
+            run_id,
+        }
+    }
 
     fn initial(prompt: &str, context: Option<&str>) -> TurnKickoff {
         TurnKickoff::Initial {
@@ -432,7 +447,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         let summary = execute_subagent(
-            "run-001",
+            &test_identity("run-001"),
             initial("check emails", None),
             &mut recent_messages,
             &resources,
@@ -452,7 +467,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         let summary = execute_subagent(
-            "run-002",
+            &test_identity("run-002"),
             initial("do work", None),
             &mut recent_messages,
             &resources,
@@ -487,7 +502,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         execute_subagent(
-            "run-ctx",
+            &test_identity("run-ctx"),
             initial("check emails", Some("extra context")),
             &mut recent_messages,
             &resources,
@@ -514,7 +529,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         execute_subagent(
-            "run-msg",
+            &test_identity("run-msg"),
             TurnKickoff::AgentMessage(AgentMessageEvent {
                 from: crate::bus::SessionAddress::from("main"),
                 from_category: "main".to_string(),
@@ -559,7 +574,7 @@ mod tests {
 
         let mut recent_messages = RecentMessages::new();
         let summary = execute_subagent(
-            "run-interrupt",
+            &test_identity("run-interrupt"),
             initial("keep working", None),
             &mut recent_messages,
             &resources,
@@ -641,7 +656,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
-            "run-fork",
+            &test_identity("run-fork"),
             initial("continue the task", None),
             &mut recent_messages,
             &resources,
@@ -733,7 +748,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
-            "run-stop",
+            &test_identity("run-stop"),
             initial("do work", None),
             &mut recent_messages,
             &resources,
@@ -811,7 +826,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
-            "run-stop-note",
+            &test_identity("run-stop-note"),
             initial("do work", None),
             &mut recent_messages,
             &resources,
