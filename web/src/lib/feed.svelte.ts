@@ -156,6 +156,23 @@ export class FeedStore {
 
       case "pong":
         break;
+
+      case "session_started":
+      case "session_state_changed":
+      case "session_completed":
+      case "session_turn_started":
+      case "session_turn_ended":
+      case "session_tool_call":
+      case "session_tool_result":
+      case "session_broadcast_response":
+      case "session_response":
+      case "session_error":
+      case "session_message_delivered":
+      case "session_stop_requested":
+      case "session_command_failed":
+        // Agent session activity belongs to the sessions surface, never
+        // the main chat feed.
+        break;
     }
   }
 

@@ -112,6 +112,9 @@ async fn spawn_server_and_adapters(
         bus_handle: core.bus_handle.clone(),
         file_registry: file_registry.clone(),
         webhooks: webhooks.clone(),
+        session_registry: Arc::clone(&parts.session_registry),
+        session_store: Arc::clone(&parts.session_store),
+        agent_messenger: Arc::clone(&parts.agent_messenger),
     };
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
@@ -259,6 +262,7 @@ async fn build_runtime(
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
+        session_store: parts.session_store,
         agent_messenger: parts.agent_messenger,
         action_store: parts.action_store,
         action_notify: parts.action_notify,

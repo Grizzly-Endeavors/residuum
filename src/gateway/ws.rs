@@ -33,8 +33,9 @@ pub(super) async fn ws_handler(
 /// bypass the bus. A forwarding task merges all sources and writes
 /// `ServerMessage` frames to the WebSocket.
 ///
-/// Verbose filtering is server-side: `ToolCall` and `ToolResult` events are
-/// dropped in the forwarding task when verbose mode is off.
+/// Verbose filtering is server-side: tool call and result events (the main
+/// agent's and every session's) are dropped in the forwarding task when
+/// verbose mode is off.
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -79,13 +80,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             };
 
             if let Some(msg) = msg {
-                // Skip tool events when verbose mode is off
-                if !verbose_fwd.load(Ordering::Relaxed)
-                    && matches!(
-                        msg,
-                        ServerMessage::ToolCall { .. } | ServerMessage::ToolResult { .. }
-                    )
-                {
+                if !verbose_fwd.load(Ordering::Relaxed) && is_verbose_only(&msg) {
                     continue;
                 }
 
@@ -244,6 +239,26 @@ async fn handle_client_message(
                 tracing::warn!("failed to dispatch stop request: channel closed or full");
             }
         }
+        ClientMessage::SessionSendMessage {
+            id,
+            address,
+            content,
+        } => {
+            tracing::info!(address = %address, "session message requested by client");
+            handle_session_command(
+                SessionCommand::SendMessage {
+                    id,
+                    address,
+                    content,
+                },
+                state,
+                local_tx,
+            )
+            .await;
+        }
+        ClientMessage::SessionStop { id, address } => {
+            handle_session_command(SessionCommand::Stop { id, address }, state, local_tx).await;
+        }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");
             let dir = state.agent_inbox_dir.clone();
@@ -276,6 +291,81 @@ async fn handle_client_message(
         }
     }
     true
+}
+
+/// Whether `msg` is only sent to clients that turned verbose mode on: tool
+/// call and result events, the main agent's and sessions' alike.
+fn is_verbose_only(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::ToolCall { .. }
+            | ServerMessage::ToolResult { .. }
+            | ServerMessage::SessionToolCall { .. }
+            | ServerMessage::SessionToolResult { .. }
+    )
+}
+
+/// Carry out a sessions-sidebar command and reply to this connection only.
+async fn handle_session_command(
+    command: SessionCommand,
+    state: &GatewayState,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    let reply = match command {
+        SessionCommand::SendMessage {
+            id,
+            address,
+            content,
+        } => {
+            match crate::gateway::sessions::send_owner_message(
+                &state.agent_messenger,
+                &address,
+                content,
+            )
+            .await
+            {
+                Ok(outcome) => ServerMessage::SessionMessageDelivered {
+                    id,
+                    address,
+                    outcome,
+                },
+                Err(e) => ServerMessage::SessionCommandFailed {
+                    id,
+                    address,
+                    code: e.code,
+                    message: e.message,
+                },
+            }
+        }
+        SessionCommand::Stop { id, address } => {
+            match crate::gateway::sessions::stop_session(&state.session_registry, &address) {
+                Ok(()) => ServerMessage::SessionStopRequested { id, address },
+                Err(e) => ServerMessage::SessionCommandFailed {
+                    id,
+                    address,
+                    code: e.code,
+                    message: e.message,
+                },
+            }
+        }
+    };
+    if local_tx.send(reply).is_err() {
+        tracing::debug!("client disconnected before its session command reply was sent");
+    }
+}
+
+/// The sessions-sidebar commands, split out of [`ClientMessage`] so
+/// [`handle_session_command`] can own their handling.
+enum SessionCommand {
+    SendMessage {
+        id: String,
+        address: String,
+        content: String,
+    },
+    Stop {
+        id: String,
+        address: String,
+    },
 }
 
 /// Maximum number of images per message.
@@ -456,5 +546,46 @@ mod tests {
                 .is_some_and(|e| e.contains("unsupported")),
             "error should mention 'unsupported'"
         );
+    }
+
+    #[test]
+    fn verbose_filter_covers_main_and_session_tool_events_only() {
+        let tool_call = ServerMessage::SessionToolCall {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            id: "tc".into(),
+            name: "exec".into(),
+            arguments: serde_json::json!({}),
+        };
+        let tool_result = ServerMessage::SessionToolResult {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            tool_call_id: "tc".into(),
+            name: "exec".into(),
+            output: "ok".into(),
+            is_error: false,
+        };
+        let main_call = ServerMessage::ToolCall {
+            id: "tc".into(),
+            name: "exec".into(),
+            arguments: serde_json::json!({}),
+        };
+        assert!(is_verbose_only(&tool_call));
+        assert!(is_verbose_only(&tool_result));
+        assert!(is_verbose_only(&main_call));
+
+        let response = ServerMessage::SessionResponse {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            turn_id: "run-a-t1".into(),
+            content: "done".into(),
+        };
+        let error = ServerMessage::SessionError {
+            address: "spawned-a-0001".into(),
+            run_id: "run-a".into(),
+            message: "loop limit".into(),
+        };
+        assert!(!is_verbose_only(&response));
+        assert!(!is_verbose_only(&error));
     }
 }

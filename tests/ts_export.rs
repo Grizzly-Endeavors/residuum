@@ -10,7 +10,7 @@
 mod ts_export {
     use ts_rs::TS;
 
-    use residuum::gateway::protocol::{ClientMessage, ServerMessage};
+    use residuum::gateway::protocol::{ClientMessage, ServerMessage, SessionListResponse};
     use residuum::inference::ImageData;
 
     #[test]
@@ -25,6 +25,9 @@ mod ts_export {
         ClientMessage::export_all(&cfg).unwrap();
         ServerMessage::export_all(&cfg).unwrap();
         ImageData::export_all(&cfg).unwrap();
+        // HTTP response type for `GET /api/sessions` (its `SessionSummary`
+        // items are also carried by the `session_started` frame).
+        SessionListResponse::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

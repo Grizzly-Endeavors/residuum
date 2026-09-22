@@ -9,6 +9,7 @@ use crate::agent::Agent;
 use crate::background::SessionRuntime;
 use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
+use crate::background::store::SessionStore;
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
 use crate::config::Config;
 use crate::inference::SharedHttpClient;
@@ -187,6 +188,13 @@ pub(crate) struct GatewayState {
     pub file_registry: crate::gateway::file_server::FileRegistry,
     /// Named webhooks served at `/webhook/{name}`; swapped in place on config reload.
     pub webhooks: crate::interfaces::webhook::WebhookTable,
+    /// Live agent sessions, for the sessions listing and the sidebar's stop
+    /// command.
+    pub session_registry: Arc<SessionRegistry>,
+    /// Durable record of every session run, for the listing and transcripts.
+    pub session_store: Arc<SessionStore>,
+    /// Delivers the sidebar's messages to sessions.
+    pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
 }
 
 /// All state needed by the main event loop.
@@ -210,6 +218,9 @@ pub(crate) struct GatewayRuntime {
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
+    /// Durable record of every session run, shared with the HTTP server's
+    /// sessions endpoints (rebuilt on a gateway rebind).
+    pub session_store: Arc<SessionStore>,
     /// Routes `message_agent` deliveries by address. Constant for the
     /// process lifetime — cloned into `spawn_context` on every reload.
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,

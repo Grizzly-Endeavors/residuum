@@ -123,6 +123,20 @@ impl SessionState {
             Self::Completed => "completed",
         }
     }
+
+    /// Parse the label [`Self::as_str`] produces, as recorded in the session
+    /// store. `None` for anything else.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "forking" => Some(Self::Forking),
+            "running" => Some(Self::Running),
+            "idle" => Some(Self::Idle),
+            "completing" => Some(Self::Completing),
+            "completed" => Some(Self::Completed),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for SessionState {
