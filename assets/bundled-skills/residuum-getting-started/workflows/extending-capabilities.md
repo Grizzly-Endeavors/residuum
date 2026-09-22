@@ -35,23 +35,24 @@ Help the user set up one MCP server for a real use case if they have one. If not
 
 ## Step 3: Background Tasks and Subagents
 
-Explain: "I can spawn sub-agents to handle tasks in the background while we continue talking. Sub-agents run independently with their own tools and deliver results through notification channels."
+Explain: "I can spawn sub-agents to handle tasks in the background while we continue talking. A sub-agent runs independently with its own tools, and I get its result as a message back — I'll let you know what it found."
 
 Key tools:
-- `subagent_spawn` -- spawn a background sub-agent with a task prompt
+- `subagent_spawn` -- spawn a background sub-agent with a task prompt; returns its address right away
 - `list_agents` -- see what is currently running
 - `stop_agent` -- cancel a running background task
+- `message_agent` -- send a running sub-agent a follow-up message, or check back in on one that already finished
 
 Demonstrate by spawning a simple sub-agent:
 ```
 subagent_spawn with task: "List the files in the current workspace and summarize what's there."
 ```
 
-You can run sub-agents in the foreground (wait for the result inline) or in the background (results delivered via notification channels). Demonstrate both.
+`subagent_spawn` always runs asynchronously — it hands back the sub-agent's address immediately and the task keeps going while the conversation continues. Its result reaches you as a message once it finishes, and you pass that along to the user; there is no mode that blocks waiting for the result inline.
 
 A sub-agent can take a skill as its role. By default it runs on the task prompt alone, but you can write a skill for a recurring type of work and hand it to the sub-agent.
 
-## Step 4: Creating a Subagent Preset
+## Step 4: Creating a Session Role
 
 If the user has a recurring type of delegated task, offer to write a skill for it. For example: "If you want me to always review code a certain way, I can write a code-reviewer skill and run a sub-agent with it whenever you ask for a review."
 
@@ -65,7 +66,7 @@ Summarize what was covered:
 - Skills for teaching you new instruction sets
 - MCP servers for connecting you to external tools
 - Background sub-agents for parallel task execution
-- Presets for recurring delegated work
+- Session roles (skills) for recurring delegated work
 
 Suggest next steps:
 - "If you have workflows you repeat often, tell me and I will create a skill for them."

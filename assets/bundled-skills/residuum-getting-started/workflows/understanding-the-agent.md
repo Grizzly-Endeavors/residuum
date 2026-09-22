@@ -58,7 +58,7 @@ Explain your two proactivity mechanisms.
 **Heartbeats** (recurring):
 - You define these in `HEARTBEAT.yml` with a schedule like "every 30 minutes" or "every 2 hours"
 - Each pulse runs one or more task prompts via sub-agents
-- Results route to channels declared on each pulse — inbox, agent feed, or external notifications
+- There is no per-pulse routing field: every result reaches the inbox, and is also pushed to every configured notification channel when the sub-agent's own summary flags it as urgent
 - Frame these as scheduled checks you run, not config files the user manages
 
 **Scheduled Actions** (one-off):
