@@ -36,10 +36,14 @@ pub(super) enum IdleAction {
 ///
 /// Every other subsystem (provider chains, memory thresholds, subconscious,
 /// background config, skills, tool PATH, agent ability gates, tracing, the
-/// pulse toggle, HTTP client timeout, webhooks, the endpoint registry) is
-/// cheap to rebuild and
+/// pulse toggle, HTTP client timeout, webhooks, web search, the endpoint
+/// registry) is cheap to rebuild and
 /// `handle_root_reload` rebuilds all of them unconditionally whenever
 /// `changed` is true, in one fixed order — see `rebuild_cheap_components`.
+/// Web search is fully live: `provider_native` is folded into the
+/// unconditional provider rebuild, `standalone_backend` naming `"ollama"`
+/// reloads the native tool in place, and a `"brave"`/`"tavily"` backend
+/// reconnects its MCP server — see `reload_web_search`.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "diff struct deliberately uses bool flags for each subsystem that needs gating"
@@ -147,6 +151,9 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     }
     if old.webhooks != new.webhooks {
         parts.push("webhooks");
+    }
+    if old.web_search != new.web_search {
+        parts.push("web search");
     }
 
     let changed = !parts.is_empty();
@@ -352,6 +359,7 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     reload_providers(rt, new_cfg, http_client.clone()).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
+    reload_web_search(rt, new_cfg).await;
     reload_memory_thresholds(rt, new_cfg).await;
     rt.pulse_enabled = new_cfg.pulse_enabled;
     rt.subconscious = crate::subconscious::Subconscious::build(new_cfg, &rt.layout, http_client);
@@ -458,6 +466,72 @@ async fn reload_providers(
             )
             .await;
         }
+    }
+}
+
+/// Reload main's standalone web search setup from the new config.
+///
+/// `ollama_web_search` is a native tool, so it reloads in place via
+/// `Agent::reload_ollama_web_search_tool` — called unconditionally, like
+/// every other cheap component, since removing and re-adding a
+/// not-actually-changed tool is harmless.
+///
+/// A `"brave"`/`"tavily"` backend is an MCP server instead: when the
+/// standalone backend actually changed, this disconnects whichever brave/
+/// tavily server was previously running (by name — `connect_servers` skips
+/// a name it already tracks, even if the entry behind it, e.g. the API key,
+/// changed, so a stale connection would otherwise survive silently) and
+/// reconnects via `connect_web_search_mcp`, the same helper startup uses.
+/// The MCP registry is shared with every session (see
+/// `docs/systems-usage/background-tasks.md`), so this one reconnect updates
+/// the tools available to main and every live or future session — no
+/// separate per-session step needed. A connect failure surfaces the same
+/// way `reload_providers`'s does: a `warn` log plus an operator-facing
+/// notice, rather than silently leaving the old (or no) server running.
+async fn reload_web_search(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    rt.agent
+        .reload_ollama_web_search_tool(new_cfg.web_search.standalone_backend.as_ref());
+
+    if rt.cfg.web_search.standalone_backend == new_cfg.web_search.standalone_backend {
+        return;
+    }
+
+    if let Some(name) = web_search_mcp_server_name(rt.cfg.web_search.standalone_backend.as_ref()) {
+        rt.mcp_registry.write().await.disconnect(name).await;
+        tracing::info!(
+            server = name,
+            "disconnected stale web search MCP server for reload"
+        );
+    }
+
+    let report = startup::connect_web_search_mcp(new_cfg, &rt.mcp_registry).await;
+    if !report.failures.is_empty() {
+        let failed: Vec<String> = report
+            .failures
+            .iter()
+            .map(|(name, err)| format!("{name}: {err}"))
+            .collect();
+        publish_notice(
+            &rt.publisher,
+            format!(
+                "web search backend reload failed to connect ({}); web search may be unavailable until this is fixed and residuum is reloaded again",
+                failed.join(", ")
+            ),
+        )
+        .await;
+    }
+}
+
+/// The MCP server name `connect_web_search_mcp` uses for a given standalone
+/// backend, or `None` when there's no backend or it names `"ollama"` (a
+/// native tool, not an MCP server).
+fn web_search_mcp_server_name(
+    backend: Option<&crate::config::StandaloneBackendConfig>,
+) -> Option<&'static str> {
+    match backend.map(|b| b.name.as_str()) {
+        Some("brave") => Some("brave_web_search"),
+        Some("tavily") => Some("tavily_web_search"),
+        _ => None,
     }
 }
 
@@ -1042,6 +1116,52 @@ mod tests {
             "timeout_secs alone should not flag providers"
         );
         assert_no_disruptive_flags(&diff);
+    }
+
+    #[test]
+    fn diff_config_detects_web_search_change() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.web_search.standalone_backend = Some(crate::config::StandaloneBackendConfig {
+            name: "ollama".to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.changed, "web_search-only change should be detected");
+        assert!(diff.summary().contains("web search"));
+        assert!(
+            !diff.summary().contains("providers"),
+            "web_search alone should not flag providers"
+        );
+        assert_no_disruptive_flags(&diff);
+    }
+
+    #[test]
+    fn web_search_mcp_server_name_maps_known_backends() {
+        let backend = |name: &str| {
+            Some(crate::config::StandaloneBackendConfig {
+                name: name.to_string(),
+                api_key: "key".to_string(),
+                base_url: None,
+            })
+        };
+
+        assert_eq!(
+            web_search_mcp_server_name(backend("brave").as_ref()),
+            Some("brave_web_search")
+        );
+        assert_eq!(
+            web_search_mcp_server_name(backend("tavily").as_ref()),
+            Some("tavily_web_search")
+        );
+        assert_eq!(
+            web_search_mcp_server_name(backend("ollama").as_ref()),
+            None,
+            "ollama is a native tool, not an MCP server"
+        );
+        assert_eq!(web_search_mcp_server_name(None), None);
     }
 
     #[test]

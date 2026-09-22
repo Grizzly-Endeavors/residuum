@@ -348,14 +348,14 @@ async fn init_mcp_servers(
     mcp_registry
 }
 
-/// Connect standalone web search MCP servers (Brave/Tavily) if configured.
-async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) {
-    let Some(backend) = &cfg.web_search.standalone_backend else {
-        return;
-    };
-
-    let entry = match backend.name.as_str() {
-        "brave" => crate::mcp::types::McpServerEntry {
+/// The MCP server entry for a standalone web search backend, or `None` for
+/// no backend or `"ollama"` (a native tool, not an MCP server — see
+/// `ToolRegistry::register_ollama_web_search_tool`).
+fn web_search_mcp_entry(
+    backend: &crate::config::StandaloneBackendConfig,
+) -> Option<crate::mcp::types::McpServerEntry> {
+    match backend.name.as_str() {
+        "brave" => Some(crate::mcp::types::McpServerEntry {
             name: "brave_web_search".to_string(),
             command: "npx".to_string(),
             args: vec![
@@ -368,8 +368,8 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
-        },
-        "tavily" => crate::mcp::types::McpServerEntry {
+        }),
+        "tavily" => Some(crate::mcp::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
             command: "npx".to_string(),
             args: vec!["-y".to_string(), "tavily-mcp".to_string()],
@@ -379,9 +379,30 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
-        },
-        // Ollama uses a native tool, not MCP
-        _ => return,
+        }),
+        _ => None,
+    }
+}
+
+/// Connect the standalone web search MCP server (Brave/Tavily) if
+/// configured, returning the connection report (empty when no backend is
+/// configured, or it names `"ollama"`).
+///
+/// Used at startup (`init_networking`) and, on a config reload that changes
+/// the standalone backend, by `gateway::reload::reload_web_search` — which
+/// disconnects whichever server was previously running first, since
+/// [`McpRegistry::connect_servers`](crate::mcp::McpRegistry::connect_servers)
+/// skips a name that's already tracked, even if its entry (e.g. the API key)
+/// changed.
+pub(crate) async fn connect_web_search_mcp(
+    cfg: &Config,
+    mcp_registry: &SharedMcpRegistry,
+) -> crate::mcp::McpReconcileReport {
+    let Some(backend) = &cfg.web_search.standalone_backend else {
+        return crate::mcp::McpReconcileReport::default();
+    };
+    let Some(entry) = web_search_mcp_entry(backend) else {
+        return crate::mcp::McpReconcileReport::default();
     };
 
     let report = mcp_registry.write().await.connect_servers(&[entry]).await;
@@ -391,11 +412,10 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
         failures = report.failures.len(),
         "web search MCP server loaded"
     );
-    if !report.failures.is_empty() {
-        for (name, err) in &report.failures {
-            tracing::warn!(server = %name, error = %err, "failed to start web search MCP server");
-        }
+    for (name, err) in &report.failures {
+        tracing::warn!(server = %name, error = %err, "failed to start web search MCP server");
     }
+    report
 }
 
 /// Load channel configs and build the endpoint registry.

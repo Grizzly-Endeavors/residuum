@@ -26,7 +26,7 @@ mod write;
 
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
-pub use registry::ToolRegistry;
+pub use registry::{SubagentToolDeps, ToolRegistry};
 
 use std::ffi::OsString;
 use std::sync::Arc;

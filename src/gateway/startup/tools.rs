@@ -382,33 +382,34 @@ mod tests {
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 
-        let session_tools = crate::tools::ToolRegistry::build_subagent_registry(
-            FileTracker::new_shared(),
-            PathPolicy::new_shared(),
-            Arc::clone(&h.skill_state),
-            chrono_tz::UTC,
-            Arc::clone(&h.mem.hybrid_searcher),
-            h.layout.episodes_dir(),
-            h.layout.sessions_dir(),
-            h.layout.agent_inbox_dir(),
-            h.layout.agent_inbox_archive_dir(),
-            h.layout.user_inbox_dir(),
-            h.layout.user_inbox_attachments_dir(),
-            Arc::clone(&h.session_registry),
-            h.endpoint_registry.clone(),
-            h.publisher.clone(),
-            Arc::clone(&h.action_store),
-            Arc::clone(&h.action_notify),
-            SessionAddress::from("spawned-test-0001"),
-            1,
-            h.cfg.background.subagent_depth_cap,
-            "spawned".to_string(),
-            Arc::clone(&h.agent_messenger),
-            h.hop_counter.clone(),
-            Arc::clone(&h.tracing_service),
-            Arc::clone(&h.tracing_client_context),
-            h.cfg.web_search.standalone_backend.as_ref(),
-        );
+        let session_tools =
+            crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
+                tracker: FileTracker::new_shared(),
+                path_policy: PathPolicy::new_shared(),
+                skill_state: Arc::clone(&h.skill_state),
+                tz: chrono_tz::UTC,
+                hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
+                episodes_dir: h.layout.episodes_dir(),
+                sessions_dir: h.layout.sessions_dir(),
+                agent_inbox_dir: h.layout.agent_inbox_dir(),
+                agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
+                user_inbox_dir: h.layout.user_inbox_dir(),
+                user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
+                session_registry: Arc::clone(&h.session_registry),
+                endpoint_registry: h.endpoint_registry.clone(),
+                publisher: h.publisher.clone(),
+                action_store: Arc::clone(&h.action_store),
+                action_notify: Arc::clone(&h.action_notify),
+                own_address: SessionAddress::from("spawned-test-0001"),
+                own_depth: 1,
+                depth_cap: h.cfg.background.subagent_depth_cap,
+                session_category: "spawned".to_string(),
+                messenger: Arc::clone(&h.agent_messenger),
+                hop_counter: h.hop_counter.clone(),
+                tracing_service: Arc::clone(&h.tracing_service),
+                tracing_client_context: Arc::clone(&h.tracing_client_context),
+                web_search_backend: h.cfg.web_search.standalone_backend.clone(),
+            });
         let mut session_names = session_tools.tool_names();
         session_names.sort();
 

@@ -751,7 +751,7 @@ On execution error:
 
 **Source:** `ollama_web_search.rs` · `OllamaWebSearchTool`
 
-**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config. Registered on both the main agent's registry and every session's (`build_subagent_registry()`), gated by the same check.
+**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config. Registered on both the main agent's registry and every session's (`build_subagent_registry()`), gated by the same check. Live on config reload: main's copy is added/removed in place by `Agent::reload_ollama_web_search_tool`, and a session forked after the reload picks up the new gating automatically since its registry is built fresh from the reloaded `SpawnContext`.
 
 **Description sent to LLM:**
 > Search the web using Ollama Cloud. Returns search results with titles, URLs, and snippets.

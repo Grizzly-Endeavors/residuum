@@ -20,7 +20,7 @@ use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
-use crate::tools::{FileTracker, ToolRegistry};
+use crate::tools::{FileTracker, SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 use super::types::SubAgentBuildConfig;
@@ -221,18 +221,18 @@ pub async fn build_subagent_resources(
         if idx.is_empty() { None } else { Some(idx) }
     };
 
-    let tools = ToolRegistry::build_subagent_registry(
+    let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
         tracker,
-        Arc::clone(&path_policy),
-        Arc::clone(&skill_state),
+        path_policy: Arc::clone(&path_policy),
+        skill_state: Arc::clone(&skill_state),
         tz,
         hybrid_searcher,
-        workspace_layout.episodes_dir(),
-        workspace_layout.sessions_dir(),
-        workspace_layout.agent_inbox_dir(),
-        workspace_layout.agent_inbox_archive_dir(),
-        workspace_layout.user_inbox_dir(),
-        workspace_layout.user_inbox_attachments_dir(),
+        episodes_dir: workspace_layout.episodes_dir(),
+        sessions_dir: workspace_layout.sessions_dir(),
+        agent_inbox_dir: workspace_layout.agent_inbox_dir(),
+        agent_inbox_archive_dir: workspace_layout.agent_inbox_archive_dir(),
+        user_inbox_dir: workspace_layout.user_inbox_dir(),
+        user_inbox_attachments_dir: workspace_layout.user_inbox_attachments_dir(),
         session_registry,
         endpoint_registry,
         publisher,
@@ -240,14 +240,14 @@ pub async fn build_subagent_resources(
         action_notify,
         own_address,
         own_depth,
-        subagent_depth_cap,
-        session_category.as_str().to_string(),
+        depth_cap: subagent_depth_cap,
+        session_category: session_category.as_str().to_string(),
         messenger,
-        hop_counter.clone(),
+        hop_counter: hop_counter.clone(),
         tracing_service,
         tracing_client_context,
-        web_search_backend.as_ref(),
-    );
+        web_search_backend,
+    });
 
     Ok(SubAgentResources {
         provider,
