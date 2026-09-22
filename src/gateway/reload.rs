@@ -899,6 +899,7 @@ mod tests {
         new.discord = Some(DiscordConfig {
             token: "new-token".to_string(),
             respond_to_others: false,
+            context_messages: 20,
         });
 
         let diff = diff_config(&old, &new);
@@ -914,6 +915,7 @@ mod tests {
         old.discord = Some(DiscordConfig {
             token: "existing-token".to_string(),
             respond_to_others: false,
+            context_messages: 20,
         });
         let mut new = old.clone();
         new.discord = None;
@@ -928,11 +930,13 @@ mod tests {
         old.telegram = Some(TelegramConfig {
             token: "old-tg-token".to_string(),
             respond_to_others: false,
+            context_messages: 20,
         });
         let mut new = old.clone();
         new.telegram = Some(TelegramConfig {
             token: "new-tg-token".to_string(),
             respond_to_others: false,
+            context_messages: 20,
         });
 
         let diff = diff_config(&old, &new);

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::bus::EndpointRegistry;
 use crate::inference::ToolDefinition;
-use crate::interfaces::chat_state::ConversationKind;
+use crate::interfaces::types::ConversationKind;
 
 use super::{Tool, ToolError, ToolResult};
 

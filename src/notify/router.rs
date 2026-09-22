@@ -119,6 +119,7 @@ async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) 
         origin: crate::interfaces::types::MessageOrigin {
             endpoint: "background".to_string(),
             sender: None,
+            conversation: None,
         },
         timestamp: event.timestamp,
         images: vec![],

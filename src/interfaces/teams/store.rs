@@ -6,7 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::interfaces::chat_state::{ChatStateStore, ConversationKind, ConversationRecord};
+use crate::interfaces::chat_state::{ChatStateStore, ConversationRecord};
+use crate::interfaces::types::ConversationKind;
 
 /// Everything needed to post into a conversation later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

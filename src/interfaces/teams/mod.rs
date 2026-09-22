@@ -16,7 +16,6 @@
 mod activity;
 mod auth;
 mod connector;
-mod context_buffer;
 mod handler;
 mod store;
 mod subscriber;
@@ -29,12 +28,12 @@ use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::interfaces::context_buffer::ContextBuffer;
 use crate::interfaces::conversations::{ConversationSource, KnownConversation};
 use crate::interfaces::reply_targets::ReplyTargets;
 
 use self::auth::TokenValidator;
 use self::connector::ConnectorClient;
-use self::context_buffer::ContextBuffer;
 use self::store::{ConversationRef, TeamsStore};
 
 /// Endpoint and interface name for Teams on the bus.

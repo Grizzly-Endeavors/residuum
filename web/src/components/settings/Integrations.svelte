@@ -178,6 +178,19 @@
           use the agent.</span
         >
       </div>
+      <div class="settings-field">
+        <label for="integ-discord-context-messages">Context messages</label>
+        <input
+          id="integ-discord-context-messages"
+          type="number"
+          min="0"
+          bind:value={fields.discord_context_messages}
+          placeholder="Default: 20"
+        />
+        <span class="field-hint"
+          >Earlier unmentioned server messages shared with the agent when it's @mentioned.</span
+        >
+      </div>
     </div>
   </div>
 
@@ -224,6 +237,20 @@
         <span class="field-hint"
           >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
           use the agent.</span
+        >
+      </div>
+      <div class="settings-field">
+        <label for="integ-telegram-context-messages">Context messages</label>
+        <input
+          id="integ-telegram-context-messages"
+          type="number"
+          min="0"
+          bind:value={fields.telegram_context_messages}
+          placeholder="Default: 20"
+        />
+        <span class="field-hint"
+          >Earlier unmentioned group messages shared with the agent when addressed. Requires privacy
+          mode off in BotFather (or the bot made a group admin).</span
         >
       </div>
     </div>

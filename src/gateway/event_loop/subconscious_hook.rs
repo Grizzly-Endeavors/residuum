@@ -168,6 +168,7 @@ fn build_correction_event(
         origin: crate::interfaces::types::MessageOrigin {
             endpoint: "background".to_string(),
             sender: None,
+            conversation: None,
         },
         timestamp,
         images: vec![],

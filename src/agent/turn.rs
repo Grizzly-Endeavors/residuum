@@ -496,6 +496,7 @@ mod tests {
             origin: MessageOrigin {
                 endpoint: "test".to_string(),
                 sender: None,
+                conversation: None,
             },
             timestamp: chrono::Utc::now(),
             images: vec![],

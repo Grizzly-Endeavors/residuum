@@ -18,9 +18,10 @@ use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::chat_state::{ChatRef, ConversationKind, Owner, Standing};
+use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::context_buffer::{BufferedMessage, render_context};
+use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
 use super::groups::{addressed_text, group_label};
 use super::{ENDPOINT, TelegramState};
@@ -255,9 +256,16 @@ async fn dispatch_message(
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
-    let Some((location, text)) = addressed_to_agent(msg, from, ctx).await else {
+    let Some(addressed) = addressed_to_agent(msg, from, ctx).await else {
         return;
     };
+    let Addressed {
+        location,
+        text,
+        conversation_id,
+        kind,
+        context,
+    } = addressed;
     {
         let _span = tracing::debug_span!("telegram_message",
             sender = %build_sender_name(from),
@@ -321,6 +329,11 @@ async fn dispatch_message(
             interface: ENDPOINT.to_string(),
             location: Some(location),
         }),
+        conversation: Some(ConversationContext {
+            id: conversation_id,
+            kind,
+            is_owner: matches!(standing, Standing::Owner),
+        }),
     };
 
     // Telegram message IDs are only unique within a chat.
@@ -332,7 +345,7 @@ async fn dispatch_message(
         origin,
         timestamp: crate::time::now_local(ctx.tz),
         images,
-        context: None,
+        context,
     };
 
     if let Err(e) = ctx
@@ -350,14 +363,27 @@ async fn dispatch_message(
     }
 }
 
+/// A message the bot has decided to act on: where it happened, its text
+/// (mention stripped), its conversation identity, and any unmentioned
+/// chatter buffered since it was last addressed there.
+struct Addressed {
+    location: String,
+    text: String,
+    conversation_id: String,
+    kind: ConversationKind,
+    context: Option<String>,
+}
+
 /// Where a message was sent and its text (or caption), if it is meant for
 /// the agent. Private chats are also recorded, and the first one claims
-/// ownership; addressed groups are recorded so the agent can post there later.
+/// ownership; addressed groups are recorded so the agent can post there
+/// later. An unaddressed group message is buffered as context instead, and
+/// `None` is returned.
 async fn addressed_to_agent(
     msg: &teloxide::types::Message,
     from: &teloxide::types::User,
     ctx: &TelegramContext<'_>,
-) -> Option<(String, String)> {
+) -> Option<Addressed> {
     let chat = &msg.chat;
     let text = msg.text().or_else(|| msg.caption()).unwrap_or_default();
     let key = chat.id.to_string();
@@ -369,7 +395,10 @@ async fn addressed_to_agent(
             .reply_to_message()
             .and_then(|m| m.from.as_ref())
             .is_some_and(|u| u.id == ctx.bot_id);
-        let text = addressed_text(text, ctx.bot_username, replies_to_bot)?;
+        let Some(text) = addressed_text(text, ctx.bot_username, replies_to_bot) else {
+            buffer_unmentioned(ctx, &key, from, text);
+            return None;
+        };
         let label = group_label(chat.title());
         let reference = ChatRef {
             kind: ConversationKind::GroupChat,
@@ -380,14 +409,47 @@ async fn addressed_to_agent(
         return None;
     };
 
-    let is_private = reference.kind == ConversationKind::Personal;
+    let kind = reference.kind;
+    let is_private = kind == ConversationKind::Personal;
     if let Err(e) = ctx.state.store.remember(&key, reference).await {
         tracing::warn!(error = %e, chat_id = %chat.id, "failed to save telegram conversation");
     }
     if is_private {
         claim_owner_if_unset(ctx.state, from, &key).await;
     }
-    Some((location, text))
+    let context = if is_private {
+        None
+    } else {
+        render_context(&location, &ctx.state.context_buffer.drain(&key))
+    };
+    Some(Addressed {
+        location,
+        text,
+        conversation_id: key,
+        kind,
+        context,
+    })
+}
+
+/// Hold an unaddressed group message as context for the next time the bot is
+/// addressed in that chat; empty messages (e.g. attachment-only) are dropped.
+fn buffer_unmentioned(
+    ctx: &TelegramContext<'_>,
+    chat_key: &str,
+    from: &teloxide::types::User,
+    text: &str,
+) {
+    if text.trim().is_empty() {
+        return;
+    }
+    ctx.state.context_buffer.record(
+        chat_key,
+        BufferedMessage {
+            sender: build_sender_name(from),
+            text: text.to_string(),
+            at: crate::time::now_local(ctx.tz),
+        },
+    );
 }
 
 /// Decide whether the sender may use the bot. Refused senders are told why
@@ -660,5 +722,233 @@ async fn handle_attachment(
             content.push('\n');
             content.push_str(&line);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::Duration as StdDuration;
+
+    use super::*;
+    use crate::bus::{MessageEvent, Subscriber, topics};
+    use crate::interfaces::chat_state::ChatStateStore;
+    use crate::interfaces::context_buffer::ContextBuffer;
+    use crate::interfaces::reply_targets::ReplyTargets;
+
+    const BOT_USERNAME: &str = "resibot";
+    const BOT_ID: UserId = UserId(9_999);
+
+    fn telegram_message(json: serde_json::Value) -> teloxide::types::Message {
+        serde_json::from_value(json).expect("valid minimal telegram message fixture")
+    }
+
+    fn dm_json(msg_id: i32, user_id: u64, name: &str, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "message_id": msg_id,
+            "from": {"id": user_id, "is_bot": false, "first_name": name},
+            "chat": {"id": user_id, "first_name": name, "type": "private"},
+            "date": 1_700_000_000,
+            "text": text,
+        })
+    }
+
+    fn group_json(
+        msg_id: i32,
+        chat_id: i64,
+        title: &str,
+        user_id: u64,
+        name: &str,
+        text: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "message_id": msg_id,
+            "from": {"id": user_id, "is_bot": false, "first_name": name},
+            "chat": {"id": chat_id, "title": title, "type": "group"},
+            "date": 1_700_000_000,
+            "text": text,
+        })
+    }
+
+    struct Harness {
+        state: Arc<TelegramState>,
+        bot: Bot,
+        user_messages: Subscriber<MessageEvent>,
+        publisher: Publisher,
+        inbox_dir: PathBuf,
+        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+        command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
+        stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn harness(respond_to_others: bool, context_messages: usize) -> Harness {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = crate::bus::spawn_broker();
+        let user_messages = bus.subscribe(topics::UserMessage).await.unwrap();
+        let state = Arc::new(TelegramState {
+            respond_to_others,
+            store: ChatStateStore::load(dir.path().join("telegram_state.json"))
+                .await
+                .unwrap(),
+            reply_targets: ReplyTargets::default(),
+            context_buffer: ContextBuffer::new(context_messages),
+        });
+        Harness {
+            state,
+            bot: Bot::new("test-token"),
+            user_messages,
+            publisher: bus.publisher(),
+            inbox_dir: dir.path().to_path_buf(),
+            reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
+            command_tx: tokio::sync::mpsc::channel(1).0,
+            stop_tx: tokio::sync::mpsc::channel(1).0,
+            _dir: dir,
+        }
+    }
+
+    fn context(h: &Harness) -> TelegramContext<'_> {
+        TelegramContext {
+            state: &h.state,
+            bot_username: BOT_USERNAME,
+            bot_id: BOT_ID,
+            publisher: &h.publisher,
+            inbox_dir: &h.inbox_dir,
+            reload_tx: &h.reload_tx,
+            command_tx: &h.command_tx,
+            stop_tx: &h.stop_tx,
+            tz: chrono_tz::UTC,
+        }
+    }
+
+    async fn deliver(h: &Harness, msg: &teloxide::types::Message) {
+        let from = msg.from.clone().expect("fixture always sets a sender");
+        dispatch_message(&h.bot, msg, &from, &context(h)).await;
+    }
+
+    async fn next_user_message(h: &mut Harness) -> Option<MessageEvent> {
+        tokio::time::timeout(StdDuration::from_millis(200), h.user_messages.recv())
+            .await
+            .ok()
+            .map(|r| r.unwrap().unwrap())
+    }
+
+    #[tokio::test]
+    async fn dm_from_owner_reaches_the_agent_with_personal_conversation() {
+        let mut h = harness(false, 10).await;
+        deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hello"))).await;
+
+        let event = next_user_message(&mut h).await.expect("dm published");
+        assert_eq!(event.content, "hello");
+        assert_eq!(event.context, None, "no buffered context for a DM");
+        let conversation = event
+            .origin
+            .conversation
+            .expect("conversation info present");
+        assert_eq!(conversation.id, "111");
+        assert_eq!(conversation.kind, ConversationKind::Personal);
+        assert!(conversation.is_owner, "first DM sender becomes the owner");
+    }
+
+    #[tokio::test]
+    async fn group_mention_carries_the_chatter_since_the_last_mention() {
+        let mut h = harness(true, 10).await;
+        // Claim the owner via a DM first, so the group sender is a non-owner.
+        deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
+        next_user_message(&mut h).await.expect("dm published");
+
+        deliver(
+            &h,
+            &telegram_message(group_json(
+                2,
+                -100_123,
+                "Launch",
+                222,
+                "Sam",
+                "build is red",
+            )),
+        )
+        .await;
+        assert!(
+            next_user_message(&mut h).await.is_none(),
+            "unmentioned chatter is buffered, not sent"
+        );
+
+        deliver(
+            &h,
+            &telegram_message(group_json(
+                3,
+                -100_123,
+                "Launch",
+                222,
+                "Sam",
+                &format!("@{BOT_USERNAME} can you look?"),
+            )),
+        )
+        .await;
+        let event = next_user_message(&mut h).await.expect("mention published");
+        assert_eq!(event.content, "can you look?");
+        let context = event.context.expect("background context attached");
+        assert!(context.contains("Sam: build is red"), "{context}");
+        let conversation = event
+            .origin
+            .conversation
+            .expect("conversation info present");
+        assert_eq!(conversation.id, "-100123");
+        assert_eq!(conversation.kind, ConversationKind::GroupChat);
+        assert!(!conversation.is_owner, "Sam is not the claimed owner");
+
+        deliver(
+            &h,
+            &telegram_message(group_json(
+                4,
+                -100_123,
+                "Launch",
+                222,
+                "Sam",
+                &format!("@{BOT_USERNAME} thanks"),
+            )),
+        )
+        .await;
+        let again = next_user_message(&mut h).await.expect("second mention");
+        assert_eq!(
+            again.context, None,
+            "already-delivered chatter is not repeated"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_buffer_is_bounded_by_context_messages() {
+        let mut h = harness(true, 1).await;
+        deliver(&h, &telegram_message(dm_json(1, 111, "Bear", "hi"))).await;
+        next_user_message(&mut h).await.expect("dm published");
+
+        deliver(
+            &h,
+            &telegram_message(group_json(2, -100_123, "Launch", 222, "Sam", "first")),
+        )
+        .await;
+        deliver(
+            &h,
+            &telegram_message(group_json(3, -100_123, "Launch", 222, "Sam", "second")),
+        )
+        .await;
+
+        deliver(
+            &h,
+            &telegram_message(group_json(
+                4,
+                -100_123,
+                "Launch",
+                222,
+                "Sam",
+                &format!("@{BOT_USERNAME} hi"),
+            )),
+        )
+        .await;
+        let event = next_user_message(&mut h).await.expect("mention published");
+        let context = event.context.expect("one buffered message fits");
+        assert!(!context.contains("first"), "{context}");
+        assert!(context.contains("second"), "{context}");
     }
 }

@@ -15,9 +15,9 @@ use crate::interfaces::types::MessageOrigin;
 use super::TeamsRuntime;
 use super::activity::{Activity, Attachment, ChannelAccount, ConversationKind};
 use super::auth::AuthError;
-use super::context_buffer::{BufferedMessage, render_context};
 use super::store::ConversationRef;
 use crate::interfaces::chat_state::{Owner, Standing, direct_message_label};
+use crate::interfaces::context_buffer::{BufferedMessage, render_context};
 
 /// Attachment content type Teams uses for files shared in a chat.
 const FILE_DOWNLOAD_INFO: &str = "application/vnd.microsoft.teams.file.download.info";
@@ -217,7 +217,8 @@ async fn handle_message(rt: &TeamsRuntime, activity: Activity) {
         rt.send_text(&incoming.reference, &reply).await;
         return;
     }
-    publish_to_agent(rt, incoming).await;
+    let is_owner = matches!(standing, Standing::Owner);
+    publish_to_agent(rt, incoming, is_owner).await;
 }
 
 fn buffer_for_context(rt: &TeamsRuntime, incoming: &Incoming) {
@@ -287,7 +288,7 @@ async fn run_command(
     crate::interfaces::run_chat_command(name, args, &dispatch, super::ENDPOINT, sender_name).await
 }
 
-async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming) {
+async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool) {
     let Incoming {
         activity,
         from,
@@ -303,6 +304,8 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming) {
         return;
     }
 
+    let conversation_id = base_id.clone();
+    let conversation_kind = reference.kind;
     let background = match reference.kind {
         ConversationKind::Personal => None,
         ConversationKind::GroupChat | ConversationKind::Channel => {
@@ -328,6 +331,11 @@ async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming) {
                 id: from.aad_object_id.unwrap_or(from.id),
                 interface: super::ENDPOINT.to_string(),
                 location: Some(location),
+            }),
+            conversation: Some(crate::interfaces::types::ConversationContext {
+                id: conversation_id,
+                kind: conversation_kind,
+                is_owner,
             }),
         },
         timestamp: crate::time::now_local(rt.tz),
@@ -520,8 +528,8 @@ mod tests {
     use super::super::auth::TokenValidator;
     use super::super::auth::test_support::valid_token;
     use super::super::connector::ConnectorClient;
-    use super::super::context_buffer::ContextBuffer;
     use super::super::store::TeamsStore;
+    use crate::interfaces::context_buffer::ContextBuffer;
 
     const APP_ID: &str = "app-id";
     const TENANT: &str = "tenant-1";
