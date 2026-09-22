@@ -829,17 +829,21 @@ mod tests {
 
     /// An embedding provider that sleeps before returning, standing in for a
     /// slow network call.
-    struct SlowEmbeddingProvider {
-        delay: std::time::Duration,
+    /// Embedding provider that parks every call until the test releases it,
+    /// signalling when the first call has entered the embedding step.
+    struct GatedEmbeddingProvider {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
     }
 
     #[async_trait::async_trait]
-    impl EmbeddingProvider for SlowEmbeddingProvider {
+    impl EmbeddingProvider for GatedEmbeddingProvider {
         async fn embed(
             &self,
             texts: &[&str],
         ) -> Result<crate::inference::EmbeddingResponse, crate::inference::InferenceError> {
-            tokio::time::sleep(self.delay).await;
+            self.entered.notify_one();
+            self.release.acquire().await.unwrap().forget();
             Ok(crate::inference::EmbeddingResponse {
                 embeddings: texts.iter().map(|_| vec![0.0_f32; 4]).collect(),
                 dimensions: 4,
@@ -847,7 +851,7 @@ mod tests {
         }
 
         fn model_name(&self) -> &'static str {
-            "slow-embed"
+            "gated-embed"
         }
     }
 
@@ -867,13 +871,17 @@ mod tests {
                 ..ReflectorConfig::default()
             },
         );
-        let slow_delay = std::time::Duration::from_millis(400);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
         let mw = Arc::new(MemoryMergeWriter::new(
             reflector,
             layout.clone(),
             search_index,
             Some(vector_store),
-            Some(Arc::new(SlowEmbeddingProvider { delay: slow_delay })),
+            Some(Arc::new(GatedEmbeddingProvider {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            })),
         ));
 
         let mw1 = Arc::clone(&mw);
@@ -887,9 +895,9 @@ mod tests {
             .unwrap()
         });
 
-        // Give the first merge time to release the merge lock and enter its
-        // slow embedding step.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The first merge is now parked inside its embedding step and stays
+        // there until the gate is released below.
+        entered.notified().await;
 
         let mw2 = Arc::clone(&mw);
         let second = tokio::spawn(async move {
@@ -902,25 +910,30 @@ mod tests {
             .unwrap()
         });
 
-        // The second merge's own indexing/embedding step also uses the slow
-        // provider and legitimately waits its turn for the shared reflector
-        // state lock — that contention is expected and not what this test
-        // checks. What must not be blocked is episode id allocation and the
-        // durable per-episode writes (`persist_episode`), which happen
-        // entirely before either merge ever touches that lock. Checking the
-        // filesystem directly — well inside the embedding delay, regardless
-        // of whether either `merge()` call has returned yet — proves that.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let latest = crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
-            .await
-            .unwrap();
-        assert_eq!(
-            latest,
-            Some("ep-002".to_string()),
+        // Episode id allocation and the durable per-episode writes must not
+        // wait on the first merge's embedding step. The gate is still closed,
+        // so the second episode appearing on disk at all proves it; the
+        // timeout only bounds how long a regression takes to fail.
+        let second_persisted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let latest =
+                    crate::memory::episode_store::latest_episode_id(&layout.episodes_dir())
+                        .await
+                        .unwrap();
+                if latest.as_deref() == Some("ep-002") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            second_persisted.is_ok(),
             "the second merge's episode id allocation and durable writes must complete \
-             well before the first merge's slow embedding step does"
+             while the first merge is still inside its embedding step"
         );
 
+        release.add_permits(2);
         let first_outcome = first.await.unwrap();
         let second_outcome = second.await.unwrap();
         assert_eq!(first_outcome.id, "ep-001");
