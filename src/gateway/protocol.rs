@@ -187,6 +187,29 @@ pub struct WorkbenchToolSummary {
     pub size: u64,
 }
 
+/// `GET /api/workbench/info`: where workbench tools are served.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkbenchInfo {
+    /// Port of the local tools listener, or `null` when it isn't running.
+    pub port: Option<u16>,
+    /// Plain-language reason the tools listener isn't running, when it isn't.
+    pub unavailable_reason: Option<String>,
+    /// Public origins through the cloud relay, when connected to a relay that
+    /// announces them.
+    pub relay: Option<WorkbenchRelayOrigins>,
+}
+
+/// The web UI's and the tools' public origins through the cloud relay.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkbenchRelayOrigins {
+    /// Origin the web UI is served from through the relay.
+    pub ui_origin: String,
+    /// Origin the tools are served from through the relay.
+    pub tools_origin: String,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]

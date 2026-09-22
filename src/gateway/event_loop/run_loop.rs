@@ -76,6 +76,33 @@ struct SpawnedHandles {
     webhooks: crate::interfaces::webhook::WebhookTable,
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    workbench_serving: crate::workbench::server::WorkbenchServing,
+    workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+}
+
+/// Start the workbench tools listener beside the gateway.
+async fn start_workbench_listener(
+    cfg: &Config,
+    workbench_dir: &std::path::Path,
+) -> (
+    crate::workbench::server::WorkbenchServing,
+    Option<tokio::sync::watch::Sender<bool>>,
+) {
+    // Teams' configured port stays free for it, and so does its default, so
+    // enabling Teams later can't collide with the tools listener.
+    let reserved_ports = [
+        cfg.teams
+            .as_ref()
+            .map_or(crate::config::DEFAULT_TEAMS_PORT, |teams| teams.port),
+        crate::config::DEFAULT_TEAMS_PORT,
+    ];
+    crate::workbench::server::start(
+        &cfg.gateway.bind,
+        cfg.gateway.port,
+        &reserved_ports,
+        workbench_dir.to_path_buf(),
+    )
+    .await
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -136,10 +163,19 @@ async fn spawn_server_and_adapters(
         client_context: Arc::clone(&parts.tracing_client_context),
         session_registry: Arc::clone(&parts.session_registry),
     };
-    let app = build_gateway_app(state, config_api_state, update_api_state, tracing_api_state);
+    let (workbench_serving, workbench_listener_shutdown_tx) =
+        start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
+    let app = build_gateway_app(
+        state,
+        config_api_state,
+        update_api_state,
+        tracing_api_state,
+        workbench_serving.clone(),
+    );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
-    let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
+    let (tunnel_handle, tunnel_shutdown_tx) =
+        spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx), workbench_serving.port());
     let sigterm = crate::gateway::types::TermSignal::new()
         .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
     let watcher_handle = Some(watcher::spawn_workspace_watcher(
@@ -165,6 +201,8 @@ async fn spawn_server_and_adapters(
         webhooks,
         watcher_handle,
         workbench_watcher_handle,
+        workbench_serving,
+        workbench_listener_shutdown_tx,
     })
 }
 
@@ -313,6 +351,8 @@ async fn build_runtime(
         teams_shutdown_tx: spawned.adapters.teams_shutdown_tx,
         watcher_handle: spawned.watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
+        workbench_listener_shutdown_tx: spawned.workbench_listener_shutdown_tx,
+        workbench_serving: spawned.workbench_serving,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         stop_tx: core.stop_tx,
@@ -332,6 +372,7 @@ async fn build_runtime(
 fn spawn_tunnel(
     cfg: &Config,
     status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
+    workbench_port: Option<u16>,
 ) -> (
     Option<tokio::task::JoinHandle<()>>,
     Option<tokio::sync::watch::Sender<bool>>,
@@ -340,7 +381,7 @@ fn spawn_tunnel(
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let handle = crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
         });
         (Some(handle), Some(shutdown_tx))
     } else {
@@ -494,6 +535,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(h) = rt.workbench_watcher_handle.take() {
         h.abort();
     }
+    if let Some(tx) = rt.workbench_listener_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
     rt.http_shutdown_tx.send(true).ok();
     tracing::info!("graceful shutdown complete");
 }
@@ -523,11 +567,12 @@ fn respawn_tunnel(rt: &mut GatewayRuntime) {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let status_tx = Arc::clone(&rt.tunnel_status_tx);
+        let workbench_port = rt.workbench_serving.port();
         status_tx
             .send(crate::tunnel::TunnelStatus::Disconnected)
             .ok();
         rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         tracing::info!("tunnel respawned after unexpected exit");

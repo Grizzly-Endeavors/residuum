@@ -1,12 +1,11 @@
 //! Polls the workbench directory and publishes a [`WorkbenchEvent`] whenever a
-//! tool page is added, changed, or removed, so open tool views reload live.
+//! tool is added, changed, or removed, so open tool views reload live.
 //!
-//! Only tool pages are watched. A tool saving its own data file
-//! (`<name>.state.json`) must not reload the tool, or it would lose its
-//! in-memory state on every save.
+//! Only tools are watched: a page, or any file inside a folder tool. A tool's
+//! saved data sits beside it (`<name>.state.json`) and is not watched, so a
+//! tool saving its state never reloads itself.
 
 use std::collections::HashMap;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -16,8 +15,10 @@ use crate::bus::{Publisher, WorkbenchEvent, topics};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// What identifies one version of a tool page.
-type PageStamp = (Option<SystemTime>, u64);
+/// What identifies one version of a tool: newest file time, total size, and
+/// file count (so adding or removing a file registers even when times don't
+/// move).
+type PageStamp = (Option<SystemTime>, u64, usize);
 
 /// Spawn the workbench watcher. Runs until aborted.
 pub(crate) fn spawn_workbench_watcher(dir: PathBuf, publisher: Publisher) -> JoinHandle<()> {
@@ -65,24 +66,11 @@ pub(crate) fn spawn_workbench_watcher(dir: PathBuf, publisher: Publisher) -> Joi
 }
 
 async fn scan(dir: &Path) -> std::io::Result<HashMap<String, PageStamp>> {
-    let mut read_dir = match tokio::fs::read_dir(dir).await {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(e) => return Err(e),
-    };
-    let mut pages = HashMap::new();
-    while let Some(entry) = read_dir.next_entry().await? {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str().and_then(super::tool_name_of) else {
-            continue;
-        };
-        if !entry.file_type().await?.is_file() {
-            continue;
-        }
-        let metadata = entry.metadata().await?;
-        pages.insert(name.to_string(), (metadata.modified().ok(), metadata.len()));
-    }
-    Ok(pages)
+    Ok(super::discover_tools(dir)
+        .await?
+        .into_iter()
+        .map(|tool| (tool.name, (tool.modified, tool.size, tool.files)))
+        .collect())
 }
 
 fn diff(
@@ -111,6 +99,7 @@ mod tests {
         (
             Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs)),
             len,
+            1,
         )
     }
 
@@ -143,13 +132,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scan_watches_only_tool_pages() {
+    async fn scan_watches_only_tools() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("chart.html"), "x").unwrap();
         std::fs::write(dir.path().join("chart.state.json"), "{}").unwrap();
         std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
         let pages = scan(dir.path()).await.unwrap();
         assert_eq!(pages.keys().collect::<Vec<_>>(), ["chart"]);
+    }
+
+    #[tokio::test]
+    async fn a_new_file_in_a_folder_tool_changes_its_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("graph")).unwrap();
+        std::fs::write(dir.path().join("graph/index.html"), "x").unwrap();
+        let before = scan(dir.path()).await.unwrap();
+        std::fs::write(dir.path().join("graph/data.json"), "[]").unwrap();
+        let after = scan(dir.path()).await.unwrap();
+        assert_eq!(
+            diff(&before, &after),
+            [WorkbenchEvent::Updated {
+                name: "graph".into()
+            }]
+        );
     }
 
     #[tokio::test]

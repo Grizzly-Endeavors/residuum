@@ -39,7 +39,7 @@ pub(crate) async fn api_cloud_status(
     let (status, user_id) = match tunnel_status {
         TunnelStatus::Disconnected => ("disconnected", None),
         TunnelStatus::Connecting => ("connecting", None),
-        TunnelStatus::Connected { ref user_id } => ("connected", Some(user_id.clone())),
+        TunnelStatus::Connected { ref user_id, .. } => ("connected", Some(user_id.clone())),
     };
 
     // Check config for cloud section presence

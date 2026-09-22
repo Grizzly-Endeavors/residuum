@@ -293,6 +293,10 @@ pub(crate) struct GatewayRuntime {
     pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Whether the workbench tools listener is running, and on which port.
+    pub workbench_serving: crate::workbench::server::WorkbenchServing,
+    /// Stops the workbench tools listener, when it is running.
+    pub workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// Cloned core senders for rebuilding adapters on reload.
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,

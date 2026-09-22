@@ -45,6 +45,24 @@ fn is_hop_by_hop(name: &str) -> bool {
 
 type TunnelSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
+/// Local listeners the tunnel forwards to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ForwardTargets {
+    /// The main gateway listener: web UI, API, WebSocket.
+    pub main: u16,
+    /// The workbench tools listener, when it is running.
+    pub workbench: Option<u16>,
+}
+
+/// Header listing optional features this tunnel client supports.
+const CAPABILITIES_HEADER: &str = "x-residuum-capabilities";
+
+/// Capability: requests tagged [`protocol::Surface::Workbench`] are routed to
+/// the workbench tools listener. Advertised even while that listener is down,
+/// so the relay forwards tool requests and they get an explanation back
+/// rather than the relay's generic "update Residuum" page.
+const WORKBENCH_SURFACE_CAPABILITY: &str = "workbench-surface";
+
 fn build_ws_upgrade_request(uri: &str, host: &str) -> Result<ws_http::Request<()>, ws_http::Error> {
     ws_http::Request::builder()
         .uri(uri)
@@ -80,5 +98,11 @@ pub(crate) enum TunnelStatus {
     Connected {
         /// The user ID associated with this tunnel.
         user_id: String,
+        /// Public origin of the web UI through the relay, when the relay
+        /// announces it.
+        origin: Option<String>,
+        /// Public origin of the workbench tools through the relay, when the
+        /// relay announces it.
+        workbench_origin: Option<String>,
     },
 }

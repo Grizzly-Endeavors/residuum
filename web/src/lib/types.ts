@@ -15,6 +15,8 @@ export type {
   SessionRunStatus,
   SessionState,
   SessionSummary,
+  WorkbenchInfo,
+  WorkbenchRelayOrigins,
   WorkbenchToolSummary,
 } from "./generated/protocol";
 

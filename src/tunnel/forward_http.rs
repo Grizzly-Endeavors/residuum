@@ -169,10 +169,18 @@ async fn collect_response_body(
 /// Build a 502-style error response frame.
 #[must_use]
 fn error_response(request_id: String, message: &str) -> TunnelFrame {
+    text_response(request_id, 502, message)
+}
+
+/// A plain-text response frame, for answers the tunnel gives itself.
+pub(super) fn text_response(request_id: String, status: u16, message: &str) -> TunnelFrame {
     TunnelFrame::HttpResponse {
         request_id,
-        status: 502,
-        headers: HashMap::new(),
+        status,
+        headers: HashMap::from([(
+            "content-type".to_string(),
+            "text/plain; charset=utf-8".to_string(),
+        )]),
         body: Some(STANDARD.encode(message.as_bytes())),
     }
 }
