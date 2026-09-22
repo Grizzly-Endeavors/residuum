@@ -193,7 +193,13 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "mcp";
+export type SettingsSection =
+  | "runtime"
+  | "providers"
+  | "memory"
+  | "integrations"
+  | "mcp"
+  | "agent-keys";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 
@@ -251,6 +257,23 @@ export interface SettingsModelAssignments {
   bgMedium: string;
   bgLarge: string;
   overrides: Record<string, RoleOverrides>;
+}
+
+/** One agent key as the API describes it. Values are never sent. */
+export interface AgentKeyInfo {
+  name: string;
+  env_var: string;
+  description: string;
+  created_by: "user" | "agent";
+}
+
+export interface AgentKeysListResponse {
+  keys: AgentKeyInfo[];
+}
+
+export interface SetAgentKeyResponse {
+  name: string;
+  env_var: string;
 }
 
 export interface SecretsListResponse {

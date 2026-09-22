@@ -14,6 +14,7 @@ use tokio::sync::watch;
 
 use super::ReloadSignal;
 
+mod agent_keys;
 pub mod cloud;
 pub mod config;
 pub mod inbox;
@@ -83,6 +84,12 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         )
         .route("/api/mcp/raw", get(config::api_mcp_raw_get))
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))
+        .route("/api/agent-keys", get(agent_keys::api_agent_keys_list))
+        .route("/api/agent-keys", post(agent_keys::api_agent_keys_set))
+        .route(
+            "/api/agent-keys/{name}",
+            delete(agent_keys::api_agent_keys_delete),
+        )
         .route("/api/secrets", post(secrets::api_secrets_set))
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
