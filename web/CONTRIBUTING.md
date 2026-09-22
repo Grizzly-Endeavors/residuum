@@ -42,6 +42,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. That's it �
 - No real LLM calls happen — responses are canned
 - Config saves don't persist across server restarts
 - Some edge cases (rate limits, network errors) aren't simulated
+- `POST /api/secrets` doesn't validate the value like the real server does — it accepts anything, including a `secret:` or `${ENV_VAR}` reference the real server would reject with a 400. The frontend already avoids sending those (see `lib/secrets.ts`), so this only matters if you're testing the rejection path itself
 
 ### Setup Wizard Mode
 
@@ -88,7 +89,8 @@ web/
 │       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
 │       ├── models.ts             # Model fetching and caching
 │       ├── markdown.ts           # Markdown rendering
-│       └── settings-toml.ts      # Config serialization
+│       ├── settings-toml.ts      # Config serialization
+│       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
 ├── mock-server.ts            # Mock API + WebSocket (only used in dev:mock)
 ├── vite.config.ts
 └── package.json
