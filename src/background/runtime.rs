@@ -1819,7 +1819,12 @@ mod tests {
         ]);
         runtime.spawn(sample_request(address.as_ref()), Some(resources));
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        // Generous timeouts: unlike the other idle-wake tests, this one uses
+        // a real (disk-backed) search index and merge writer per turn (see
+        // `make_sequenced_resources_with_eager_observer`), which is
+        // meaningfully slower under CI load than the disabled-observer path
+        // most other tests here use.
+        wait_for(&runtime, &address, Duration::from_secs(5), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -1838,7 +1843,7 @@ mod tests {
             crate::background::registry::DeliverOutcome::Delivered
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
