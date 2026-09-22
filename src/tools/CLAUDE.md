@@ -21,11 +21,23 @@ The file lives at `src/tools/TOOLS.md`.
 - Declare the module in `src/tools/mod.rs` (`mod foo;` or `pub mod foo;`).
 - Add a `register_*` method for it in `src/tools/registry.rs`, then wire that
   call into whichever registry-building surface(s) should carry it. There are
-  **two separate registration surfaces** and a new tool is not on both by default:
-  - the main agent's registry, built in `src/gateway/startup/tools.rs`
-  - the sub-agent registry, built by `ToolRegistry::build_subagent_registry`
-    in `src/tools/registry.rs`
-  Decide on purpose whether the new tool belongs in one or both — do not assume
-  parity between them. (Past gap: `ollama_web_search` is registered for the main
-  agent in `gateway/startup/tools.rs` but has no corresponding call in
-  `build_subagent_registry`, with no record of whether that's intentional.)
+  **two separate registration surfaces**:
+  - the main agent's registry, built by `init_tool_registry` in
+    `src/gateway/startup/tools.rs`
+  - the sub-agent (session) registry, built by
+    `ToolRegistry::build_subagent_registry` in `src/tools/registry.rs`
+
+  **The rule: every tool registered for main is also registered for
+  sessions, with the same config gating, except `switch_endpoint`** — the one
+  documented exception, because it redirects main's background-turn output
+  and is meaningless for a session. If a tool genuinely must stay main-only,
+  add it to the allowlist next to `switch_endpoint` in both
+  `build_subagent_registry`'s doc comment and the `MAIN_ONLY_TOOLS` constant
+  in `src/gateway/startup/tools.rs`'s tests, with a comment explaining why —
+  don't just leave it off silently.
+
+  `gateway::startup::tools::tests::session_registry_matches_main_minus_documented_allowlist`
+  enforces this: it builds both registries from equivalent config (every
+  optional tool gate turned on) and asserts the session registry's tool names
+  equal main's minus that allowlist. Forgetting to wire a new tool into one of
+  the two surfaces fails this test instead of drifting silently.

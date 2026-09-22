@@ -32,6 +32,60 @@ impl Default for ToolRegistry {
     }
 }
 
+/// Dependencies for [`ToolRegistry::build_subagent_registry`].
+///
+/// Grouped into a struct because a session's tool registry needs every
+/// dependency the main agent's does. `own_address` and `own_depth` are this
+/// session's own address and depth, and `depth_cap` the configured nesting
+/// limit — together they let this session's own `subagent_spawn` record the
+/// right spawner/depth on anything it forks and refuse spawning once the cap
+/// is reached. `own_address` is reused (cloned) as the identity
+/// `message_agent` reports to the agents it messages, alongside
+/// `session_category` and `messenger`. `hop_counter` is this session's
+/// current-turn hop counter, shared with `message_agent`/`subagent_spawn` so
+/// they compute outgoing hop counts from the same value the session runtime
+/// updates. `tracing_service` and `tracing_client_context` back this
+/// session's own `file_bug_report`/`submit_feedback` tools, the same as
+/// main's. `web_search_backend` mirrors main's
+/// `cfg.web_search.standalone_backend`: `ollama_web_search` is registered
+/// only when it names the `"ollama"` backend, exactly like
+/// `gateway::startup::tools::init_tool_registry`.
+pub struct SubagentToolDeps {
+    pub tracker: SharedFileTracker,
+    pub path_policy: SharedPathPolicy,
+    pub skill_state: SharedSkillState,
+    pub tz: chrono_tz::Tz,
+    pub hybrid_searcher: Arc<HybridSearcher>,
+    pub episodes_dir: PathBuf,
+    pub sessions_dir: PathBuf,
+    pub agent_inbox_dir: PathBuf,
+    pub agent_inbox_archive_dir: PathBuf,
+    pub user_inbox_dir: PathBuf,
+    pub user_inbox_attachments_dir: PathBuf,
+    pub session_registry: Arc<SessionRegistry>,
+    pub endpoint_registry: EndpointRegistry,
+    pub publisher: crate::bus::Publisher,
+    pub action_store: Arc<Mutex<ActionStore>>,
+    pub action_notify: Arc<Notify>,
+    /// This session's own address, recorded as the spawner on anything it
+    /// forks in turn, and reused as the identity `message_agent` reports.
+    pub own_address: SessionAddress,
+    /// This session's own depth from the main agent (main is depth 0).
+    pub own_depth: u32,
+    /// Maximum depth a `subagent_spawn`-created session may have.
+    pub depth_cap: u32,
+    /// This session's category, for `message_agent` to report alongside
+    /// `own_address`.
+    pub session_category: String,
+    pub messenger: Arc<AgentMessenger>,
+    pub hop_counter: HopCounter,
+    pub tracing_service: Arc<crate::tracing_service::TracingService>,
+    pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+    /// Standalone web search backend config, if one is configured — mirrors
+    /// `cfg.web_search.standalone_backend`.
+    pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
+}
+
 impl ToolRegistry {
     /// Create a new empty tool registry.
     #[must_use]
@@ -53,6 +107,18 @@ impl ToolRegistry {
     /// Register a tool in the registry.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.push(tool);
+    }
+
+    /// Remove a registered tool by name, if present.
+    ///
+    /// Used to reload a single conditionally-registered tool in place on a
+    /// live registry (e.g. `ollama_web_search` after a config reload changes
+    /// the standalone web search backend) without rebuilding the whole
+    /// registry. Returns `true` if a tool was removed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let before = self.tools.len();
+        self.tools.retain(|t| t.name() != name);
+        self.tools.len() != before
     }
 
     /// Get tool definitions for sending to the model.
@@ -236,49 +302,46 @@ impl ToolRegistry {
 
     /// Build a tool registry for a session.
     ///
-    /// Includes all tools available to the main agent except `switch_endpoint`,
-    /// which stays main-only. Sessions get their own isolated skill state but
-    /// share the same endpoint registry, action store, etc. `own_address` and
-    /// `own_depth` are this session's own address and depth, and `depth_cap`
-    /// the configured nesting limit — together they let this session's own
-    /// `subagent_spawn` record the right spawner/depth on anything it forks
-    /// and refuse spawning once the cap is reached. `own_address` is reused
-    /// (cloned) as the identity `message_agent` reports to the agents it
-    /// messages, alongside `session_category` and the shared `messenger`.
-    /// `send_message` from this registry refuses the owner's DM on every
-    /// chat interface and the web UI (only the main agent talks to the
-    /// owner). `hop_counter` is this session's current-turn hop counter,
-    /// shared with `message_agent`/`subagent_spawn` so they compute outgoing
-    /// hop counts from the same value the session runtime updates.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session registry needs all tool dependencies"
-    )]
+    /// Includes every tool available to the main agent, with the same config
+    /// gating, except `switch_endpoint` — the one tool that stays main-only,
+    /// because it redirects main's background-turn output and is meaningless
+    /// for a session. `tests::session_registry_matches_main_minus_documented_allowlist`
+    /// enforces this: it builds both registries from equivalent config and
+    /// asserts the session registry's tool names equal main's minus that one
+    /// documented exclusion, so a tool added to one registration surface but
+    /// not the other fails the build instead of drifting silently.
+    ///
+    /// See [`SubagentToolDeps`] for what each field means.
     #[must_use]
-    pub fn build_subagent_registry(
-        tracker: SharedFileTracker,
-        path_policy: SharedPathPolicy,
-        skill_state: SharedSkillState,
-        tz: chrono_tz::Tz,
-        hybrid_searcher: Arc<HybridSearcher>,
-        episodes_dir: std::path::PathBuf,
-        sessions_dir: std::path::PathBuf,
-        agent_inbox_dir: std::path::PathBuf,
-        agent_inbox_archive_dir: std::path::PathBuf,
-        user_inbox_dir: std::path::PathBuf,
-        user_inbox_attachments_dir: std::path::PathBuf,
-        session_registry: Arc<SessionRegistry>,
-        endpoint_registry: EndpointRegistry,
-        publisher: crate::bus::Publisher,
-        action_store: Arc<Mutex<ActionStore>>,
-        action_notify: Arc<Notify>,
-        own_address: SessionAddress,
-        own_depth: u32,
-        depth_cap: u32,
-        session_category: String,
-        messenger: Arc<AgentMessenger>,
-        hop_counter: HopCounter,
-    ) -> Self {
+    pub fn build_subagent_registry(deps: SubagentToolDeps) -> Self {
+        let SubagentToolDeps {
+            tracker,
+            path_policy,
+            skill_state,
+            tz,
+            hybrid_searcher,
+            episodes_dir,
+            sessions_dir,
+            agent_inbox_dir,
+            agent_inbox_archive_dir,
+            user_inbox_dir,
+            user_inbox_attachments_dir,
+            session_registry,
+            endpoint_registry,
+            publisher,
+            action_store,
+            action_notify,
+            own_address,
+            own_depth,
+            depth_cap,
+            session_category,
+            messenger,
+            hop_counter,
+            tracing_service,
+            tracing_client_context,
+            web_search_backend,
+        } = deps;
+
         let mut registry = Self::new();
 
         // Core I/O tools
@@ -298,6 +361,13 @@ impl ToolRegistry {
             user_inbox_dir,
             user_inbox_attachments_dir,
             tz,
+        );
+
+        // Feedback tools (file_bug_report, submit_feedback)
+        registry.register_feedback_tools(
+            tracing_service,
+            tracing_client_context,
+            Arc::clone(&session_registry),
         );
 
         // Session management (stop_agent, list_agents, subagent_spawn)
@@ -321,6 +391,19 @@ impl ToolRegistry {
 
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
+
+        // Ollama Cloud web search tool, gated the same way as main's
+        // (see `gateway::startup::tools::init_tool_registry`).
+        if let Some(backend) = &web_search_backend
+            && backend.name == "ollama"
+        {
+            let base_url = backend
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.ollama.com".to_string());
+            registry.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+            tracing::info!("registered ollama_web_search tool for session");
+        }
 
         registry
     }

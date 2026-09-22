@@ -194,3 +194,236 @@ pub(super) async fn create_agent(
 
     agent
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::store::ActionStore;
+    use crate::agent::HopCounter;
+    use crate::background::HopLimits;
+    use crate::background::messaging::AgentMessenger;
+    use crate::background::registry::SessionRegistry;
+    use crate::background::store::SessionStore;
+    use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
+    use crate::config::{
+        AgentAbilitiesConfig, BackgroundConfig, GatewayConfig, IdleConfig, LearningConfig,
+        MemoryConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings,
+        ToolsConfig, TracingConfig, WebSearchConfig,
+    };
+    use crate::inference::retry::RetryConfig;
+    use crate::memory::search::{HybridSearcher, MemoryIndex};
+    use crate::skills::{SkillIndex, SkillState};
+    use crate::tools::{FileTracker, PathPolicy};
+    use crate::tracing_service::TracingService;
+    use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
+    use std::collections::HashMap;
+
+    /// Tools that must stay main-only, never registered for a session. This
+    /// is the one documented exclusion from `ToolRegistry::build_subagent_registry`
+    /// (see its doc comment) — keep the two lists in sync.
+    const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
+
+    /// A minimal but fully populated `Config`, with every optional
+    /// tool-gating switch turned on (here: an Ollama standalone web search
+    /// backend), so `session_registry_matches_main_minus_documented_allowlist`
+    /// exercises every conditionally-registered tool on both surfaces.
+    fn test_config(dir: &std::path::Path) -> Config {
+        Config {
+            name: None,
+            main: vec![],
+            observer: vec![],
+            reflector: vec![],
+            pulse: vec![],
+            subconscious: vec![],
+            embedding: None,
+            workspace_dir: dir.to_path_buf(),
+            timeout_secs: 30,
+            max_tokens: 4096,
+            memory: MemoryConfig::default(),
+            pulse_enabled: false,
+            subconscious_settings: SubconsciousSettings::default(),
+            learning: LearningConfig::default(),
+            gateway: GatewayConfig::default(),
+            timezone: chrono_tz::UTC,
+            cloud: None,
+            discord: None,
+            telegram: None,
+            teams: None,
+            webhooks: HashMap::new(),
+            skills: SkillsConfig { dirs: vec![] },
+            tools: ToolsConfig { dirs: vec![] },
+            retry: RetryConfig::default(),
+            background: BackgroundConfig::default(),
+            agent: AgentAbilitiesConfig::default(),
+            idle: IdleConfig::default(),
+            temperature: None,
+            thinking: None,
+            web_search: WebSearchConfig {
+                provider_native: None,
+                standalone_backend: Some(StandaloneBackendConfig {
+                    name: "ollama".to_string(),
+                    api_key: "test-key".to_string(),
+                    base_url: None,
+                }),
+            },
+            tracing: TracingConfig::default(),
+            role_overrides: HashMap::new(),
+            config_dir: dir.to_path_buf(),
+        }
+    }
+
+    /// Shared scaffolding both registries are built from, so the comparison
+    /// in the test below isolates the one thing it actually cares about
+    /// (which tools got registered) rather than incidental config drift
+    /// between two independently hand-built setups.
+    struct Harness {
+        cfg: Config,
+        layout: WorkspaceLayout,
+        mem: super::super::memory::MemoryComponents,
+        action_store: Arc<tokio::sync::Mutex<ActionStore>>,
+        action_notify: Arc<tokio::sync::Notify>,
+        skill_state: SharedSkillState,
+        tools_path: crate::tools::SharedToolsPath,
+        session_registry: Arc<SessionRegistry>,
+        endpoint_registry: EndpointRegistry,
+        publisher: Publisher,
+        tracing_service: Arc<TracingService>,
+        tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+        agent_messenger: Arc<AgentMessenger>,
+        hop_counter: HopCounter,
+    }
+
+    fn build_harness(dir: &std::path::Path) -> Harness {
+        let cfg = test_config(dir);
+        let layout = WorkspaceLayout::new(dir);
+
+        let search_index = Arc::new(MemoryIndex::empty().expect("empty search index"));
+        let hybrid_searcher = Arc::new(HybridSearcher::new(
+            Arc::clone(&search_index),
+            None,
+            None,
+            SearchConfig::default(),
+        ));
+        let mem = super::super::memory::MemoryComponents {
+            search_index,
+            hybrid_searcher,
+            vector_store: None,
+        };
+
+        let action_store = Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
+            layout.scheduled_actions_json(),
+        )));
+        let action_notify = Arc::new(tokio::sync::Notify::new());
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let tools_path: crate::tools::SharedToolsPath = Arc::new(tokio::sync::RwLock::new(None));
+        let session_registry = Arc::new(SessionRegistry::new());
+        let endpoint_registry = EndpointRegistry::from_config(&cfg, &[]);
+        let publisher = Publisher::noop();
+
+        let (_, span_buffer) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        let tracing_service = Arc::new(TracingService::new(cfg.tracing.clone(), span_buffer));
+        let tracing_client_context =
+            Arc::new(crate::tracing_service::client_context::gather_for_bug_report(&cfg));
+
+        let session_store = Arc::new(SessionStore::new(layout.sessions_dir()));
+        let agent_messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&session_registry),
+            publisher.clone(),
+            session_store,
+            HopLimits::from(&cfg.background),
+        ));
+        let hop_counter = HopCounter::new(0);
+
+        Harness {
+            cfg,
+            layout,
+            mem,
+            action_store,
+            action_notify,
+            skill_state,
+            tools_path,
+            session_registry,
+            endpoint_registry,
+            publisher,
+            tracing_service,
+            tracing_client_context,
+            agent_messenger,
+            hop_counter,
+        }
+    }
+
+    /// Enforces "every tool registered for main is also registered for
+    /// sessions, except the documented main-only allowlist" by building both
+    /// registration surfaces from equivalent config (every optional tool
+    /// gate turned on) and comparing their tool names directly. A tool added
+    /// to one registry but not the other fails this test instead of drifting
+    /// silently — see the "Past gap" history this replaced in
+    /// `src/tools/CLAUDE.md`.
+    #[test]
+    fn session_registry_matches_main_minus_documented_allowlist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = build_harness(dir.path());
+
+        let deps = ToolRegistryDeps {
+            action_store: &h.action_store,
+            action_notify: &h.action_notify,
+            skill_state: &h.skill_state,
+            tools_path: &h.tools_path,
+            session_registry: &h.session_registry,
+            endpoint_registry: &h.endpoint_registry,
+            publisher: &h.publisher,
+            tracing_service: &h.tracing_service,
+            tracing_client_context: &h.tracing_client_context,
+            agent_messenger: &h.agent_messenger,
+            hop_counter: &h.hop_counter,
+        };
+        let (main_tools, _, _) =
+            init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
+        let mut main_names = main_tools.tool_names();
+        main_names.sort();
+
+        let session_tools =
+            crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
+                tracker: FileTracker::new_shared(),
+                path_policy: PathPolicy::new_shared(),
+                skill_state: Arc::clone(&h.skill_state),
+                tz: chrono_tz::UTC,
+                hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
+                episodes_dir: h.layout.episodes_dir(),
+                sessions_dir: h.layout.sessions_dir(),
+                agent_inbox_dir: h.layout.agent_inbox_dir(),
+                agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
+                user_inbox_dir: h.layout.user_inbox_dir(),
+                user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
+                session_registry: Arc::clone(&h.session_registry),
+                endpoint_registry: h.endpoint_registry.clone(),
+                publisher: h.publisher.clone(),
+                action_store: Arc::clone(&h.action_store),
+                action_notify: Arc::clone(&h.action_notify),
+                own_address: SessionAddress::from("spawned-test-0001"),
+                own_depth: 1,
+                depth_cap: h.cfg.background.subagent_depth_cap,
+                session_category: "spawned".to_string(),
+                messenger: Arc::clone(&h.agent_messenger),
+                hop_counter: h.hop_counter.clone(),
+                tracing_service: Arc::clone(&h.tracing_service),
+                tracing_client_context: Arc::clone(&h.tracing_client_context),
+                web_search_backend: h.cfg.web_search.standalone_backend.clone(),
+            });
+        let mut session_names = session_tools.tool_names();
+        session_names.sort();
+
+        let mut expected: Vec<String> = main_names
+            .iter()
+            .filter(|name| !MAIN_ONLY_TOOLS.contains(&name.as_str()))
+            .cloned()
+            .collect();
+        expected.sort();
+
+        assert_eq!(
+            session_names, expected,
+            "session registry must carry every main tool except the documented \
+             main-only allowlist ({MAIN_ONLY_TOOLS:?})"
+        );
+    }
+}

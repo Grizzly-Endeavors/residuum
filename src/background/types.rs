@@ -115,6 +115,17 @@ pub struct SubAgentBuildConfig {
     /// so they read the same value the runtime updates as the run's turns
     /// progress.
     pub hop_counter: HopCounter,
+    /// Shared tracing service backing this session's own
+    /// `file_bug_report`/`submit_feedback` tools, the same instance the main
+    /// agent's tools register against.
+    pub tracing_service: Arc<crate::tracing_service::TracingService>,
+    /// Snapshot of the runtime client context for this session's bug-report
+    /// submissions.
+    pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+    /// Standalone web search backend config, if one is configured — mirrors
+    /// `cfg.web_search.standalone_backend` so the session's tool registry can
+    /// gate `ollama_web_search` the same way the main agent's does.
+    pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
 }
 
 #[cfg(test)]

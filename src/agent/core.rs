@@ -128,6 +128,35 @@ impl Agent {
         self.options = options;
     }
 
+    /// Reload the `ollama_web_search` tool in place from the current
+    /// standalone web search backend config (e.g. after a config reload).
+    ///
+    /// Mirrors `gateway::startup::tools::init_tool_registry`'s startup-time
+    /// gating: removes any existing `ollama_web_search` tool, then re-adds
+    /// it with the current API key/base URL if `backend` names the
+    /// `"ollama"` backend. A no-op call (backend unchanged) still removes
+    /// and re-adds the tool — harmless, since the tool itself is stateless
+    /// beyond the credentials it's constructed with.
+    pub fn reload_ollama_web_search_tool(
+        &mut self,
+        backend: Option<&crate::config::StandaloneBackendConfig>,
+    ) {
+        let was_registered = self.tools.remove("ollama_web_search");
+        if let Some(backend) = backend
+            && backend.name == "ollama"
+        {
+            let base_url = backend
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.ollama.com".to_string());
+            self.tools
+                .register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+            tracing::info!("reloaded ollama_web_search tool from config");
+        } else if was_registered {
+            tracing::info!("removed ollama_web_search tool: no longer configured");
+        }
+    }
+
     /// Reload observations from the observation log file.
     ///
     /// # Errors
@@ -1689,6 +1718,95 @@ mod tests {
         assert!(
             calls[0][0].content.contains("cached soul"),
             "system prompt should fall back to the cached soul snapshot"
+        );
+    }
+
+    fn test_agent(tools: ToolRegistry) -> Agent {
+        Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            tools,
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        )
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_adds_it_when_backend_is_ollama() {
+        let mut agent = test_agent(ToolRegistry::new());
+        assert!(
+            !agent
+                .tools
+                .tool_names()
+                .contains(&"ollama_web_search".to_string()),
+            "should start without the tool"
+        );
+
+        let backend = crate::config::StandaloneBackendConfig {
+            name: "ollama".to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+        };
+        agent.reload_ollama_web_search_tool(Some(&backend));
+
+        assert!(
+            agent
+                .tools
+                .tool_names()
+                .contains(&"ollama_web_search".to_string()),
+            "should register the tool once the backend names ollama"
+        );
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_removes_it_when_backend_changes_away() {
+        let mut agent = test_agent(ToolRegistry::new());
+        let backend = crate::config::StandaloneBackendConfig {
+            name: "ollama".to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+        };
+        agent.reload_ollama_web_search_tool(Some(&backend));
+        assert!(
+            agent
+                .tools
+                .tool_names()
+                .contains(&"ollama_web_search".to_string())
+        );
+
+        agent.reload_ollama_web_search_tool(None);
+        assert!(
+            !agent
+                .tools
+                .tool_names()
+                .contains(&"ollama_web_search".to_string()),
+            "should remove the tool once no standalone backend is configured"
+        );
+    }
+
+    #[test]
+    fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        let mut agent = test_agent(registry);
+
+        let backend = crate::config::StandaloneBackendConfig {
+            name: "ollama".to_string(),
+            api_key: "key".to_string(),
+            base_url: None,
+        };
+        agent.reload_ollama_web_search_tool(Some(&backend));
+        agent.reload_ollama_web_search_tool(None);
+
+        let names = agent.tools.tool_names();
+        assert!(
+            names.contains(&"exec".to_string()),
+            "unrelated tools should survive reload"
         );
     }
 }
