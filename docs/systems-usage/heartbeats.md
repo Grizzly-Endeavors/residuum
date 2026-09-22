@@ -58,7 +58,7 @@ pulses:
 | `~` (null / omitted) | Session with no skill | Small |
 | `"<skill-name>"` | Session with that skill activated as its role | The pulse's `model_tier` (default: small) |
 
-`agent: "main"` is removed: every session fork already carries the main agent's identity and a snapshot of its memory, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse — it is never silently reinterpreted as something else.
+`agent: "main"` is removed: every session fork already carries the main agent's identity and a snapshot of its memory, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse — it is never silently reinterpreted as something else. This is logged (`residuum logs --level error`) and also raised as an owner-facing notice (a toast in the web UI, and the same message on any chat interface, via the bus's system notification channel) naming every currently rejected pulse, the field to remove, and a link to [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md). The notice fires once when a pulse first becomes rejected and again if the rejected set changes on a later edit — not on every scheduler tick, even though HEARTBEAT.yml re-validates on each one (see "Scheduling Behavior" below).
 
 ### HEARTBEAT_OK Convention
 
@@ -71,7 +71,7 @@ Every pulse-triggered session run is framed in its prompt as autonomous: no user
 ## Scheduling Behavior
 
 - The scheduler runs on a **60-second tick**, so precision is at best ~1 minute
-- HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway
+- HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway. It's also fully re-validated on every tick — a pulse rejected for using a removed option (see "Agent Routing" above), a duplicate pulse name (dropped, keeping the first definition), or an unparseable `schedule`/`active_hours` string (that pulse is skipped) — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged, still-broken file, otherwise a single bad pulse would log and toast once a minute for as long as it stays broken. A removed-option problem is logged at `error!` and links [`migrating-to-agent-sessions.md`](../guides/migrating-to-agent-sessions.md); a duplicate name or bad schedule/active_hours is logged at `warn!` and links this doc instead, since neither has anything to do with the migration.
 - Last-run timestamps are persisted to `pulse_state.json` in the workspace, so pulses resume their schedule across gateway restarts. Missing or corrupt state files are treated as empty state (logged at warn level).
 - Multiple due pulses all fire simultaneously (subject to `max_concurrent` from `[background]` config)
 

@@ -275,6 +275,32 @@ fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> Result<String, F
     .map_err(|e| FatalError::Config(format!("failed to serialize secrets: {e}")))
 }
 
+/// The variable name inside a `${VAR_NAME}` token, if `raw` has exactly that
+/// shape (a non-empty name, nothing else).
+///
+/// The single place that recognizes the `${...}` env-reference form —
+/// `resolve::expand_env_token` matches this exact shape when actually
+/// expanding a value, and `is_reference` reuses it to recognize the shape
+/// without performing a lookup.
+#[must_use]
+pub fn env_var_name(raw: &str) -> Option<&str> {
+    raw.strip_prefix("${")
+        .and_then(|s| s.strip_suffix('}'))
+        .filter(|s| !s.is_empty())
+}
+
+/// True when `value` is already a reference — `secret:<name>` or
+/// `${ENV_VAR}` — rather than a literal that should be stored as a new
+/// secret.
+///
+/// Used to keep a raw value the settings UI is about to store from
+/// accidentally being a reference to something else (see
+/// `crate::gateway::web::secrets::api_secrets_set`).
+#[must_use]
+pub fn is_reference(value: &str) -> bool {
+    value.starts_with("secret:") || env_var_name(value).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

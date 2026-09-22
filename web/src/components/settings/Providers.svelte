@@ -15,6 +15,7 @@
     invalidateProvider,
     type ModelEntry,
   } from "../../lib/models";
+  import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
   import ConfirmButton from "../ConfirmButton.svelte";
 
   let {
@@ -220,7 +221,7 @@
               >API Key{#if prov.type === "ollama"}
                 (optional){/if}</label
             >
-            {#if prov.apiKey.startsWith("secret:")}
+            {#if isSecretReference(prov.apiKey)}
               <div class="secret-stored">
                 <span class="secret-badge">Stored securely</span>
                 <button
@@ -228,6 +229,18 @@
                   onclick={() => {
                     prov.apiKey = "";
                   }}>Change</button
+                >
+              </div>
+            {:else if isEnvReference(prov.apiKey)}
+              <div class="secret-stored">
+                <span class="secret-badge"
+                  >From environment variable {envReferenceName(prov.apiKey)}</span
+                >
+                <button
+                  class="btn btn-sm btn-secondary"
+                  onclick={() => {
+                    prov.apiKey = "";
+                  }}>Replace</button
                 >
               </div>
             {:else}

@@ -4,7 +4,7 @@ Residuum's background-task system was replaced with **agent sessions**: every pu
 
 ## `agent: "main"` no longer works in `HEARTBEAT.yml`
 
-If a pulse in your `HEARTBEAT.yml` has `agent: "main"`, it will stop firing: the pulse is skipped and an error naming it is written to the log (`residuum logs --level error`) rather than being silently reinterpreted. Every other pulse in the file keeps running as normal — only the offending one is affected.
+If a pulse in your `HEARTBEAT.yml` has `agent: "main"`, it will stop firing: the pulse is skipped and an error naming it is written to the log (`residuum logs --level error`) rather than being silently reinterpreted. Every other pulse in the file keeps running as normal — only the offending one is affected. You'll also see this as an owner-facing notice — a toast in the web UI, and the same message on any chat interface you have connected — naming the rejected pulse, the field to remove, and a link back to this guide, so you don't have to go looking in the logs to notice a pulse silently stopped firing. The notice fires once when the pulse is first rejected and again only if what's rejected changes on a later edit, not on every scheduler tick.
 
 **Why it was removed:** every session now already carries the main agent's full identity (`SOUL.md`, `AGENTS.md`, `USER.md`) and a snapshot of memory when it forks, which is all `agent: "main"` used to add. There's no longer a distinct "run this on main" mode to ask for.
 
@@ -16,7 +16,7 @@ Same story, same fix: a pulse setting `include_identity` (`true` or `false`) is 
 
 ## `agent_name: "main"` no longer works for scheduled actions
 
-Calling `schedule_action` with `agent_name: "main"` (in any capitalization) is now rejected outright, with an error telling you to omit `agent_name` or name a skill instead. If you have an existing one-off action stored from before this change, it's dropped when Residuum starts up — logged as an error naming the action — rather than quietly running it as something it isn't. If you still need that action, recreate it with `schedule_action`, either without `agent_name` or with a skill name.
+Calling `schedule_action` with `agent_name: "main"` (in any capitalization) is now rejected outright, with an error telling you to omit `agent_name` or name a skill instead. If you have an existing one-off action stored from before this change, it's dropped when Residuum starts up — logged as an error naming the action, and raised once as an owner-facing notice (the same web UI toast / chat interface message the pulse notice above uses) naming every dropped action and linking back here — rather than quietly running it as something it isn't. If you still need that action, recreate it with `schedule_action`, either without `agent_name` or with a skill name.
 
 ## Group chats and other people's DMs no longer reach your agent's own conversation
 

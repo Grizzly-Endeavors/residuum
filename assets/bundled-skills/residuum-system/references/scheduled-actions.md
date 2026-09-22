@@ -50,3 +50,4 @@ Actions are checked on a 30-second tick. When `run_at` has passed:
 - The 30-second tick means fire-time precision is at best ~30 seconds.
 - IDs are generated as `action-{8 hex chars}`.
 - If the agent is offline when an action comes due, it fires on the next startup when the tick evaluates it.
+- A stored action left over from before `agent: "main"` was removed is dropped at startup load, logged as an error naming it, and raised once as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every dropped action and linking to `migrating-to-agent-sessions.md`. Unlike heartbeat pulses, this only ever happens once at startup — actions aren't re-validated on a running tick.

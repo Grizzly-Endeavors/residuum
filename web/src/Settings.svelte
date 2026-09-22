@@ -16,6 +16,7 @@
     putMcpRaw,
     storeSecret,
   } from "./lib/api";
+  import { isStoredReference } from "./lib/secrets";
   import {
     parseConfigToml,
     parseProvidersToml,
@@ -310,9 +311,21 @@
   // ── Secret management ──────────────────────────────────────────────
 
   async function storeNewSecrets() {
-    // Collect secrets that need storing (non-empty, non-secret: values)
+    // Collect secrets that need storing: non-empty values that aren't
+    // already a reference (a `secret:` lookup or a `${ENV_VAR}` expansion —
+    // see isStoredReference). A `${ENV_VAR}` value must never reach
+    // storeSecret: the secret store returns whatever it's given verbatim,
+    // so storing the reference text would hand the provider that literal
+    // placeholder as its key instead of the env var's value.
     const secretOps: {
-      field: "discord_token" | "telegram_token" | "teams_app_password" | "cloud_token";
+      field:
+        | "discord_token"
+        | "telegram_token"
+        | "teams_app_password"
+        | "cloud_token"
+        | "ws_brave_api_key"
+        | "ws_tavily_api_key"
+        | "ws_ollama_api_key";
       name: string;
     }[] = [];
 
@@ -321,11 +334,14 @@
       { field: "telegram_token" as const, name: "telegram" },
       { field: "teams_app_password" as const, name: "teams" },
       { field: "cloud_token" as const, name: "cloud_token" },
+      { field: "ws_brave_api_key" as const, name: "ws_brave" },
+      { field: "ws_tavily_api_key" as const, name: "ws_tavily" },
+      { field: "ws_ollama_api_key" as const, name: "ws_ollama" },
     ];
 
     for (const { field, name } of secretFields) {
       const val = configFields[field];
-      if (val && !val.startsWith("secret:")) {
+      if (val && !isStoredReference(val)) {
         secretOps.push({ field, name });
       }
     }
@@ -334,7 +350,7 @@
     const webhookSecretOps: { idx: number; name: string }[] = [];
     for (let i = 0; i < configFields.webhooks.length; i++) {
       const wh = configFields.webhooks[i];
-      if (wh?.secret && !wh.secret.startsWith("secret:")) {
+      if (wh?.secret && !isStoredReference(wh.secret)) {
         webhookSecretOps.push({ idx: i, name: `webhook_${wh.name}` });
       }
     }
@@ -343,7 +359,7 @@
     const provKeyOps: { idx: number; name: string }[] = [];
     for (let i = 0; i < providerEntries.length; i++) {
       const p = providerEntries[i];
-      if (p?.apiKey && !p.apiKey.startsWith("secret:") && p.type !== "ollama") {
+      if (p?.apiKey && !isStoredReference(p.apiKey) && p.type !== "ollama") {
         provKeyOps.push({ idx: i, name: p.name });
       }
     }

@@ -3,6 +3,7 @@
   import type { CloudStatusResponse } from "../../lib/types";
   import type { ConfigFields } from "../../lib/settings-toml";
   import { fetchCloudStatus, disconnectCloud, storeSecret } from "../../lib/api";
+  import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
   import ConfirmButton from "../ConfirmButton.svelte";
 
   let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
@@ -146,7 +147,7 @@
       </div>
       <div class="settings-field">
         <label for="integ-discord-token">Bot Token</label>
-        {#if fields.discord_token.startsWith("secret:")}
+        {#if isSecretReference(fields.discord_token)}
           <div class="secret-stored">
             <span class="secret-badge">Stored securely</span>
             <button
@@ -154,6 +155,18 @@
               onclick={() => {
                 fields.discord_token = "";
               }}>Change</button
+            >
+          </div>
+        {:else if isEnvReference(fields.discord_token)}
+          <div class="secret-stored">
+            <span class="secret-badge"
+              >From environment variable {envReferenceName(fields.discord_token)}</span
+            >
+            <button
+              class="btn btn-sm btn-secondary"
+              onclick={() => {
+                fields.discord_token = "";
+              }}>Replace</button
             >
           </div>
         {:else}
@@ -207,7 +220,7 @@
       </div>
       <div class="settings-field">
         <label for="integ-telegram-token">Bot Token</label>
-        {#if fields.telegram_token.startsWith("secret:")}
+        {#if isSecretReference(fields.telegram_token)}
           <div class="secret-stored">
             <span class="secret-badge">Stored securely</span>
             <button
@@ -215,6 +228,18 @@
               onclick={() => {
                 fields.telegram_token = "";
               }}>Change</button
+            >
+          </div>
+        {:else if isEnvReference(fields.telegram_token)}
+          <div class="secret-stored">
+            <span class="secret-badge"
+              >From environment variable {envReferenceName(fields.telegram_token)}</span
+            >
+            <button
+              class="btn btn-sm btn-secondary"
+              onclick={() => {
+                fields.telegram_token = "";
+              }}>Replace</button
             >
           </div>
         {:else}
@@ -289,7 +314,7 @@
       </div>
       <div class="settings-field">
         <label for="integ-teams-app-password">Client Secret</label>
-        {#if fields.teams_app_password.startsWith("secret:")}
+        {#if isSecretReference(fields.teams_app_password)}
           <div class="secret-stored">
             <span class="secret-badge">Stored securely</span>
             <button
@@ -297,6 +322,18 @@
               onclick={() => {
                 fields.teams_app_password = "";
               }}>Change</button
+            >
+          </div>
+        {:else if isEnvReference(fields.teams_app_password)}
+          <div class="secret-stored">
+            <span class="secret-badge"
+              >From environment variable {envReferenceName(fields.teams_app_password)}</span
+            >
+            <button
+              class="btn btn-sm btn-secondary"
+              onclick={() => {
+                fields.teams_app_password = "";
+              }}>Replace</button
             >
           </div>
         {:else}
@@ -525,7 +562,7 @@
 
               <div class="settings-field">
                 <label for="wh-secret-{i}">Secret</label>
-                {#if wh.secret.startsWith("secret:")}
+                {#if isSecretReference(wh.secret)}
                   <div class="secret-stored">
                     <span class="secret-badge">Stored securely</span>
                     <button
@@ -533,6 +570,18 @@
                       onclick={() => {
                         wh.secret = "";
                       }}>Change</button
+                    >
+                  </div>
+                {:else if isEnvReference(wh.secret)}
+                  <div class="secret-stored">
+                    <span class="secret-badge"
+                      >From environment variable {envReferenceName(wh.secret)}</span
+                    >
+                    <button
+                      class="btn btn-sm btn-secondary"
+                      onclick={() => {
+                        wh.secret = "";
+                      }}>Replace</button
                     >
                   </div>
                 {:else}
@@ -659,7 +708,7 @@
         {#if fields.ws_backend === "brave"}
           <div class="settings-field">
             <label for="ws-brave-key">Brave API Key</label>
-            {#if fields.ws_brave_api_key.startsWith("secret:")}
+            {#if isSecretReference(fields.ws_brave_api_key)}
               <div class="secret-stored">
                 <span class="secret-badge">Stored securely</span>
                 <button
@@ -667,6 +716,18 @@
                   onclick={() => {
                     fields.ws_brave_api_key = "";
                   }}>Change</button
+                >
+              </div>
+            {:else if isEnvReference(fields.ws_brave_api_key)}
+              <div class="secret-stored">
+                <span class="secret-badge"
+                  >From environment variable {envReferenceName(fields.ws_brave_api_key)}</span
+                >
+                <button
+                  class="btn btn-sm btn-secondary"
+                  onclick={() => {
+                    fields.ws_brave_api_key = "";
+                  }}>Replace</button
                 >
               </div>
             {:else}
@@ -688,7 +749,7 @@
         {#if fields.ws_backend === "tavily"}
           <div class="settings-field">
             <label for="ws-tavily-key">Tavily API Key</label>
-            {#if fields.ws_tavily_api_key.startsWith("secret:")}
+            {#if isSecretReference(fields.ws_tavily_api_key)}
               <div class="secret-stored">
                 <span class="secret-badge">Stored securely</span>
                 <button
@@ -696,6 +757,18 @@
                   onclick={() => {
                     fields.ws_tavily_api_key = "";
                   }}>Change</button
+                >
+              </div>
+            {:else if isEnvReference(fields.ws_tavily_api_key)}
+              <div class="secret-stored">
+                <span class="secret-badge"
+                  >From environment variable {envReferenceName(fields.ws_tavily_api_key)}</span
+                >
+                <button
+                  class="btn btn-sm btn-secondary"
+                  onclick={() => {
+                    fields.ws_tavily_api_key = "";
+                  }}>Replace</button
                 >
               </div>
             {:else}
@@ -717,7 +790,7 @@
         {#if fields.ws_backend === "ollama"}
           <div class="settings-field">
             <label for="ws-ollama-key">Ollama API Key</label>
-            {#if fields.ws_ollama_api_key.startsWith("secret:")}
+            {#if isSecretReference(fields.ws_ollama_api_key)}
               <div class="secret-stored">
                 <span class="secret-badge">Stored securely</span>
                 <button
@@ -725,6 +798,18 @@
                   onclick={() => {
                     fields.ws_ollama_api_key = "";
                   }}>Change</button
+                >
+              </div>
+            {:else if isEnvReference(fields.ws_ollama_api_key)}
+              <div class="secret-stored">
+                <span class="secret-badge"
+                  >From environment variable {envReferenceName(fields.ws_ollama_api_key)}</span
+                >
+                <button
+                  class="btn btn-sm btn-secondary"
+                  onclick={() => {
+                    fields.ws_ollama_api_key = "";
+                  }}>Replace</button
                 >
               </div>
             {:else}
