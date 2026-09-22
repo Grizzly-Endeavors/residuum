@@ -474,37 +474,54 @@ async fn execute_tool(
         )
         .await;
 
-    // Try built-in tools first, fall back to MCP servers. This ordering is the
-    // dispatch half of the collision policy: a built-in always wins its name,
-    // and the registry has already hidden any shadowed MCP tool from the model
-    // (src/mcp/CLAUDE.md), so the fallback only ever reaches genuinely
-    // MCP-owned names.
+    // A malformed name means the inference provider failed to parse the
+    // model's tool-call syntax into structured JSON (e.g. GLM's
+    // `<arg_key>`/`<arg_value>` template leaking through unparsed) — dispatch
+    // to the built-in or MCP registry would only ever produce a confusing
+    // "unknown tool" lookup failure, so short-circuit with a clear error
+    // instead of trying both registries first.
     let mut used_mcp = false;
-    let result = match resources
-        .tools
-        .execute(&tool_call.name, tool_call.arguments.clone())
-        .await
-    {
-        Err(ToolError::NotFound(_)) => {
-            tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
-            used_mcp = true;
-            resources
-                .mcp_registry
-                .read()
-                .await
-                .call_tool(&tool_call.name, tool_call.arguments.clone())
-                .await
+    let result = if crate::tools::is_plausible_tool_name(&tool_call.name) {
+        match resources
+            .tools
+            .execute(&tool_call.name, tool_call.arguments.clone())
+            .await
+        {
+            // Try built-in tools first, fall back to MCP servers. This
+            // ordering is the dispatch half of the collision policy: a
+            // built-in always wins its name, and the registry has already
+            // hidden any shadowed MCP tool from the model
+            // (src/mcp/CLAUDE.md), so the fallback only ever reaches
+            // genuinely MCP-owned names.
+            Err(ToolError::NotFound(_)) => {
+                tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
+                used_mcp = true;
+                resources
+                    .mcp_registry
+                    .read()
+                    .await
+                    .call_tool(&tool_call.name, tool_call.arguments.clone())
+                    .await
+            }
+            other => other,
         }
-        other => other,
+    } else {
+        Err(ToolError::MalformedName(
+            crate::tools::truncate_tool_name_for_display(&tool_call.name),
+        ))
     };
 
     let (output, is_error, images) = match result {
         Ok(r) => (r.output, r.is_error, r.images),
         Err(e) => {
-            let source = if used_mcp { "mcp" } else { "built-in" };
+            let source = match (&e, used_mcp) {
+                (ToolError::MalformedName(_), _) => "validation",
+                (_, true) => "mcp",
+                (_, false) => "built-in",
+            };
             tracing::warn!(
                 error = %e,
-                tool_name = %tool_call.name,
+                tool_name = %crate::tools::truncate_tool_name_for_display(&tool_call.name),
                 tool_call_id = %tool_call.id,
                 source,
                 "tool execution failed"
@@ -806,6 +823,67 @@ mod tests {
                 .await
                 .is_err(),
             "with no output endpoint there is nowhere to publish intermediate text"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_rejects_malformed_name_without_registry_lookup() {
+        // Mirrors a Fireworks/GLM response whose native `<arg_key>`/`<arg_value>`
+        // tool-call template leaked through unparsed into the structured
+        // `tool_calls` name field, instead of a clean `write_file`.
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "write_file\tcontent</arg_key><arg_value># Hello".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let tools = ToolRegistry::new();
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        execute_tool(&tool_call, &resources, &mut recent, &events).await;
+
+        let msg = recent
+            .messages()
+            .first()
+            .expect("a tool-result message should have been recorded");
+        assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
+        assert!(
+            msg.content.contains("provider likely failed to parse"),
+            "the model should be told why its call was rejected: {}",
+            msg.content
+        );
+        assert!(
+            !msg.content.starts_with("unknown tool:"),
+            "should not surface the confusing 'unknown tool' registry-lookup message: {}",
+            msg.content
         );
     }
 }
