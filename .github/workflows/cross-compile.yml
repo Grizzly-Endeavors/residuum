@@ -1,11 +1,65 @@
 name: Cross-Platform Compile Checks
 
+# Opt-in: runs on a PR carrying the `cross-compile` label, on a PR that changes
+# dependencies or the toolchain, or by hand with
+# `gh workflow run cross-compile.yml --ref <branch>`.
 on:
-  workflow_call:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+# Adding an unrelated label gets its own group, so it can't cancel a real run
+concurrency:
+  group: cross-compile-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'cross-compile' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
 
 jobs:
+  gate:
+    name: Decide whether to cross-compile
+    runs-on: lab-runners
+
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+
+      - name: Decide
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          ADDED_LABEL: ${{ github.event.label.name }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'cross-compile') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          run=false
+          reason="no cross-compile label and no dependency or toolchain change"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            run=true; reason="manual dispatch"
+          elif [ "$ACTION" = labeled ]; then
+            if [ "$ADDED_LABEL" = cross-compile ]; then
+              run=true; reason="cross-compile label added"
+            else
+              reason="unrelated label added"
+            fi
+          elif [ "$HAS_LABEL" = true ]; then
+            run=true; reason="PR has the cross-compile label"
+          elif git diff --name-only "$BASE_SHA...$HEAD_SHA" -- Cargo.toml Cargo.lock build.rs rust-toolchain.toml | grep -q .; then
+            run=true; reason="dependency or toolchain change"
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Cross-compile: $run ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+
   cross-check:
     name: Compile check (${{ matrix.target }})
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: lab-runners
 
     strategy:
@@ -32,6 +86,8 @@ jobs:
 
   macos-check:
     name: Compile check (aarch64-apple-darwin)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
 
     steps:

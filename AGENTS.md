@@ -9,31 +9,36 @@
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
-**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/AGENTS.md` for details. **Do not confuse with `relay/web/`**, which is only a marketing landing page.
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, the marketing landing page — it lives in a separate repository, not this one.
 
 ## Build & Quality Gates
 
 ### Pre-Commit Hooks
 
 Pre-commit hooks enforce quality gates:
-- **pre-commit**: auto-formats with `cargo fmt` (auto-stages changes), runs `cargo clippy`, runs `cargo test`
-- **commit-msg**: validates message format
+- **pre-commit**: auto-formats with `cargo fmt --all` (re-staging only the paths already staged), runs `cargo clippy --all-targets --all-features -- -D warnings`, runs the tests for the modules touched by the commit, and runs `cargo deny check`. When `web/src/` files are staged it also runs the web formatter, ESLint, and `svelte-check`. Finally it blocks two things outright in the staged diff: a `dbg!()` call, and an `#[allow(...)]` attribute (use `#[expect(lint, reason = "...")]` instead so stale suppressions warn).
+- **commit-msg**: advisory checks on the subject line — fails only on a subject under 10 characters, and warns on over-72-character subjects, a trailing period, or a missing conventional prefix.
 
 Bypass is **FORBIDDEN**.
 
 ### Cross-Platform Targets
 
-Release builds target Linux x86_64, Linux aarch64, and macOS aarch64 (Apple Silicon). Keep platform differences in mind:
+Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon), and Windows x86_64 (`x86_64-pc-windows-gnu`). Keep platform differences in mind:
 - **`c_char`**: `i8` on x86_64, `u8` on aarch64-linux — always use `std::ffi::c_char` in FFI signatures, never hardcode `i8`/`u8`
 - **Path separators, endianness, pointer width**: use `std` abstractions, not platform-specific assumptions
 - **FFI code**: test against the aarch64 target when touching unsafe/FFI boundaries
+
+CI does not cross-compile by default. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
 
 ### Lint Rules
 
 Clippy pedantic is enabled with strict error handling:
 - `unsafe_code` - **denied** (not `forbid`, so a genuine FFI boundary can carry a scoped `#[expect(unsafe_code, reason = "...")]` at the item level; `forbid` cannot be overridden that way)
 - `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented` - **denied**
-- `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate` - warnings
+- `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate` - **denied**
+- `print_stderr` - **denied** (residuum runs as a daemon; diagnostics go through `tracing`, not stderr)
+
+The lint set is kept in parity with the `rust-toolkit` reference project. `print_stderr` and the sqlite-vec-specific `unsafe_code` rationale are the only intentional residuum-only deltas. Supply-chain policy lives in `deny.toml`: vulnerabilities and source problems block, unmaintained and yanked crates do not. Every entry in the `advisories.ignore` list carries a comment saying why it is tolerated and what would let it be dropped.
 
 The root `clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` for code inside `#[cfg(test)]` modules and `#[test]`-attributed functions, so test code may freely use unwrap/expect/panic/dbg for readability with no suppression header needed. Adding an `#[expect(clippy::unwrap_used, ...)]` (or `expect_used`/`panic`/`dbg_macro`) to a test file is an error, not belt-and-braces — the lint is already exempt there, so the expectation never fires and becomes an unfulfilled-expectation hard error under `-D warnings`. `clippy::tests_outside_test_module` is the one exception: it is not controllable from `clippy.toml` and stays denied project-wide, so integration tests under `tests/` (which live outside a `#[cfg(test)]` module) still need an explicit `#[expect(clippy::tests_outside_test_module, reason = "...")]`. Plain helper functions at the top level of a `tests/*.rs` file (not wrapped in `#[cfg(test)]` and not themselves `#[test]`-attributed) are also not covered by the `clippy.toml` exemption and still need their own suppression if they use unwrap/expect/panic/dbg.
 
