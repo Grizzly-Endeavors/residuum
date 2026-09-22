@@ -14,7 +14,7 @@ Sessions share the MCP registry with the main agent.
 
 Every session has a category — `scheduled` (pulses, actions), `external` (webhooks), or `spawned` (`subagent_spawn`, the `learner`) — and moves through `forking` → `running` → `idle` → `completing` → `completed`. A run holds a concurrency permit only while `running`; it lingers `idle` for its category's timeout (`idle_timeout_scheduled_minutes` / `_spawned_minutes` / `_external_minutes` in `[background]`, defaulting to 2 / 10 / 30 minutes; a webhook session uses the scheduled timeout) before completing. `stop_agent` cancels a session's stop token: a running turn ends at its next checkpoint with its transcript intact, an idle one completes immediately.
 
-Each session has a stable address (e.g. `spawned-researcher-3f9a`) generated at spawn time.
+Each session has a stable address (e.g. `spawned-researcher-3f9a`) generated at spawn time. Messaging a completed session's address (see Messaging below) resumes it as a new run at the same address.
 
 ## Model Tiers
 
@@ -41,10 +41,15 @@ Four role skills ship bundled:
 
 Pulses and actions route by an `agent` field naming a skill; `agent: "main"` is removed — a pulse or action using it fails to load (pulses) or is rejected (the `schedule_action` tool) rather than silently running as something else.
 
+## Messaging
+
+`message_agent` sends text to an address, available to main and every session. Delivery depends on the target's state: `main` and a running session get it as an interrupt at the next tool-call boundary; an idle session starts another turn in the same run with it as input (so a run can span several turns, and per-turn memory staging runs after each one); a completed session is resumed as a new run at the same address, with a pointer to its previous run's episode (or run id, for `memory_get`) in the new run's context. An address that has never run reports an error pointing at `list_agents`. Every delivered message names the sender's address and category.
+
 ## Tools
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
+| `message_agent` | `to`, `message` | Send text to `main` or a session address. See Messaging above. |
 | `subagent_spawn` | `task`, `skill`, `model` | Fork a session. Returns its address immediately. Each turn's result relays through the notification router, tagged with the address. |
 | `list_agents` | *(none)* | List main plus every live session, with category, state, depth, spawner, elapsed time, and purpose. |
 | `stop_agent` | `address` | Stop a live session by address. |
@@ -63,7 +68,7 @@ Every session result flows through the pub/sub bus to the notification router. `
 
 ## Memory
 
-A session merges what it learned into global memory when it completes — full model in [memory-system.md](memory-system.md#agent-sessions-and-memory). Short version: the run is checked against the same observer thresholds the main agent uses; crossing the force threshold mid-run stages observations locally; on completion the run produces an episode (tagged with its session address, run id, category) unless it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor`. The transcript is kept in the session store either way, and the run's metadata records the episode id once merged.
+A session merges what it learned into global memory when it completes — full model in [memory-system.md](memory-system.md#agent-sessions-and-memory). Short version: after every turn in the run, its accumulated messages are checked against the same observer thresholds the main agent uses; crossing the force threshold stages observations locally, for each turn a multi-turn run has, not just once; on completion the run produces an episode (tagged with its session address, run id, category) unless it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under the configurable `episode_skip_token_floor`. The transcript is kept in the session store either way, and the run's metadata records the episode id once merged.
 
 ## Concurrency
 
@@ -76,6 +81,6 @@ Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json
 ## Gotchas
 
 - A session's fork always carries the main agent's full identity now — there is no minimal-context mode and no `include_identity` flag to opt in or out of.
-- Tools excluded from sessions: `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `switch_endpoint` (no nesting yet, no action scheduling from a session).
+- Tools excluded from sessions: `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `switch_endpoint` (no nesting yet, no action scheduling from a session). `message_agent` is available to sessions.
 - The `memory/sessions/` directory is not created at bootstrap — it appears only after the first session run.
 - A completed session is no longer listed by `list_agents`, but its address and transcript remain in the session store.
