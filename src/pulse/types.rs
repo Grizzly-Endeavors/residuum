@@ -590,6 +590,12 @@ pulses:
         );
         for pulse in &cfg.pulses {
             assert!(pulse.enabled, "built-in pulses ship enabled");
+            validate_pulse(pulse).unwrap_or_else(|e| {
+                panic!(
+                    "bundled pulse '{}' must not use a removed option: {e}",
+                    pulse.name
+                )
+            });
             parse_schedule_duration(&pulse.schedule).unwrap();
             if let Some(hours) = &pulse.active_hours {
                 parse_active_hours(hours).unwrap();
