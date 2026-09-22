@@ -673,7 +673,11 @@ async fn run_session(
         );
         match wait_idle(&stop_token, idle_timeout, &mut interrupt_rx).await {
             IdleOutcome::Stopped => {
+                // An explicit stop ends the run early whatever its last turn
+                // did, so report it as cancelled; an idle timeout keeps the
+                // last turn's own outcome.
                 tracing::info!("session stopped while idle");
+                status = AgentResultStatus::Cancelled;
                 break;
             }
             IdleOutcome::TimedOut => {
@@ -2705,6 +2709,56 @@ mod tests {
         assert!(
             turn_ids.iter().all(|id| *id == expected_turn_id),
             "turn events should share the turn's id, got {turn_ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_an_idle_session_reports_cancelled() {
+        let (runtime, mut results) = test_runtime_with_idle_window(Duration::from_hours(1)).await;
+        let address = SessionAddress::from("spawned-researcher-idle-stop");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        let mut request = sample_request(address.as_ref());
+        request.spawner = None;
+        runtime.spawn(
+            request,
+            Some(SubAgentResources {
+                provider: Box::new(ToolThenAnswerProvider {
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
+            }),
+        );
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while runtime.registry.get(&address).map(|s| s.state) != Some(SessionState::Idle) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the session should go idle after its first turn");
+        assert!(runtime.registry.stop(&address));
+
+        let result = tokio::time::timeout(Duration::from_secs(10), results.recv())
+            .await
+            .expect("the stopped session should publish its result")
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(result.status, AgentResultStatus::Cancelled),
+            "an explicit stop while idle is a cancellation, got {:?}",
+            result.status
         );
     }
 

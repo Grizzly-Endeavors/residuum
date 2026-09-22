@@ -44,7 +44,7 @@ A session run moves through: `forking` → `running` → `idle` → `completing`
 - **completing** — the idle timeout elapsed, or the session was stopped via `stop_agent`. A completing run no longer accepts messages into itself; one addressed to it is queued for the resume that follows once it clears (see [Messaging](#messaging)).
 - **completed** — the run's final transcript and metadata are recorded in the session store, and the result is delivered. The session is no longer listed by `list_agents`, though its address stays meaningful: a message to it starts a new run at the same address (see [Messaging](#messaging)).
 
-Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing.
+Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing. Either way the run is reported as cancelled; a run that simply idles out keeps its last turn's outcome.
 
 ### Idle Timeouts
 
@@ -241,6 +241,6 @@ A sidebar message is delivered like any agent message, at hop count 0: an interr
 - `completed` — one page of completed runs from the session store, newest first (by start time, then run id).
 - `next_cursor` — an opaque string to pass back as `before` for the next page, or `null` on the last page.
 
-Query parameters: `category` (`scheduled` | `external` | `spawned`; filters both lists), `limit` (completed runs per page, 1–200, default 50), `before` (a `next_cursor` from a previous response). An unknown category, an out-of-range limit, or a cursor the server didn't issue is a `400`. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
+Query parameters: `category` (`scheduled` | `external` | `spawned`; filters both lists), `limit` (completed runs per page, 1–200, default 50), `before` (a `next_cursor` from a previous response). An unknown category, an out-of-range limit, or a malformed cursor is a `400`; pass back only a `next_cursor` the server returned. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
 
 **`GET /api/sessions/runs/{run_id}/transcript`** returns `{ session: SessionSummary, messages: RecentMessage[] }`. `messages` has the same shape `GET /api/chat/history` returns, so the chat's message components render it. A live run's transcript is read from its incremental transcript file, current to the last message produced, and `session` reflects its live state; a completed run's comes from its final record. Runs don't record per-message times, so every message carries the run's start time (in the configured timezone, like chat history). A run id containing anything but ASCII letters, digits, `-`, and `_` is a `400`; an unknown run is a `404`.
