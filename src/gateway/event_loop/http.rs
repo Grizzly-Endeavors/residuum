@@ -39,6 +39,7 @@ pub fn build_gateway_app(
     config_api_state: web::ConfigApiState,
     update_api_state: web::update::UpdateApiState,
     tracing_api_state: web::tracing_api::TracingApiState,
+    workbench_serving: crate::workbench::server::WorkbenchServing,
 ) -> axum::Router {
     use axum::routing::{get, post};
 
@@ -99,6 +100,8 @@ pub fn build_gateway_app(
         web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
             dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
                 .workbench_dir(),
+            serving: workbench_serving,
+            tunnel_status_rx: state.tunnel_status_rx.clone(),
         });
 
     axum::Router::new()

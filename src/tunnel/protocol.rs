@@ -7,6 +7,15 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Which local listener a proxied request is for. Requests with no surface go
+/// to the main gateway listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Surface {
+    /// The workbench tools listener, for `{user}.workbench.<relay>` hosts.
+    Workbench,
+}
+
 /// A single frame exchanged over the tunnel WebSocket connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -15,6 +24,12 @@ pub(crate) enum TunnelFrame {
     Connected {
         user_id: String,
         keepalive_interval_secs: u64,
+        /// Public origin of this user's web UI through the relay.
+        #[serde(default)]
+        origin: Option<String>,
+        /// Public origin of this user's workbench tools through the relay.
+        #[serde(default)]
+        workbench_origin: Option<String>,
     },
     /// Keepalive ping (relay → client).
     Ping,
@@ -27,6 +42,8 @@ pub(crate) enum TunnelFrame {
         path: String,
         headers: HashMap<String, String>,
         body: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        surface: Option<Surface>,
     },
     /// Proxied HTTP response (client → relay).
     HttpResponse {
@@ -58,11 +75,13 @@ mod tests {
         let frame = TunnelFrame::Connected {
             user_id: "bear".to_string(),
             keepalive_interval_secs: 30,
+            origin: None,
+            workbench_origin: None,
         };
         let json = serde_json::to_string(&frame).unwrap();
         let parsed: TunnelFrame = serde_json::from_str(&json).unwrap();
         assert!(
-            matches!(parsed, TunnelFrame::Connected { user_id, keepalive_interval_secs } if user_id == "bear" && keepalive_interval_secs == 30),
+            matches!(parsed, TunnelFrame::Connected { user_id, keepalive_interval_secs, .. } if user_id == "bear" && keepalive_interval_secs == 30),
             "connected frame should round-trip"
         );
     }
@@ -86,6 +105,31 @@ mod tests {
     }
 
     #[test]
+    fn relay_frames_parse_with_and_without_new_fields() {
+        let old = r#"{"type":"http_request","request_id":"r","method":"GET","path":"/","headers":{},"body":null}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(old).unwrap(),
+            TunnelFrame::HttpRequest { surface: None, .. }
+        ));
+        let workbench = r#"{"type":"http_request","request_id":"r","method":"GET","path":"/chart/","headers":{},"body":null,"surface":"workbench"}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(workbench).unwrap(),
+            TunnelFrame::HttpRequest {
+                surface: Some(Surface::Workbench),
+                ..
+            }
+        ));
+        let connected = r#"{"type":"connected","user_id":"bear","keepalive_interval_secs":30,"instance":"laptop","origin":"https://bear.agent-residuum.com","workbench_origin":"https://bear.workbench.agent-residuum.com"}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(connected).unwrap(),
+            TunnelFrame::Connected {
+                workbench_origin: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn round_trip_http_request() {
         let mut headers = HashMap::new();
         headers.insert("content-type".to_string(), "application/json".to_string());
@@ -95,6 +139,7 @@ mod tests {
             path: "/api/test".to_string(),
             headers,
             body: Some("eyJrZXkiOiJ2YWx1ZSJ9".to_string()),
+            surface: None,
         };
         let json = serde_json::to_string(&frame).unwrap();
         let parsed: TunnelFrame = serde_json::from_str(&json).unwrap();
@@ -104,6 +149,7 @@ mod tests {
             path,
             headers: parsed_headers,
             body,
+            ..
         } = parsed
         {
             assert_eq!(request_id, "req-1");

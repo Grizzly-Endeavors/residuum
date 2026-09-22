@@ -3,7 +3,8 @@
   import { SvelteSet } from "svelte/reactivity";
   import { ws } from "../lib/ws.svelte";
   import { router } from "../lib/router.svelte";
-  import { deleteWorkbenchTool, fetchWorkbenchTools } from "../lib/api";
+  import { deleteWorkbenchTool, fetchWorkbenchInfo, fetchWorkbenchTools } from "../lib/api";
+  import { resolveToolsOrigin, type ToolsOrigin } from "../lib/workbench";
   import { userErrorMessage } from "../lib/errors";
   import { notifications } from "../lib/notifications.svelte";
   import { relativeTime } from "../lib/time";
@@ -19,6 +20,7 @@
   const CHANGE_GLOW_MS = 2400;
 
   let tools = $state<WorkbenchToolSummary[]>([]);
+  let toolsOrigin = $state<ToolsOrigin | null>(null);
   let loadState = $state<"loading" | "ready" | "failed">("loading");
   let loadError = $state("");
   let now = $state(Date.now());
@@ -30,7 +32,9 @@
 
   async function load(): Promise<void> {
     try {
-      tools = await fetchWorkbenchTools();
+      const [list, info] = await Promise.all([fetchWorkbenchTools(), fetchWorkbenchInfo()]);
+      tools = list;
+      toolsOrigin = resolveToolsOrigin(info, window.location);
       loadState = "ready";
     } catch (err) {
       loadError = userErrorMessage(err, { action: "Couldn't load the workbench." });
@@ -110,6 +114,7 @@
       <WorkbenchTool
         name={tool}
         title={currentTitle}
+        origin={toolsOrigin}
         {full}
         onBack={() => router.openWorkbench(null)}
         onSetFull={(next) => router.setWorkbenchFull(next)}
@@ -152,6 +157,9 @@
           <p class="workbench-note">
             Tools Residuum built for you. Each one updates live while the agent edits it.
           </p>
+          {#if toolsOrigin !== null && !toolsOrigin.ok}
+            <p class="workbench-unavailable" role="alert">{toolsOrigin.reason}</p>
+          {/if}
           <ul class="workbench-list">
             {#each tools as item (item.name)}
               <li class="workbench-slab" class:just-changed={justChanged.has(item.name)}>

@@ -1,7 +1,8 @@
 // ── Workbench bridge ─────────────────────────────────────────────────
 //
-// Workbench tools run in a sandboxed frame with an opaque origin, so they
-// can't call the gateway themselves. The SDK injected into each tool page
+// Workbench tools run on their own origin (the tools listener), so they can't
+// call the gateway's API themselves: another origin can't read its responses,
+// and the gateway rejects its writes. The SDK injected into each tool page
 // (assets/workbench/sdk.js) posts requests here instead, and this bridge
 // makes them on the tool's behalf. This is the one place that decides what a
 // tool may reach: most of the API is open, but routes that change secrets,
@@ -221,6 +222,8 @@ export class WorkbenchBridge {
 
   constructor(
     private readonly tool: string,
+    /** The tools origin; the only origin the bridge listens to or posts to. */
+    private readonly frameOrigin: string,
     private readonly target: () => FrameTarget | null,
     private readonly deps: BridgeDeps,
   ) {}
@@ -247,10 +250,13 @@ export class WorkbenchBridge {
     this.subscribed = false;
   }
 
-  /** Handle a `message` event. Ignores anything not from the tool's frame. */
-  async handleMessage(source: unknown, data: unknown): Promise<void> {
+  /**
+   * Handle a `message` event. Ignores anything not from the tool's frame, or
+   * from a page the frame navigated to on another origin.
+   */
+  async handleMessage(source: unknown, origin: string, data: unknown): Promise<void> {
     const frame = this.target();
-    if (frame === null || source !== frame) return;
+    if (frame === null || source !== frame || origin !== this.frameOrigin) return;
     const request = parseToolRequest(data);
     if (request === null) return;
 
@@ -349,8 +355,7 @@ export class WorkbenchBridge {
   }
 
   private post(message: Record<string, unknown>, transfer: Transferable[] = []): void {
-    // The frame's origin is opaque, so "*" is the only target that reaches
-    // it. Messages go to this frame's window object, not to any origin.
-    this.target()?.postMessage({ tag: BRIDGE_TAG, ...message }, "*", transfer);
+    // If the frame navigated to another origin, the browser drops this.
+    this.target()?.postMessage({ tag: BRIDGE_TAG, ...message }, this.frameOrigin, transfer);
   }
 }

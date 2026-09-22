@@ -334,3 +334,14 @@
     opacity: 0.8;
   }
 }
+
+.workbench-unavailable {
+  margin: 0 0 var(--s-5);
+  padding: var(--s-3) var(--s-4);
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  color: var(--text);
+  background: var(--error-bg);
+  border: 1px solid rgba(192, 57, 43, 0.35);
+  border-radius: var(--radius-sm);
+}

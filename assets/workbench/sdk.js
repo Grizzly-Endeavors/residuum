@@ -1,8 +1,8 @@
-// Residuum workbench SDK, injected into every workbench tool page.
+// Residuum workbench SDK, injected into every HTML page a workbench tool serves.
 //
-// Tools run in a sandboxed frame with an opaque origin, so they cannot call
-// the gateway directly. Every call is relayed over postMessage to the
-// Residuum web UI hosting the frame, which enforces what tools may reach.
+// Tools run on their own origin, so they cannot call the gateway directly.
+// Every call is relayed over postMessage to the Residuum web UI hosting the
+// frame, which enforces what tools may reach.
 (() => {
   "use strict";
   if (window.residuum) return;

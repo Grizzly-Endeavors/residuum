@@ -1,125 +1,93 @@
-//! Workbench API: list, serve, and delete the agent's workbench tools.
+//! Workbench API: list and delete the agent's workbench tools, and say where
+//! they are served.
 //!
-//! Tool pages are served with a CSP `sandbox` header, so a page runs in an
-//! opaque origin whether the web UI frames it or someone opens its URL
-//! directly: it cannot read gateway responses, and the cross-site guard
-//! rejects anything state-changing it sends. Tools reach the gateway only
-//! through the web UI's bridge (`web/src/lib/workbench-bridge.ts`), which
-//! decides what they may call.
+//! Tools themselves are never served here. They run on the tools listener
+//! (`crate::workbench::server`), a separate origin, so an agent-written page
+//! can't call this API directly; it goes through the web UI's bridge
+//! (`web/src/lib/workbench-bridge.ts`), which decides what tools may call.
 
 use std::path::PathBuf;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Json, Response};
-use axum::routing::get;
+use axum::http::StatusCode;
+use axum::response::Json;
+use axum::routing::{delete, get};
 use serde::Serialize;
 
-use crate::gateway::protocol::WorkbenchToolSummary;
-use crate::workbench::{self, ToolDeleteError, ToolPageError};
-
-/// Sandbox flags for tool pages. Must match the `sandbox` attribute on the
-/// web UI's tool frame; the browser applies the intersection of both.
-const TOOL_PAGE_CSP: &str =
-    "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+use crate::gateway::protocol::{WorkbenchInfo, WorkbenchRelayOrigins, WorkbenchToolSummary};
+use crate::tunnel::TunnelStatus;
+use crate::workbench::server::WorkbenchServing;
+use crate::workbench::{self, ToolDeleteError};
 
 #[derive(Clone)]
 pub(crate) struct WorkbenchApiState {
     /// `<workspace>/workbench`.
     pub dir: PathBuf,
+    pub serving: WorkbenchServing,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
 }
 
 /// Response from `DELETE /api/workbench/tools/{name}`.
 #[derive(Debug, Serialize)]
 struct DeleteToolResponse {
-    /// File names removed: the page and any `<name>.*` data files.
+    /// Entries removed: the page or folder (`name/`) and any `<name>.*` data files.
     removed: Vec<String>,
 }
 
 pub(crate) fn workbench_api_router(state: WorkbenchApiState) -> axum::Router {
     axum::Router::new()
+        .route("/api/workbench/info", get(api_workbench_info))
         .route("/api/workbench/tools", get(api_workbench_tools))
         .route(
             "/api/workbench/tools/{name}",
-            get(api_workbench_tool_page).delete(api_workbench_tool_delete),
+            delete(api_workbench_tool_delete),
         )
         .with_state(state)
+}
+
+/// `GET /api/workbench/info` — where tools are served, locally and through
+/// the relay. The web UI picks the relay origin when it is itself being
+/// viewed through the relay, and the local port otherwise.
+async fn api_workbench_info(State(state): State<WorkbenchApiState>) -> Json<WorkbenchInfo> {
+    let (port, unavailable_reason) = match &state.serving {
+        WorkbenchServing::Running { port } => (Some(*port), None),
+        WorkbenchServing::Unavailable { reason } => (None, Some(reason.clone())),
+    };
+    let relay = match &*state.tunnel_status_rx.borrow() {
+        TunnelStatus::Connected {
+            origin: Some(ui_origin),
+            workbench_origin: Some(tools_origin),
+            ..
+        } => Some(WorkbenchRelayOrigins {
+            ui_origin: ui_origin.clone(),
+            tools_origin: tools_origin.clone(),
+        }),
+        TunnelStatus::Connected { .. } | TunnelStatus::Connecting | TunnelStatus::Disconnected => {
+            None
+        }
+    };
+    Json(WorkbenchInfo {
+        port,
+        unavailable_reason,
+        relay,
+    })
 }
 
 /// `GET /api/workbench/tools` — every tool, most recently modified first.
 async fn api_workbench_tools(
     State(state): State<WorkbenchApiState>,
 ) -> Result<Json<Vec<WorkbenchToolSummary>>, (StatusCode, String)> {
-    workbench::list_tools(&state.dir).await.map(Json).map_err(|e| {
-        tracing::error!(dir = %state.dir.display(), error = %e, "failed to list workbench tools");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't read the workbench folder. Check that the workspace is readable and try again."
-                .to_string(),
-        )
-    })
-}
-
-/// `GET /api/workbench/tools/{name}` — the tool's page, SDK injected, sandboxed.
-async fn api_workbench_tool_page(
-    State(state): State<WorkbenchApiState>,
-    Path(name): Path<String>,
-) -> Response {
-    match workbench::read_tool_page(&state.dir, &name).await {
-        Ok(page) => {
-            let mut resp = page.into_response();
-            let headers = resp.headers_mut();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            headers.insert(
-                header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(TOOL_PAGE_CSP),
-            );
-            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            headers.insert(
-                header::X_CONTENT_TYPE_OPTIONS,
-                HeaderValue::from_static("nosniff"),
-            );
-            resp
-        }
-        Err(e) => {
-            let status = match &e {
-                ToolPageError::InvalidName(_) => StatusCode::BAD_REQUEST,
-                ToolPageError::NotFound(_) => StatusCode::NOT_FOUND,
-                ToolPageError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
-                ToolPageError::Io { .. } => {
-                    tracing::error!(tool = %name, error = %e, "failed to serve workbench tool");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
-            };
-            (status, error_page(&e.to_string())).into_response()
-        }
-    }
-}
-
-/// A minimal page for errors, since the response lands in the tool frame.
-fn error_page(message: &str) -> (header::HeaderMap, String) {
-    let mut headers = header::HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("sandbox; default-src 'none'; style-src 'unsafe-inline'"),
-    );
-    let escaped = message
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    (
-        headers,
-        format!(
-            "<!doctype html><meta charset=utf-8><body style=\"font:14px sans-serif;color:#a8a29e;background:#12100e;padding:2rem\"><p>{escaped}</p></body>"
-        ),
-    )
+    workbench::list_tools(&state.dir)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!(dir = %state.dir.display(), error = %e, "failed to list workbench tools");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Couldn't read the workbench folder. Check that the workspace is readable and try again."
+                    .to_string(),
+            )
+        })
 }
 
 /// `DELETE /api/workbench/tools/{name}` — remove the tool and its data files.
@@ -151,72 +119,100 @@ async fn api_workbench_tool_delete(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
+    use axum::response::Response;
     use tower::ServiceExt;
 
     use super::*;
 
-    fn app(dir: &std::path::Path) -> axum::Router {
+    fn app(dir: &std::path::Path, serving: WorkbenchServing, status: TunnelStatus) -> axum::Router {
+        let (_tx, rx) = tokio::sync::watch::channel(status);
         workbench_api_router(WorkbenchApiState {
             dir: dir.to_path_buf(),
+            serving,
+            tunnel_status_rx: rx,
         })
     }
 
-    async fn body_text(resp: Response) -> String {
+    async fn body_json(resp: Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        String::from_utf8(bytes.to_vec()).unwrap()
+        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
-    async fn tool_page_is_sandboxed_and_carries_the_sdk() {
+    async fn info_reports_local_port_and_relay_origins() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("chart.html"),
-            "<html><head><title>Chart</title></head></html>",
+        let connected = TunnelStatus::Connected {
+            user_id: "bear".into(),
+            origin: Some("https://bear.agent-residuum.com".into()),
+            workbench_origin: Some("https://bear.workbench.agent-residuum.com".into()),
+        };
+        let resp = app(
+            dir.path(),
+            WorkbenchServing::Running { port: 7702 },
+            connected,
         )
+        .oneshot(
+            Request::get("/api/workbench/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
         .unwrap();
-        let resp = app(dir.path())
-            .oneshot(
-                Request::get("/api/workbench/tools/chart")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let info = body_json(resp).await;
+        assert_eq!(info.get("port"), Some(&serde_json::json!(7702)));
         assert_eq!(
-            resp.headers().get(header::CONTENT_SECURITY_POLICY).unwrap(),
-            TOOL_PAGE_CSP
+            info.pointer("/relay/tools_origin"),
+            Some(&serde_json::json!(
+                "https://bear.workbench.agent-residuum.com"
+            ))
         );
-        assert!(
-            !TOOL_PAGE_CSP.contains("allow-same-origin"),
-            "tools must never share the gateway's origin"
-        );
-        assert!(body_text(resp).await.contains("window.residuum"));
     }
 
     #[tokio::test]
-    async fn missing_and_invalid_tools_get_sandboxed_error_pages() {
+    async fn info_reports_why_tools_are_unavailable() {
         let dir = tempfile::tempdir().unwrap();
-        for (path, status) in [
-            ("/api/workbench/tools/nope", StatusCode::NOT_FOUND),
-            ("/api/workbench/tools/Bad.Name", StatusCode::BAD_REQUEST),
-        ] {
-            let resp = app(dir.path())
-                .oneshot(Request::get(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), status, "{path}");
-            assert!(
-                resp.headers()
-                    .get(header::CONTENT_SECURITY_POLICY)
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("sandbox"),
-            );
-        }
+        let resp = app(
+            dir.path(),
+            WorkbenchServing::Unavailable {
+                reason: "port 7702 is in use".into(),
+            },
+            TunnelStatus::Disconnected,
+        )
+        .oneshot(
+            Request::get("/api/workbench/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let info = body_json(resp).await;
+        assert_eq!(info.get("port"), Some(&serde_json::Value::Null));
+        assert_eq!(info.get("relay"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            info.get("unavailable_reason"),
+            Some(&serde_json::json!("port 7702 is in use"))
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_pages_are_not_served_on_the_api_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("chart.html"), "<title>Chart</title>").unwrap();
+        let resp = app(
+            dir.path(),
+            WorkbenchServing::Running { port: 7702 },
+            TunnelStatus::Disconnected,
+        )
+        .oneshot(
+            Request::get("/api/workbench/tools/chart")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]
@@ -224,8 +220,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("chart.html"), "<title>My Chart</title>").unwrap();
         std::fs::write(dir.path().join("chart.state.json"), "{}").unwrap();
+        let router = app(
+            dir.path(),
+            WorkbenchServing::Running { port: 7702 },
+            TunnelStatus::Disconnected,
+        );
 
-        let listing = app(dir.path())
+        let listing = router
+            .clone()
             .oneshot(
                 Request::get("/api/workbench/tools")
                     .body(Body::empty())
@@ -234,14 +236,14 @@ mod tests {
             .await
             .unwrap();
         let tools: Vec<WorkbenchToolSummary> =
-            serde_json::from_str(&body_text(listing).await).unwrap();
+            serde_json::from_value(body_json(listing).await).unwrap();
         let [tool] = tools.as_slice() else {
             panic!("expected exactly one tool, got {tools:?}");
         };
-        assert_eq!(tool.name, "chart");
         assert_eq!(tool.title, "My Chart");
 
-        let deleted = app(dir.path())
+        let deleted = router
+            .clone()
             .oneshot(
                 Request::delete("/api/workbench/tools/chart")
                     .body(Body::empty())
@@ -250,13 +252,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::OK);
-        let body: serde_json::Value = serde_json::from_str(&body_text(deleted).await).unwrap();
         assert_eq!(
-            body.get("removed"),
+            body_json(deleted).await.get("removed"),
             Some(&serde_json::json!(["chart.html", "chart.state.json"]))
         );
 
-        let deleted_again = app(dir.path())
+        let deleted_again = router
             .oneshot(
                 Request::delete("/api/workbench/tools/chart")
                     .body(Body::empty())

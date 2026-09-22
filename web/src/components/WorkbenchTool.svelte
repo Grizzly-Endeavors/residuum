@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { workbenchToolPageUrl } from "../lib/api";
+  import { toolUrl, type ToolsOrigin } from "../lib/workbench";
   import { notifications } from "../lib/notifications.svelte";
   import { WorkbenchBridge } from "../lib/workbench-bridge";
   import { Icon } from "../lib/icons";
@@ -9,22 +9,25 @@
   let {
     name,
     title,
+    origin,
     full,
     onBack,
     onSetFull,
   }: {
     name: string;
     title: string;
+    /** Where tools are served, or null while that is still loading. */
+    origin: ToolsOrigin | null;
     /** The tool fills the window with the Residuum UI hidden. */
     full: boolean;
     onBack: () => void;
     onSetFull: (full: boolean) => void;
   } = $props();
 
-  // Must match TOOL_PAGE_CSP in src/gateway/web/workbench.rs; the browser
-  // applies the intersection of the two. Never add allow-same-origin: it
-  // would give the tool the web UI's origin and the whole API with it.
-  const SANDBOX = "allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+  // The tool runs on its own origin (the tools listener), so allow-same-origin
+  // gives it that origin (browser storage, relative files), never the UI's.
+  const SANDBOX =
+    "allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads";
 
   let frame: HTMLIFrameElement | undefined = $state();
   let headingEl: HTMLHeadingElement | undefined = $state();
@@ -33,7 +36,7 @@
   let removed = $state(false);
   let bridge: WorkbenchBridge | null = null;
 
-  let src = $derived(`${workbenchToolPageUrl(name)}?v=${version}`);
+  let src = $derived(origin?.ok ? `${toolUrl(origin.origin, name)}?v=${version}` : null);
 
   // Reloads keep the frame visible, so an agent editing the tool reads as the
   // page changing in place rather than flashing out and back.
@@ -42,8 +45,11 @@
     version += 1;
   }
 
-  onMount(() => {
-    const active = new WorkbenchBridge(name, () => frame?.contentWindow ?? null, {
+  // The bridge only talks to the tools origin, so it starts once that's known.
+  $effect(() => {
+    const frameOrigin = origin?.ok ? origin.origin : null;
+    if (frameOrigin === null) return;
+    const active = new WorkbenchBridge(name, frameOrigin, () => frame?.contentWindow ?? null, {
       origin: window.location.origin,
       fetch: (input, init) => window.fetch(input, init),
       hasUserActivation: () => navigator.userActivation.isActive,
@@ -63,21 +69,23 @@
     active.start();
     bridge = active;
 
-    const onMessage = (event: MessageEvent) => void active.handleMessage(event.source, event.data);
+    const onMessage = (event: MessageEvent) =>
+      void active.handleMessage(event.source, event.origin, event.data);
     window.addEventListener("message", onMessage);
 
-    const stopFrames = ws.onFrame((msg) => {
-      if (msg.type === "workbench_tool_updated" && msg.name === name) reload();
-      else if (msg.type === "workbench_tool_removed" && msg.name === name) removed = true;
-    });
-
     return () => {
-      stopFrames();
       window.removeEventListener("message", onMessage);
       active.stop();
       bridge = null;
     };
   });
+
+  onMount(() =>
+    ws.onFrame((msg) => {
+      if (msg.type === "workbench_tool_updated" && msg.name === name) reload();
+      else if (msg.type === "workbench_tool_removed" && msg.name === name) removed = true;
+    }),
+  );
 
   function frameLoaded() {
     bridge?.documentChanged();
@@ -161,25 +169,32 @@
       <div class="workbench-empty workbench-removed" role="status">
         <h2 class="workbench-empty-title">This tool was deleted</h2>
         <p>
-          Its page is gone from the workbench folder. If the agent is rebuilding it, it reappears
-          here when it's written again.
+          It's gone from the workbench folder. If the agent is rebuilding it, it reappears here when
+          it's written again.
         </p>
         <button type="button" class="btn btn-secondary btn-sm" onclick={onBack}
           >Back to the workbench</button
         >
       </div>
     {/if}
-    <iframe
-      bind:this={frame}
-      class="workbench-frame"
-      class:loaded
-      class:hidden={removed}
-      {src}
-      {title}
-      sandbox={SANDBOX}
-      allow="clipboard-write; fullscreen"
-      referrerpolicy="no-referrer"
-      onload={frameLoaded}
-    ></iframe>
+    {#if origin !== null && !origin.ok}
+      <div class="workbench-empty workbench-removed" role="alert">
+        <h2 class="workbench-empty-title">Tools can't open right now</h2>
+        <p>{origin.reason}</p>
+      </div>
+    {:else if src !== null}
+      <iframe
+        bind:this={frame}
+        class="workbench-frame"
+        class:loaded
+        class:hidden={removed}
+        {src}
+        {title}
+        sandbox={SANDBOX}
+        allow="clipboard-write; fullscreen"
+        referrerpolicy="no-referrer"
+        onload={frameLoaded}
+      ></iframe>
+    {/if}
   </div>
 </div>

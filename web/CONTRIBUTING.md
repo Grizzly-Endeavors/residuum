@@ -89,7 +89,8 @@ web/
 │       ├── routes.ts             # URL <-> location: session, workspace flag, settings section, workbench tool
 │       ├── router.svelte.ts      # Current location; push/replace history, back/forward
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
-│       ├── workbench-bridge.ts   # What workbench tools may call, relayed from their sandboxed frames
+│       ├── workbench-bridge.ts   # What workbench tools may call, relayed from their frames on the tools origin
+│       ├── workbench.ts          # Where tools are served: relay origin or this host on the tools port
 │       ├── time.ts               # Relative times ("5m ago")
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages

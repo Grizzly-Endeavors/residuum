@@ -11,6 +11,7 @@ import {
 import type { ServerMessage } from "./types";
 
 const ORIGIN = "https://bear.agent-residuum.com";
+const TOOLS = "https://bear.workbench.agent-residuum.com";
 
 describe("checkToolRequest", () => {
   it.each([
@@ -145,7 +146,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     },
     ...overrides,
   };
-  const bridge = new WorkbenchBridge("chart", () => frame, deps);
+  const bridge = new WorkbenchBridge("chart", TOOLS, () => frame, deps);
   bridge.start();
   return { bridge, frame, deps, emit: (msg) => listener?.(msg), sent, escapes: () => escapes };
 }
@@ -161,16 +162,17 @@ const fetchMsg = (path: string, method = "GET"): Record<string, unknown> => ({
 });
 
 describe("WorkbenchBridge", () => {
-  it("ignores messages from anything but the tool's frame", async () => {
+  it("ignores messages from anything but the tool's frame on the tools origin", async () => {
     const h = harness();
-    await h.bridge.handleMessage({}, fetchMsg("/api/status"));
+    await h.bridge.handleMessage({}, TOOLS, fetchMsg("/api/status"));
+    await h.bridge.handleMessage(h.frame, "https://evil.example", fetchMsg("/api/status"));
     expect(h.deps.fetch).not.toHaveBeenCalled();
     expect(h.frame.posted).toEqual([]);
   });
 
   it("relays an allowed request and its response", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, fetchMsg("/api/status"));
+    await h.bridge.handleMessage(h.frame, TOOLS, fetchMsg("/api/status"));
     expect(h.deps.fetch).toHaveBeenCalledWith(
       "/api/status",
       expect.objectContaining({ method: "GET" }),
@@ -184,7 +186,7 @@ describe("WorkbenchBridge", () => {
 
   it("answers a blocked request with a 403 without calling the gateway", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, fetchMsg("/api/shutdown", "POST"));
+    await h.bridge.handleMessage(h.frame, TOOLS, fetchMsg("/api/shutdown", "POST"));
     expect(h.deps.fetch).not.toHaveBeenCalled();
     const result = h.frame.posted[0]?.result as RelayedResponse;
     expect(result.status).toBe(403);
@@ -193,13 +195,13 @@ describe("WorkbenchBridge", () => {
 
   it("reports a network failure as an error", async () => {
     const h = harness({ fetch: vi.fn(() => Promise.reject(new TypeError("offline"))) });
-    await h.bridge.handleMessage(h.frame, fetchMsg("/api/status"));
+    await h.bridge.handleMessage(h.frame, TOOLS, fetchMsg("/api/status"));
     expect(h.frame.posted[0]).toHaveProperty("error");
   });
 
   it("sends to the agent after a user gesture, labelled with the tool", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, {
+    await h.bridge.handleMessage(h.frame, TOOLS, {
       tag: BRIDGE_TAG,
       kind: "send",
       id: "s1",
@@ -211,7 +213,7 @@ describe("WorkbenchBridge", () => {
 
   it("refuses to message the agent without a user gesture", async () => {
     const h = harness({ hasUserActivation: () => false });
-    await h.bridge.handleMessage(h.frame, {
+    await h.bridge.handleMessage(h.frame, TOOLS, {
       tag: BRIDGE_TAG,
       kind: "send",
       id: "s1",
@@ -223,7 +225,7 @@ describe("WorkbenchBridge", () => {
 
   it("refuses to message the agent while disconnected", async () => {
     const h = harness({ isConnected: () => false });
-    await h.bridge.handleMessage(h.frame, {
+    await h.bridge.handleMessage(h.frame, TOOLS, {
       tag: BRIDGE_TAG,
       kind: "send",
       id: "s1",
@@ -239,7 +241,7 @@ describe("WorkbenchBridge", () => {
     h.emit(frame);
     expect(h.frame.posted).toEqual([]);
 
-    await h.bridge.handleMessage(h.frame, { tag: BRIDGE_TAG, kind: "subscribe" });
+    await h.bridge.handleMessage(h.frame, TOOLS, { tag: BRIDGE_TAG, kind: "subscribe" });
     h.emit(frame);
     expect(h.frame.posted).toEqual([{ tag: BRIDGE_TAG, kind: "event", frame }]);
 
@@ -253,9 +255,9 @@ describe("WorkbenchBridge", () => {
 
   it("passes an unhandled Esc from the tool to the page", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, { tag: BRIDGE_TAG, kind: "escape" });
+    await h.bridge.handleMessage(h.frame, TOOLS, { tag: BRIDGE_TAG, kind: "escape" });
     expect(h.escapes()).toBe(1);
-    await h.bridge.handleMessage({}, { tag: BRIDGE_TAG, kind: "escape" });
+    await h.bridge.handleMessage({}, TOOLS, { tag: BRIDGE_TAG, kind: "escape" });
     expect(h.escapes()).toBe(1);
   });
 });

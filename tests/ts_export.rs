@@ -11,7 +11,7 @@ mod ts_export {
     use ts_rs::TS;
 
     use residuum::gateway::protocol::{
-        ClientMessage, ServerMessage, SessionListResponse, WorkbenchToolSummary,
+        ClientMessage, ServerMessage, SessionListResponse, WorkbenchInfo, WorkbenchToolSummary,
     };
     use residuum::inference::ImageData;
 
@@ -32,6 +32,8 @@ mod ts_export {
         SessionListResponse::export_all(&cfg).unwrap();
         // HTTP response items for `GET /api/workbench/tools`.
         WorkbenchToolSummary::export_all(&cfg).unwrap();
+        // `GET /api/workbench/info` (its relay origins are exported with it).
+        WorkbenchInfo::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

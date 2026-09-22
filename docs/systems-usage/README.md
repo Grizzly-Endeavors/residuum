@@ -12,7 +12,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 |------|-------|-------|
 | `wiki/` | High | Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `wiki/log.md`. Agent maintains pages and indexes by hand. |
 | `USER.md` | Medium | Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
-| `workbench/` | Medium | Interactive HTML tools the agent builds for the user, one page each, plus each tool's `<name>.*` data files. See [Workbench](workbench.md). |
+| `workbench/` | Medium | Interactive tools the agent builds for the user, each a page or a folder, plus each tool's `<name>.*` data files. See [Workbench](workbench.md). |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
 | `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
@@ -55,7 +55,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 |--------|-----|---------------|--------|
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
 | [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `wiki/` |
-| [Workbench](workbench.md) | Interactive tools the user opens in the web UI, sandboxed, with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
+| [Workbench](workbench.md) | Interactive tools the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
 | [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |

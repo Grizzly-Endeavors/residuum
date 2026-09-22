@@ -1,11 +1,15 @@
-//! Workbench: single-file HTML tools the agent builds for the user.
+//! Workbench: interactive tools the agent builds for the user.
 //!
-//! A tool is `<workspace>/workbench/<name>.html`, where `<name>` is kebab-case.
-//! The web UI lists tools at `/workbench` and shows one at `/workbench/<name>`
-//! inside a sandboxed frame. Files beside a tool that share its `<name>.`
-//! prefix (for example `<name>.state.json`) are that tool's data: they are not
-//! listed as tools and are deleted with it.
+//! A tool is either a single page, `<workspace>/workbench/<name>.html`, or a
+//! folder, `<workspace>/workbench/<name>/` with an `index.html` and any other
+//! files it loads. `<name>` is kebab-case. The tools listener
+//! ([`server`]) serves them on their own origin at `/<name>/`; the web UI
+//! lists them at `/workbench` and shows one at `/workbench/<name>`. Files
+//! beside a tool that share its `<name>.` prefix (for example
+//! `<name>.state.json`) are that tool's saved data: not part of the tool, not
+//! watched for reloads, and deleted with it.
 
+pub(crate) mod server;
 pub(crate) mod watcher;
 
 use std::io::ErrorKind;
@@ -16,35 +20,20 @@ use chrono::{DateTime, Utc};
 
 use crate::gateway::protocol::WorkbenchToolSummary;
 
-/// Tool pages larger than this are refused rather than served.
-pub(crate) const MAX_TOOL_PAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// Files larger than this are refused rather than served.
+pub(crate) const MAX_TOOL_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// A folder tool's files are counted up to this many when listing and
+/// watching, so a runaway folder can't stall either.
+const MAX_FOLDER_FILES: usize = 5_000;
 
 /// Only the start of a page is scanned for its `<title>` when listing.
 const TITLE_SCAN_BYTES: usize = 64 * 1024;
 
 const MAX_TOOL_NAME_LEN: usize = 64;
 
-const TOOL_EXTENSION: &str = "html";
-
-/// The SDK injected into every served tool page.
+/// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../assets/workbench/sdk.js");
-
-/// Why a tool page could not be read.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum ToolPageError {
-    #[error("invalid tool name {0:?}: use lowercase letters, digits, and single hyphens")]
-    InvalidName(String),
-    #[error("workbench tool {0:?} does not exist")]
-    NotFound(String),
-    #[error("workbench tool {name:?} is {size} bytes, over the {MAX_TOOL_PAGE_BYTES}-byte limit")]
-    TooLarge { name: String, size: u64 },
-    #[error("failed to read workbench tool {name:?}: {source}")]
-    Io {
-        name: String,
-        #[source]
-        source: std::io::Error,
-    },
-}
 
 /// Whether `name` is a valid tool name: lowercase ASCII letters and digits in
 /// hyphen-separated words, at most 64 characters. Names carry no path
@@ -61,68 +50,156 @@ pub(crate) fn is_valid_tool_name(name: &str) -> bool {
         })
 }
 
-fn tool_page_path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{name}.{TOOL_EXTENSION}"))
+/// Where a tool lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ToolKind {
+    /// `<name>.html`.
+    Page(PathBuf),
+    /// `<name>/`, entered through `<name>/index.html`.
+    Folder(PathBuf),
 }
 
-/// The tool name a directory entry's file name denotes, if it is a tool page.
-fn tool_name_of(file_name: &str) -> Option<&str> {
-    let stem = file_name.strip_suffix(".html")?;
-    is_valid_tool_name(stem).then_some(stem)
+/// A tool found in the workbench directory.
+#[derive(Debug, Clone)]
+pub(crate) struct DiscoveredTool {
+    pub name: String,
+    pub kind: ToolKind,
+    /// Newest modification time among the tool's files.
+    pub modified: Option<SystemTime>,
+    /// Total size of the tool's files.
+    pub size: u64,
+    /// Number of files in the tool.
+    pub files: usize,
 }
 
-/// List the tools in `dir`, most recently modified first.
-///
-/// A missing directory is an empty workbench. Symlinks are skipped so a tool
-/// can never expose a file from outside the workbench.
+impl DiscoveredTool {
+    /// The HTML page the tool opens with.
+    fn entry_page(&self) -> PathBuf {
+        match &self.kind {
+            ToolKind::Page(path) => path.clone(),
+            ToolKind::Folder(dir) => dir.join("index.html"),
+        }
+    }
+}
+
+/// Find every tool in `dir`. A missing directory is an empty workbench.
+/// Symlinks are skipped, so a tool can never expose files from outside the
+/// workbench. When both `<name>.html` and `<name>/` exist, the folder wins.
 ///
 /// # Errors
 /// Returns an error if the directory exists but cannot be read.
-pub(crate) async fn list_tools(dir: &Path) -> std::io::Result<Vec<WorkbenchToolSummary>> {
+pub(crate) async fn discover_tools(dir: &Path) -> std::io::Result<Vec<DiscoveredTool>> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
 
-    let mut tools = Vec::new();
+    let mut tools: Vec<DiscoveredTool> = Vec::new();
     while let Some(entry) = read_dir.next_entry().await? {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str().and_then(tool_name_of) else {
+        let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
         let file_type = entry.file_type().await?;
-        if !file_type.is_file() {
+        let found = if file_type.is_dir() && is_valid_tool_name(&file_name) {
+            if !tokio::fs::symlink_metadata(entry.path().join("index.html"))
+                .await
+                .is_ok_and(|m| m.is_file())
+            {
+                continue;
+            }
+            let (modified, size, files) = folder_stats(entry.path()).await?;
+            DiscoveredTool {
+                name: file_name,
+                kind: ToolKind::Folder(entry.path()),
+                modified,
+                size,
+                files,
+            }
+        } else if file_type.is_file()
+            && let Some(name) = file_name
+                .strip_suffix(".html")
+                .filter(|stem| is_valid_tool_name(stem))
+        {
+            let metadata = entry.metadata().await?;
+            DiscoveredTool {
+                name: name.to_string(),
+                kind: ToolKind::Page(entry.path()),
+                modified: metadata.modified().ok(),
+                size: metadata.len(),
+                files: 1,
+            }
+        } else {
             continue;
+        };
+
+        match tools.iter_mut().find(|t| t.name == found.name) {
+            Some(existing) if matches!(found.kind, ToolKind::Folder(_)) => *existing = found,
+            Some(_) => {}
+            None => tools.push(found),
         }
-        let metadata = entry.metadata().await?;
-        let title = match read_title(&entry.path()).await {
+    }
+    Ok(tools)
+}
+
+/// Newest modification time, total size, and file count of a folder tool,
+/// walking at most [`MAX_FOLDER_FILES`] files and skipping symlinks.
+async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64, usize)> {
+    let mut newest: Option<SystemTime> = None;
+    let mut size = 0_u64;
+    let mut files = 0_usize;
+    let mut pending = vec![root];
+    while let Some(dir) = pending.pop() {
+        let mut read_dir = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = read_dir.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                let metadata = entry.metadata().await?;
+                size += metadata.len();
+                files += 1;
+                if let Ok(m) = metadata.modified() {
+                    newest = Some(newest.map_or(m, |n| n.max(m)));
+                }
+                if files >= MAX_FOLDER_FILES {
+                    return Ok((newest, size, files));
+                }
+            }
+        }
+    }
+    Ok((newest, size, files))
+}
+
+/// List the tools in `dir` for the web UI, most recently modified first.
+///
+/// # Errors
+/// Returns an error if the directory exists but cannot be read.
+pub(crate) async fn list_tools(dir: &Path) -> std::io::Result<Vec<WorkbenchToolSummary>> {
+    let mut tools = Vec::new();
+    for tool in discover_tools(dir).await? {
+        let title = match read_title(&tool.entry_page()).await {
             Ok(title) => title,
             Err(e) => {
-                tracing::warn!(tool = name, error = %e, "failed to read workbench tool title");
+                tracing::warn!(tool = %tool.name, error = %e, "failed to read workbench tool title");
                 None
             }
         };
         tools.push(WorkbenchToolSummary {
-            name: name.to_string(),
-            title: title.unwrap_or_else(|| name.to_string()),
-            modified_at: metadata
-                .modified()
-                .map_or_else(|_| DateTime::<Utc>::UNIX_EPOCH, to_utc),
-            size: metadata.len(),
+            title: title.unwrap_or_else(|| tool.name.clone()),
+            modified_at: tool
+                .modified
+                .map_or(DateTime::<Utc>::UNIX_EPOCH, DateTime::<Utc>::from),
+            size: tool.size,
+            name: tool.name,
         });
     }
-
     tools.sort_by(|a, b| {
         b.modified_at
             .cmp(&a.modified_at)
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(tools)
-}
-
-fn to_utc(time: SystemTime) -> DateTime<Utc> {
-    DateTime::<Utc>::from(time)
 }
 
 async fn read_title(path: &Path) -> std::io::Result<Option<String>> {
@@ -181,43 +258,6 @@ fn decode_entities(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Read a tool page and inject the workbench SDK into it.
-///
-/// # Errors
-/// Returns [`ToolPageError`] if the name is invalid, the page does not exist
-/// (or is not a regular file), is over [`MAX_TOOL_PAGE_BYTES`], or cannot be
-/// read.
-pub(crate) async fn read_tool_page(dir: &Path, name: &str) -> Result<String, ToolPageError> {
-    if !is_valid_tool_name(name) {
-        return Err(ToolPageError::InvalidName(name.to_string()));
-    }
-    let path = tool_page_path(dir, name);
-    let io_err = |source| ToolPageError::Io {
-        name: name.to_string(),
-        source,
-    };
-
-    let metadata = match tokio::fs::symlink_metadata(&path).await {
-        Ok(m) => m,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(ToolPageError::NotFound(name.to_string()));
-        }
-        Err(e) => return Err(io_err(e)),
-    };
-    if !metadata.is_file() {
-        return Err(ToolPageError::NotFound(name.to_string()));
-    }
-    if metadata.len() > MAX_TOOL_PAGE_BYTES {
-        return Err(ToolPageError::TooLarge {
-            name: name.to_string(),
-            size: metadata.len(),
-        });
-    }
-
-    let bytes = tokio::fs::read(&path).await.map_err(io_err)?;
-    Ok(inject_sdk(&String::from_utf8_lossy(&bytes)))
-}
-
 /// Insert the SDK `<script>` so it runs before any of the page's own scripts:
 /// right after the `<head>` open tag, else after `<html>`, else after the
 /// doctype, else at the very start.
@@ -240,6 +280,127 @@ pub(crate) fn inject_sdk(html: &str) -> String {
     out
 }
 
+/// Why a tool file could not be served.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ToolFileError {
+    #[error("no workbench tool named {0:?}")]
+    NoSuchTool(String),
+    #[error("workbench tool {tool:?} has no file {path:?}")]
+    NotFound { tool: String, path: String },
+    #[error(
+        "{path:?} in workbench tool {tool:?} is {size} bytes, over the {MAX_TOOL_FILE_BYTES}-byte limit"
+    )]
+    TooLarge {
+        tool: String,
+        path: String,
+        size: u64,
+    },
+    #[error("failed to read {path:?} in workbench tool {tool:?}: {source}")]
+    Io {
+        tool: String,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// A tool file ready to serve.
+#[derive(Debug)]
+pub(crate) struct ToolFile {
+    pub bytes: Vec<u8>,
+    pub content_type: String,
+}
+
+/// Read file `rest` of tool `name` (`""` for the tool's page). HTML gets the
+/// SDK injected.
+///
+/// `rest` is a `/`-separated path relative to a folder tool. A trailing `/`
+/// means that directory's `index.html`. Segments that are empty, `.`, `..`,
+/// or start with `.` are refused, and the resolved file must stay inside the
+/// tool's folder after symlinks. A single-page tool has no other files.
+///
+/// # Errors
+/// Returns [`ToolFileError`] when the tool or file does not exist, the file
+/// is too large, or it cannot be read.
+pub(crate) async fn read_tool_file(
+    dir: &Path,
+    name: &str,
+    rest: &str,
+) -> Result<ToolFile, ToolFileError> {
+    let tool = discover_tools(dir)
+        .await
+        .ok()
+        .and_then(|tools| tools.into_iter().find(|t| t.name == name))
+        .ok_or_else(|| ToolFileError::NoSuchTool(name.to_string()))?;
+    let not_found = || ToolFileError::NotFound {
+        tool: name.to_string(),
+        path: rest.to_string(),
+    };
+
+    let path = match &tool.kind {
+        ToolKind::Page(page) if rest.is_empty() || rest == "index.html" => page.clone(),
+        ToolKind::Page(_) => return Err(not_found()),
+        ToolKind::Folder(root) => resolve_in_folder(root, rest).await.ok_or_else(not_found)?,
+    };
+
+    let io_err = |source| ToolFileError::Io {
+        tool: name.to_string(),
+        path: rest.to_string(),
+        source,
+    };
+    let metadata = tokio::fs::metadata(&path).await.map_err(io_err)?;
+    if !metadata.is_file() {
+        return Err(not_found());
+    }
+    if metadata.len() > MAX_TOOL_FILE_BYTES {
+        return Err(ToolFileError::TooLarge {
+            tool: name.to_string(),
+            path: rest.to_string(),
+            size: metadata.len(),
+        });
+    }
+    let bytes = tokio::fs::read(&path).await.map_err(io_err)?;
+
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    if mime.essence_str() == "text/html" {
+        Ok(ToolFile {
+            bytes: inject_sdk(&String::from_utf8_lossy(&bytes)).into_bytes(),
+            content_type: "text/html; charset=utf-8".to_string(),
+        })
+    } else {
+        let content_type = if mime.type_() == mime_guess::mime::TEXT
+            || mime.essence_str() == "application/javascript"
+        {
+            format!("{}; charset=utf-8", mime.essence_str())
+        } else {
+            mime.essence_str().to_string()
+        };
+        Ok(ToolFile {
+            bytes,
+            content_type,
+        })
+    }
+}
+
+/// Resolve `rest` inside a folder tool, or `None` if it names nothing there.
+async fn resolve_in_folder(root: &Path, rest: &str) -> Option<PathBuf> {
+    let mut path = root.to_path_buf();
+    let wants_index = rest.is_empty() || rest.ends_with('/');
+    for segment in rest.split('/').filter(|s| !s.is_empty()) {
+        if segment.starts_with('.') || segment.contains('\\') {
+            return None;
+        }
+        path.push(segment);
+    }
+    if wants_index {
+        path.push("index.html");
+    }
+
+    let canonical_root = tokio::fs::canonicalize(root).await.ok()?;
+    let canonical = tokio::fs::canonicalize(&path).await.ok()?;
+    canonical.starts_with(&canonical_root).then_some(canonical)
+}
+
 /// Why a tool could not be deleted.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ToolDeleteError {
@@ -255,12 +416,13 @@ pub(crate) enum ToolDeleteError {
     },
 }
 
-/// Delete a tool's page and its data files (regular files named `<name>.*`).
-/// Returns the file names removed.
+/// Delete a tool (its page, or its whole folder) and its data files (regular
+/// files named `<name>.*`). Returns the entries removed.
 ///
 /// # Errors
-/// Returns [`ToolDeleteError`] if the name is invalid, the tool has no page,
-/// or a file cannot be removed. Files removed before a failure stay removed.
+/// Returns [`ToolDeleteError`] if the name is invalid, the tool does not
+/// exist, or something cannot be removed. Entries removed before a failure
+/// stay removed.
 pub(crate) async fn delete_tool(dir: &Path, name: &str) -> Result<Vec<String>, ToolDeleteError> {
     if !is_valid_tool_name(name) {
         return Err(ToolDeleteError::InvalidName(name.to_string()));
@@ -270,17 +432,24 @@ pub(crate) async fn delete_tool(dir: &Path, name: &str) -> Result<Vec<String>, T
         source,
     };
 
-    match tokio::fs::symlink_metadata(tool_page_path(dir, name)).await {
-        Ok(m) if m.is_file() => {}
-        Ok(_) => return Err(ToolDeleteError::NotFound(name.to_string())),
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(ToolDeleteError::NotFound(name.to_string()));
-        }
-        Err(e) => return Err(io_err(e)),
+    let folder = dir.join(name);
+    let has_folder = tokio::fs::symlink_metadata(&folder)
+        .await
+        .is_ok_and(|m| m.is_dir());
+    let has_page = tokio::fs::symlink_metadata(dir.join(format!("{name}.html")))
+        .await
+        .is_ok_and(|m| m.is_file());
+    if !has_folder && !has_page {
+        return Err(ToolDeleteError::NotFound(name.to_string()));
+    }
+
+    let mut removed = Vec::new();
+    if has_folder {
+        tokio::fs::remove_dir_all(&folder).await.map_err(io_err)?;
+        removed.push(format!("{name}/"));
     }
 
     let prefix = format!("{name}.");
-    let mut removed = Vec::new();
     let mut read_dir = tokio::fs::read_dir(dir).await.map_err(io_err)?;
     while let Some(entry) = read_dir.next_entry().await.map_err(io_err)? {
         let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
@@ -324,15 +493,6 @@ mod tests {
         ] {
             assert!(!is_valid_tool_name(bad), "{bad:?} should be invalid");
         }
-    }
-
-    #[test]
-    fn tool_name_of_requires_html_and_valid_stem() {
-        assert_eq!(tool_name_of("chart.html"), Some("chart"));
-        assert_eq!(tool_name_of("chart.state.json"), None);
-        assert_eq!(tool_name_of("chart.data.html"), None);
-        assert_eq!(tool_name_of("Chart.html"), None);
-        assert_eq!(tool_name_of("chart.htm"), None);
     }
 
     #[test]
@@ -388,14 +548,21 @@ mod tests {
         assert!(!SDK_JS.to_ascii_lowercase().contains("</script"));
     }
 
+    fn write(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
     #[tokio::test]
-    async fn list_tools_skips_non_tools_and_sorts_newest_first() {
+    async fn list_tools_covers_pages_and_folders_newest_first() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
-        std::fs::write(p.join("older.html"), "<title>Older</title>").unwrap();
-        std::fs::write(p.join("older.state.json"), "{}").unwrap();
-        std::fs::write(p.join("Bad Name.html"), "x").unwrap();
-        std::fs::create_dir(p.join("folder.html")).unwrap();
+        write(&p.join("older.html"), "<title>Older</title>");
+        write(&p.join("older.state.json"), "{}");
+        write(&p.join("Bad Name.html"), "x");
+        write(&p.join("no-index/app.js"), "x");
         let old = SystemTime::now() - std::time::Duration::from_secs(60);
         std::fs::File::options()
             .write(true)
@@ -403,17 +570,30 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        std::fs::write(p.join("newer.html"), "<p>untitled</p>").unwrap();
+        write(&p.join("graph/index.html"), "<title>Wiki Graph</title>");
+        write(&p.join("graph/lib/app.js"), "x");
 
         let tools = list_tools(p).await.unwrap();
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["newer", "older"]);
+        assert_eq!(names, ["graph", "older"]);
         let titles: Vec<_> = tools.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["newer", "Older"],
-            "untitled tools fall back to the name"
+        assert_eq!(titles, ["Wiki Graph", "Older"]);
+    }
+
+    #[tokio::test]
+    async fn folder_wins_over_page_with_the_same_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("chart.html"), "<title>Page</title>");
+        write(
+            &dir.path().join("chart/index.html"),
+            "<title>Folder</title>",
         );
+        let tools = discover_tools(dir.path()).await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert!(matches!(
+            tools.first().map(|t| &t.kind),
+            Some(ToolKind::Folder(_))
+        ));
     }
 
     #[tokio::test]
@@ -427,46 +607,111 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reads_pages_and_folder_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        write(&p.join("single.html"), "<head></head>");
+        write(&p.join("graph/index.html"), "<head></head>");
+        write(&p.join("graph/lib/app.js"), "console.log(1)");
+        write(&p.join("graph/docs/index.html"), "<p>docs</p>");
+
+        let page = read_tool_file(p, "single", "").await.unwrap();
+        assert!(
+            String::from_utf8(page.bytes)
+                .unwrap()
+                .starts_with("<head><script>")
+        );
+        assert_eq!(page.content_type, "text/html; charset=utf-8");
+
+        let index = read_tool_file(p, "graph", "").await.unwrap();
+        assert!(
+            String::from_utf8(index.bytes)
+                .unwrap()
+                .contains("window.residuum")
+        );
+
+        let script = read_tool_file(p, "graph", "lib/app.js").await.unwrap();
+        assert_eq!(script.bytes, b"console.log(1)");
+        assert!(script.content_type.contains("javascript"));
+
+        let nested = read_tool_file(p, "graph", "docs/").await.unwrap();
+        assert!(
+            String::from_utf8(nested.bytes)
+                .unwrap()
+                .contains("window.residuum")
+        );
+
+        assert!(matches!(
+            read_tool_file(p, "single", "other.js").await,
+            Err(ToolFileError::NotFound { .. })
+        ));
+        assert!(matches!(
+            read_tool_file(p, "missing", "").await,
+            Err(ToolFileError::NoSuchTool(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn folder_paths_cannot_escape_or_reach_hidden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        write(&p.join("graph/index.html"), "x");
+        write(&p.join("graph/.secret"), "x");
+        write(&p.join("other/index.html"), "x");
+        write(&p.join("graph.state.json"), "{}");
+
+        for rest in [
+            "../other/index.html",
+            ".secret",
+            "..",
+            "a/../../graph.state.json",
+        ] {
+            assert!(
+                matches!(
+                    read_tool_file(p, "graph", rest).await,
+                    Err(ToolFileError::NotFound { .. })
+                ),
+                "{rest} must not resolve"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
-    async fn symlinked_tools_are_neither_listed_nor_served() {
+    async fn symlinks_cannot_expose_outside_files() {
         let dir = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.html");
         std::fs::write(&secret, "<title>Secret</title>").unwrap();
         std::os::unix::fs::symlink(&secret, dir.path().join("leak.html")).unwrap();
+        write(&dir.path().join("graph/index.html"), "x");
+        std::os::unix::fs::symlink(&secret, dir.path().join("graph/leak.html")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
 
-        assert!(list_tools(dir.path()).await.unwrap().is_empty());
-        assert!(matches!(
-            read_tool_page(dir.path(), "leak").await,
-            Err(ToolPageError::NotFound(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn read_tool_page_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            read_tool_page(dir.path(), "../etc").await,
-            Err(ToolPageError::InvalidName(_))
-        ));
-        assert!(matches!(
-            read_tool_page(dir.path(), "missing").await,
-            Err(ToolPageError::NotFound(_))
-        ));
-        std::fs::write(dir.path().join("ok.html"), "<head></head>").unwrap();
-        let page = read_tool_page(dir.path(), "ok").await.unwrap();
-        assert!(page.starts_with("<head><script>"));
+        let names: Vec<_> = list_tools(dir.path())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["graph"]);
+        assert!(read_tool_file(dir.path(), "leak", "").await.is_err());
+        assert!(
+            read_tool_file(dir.path(), "graph", "leak.html")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn delete_tool_removes_page_and_data_only() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
-        std::fs::write(p.join("chart.html"), "x").unwrap();
-        std::fs::write(p.join("chart.state.json"), "{}").unwrap();
-        std::fs::write(p.join("chart-two.html"), "x").unwrap();
-        std::fs::write(p.join("chartx.json"), "{}").unwrap();
+        write(&p.join("chart.html"), "x");
+        write(&p.join("chart.state.json"), "{}");
+        write(&p.join("chart-two.html"), "x");
+        write(&p.join("chartx.json"), "{}");
 
         let removed = delete_tool(p, "chart").await.unwrap();
         assert_eq!(removed, ["chart.html", "chart.state.json"]);
@@ -477,5 +722,18 @@ mod tests {
             delete_tool(p, "chart").await,
             Err(ToolDeleteError::NotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn delete_tool_removes_a_folder_and_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        write(&p.join("graph/index.html"), "x");
+        write(&p.join("graph/lib/app.js"), "x");
+        write(&p.join("graph.state.json"), "{}");
+
+        let removed = delete_tool(p, "graph").await.unwrap();
+        assert_eq!(removed, ["graph.state.json", "graph/"]);
+        assert!(!p.join("graph").exists());
     }
 }

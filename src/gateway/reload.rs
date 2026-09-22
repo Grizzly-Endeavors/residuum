@@ -701,6 +701,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 config_api_state,
                 update_api_state,
                 tracing_api_state,
+                rt.workbench_serving.clone(),
             );
 
             let new_handle = crate::gateway::event_loop::spawn_server_with_listener(
@@ -850,8 +851,9 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
+        let workbench_port = rt.workbench_serving.port();
         rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         rt.cloud_config.clone_from(&new_cfg.cloud);

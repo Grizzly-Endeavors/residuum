@@ -14,8 +14,8 @@ use tracing::{debug, error, info, warn};
 use super::TunnelStatus;
 use super::forward_http;
 use super::forward_ws;
-use super::protocol::TunnelFrame;
-use super::{TunnelSink, send_frame};
+use super::protocol::{Surface, TunnelFrame};
+use super::{ForwardTargets, TunnelSink, send_frame};
 use crate::config::CloudConfig;
 
 /// Minimum backoff duration between reconnection attempts.
@@ -38,7 +38,8 @@ fn next_backoff(current: Duration) -> Duration {
 /// relay with exponential backoff reconnection.
 ///
 /// The tunnel forwards HTTP requests and WebSocket connections from the relay
-/// to the local residuum instance running on `cfg.local_port`.
+/// to the local residuum instance: the main listener on `cfg.local_port`, and
+/// workbench tool requests to `workbench_port` when that listener is running.
 ///
 /// # Errors
 ///
@@ -47,13 +48,15 @@ fn next_backoff(current: Duration) -> Duration {
 #[tracing::instrument(skip_all, fields(relay_url = %cfg.relay_url))]
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
+    workbench_port: Option<u16>,
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
 ) {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(25))
-        .build()
-    else {
+    let targets = ForwardTargets {
+        main: cfg.local_port,
+        workbench: workbench_port,
+    };
+    let Ok(client) = forward_http::forwarding_client() else {
         error!("failed to build reqwest client");
         return;
     };
@@ -103,7 +106,7 @@ pub(crate) async fn start_tunnel(
         // indefinitely if the relay accepts the WS but never sends Connected).
         let connected_result =
             tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
-        let (user_id, keepalive_interval_secs) = match connected_result {
+        let (user_id, keepalive_interval_secs, origins) = match connected_result {
             Err(_) => {
                 warn!(url = %cfg.relay_url, "timed out waiting for Connected frame from relay");
                 tokio::time::sleep(backoff).await;
@@ -116,12 +119,14 @@ pub(crate) async fn start_tunnel(
                 backoff = next_backoff(backoff);
                 continue;
             }
-            Ok(Some(pair)) => pair,
+            Ok(Some(connected)) => connected,
         };
 
         status_tx
             .send(TunnelStatus::Connected {
                 user_id: user_id.clone(),
+                origin: origins.origin,
+                workbench_origin: origins.workbench_origin,
             })
             .unwrap_or_else(|_| {
                 debug!("status receiver dropped");
@@ -140,7 +145,7 @@ pub(crate) async fn start_tunnel(
 
         let action = run_tunnel_loop(
             &client,
-            cfg.local_port,
+            targets,
             &mut read,
             &write,
             &mut shutdown_rx,
@@ -169,7 +174,7 @@ enum LoopExit {
 /// Process tunnel frames until disconnection or shutdown.
 async fn run_tunnel_loop<S>(
     client: &reqwest::Client,
-    local_port: u16,
+    targets: ForwardTargets,
     read: &mut S,
     write: &Arc<Mutex<TunnelSink>>,
     shutdown_rx: &mut watch::Receiver<bool>,
@@ -194,7 +199,7 @@ where
                         last_frame = tokio::time::Instant::now();
                         match serde_json::from_str::<TunnelFrame>(&text) {
                             Ok(frame) => {
-                                handle_frame(frame, client, local_port, write, &mut local_ws_channels, &ws_open_tx).await;
+                                handle_frame(frame, client, targets, write, &mut local_ws_channels, &ws_open_tx).await;
                             }
                             Err(e) => {
                                 warn!(error = %e, "failed to parse tunnel frame");
@@ -257,11 +262,22 @@ fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::
         ws_http::header::AUTHORIZATION,
         ws_http::HeaderValue::from_str(&format!("Bearer {}", cfg.token))?,
     );
+    request.headers_mut().insert(
+        super::CAPABILITIES_HEADER,
+        ws_http::HeaderValue::from_static(super::WORKBENCH_SURFACE_CAPABILITY),
+    );
     Ok(request)
 }
 
+/// Public origins the relay announced for this user.
+#[derive(Debug, Default)]
+struct AnnouncedOrigins {
+    origin: Option<String>,
+    workbench_origin: Option<String>,
+}
+
 /// Wait for the initial `Connected` frame from the relay.
-async fn wait_for_connected<S>(read: &mut S) -> Option<(String, u64)>
+async fn wait_for_connected<S>(read: &mut S) -> Option<(String, u64, AnnouncedOrigins)>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
@@ -271,7 +287,18 @@ where
                 Ok(TunnelFrame::Connected {
                     user_id,
                     keepalive_interval_secs,
-                }) => return Some((user_id, keepalive_interval_secs)),
+                    origin,
+                    workbench_origin,
+                }) => {
+                    return Some((
+                        user_id,
+                        keepalive_interval_secs,
+                        AnnouncedOrigins {
+                            origin,
+                            workbench_origin,
+                        },
+                    ));
+                }
                 Ok(other) => {
                     debug!(?other, "ignoring non-Connected frame during handshake");
                 }
@@ -290,11 +317,24 @@ where
     None
 }
 
+/// The local port for a request's surface, or why it can't be served.
+///
+/// A workbench request is never sent to the main listener: that would serve
+/// the web UI and API on the tools' origin.
+fn forward_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16, &'static str> {
+    match surface {
+        None => Ok(targets.main),
+        Some(Surface::Workbench) => targets.workbench.ok_or(
+            "Workbench tools aren't available on this Residuum instance right now: its tools listener isn't running. Check Residuum's logs for why it couldn't start.",
+        ),
+    }
+}
+
 /// Process a single tunnel frame.
 async fn handle_frame(
     frame: TunnelFrame,
     client: &reqwest::Client,
-    local_port: u16,
+    targets: ForwardTargets,
     write: &Arc<Mutex<TunnelSink>>,
     local_ws_channels: &mut HashMap<String, mpsc::Sender<String>>,
     ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
@@ -312,14 +352,20 @@ async fn handle_frame(
             path,
             headers,
             body,
+            surface,
         } => {
             let client = client.clone();
             let write = Arc::clone(write);
             tokio::spawn(async move {
-                let response = forward_http::forward(
-                    &client, local_port, request_id, method, path, headers, body,
-                )
-                .await;
+                let response = match forward_port(targets, surface) {
+                    Ok(port) => {
+                        forward_http::forward(
+                            &client, port, request_id, method, path, headers, body,
+                        )
+                        .await
+                    }
+                    Err(message) => forward_http::text_response(request_id, 503, message),
+                };
                 if let Err(e) = send_frame(&write, &response).await {
                     warn!(error = %e, "failed to send HttpResponse");
                 }
@@ -335,7 +381,8 @@ async fn handle_frame(
             tokio::spawn(async move {
                 let ch_id = channel_id.clone();
                 let sender =
-                    forward_ws::handle_ws_open(local_port, channel_id, path, headers, write).await;
+                    forward_ws::handle_ws_open(targets.main, channel_id, path, headers, write)
+                        .await;
                 if let Some(tx) = sender {
                     // Send back to the frame loop; if the loop has exited the
                     // channel will be dropped and this is harmless.
@@ -504,13 +551,55 @@ mod tests {
         let frame = TunnelFrame::Connected {
             user_id: "user-1".to_string(),
             keepalive_interval_secs: 30,
+            origin: Some("https://user-1.agent-residuum.com".to_string()),
+            workbench_origin: Some("https://user-1.workbench.agent-residuum.com".to_string()),
         };
         let json = serde_json::to_string(&frame).unwrap();
         let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
             vec![Ok(Message::Text(json.into()))];
         let mut stream = stream::iter(messages);
         let result = wait_for_connected(&mut stream).await;
-        assert_eq!(result, Some(("user-1".to_string(), 30)));
+        let (user_id, keepalive, origins) = result.unwrap();
+        assert_eq!((user_id.as_str(), keepalive), ("user-1", 30));
+        assert_eq!(
+            origins.workbench_origin.as_deref(),
+            Some("https://user-1.workbench.agent-residuum.com")
+        );
+    }
+
+    #[test]
+    fn workbench_requests_only_reach_a_running_tools_listener() {
+        let running = ForwardTargets {
+            main: 7700,
+            workbench: Some(7702),
+        };
+        assert_eq!(forward_port(running, None), Ok(7700));
+        assert_eq!(forward_port(running, Some(Surface::Workbench)), Ok(7702));
+
+        let down = ForwardTargets {
+            main: 7700,
+            workbench: None,
+        };
+        assert!(
+            forward_port(down, Some(Surface::Workbench)).is_err(),
+            "a workbench request must never fall back to the main listener"
+        );
+    }
+
+    #[test]
+    fn upgrade_request_advertises_the_workbench_capability() {
+        let cfg = CloudConfig {
+            relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
+            token: "rst_test".to_string(),
+            local_port: 7700,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(
+            req.headers()
+                .get("x-residuum-capabilities")
+                .and_then(|v| v.to_str().ok()),
+            Some("workbench-surface")
+        );
     }
 
     #[tokio::test]
@@ -530,6 +619,8 @@ mod tests {
         let connected_json = serde_json::to_string(&TunnelFrame::Connected {
             user_id: "user-2".to_string(),
             keepalive_interval_secs: 15,
+            origin: None,
+            workbench_origin: None,
         })
         .unwrap();
         let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = vec![
@@ -538,7 +629,9 @@ mod tests {
         ];
         let mut stream = stream::iter(messages);
         let result = wait_for_connected(&mut stream).await;
-        assert_eq!(result, Some(("user-2".to_string(), 15)));
+        let (user_id, keepalive, origins) = result.unwrap();
+        assert_eq!((user_id.as_str(), keepalive), ("user-2", 15));
+        assert!(origins.origin.is_none() && origins.workbench_origin.is_none());
     }
 
     #[tokio::test]
