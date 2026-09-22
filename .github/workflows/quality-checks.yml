@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       web:
-        description: Run the web format, lint, type, and build checks
+        description: Run the web format, lint, type, test, and build checks
         type: boolean
         default: true
       rust:
