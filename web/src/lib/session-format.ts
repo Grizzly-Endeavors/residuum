@@ -44,6 +44,30 @@ export function categoryDescription(category: SessionCategory): string {
   }
 }
 
+/** A category's name as a sidebar group heading. */
+export function categoryHeading(category: SessionCategory): string {
+  switch (category) {
+    case "scheduled":
+      return "Scheduled";
+    case "external":
+      return "External";
+    case "spawned":
+      return "Spawned";
+  }
+}
+
+/** What a sidebar group says when none of its sessions are running. */
+export function categoryIdleText(category: SessionCategory): string {
+  switch (category) {
+    case "scheduled":
+      return "Nothing running. Pulses and scheduled actions show up here while they run.";
+    case "external":
+      return "Nothing running. Conversations with other people and webhook calls show up here while they run.";
+    case "spawned":
+      return "Nothing running. Work your agent hands off shows up here while it runs.";
+  }
+}
+
 /** How a run ended, for a status line. */
 export function runOutcomeText(status: SessionRunStatus, error: string | null): string {
   switch (status) {

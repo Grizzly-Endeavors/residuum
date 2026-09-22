@@ -2,6 +2,9 @@
   import { tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { Icon } from "../lib/icons";
+  import { SESSION_CATEGORIES } from "../lib/sessions.svelte";
+  import { categoryDescription, categoryHeading, categoryIdleText } from "../lib/session-format";
+  import type { SessionCategory } from "../lib/types";
   import SessionRow from "./SessionRow.svelte";
 
   let {
@@ -15,11 +18,31 @@
     onSelect: (runId: string) => void;
   } = $props();
 
-  let finishedOpen = $state(false);
+  /** Groups the user has collapsed; every group starts open. */
+  let collapsed = $state<Record<SessionCategory, boolean>>({
+    external: false,
+    scheduled: false,
+    spawned: false,
+  });
+  /** Groups whose finished runs are shown; every group starts closed. */
+  let finishedOpen = $state<Record<SessionCategory, boolean>>({
+    external: false,
+    scheduled: false,
+    spawned: false,
+  });
   let headingEl: HTMLHeadingElement | undefined = $state();
 
   const sessions = ws.sessions;
   let selectedRunId = $derived(sessions.view?.runId ?? null);
+
+  let liveByCategory = $derived(
+    Object.fromEntries(
+      SESSION_CATEGORIES.map((category) => [
+        category,
+        sessions.live.filter((s) => s.category === category),
+      ]),
+    ) as Record<SessionCategory, typeof sessions.live>,
+  );
 
   let sidebarEl: HTMLElement | undefined = $state();
 
@@ -136,61 +159,90 @@
     {#if !sessions.loaded && !sessions.listError}
       <p class="sessions-empty">Loading sessions…</p>
     {:else if sessions.loaded}
-      {#if sessions.live.length > 0}
-        <ul class="sessions-list" aria-label="Live sessions">
-          {#each sessions.live as session (session.run_id)}
-            <SessionRow {session} selected={session.run_id === selectedRunId} {onSelect} />
-          {/each}
-        </ul>
-      {:else}
-        <p class="sessions-empty">
-          Nothing is running. Work your agent hands off, scheduled pulses, and conversations with
-          other people show up here while they run.
-        </p>
-      {/if}
+      {#each SESSION_CATEGORIES as category (category)}
+        {@const live = liveByCategory[category]}
+        {@const finished = sessions.completed[category]}
+        <section class="sessions-group" aria-labelledby="sessions-group-{category}-heading">
+          <h3 class="sessions-group-heading" id="sessions-group-{category}-heading">
+            <button
+              type="button"
+              class="sessions-disclosure sessions-group-toggle"
+              aria-expanded={!collapsed[category]}
+              aria-controls="sessions-group-{category}"
+              title={categoryDescription(category)}
+              onclick={() => (collapsed[category] = !collapsed[category])}
+            >
+              <span class="sessions-disclosure-chevron" class:open={!collapsed[category]}>
+                <Icon name="chevron" size={12} />
+              </span>
+              {categoryHeading(category)}
+              {#if live.length > 0}
+                <span class="sessions-group-live-count">{live.length} live</span>
+              {/if}
+            </button>
+          </h3>
+          {#if !collapsed[category]}
+            <div id="sessions-group-{category}" class="sessions-group-body">
+              {#if live.length > 0}
+                <ul class="sessions-list" aria-label="Live {category} sessions">
+                  {#each live as session (session.run_id)}
+                    <SessionRow {session} selected={session.run_id === selectedRunId} {onSelect} />
+                  {/each}
+                </ul>
+              {:else}
+                <p class="sessions-empty">{categoryIdleText(category)}</p>
+              {/if}
 
-      <div class="sessions-finished">
-        <button
-          type="button"
-          class="sessions-disclosure"
-          aria-expanded={finishedOpen}
-          aria-controls="sessions-finished-list"
-          onclick={() => (finishedOpen = !finishedOpen)}
-        >
-          <span class="sessions-disclosure-chevron" class:open={finishedOpen}>
-            <Icon name="chevron" size={12} />
-          </span>
-          Finished
-          {#if sessions.completed.length > 0}
-            <span class="sessions-disclosure-count">
-              {sessions.completed.length}{sessions.nextCursor ? "+" : ""}
-            </span>
+              <div class="sessions-finished">
+                <button
+                  type="button"
+                  class="sessions-disclosure sessions-finished-toggle"
+                  aria-expanded={finishedOpen[category]}
+                  aria-controls="sessions-finished-{category}"
+                  onclick={() => (finishedOpen[category] = !finishedOpen[category])}
+                >
+                  <span class="sessions-disclosure-chevron" class:open={finishedOpen[category]}>
+                    <Icon name="chevron" size={12} />
+                  </span>
+                  Finished
+                  {#if finished.runs.length > 0}
+                    <span class="sessions-disclosure-count">
+                      {finished.runs.length}{finished.nextCursor ? "+" : ""}
+                    </span>
+                  {/if}
+                </button>
+                {#if finishedOpen[category]}
+                  <div id="sessions-finished-{category}">
+                    {#if finished.runs.length > 0}
+                      <ul class="sessions-list" aria-label="Finished {category} sessions">
+                        {#each finished.runs as session (session.run_id)}
+                          <SessionRow
+                            {session}
+                            selected={session.run_id === selectedRunId}
+                            {onSelect}
+                          />
+                        {/each}
+                      </ul>
+                    {:else}
+                      <p class="sessions-empty">Nothing has finished yet.</p>
+                    {/if}
+                    {#if finished.nextCursor}
+                      <button
+                        type="button"
+                        class="sessions-text-btn sessions-more"
+                        disabled={finished.loadingMore}
+                        onclick={() => void finished.loadMore()}
+                      >
+                        {finished.loadingMore ? "Loading…" : "Show older"}
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            </div>
           {/if}
-        </button>
-        {#if finishedOpen}
-          <div id="sessions-finished-list">
-            {#if sessions.completed.length > 0}
-              <ul class="sessions-list" aria-label="Finished sessions">
-                {#each sessions.completed as session (session.run_id)}
-                  <SessionRow {session} selected={session.run_id === selectedRunId} {onSelect} />
-                {/each}
-              </ul>
-            {:else}
-              <p class="sessions-empty">Nothing has finished yet.</p>
-            {/if}
-            {#if sessions.nextCursor}
-              <button
-                type="button"
-                class="sessions-text-btn sessions-more"
-                disabled={sessions.loadingMore}
-                onclick={() => void sessions.loadMore()}
-              >
-                {sessions.loadingMore ? "Loading…" : "Show older"}
-              </button>
-            {/if}
-          </div>
-        {/if}
-      </div>
+        </section>
+      {/each}
     {/if}
   </div>
 </aside>
