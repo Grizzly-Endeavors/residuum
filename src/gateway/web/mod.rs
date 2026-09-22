@@ -111,7 +111,9 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
 /// Fallback handler for serving embedded static files.
 ///
 /// Serves the file at the requested URI path, falling back to `index.html`
-/// for SPA routing (paths without file extensions).
+/// for the web UI's client-side routes (paths without file extensions).
+/// Unknown API and WebSocket paths get a 404 rather than the app shell, so a
+/// client calling a missing endpoint sees the failure instead of HTML.
 pub(super) async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
@@ -120,8 +122,7 @@ pub(super) async fn static_handler(uri: Uri) -> Response {
         return resp;
     }
 
-    // SPA fallback: if no file extension, serve index.html
-    if !path.contains('.')
+    if is_client_route(path)
         && let Some(resp) = serve_embedded("index.html")
     {
         return resp;
@@ -131,6 +132,13 @@ pub(super) async fn static_handler(uri: Uri) -> Response {
         .status(axum::http::StatusCode::NOT_FOUND)
         .body(axum::body::Body::from("not found"))
         .unwrap_or_default()
+}
+
+/// Whether `path` (without its leading slash) is a web UI route that the
+/// client-side router handles, rather than a missing asset or server endpoint.
+fn is_client_route(path: &str) -> bool {
+    let first_segment = path.split('/').next().unwrap_or_default();
+    !path.contains('.') && first_segment != "api" && first_segment != "ws"
 }
 
 /// Serve an embedded file by path, returning `None` if it doesn't exist.
@@ -154,6 +162,7 @@ fn serve_embedded(path: &str) -> Option<Response> {
 )]
 mod tests {
     use super::*;
+    use axum::http::{StatusCode, header};
 
     #[test]
     fn web_assets_contains_index_html() {
@@ -187,6 +196,40 @@ mod tests {
             ct.to_str().unwrap().contains("json"),
             "content type should be json"
         );
+    }
+
+    #[tokio::test]
+    async fn static_handler_serves_app_shell_for_client_routes() {
+        for path in [
+            "/",
+            "/sessions/run-1790000000000-0a1b2c3d",
+            "/settings/memory",
+        ] {
+            let resp = static_handler(Uri::from_static(path)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{path} should be served");
+            let ct = resp.headers().get(header::CONTENT_TYPE).unwrap();
+            assert!(
+                ct.to_str().unwrap().contains("html"),
+                "{path} should get index.html"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn static_handler_404s_for_missing_endpoints_and_assets() {
+        for path in [
+            "/api/nope",
+            "/api",
+            "/ws/extra",
+            "/assets/missing-abc123.js",
+        ] {
+            let resp = static_handler(Uri::from_static(path)).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "{path} should not get the app shell"
+            );
+        }
     }
 
     #[test]

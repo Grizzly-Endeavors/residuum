@@ -39,11 +39,18 @@
   import { toast } from "./lib/toast.svelte";
   import { userErrorMessage } from "./lib/errors";
 
-  let { onClose }: { onClose: () => void } = $props();
+  let {
+    section: activeSection,
+    onSelectSection,
+    onClose,
+  }: {
+    section: SettingsSection;
+    onSelectSection: (section: SettingsSection) => void;
+    onClose: () => void;
+  } = $props();
 
   // ── State ──────────────────────────────────────────────────────────
 
-  let activeSection = $state<SettingsSection>("runtime");
   let settingsMode = $state<SettingsMode>(
     (localStorage.getItem("residuum-settings-mode") as SettingsMode) || "simple",
   );
@@ -451,7 +458,7 @@
               class="settings-sidebar-btn"
               class:active={activeSection === sec.id}
               onclick={() => {
-                activeSection = sec.id;
+                onSelectSection(sec.id);
                 mobileNavOpen = false;
               }}
             >

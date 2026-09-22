@@ -84,6 +84,8 @@ web/
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
+│       ├── routes.ts             # URL <-> location: which session, workspace flag, settings section
+│       ├── router.svelte.ts      # Current location; push/replace history, back/forward
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages
@@ -97,6 +99,21 @@ web/
 └── package.json
 ```
 
+## Routing
+
+The URL is the source of truth for where the user is:
+
+| URL | Shows |
+|-----|-------|
+| `/` | Main chat |
+| `/sessions/:runId` | A session's run in the main pane |
+| `?workspace` (on either of the above) | Workspace panel open beside the main pane |
+| `/settings/:section` | Settings, on one section |
+
+`App.svelte` derives its layout state from `router` instead of mounting a component per route, so the chat, session view, and workspace stay mounted and every transition is the same CSS transition whether it came from a click or the back button. Navigate through `router` (or `sessions.openRun`), never by setting layout state directly.
+
+History records places, not panel states. Opening a session, returning to the main chat, and opening or switching settings push an entry. Toggling the workspace replaces the current one, and so does a session view following its session into a new run. Back therefore moves between places the user visited. A settings URL says nothing about the chat side, so leaving settings returns to the session and workspace state that was showing before. Overlays (help, feedback, inbox) and the narrow-screen sessions drawer are not in the URL.
+
 ## Code Quality
 
 Before submitting changes, run:
@@ -105,6 +122,7 @@ Before submitting changes, run:
 npm run lint          # ESLint check
 npm run format        # Prettier auto-format
 npm run check         # TypeScript / Svelte type check
+npm test              # Vitest unit tests (*.test.ts next to the code they test)
 ```
 
 ## Running Against the Real Backend

@@ -13,6 +13,7 @@ import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
 import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
 import { notifications } from "./notifications.svelte";
+import { router } from "./router.svelte";
 import { deliveryOutcomeText, runOutcomeText } from "./session-format";
 import type {
   ClientMessage,
@@ -372,8 +373,16 @@ export class SessionsStore {
 
   // ── Navigation ───────────────────────────────────────────────────
 
-  /** Show a run in the main pane. */
+  /** Navigate to a run, showing it in the main pane. */
   openRun(runId: string): void {
+    router.openSession(runId);
+  }
+
+  /**
+   * Put a run in the main pane. Called when the location changes; anything
+   * that wants to show a run navigates with `openRun` instead.
+   */
+  showRun(runId: string): void {
     if (this.view?.runId === runId) return;
     const view = new SessionView(runId, this.findRun(runId) ?? null);
     this.view = view;
@@ -410,7 +419,7 @@ export class SessionsStore {
     }
   }
 
-  /** Return the main pane to the main chat. */
+  /** Take the run out of the main pane. Called when the location changes. */
   closeView(): void {
     this.view = null;
   }
@@ -465,7 +474,10 @@ export class SessionsStore {
   private handleStarted(session: SessionSummary): void {
     this.live = [session, ...this.live.filter((s) => s.run_id !== session.run_id)];
     const view = this.view;
-    if (view?.followAddress === session.address) view.follow(session);
+    if (view?.followAddress === session.address) {
+      view.follow(session);
+      router.replaceSession(session.run_id);
+    }
   }
 
   private handleRunFrame(frame: RunFrame): void {

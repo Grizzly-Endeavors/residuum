@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { fetchStatus } from "./lib/api";
   import { ws } from "./lib/ws.svelte";
   import Header from "./components/Header.svelte";
@@ -15,13 +15,19 @@
   import SessionsSidebar from "./components/SessionsSidebar.svelte";
   import SessionView from "./components/SessionView.svelte";
   import { userInbox } from "./lib/inbox.svelte";
+  import { router } from "./lib/router.svelte";
 
   // Below this width the sessions sidebar becomes a drawer over the page.
   const NARROW_QUERY = "(max-width: 900px)";
   const SIDEBAR_PREF_KEY = "residuum-sessions-sidebar";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
-  let activeView = $state<"chat" | "workspace" | "settings">("chat");
+  router.start();
+
+  let activeView = $derived.by<"chat" | "workspace" | "settings">(() => {
+    if (router.settings !== null) return "settings";
+    return router.chat.workspace ? "workspace" : "chat";
+  });
   let workspaceMounted = $state(false);
   let helpOpen = $state(false);
   let feedbackOpen = $state(false);
@@ -62,11 +68,10 @@
   function selectSession(runId: string) {
     sessions.openRun(runId);
     if (narrow) drawerOpen = false;
-    if (activeView === "settings") activeView = "chat";
   }
 
   function backToChat() {
-    sessions.closeView();
+    router.openMainChat();
     void tick().then(() =>
       document.querySelector<HTMLTextAreaElement>(".chat-view .chat-input")?.focus(),
     );
@@ -100,6 +105,15 @@
 
   $effect(() => {
     if (activeView === "workspace") workspaceMounted = true;
+  });
+
+  // The location decides which run the main pane shows.
+  $effect(() => {
+    const runId = router.chat.runId;
+    untrack(() => {
+      if (runId === null) sessions.closeView();
+      else sessions.showRun(runId);
+    });
   });
 
   onMount(async () => {
@@ -169,14 +183,11 @@
   <Header
     status={ws.transport.status}
     {activeView}
-    onOpenChat={() => {
-      activeView = "chat";
-    }}
-    onOpenWorkspace={() => {
-      activeView = activeView === "workspace" ? "chat" : "workspace";
-    }}
+    onOpenChat={() => router.setWorkspace(false)}
+    onOpenWorkspace={() => router.setWorkspace(activeView !== "workspace")}
     onOpenSettings={() => {
-      activeView = activeView === "settings" ? "chat" : "settings";
+      if (activeView === "settings") router.closeSettings();
+      else router.openSettings();
     }}
     onOpenFeedback={() => openFeedback("bug")}
     onOpenInbox={() => {
@@ -192,9 +203,9 @@
   />
   {#if activeView === "settings"}
     <Settings
-      onClose={() => {
-        activeView = "chat";
-      }}
+      section={router.settings ?? "runtime"}
+      onSelectSection={(section) => router.openSettings(section)}
+      onClose={() => router.closeSettings()}
     />
   {:else}
     <div class="app-body">
@@ -223,11 +234,7 @@
       >
         <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
           {#if workspaceMounted}
-            <Workspace
-              onClose={() => {
-                activeView = "chat";
-              }}
-            />
+            <Workspace onClose={() => router.setWorkspace(false)} />
           {/if}
         </div>
         <div class="main-pane">
