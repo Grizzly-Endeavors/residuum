@@ -21,6 +21,10 @@ Slash commands (`/stop`, `/reload`, `/inbox`, …) run only for the owner in eit
 
 Every message the agent sees records who sent it and where, e.g. `[From: bear via discord (#builds (Eng Team))]` — see [Message Senders](memory.md#message-senders).
 
+## Conversation routing
+
+Only the owner's own direct messages reach the main agent. Every other admitted conversation — a server channel or thread, and a non-owner's DM when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that channel, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a server channel — a channel is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that channel — see [Where replies go](#where-replies-go).
+
 ## Direct messages and server channels
 
 In a direct message every message goes to the agent.
@@ -39,9 +43,10 @@ The buffer for that channel is emptied when it is delivered, so each message rea
 
 ## Where replies go
 
-- A reply goes to the DM or channel the message came from.
-- `send_message` with a `conversation` from `list_conversations` posts into that DM or channel. If Discord refuses the post (the bot lacks permission there, or was removed), the owner gets an error DM saying so.
-- Other proactive output — `send_message` without a conversation, results routed through `idle_channel = "discord"`, background turns — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
+- A DM reply goes to the owner from the main agent's own conversation.
+- A server channel or thread's reply comes from that channel's own session and always goes back to that same channel. It never falls back to the owner's DM: if Discord refuses the post (the bot lacks permission there, or was removed), the output is dropped, the error is logged naming the session and channel, and main gets a notice so the owner can be told if it matters.
+- `send_message` with a `conversation` from `list_conversations` posts into that DM or channel, from whichever agent (main or a session) calls it. If Discord refuses the post, main's own send gets an error DM to the owner the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "discord"`, background turns — goes to the owner's DM. Until an owner exists it is dropped with a warning in the log.
 - System notices and errors go only to the owner's DM, never into a server channel.
 
 Long replies are split into 2000-character messages. A typing indicator shows in the target channel while a turn runs. Files the agent sends are uploaded as Discord attachments.

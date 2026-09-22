@@ -29,6 +29,10 @@ Slash commands (`/stop`, `/reload`, `/inbox`, …) run only for the owner in eit
 
 Every message the agent sees records who sent it and where, e.g. `[From: Jane Doe via teams (#builds (Eng Team))]` — see [Message Senders](memory.md#message-senders). The agent's standing orientation tells it to keep the owner's private information out of replies to other people.
 
+## Conversation routing
+
+Only the owner's own direct message reaches the main agent. Every other admitted conversation — a group chat, a standard or private channel, and a non-owner's DM when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that conversation, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group chat or channel — those are still shared spaces, so they get a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that conversation — see [Where replies go](#where-replies-go).
+
 ## Direct messages, group chats, and channels
 
 In a direct message every message goes to the agent.
@@ -47,11 +51,12 @@ The buffer for that conversation is emptied when it is delivered, so each messag
 
 ## Where replies go
 
-- A reply goes to the conversation the message came from; in a channel it lands in the same thread.
-- `send_message` with a `conversation` from `list_conversations` posts into that DM, group chat, or channel (a channel post starts a new thread). If Teams refuses the post, the owner gets an error DM saying so.
-- Other proactive output with no originating Teams message — `send_message` without a conversation, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — goes to the owner's DM.
+- A DM reply goes to the owner from the main agent's own conversation.
+- A group chat or channel's reply comes from that conversation's own session and always goes back to that same conversation (a channel reply lands in the same thread). It never falls back to the owner's DM: if Teams refuses the post, the output is dropped, the error is logged naming the session and conversation, and main gets a notice so the owner can be told if it matters.
+- `send_message` with a `conversation` from `list_conversations` posts into that DM, group chat, or channel (a channel post starts a new thread), from whichever agent (main or a session) calls it. If Teams refuses main's own send, the owner gets an error DM the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- Other proactive output from main with no originating Teams message — `send_message` without a conversation, results routed through `idle_channel = "teams"`, background turns whose last user message came from Teams — goes to the owner's DM.
 - System notices and errors go only to the owner's DM, never into a shared conversation.
-- If a turn is already running when another Teams message arrives, the new message joins that turn and the answer goes to the conversation that started it.
+- If a turn is already running when another Teams message arrives, the new message joins that turn (main's own turn for the owner's DM, or a session's turn for its own conversation) and the answer goes to the conversation that started it.
 
 Long replies are split into chunks of about 20 KB (Teams rejects larger activities). A typing indicator shows in the target conversation while a turn runs.
 
