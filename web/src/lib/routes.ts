@@ -1,13 +1,14 @@
-// URL <-> app location. The chat side and the settings page are tracked
-// separately so that leaving settings returns to the chat side exactly as it
-// was (same session, workspace open or not), matching how the layout keeps
-// the chat, session view, and workspace mounted underneath.
+// URL <-> app location. The chat side and the full-page places (settings,
+// the workbench) are tracked separately so that leaving one returns to the
+// chat side exactly as it was (same session, workspace open or not).
 //
 // Paths:
 //   /                         main chat
 //   /sessions/:runId          a session's run in the main pane
 //   ?workspace                workspace panel open beside either of the above
 //   /settings/:section        settings (bare /settings opens the first section)
+//   /workbench                the workbench's tool list
+//   /workbench/:tool          one workbench tool
 
 import type { SettingsSection } from "./types";
 
@@ -31,10 +32,18 @@ export interface ChatLocation {
   workspace: boolean;
 }
 
+/** What the workbench shows. */
+export interface WorkbenchLocation {
+  /** The tool shown, or null for the tool list. */
+  tool: string | null;
+}
+
 export interface AppLocation {
   chat: ChatLocation;
   /** The settings section shown, or null when not on the settings page. */
   settings: SettingsSection | null;
+  /** The workbench place shown, or null when not on the workbench. */
+  workbench: WorkbenchLocation | null;
 }
 
 export interface ParsedLocation {
@@ -47,6 +56,13 @@ export interface ParsedLocation {
 }
 
 export const MAIN_CHAT: ChatLocation = { runId: null, workspace: false };
+
+/** Mirrors the gateway's tool-name rule, so a bad URL corrects to the list. */
+const TOOL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+export function isToolName(value: string): boolean {
+  return value.length <= 64 && TOOL_NAME.test(value);
+}
 
 function isSettingsSection(value: string): value is SettingsSection {
   return Object.hasOwn(SETTINGS_SECTIONS, value);
@@ -61,8 +77,8 @@ function decodeSegment(segment: string): string | null {
 }
 
 /**
- * Read a URL into a location. A settings URL says nothing about the chat
- * side, so `currentChat` carries over unchanged.
+ * Read a URL into a location. A settings or workbench URL says nothing about
+ * the chat side, so `currentChat` carries over unchanged.
  */
 export function parseLocation(
   pathname: string,
@@ -74,30 +90,58 @@ export function parseLocation(
   const [first, second, ...rest] = segments;
 
   if (first === undefined) {
-    return { location: { chat: { runId: null, workspace }, settings: null }, corrected: false };
+    return {
+      location: { chat: { runId: null, workspace }, settings: null, workbench: null },
+      corrected: false,
+    };
   }
 
   if (first === "settings" && rest.length === 0) {
     const section = second === undefined ? null : decodeSegment(second);
     if (section !== null && isSettingsSection(section)) {
-      return { location: { chat: currentChat, settings: section }, corrected: false };
+      return {
+        location: { chat: currentChat, settings: section, workbench: null },
+        corrected: false,
+      };
     }
-    return { location: { chat: currentChat, settings: DEFAULT_SECTION }, corrected: true };
+    return {
+      location: { chat: currentChat, settings: DEFAULT_SECTION, workbench: null },
+      corrected: true,
+    };
+  }
+
+  if (first === "workbench" && rest.length === 0) {
+    const tool = second === undefined ? null : decodeSegment(second);
+    const valid = second === undefined || (tool !== null && isToolName(tool));
+    return {
+      location: { chat: currentChat, settings: null, workbench: { tool: valid ? tool : null } },
+      corrected: !valid,
+    };
   }
 
   if (first === "sessions" && second !== undefined && rest.length === 0) {
     const runId = decodeSegment(second);
     if (runId !== null && runId !== "") {
-      return { location: { chat: { runId, workspace }, settings: null }, corrected: false };
+      return {
+        location: { chat: { runId, workspace }, settings: null, workbench: null },
+        corrected: false,
+      };
     }
   }
 
-  return { location: { chat: { runId: null, workspace }, settings: null }, corrected: true };
+  return {
+    location: { chat: { runId: null, workspace }, settings: null, workbench: null },
+    corrected: true,
+  };
 }
 
 /** The URL (path and query) for a location. */
 export function formatLocation(location: AppLocation): string {
   if (location.settings !== null) return `/settings/${location.settings}`;
+  if (location.workbench !== null) {
+    const { tool } = location.workbench;
+    return tool === null ? "/workbench" : `/workbench/${tool}`;
+  }
   const { runId, workspace } = location.chat;
   const path = runId === null ? "/" : `/sessions/${encodeURIComponent(runId)}`;
   return workspace ? `${path}?workspace` : path;

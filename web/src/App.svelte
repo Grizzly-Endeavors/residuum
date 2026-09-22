@@ -14,6 +14,7 @@
   import UserInboxDrawer from "./components/UserInboxDrawer.svelte";
   import SessionsSidebar from "./components/SessionsSidebar.svelte";
   import SessionView from "./components/SessionView.svelte";
+  import Workbench from "./components/Workbench.svelte";
   import { userInbox } from "./lib/inbox.svelte";
   import { router } from "./lib/router.svelte";
 
@@ -24,8 +25,9 @@
   let mode = $state<"loading" | "setup" | "running">("loading");
   router.start();
 
-  let activeView = $derived.by<"chat" | "workspace" | "settings">(() => {
+  let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench">(() => {
     if (router.settings !== null) return "settings";
+    if (router.workbench !== null) return "workbench";
     return router.chat.workspace ? "workspace" : "chat";
   });
   let workspaceMounted = $state(false);
@@ -189,11 +191,15 @@
       if (activeView === "settings") router.closeSettings();
       else router.openSettings();
     }}
+    onOpenWorkbench={() => {
+      if (activeView === "workbench") router.closeWorkbench();
+      else router.openWorkbench();
+    }}
     onOpenFeedback={() => openFeedback("bug")}
     onOpenInbox={() => {
       inboxOpen = true;
     }}
-    sessionsToggle={activeView === "settings"
+    sessionsToggle={activeView === "settings" || activeView === "workbench"
       ? undefined
       : {
           open: sidebarOpen,
@@ -207,6 +213,8 @@
       onSelectSection={(section) => router.openSettings(section)}
       onClose={() => router.closeSettings()}
     />
+  {:else if activeView === "workbench"}
+    <Workbench tool={router.workbench?.tool ?? null} onClose={() => router.closeWorkbench()} />
   {:else}
     <div class="app-body">
       {#if sidebarOpen}

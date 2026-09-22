@@ -19,7 +19,7 @@ import {
   CACHE_KEY_PROVIDERS_RAW,
   CACHE_KEY_MCP_RAW,
 } from "./api";
-import type { ClientMessage, ImageAttachment } from "./types";
+import type { ClientMessage, ImageAttachment, ServerMessage } from "./types";
 
 class WsCoordinator {
   transport = new WsTransport();
@@ -34,6 +34,7 @@ class WsCoordinator {
   });
   private msgCounter = 0;
   private hasConnected = false;
+  private frameListeners = new Set<(msg: ServerMessage) => void>();
 
   verbose = $state(false);
 
@@ -48,6 +49,14 @@ class WsCoordinator {
     // surface, then hand the message to the feed store for any chat-state
     // side effects (e.g. clearing the thinking indicator on errors).
     this.transport.onMessage = (msg) => {
+      for (const listener of this.frameListeners) {
+        try {
+          listener(msg);
+        } catch (err) {
+          // eslint-disable-next-line no-console -- a failing observer must not stop the chat from handling the frame; the console is its only channel
+          console.error("frame listener failed", err);
+        }
+      }
       // Session activity has its own store. It must never reach the main
       // feed, whose `error` handling would clear the main turn's state.
       if (isSessionFrame(msg)) {
@@ -154,6 +163,15 @@ class WsCoordinator {
     if (this.store.reconcileRecent(recent)) return;
     this.store.reloadHistory(recent);
     await this.loadOlderHistory();
+  }
+
+  /**
+   * Observe every frame the server sends, alongside the stores that handle
+   * them. Returns a function that stops observing.
+   */
+  onFrame(listener: (msg: ServerMessage) => void): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
   }
 
   // ── Delegated methods ─────────────────────────────────────────────

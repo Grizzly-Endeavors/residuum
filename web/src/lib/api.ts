@@ -20,6 +20,7 @@ import type {
   SessionCategory,
   SessionListResponse,
   SessionTranscriptResponse,
+  WorkbenchToolSummary,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -346,6 +347,25 @@ export async function fetchSessionTranscript(runId: string): Promise<SessionTran
   return apiFetch<SessionTranscriptResponse>(
     `/api/sessions/runs/${encodeURIComponent(runId)}/transcript`,
   );
+}
+
+// ── Workbench API wrappers ──────────────────────────────────────────
+
+/** Every workbench tool, most recently modified first. Not cached: tools change live. */
+export async function fetchWorkbenchTools(): Promise<WorkbenchToolSummary[]> {
+  return apiFetch<WorkbenchToolSummary[]>("/api/workbench/tools");
+}
+
+/** Where a tool's sandboxed page is served, for the tool frame's `src`. */
+export function workbenchToolPageUrl(name: string): string {
+  return `/api/workbench/tools/${encodeURIComponent(name)}`;
+}
+
+/** Delete a tool and its data files. Throws `ApiError` (404 if already gone). */
+export async function deleteWorkbenchTool(name: string): Promise<void> {
+  await apiFetch<unknown>(`/api/workbench/tools/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Workspace API wrappers ──────────────────────────────────────────
