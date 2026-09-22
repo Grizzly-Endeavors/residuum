@@ -9,6 +9,7 @@ use crate::agent::HopCounter;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::inference::MessageSender;
+use crate::interfaces::types::InboundMessage;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
@@ -37,6 +38,14 @@ pub struct SubAgentConfig {
     /// same `[From: name via interface (location)]` attribution the main
     /// agent shows. `None` for every other trigger.
     pub sender: Option<MessageSender>,
+    /// The original inbound message that triggered this run, for a
+    /// conversation-triggered spawn — carried so that if this run loses the
+    /// race to register its own address (see
+    /// `crate::background::listener::race_guard_interrupt`), its content can
+    /// still be delivered into the winning run as `Interrupt::UserMessage`
+    /// with correct sender attribution, instead of a plain agent message
+    /// misattributed to `main`. `None` for every other trigger.
+    pub inbound: Option<InboundMessage>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display

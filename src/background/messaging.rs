@@ -132,6 +132,14 @@ impl AgentMessenger {
         }
     }
 
+    /// The bus publisher this messenger delivers with, for a caller (e.g.
+    /// [`super::conversation_router::ConversationRouter`]) that needs to
+    /// publish a notice of its own alongside an ordinary delivery.
+    #[must_use]
+    pub(crate) fn publisher(&self) -> Publisher {
+        self.publisher.clone()
+    }
+
     /// Recover the hop count of an agent message delivered to main, given
     /// the `MessageEvent.id` it arrived under. Removes the entry on read.
     /// Returns `0` for any id this messenger never published under — a
@@ -526,6 +534,8 @@ async fn publish_conversation_spawn(
             "internal error: no conversation context on an external message".to_string(),
         ));
     };
+    let conversation_id = conversation.id.clone();
+    let original_inbound = inbound.clone();
     let event = crate::bus::SpawnRequestEvent {
         address,
         skill: None,
@@ -540,8 +550,9 @@ async fn publish_conversation_spawn(
         sender: inbound.origin.sender,
         conversation: Some(crate::bus::ConversationTarget {
             endpoint: inbound.origin.endpoint,
-            conversation_id: conversation.id.clone(),
+            conversation_id,
         }),
+        inbound: Some(original_inbound),
     };
     publisher
         .publish(topics::Background, event)
@@ -578,6 +589,7 @@ async fn publish_conversation_resume(
         hop_count: 0,
         sender: inbound.origin.sender.clone(),
         conversation: point.conversation_target.clone(),
+        inbound: Some(inbound.clone()),
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -823,6 +835,14 @@ async fn publish_resume(
         // so a resume triggered by `message_agent` doesn't strand it.
         sender: None,
         conversation: point.conversation_target.clone(),
+        // This resume was triggered by a plain agent message
+        // (`message_agent`/`resume_with_pending`), never an inbound
+        // conversation message — even when `point.trigger` is
+        // `Conversation` (a previously conversation-triggered session,
+        // resumed by an agent addressing it directly). A race-guard delivery
+        // for this request must fall back to `Interrupt::AgentMessage`, not
+        // fabricate a `UserMessage` with no real sender.
+        inbound: None,
     };
 
     publisher

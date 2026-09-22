@@ -294,6 +294,7 @@ impl Tool for SubagentSpawnTool {
             hop_count: self.hop_counter.outgoing(),
             sender: None,
             conversation: None,
+            inbound: None,
         };
 
         self.publisher

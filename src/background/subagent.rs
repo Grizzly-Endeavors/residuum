@@ -9,8 +9,8 @@ use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{EventContext, TurnResources, execute_turn};
-use crate::bus::{AgentMessageEvent, Publisher};
+use crate::agent::turn::{EventContext, SessionConversationTarget, TurnResources, execute_turn};
+use crate::bus::{AgentMessageEvent, EndpointName, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, InferenceProvider, Message, MessageSender};
 use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
@@ -259,6 +259,38 @@ pub async fn build_subagent_resources(
     })
 }
 
+/// Where a conversation session delivers its intermediate turn text: its own
+/// address, the interface endpoint its conversation lives on, the
+/// conversation id itself, and a real bus publisher to reach it with.
+pub(crate) struct ConversationOutput<'a> {
+    pub(crate) publisher: &'a Publisher,
+    pub(crate) session_address: &'a SessionAddress,
+    pub(crate) endpoint: &'a str,
+    pub(crate) conversation_id: &'a str,
+}
+
+/// A turn's control-flow handles — cancellation, transcript persistence, and
+/// the run's own interrupt channel — grouped into one argument so
+/// `execute_subagent`'s parameter count stays within clippy's limit.
+pub(crate) struct TurnExecution<'a> {
+    /// The session's own token: cancelling it (via `stop_agent`) aborts an
+    /// in-flight model call or ends the turn at its next checkpoint, leaving
+    /// `recent_messages` — and therefore the transcript — intact up to that
+    /// point.
+    pub(crate) stop_token: &'a CancellationToken,
+    /// When given, receives every message as it's produced (the kickoff
+    /// message, then each model response and tool result inside
+    /// `execute_turn`) so the run's transcript survives a crash mid-turn in
+    /// the session store.
+    pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
+    /// The run's own long-lived interrupt channel: draining it is what
+    /// delivers an agent message to a *running* turn at its next tool-call
+    /// boundary. Between turns, the caller drains the same channel itself to
+    /// decide whether to wake for another turn (see
+    /// `crate::background::runtime`).
+    pub(crate) interrupt_rx: &'a mut mpsc::Receiver<Interrupt>,
+}
+
 /// Execute one turn of a session's run.
 ///
 /// `recent_messages` is the run's whole history so far — empty on the run's
@@ -269,21 +301,14 @@ pub async fn build_subagent_resources(
 /// message that `execute_turn` assembles itself, the same way the main
 /// agent's turns are, so nothing is injected twice.
 ///
-/// `stop_token` is the session's own token: cancelling it (via `stop_agent`)
-/// aborts an in-flight model call or ends the turn at its next checkpoint,
-/// leaving `recent_messages` — and therefore the transcript — intact up to
-/// that point.
+/// `turn` groups this turn's control-flow handles — see
+/// [`TurnExecution`]'s field docs for what each one does.
 ///
-/// `transcript_sink`, when given, receives every message as it's produced
-/// (the kickoff message here, then each model response and tool result
-/// inside `execute_turn`) so the run's transcript survives a crash mid-turn
-/// in the session store.
-///
-/// `interrupt_rx` is the run's own long-lived interrupt channel: draining it
-/// here is what delivers an agent message to a *running* turn at its next
-/// tool-call boundary. Between turns, the caller drains the same channel
-/// itself to decide whether to wake for another turn (see
-/// `crate::background::runtime`).
+/// `conversation_output`, when given, is where this turn's intermediate
+/// (pre-tool-call) text is delivered — a conversation session's own address,
+/// conversation, and a real bus publisher. `None` for every other session
+/// category: their intermediate text uses a noop publisher and goes
+/// nowhere, since there is no conversation of theirs to send it to.
 ///
 /// Returns this turn's final text response. The full transcript is left in
 /// `recent_messages` for the caller.
@@ -296,10 +321,14 @@ pub(crate) async fn execute_subagent(
     kickoff: TurnKickoff,
     recent_messages: &mut RecentMessages,
     resources: &SubAgentResources,
-    stop_token: &CancellationToken,
-    transcript_sink: Option<&dyn crate::agent::turn::TranscriptSink>,
-    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    turn: TurnExecution<'_>,
+    conversation_output: Option<ConversationOutput<'_>>,
 ) -> Result<String, anyhow::Error> {
+    let TurnExecution {
+        stop_token,
+        transcript_sink,
+        interrupt_rx,
+    } = turn;
     // Build skills context from this session's isolated skill state
     let active_instructions: Option<String> = {
         let guard = resources.skill_state.lock().await;
@@ -322,10 +351,24 @@ pub(crate) async fn execute_subagent(
         sink.append(&kickoff_messages).await;
     }
 
-    // No broker needed: sessions pass `None` for both endpoints, so
-    // streaming events are never published. A noop publisher satisfies
-    // the type without spawning a background task.
-    let publisher = Publisher::noop();
+    // A session with no conversation of its own (scheduled, spawned) has no
+    // legitimate audience for intermediate text, so it keeps the noop
+    // publisher and an unset output endpoint — `EventContext` then never
+    // publishes anything for it, the same as before this parameter existed.
+    let noop_publisher = Publisher::noop();
+    let output_endpoint = conversation_output
+        .as_ref()
+        .map(|out| EndpointName::from(out.endpoint));
+    let (publisher, session_conversation) = match &conversation_output {
+        Some(out) => (
+            out.publisher,
+            Some(SessionConversationTarget {
+                session_address: out.session_address,
+                conversation_id: out.conversation_id,
+            }),
+        ),
+        None => (&noop_publisher, None),
+    };
 
     let memory_ctx = MemoryContext {
         observations: resources.observations.as_deref(),
@@ -346,10 +389,11 @@ pub(crate) async fn execute_subagent(
     };
 
     let events = EventContext {
-        publisher: &publisher,
-        output_endpoint: None,
+        publisher,
+        output_endpoint: output_endpoint.as_ref(),
         tool_activity_endpoint: None,
         correlation_id: "",
+        session_conversation,
     };
     // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
@@ -470,9 +514,12 @@ mod tests {
             initial("check emails", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -490,9 +537,12 @@ mod tests {
             initial("do work", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -525,9 +575,12 @@ mod tests {
             initial("check emails", Some("extra context")),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -557,9 +610,12 @@ mod tests {
             }),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -596,9 +652,12 @@ mod tests {
             },
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -627,9 +686,12 @@ mod tests {
             },
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -672,9 +734,12 @@ mod tests {
             TurnKickoff::External(inbound),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -715,9 +780,12 @@ mod tests {
             initial("keep working", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut rx,
+            },
             None,
-            &mut rx,
         )
         .await
         .unwrap();
@@ -768,9 +836,12 @@ mod tests {
             initial("keep working", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut rx,
+            },
             None,
-            &mut rx,
         )
         .await
         .unwrap();
@@ -847,9 +918,12 @@ mod tests {
             initial("continue the task", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -884,6 +958,118 @@ mod tests {
             !user.content.contains("I am the agent."),
             "identity must not be duplicated into the user message"
         );
+    }
+
+    /// Returns a tool call plus text on its first call (so `execute_turn`
+    /// takes the intermediate-publish branch and executes a tool), then
+    /// plain text with no tool calls on every call after (ending the turn).
+    struct ToolCallThenTextProvider {
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ToolCallThenTextProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            let n = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(InferenceResponse::new(
+                    "checking the build now".to_string(),
+                    vec![crate::inference::ToolCall {
+                        id: "call-1".to_string(),
+                        name: "nonexistent_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                    }],
+                ))
+            } else {
+                Ok(InferenceResponse::new("build is green".to_string(), vec![]))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "tool-call-then-text"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_sessions_intermediate_text_reaches_its_own_conversation() {
+        // Regression test: a conversation session's pre-tool-call text used
+        // to go nowhere (sessions always ran with a noop publisher and no
+        // output endpoint). With `conversation_output` set, it must reach
+        // the session's own conversation as a `SessionResponseEvent` — the
+        // same event and delivery path its final turn output uses — not
+        // main's `IntermediateEvent`.
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+        let (layout, observer, merge_writer) = test_memory_extras();
+        let resources = SubAgentResources {
+            provider: Box::new(ToolCallThenTextProvider {
+                call_count: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            tools: ToolRegistry::new(),
+            mcp_registry,
+            skill_state,
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(crate::bus::topics::Endpoint(
+                crate::bus::EndpointName::from("discord"),
+            ))
+            .await
+            .unwrap();
+
+        let address = crate::bus::SessionAddress::from("external-discord-chan-1");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        let summary = execute_subagent(
+            "run-conv-tool",
+            initial("can you check the build?", None),
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            Some(ConversationOutput {
+                publisher: &publisher,
+                session_address: &address,
+                endpoint: "discord",
+                conversation_id: "chan-1",
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary, "build is green");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
+            .await
+            .expect("intermediate text should reach the conversation promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.content, "checking the build now");
+        assert_eq!(event.session_address, address);
+        assert_eq!(event.conversation_id, "chan-1");
     }
 
     #[tokio::test]
@@ -939,9 +1125,12 @@ mod tests {
             initial("do work", None),
             &mut recent_messages,
             &resources,
-            &stop_token,
+            TurnExecution {
+                stop_token: &stop_token,
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -1017,9 +1206,12 @@ mod tests {
             initial("do work", None),
             &mut recent_messages,
             &resources,
-            &stop_token,
-            Some(&sink),
-            &mut interrupt_rx,
+            TurnExecution {
+                stop_token: &stop_token,
+                transcript_sink: Some(&sink),
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
         )
         .await
         .unwrap();

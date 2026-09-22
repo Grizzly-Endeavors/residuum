@@ -70,6 +70,7 @@ impl ConversationRouter {
             model_tier: self.model_tier,
         };
 
+        let conversation_id = conversation.id.clone();
         match self
             .messenger
             .deliver_conversation(&address, message, spawn)
@@ -86,6 +87,21 @@ impl ConversationRouter {
             }
             Ok(super::messaging::ConversationDeliveryOutcome::Queued(addr)) => {
                 tracing::debug!(address = %addr, "queued conversation message for a completing session");
+            }
+            Err(super::messaging::SendError::Busy(addr)) => {
+                // Unlike every other outcome above, a busy target drops this
+                // participant's message on the floor with nothing else to
+                // show for it — the interface already delivered it, and
+                // there's no resume path to fall back to (the target is
+                // live, just saturated). Without a notice, main never learns
+                // it happened.
+                crate::interfaces::notify_main_of_undeliverable_conversation_message(
+                    &self.messenger.publisher(),
+                    &addr,
+                    &conversation_id,
+                    "the session's interrupt channel is saturated",
+                )
+                .await;
             }
             Err(e) => {
                 tracing::error!(address = %address, error = %e, "failed to route conversation message to its session");
@@ -123,7 +139,11 @@ mod tests {
         }
     }
 
-    fn router() -> (ConversationRouter, crate::bus::BusHandle) {
+    fn router() -> (
+        ConversationRouter,
+        crate::bus::BusHandle,
+        Arc<super::super::registry::SessionRegistry>,
+    ) {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(super::super::registry::SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
@@ -131,17 +151,17 @@ mod tests {
             dir.path().to_path_buf(),
         ));
         let messenger = Arc::new(AgentMessenger::new(
-            registry,
+            Arc::clone(&registry),
             bus_handle.publisher(),
             store,
             crate::agent::hop::HopLimits { soft: 8, hard: 32 },
         ));
-        (ConversationRouter::new(messenger), bus_handle)
+        (ConversationRouter::new(messenger), bus_handle, registry)
     }
 
     #[tokio::test]
     async fn routing_the_same_conversation_twice_resolves_to_the_same_address() {
-        let (router, bus_handle) = router();
+        let (router, bus_handle, _registry) = router();
         let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> = bus_handle
             .subscribe(crate::bus::topics::Background)
             .await
@@ -198,11 +218,79 @@ mod tests {
 
     #[tokio::test]
     async fn a_message_with_no_conversation_context_is_dropped_not_panicked() {
-        let (router, _bus_handle) = router();
+        let (router, _bus_handle, _registry) = router();
         let mut msg = inbound("discord", "chan-1", None);
         msg.origin.conversation = None;
         // Must not panic; the caller contract says this shouldn't happen,
         // but the router still degrades to a dropped-with-log message.
         router.route(msg).await;
+    }
+
+    #[tokio::test]
+    async fn a_busy_session_notifies_main_instead_of_silently_dropping_the_message() {
+        let (router, bus_handle, registry) = router();
+        let address = conversation_session_address("discord", "chan-1");
+        let info = crate::background::registry::SessionInfo {
+            address: address.clone(),
+            run_id: "run-1".to_string(),
+            category: crate::background::registry::SessionCategory::External,
+            trigger: crate::bus::EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: crate::background::registry::SessionState::Idle,
+            spawner: None,
+            depth: 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: Some(crate::bus::ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+            started_at: chrono::Utc::now(),
+        };
+        registry
+            .register(info, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        // Saturate the session's interrupt channel directly so the router's
+        // own delivery attempt below finds it full.
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+            registry.deliver(
+                &address,
+                crate::agent::interrupt::Interrupt::UserMessage(inbound(
+                    "discord",
+                    "chan-1",
+                    Some("#builds"),
+                )),
+            );
+        }
+
+        let mut main_sub: crate::bus::Subscriber<crate::bus::MessageEvent> = bus_handle
+            .subscribe(crate::bus::topics::UserMessage)
+            .await
+            .unwrap();
+
+        router
+            .route(inbound("discord", "chan-1", Some("#builds")))
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), main_sub.recv())
+            .await
+            .expect("main should be notified promptly, not left to find out never")
+            .unwrap()
+            .unwrap();
+        assert!(
+            event.content.contains(&address.to_string()),
+            "notice should name the busy session, got: {}",
+            event.content
+        );
+        assert!(
+            event.content.contains("chan-1"),
+            "notice should name the conversation, got: {}",
+            event.content
+        );
+        assert!(
+            event.origin.belongs_to_main(),
+            "the notice must reach main, never a conversation session"
+        );
     }
 }

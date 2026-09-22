@@ -9,7 +9,7 @@ use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::types::{InboundMessage, MessageOrigin};
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -384,6 +384,16 @@ pub struct SpawnRequestEvent {
     /// spawn. `None` for every other trigger, which have no conversation of
     /// their own to reply into.
     pub conversation: Option<ConversationTarget>,
+    /// The original inbound message that triggered this spawn or resume, for
+    /// a `Conversation`-triggered request. Carried alongside the already-
+    /// extracted `prompt`/`context`/`sender` fields so that if this request
+    /// loses the race for its target address (see
+    /// `crate::background::listener::race_guard_interrupt`), its content can
+    /// still be delivered as `Interrupt::UserMessage` — with the same sender
+    /// attribution ordinary conversation delivery gets — instead of being
+    /// misattributed as a plain agent message from `main`. `None` for every
+    /// other trigger.
+    pub inbound: Option<InboundMessage>,
 }
 
 /// The conversation an `external` conversation session replies to: which

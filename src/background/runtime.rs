@@ -28,8 +28,8 @@ use crate::interfaces::types::InboundMessage;
 
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
 use super::registry::{
-    DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionCategory, SessionInfo, SessionRegistry,
-    SessionState, generate_run_id,
+    DeliverOutcome, ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState,
+    generate_run_id,
 };
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
@@ -303,17 +303,23 @@ fn deliver_losing_spawn_input(
         Some(ctx) => format!("{ctx}\n\n{}", config.prompt),
         None => config.prompt.clone(),
     };
+    // Shares `race_guard_interrupt` with `listener::handle_spawn_request`'s
+    // own live-address guard: this is the same situation (a spawn/resume's
+    // content losing the race for its address), just found in a narrower
+    // window — after `handle_spawn_request`'s own check found the address
+    // free, but before this run actually won `SessionRegistry::register`. A
+    // `Conversation`-triggered run must still deliver its carried inbound
+    // message as `Interrupt::UserMessage`, not misattribute it to `main`.
     let outcome = registry.deliver(
         &info.address,
-        Interrupt::AgentMessage(AgentMessageEvent {
-            from: info
-                .spawner
-                .clone()
-                .unwrap_or_else(|| SessionAddress::from(MAIN_ADDRESS)),
-            from_category: info.category.as_str().to_string(),
+        super::listener::race_guard_interrupt(
+            &info.trigger,
+            config.inbound.clone(),
+            info.spawner.clone(),
+            info.category,
             content,
-            hop_count: config.hop_count,
-        }),
+            config.hop_count,
+        ),
     );
     match outcome {
         DeliverOutcome::Delivered => {}
@@ -613,6 +619,7 @@ async fn run_session(
                             resources: resources.as_ref(),
                             stop_token: &stop_token,
                             store: &env.store,
+                            publisher: &env.publisher,
                         };
                         run_turn(&ctx, &mut recent_messages, kickoff, &mut interrupt_rx).await
                     }
@@ -992,6 +999,11 @@ struct TurnCtx<'a> {
     resources: Option<&'a SubAgentResources>,
     stop_token: &'a CancellationToken,
     store: &'a SessionStore,
+    /// The run's own bus publisher, threaded through to
+    /// `execute_subagent`'s `conversation_output` so a conversation
+    /// session's intermediate turn text reaches its own conversation the
+    /// same way its final output does.
+    publisher: &'a Publisher,
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -1015,6 +1027,16 @@ async fn run_turn(
         run_id: &ctx.info.run_id,
         started_at: ctx.info.started_at,
     };
+    let conversation_output =
+        ctx.info
+            .conversation_target
+            .as_ref()
+            .map(|target| super::subagent::ConversationOutput {
+                publisher: ctx.publisher,
+                session_address: &ctx.info.address,
+                endpoint: target.endpoint.as_str(),
+                conversation_id: target.conversation_id.as_str(),
+            });
     let outcome = async {
         let res = ctx
             .resources
@@ -1024,9 +1046,12 @@ async fn run_turn(
             kickoff,
             recent_messages,
             res,
-            ctx.stop_token,
-            Some(&sink),
-            interrupt_rx,
+            super::subagent::TurnExecution {
+                stop_token: ctx.stop_token,
+                transcript_sink: Some(&sink),
+                interrupt_rx,
+            },
+            conversation_output,
         )
         .await
     }
@@ -1192,6 +1217,7 @@ mod tests {
                 model_tier: crate::config::BackgroundModelTier::Medium,
                 hop_count: 0,
                 sender: None,
+                inbound: None,
             },
             conversation_target: None,
         }
@@ -1234,11 +1260,75 @@ mod tests {
                 model_tier: crate::config::BackgroundModelTier::Medium,
                 hop_count: 0,
                 sender: None,
+                inbound: None,
             },
             conversation_target: Some(ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),
             }),
+        }
+    }
+
+    #[test]
+    fn deliver_losing_spawn_input_for_a_conversation_trigger_preserves_sender_attribution() {
+        // Mirrors `listener::two_conversation_messages_...`: this is the
+        // same race-guard misattribution bug, just hit through the narrower
+        // window between `handle_spawn_request`'s own live-address check
+        // passing and this run actually winning `SessionRegistry::register`.
+        let registry = SessionRegistry::new();
+        let address = SessionAddress::from("external-discord-race");
+        let winner = SessionInfo {
+            address: address.clone(),
+            run_id: "run-winner".to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: SessionState::Idle,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: Some(ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+            started_at: Utc::now(),
+        };
+        let mut rx = registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let losing_inbound = sample_inbound_message("any updates?");
+        let config = SubAgentConfig {
+            prompt: "any updates?".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            hop_count: 0,
+            sender: None,
+            inbound: Some(losing_inbound),
+        };
+        let register_error = super::super::registry::RegisterError {
+            address: address.clone(),
+        };
+
+        deliver_losing_spawn_input(&registry, &losing_info, &config, &register_error);
+
+        let delivered = rx
+            .try_recv()
+            .expect("the losing run's content must be delivered into the winning run");
+        match delivered {
+            Interrupt::UserMessage(m) => assert_eq!(m.content, "any updates?"),
+            Interrupt::AgentMessage(_) | Interrupt::Subconscious(_) | Interrupt::Stopped => {
+                panic!(
+                    "expected a UserMessage interrupt for a conversation trigger, not an agent \
+                     message misattributed to main"
+                )
+            }
         }
     }
 

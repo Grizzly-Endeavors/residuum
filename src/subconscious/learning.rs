@@ -171,6 +171,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         hop_count: 0,
         sender: None,
         conversation: None,
+        inbound: None,
     }
 }
 

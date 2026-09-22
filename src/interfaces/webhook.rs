@@ -225,6 +225,7 @@ async fn route_webhook_content(
                 hop_count: 0,
                 sender: None,
                 conversation: None,
+                inbound: None,
             };
             if let Err(e) = state
                 .publisher
