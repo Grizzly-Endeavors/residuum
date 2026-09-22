@@ -150,15 +150,32 @@ pub struct SubagentSpawnTool {
     publisher: crate::bus::Publisher,
     /// Main agent skill state — read to validate a requested skill name.
     skill_state: SharedSkillState,
+    /// The caller's own address, recorded as the spawner of any session this
+    /// tool forks (`main`, or a session's own address).
+    spawner_address: SessionAddress,
+    /// The caller's own depth from the main agent (main = 0).
+    depth: u32,
+    /// Maximum depth a spawned session may have. Spawning is refused once
+    /// `depth + 1` would exceed this.
+    depth_cap: u32,
 }
 
 impl SubagentSpawnTool {
     /// Create a new `SubagentSpawnTool`.
     #[must_use]
-    pub(crate) fn new(publisher: crate::bus::Publisher, skill_state: SharedSkillState) -> Self {
+    pub(crate) fn new(
+        publisher: crate::bus::Publisher,
+        skill_state: SharedSkillState,
+        spawner_address: SessionAddress,
+        depth: u32,
+        depth_cap: u32,
+    ) -> Self {
         Self {
             publisher,
             skill_state,
+            spawner_address,
+            depth,
+            depth_cap,
         }
     }
 }
@@ -245,6 +262,15 @@ impl Tool for SubagentSpawnTool {
             None => BackgroundModelTier::Medium,
         };
 
+        let new_depth = self.depth + 1;
+        if new_depth > self.depth_cap {
+            return Ok(ToolResult::error(format!(
+                "cannot spawn: nesting depth cap ({}) reached at depth {} — handle this task \
+                 directly instead of spawning further, or have a shallower agent spawn it",
+                self.depth_cap, self.depth
+            )));
+        }
+
         let trigger = EventTrigger::Agent;
         let address = generate_address(&trigger, skill_name.unwrap_or("subagent"));
 
@@ -256,6 +282,8 @@ impl Tool for SubagentSpawnTool {
             context: None,
             source: trigger,
             model_tier,
+            spawner: Some(self.spawner_address.clone()),
+            depth: new_depth,
         };
 
         self.publisher
@@ -284,10 +312,20 @@ mod tests {
     use crate::skills::{SkillIndex, SkillState};
 
     fn make_tool() -> SubagentSpawnTool {
+        make_tool_with_depth(MAIN_ADDRESS, 0, 2)
+    }
+
+    fn make_tool_with_depth(spawner: &str, depth: u32, depth_cap: u32) -> SubagentSpawnTool {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        SubagentSpawnTool::new(publisher, skill_state)
+        SubagentSpawnTool::new(
+            publisher,
+            skill_state,
+            SessionAddress::from(spawner),
+            depth,
+            depth_cap,
+        )
     }
 
     #[test]
@@ -418,7 +456,13 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let skill_state = SkillState::new_shared(index, vec![dir.path().to_path_buf()]);
-        let tool = SubagentSpawnTool::new(publisher, skill_state);
+        let tool = SubagentSpawnTool::new(
+            publisher,
+            skill_state,
+            SessionAddress::from(MAIN_ADDRESS),
+            0,
+            2,
+        );
 
         let res = tool
             .execute(serde_json::json!({
@@ -431,6 +475,68 @@ mod tests {
         assert!(!res.is_error, "got: {}", res.output);
         assert!(res.output.contains("spawned-researcher-"));
         assert!(res.output.contains("researcher"));
+    }
+
+    #[tokio::test]
+    async fn spawn_at_the_depth_cap_is_refused() {
+        // A session at depth 2 with a cap of 2 would create a depth-3 child,
+        // which exceeds the cap.
+        let tool = make_tool_with_depth("spawned-parent-0001", 2, 2);
+
+        let result = tool
+            .execute(serde_json::json!({ "task": "do something" }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "spawning past the cap should be refused");
+        assert!(
+            result.output.contains("depth cap"),
+            "error should explain the depth cap, got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_at_depth_below_cap_succeeds() {
+        // A session at depth 1 with a cap of 2 creates a depth-2 child, which
+        // is exactly at the cap and still allowed.
+        let tool = make_tool_with_depth("spawned-parent-0001", 1, 2);
+
+        let result = tool
+            .execute(serde_json::json!({ "task": "do something" }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "got: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn spawn_records_the_calling_session_as_spawner_and_its_depth_plus_one() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut subscriber = bus_handle
+            .subscribe(crate::bus::topics::Background)
+            .await
+            .unwrap();
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let tool = SubagentSpawnTool::new(
+            publisher,
+            skill_state,
+            SessionAddress::from("spawned-parent-0001"),
+            1,
+            2,
+        );
+
+        tool.execute(serde_json::json!({ "task": "do something" }))
+            .await
+            .unwrap();
+
+        let event: crate::bus::SpawnRequestEvent = subscriber.recv().await.unwrap().unwrap();
+        assert_eq!(
+            event.spawner,
+            Some(SessionAddress::from("spawned-parent-0001"))
+        );
+        assert_eq!(event.depth, 2);
     }
 
     #[tokio::test]

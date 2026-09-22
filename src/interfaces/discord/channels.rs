@@ -88,6 +88,10 @@ pub(super) struct DiscordConversations {
 
 #[async_trait]
 impl ConversationSource for DiscordConversations {
+    async fn owner_dm_conversation_id(&self) -> Option<String> {
+        self.state.store.owner().await.map(|o| o.dm_conversation_id)
+    }
+
     async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>> {
         use anyhow::Context as _;
 

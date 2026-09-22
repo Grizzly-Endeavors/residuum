@@ -95,6 +95,9 @@ pub async fn build_subagent_resources(
         observer,
         merge_writer,
         episode_skip_token_floor,
+        own_address,
+        own_depth,
+        subagent_depth_cap,
     } = config;
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
@@ -136,6 +139,7 @@ pub async fn build_subagent_resources(
         tz,
         hybrid_searcher,
         workspace_layout.episodes_dir(),
+        workspace_layout.sessions_dir(),
         workspace_layout.agent_inbox_dir(),
         workspace_layout.agent_inbox_archive_dir(),
         workspace_layout.user_inbox_dir(),
@@ -145,6 +149,9 @@ pub async fn build_subagent_resources(
         publisher,
         action_store,
         action_notify,
+        own_address,
+        own_depth,
+        subagent_depth_cap,
     );
 
     Ok(SubAgentResources {

@@ -22,7 +22,7 @@ use crate::bus::{
 use crate::config::BackgroundConfig;
 
 use super::registry::{
-    MAIN_ADDRESS, SessionCategory, SessionInfo, SessionRegistry, SessionState, generate_run_id,
+    SessionCategory, SessionInfo, SessionRegistry, SessionState, generate_run_id,
 };
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
@@ -82,6 +82,11 @@ pub(crate) struct SessionSpawnRequest {
     pub trigger: EventTrigger,
     /// Skill the session runs with, if any.
     pub agent_skill: Option<SkillName>,
+    /// The agent that requested this spawn, if any (see [`SpawnRequestEvent`]
+    /// via [`crate::bus::SpawnRequestEvent`]).
+    pub spawner: Option<SessionAddress>,
+    /// Depth from the main agent this session runs at (main = 0).
+    pub depth: u32,
     /// The session's turn configuration.
     pub subagent_config: SubAgentConfig,
 }
@@ -137,8 +142,6 @@ impl SessionRuntime {
     pub(crate) fn spawn(&self, req: SessionSpawnRequest, resources: Option<SubAgentResources>) {
         let run_id = generate_run_id();
         let category = SessionCategory::from_trigger(&req.trigger);
-        let spawner = matches!(category, SessionCategory::Spawned)
-            .then(|| SessionAddress::from(MAIN_ADDRESS));
         let purpose = truncate_prompt_preview(&req.subagent_config.prompt);
         let idle_timeout = self.idle_timeouts.for_trigger(&req.trigger);
 
@@ -149,8 +152,8 @@ impl SessionRuntime {
             trigger: req.trigger,
             source_label: req.source_label,
             state: SessionState::Forking,
-            spawner,
-            depth: super::registry::MAIN_DEPTH + 1,
+            spawner: req.spawner,
+            depth: req.depth,
             purpose,
             agent_skill: req.agent_skill,
             started_at: Utc::now(),
@@ -548,6 +551,7 @@ mod tests {
     use crate::workspace::identity::IdentityFiles;
     use async_trait::async_trait;
 
+    use super::super::registry::MAIN_ADDRESS;
     use super::super::subagent::test_memory_extras;
 
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
@@ -623,12 +627,37 @@ mod tests {
             source_label: "agent:researcher".to_string(),
             trigger: EventTrigger::Agent,
             agent_skill: None,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
             subagent_config: SubAgentConfig {
                 prompt: "do the thing".to_string(),
                 context: None,
                 model_tier: crate::config::BackgroundModelTier::Medium,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn spawn_records_spawner_and_depth_from_the_request() {
+        // A nested spawn (session spawning session) must record the actual
+        // calling session as spawner and its depth plus one — not the
+        // hardcoded main/depth-1 defaults `sample_request` uses for a
+        // main-initiated spawn.
+        let (runtime, _sub) = test_runtime(3).await;
+        let mut request = sample_request("spawned-child-0001");
+        request.spawner = Some(SessionAddress::from("spawned-parent-0001"));
+        request.depth = 2;
+        runtime.spawn(request, None);
+
+        let info = runtime
+            .registry
+            .get(&SessionAddress::from("spawned-child-0001"))
+            .unwrap();
+        assert_eq!(
+            info.spawner,
+            Some(SessionAddress::from("spawned-parent-0001"))
+        );
+        assert_eq!(info.depth, 2);
     }
 
     #[tokio::test]

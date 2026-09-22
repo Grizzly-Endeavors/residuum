@@ -103,6 +103,10 @@ pub(super) const DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES: u64 = 30;
 /// produces no episode.
 pub(super) const DEFAULT_EPISODE_SKIP_TOKEN_FLOOR: usize = 2_000;
 
+/// Default maximum depth a `subagent_spawn`-created session may have (main is
+/// depth 0; a `scheduled`/`external` session is depth 1).
+pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 2;
+
 /// Default number of earlier Teams group chat / channel messages handed to the agent on @mention.
 pub(super) const DEFAULT_TEAMS_CONTEXT_MESSAGES: usize = 20;
 

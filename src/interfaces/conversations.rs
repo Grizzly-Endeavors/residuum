@@ -30,6 +30,17 @@ pub(crate) trait ConversationSource: Send + Sync {
     /// # Errors
     /// Returns an error if the interface has to ask its platform and that fails.
     async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>>;
+
+    /// The conversation ID of the owner's direct message with the bot, if the
+    /// owner has been claimed yet.
+    ///
+    /// Used by `send_message`'s session guard to tell whether a target
+    /// conversation — or the no-conversation default — reaches the owner
+    /// directly. The default implementation returns `None`, for sources with
+    /// no owner concept.
+    async fn owner_dm_conversation_id(&self) -> Option<String> {
+        None
+    }
 }
 
 type SourceMap = HashMap<String, Arc<dyn ConversationSource>>;
@@ -111,6 +122,12 @@ impl ConversationDirectory {
     #[must_use]
     pub(crate) fn source(&self, endpoint: &str) -> Option<Arc<dyn ConversationSource>> {
         self.read().get(endpoint).cloned()
+    }
+
+    /// The owner's DM conversation ID on `endpoint`, if that endpoint has a
+    /// running chat interface with a claimed owner.
+    pub(crate) async fn owner_dm(&self, endpoint: &str) -> Option<String> {
+        self.source(endpoint)?.owner_dm_conversation_id().await
     }
 
     /// Look up conversation `id` on `endpoint`, explaining in agent-facing

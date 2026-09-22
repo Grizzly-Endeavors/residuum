@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::bus::{EndpointRegistry, Publisher};
+use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -71,6 +71,13 @@ pub struct SubAgentBuildConfig {
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub episode_skip_token_floor: usize,
+    /// This new session's own address, recorded as the spawner on any
+    /// session it forks in turn via its own `subagent_spawn` tool.
+    pub own_address: SessionAddress,
+    /// This new session's own depth from the main agent (main = 0).
+    pub own_depth: u32,
+    /// Maximum depth a `subagent_spawn`-created session may have.
+    pub subagent_depth_cap: u32,
 }
 
 #[cfg(test)]

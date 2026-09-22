@@ -290,10 +290,10 @@ pub async fn read_episode_jsonl(path: &Path) -> anyhow::Result<(EpisodeMeta, Vec
 }
 
 /// Default number of message lines returned when no limit is specified.
-const DEFAULT_LINES: usize = 50;
+pub(crate) const DEFAULT_LINES: usize = 50;
 
 /// Hard maximum on the number of message lines per request.
-const MAX_LINES: usize = 200;
+pub(crate) const MAX_LINES: usize = 200;
 
 /// Maximum characters shown for tool result content before truncation.
 const MAX_TOOL_RESULT_CHARS: usize = 500;
@@ -503,7 +503,7 @@ fn walk_for_max(dir: &Path, max: &mut u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
+pub(crate) fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
             let calls = msg.tool_calls.as_deref().unwrap_or(&[]);

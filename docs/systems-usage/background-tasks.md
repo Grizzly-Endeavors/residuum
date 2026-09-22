@@ -16,7 +16,9 @@ A session is a fork of the main agent with its own identity, memory snapshot, an
 **What's excluded:**
 - The main agent's live, unobserved conversation. A session never sees what the user and main agent are currently discussing — the spawning agent writes a task prompt with whatever context the session needs.
 
-**Tools excluded from sessions:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `switch_endpoint` (no nesting yet, no action scheduling from a session, and `switch_endpoint` only makes sense for the main agent's own output routing).
+**Tools excluded from sessions:** `switch_endpoint` — it only makes sense for the main agent's own output routing. Everything else, including `subagent_spawn` and the action-scheduling tools, is available to a session too.
+
+**Sessions can talk to other endpoints, but not the owner directly.** A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface — whether named explicitly as `conversation` or reached through the no-conversation default — with an error telling it to message `main` instead. Posting to any other conversation or notification endpoint still works; see [notifications.md](notifications.md).
 
 Sessions share the MCP registry with the main agent.
 
@@ -60,6 +62,12 @@ Every session has a stable, human-readable address, e.g. `spawned-researcher-3f9
 
 A run id, distinct from the address, identifies the specific run within the session's lifecycle.
 
+## Nesting
+
+Sessions can spawn sessions with their own `subagent_spawn` tool. Depth counts from the main agent: main is depth 0, every `scheduled`/`external` session is depth 1, and a `spawned` session is its spawner's depth plus 1 — whatever the spawner's own category. The spawned session's spawner is recorded as the calling agent's address (`main`, or the calling session's own address).
+
+Depth is capped by `subagent_depth_cap` in `[background]` (default 2). Spawning a session that would exceed the cap is refused with an error explaining the limit; the calling agent should either handle the task directly or ask a shallower agent to spawn it.
+
 ## Tools
 
 ### `subagent_spawn`
@@ -70,7 +78,7 @@ A run id, distinct from the address, identifies the specific run within the sess
 | `skill` | string | no | Name of a skill to activate as the session's role. Omit to run on the task prompt alone. `"main"` is rejected. |
 | `model` | string enum | no | `"small"`, `"medium"`, `"large"`. Default: `"medium"`. |
 
-Returns the session's address immediately. A session's final result is a **self-report** — it describes what the session believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
+Available to the main agent and to every session, subject to the depth cap above. Returns the session's address immediately. A session's final result is a **self-report** — it describes what the session believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
 
 ### `list_agents`
 
