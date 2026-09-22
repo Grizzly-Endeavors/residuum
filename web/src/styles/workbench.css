@@ -301,3 +301,36 @@
     transition: none;
   }
 }
+
+/* ── Full view ────────────────────────────────────────────────────────── */
+/* The tool fills the window. The one way back stays in the corner, faint  */
+/* until reached for, so it never covers much of the tool.                  */
+
+.workbench-tool.full .workbench-stage {
+  background: var(--bg-deep);
+}
+
+.workbench-exit-full {
+  position: fixed;
+  top: var(--s-2);
+  right: var(--s-2);
+  z-index: 10;
+  background: var(--bg-surface);
+  opacity: 0.35;
+  transition:
+    opacity var(--dur-quick),
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.workbench-exit-full:hover,
+.workbench-exit-full:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .workbench-exit-full {
+    opacity: 0.8;
+  }
+}

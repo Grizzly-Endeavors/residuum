@@ -114,5 +114,12 @@
     else entry.resolve(msg.result);
   });
 
+  // Esc leaves full view in the Residuum UI. Keys pressed inside the tool
+  // never reach the page around it, so forward Esc unless the tool used it.
+  // Listening on window runs after the tool's own handlers.
+  window.addEventListener("keydown", (event) => {
+    if (embedded && event.key === "Escape" && !event.defaultPrevented) post({ kind: "escape" });
+  });
+
   window.residuum = Object.freeze({ embedded, fetch: fetchVia, send, on });
 })();

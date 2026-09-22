@@ -116,6 +116,7 @@ interface Harness {
   deps: BridgeDeps;
   emit: (msg: ServerMessage) => void;
   sent: string[];
+  escapes: () => number;
 }
 
 function harness(overrides: Partial<BridgeDeps> = {}): Harness {
@@ -126,12 +127,16 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
   };
   let listener: ((msg: ServerMessage) => void) | null = null;
   const sent: string[] = [];
+  let escapes = 0;
   const deps: BridgeDeps = {
     origin: ORIGIN,
     fetch: vi.fn(() => Promise.resolve(new Response('{"ok":true}', { status: 200 }))),
     hasUserActivation: () => true,
     isConnected: () => true,
     sendToAgent: (content) => sent.push(content),
+    onEscape: () => {
+      escapes += 1;
+    },
     onFrame: (l) => {
       listener = l;
       return () => {
@@ -142,7 +147,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
   };
   const bridge = new WorkbenchBridge("chart", () => frame, deps);
   bridge.start();
-  return { bridge, frame, deps, emit: (msg) => listener?.(msg), sent };
+  return { bridge, frame, deps, emit: (msg) => listener?.(msg), sent, escapes: () => escapes };
 }
 
 const fetchMsg = (path: string, method = "GET"): Record<string, unknown> => ({
@@ -244,5 +249,13 @@ describe("WorkbenchBridge", () => {
     h.bridge.documentChanged();
     h.emit(frame);
     expect(h.frame.posted).toHaveLength(1);
+  });
+
+  it("passes an unhandled Esc from the tool to the page", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, { tag: BRIDGE_TAG, kind: "escape" });
+    expect(h.escapes()).toBe(1);
+    await h.bridge.handleMessage({}, { tag: BRIDGE_TAG, kind: "escape" });
+    expect(h.escapes()).toBe(1);
   });
 });

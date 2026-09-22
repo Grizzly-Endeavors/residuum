@@ -12,7 +12,8 @@
   import ConfirmButton from "./ConfirmButton.svelte";
   import WorkbenchTool from "./WorkbenchTool.svelte";
 
-  let { tool, onClose }: { tool: string | null; onClose: () => void } = $props();
+  let { tool, full, onClose }: { tool: string | null; full: boolean; onClose: () => void } =
+    $props();
 
   // How long a tool's seam glows after the agent changes it.
   const CHANGE_GLOW_MS = 2400;
@@ -106,7 +107,13 @@
 <div class="workbench-view emerges">
   {#if tool !== null}
     {#key tool}
-      <WorkbenchTool name={tool} title={currentTitle} onBack={() => router.openWorkbench(null)} />
+      <WorkbenchTool
+        name={tool}
+        title={currentTitle}
+        {full}
+        onBack={() => router.openWorkbench(null)}
+        onSetFull={(next) => router.setWorkbenchFull(next)}
+      />
     {/key}
   {:else}
     <div class="settings-header">

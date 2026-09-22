@@ -13,6 +13,7 @@
     { keys: "Shift Enter", description: "New line in composer" },
     { keys: "/", description: "Open command menu" },
     { keys: "Esc", description: "Close menus and overlays" },
+    { keys: "F", description: "In a workbench tool, fill the window with it (Esc returns)" },
     { keys: "?", description: "Open this help" },
   ];
 

@@ -182,31 +182,34 @@
     }}
   />
 {:else}
-  <Header
-    status={ws.transport.status}
-    {activeView}
-    onOpenChat={() => router.setWorkspace(false)}
-    onOpenWorkspace={() => router.setWorkspace(activeView !== "workspace")}
-    onOpenSettings={() => {
-      if (activeView === "settings") router.closeSettings();
-      else router.openSettings();
-    }}
-    onOpenWorkbench={() => {
-      if (activeView === "workbench") router.closeWorkbench();
-      else router.openWorkbench();
-    }}
-    onOpenFeedback={() => openFeedback("bug")}
-    onOpenInbox={() => {
-      inboxOpen = true;
-    }}
-    sessionsToggle={activeView === "settings" || activeView === "workbench"
-      ? undefined
-      : {
-          open: sidebarOpen,
-          liveCount: sessions.live.length,
-          onToggle: () => setSidebarOpen(!sidebarOpen),
-        }}
-  />
+  <!-- A workbench tool in full view fills the window on its own. -->
+  {#if !router.workbench?.full}
+    <Header
+      status={ws.transport.status}
+      {activeView}
+      onOpenChat={() => router.setWorkspace(false)}
+      onOpenWorkspace={() => router.setWorkspace(activeView !== "workspace")}
+      onOpenSettings={() => {
+        if (activeView === "settings") router.closeSettings();
+        else router.openSettings();
+      }}
+      onOpenWorkbench={() => {
+        if (activeView === "workbench") router.closeWorkbench();
+        else router.openWorkbench();
+      }}
+      onOpenFeedback={() => openFeedback("bug")}
+      onOpenInbox={() => {
+        inboxOpen = true;
+      }}
+      sessionsToggle={activeView === "settings" || activeView === "workbench"
+        ? undefined
+        : {
+            open: sidebarOpen,
+            liveCount: sessions.live.length,
+            onToggle: () => setSidebarOpen(!sidebarOpen),
+          }}
+    />
+  {/if}
   {#if activeView === "settings"}
     <Settings
       section={router.settings ?? "runtime"}
@@ -214,7 +217,11 @@
       onClose={() => router.closeSettings()}
     />
   {:else if activeView === "workbench"}
-    <Workbench tool={router.workbench?.tool ?? null} onClose={() => router.closeWorkbench()} />
+    <Workbench
+      tool={router.workbench?.tool ?? null}
+      full={router.workbench?.full ?? false}
+      onClose={() => router.closeWorkbench()}
+    />
   {:else}
     <div class="app-body">
       {#if sidebarOpen}

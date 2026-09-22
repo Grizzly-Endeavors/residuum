@@ -133,7 +133,12 @@ interface SubscribeRequest {
   kind: "subscribe";
 }
 
-type ToolRequest = FetchRequest | SendRequest | SubscribeRequest;
+/** The user pressed Esc in the tool and the tool didn't handle it. */
+interface EscapeRequest {
+  kind: "escape";
+}
+
+type ToolRequest = FetchRequest | SendRequest | SubscribeRequest | EscapeRequest;
 
 /** A relayed response, rebuilt into a `Response` by the SDK. */
 export interface RelayedResponse {
@@ -180,6 +185,8 @@ export function parseToolRequest(data: unknown): ToolRequest | null {
       return null;
     case "subscribe":
       return { kind: "subscribe" };
+    case "escape":
+      return { kind: "escape" };
     default:
       return null;
   }
@@ -204,6 +211,8 @@ export interface BridgeDeps {
   sendToAgent: (content: string) => void;
   /** Observe server frames; returns a function that stops observing. */
   onFrame: (listener: (msg: ServerMessage) => void) => () => void;
+  /** The user pressed Esc inside the tool and the tool left it unhandled. */
+  onEscape: () => void;
 }
 
 export class WorkbenchBridge {
@@ -248,6 +257,9 @@ export class WorkbenchBridge {
     switch (request.kind) {
       case "subscribe":
         this.subscribed = true;
+        return;
+      case "escape":
+        this.deps.onEscape();
         return;
       case "send":
         this.handleSend(request);

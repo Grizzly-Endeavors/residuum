@@ -9,6 +9,7 @@
 //   /settings/:section        settings (bare /settings opens the first section)
 //   /workbench                the workbench's tool list
 //   /workbench/:tool          one workbench tool
+//   /workbench/:tool?full     the tool filling the window, no Residuum chrome
 
 import type { SettingsSection } from "./types";
 
@@ -36,6 +37,8 @@ export interface ChatLocation {
 export interface WorkbenchLocation {
   /** The tool shown, or null for the tool list. */
   tool: string | null;
+  /** The tool fills the window with the Residuum UI hidden. Only with a tool. */
+  full: boolean;
 }
 
 export interface AppLocation {
@@ -113,9 +116,12 @@ export function parseLocation(
   if (first === "workbench" && rest.length === 0) {
     const tool = second === undefined ? null : decodeSegment(second);
     const valid = second === undefined || (tool !== null && isToolName(tool));
+    const shown = valid ? tool : null;
+    const wantsFull = new URLSearchParams(search).has("full");
+    const full = wantsFull && shown !== null;
     return {
-      location: { chat: currentChat, settings: null, workbench: { tool: valid ? tool : null } },
-      corrected: !valid,
+      location: { chat: currentChat, settings: null, workbench: { tool: shown, full } },
+      corrected: !valid || wantsFull !== full,
     };
   }
 
@@ -139,8 +145,9 @@ export function parseLocation(
 export function formatLocation(location: AppLocation): string {
   if (location.settings !== null) return `/settings/${location.settings}`;
   if (location.workbench !== null) {
-    const { tool } = location.workbench;
-    return tool === null ? "/workbench" : `/workbench/${tool}`;
+    const { tool, full } = location.workbench;
+    if (tool === null) return "/workbench";
+    return full ? `/workbench/${tool}?full` : `/workbench/${tool}`;
   }
   const { runId, workspace } = location.chat;
   const path = runId === null ? "/" : `/sessions/${encodeURIComponent(runId)}`;

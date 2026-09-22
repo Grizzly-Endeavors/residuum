@@ -56,14 +56,18 @@ describe("parseLocation", () => {
 
   it("reads the workbench list and keeps the chat side", () => {
     expect(parseLocation("/workbench", "", IN_SESSION)).toEqual({
-      location: { chat: IN_SESSION, settings: null, workbench: { tool: null } },
+      location: { chat: IN_SESSION, settings: null, workbench: { tool: null, full: false } },
       corrected: false,
     });
   });
 
   it("reads a workbench tool", () => {
     expect(parseLocation("/workbench/pricing-explorer", "", MAIN_CHAT)).toEqual({
-      location: { chat: MAIN_CHAT, settings: null, workbench: { tool: "pricing-explorer" } },
+      location: {
+        chat: MAIN_CHAT,
+        settings: null,
+        workbench: { tool: "pricing-explorer", full: false },
+      },
       corrected: false,
     });
   });
@@ -72,11 +76,25 @@ describe("parseLocation", () => {
     "corrects %s to the workbench list",
     (path) => {
       expect(parseLocation(path, "", MAIN_CHAT)).toEqual({
-        location: { chat: MAIN_CHAT, settings: null, workbench: { tool: null } },
+        location: { chat: MAIN_CHAT, settings: null, workbench: { tool: null, full: false } },
         corrected: true,
       });
     },
   );
+
+  it("reads a tool in full view", () => {
+    expect(parseLocation("/workbench/chart", "?full", MAIN_CHAT)).toEqual({
+      location: { chat: MAIN_CHAT, settings: null, workbench: { tool: "chart", full: true } },
+      corrected: false,
+    });
+  });
+
+  it("drops full view from the tool list", () => {
+    expect(parseLocation("/workbench", "?full", MAIN_CHAT)).toEqual({
+      location: { chat: MAIN_CHAT, settings: null, workbench: { tool: null, full: false } },
+      corrected: true,
+    });
+  });
 
   it("corrects a nested workbench path to the main chat", () => {
     expect(parseLocation("/workbench/a/b", "", MAIN_CHAT).location.workbench).toBeNull();
@@ -100,8 +118,15 @@ describe("formatLocation", () => {
       "/sessions/run-1?workspace",
     ],
     [{ chat: IN_SESSION, settings: "agent-keys", workbench: null }, "/settings/agent-keys"],
-    [{ chat: IN_SESSION, settings: null, workbench: { tool: null } }, "/workbench"],
-    [{ chat: MAIN_CHAT, settings: null, workbench: { tool: "chart" } }, "/workbench/chart"],
+    [{ chat: IN_SESSION, settings: null, workbench: { tool: null, full: false } }, "/workbench"],
+    [
+      { chat: MAIN_CHAT, settings: null, workbench: { tool: "chart", full: false } },
+      "/workbench/chart",
+    ],
+    [
+      { chat: MAIN_CHAT, settings: null, workbench: { tool: "chart", full: true } },
+      "/workbench/chart?full",
+    ],
   ])("formats %j as %s", (location, url) => {
     expect(formatLocation(location)).toBe(url);
   });

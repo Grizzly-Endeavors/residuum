@@ -80,7 +80,17 @@ class Router {
 
   /** Open the workbench: a tool, or the tool list when `tool` is null. */
   openWorkbench(tool: string | null = null): void {
-    this.go({ chat: this.chat, settings: null, workbench: { tool } }, "push");
+    this.go({ chat: this.chat, settings: null, workbench: { tool, full: false } }, "push");
+  }
+
+  /**
+   * Show the open tool filling the window, or return it to the Residuum UI.
+   * A view mode of the same place, so it replaces history rather than adding.
+   */
+  setWorkbenchFull(full: boolean): void {
+    const tool = this.workbench?.tool ?? null;
+    if (tool === null) return;
+    this.go({ chat: this.chat, settings: null, workbench: { tool, full } }, "replace");
   }
 
   /** Leave the workbench for the chat side as it was before it opened. */

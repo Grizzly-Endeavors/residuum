@@ -14,7 +14,9 @@
     | "inbox"
     | "stop"
     | "sessions"
-    | "back";
+    | "back"
+    | "expand"
+    | "collapse";
 
   interface Props {
     name: IconName;
@@ -37,6 +39,10 @@
   <g stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
     {#if name === "menu"}
       <path d="M3 4.75h10M3 8h10M3 11.25h10" />
+    {:else if name === "expand"}
+      <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" />
+    {:else if name === "collapse"}
+      <path d="M6 2.5V6H2.5M10 2.5V6h3.5M10 13.5V10h3.5M6 13.5V10H2.5" />
     {:else if name === "close"}
       <path d="M4 4l8 8M12 4l-8 8" />
     {:else if name === "chevron"}
