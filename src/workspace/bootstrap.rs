@@ -56,6 +56,14 @@ const MEMORY_ANALYST_SKILL_MD: &str =
 /// of the `memory_tending` and `wiki_lint` pulses.
 const WIKI_SKILL_MD: &str = include_str!("../../assets/bundled-skills/wiki/SKILL.md");
 
+/// Built-in `workbench` skill: building interactive HTML tools in `workbench/`
+/// that the web UI shows sandboxed, with the injected `residuum` SDK.
+const WORKBENCH_SKILL_MD: &str = include_str!("../../assets/bundled-skills/workbench/SKILL.md");
+
+/// Endpoint, event, and blocked-route reference for the `workbench` skill.
+const WORKBENCH_REF_API: &str =
+    include_str!("../../assets/bundled-skills/workbench/references/api.md");
+
 /// Default subconscious check policy written to SUBCONSCIOUS.md.
 ///
 /// Contains only the customizable check guidance — the output format spec is
@@ -354,6 +362,20 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     )
     .await?;
 
+    // workbench skill
+    let workbench_dir = layout.skills_dir().join("workbench");
+    let workbench_refs = workbench_dir.join("references");
+    tokio::fs::create_dir_all(&workbench_refs)
+        .await
+        .map_err(|e| {
+            FatalError::Workspace(format!(
+                "failed to create skill directory {}: {e}",
+                workbench_refs.display()
+            ))
+        })?;
+    write_if_missing(&workbench_dir.join("SKILL.md"), WORKBENCH_SKILL_MD).await?;
+    write_if_missing(&workbench_refs.join("api.md"), WORKBENCH_REF_API).await?;
+
     tracing::debug!(workspace = %layout.root().display(), "wrote bundled skills");
 
     Ok(())
@@ -522,6 +544,24 @@ mod tests {
                 .join("references/authoring-standards.md")
                 .exists(),
             "authoring-standards.md"
+        );
+
+        // workbench skill tree
+        let workbench_dir = layout.skills_dir().join("workbench");
+        let workbench_skill = tokio::fs::read_to_string(workbench_dir.join("SKILL.md"))
+            .await
+            .unwrap();
+        assert!(
+            workbench_skill.contains("name: workbench"),
+            "workbench SKILL.md carries its frontmatter name"
+        );
+        assert!(
+            workbench_dir.join("references/api.md").exists(),
+            "workbench api.md"
+        );
+        assert!(
+            layout.workbench_dir().is_dir(),
+            "the workbench folder exists for tools"
         );
 
         let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))

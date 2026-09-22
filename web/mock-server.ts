@@ -33,6 +33,8 @@ interface MockState {
     attachments: string[];
   }>;
   sessions: MockSessions;
+  /** Workbench tools: name → page HTML and modification time. */
+  workbenchTools: Map<string, { html: string; modifiedAt: string }>;
   /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
   extraRecent: Array<Record<string, unknown>>;
   /** Close every WebSocket, as if the connection dropped. Set by `setupWebSocket`. */
@@ -253,9 +255,48 @@ function loadAsset(filename: string): string {
   }
 }
 
+const MOCK_WORKBENCH_TOOL = `<!doctype html>
+<html><head><title>Tip Splitter</title>
+<style>
+  body { margin: 0; padding: 32px; background: #14181f; color: #e6e8ec; font: 16px system-ui; }
+  label { display: block; margin: 12px 0 4px; color: #9aa3b2; }
+  input { font: inherit; padding: 6px 8px; width: 160px; }
+  output { display: block; margin-top: 20px; font-size: 28px; }
+  button { margin-top: 20px; font: inherit; }
+</style></head>
+<body>
+  <h1>Tip splitter</h1>
+  <label for="bill">Bill</label><input id="bill" type="number" value="84">
+  <label for="people">People</label><input id="people" type="number" value="3">
+  <output id="each"></output>
+  <button id="ask">Ask Residuum about this split</button>
+  <script>
+    const each = document.getElementById("each");
+    const update = () => {
+      const bill = Number(document.getElementById("bill").value);
+      const people = Math.max(1, Number(document.getElementById("people").value));
+      each.textContent = (bill * 1.2 / people).toFixed(2) + " each, with 20% tip";
+    };
+    document.querySelectorAll("input").forEach((i) => i.addEventListener("input", update));
+    update();
+    document.getElementById("ask").addEventListener("click", () =>
+      residuum.send("Is " + each.textContent + " right?").catch((e) => alert(e.message)),
+    );
+  </script>
+</body></html>`;
+
+/** Serve a tool page the way the gateway does: SDK injected, sandboxed. */
+function workbenchPage(html: string): string {
+  const sdk = readFileSync(resolve(__dirname, "..", "assets", "workbench", "sdk.js"), "utf-8");
+  return html.replace("<head>", `<head><script>${sdk}</script>`);
+}
+
 function createState(): MockState {
   return {
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
+    workbenchTools: new Map([
+      ["tip-splitter", { html: MOCK_WORKBENCH_TOOL, modifiedAt: new Date().toISOString() }],
+    ]),
     secrets: new Map([
       ["anthropic_key", "sk-ant-mock-xxxx"],
       ["openai_key", "sk-mock-xxxx"],
@@ -1039,6 +1080,48 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         state.secrets.delete(name);
         json(res, 200, { deleted: true });
         return;
+      }
+
+      // ── Workbench ─────────────────────────────────────────────────────
+      if (path === "/api/workbench/tools" && method === "GET") {
+        json(
+          res,
+          200,
+          [...state.workbenchTools].map(([name, tool]) => ({
+            name,
+            title: /<title>([^<]*)<\/title>/i.exec(tool.html)?.[1]?.trim() || name,
+            modified_at: tool.modifiedAt,
+            size: tool.html.length,
+          })),
+        );
+        return;
+      }
+
+      const toolMatch = path.match(/^\/api\/workbench\/tools\/([^/]+)$/);
+      if (toolMatch) {
+        const name = decodeURIComponent(toolMatch[1] ?? "");
+        const tool = state.workbenchTools.get(name);
+        if (method === "GET") {
+          if (!tool) {
+            text(res, 404, `workbench tool "${name}" does not exist`);
+            return;
+          }
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy":
+              "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads",
+          });
+          res.end(workbenchPage(tool.html));
+          return;
+        }
+        if (method === "DELETE") {
+          if (!state.workbenchTools.delete(name)) {
+            text(res, 404, "That tool no longer exists. It may already have been deleted.");
+            return;
+          }
+          json(res, 200, { removed: [`${name}.html`] });
+          return;
+        }
       }
 
       // ── Inbox ─────────────────────────────────────────────────────────

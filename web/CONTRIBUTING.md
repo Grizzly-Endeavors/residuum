@@ -76,6 +76,8 @@ web/
 │   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
 │   │   ├── Header.svelte           # Top bar with navigation
+│   │   ├── Workbench.svelte        # Workbench tool list; hosts the open tool
+│   │   ├── WorkbenchTool.svelte    # One tool in its sandboxed frame; full view
 │   │   ├── settings/               # Settings sub-panels
 │   │   └── setup/                  # Setup wizard steps
 │   └── lib/
@@ -84,9 +86,11 @@ web/
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
-│       ├── routes.ts             # URL <-> location: which session, workspace flag, settings section
+│       ├── routes.ts             # URL <-> location: session, workspace flag, settings section, workbench tool
 │       ├── router.svelte.ts      # Current location; push/replace history, back/forward
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
+│       ├── workbench-bridge.ts   # What workbench tools may call, relayed from their sandboxed frames
+│       ├── time.ts               # Relative times ("5m ago")
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages
 │       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
