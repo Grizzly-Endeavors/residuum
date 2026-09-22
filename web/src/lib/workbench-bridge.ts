@@ -219,7 +219,8 @@ export class WorkbenchBridge {
   /** Start forwarding server frames to subscribed tools. */
   start(): void {
     this.stopObserving ??= this.deps.onFrame((frame) => {
-      if (this.subscribed) this.post({ kind: "event", frame });
+      // Keepalive pongs are transport noise, not events a tool can act on.
+      if (this.subscribed && frame.type !== "pong") this.post({ kind: "event", frame });
     });
   }
 

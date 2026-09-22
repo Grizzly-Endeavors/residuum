@@ -15,9 +15,11 @@
   margin: 0;
 }
 
-.workbench-title:focus,
-.workbench-tool-title:focus {
-  outline: none;
+/* Headings take focus only programmatically, to announce where the user */
+/* landed; they are not controls, so they get no focus ring. */
+.workbench-title:focus-visible,
+.workbench-tool-title:focus-visible {
+  box-shadow: none;
 }
 
 .workbench-body {

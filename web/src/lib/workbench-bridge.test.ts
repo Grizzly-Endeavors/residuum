@@ -238,6 +238,9 @@ describe("WorkbenchBridge", () => {
     h.emit(frame);
     expect(h.frame.posted).toEqual([{ tag: BRIDGE_TAG, kind: "event", frame }]);
 
+    h.emit({ type: "pong" });
+    expect(h.frame.posted).toHaveLength(1);
+
     h.bridge.documentChanged();
     h.emit(frame);
     expect(h.frame.posted).toHaveLength(1);
