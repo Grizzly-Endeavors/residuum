@@ -56,10 +56,7 @@ pub(crate) async fn start_tunnel(
         main: cfg.local_port,
         workbench: workbench_port,
     };
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(25))
-        .build()
-    else {
+    let Ok(client) = forward_http::forwarding_client() else {
         error!("failed to build reqwest client");
         return;
     };

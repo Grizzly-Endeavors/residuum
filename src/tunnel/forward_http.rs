@@ -12,6 +12,21 @@ use super::protocol::TunnelFrame;
 /// Maximum response body size (10 MB).
 const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
+/// The HTTP client that forwards relay requests to local listeners.
+///
+/// Redirects go back to the browser untouched: following them here would
+/// serve the target under the original URL, breaking the page's relative URLs
+/// (a workbench tool at `/{tool}` redirects to `/{tool}/`).
+///
+/// # Errors
+/// Returns an error if the client cannot be built.
+pub(super) fn forwarding_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(25))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
 /// Forward an HTTP request to the local residuum instance and return the
 /// response as a [`TunnelFrame::HttpResponse`].
 ///
@@ -251,5 +266,42 @@ mod tests {
             let text = String::from_utf8(decoded).unwrap();
             assert_eq!(text, "test error", "body should contain error message");
         }
+    }
+
+    #[tokio::test]
+    async fn redirects_are_passed_back_not_followed() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/tool",
+                axum::routing::get(|| async { axum::response::Redirect::permanent("/tool/") }),
+            )
+            .route("/tool/", axum::routing::get(|| async { "page" }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let client = forwarding_client().unwrap();
+        let frame = forward(
+            &client,
+            port,
+            "req-1".to_string(),
+            "GET".to_string(),
+            "/tool".to_string(),
+            HashMap::new(),
+            None,
+        )
+        .await;
+        server.abort();
+
+        let TunnelFrame::HttpResponse {
+            status, headers, ..
+        } = frame
+        else {
+            panic!("expected an HttpResponse");
+        };
+        assert_eq!(status, 308);
+        assert_eq!(headers.get("location").map(String::as_str), Some("/tool/"));
     }
 }
