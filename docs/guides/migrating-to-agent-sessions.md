@@ -33,9 +33,9 @@ Now, only your own direct message (and the web UI) reaches the main agent. Every
 
 No configuration is needed to get this — it's automatic. `respond_to_others` still controls whether non-owner DMs are admitted at all; it just no longer controls whether they land on your main agent.
 
-## `subagent_spawn` returns an address, not a result
+## `subagent_spawn` returns an address
 
-`subagent_spawn` used to run and hand back a result once the sub-agent finished. It now returns the new session's **address** immediately (e.g. `spawned-researcher-3f9a`) and the session keeps running in the background. Its result — after every turn, not just once at the end — is delivered back to you as an agent message, and you pass it along to whoever's waiting. If you (or a skill) were relying on `subagent_spawn`'s own output being the final answer, that assumption no longer holds — wait for the relayed message instead. `list_agents` shows what's still running, and `message_agent` lets you send a live session a follow-up or check in on one that's already finished.
+`subagent_spawn` used to reply only "Sub-agent spawned.", with no way to refer to the sub-agent afterwards; its one final result arrived later as a background message. It now returns the new session's **address** immediately (e.g. `spawned-researcher-3f9a`) and the session keeps running in the background. Its result — after every turn, not just once at the end — is delivered back to you as an agent message, and you pass it along to whoever's waiting. If a skill expected exactly one result per spawn, expect one per turn instead. `list_agents` shows what's still running, and `message_agent` lets you send a live session a follow-up or check in on one that's already finished.
 
 ## Sessions can't message you directly
 
