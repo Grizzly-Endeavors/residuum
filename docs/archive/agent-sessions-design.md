@@ -1,6 +1,6 @@
 # Agent Sessions — Design
 
-> **Status:** designed, not built. Implementation phases are in [`agent-sessions-phases.md`](./agent-sessions-phases.md). Once shipped, the behavior moves into `docs/systems-usage/` and this document moves to `docs/archive/`.
+> **Status:** archived. This design shipped; it records the reasoning behind agent sessions, not current behavior. Current behavior is described in [`docs/systems-usage/background-tasks.md`](../systems-usage/background-tasks.md). Implementation phases: [`agent-sessions-phases.md`](./agent-sessions-phases.md).
 
 > Systems level only. No file or line references. This document must stand on its own: it will be implemented in fresh sessions that have only this doc, the phases doc, and the codebase.
 

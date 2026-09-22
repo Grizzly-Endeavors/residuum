@@ -1,6 +1,6 @@
 # Agent Sessions — Implementation Phases
 
-> **Status:** planned, not started. Design: [`agent-sessions.md`](./agent-sessions.md). Terms (session, run, address, category, spawner, hop count) are defined there.
+> **Status:** archived. All phases shipped. Design: [`agent-sessions-design.md`](./agent-sessions-design.md). Terms (session, run, address, category, spawner, hop count) are defined there.
 
 > Module level only. No file or line references — those get mapped in each phase's own session. Each phase is self-contained, depends only on phases before it, and is verifiable on its own. Each phase ships as its own branch and PR, with passing pre-commit gates, and updates the `docs/systems-usage/` pages whose behavior it changes, along with their mirrors in the bundled `residuum-system` skill references.
 

@@ -1,6 +1,6 @@
-//! Agent sessions: the session registry, runtime, and store that replace the
-//! old fire-and-forget background task spawner. See `docs/design/agent-sessions.md`
-//! for the systems-level design and `README.md` for how the pieces fit together.
+//! Agent sessions: the session registry, runtime, and store that run temporary
+//! forks of the main agent. See `docs/systems-usage/background-tasks.md` for the
+//! behavior and `README.md` for how the pieces fit together.
 
 pub mod conversation_router;
 pub(crate) mod events;

@@ -54,8 +54,9 @@ main = "anthropic/claude-sonnet-4-6"
 # embedding = "openai/text-embedding-3-small"
 # embedding = "fireworks/accounts/fireworks/models/qwen3-embedding-8b"
 
-# ── Background task model tiers (optional) ──────────────────────────────────
-# Assign models for background sub-agent tasks by complexity tier.
+# ── Session model tiers (optional) ──────────────────────────────────────────
+# Assign models for agent sessions (pulses, actions, webhooks, spawned
+# sub-agents, and conversation sessions) by the tier each one requests.
 # Each tier falls back: tier → next tier up → main.
 # Supports failover arrays like the roles above.
 #

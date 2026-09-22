@@ -1,6 +1,6 @@
 # Background Module: Agent Sessions
 
-Owns the session registry, runtime, and store that execute work off the main agent's turn loop: pulse checks, scheduled actions, webhooks, and on-demand sub-agent delegation. See `docs/design/agent-sessions.md` for the systems-level design and `docs/systems-usage/background-tasks.md` for the user-facing behavior; this file covers how the module's own pieces fit together.
+Owns the session registry, runtime, and store that execute work off the main agent's turn loop: pulse checks, scheduled actions, webhooks, and on-demand sub-agent delegation. See `docs/systems-usage/background-tasks.md` for the user-facing behavior (the original design and its reasoning are archived in `docs/archive/agent-sessions-design.md`); this file covers how the module's own pieces fit together.
 
 ## Overview
 
