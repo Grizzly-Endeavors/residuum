@@ -31,6 +31,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. That's it �
 
 - All REST endpoints return realistic fake data
 - WebSocket simulates chat responses with tool calls and delays
+- Agent sessions: two live sessions and a page-able list of finished ones. Messaging a session simulates a turn (include "busy" in the message to see a delivery failure), messaging a finished one resumes it, and a chat message starting with `spawn` starts a spawned session that relays its result to the main chat
 - Config files are loaded from `../assets/*.example.*` and can be edited in the UI
 - Secrets can be added and removed (stored in memory)
 
@@ -55,32 +56,37 @@ This starts the app in "setup" mode so you can walk through the onboarding flow.
 ```
 web/
 ├── src/
-│   ├── main.ts              # App entry point
-│   ├── App.svelte            # Main router — switches between Chat, Setup, Settings
-│   ├── Chat.svelte           # Chat view
+│   ├── main.ts               # App entry point
+│   ├── App.svelte            # Layout — header, sessions sidebar, chat / session view, settings
+│   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
-│   ├── app.css               # Global styles
+│   ├── styles/               # Global styles (tokens in variables.css)
 │   ├── components/
-│   │   ├── ChatFeed.svelte       # Message list
-│   │   ├── ChatInput.svelte      # Input box with slash commands
-│   │   ├── Header.svelte         # Top bar with navigation
-│   │   ├── MessageAssistant.svelte
-│   │   ├── MessageUser.svelte
-│   │   ├── MessageSystem.svelte
-│   │   ├── ThinkingIndicator.svelte
-│   │   ├── ToolGroup.svelte      # Groups related tool calls together
-│   │   ├── ToolItem.svelte       # Individual tool call display
-│   │   ├── settings/             # Settings sub-panels
-│   │   └── setup/                # Setup wizard steps
+│   │   ├── ChatFeed.svelte         # Main chat message list (lazy-loads older episodes)
+│   │   ├── ChatInput.svelte        # Input box with slash commands
+│   │   ├── FeedItemView.svelte     # Renders one feed item; shared by chat and session views
+│   │   ├── Message*.svelte         # Message components (user, assistant, agent message, status, …)
+│   │   ├── ToolGroup.svelte        # Groups related tool calls together
+│   │   ├── ToolItem.svelte         # Individual tool call display
+│   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions
+│   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
+│   │   ├── Header.svelte           # Top bar with navigation
+│   │   ├── settings/               # Settings sub-panels
+│   │   └── setup/                  # Setup wizard steps
 │   └── lib/
-│       ├── api.ts            # REST API client (typed fetch wrappers)
-│       ├── ws.svelte.ts      # WebSocket connection (reactive state)
-│       ├── types.ts          # TypeScript types for API and messages
-│       ├── commands.ts       # Slash command parser (/help, /reload, etc.)
-│       ├── models.ts         # Model fetching and caching
-│       ├── markdown.ts       # Markdown rendering
-│       └── settings-toml.ts  # Config serialization
+│       ├── api.ts                # REST API client (typed fetch wrappers)
+│       ├── ws.svelte.ts          # WebSocket coordinator: routes frames to the feed and sessions stores
+│       ├── feed.svelte.ts        # Main chat feed state
+│       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
+│       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
+│       ├── relay.ts              # Recognizes agent-message headers in transcripts
+│       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
+│       ├── types.ts              # TypeScript types for API and messages
+│       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
+│       ├── models.ts             # Model fetching and caching
+│       ├── markdown.ts           # Markdown rendering
+│       └── settings-toml.ts      # Config serialization
 ├── mock-server.ts            # Mock API + WebSocket (only used in dev:mock)
 ├── vite.config.ts
 └── package.json

@@ -93,3 +93,7 @@ Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json
 - A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface (named explicitly, or reached through the no-conversation default) — only `main` talks to the owner. See [notifications.md](notifications.md).
 - The `memory/sessions/` directory is not created at bootstrap — it appears only after the first session run.
 - A completed session is no longer listed by `list_agents`, but its address and transcript remain in the session store — and the web UI's session listing includes finished runs.
+
+## Web UI
+
+The owner sees sessions in the web UI's sessions sidebar: live sessions with their category, source label, state, and running time, plus a paginated list of finished runs. Opening one shows its transcript and live activity, with a message box and a stop button. A message the owner sends from there arrives labelled as coming from the owner via the web UI; answer it in your response, which the owner reads in that view. Results a session relays to `main`, and `message_agent` calls to `main`, show in the main chat as compact items linking to the sending session.
