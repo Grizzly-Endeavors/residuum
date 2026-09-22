@@ -1,9 +1,11 @@
 // ── WebSocket coordinator (Svelte 5 runes) ──────────────────────────
 //
-// Thin glue layer that wires WsTransport and FeedStore together.
+// Thin glue layer that wires WsTransport to the main chat's FeedStore and
+// the agent sessions store.
 
 import { WsTransport } from "./transport.svelte";
 import { FeedStore } from "./feed.svelte";
+import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
 import {
@@ -24,6 +26,14 @@ import type {
 class WsCoordinator {
   transport = new WsTransport();
   store = new FeedStore();
+  sessions = new SessionsStore({
+    send: (msg) => {
+      this.transport.send(msg);
+    },
+    pushToMain: (from, runId, content, category) => {
+      this.store.pushAgentMessage(from, runId, content, category);
+    },
+  });
   private msgCounter = 0;
 
   verbose = $state(false);
@@ -39,6 +49,12 @@ class WsCoordinator {
     // surface, then hand the message to the feed store for any chat-state
     // side effects (e.g. clearing the thinking indicator on errors).
     this.transport.onMessage = (msg) => {
+      // Session activity has its own store. It must never reach the main
+      // feed, whose `error` handling would clear the main turn's state.
+      if (isSessionFrame(msg)) {
+        this.sessions.handleFrame(msg);
+        return;
+      }
       if (msg.type === "error") {
         notifications.surface("error", msg.message);
       } else if (msg.type === "notice") {
@@ -62,6 +78,9 @@ class WsCoordinator {
       if (this.verbose) {
         this.transport.send({ type: "set_verbose", enabled: true });
       }
+      // Load the sessions listing, or catch up on frames missed while
+      // disconnected.
+      this.sessions.resync();
     };
   }
 

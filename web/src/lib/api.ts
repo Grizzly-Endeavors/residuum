@@ -14,6 +14,8 @@ import type {
   WorkspaceEntry,
   CloudStatusResponse,
   UpdateStatusResponse,
+  SessionListResponse,
+  SessionTranscriptResponse,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -278,6 +280,39 @@ export async function deleteSecret(name: string): Promise<void> {
   await apiFetchText(`/api/secrets/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
+}
+
+// ── Agent sessions API wrappers ─────────────────────────────────────
+
+/**
+ * List live sessions plus one page of completed runs, newest first. Never
+ * cached: the listing changes whenever a session starts or finishes.
+ *
+ * Throws `ApiError` on failure; the caller surfaces it.
+ */
+export async function fetchSessions(query: {
+  before?: string;
+  limit?: number;
+  address?: string;
+}): Promise<SessionListResponse> {
+  const params = new URLSearchParams();
+  if (query.before) params.set("before", query.before);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.address) params.set("address", query.address);
+  const qs = params.toString();
+  return apiFetch<SessionListResponse>(`/api/sessions${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * Fetch one run's transcript, live or completed. Not cached: a live run's
+ * transcript grows as it works.
+ *
+ * Throws `ApiError` on failure (404 for an unknown run).
+ */
+export async function fetchSessionTranscript(runId: string): Promise<SessionTranscriptResponse> {
+  return apiFetch<SessionTranscriptResponse>(
+    `/api/sessions/runs/${encodeURIComponent(runId)}/transcript`,
+  );
 }
 
 // ── Workspace API wrappers ──────────────────────────────────────────

@@ -2,46 +2,18 @@
 
 import { SvelteMap } from "svelte/reactivity";
 import { nextFeedId } from "./feed-id";
+import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
 import type {
   ServerMessage,
   RecentMessage,
   FeedItem,
   DividerFeedItem,
-  ToolGroupFeedItem,
   ToolCallState,
   ImageAttachment,
   FileAttachmentFeedItem,
   RecentHistorySegment,
   EpisodeHistorySegment,
 } from "./types";
-
-/**
- * Coerce tool-call arguments to an object, whatever shape they arrived in.
- *
- * Tool arguments reach the UI two ways and they do NOT agree: the history
- * endpoint serializes a Rust `serde_json::Value` (an **object**), while the
- * live socket has carried a JSON **string**. Every reader must go through
- * here — a bare `JSON.parse()` throws `SyntaxError` on the object form
- * (`JSON.parse` stringifies its argument first, yielding "[object Object]"),
- * and because feed building is a single pass, one throw blanks the entire
- * conversation rather than one message.
- *
- * Malformed input degrades to `{}` so a single bad record can't take the
- * feed down with it.
- */
-export function normalizeToolArgs(value: unknown): Record<string, unknown> {
-  if (typeof value === "string") {
-    try {
-      const parsed: unknown = JSON.parse(value);
-      return typeof parsed === "object" && parsed !== null
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-}
 
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "long",
@@ -96,11 +68,11 @@ export class FeedStore {
         break;
 
       case "tool_call":
-        this.handleToolCall(msg);
+        appendToolCall(this.feed, this.pendingToolCalls, msg);
         break;
 
       case "tool_result":
-        this.handleToolResult(msg);
+        applyToolResult(this.pendingToolCalls, msg);
         break;
 
       case "response":
@@ -186,9 +158,7 @@ export class FeedStore {
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
 
-    const items = this.convertMessages(segment.messages, {
-      withDayDividers: true,
-    });
+    const items = this.convertMessages(segment.messages, { withDayDividers: true });
     for (const item of items) this.feed.push(item);
   }
 
@@ -231,6 +201,14 @@ export class FeedStore {
     this.feed.push({ id: nextFeedId(), kind: "local-system", content });
   }
 
+  /**
+   * Add a message a session sent the main agent (its relayed result, or a
+   * `message_agent` call), as it arrives live.
+   */
+  pushAgentMessage(from: string, runId: string, content: string, category: string | null): void {
+    this.feed.push({ id: nextFeedId(), kind: "agent-message", from, category, content, runId });
+  }
+
   /** Add a user message to the feed. */
   pushUserMessage(content: string, images?: ImageAttachment[]): void {
     // Live user messages carry an implicit "now" timestamp — inject a day
@@ -245,131 +223,30 @@ export class FeedStore {
   // ── Private ──────────────────────────────────────────────────────────
 
   /**
-   * Convert a RecentMessage list into feed items using the same
-   * role-based logic as `loadHistory` used to inline. Optionally emit
+   * Convert main-agent history messages into feed items, optionally emitting
    * day dividers when the per-message timestamp crosses a day boundary.
    */
   private convertMessages(
     messages: RecentMessage[],
     opts: { withDayDividers: boolean },
   ): FeedItem[] {
-    const out: FeedItem[] = [];
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
-    const toolCallItems = new Map<string, ToolCallState>();
+    return convertHistoryMessages(messages, {
+      mode: "main",
+      dayDivider: opts.withDayDividers ? (ts) => this.dayDividerFor(ts) : undefined,
+    });
+  }
 
-    for (const msg of messages.filter((m) => m.visibility !== "background")) {
-      if (opts.withDayDividers && msg.timestamp) {
-        const key = dayKey(msg.timestamp);
-        if (this.lastLiveDayKey !== null && key !== this.lastLiveDayKey) {
-          out.push({
-            id: nextFeedId(),
-            kind: "divider",
-            variant: "day",
-            label: dayLabel(msg.timestamp),
-          } satisfies DividerFeedItem);
-        }
-        this.lastLiveDayKey = key;
-      }
-
-      const content = msg.content;
-      switch (msg.role) {
-        case "user":
-          out.push({ id: nextFeedId(), kind: "user", content, sender: msg.sender });
-          break;
-        case "assistant": {
-          if (content.trim()) {
-            out.push({ id: nextFeedId(), kind: "assistant", content });
-          }
-          if (msg.tool_calls?.length) {
-            const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
-              const args = normalizeToolArgs(tc.arguments);
-              const call: ToolCallState = {
-                id: tc.id,
-                name: tc.name,
-                arguments: args,
-                status: "done",
-              };
-              toolCallItems.set(tc.id, call);
-              return call;
-            });
-            out.push({ id: nextFeedId(), kind: "tool-group", calls });
-          }
-          break;
-        }
-        case "tool": {
-          if (msg.tool_call_id) {
-            const call = toolCallItems.get(msg.tool_call_id);
-            if (call && content) {
-              call.result =
-                (call.result ? call.result + "\n" : "") +
-                "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" +
-                content;
-            }
-            toolCallItems.delete(msg.tool_call_id);
-          }
-          break;
-        }
-        case "system":
-          break;
-      }
-    }
-
-    return out;
+  private dayDividerFor(iso: string): DividerFeedItem | null {
+    const key = dayKey(iso);
+    const crossed = this.lastLiveDayKey !== null && key !== this.lastLiveDayKey;
+    this.lastLiveDayKey = key;
+    return crossed
+      ? { id: nextFeedId(), kind: "divider", variant: "day", label: dayLabel(iso) }
+      : null;
   }
 
   private maybePushDayDivider(iso: string): void {
-    const key = dayKey(iso);
-    if (this.lastLiveDayKey !== null && key !== this.lastLiveDayKey) {
-      this.feed.push({
-        id: nextFeedId(),
-        kind: "divider",
-        variant: "day",
-        label: dayLabel(iso),
-      } satisfies DividerFeedItem);
-    }
-    this.lastLiveDayKey = key;
-  }
-
-  private handleToolCall(msg: Extract<ServerMessage, { type: "tool_call" }>): void {
-    const args = normalizeToolArgs(msg.arguments);
-
-    const call: ToolCallState = {
-      id: msg.id,
-      name: msg.name,
-      arguments: args,
-      status: "running",
-    };
-
-    // Find or create a tool group at the end of the feed
-    const last = this.feed[this.feed.length - 1];
-    if (last?.kind === "tool-group") {
-      last.calls.push(call);
-    } else {
-      this.feed.push({
-        id: nextFeedId(),
-        kind: "tool-group",
-        calls: [call],
-      });
-    }
-
-    // Store the proxied reference from the $state feed so mutations
-    // in handleToolResult go through Svelte's reactivity system
-    const group = this.feed[this.feed.length - 1] as ToolGroupFeedItem;
-    const lastCall = group.calls[group.calls.length - 1];
-    if (lastCall) this.pendingToolCalls.set(msg.id, lastCall);
-  }
-
-  private handleToolResult(msg: Extract<ServerMessage, { type: "tool_result" }>): void {
-    const call = this.pendingToolCalls.get(msg.tool_call_id);
-    if (call) {
-      call.status = msg.is_error ? "error" : "done";
-      if (msg.output) {
-        call.result =
-          (call.result ? call.result + "\n" : "") +
-          "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" +
-          msg.output;
-      }
-      this.pendingToolCalls.delete(msg.tool_call_id);
-    }
+    const divider = this.dayDividerFor(iso);
+    if (divider) this.feed.push(divider);
   }
 }
