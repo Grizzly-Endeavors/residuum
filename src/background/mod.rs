@@ -3,6 +3,7 @@
 //! for the systems-level design and `README.md` for how the pieces fit together.
 
 pub(crate) mod listener;
+pub mod messaging;
 pub mod registry;
 pub(crate) mod runtime;
 pub(crate) mod session_memory;
@@ -11,7 +12,8 @@ pub mod store;
 pub mod subagent;
 pub mod types;
 
-pub use registry::SessionRegistry;
+pub use messaging::{AgentMessenger, DeliveryOutcome, SendError};
+pub use registry::{DeliverOutcome, SessionRegistry};
 pub use runtime::SessionRuntime;
 pub use store::SessionStore;
 pub use subagent::{SubAgentResources, build_subagent_resources};

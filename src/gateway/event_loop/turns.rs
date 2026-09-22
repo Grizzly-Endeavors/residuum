@@ -60,8 +60,8 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
             Interrupt::UserMessage(leftover_msg) => {
                 rt.agent.inject_inbound_message(leftover_msg);
             }
-            Interrupt::BackgroundResult(result) => {
-                rt.agent.inject_system_message(result.format_for_agent());
+            Interrupt::AgentMessage(msg) => {
+                rt.agent.inject_system_message(msg.format_for_agent());
             }
             Interrupt::Subconscious(content) => {
                 // A late mid-turn finding degrades to a note for the next turn.

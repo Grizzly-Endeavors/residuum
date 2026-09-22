@@ -208,7 +208,7 @@ mod tests {
                     "correction should carry the instruction"
                 );
             }
-            Interrupt::UserMessage(_) | Interrupt::BackgroundResult(_) | Interrupt::Stopped => {
+            Interrupt::UserMessage(_) | Interrupt::AgentMessage(_) | Interrupt::Stopped => {
                 unreachable!("expected a subconscious interrupt")
             }
         }

@@ -279,18 +279,13 @@ async fn drain_interrupts(
                 tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
                 push_and_record_many(recent_messages, sink, msg.into_history_messages()).await;
             }
-            Interrupt::BackgroundResult(result) => {
+            Interrupt::AgentMessage(msg) => {
                 tracing::info!(
-                    run_id = %result.run_id,
-                    source = %result.source_label,
-                    "injecting background result mid-turn"
+                    from = %msg.from,
+                    category = %msg.from_category,
+                    "injecting agent message mid-turn"
                 );
-                push_and_record(
-                    recent_messages,
-                    sink,
-                    Message::user(result.format_for_agent()),
-                )
-                .await;
+                push_and_record(recent_messages, sink, Message::user(msg.format_for_agent())).await;
             }
             Interrupt::Subconscious(content) => {
                 tracing::info!("injecting subconscious correction mid-turn");

@@ -5,16 +5,17 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
+use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::EndpointRegistry;
+use crate::bus::{EndpointRegistry, SessionAddress};
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult, actions,
-    background, edit, exec, file_bug_report, inbox, memory_get, memory_search, ollama_web_search,
-    read, send_message, skills, submit_feedback, web_fetch, write,
+    background, edit, exec, file_bug_report, inbox, memory_get, memory_search, message_agent,
+    ollama_web_search, read, send_message, skills, submit_feedback, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -191,6 +192,21 @@ impl ToolRegistry {
         self.register(Box::new(background::ListAgentsTool::new(registry)));
     }
 
+    /// Register the `message_agent` tool, identifying this registry's owner
+    /// as `self_address` (category `self_category`) to whoever it messages.
+    pub fn register_message_agent_tool(
+        &mut self,
+        self_address: SessionAddress,
+        self_category: String,
+        messenger: Arc<AgentMessenger>,
+    ) {
+        self.register(Box::new(message_agent::MessageAgentTool::new(
+            self_address,
+            self_category,
+            messenger,
+        )));
+    }
+
     /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
     ///
     /// `spawner_address` and `depth` are the caller's own address and depth
@@ -221,9 +237,12 @@ impl ToolRegistry {
     /// `own_depth` are this session's own address and depth, and `depth_cap`
     /// the configured nesting limit — together they let this session's own
     /// `subagent_spawn` record the right spawner/depth on anything it forks
-    /// and refuse spawning once the cap is reached. `send_message` from this
-    /// registry refuses the owner's DM on every chat interface and the web UI
-    /// (only the main agent talks to the owner).
+    /// and refuse spawning once the cap is reached. `own_address` is reused
+    /// (cloned) as the identity `message_agent` reports to the agents it
+    /// messages, alongside `session_category` and the shared `messenger`.
+    /// `send_message` from this registry refuses the owner's DM on every
+    /// chat interface and the web UI (only the main agent talks to the
+    /// owner).
     #[expect(
         clippy::too_many_arguments,
         reason = "session registry needs all tool dependencies"
@@ -246,9 +265,11 @@ impl ToolRegistry {
         publisher: crate::bus::Publisher,
         action_store: Arc<Mutex<ActionStore>>,
         action_notify: Arc<Notify>,
-        own_address: crate::bus::SessionAddress,
+        own_address: SessionAddress,
         own_depth: u32,
         depth_cap: u32,
+        session_category: String,
+        messenger: Arc<AgentMessenger>,
     ) -> Self {
         let mut registry = Self::new();
 
@@ -276,7 +297,7 @@ impl ToolRegistry {
         registry.register_spawn_tool(
             publisher.clone(),
             skill_state,
-            own_address,
+            own_address.clone(),
             own_depth,
             depth_cap,
         );
@@ -284,6 +305,7 @@ impl ToolRegistry {
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
         registry.register_list_endpoints_tool(endpoint_registry);
+        registry.register_message_agent_tool(own_address, session_category, messenger);
 
         // Web fetch
         registry.register_web_fetch_tool();

@@ -672,6 +672,44 @@ The session runs in the background via the session runtime. Its result from each
 
 ---
 
+## `message_agent`
+
+**Source:** `message_agent.rs` · `MessageAgentTool`
+
+**Description sent to LLM:**
+> Send a text message to another agent by address — main, or any session (running, idle, or previously completed). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses.
+
+### Input
+
+| Parameter | Type   | Required | Description                                                  |
+|-----------|--------|----------|----------------------------------------------------------------|
+| `to`      | string | yes      | Address to message: `"main"`, or a session address from `list_agents`. |
+| `message` | string | yes      | The message body.                                             |
+
+### Output
+
+- Delivered to main: `"Message delivered to main."`
+- Delivered to a live session: `"Message delivered to {address}."`
+- Delivered to a completed (or completing) session: `"Session {address} had completed; message delivered by resuming it as a new run."` (`is_error = false` — the resume itself is not a failure)
+- Unknown address (`is_error = true`): `"no such agent '{to}'. Use list_agents to see live sessions; a completed session's address only works again once it has run at least once."`
+- Messaging yourself (`is_error = true`): `"cannot message yourself"`
+- Target's interrupt channel is saturated (`is_error = true`, vanishingly unlikely): `"agent {address} is busy, try again shortly"` — never falls back to a resume, which would double-register the address.
+- A publish (to main, or as a resume spawn request) failed at the bus (`is_error = true`): a message naming what failed. The tool never reports success when delivery didn't actually happen.
+
+### Errors
+
+- Missing or empty `to`/`message` → `InvalidArguments`
+
+**Side effects:** Routes through the shared `AgentMessenger` (`crate::background::messaging`):
+- **main** — publishes a `MessageEvent` on the `UserMessage` bus topic, formatted with the sender's address and category, reusing the main event loop's existing interrupt-if-running/new-turn-if-idle handling.
+- **running/idle session** — delivers an `Interrupt::AgentMessage` through the session's own interrupt channel (registered in the `SessionRegistry` at fork time). A running turn drains it at its next tool-call boundary; an idle session wakes and runs another turn in the same run, with the message as that turn's input.
+- **completing session** — the run no longer accepts messages into itself; `AgentMessenger` waits for it to fully leave the registry (its resume point is always recorded before that happens) and then resumes it, same as a completed session below. A message still queued in a run's own interrupt channel when its teardown drains it (e.g. one delivered just as `stop_agent` lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
+- **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model tier and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. The spawn listener itself refuses a spawn/resume for an address still registered as running/idle/forking (logged as an error — should only happen if something else raced the registry), and defers one for a completing address until it clears.
+
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent).
+
+---
+
 ## `web_fetch`
 
 **Source:** `web_fetch.rs` · `WebFetchTool`

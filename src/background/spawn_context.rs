@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::agent::context::loading::{load_observations, load_recent_context_narrative};
-use crate::background::registry::SessionRegistry;
+use crate::background::registry::{SessionCategory, SessionRegistry};
 use crate::background::runtime::SessionRuntime;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
@@ -23,6 +23,7 @@ use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
+use super::messaging::AgentMessenger;
 use super::subagent::{SubAgentResources, build_subagent_resources};
 use super::types::SubAgentBuildConfig;
 
@@ -58,6 +59,9 @@ pub(crate) struct SpawnContext {
     /// agent so episode numbering and log appends never race between a
     /// session's completion pipeline and the main agent's own observations.
     pub(crate) merge_writer: Arc<MemoryMergeWriter>,
+    /// Shared agent-messaging service, threaded into every fork so its
+    /// `message_agent` tool can identify itself as the sender.
+    pub(crate) messenger: Arc<AgentMessenger>,
 }
 
 /// Build isolated `SubAgentResources` for a new session run at a given tier.
@@ -72,6 +76,9 @@ pub(crate) struct SpawnContext {
 /// `own_address` and `own_depth` are this new session's own address and
 /// depth, threaded into its `subagent_spawn` tool so any session it spawns in
 /// turn records the right spawner and depth (see "Nesting" in the design).
+/// `own_address` and `category` are also carried into `SubAgentBuildConfig`
+/// so the fork's `message_agent` tool can name itself as the sender of any
+/// message it sends.
 ///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key), the
@@ -83,6 +90,7 @@ pub(crate) async fn build_spawn_resources(
     skill: Option<&str>,
     own_address: SessionAddress,
     own_depth: u32,
+    category: SessionCategory,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let specs = ctx
         .background_config
@@ -159,6 +167,8 @@ pub(crate) async fn build_spawn_resources(
         own_address,
         own_depth,
         subagent_depth_cap: ctx.background_config.subagent_depth_cap,
+        session_category: category,
+        messenger: Arc::clone(&ctx.messenger),
     };
 
     build_subagent_resources(

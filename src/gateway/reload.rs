@@ -414,6 +414,7 @@ fn build_spawn_context(
         mcp_registry: Arc::clone(&rt.mcp_registry),
         observer,
         merge_writer: Arc::clone(&rt.merge_writer),
+        messenger: Arc::clone(&rt.agent_messenger),
     })
 }
 

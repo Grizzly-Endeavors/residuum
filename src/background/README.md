@@ -4,28 +4,31 @@ Owns the session registry, runtime, and store that execute work off the main age
 
 ## Overview
 
-A **session** is a temporary fork of the main agent: its own identity/memory snapshot, its own tool registry, its own message history. A session has an **address** (stable, human-readable, e.g. `spawned-researcher-3f9a`) and moves through a lifecycle — `forking` → `running` → `idle` → `completing` → `completed` — tracked by the registry for as long as it's live.
+A **session** is a temporary fork of the main agent: its own identity/memory snapshot, its own tool registry, its own message history. A session has an **address** (stable, human-readable, e.g. `spawned-researcher-3f9a`) and moves through a lifecycle — `forking` → `running` → `idle` → `completing` → `completed` — tracked by the registry for as long as it's live. A run is one or more turns: the first is always the fork's task prompt, and any later one is an agent message that arrived while the session was idle (see "Agent Messaging" below) — the run's history and per-turn memory staging span however many turns it takes.
 
 The module owns:
-- **The session registry** (`registry.rs`): the single source of truth for every live session's address, run id, category, source label, lifecycle state, spawner, depth, and purpose. Discovery tools (`list_agents`, `stop_agent`) and the bug-report client context read it directly.
-- **The session runtime** (`runtime.rs`): executes a session's turn, holding the concurrency permit only while a turn is actually running, then lingering the session `idle` until its category's timeout elapses or it's stopped, before finalizing the run and merging its memory.
+- **The session registry** (`registry.rs`): the single source of truth for every live session's address, run id, category, source label, lifecycle state, spawner, depth, and purpose, plus the sender half of each session's interrupt channel and a standing `ResumePoint` per address (surviving past `completed`) for resuming a finished session. Discovery tools (`list_agents`, `stop_agent`) and the bug-report client context read it directly.
+- **The session runtime** (`runtime.rs`): executes a session's turns, holding the concurrency permit only while a turn is actually running, then lingering the session `idle` until a message wakes it, its category's timeout elapses, or it's stopped, before finalizing the run and merging its memory.
 - **The session store** (`store.rs`): durable on-disk record of every run — a metadata JSON file under `memory/sessions/YYYY-MM/DD/<run-id>.json`, plus a sibling `<run-id>.transcript.jsonl` appended to as the run progresses (see "Incremental Transcript Persistence" below).
-- **Per-run memory** (`session_memory.rs`): threshold-based mid-run staging and the completion pipeline that merges a finished run's observations into global memory through the `MemoryMergeWriter` (`crate::memory::merge_writer`).
-- **Fork construction** (`spawn_context.rs`, `subagent.rs`): resolves the model tier, activates the requested skill, snapshots the global observation log and recent-context narrative, and builds the isolated `SubAgentResources` a session's turn runs with — including its own `Observer` and a shared handle to the `MemoryMergeWriter`.
+- **Per-run memory** (`session_memory.rs`): threshold-based staging, run after every turn, and the completion pipeline that merges a finished run's observations into global memory through the `MemoryMergeWriter` (`crate::memory::merge_writer`).
+- **Fork construction** (`spawn_context.rs`, `subagent.rs`): resolves the model tier, activates the requested skill, snapshots the global observation log and recent-context narrative, and builds the isolated `SubAgentResources` a session's turn runs with — including its own `Observer`, a shared handle to the `MemoryMergeWriter`, and its own `message_agent` tool identifying it as the sender.
+- **Agent messaging** (`messaging.rs`): routes a `message_agent` call to its target by address — an interrupt into a running or idle session's channel, a fresh `SpawnRequestEvent` to resume a completed one, or a `MessageEvent` to main's own inbound path.
 
 The module does **not** handle:
-- **Channel delivery.** Each completed run publishes its own `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels, or a relay to the main agent) and delivers to them.
+- **Channel delivery.** Each completed run publishes its own `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels, or a relay to the main agent) and delivers to them. This is unchanged by agent messaging: `message_agent` is a distinct, addressed delivery path, not a replacement for the disposition-based result routing.
 - **Skill discovery.** `crate::skills` owns the index; this module activates a named skill on the session's own `SkillState` and lets that failure fail the fork.
 - **Persisting a merge.** `session_memory.rs` decides what to merge and when; `crate::memory::merge_writer::MemoryMergeWriter` is the single serialized writer that actually allocates episode ids, appends the observation log, indexes, embeds, and checks the reflector — shared with the main agent's own observation flow so numbering never races.
-- **Cross-session messaging and nesting.** Sessions cannot yet message each other or spawn further sessions — `subagent_spawn` is main-only, and `build_subagent_registry()` omits it.
+- **Nesting.** Sessions cannot yet spawn further sessions — `subagent_spawn` is main-only, and `build_subagent_registry()` omits it. Messaging exists independently of nesting.
 
 ## How It Works
 
 ### Core Abstractions
 
-**`SessionRegistry`** (`registry.rs`): an in-memory map from address to `SessionInfo` plus the `CancellationToken` that stops the run. `register`/`set_state`/`stop`/`remove` mutate it; `list_live`/`get`/`subagent_snapshot` read it. `generate_address(trigger, qualifier)` builds a new address from the category implied by the trigger (`EventTrigger::Pulse`/`Action` → `scheduled`, `EventTrigger::Agent` → `spawned`, `EventTrigger::Webhook` → `external`) and a slugified qualifier (skill, pulse, action, or webhook name).
+**`SessionRegistry`** (`registry.rs`): an in-memory map from address to `SessionInfo`, the `CancellationToken` that stops the run, and the sender half of an `mpsc::Receiver<Interrupt>` created at `register()` time — the run's interrupt channel, alternately drained by an active turn (`execute_turn`'s checkpoint) and by the runtime's idle wait, for however long the run lives. A separate map holds a `ResumePoint` per address (previous run id, episode id if any, category-defining trigger, source label, skill) that outlives the live entry, so a `message_agent` call after completion can still resume the address. `register`/`set_state`/`stop`/`remove`/`deliver`/`record_resume_point`/`resume_point` mutate or read it; `list_live`/`get`/`subagent_snapshot` read the live map. `generate_address(trigger, qualifier)` builds a new address from the category implied by the trigger (`EventTrigger::Pulse`/`Action` → `scheduled`, `EventTrigger::Agent` → `spawned`, `EventTrigger::Webhook` → `external`) and a slugified qualifier (skill, pulse, action, or webhook name).
 
-**`SessionRuntime`** (`runtime.rs`): holds the concurrency `Semaphore`, an `Arc<SessionRegistry>`, an `Arc<SessionStore>`, and the per-category `IdleTimeouts` resolved once from `BackgroundConfig` at construction (like `max_concurrent`, a config reload does not resize this — the semaphore and timeouts are fixed for the runtime's lifetime). `spawn()` registers the session as `forking` synchronously, then drives the rest of the lifecycle on a detached task.
+**`SessionRuntime`** (`runtime.rs`): holds the concurrency `Semaphore`, an `Arc<SessionRegistry>`, an `Arc<SessionStore>`, and the per-category `IdleTimeouts` resolved once from `BackgroundConfig` at construction (like `max_concurrent`, a config reload does not resize this — the semaphore and timeouts are fixed for the runtime's lifetime). `spawn()` registers the session as `forking` synchronously, then drives the rest of the lifecycle — however many turns it takes — on a detached task.
+
+**`AgentMessenger`** (`messaging.rs`): the `message_agent` tool's routing target. `send(to, from, from_category, content)` checks `to` against `MAIN_ADDRESS` first (publishes a `MessageEvent` on the `UserMessage` bus topic — the main event loop's own inbound path already implements interrupt-if-running/new-turn-if-idle), then tries `SessionRegistry::deliver()` (a live session), then falls back to `SessionRegistry::resume_point()` (publish a fresh `SpawnRequestEvent` at the same address) before reporting an unknown address. Needs only an `Arc<SessionRegistry>` and a `Publisher` — resuming a completed session goes through the ordinary spawn-listener path rather than forking directly, so the messenger never needs a `SpawnContext`.
 
 **`SessionStore`** (`store.rs`): writes a `RunRecord` (metadata: address, run id, category, lifecycle timestamps, episode id once merged) at fork time and again at completion, both to the same date-partitioned path. The transcript itself lives in a sibling `.transcript.jsonl` file, appended to via `append_transcript()`/`RunTranscriptSink` as the run progresses; on completion the full transcript is also folded into the metadata file so a finished run's read path is one file. `recover_incomplete_runs()` runs once at startup, sweeping the store for any run left in a non-terminal state by a prior process exit, running the full completion memory pipeline against its persisted transcript, and marking it `completed` with `interrupted: true`.
 
@@ -55,13 +58,23 @@ Every producer generates the session's address itself, up front — `subagent_sp
 
 #### Session Execution
 
-`run_session()` (in `runtime.rs`) drives one run:
+`run_session()` (in `runtime.rs`) drives a run's turn loop, accumulating one `RecentMessages` history across however many turns it takes:
 
-1. **Acquire a permit or get cancelled first.** `tokio::select!` races the session's `CancellationToken` against `Semaphore::acquire()`. If stopped before a permit is available, the run produces a `Cancelled` result immediately — no turn ever starts.
-2. **Run the turn.** Once a permit is held, the registry moves to `Running` and `execute_subagent()` (`subagent.rs`) runs the turn through the shared `execute_turn()` executor, with the session's own `CancellationToken` wired in as `TurnResources.stop_token` and a `RunTranscriptSink` wired in as `TurnResources.transcript_sink`. This is what makes `stop_agent` cooperative: cancelling ends the turn at its next checkpoint (a model call or tool-loop boundary) with the transcript so far intact, rather than dropping the whole future.
-3. **Stage mid-run, if warranted.** After the turn, `SessionMemory::maybe_stage()` checks the run's transcript against the session's own `Observer` thresholds; crossing the force threshold extracts the unstaged tail immediately, mirroring the main agent's own rotation. Staged observations are held locally, invisible to any other agent until the run completes.
-4. **Go idle.** The permit is released (it's a stack-scoped guard); the registry moves to `Idle`. The run then races the `CancellationToken` against `tokio::time::sleep(idle_timeout)` — whichever fires first ends the idle wait.
-5. **Complete.** The registry moves to `Completing`. `complete_session_memory()` runs the skip check, a final extraction over whatever wasn't staged, and the merge into global memory (see below). `SessionStore::complete_run()` then overwrites the run's metadata record with its final state, full transcript, and episode id (if merged), and an `AgentResultEvent` — tagged with the session's address and run id — is published on the bus. The registry entry is then removed; the session no longer appears in `list_agents`, though its store record remains.
+1. **Acquire a permit or get cancelled first.** `tokio::select!` races the session's `CancellationToken` against `Semaphore::acquire()`. If stopped before a permit is available, the run produces a `Cancelled` result immediately — no turn ever starts. A later turn (started by a wake, below) races the same way and acquires its own permit, just like the first.
+2. **Run the turn.** Once a permit is held, the registry moves to `Running` and `execute_subagent()` (`subagent.rs`) runs the turn through the shared `execute_turn()` executor, with the session's own `CancellationToken` wired in as `TurnResources.stop_token`, a `RunTranscriptSink` wired in as `TurnResources.transcript_sink`, and the run's own live interrupt channel receiver passed through as `execute_turn`'s `interrupt_rx`. This is what makes `stop_agent` cooperative (cancelling ends the turn at its next checkpoint with the transcript so far intact) and what delivers an agent message to a *running* session: `execute_turn`'s existing checkpoint-based draining picks it up at the next tool-call boundary, exactly like a main-agent user message.
+3. **Stage after the turn.** `SessionMemory::maybe_stage()` checks the run's accumulated transcript against the session's own `Observer` thresholds; crossing the force threshold extracts the unstaged tail immediately, mirroring the main agent's own rotation. This runs after every turn, not just once, so a multi-turn run stages incrementally. Staged observations are held locally, invisible to any other agent until the run completes.
+4. **Go idle.** The permit is released (it's a stack-scoped guard); the registry moves to `Idle`. `wait_idle()` then races the `CancellationToken`, `tokio::time::sleep(idle_timeout)`, and the same interrupt channel's `recv()` — whichever fires first ends the idle wait. An `Interrupt::AgentMessage` received here becomes the next turn's `TurnKickoff::AgentMessage`, looping back to step 1 instead of ending the run.
+5. **Complete.** Once idle ends in a stop or timeout (not a wake), the registry moves to `Completing`. `complete_session_memory()` runs the skip check, a final extraction over whatever wasn't staged, and the merge into global memory (see below). The registry's `record_resume_point()` captures this run's id, episode id (if any), trigger, source label, and skill before `SessionStore::complete_run()` overwrites the run's metadata record with its final state, full transcript, and episode id, and an `AgentResultEvent` — tagged with the session's address and run id — is published on the bus. The registry's live entry is then removed; the session no longer appears in `list_agents`, though its store record and resume point remain.
+
+#### Agent Messaging
+
+`message_agent` (`crate::tools::message_agent::MessageAgentTool`) is registered for both the main agent and every session, each instance carrying its own address and category so it can identify itself as the sender. It calls `AgentMessenger::send()`, which:
+- for `main`, publishes a `MessageEvent` on `UserMessage` — the same bus path a relayed session result already uses, which the main event loop treats as an interrupt when a turn is running and as a fresh turn's input when idle;
+- for a live session (any state `SessionRegistry` still has an entry for), calls `SessionRegistry::deliver()`, which hands an `Interrupt::AgentMessage` to that session's interrupt channel — picked up by a running turn's next checkpoint, or by the idle wait if the session isn't currently in a turn;
+- for a completed session (no live entry, but a `ResumePoint` recorded), publishes a fresh `SpawnRequestEvent` at the same address — carrying the delivered message as the new run's prompt and a pointer to the previous run's episode (or run id) as its context — which the ordinary spawn listener picks up exactly like any other fork request;
+- otherwise, reports the address unknown.
+
+Every delivered message is formatted (`AgentMessageEvent::format_for_agent()`) naming the sender's address and category, so the recipient can reply.
 
 #### Incremental Transcript Persistence
 
@@ -69,7 +82,7 @@ A session's transcript is not just written once at completion. `agent::turn::Tra
 
 #### Fork Contents
 
-`execute_subagent()` builds the turn's starting user message from **only** the source-specific input (task prompt, pulse/action/webhook payload, plus any explicit context) — no identity, wiki, or skills content goes into it. Everything else — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki index, the skills index, and the fork-time observation/recent-context snapshot — flows through `MemoryContext`/`PromptContext` into the *system* message, assembled once per iteration by `execute_turn()`'s own `assemble_system_prompt()`, exactly as it is for the main agent. This is deliberate: putting identity content in both the user message and the system message (as the old sub-agent path did) would show up twice in every model call.
+`execute_subagent()` builds each turn's opening user message from a `TurnKickoff` — `TurnKickoff::Initial` (the task prompt, pulse/action/webhook payload, or a resume pointer, plus any explicit context) for a run's first turn, `TurnKickoff::AgentMessage` (the delivered message, formatted with the sender's address and category) for any later one — and **only** that; no identity, wiki, or skills content goes into it. Everything else — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki index, the skills index, and the fork-time observation/recent-context snapshot — flows through `MemoryContext`/`PromptContext` into the *system* message, assembled once per iteration by `execute_turn()`'s own `assemble_system_prompt()`, exactly as it is for the main agent. This is deliberate: putting identity content in both the user message and the system message (as the old sub-agent path did) would show up twice in every model call.
 
 ### Memory Merge
 
@@ -111,7 +124,19 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 
 **Decision: No sub-to-session nesting yet.**
 
-**Why:** Depth-capped nesting (a session spawning another session) is a real part of the design but depends on cross-session messaging existing first — a nested session's result needs somewhere to relay to besides main. `build_subagent_registry()` still registers `stop_agent` and `list_agents` for a session's own tool set (any session can inspect or stop any other) but omits `subagent_spawn`, keeping the spawn tree exactly two levels deep (main → spawned) until messaging lands.
+**Why:** Depth-capped nesting (a session spawning another session) is a real part of the design but is a separate piece of work from messaging. `build_subagent_registry()` still registers `stop_agent`, `list_agents`, and now `message_agent` for a session's own tool set (any session can inspect, stop, or message any other) but omits `subagent_spawn`, keeping the spawn tree exactly two levels deep (main → spawned) until nesting lands.
+
+---
+
+**Decision: Resuming a completed session goes through a fresh `SpawnRequestEvent`, not a direct fork call.**
+
+**Why:** Every other spawn path (pulses, actions, webhooks, `subagent_spawn`, the learner) already goes through `SpawnRequestEvent` on the bus, picked up by the one spawn listener that builds fork resources and hands them to the runtime. Reusing that path for a resume means `AgentMessenger` needs only a `SessionRegistry` and a `Publisher` — not a `SpawnContext` — which avoids a reference cycle (`SpawnContext` already carries an `Arc<AgentMessenger>` for every fork's `message_agent` tool; the messenger holding a `SpawnContext` back would be circular). The cost is that a resume is asynchronous like any other fork: `message_agent`'s tool result reports that the session was resumed, not the new run's id.
+
+---
+
+**Decision: Delivery to a running session reuses `execute_turn`'s existing interrupt draining; delivery to main reuses the existing inbound-message bus path.**
+
+**Why:** `execute_turn`'s tool loop already drains its `interrupt_rx` at every checkpoint — wiring a session's real interrupt channel into that (replacing the dead-end receiver every fork used to get) is enough to deliver "an interrupt at the next tool-call boundary" with no new mid-turn plumbing. Main's own turn loop already treats an inbound `MessageEvent` as an interrupt when a turn is running and as fresh input when idle (this is how a relayed session result reaches main today) — reusing it for `message_agent` avoids a second, parallel delivery mechanism for the one target that isn't a session.
 
 ---
 
@@ -124,8 +149,8 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 - **`crate::inference::retry`** — `RetryConfig`, passed to provider construction.
 - **`crate::agent::context`** — `assemble_system_prompt`/`build_system_content` (via `execute_turn`), `PromptContext`, `MemoryContext`, `SkillsContext`, and `crate::agent::context::loading::{load_observations, load_recent_context_narrative}` for the fork-time memory snapshot.
 - **`crate::agent::turn`** — `execute_turn()`. The session executor calls this to run the turn loop, passing the session's `CancellationToken` as the stop token.
-- **`crate::agent::recent_messages`** — `RecentMessages`, the message buffer for a session's turn.
-- **`crate::agent::interrupt`** — `dead_interrupt_rx()`. A session's interrupt channel is a dead end until cross-session messaging exists.
+- **`crate::agent::recent_messages`** — `RecentMessages`, the message buffer accumulated across a run's turns.
+- **`crate::agent::interrupt`** — `Interrupt` (specifically `Interrupt::AgentMessage`), the type a session's real interrupt channel carries.
 - **`crate::memory::observer`** — `Observer`, `Extraction`. Each session gets its own `Observer` instance (built from the same `[observer]` config as the main agent's) for per-run threshold checks and extraction.
 - **`crate::memory::merge_writer`** — `MemoryMergeWriter`, `SourceTag`. Shared with the main agent so episode numbering, the observation log, indexing, embedding, and the reflector trigger are all serialized through one writer.
 - **`crate::memory::tokens`** — `estimate_message_tokens()`, for the episode skip token floor check.
@@ -133,23 +158,25 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 - **`crate::skills`** — `SkillState`, `SharedSkillState`. Each session gets an isolated clone.
 - **`crate::tools`** — `ToolRegistry`, `PathPolicy`, `FileTracker`. Each session gets fresh isolated instances.
 - **`crate::workspace`** — `IdentityFiles`, `WorkspaceLayout` (including `sessions_dir()`).
-- **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`.
-- **`tokio`** — `tokio::sync::{Semaphore, Mutex, Notify}`, `tokio_util::sync::CancellationToken`.
+- **`crate::bus`** — `EventTrigger`, `SessionAddress`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`, `AgentMessageEvent`, `MessageEvent`, `Publisher`, `topics`.
+- **`crate::interfaces::types`** — `MessageOrigin`, for the `MessageEvent` `AgentMessenger` publishes to main.
+- **`tokio`** — `tokio::sync::{Semaphore, Mutex, Notify, mpsc}`, `tokio_util::sync::CancellationToken`.
 - **`chrono`, `chrono_tz`** — timestamps throughout; timezone conversion for `AgentResultEvent`.
 - **`anyhow`**, **`serde_json`/`serde`** — error handling and (de)serialization of `RunRecord`.
 
 ### Used By
 
-- **`src/gateway/startup/mod.rs`** — constructs the `SessionRegistry`, `SessionStore` (running its startup sweep), and `SessionRuntime`; builds the `SpawnContext`.
-- **`src/gateway/event_loop/run_loop.rs`** / **`reload.rs`** — wire `SessionRuntime`/`SessionRegistry` into `GatewayRuntime`, and rebuild `SpawnContext` on config reload.
-- **`listener.rs`** — the sole caller of `SessionRuntime::spawn()`.
+- **`src/gateway/startup/mod.rs`** — constructs the `SessionRegistry`, `SessionStore` (running its startup sweep), `SessionRuntime`, and the shared `AgentMessenger`; builds the `SpawnContext`; registers `message_agent` for the main agent (address `"main"`).
+- **`src/gateway/event_loop/run_loop.rs`** / **`reload.rs`** — wire `SessionRuntime`/`SessionRegistry`/`AgentMessenger` into `GatewayRuntime`, and rebuild `SpawnContext` (cloning the same `AgentMessenger`) on config reload.
+- **`listener.rs`** — the sole caller of `SessionRuntime::spawn()`; handles both a fresh fork and a `message_agent`-triggered resume identically, since both arrive as a `SpawnRequestEvent`.
 - **`src/gateway/actions.rs`** — forks a `scheduled` session for each due scheduled action.
 - **`src/pulse/executor.rs`** — builds a `SpawnRequestEvent` from a due pulse.
 - **`src/interfaces/webhook.rs`** — forks an `external` session for a webhook routed to an agent.
 - **`src/subconscious/learning.rs`** — forks a `spawned` session running the `learner` skill.
 - **`src/tools/background.rs`** — `stop_agent`/`list_agents` (read the `SessionRegistry` directly), `subagent_spawn` (publishes a `SpawnRequestEvent` with a pre-generated address).
+- **`src/tools/message_agent.rs`** — `MessageAgentTool`, registered for main and (via `build_subagent_registry()`) every session; calls `AgentMessenger::send()`.
 - **`src/tracing_service/client_context.rs`** / **`src/tools/file_bug_report.rs`** / **`src/gateway/web/tracing_api.rs`** — read `SessionRegistry::subagent_snapshot()` to populate a bug report's `active_subagents`.
-- **`src/agent/turn.rs`** — `execute_turn()` is what a session's executor calls to run its turn loop.
+- **`src/agent/turn.rs`** — `execute_turn()` is what a session's executor calls to run its turn loop; its `drain_interrupts()` is what actually delivers an `Interrupt::AgentMessage` mid-turn.
 
 ---
 
@@ -157,12 +184,13 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module exports: `SessionRegistry`, `SessionRuntime`, `SessionStore`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`. |
-| `registry.rs` | `SessionRegistry`, `SessionInfo`, `SessionCategory`, `SessionState`, address/run-id generation. |
+| `mod.rs` | Module exports: `SessionRegistry`, `SessionRuntime`, `SessionStore`, `AgentMessenger`/`DeliveryOutcome`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`. |
+| `registry.rs` | `SessionRegistry`, `SessionInfo`, `SessionCategory`, `SessionState`, `ResumePoint`, address/run-id generation, the interrupt-channel plumbing (`register()`/`deliver()`). |
 | `store.rs` | `SessionStore`, `RunRecord`, `RunTranscriptSink`: per-run metadata persistence, the incrementally-appended transcript file, and the startup incomplete-run recovery sweep. |
-| `session_memory.rs` | `SessionMemory`, `SessionMemoryEnv`, `complete_session_memory()`: per-run mid-run staging and the completion pipeline that merges into global memory. |
-| `runtime.rs` | `SessionRuntime`: concurrency-bounded execution, lifecycle driving (`run_session`), memory merge on completion, and `AgentResultEvent` construction. |
-| `types.rs` | `SubAgentConfig` (a run's turn configuration), `SubAgentBuildConfig` (fork construction inputs), `truncate_prompt_preview()`. |
-| `subagent.rs` | `SubAgentResources` (isolated state bundle), `build_subagent_resources()`, `execute_subagent()` (runs one turn through `execute_turn()`). |
-| `spawn_context.rs` | `SpawnContext` (gathered at gateway startup/reload): config, provider specs, identity, workspace layout, session-tool dependencies, this session's `Observer` and the shared `MemoryMergeWriter`. `build_spawn_resources()` resolves the tier, activates the skill, snapshots memory, and builds `SubAgentResources`. |
-| `listener.rs` | Bus listener: turns each `SpawnRequestEvent` into a `SessionRuntime::spawn()` call. |
+| `session_memory.rs` | `SessionMemory`, `SessionMemoryEnv`, `complete_session_memory()`: per-turn staging and the completion pipeline that merges into global memory. |
+| `runtime.rs` | `SessionRuntime`: concurrency-bounded execution, the turn loop and idle wait driving a (possibly multi-turn) run (`run_session`, `wait_idle`), memory merge and resume-point recording on completion (`finish_run`), and `AgentResultEvent` construction. |
+| `messaging.rs` | `AgentMessenger`, `DeliveryOutcome`: routes a `message_agent` call to main, a live session, or a resume for a completed one. |
+| `types.rs` | `SubAgentConfig` (a run's turn configuration), `SubAgentBuildConfig` (fork construction inputs, including the session's own address/category/messenger), `truncate_prompt_preview()`. |
+| `subagent.rs` | `SubAgentResources` (isolated state bundle), `build_subagent_resources()`, `TurnKickoff` (a turn's opening input), `execute_subagent()` (runs one turn through `execute_turn()`, given the run's accumulated history and interrupt channel). |
+| `spawn_context.rs` | `SpawnContext` (gathered at gateway startup/reload): config, provider specs, identity, workspace layout, session-tool dependencies, this session's `Observer`, the shared `MemoryMergeWriter`, and the shared `AgentMessenger`. `build_spawn_resources()` resolves the tier, activates the skill, snapshots memory, and builds `SubAgentResources` for a given address and category. |
+| `listener.rs` | Bus listener: turns each `SpawnRequestEvent` (a fresh fork or a `message_agent` resume) into a `SessionRuntime::spawn()` call. |

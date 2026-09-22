@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::SessionRuntime;
+use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
@@ -52,6 +53,7 @@ pub(crate) struct GatewayComponents {
     pub http_client: SharedHttpClient,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
+    pub agent_messenger: Arc<AgentMessenger>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
@@ -199,10 +201,16 @@ struct StartupSpawnContextInputs<'a> {
     mcp_registry: &'a SharedMcpRegistry,
     session_observer: &'a Arc<Observer>,
     merge_writer: &'a Arc<MemoryMergeWriter>,
+    /// Built alongside the session registry in `init_session_runtime`, since
+    /// the runtime itself now needs it too (to resume a run whose interrupt
+    /// channel still held messages at teardown) — reused here rather than
+    /// built a second time.
+    messenger: &'a Arc<AgentMessenger>,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
 fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<SpawnContext> {
+    let messenger = Arc::clone(inputs.messenger);
     Arc::new(SpawnContext {
         background_config: inputs.cfg.background.clone(),
         main_provider_specs: inputs.cfg.main.clone(),
@@ -229,10 +237,16 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         mcp_registry: Arc::clone(inputs.mcp_registry),
         observer: Arc::clone(inputs.session_observer),
         merge_writer: Arc::clone(inputs.merge_writer),
+        messenger,
     })
 }
 
-/// Create the session registry, store, and runtime.
+/// Create the session registry, messenger, store, and runtime.
+///
+/// The messenger is built here (rather than alongside the rest of
+/// `SpawnContext`) because the runtime itself now depends on it too — to
+/// resume a run whose interrupt channel still held messages at teardown —
+/// so it has to exist before `SessionRuntime::new` is called.
 ///
 /// At startup, any run left in the store from a prior process exit goes
 /// through the full completion pipeline (skip check, final observation,
@@ -244,7 +258,11 @@ async fn init_session_runtime(
     session_observer: &Observer,
     merge_writer: &MemoryMergeWriter,
     episode_skip_token_floor: usize,
-) -> (Arc<SessionRegistry>, Arc<SessionRuntime>) {
+) -> (
+    Arc<SessionRegistry>,
+    Arc<AgentMessenger>,
+    Arc<SessionRuntime>,
+) {
     let registry = Arc::new(SessionRegistry::new());
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
 
@@ -263,6 +281,11 @@ async fn init_session_runtime(
         );
     }
 
+    let messenger = Arc::new(AgentMessenger::new(
+        Arc::clone(&registry),
+        publisher.clone(),
+    ));
+
     let runtime = Arc::new(SessionRuntime::new(
         Arc::clone(&registry),
         store,
@@ -270,8 +293,9 @@ async fn init_session_runtime(
         &cfg.background,
         publisher.clone(),
         cfg.timezone,
+        Arc::clone(&messenger),
     ));
-    (registry, runtime)
+    (registry, messenger, runtime)
 }
 
 /// Load and connect workspace MCP servers.
@@ -479,6 +503,67 @@ fn init_tracing_service(
     (service, client_context)
 }
 
+/// Inputs to [`build_tools_and_agent`], gathered because building the tool
+/// registry and the agent that owns it needs this many independent pieces.
+struct ToolsAndAgentInputs<'a> {
+    cfg: &'a Config,
+    layout: &'a WorkspaceLayout,
+    mem: &'a memory::MemoryComponents,
+    tz: chrono_tz::Tz,
+    tool_deps: ToolRegistryDeps<'a>,
+    mcp_registry: &'a SharedMcpRegistry,
+    provider: Box<dyn crate::inference::InferenceProvider>,
+    options: crate::inference::CompletionOptions,
+    identity: IdentityFiles,
+}
+
+/// Build the tool registry, reserve its names against MCP name collisions,
+/// and construct the agent from it.
+///
+/// Split out of `initialize` (which has this many independent subsystems to
+/// wire up already) so the tool/agent construction sequence reads as one
+/// step there. Takes `ToolRegistryDeps` by value (built by the caller) so it
+/// doesn't also need every one of its dependencies as a separate parameter.
+async fn build_tools_and_agent(
+    inputs: ToolsAndAgentInputs<'_>,
+) -> (
+    Agent,
+    crate::tools::SharedPathPolicy,
+    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
+) {
+    let (tools, path_policy_for_runtime, output_topic_override_tx) = tools::init_tool_registry(
+        inputs.cfg,
+        inputs.layout,
+        inputs.mem,
+        inputs.tz,
+        &inputs.tool_deps,
+    );
+
+    // Reserve the built-in tool namespace so any MCP tool (workspace or web
+    // search) that reuses a built-in name is shadowed visibly instead of
+    // silently. See src/mcp/CLAUDE.md.
+    inputs
+        .mcp_registry
+        .write()
+        .await
+        .set_reserved_tool_names(tools.tool_names());
+
+    let agent = tools::create_agent(
+        CreateAgentArgs {
+            provider: inputs.provider,
+            options: inputs.options,
+            tools,
+            identity: inputs.identity,
+        },
+        inputs.mcp_registry,
+        inputs.tz,
+        inputs.layout,
+    )
+    .await;
+
+    (agent, path_policy_for_runtime, output_topic_override_tx)
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -510,7 +595,7 @@ pub(crate) async fn initialize(
         &mem,
         providers.embedding_provider.clone(),
     )?;
-    let (session_registry, session_runtime) = init_session_runtime(
+    let (session_registry, agent_messenger, session_runtime) = init_session_runtime(
         cfg,
         &layout,
         publisher,
@@ -537,44 +622,35 @@ pub(crate) async fn initialize(
         mcp_registry: &net.mcp_registry,
         session_observer: &session_observer,
         merge_writer: &merge_writer,
+        messenger: &agent_messenger,
     });
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
 
-    let tool_deps = ToolRegistryDeps {
-        action_store: &action_store,
-        action_notify: &action_notify,
-        skill_state: &skill_state,
-        tools_path: &net.tools_path,
-        session_registry: &session_registry,
-        endpoint_registry: &net.endpoint_registry,
-        publisher,
-        tracing_service: &tracing_service,
-        tracing_client_context: &tracing_client_context,
-    };
-    let (tools, path_policy_for_runtime, output_topic_override_tx) =
-        tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
-
-    // Reserve the built-in tool namespace so any MCP tool (workspace or web
-    // search) that reuses a built-in name is shadowed visibly instead of
-    // silently. See src/mcp/CLAUDE.md.
-    net.mcp_registry
-        .write()
-        .await
-        .set_reserved_tool_names(tools.tool_names());
-
-    let agent = tools::create_agent(
-        CreateAgentArgs {
+    let (agent, path_policy_for_runtime, output_topic_override_tx) =
+        build_tools_and_agent(ToolsAndAgentInputs {
+            cfg,
+            layout: &layout,
+            mem: &mem,
+            tz,
+            tool_deps: ToolRegistryDeps {
+                action_store: &action_store,
+                action_notify: &action_notify,
+                skill_state: &skill_state,
+                tools_path: &net.tools_path,
+                session_registry: &session_registry,
+                endpoint_registry: &net.endpoint_registry,
+                publisher,
+                tracing_service: &tracing_service,
+                tracing_client_context: &tracing_client_context,
+                agent_messenger: &agent_messenger,
+            },
+            mcp_registry: &net.mcp_registry,
             provider: providers.provider,
             options: providers.options,
-            tools,
             identity,
-        },
-        &net.mcp_registry,
-        tz,
-        &layout,
-    )
-    .await;
+        })
+        .await;
 
     Ok(GatewayComponents {
         layout,
@@ -595,6 +671,7 @@ pub(crate) async fn initialize(
         http_client: http.clone(),
         session_runtime,
         session_registry,
+        agent_messenger,
         spawn_context,
         path_policy: path_policy_for_runtime,
         output_topic_override_tx,

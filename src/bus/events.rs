@@ -254,6 +254,38 @@ impl AgentResultEvent {
     }
 }
 
+/// A message one agent sends to another by address (`message_agent` tool).
+///
+/// Delivered as an [`crate::agent::interrupt::Interrupt::AgentMessage`] to a
+/// live session (an interrupt when its turn is running, a new turn's input
+/// when it's idle). The main agent's own delivery reuses the existing
+/// `MessageEvent`/`UserMessage` bus path instead, which already implements
+/// the same interrupt-if-running/new-turn-if-idle behavior.
+#[derive(Debug, Clone)]
+pub struct AgentMessageEvent {
+    /// Address of the sending agent (`"main"` or a session address).
+    pub from: SessionAddress,
+    /// The sender's category label (`"main"`, `"scheduled"`, `"external"`, or `"spawned"`).
+    pub from_category: String,
+    /// The message body.
+    pub content: String,
+    /// Hop count carried by this message. Always `0` until hop-count limits
+    /// are implemented; carried now so delivery has somewhere to put it.
+    pub hop_count: u32,
+}
+
+impl AgentMessageEvent {
+    /// Format this message for injection into the recipient's conversation,
+    /// naming the sender's address and category so the recipient can reply.
+    #[must_use]
+    pub fn format_for_agent(&self) -> String {
+        format!(
+            "[Agent Message from {} ({})]\n{}",
+            self.from, self.from_category, self.content
+        )
+    }
+}
+
 /// Request to spawn an agent session from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {
@@ -434,6 +466,20 @@ mod tests {
         assert_eq!(
             event.format_for_agent(),
             "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nTranscript: /tmp/transcript.txt"
+        );
+    }
+
+    #[test]
+    fn agent_message_event_format_for_agent_names_sender_and_category() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("spawned-researcher-3f9a"),
+            from_category: "spawned".to_string(),
+            content: "found the answer".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(
+            msg.format_for_agent(),
+            "[Agent Message from spawned-researcher-3f9a (spawned)]\nfound the answer"
         );
     }
 

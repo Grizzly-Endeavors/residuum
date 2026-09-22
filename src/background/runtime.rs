@@ -12,21 +12,24 @@ use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::FutureExt;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::interrupt::Interrupt;
+use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
-    AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
-    ResultDisposition, SessionAddress, SkillName, topics,
+    AgentMessageEvent, AgentResultEvent, AgentResultStatus, EventTrigger, HEARTBEAT_OK,
+    HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress, SkillName, topics,
 };
 use crate::config::BackgroundConfig;
 
+use super::messaging::AgentMessenger;
 use super::registry::{
-    SessionCategory, SessionInfo, SessionRegistry, SessionState, generate_run_id,
+    ResumePoint, SessionCategory, SessionInfo, SessionRegistry, SessionState, generate_run_id,
 };
 use super::session_memory::{SessionMemory, SessionMemoryEnv, complete_session_memory};
 use super::store::{RunTranscriptSink, SessionStore};
-use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
+use super::subagent::{SubAgentResources, TurnKickoff, execute_subagent};
 use super::types::{SubAgentConfig, truncate_prompt_preview};
 
 /// Idle timeouts per category, resolved once from config at construction.
@@ -100,6 +103,11 @@ pub struct SessionRuntime {
     idle_timeouts: IdleTimeouts,
     publisher: Publisher,
     tz: chrono_tz::Tz,
+    /// Used only to resume a run whose interrupt channel still held agent
+    /// messages at the moment its own teardown drained it — see
+    /// `finish_run`. Ordinary live delivery goes through the registry
+    /// directly and never touches this.
+    messenger: Arc<AgentMessenger>,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -110,6 +118,7 @@ struct RunEnv {
     store: Arc<SessionStore>,
     publisher: Publisher,
     tz: chrono_tz::Tz,
+    messenger: Arc<AgentMessenger>,
 }
 
 impl SessionRuntime {
@@ -122,6 +131,7 @@ impl SessionRuntime {
         idle_timeouts: impl Into<IdleTimeouts>,
         publisher: Publisher,
         tz: chrono_tz::Tz,
+        messenger: Arc<AgentMessenger>,
     ) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -130,6 +140,7 @@ impl SessionRuntime {
             idle_timeouts: idle_timeouts.into(),
             publisher,
             tz,
+            messenger,
         }
     }
 
@@ -144,6 +155,7 @@ impl SessionRuntime {
         let category = SessionCategory::from_trigger(&req.trigger);
         let purpose = truncate_prompt_preview(&req.subagent_config.prompt);
         let idle_timeout = self.idle_timeouts.for_trigger(&req.trigger);
+        let model_tier = req.subagent_config.model_tier;
 
         let info = SessionInfo {
             address: req.address,
@@ -156,11 +168,12 @@ impl SessionRuntime {
             depth: req.depth,
             purpose,
             agent_skill: req.agent_skill,
+            model_tier,
             started_at: Utc::now(),
         };
 
         let stop_token = CancellationToken::new();
-        self.registry.register(info.clone(), stop_token.clone());
+        let interrupt_rx = self.registry.register(info.clone(), stop_token.clone());
         tracing::info!(address = %info.address, source_label = %info.source_label, "session forking");
 
         let env = RunEnv {
@@ -169,6 +182,7 @@ impl SessionRuntime {
             store: Arc::clone(&self.store),
             publisher: self.publisher.clone(),
             tz: self.tz,
+            messenger: Arc::clone(&self.messenger),
         };
         let config = req.subagent_config;
 
@@ -196,6 +210,7 @@ impl SessionRuntime {
                 config,
                 resources,
                 stop_token,
+                interrupt_rx,
                 idle_timeout,
                 env,
             ))
@@ -316,6 +331,8 @@ async fn recover_from_panic(
         None
     };
 
+    registry.record_resume_point(&info.address, resume_point(info, episode_id.clone()));
+
     let transcript_path = store
         .complete_run(
             info,
@@ -333,82 +350,253 @@ async fn recover_from_panic(
         tracing::warn!(error = %e, "failed to publish panicked session result to bus");
     }
 
-    registry.remove(&info.address);
+    registry.remove(&info.address, &info.run_id);
     tracing::info!("session removed from registry after panic recovery");
 }
 
+/// Build the resume point a completed run leaves behind, so a later
+/// `message_agent` call to its address can fork it again with a pointer back
+/// to what it produced.
+fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
+    ResumePoint {
+        previous_run_id: info.run_id.clone(),
+        previous_episode_id: episode_id,
+        trigger: info.trigger.clone(),
+        source_label: info.source_label.clone(),
+        agent_skill: info.agent_skill.clone(),
+        model_tier: info.model_tier,
+        spawner: info.spawner.clone(),
+        depth: info.depth,
+    }
+}
+
+/// What ended a session's idle wait.
+enum IdleOutcome {
+    /// Stopped via `stop_agent` while idle.
+    Stopped,
+    /// The idle timeout elapsed with no new input.
+    TimedOut,
+    /// An agent message arrived; it becomes the next turn's kickoff.
+    Woken(AgentMessageEvent),
+}
+
+/// Wait for a session's idle period to end: a stop, the idle timeout, or an
+/// agent message delivered through the run's own interrupt channel (the
+/// same channel a running turn drains at its tool-call checkpoints — see
+/// `crate::background::messaging`). An interrupt kind other than
+/// `AgentMessage` is not expected while idle (nothing else is ever sent into
+/// a session's channel) but is ignored defensively rather than treated as a
+/// wake, so the idle wait keeps going.
+async fn wait_idle(
+    stop_token: &CancellationToken,
+    idle_timeout: Duration,
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+) -> IdleOutcome {
+    loop {
+        tokio::select! {
+            biased;
+            () = stop_token.cancelled() => return IdleOutcome::Stopped,
+            () = tokio::time::sleep(idle_timeout) => {
+                // `biased` means this arm can win even when a message landed
+                // in the channel in the same poll (it's checked ahead of the
+                // `recv()` arm below) — a `try_recv` here catches that exact
+                // race before treating the run as genuinely timed out and
+                // letting its caller move on to completing, which would
+                // otherwise leave the message stranded in a channel about to
+                // be drained and dropped (see `finish_run`).
+                return match interrupt_rx.try_recv() {
+                    Ok(Interrupt::AgentMessage(msg)) => IdleOutcome::Woken(msg),
+                    Ok(_) | Err(_) => IdleOutcome::TimedOut,
+                };
+            }
+            received = interrupt_rx.recv() => {
+                match received {
+                    Some(Interrupt::AgentMessage(msg)) => return IdleOutcome::Woken(msg),
+                    Some(_) => {}
+                    None => return IdleOutcome::TimedOut,
+                }
+            }
+        }
+    }
+}
+
 /// Drive one session run from permit acquisition through completion.
+///
+/// A run is one or more turns: the first is always the fork's task prompt;
+/// any later one is an agent message that arrived while the session was
+/// idle, per the design's messaging rules. `recent_messages` accumulates
+/// across every turn in the run, so a session woken from idle still has its
+/// earlier context, and staging/the final merge see the whole run's
+/// transcript regardless of how many turns produced it.
 #[tracing::instrument(skip_all, fields(session.address = %info.address, run.id = %info.run_id))]
 async fn run_session(
     mut info: SessionInfo,
     config: SubAgentConfig,
     resources: Option<SubAgentResources>,
     stop_token: CancellationToken,
+    mut interrupt_rx: mpsc::Receiver<Interrupt>,
     idle_timeout: Duration,
     env: RunEnv,
 ) {
-    let (status, summary, transcript) = tokio::select! {
-        biased;
-        () = stop_token.cancelled() => {
-            tracing::info!("session stopped before its turn started");
-            (AgentResultStatus::Cancelled, String::new(), Vec::new())
-        }
-        permit = env.semaphore.acquire() => {
-            match permit {
-                Ok(_permit) => {
-                    env.registry.set_state(&info.address, SessionState::Running);
-                    run_turn(&info, &config, resources.as_ref(), &stop_token, &env.store).await
-                }
-                Err(_closed) => {
-                    tracing::warn!("concurrency semaphore closed before session could acquire a permit");
-                    (
-                        AgentResultStatus::Failed {
-                            error: "gateway is shutting down".to_string(),
-                        },
-                        String::new(),
-                        Vec::new(),
-                    )
+    let mut recent_messages = RecentMessages::new();
+    let mut memory = SessionMemory::new();
+    let mut kickoff = TurnKickoff::Initial {
+        prompt: config.prompt,
+        context: config.context,
+    };
+    // Assigned on the loop's first iteration, which always runs at least
+    // once (the run's initial turn), so both are definitely initialized by
+    // the time anything after the loop reads them.
+    let mut status;
+    let mut summary;
+
+    loop {
+        (status, summary) = tokio::select! {
+            biased;
+            () = stop_token.cancelled() => {
+                tracing::info!("session stopped before its turn started");
+                (AgentResultStatus::Cancelled, String::new())
+            }
+            permit = env.semaphore.acquire() => {
+                match permit {
+                    Ok(_permit) => {
+                        env.registry.set_state(&info.address, SessionState::Running);
+                        let ctx = TurnCtx {
+                            info: &info,
+                            resources: resources.as_ref(),
+                            stop_token: &stop_token,
+                            store: &env.store,
+                        };
+                        run_turn(&ctx, &mut recent_messages, kickoff, &mut interrupt_rx).await
+                    }
+                    Err(_closed) => {
+                        tracing::warn!("concurrency semaphore closed before session could acquire a permit");
+                        (
+                            AgentResultStatus::Failed {
+                                error: "gateway is shutting down".to_string(),
+                            },
+                            String::new(),
+                        )
+                    }
                 }
             }
-        }
-    };
-
-    // Per-run threshold check: mirrors the main agent's own rotation, and
-    // matters most for a run whose single turn already produced enough
-    // content to cross the force threshold. Staged observations are held
-    // locally and merged alongside the final observation on completion.
-    let mut memory = SessionMemory::new();
-    if let Some(res) = resources.as_ref() {
-        let mem_env = SessionMemoryEnv {
-            observer: &res.observer,
-            merge_writer: &res.merge_writer,
-            layout: &res.layout,
-            episode_skip_token_floor: res.episode_skip_token_floor,
-            tz: env.tz,
         };
-        memory.maybe_stage(&transcript, &mem_env).await;
-    }
 
-    // A cancelled run — whether stopped before its turn started or mid-turn
-    // — skips lingering idle and goes straight to completing, per the
-    // design: stopping a session moves it straight to `completing`.
-    if matches!(status, AgentResultStatus::Cancelled) {
-        tracing::info!("session stopped, skipping idle and completing directly");
-    } else {
+        // Per-turn threshold check: mirrors the main agent's own rotation,
+        // run after every turn (not just once) since a run can now span
+        // several. Staged observations are held locally and merged alongside
+        // the final observation on completion.
+        if let Some(res) = resources.as_ref() {
+            let mem_env = session_memory_env(res, env.tz);
+            memory
+                .maybe_stage(recent_messages.messages(), &mem_env)
+                .await;
+        }
+
+        // A cancelled run — whether stopped before its turn started or
+        // mid-turn — skips lingering idle and goes straight to completing,
+        // per the design: stopping a session moves it straight to
+        // `completing`.
+        if matches!(status, AgentResultStatus::Cancelled) {
+            tracing::info!("session stopped, skipping idle and completing directly");
+            break;
+        }
+
         env.registry.set_state(&info.address, SessionState::Idle);
         tracing::debug!(
             idle_secs = idle_timeout.as_secs(),
             "session idle, awaiting further input or timeout"
         );
-        tokio::select! {
-            () = stop_token.cancelled() => {
+        match wait_idle(&stop_token, idle_timeout, &mut interrupt_rx).await {
+            IdleOutcome::Stopped => {
                 tracing::info!("session stopped while idle");
+                break;
             }
-            () = tokio::time::sleep(idle_timeout) => {
+            IdleOutcome::TimedOut => {
                 tracing::debug!("session idle timeout elapsed");
+                break;
+            }
+            IdleOutcome::Woken(msg) => {
+                tracing::info!(from = %msg.from, "session woken by an agent message, starting another turn");
+                kickoff = TurnKickoff::AgentMessage(msg);
             }
         }
     }
+
+    // The run is genuinely ending now (stopped, or timed out with the race
+    // above finding nothing) and `interrupt_rx` is about to be dropped —
+    // drain whatever is still queued in it so a message that landed in the
+    // narrow window between the loop's last check and here isn't silently
+    // lost. `finish_run` resumes the session as a new run to deliver these
+    // once this run has fully left the registry.
+    let leftover_messages = drain_pending_agent_messages(&mut interrupt_rx);
+
+    finish_run(
+        &mut info,
+        resources.as_ref(),
+        RunOutcome {
+            status,
+            summary,
+            memory,
+            recent_messages,
+            leftover_messages,
+        },
+        &env,
+    )
+    .await;
+}
+
+/// Drain every agent message still queued in a run's interrupt channel,
+/// discarding any other interrupt kind (nothing else is ever sent into a
+/// session's channel — see `wait_idle`).
+fn drain_pending_agent_messages(
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+) -> Vec<AgentMessageEvent> {
+    let mut drained = Vec::new();
+    while let Ok(interrupt) = interrupt_rx.try_recv() {
+        if let Interrupt::AgentMessage(msg) = interrupt {
+            drained.push(msg);
+        }
+    }
+    drained
+}
+
+/// What a run's turn loop produced, once it has ended — everything
+/// [`finish_run`] needs to close it out, grouped to keep that function's
+/// argument count down.
+struct RunOutcome {
+    status: AgentResultStatus,
+    summary: String,
+    memory: SessionMemory,
+    recent_messages: RecentMessages,
+    /// Agent messages still queued in the run's interrupt channel when
+    /// [`drain_pending_agent_messages`] drained it — must be routed to the
+    /// resumed run rather than silently dropped.
+    leftover_messages: Vec<AgentMessageEvent>,
+}
+
+/// Finalize a run once its turn loop has ended: merge whatever it staged
+/// (and a final extraction) into global memory, record the run's resume
+/// point, write its completed store record, publish its result, and — if
+/// any agent messages were still queued when the run's interrupt channel was
+/// drained (see [`drain_pending_agent_messages`]) — resume the session as a
+/// new run to deliver them, once this run has fully left the registry.
+///
+/// Split out of [`run_session`] purely to keep that function's line count
+/// down — this is still exclusively its own tail end, not a reusable step.
+async fn finish_run(
+    info: &mut SessionInfo,
+    resources: Option<&SubAgentResources>,
+    outcome: RunOutcome,
+    env: &RunEnv,
+) {
+    let RunOutcome {
+        status,
+        summary,
+        memory,
+        recent_messages,
+        leftover_messages,
+    } = outcome;
 
     info.state = SessionState::Completing;
     env.registry
@@ -417,44 +605,85 @@ async fn run_session(
     // Merge into global memory before recording the run as completed, so a
     // successful merge's episode id lands in the same record. A stopped run
     // merges like any other — stopping is not discarding.
-    let episode_id = if let Some(res) = resources.as_ref() {
-        let mem_env = SessionMemoryEnv {
-            observer: &res.observer,
-            merge_writer: &res.merge_writer,
-            layout: &res.layout,
-            episode_skip_token_floor: res.episode_skip_token_floor,
-            tz: env.tz,
-        };
+    let episode_id = if let Some(res) = resources {
+        let mem_env = session_memory_env(res, env.tz);
         let tag = crate::memory::types::SourceTag::session(
             info.address.to_string(),
             info.run_id.clone(),
             info.category.as_str(),
         );
-        complete_session_memory(tag, &summary, &transcript, memory, &mem_env).await
+        complete_session_memory(tag, &summary, recent_messages.messages(), memory, &mem_env).await
     } else {
         None
     };
 
+    let point = resume_point(info, episode_id.clone());
+    env.registry
+        .record_resume_point(&info.address, point.clone());
+
     let transcript_path = env
         .store
         .complete_run(
-            &info,
+            info,
             SessionState::Completed.as_str(),
-            transcript,
+            recent_messages.messages().to_vec(),
             episode_id,
         )
         .await;
 
-    let event = build_result_event(&info, status, summary, transcript_path, env.tz);
+    let event = build_result_event(info, status, summary, transcript_path, env.tz);
     if let Err(e) = env.publisher.publish(topics::Background, event).await {
         tracing::warn!(error = %e, "failed to publish session result to bus");
     }
 
-    env.registry.remove(&info.address);
+    env.registry.remove(&info.address, &info.run_id);
     tracing::info!("session completed");
+
+    if !leftover_messages.is_empty() {
+        tracing::warn!(
+            address = %info.address,
+            count = leftover_messages.len(),
+            "agent message(s) arrived as the run was tearing down; resuming the session as a new run to deliver them"
+        );
+        if let Err(e) = env
+            .messenger
+            .resume_with_messages(&info.address, &point, &leftover_messages)
+            .await
+        {
+            tracing::error!(
+                address = %info.address,
+                error = %e,
+                "failed to resume session to deliver messages queued at teardown"
+            );
+        }
+    }
 }
 
-/// Run the session's single turn, translating a missing-resources or
+/// Build a [`SessionMemoryEnv`] borrowing from a run's [`SubAgentResources`],
+/// for the two call sites (per-turn staging, final completion) that both
+/// need one from the same fields.
+fn session_memory_env(res: &SubAgentResources, tz: chrono_tz::Tz) -> SessionMemoryEnv<'_> {
+    SessionMemoryEnv {
+        observer: &res.observer,
+        merge_writer: &res.merge_writer,
+        layout: &res.layout,
+        episode_skip_token_floor: res.episode_skip_token_floor,
+        tz,
+    }
+}
+
+/// A run's identity and resources, unchanging across however many turns the
+/// run has — grouped so [`run_turn`] takes one borrow of them plus its own
+/// per-turn arguments (the accumulated history, this turn's kickoff, and the
+/// interrupt channel), rather than each individually.
+struct TurnCtx<'a> {
+    info: &'a SessionInfo,
+    resources: Option<&'a SubAgentResources>,
+    stop_token: &'a CancellationToken,
+    store: &'a SessionStore,
+}
+
+/// Run one turn of a session's run, translating a missing-resources or
 /// execution error into a `Failed` result rather than panicking or losing
 /// the run.
 ///
@@ -462,35 +691,44 @@ async fn run_session(
 /// when it was stopped mid-flight (the stop token races the model call and
 /// ends the turn at its next checkpoint rather than surfacing an error), so
 /// an `Ok` alone cannot distinguish the two. Checking the token after the
-/// fact tells them apart while still keeping whatever partial
-/// summary/transcript the turn produced before it was stopped.
+/// fact tells them apart while still keeping whatever partial transcript
+/// (left in `recent_messages`) the turn produced before it was stopped.
 async fn run_turn(
-    info: &SessionInfo,
-    config: &SubAgentConfig,
-    resources: Option<&SubAgentResources>,
-    stop_token: &CancellationToken,
-    store: &SessionStore,
-) -> (AgentResultStatus, String, Vec<crate::inference::Message>) {
+    ctx: &TurnCtx<'_>,
+    recent_messages: &mut RecentMessages,
+    kickoff: TurnKickoff,
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+) -> (AgentResultStatus, String) {
     let sink = RunTranscriptSink {
-        store,
-        run_id: &info.run_id,
-        started_at: info.started_at,
+        store: ctx.store,
+        run_id: &ctx.info.run_id,
+        started_at: ctx.info.started_at,
     };
     let outcome = async {
-        let res =
-            resources.ok_or_else(|| anyhow::anyhow!("session run requires SubAgentResources"))?;
-        execute_subagent(&info.run_id, config, res, stop_token, Some(&sink)).await
+        let res = ctx
+            .resources
+            .ok_or_else(|| anyhow::anyhow!("session run requires SubAgentResources"))?;
+        execute_subagent(
+            &ctx.info.run_id,
+            kickoff,
+            recent_messages,
+            res,
+            ctx.stop_token,
+            Some(&sink),
+            interrupt_rx,
+        )
+        .await
     }
     .await;
 
     match outcome {
-        Ok(SubAgentOutput { summary, messages }) if stop_token.is_cancelled() => {
+        Ok(summary) if ctx.stop_token.is_cancelled() => {
             tracing::info!("session turn stopped mid-flight");
-            (AgentResultStatus::Cancelled, summary, messages)
+            (AgentResultStatus::Cancelled, summary)
         }
-        Ok(SubAgentOutput { summary, messages }) => {
+        Ok(summary) => {
             tracing::info!("session turn completed");
-            (AgentResultStatus::Completed, summary, messages)
+            (AgentResultStatus::Completed, summary)
         }
         Err(e) => {
             tracing::warn!(error = %e, "session turn failed");
@@ -499,7 +737,6 @@ async fn run_turn(
                     error: e.to_string(),
                 },
                 String::new(),
-                Vec::new(),
             )
         }
     }
@@ -569,6 +806,10 @@ mod tests {
             spawned: Duration::from_millis(20),
             external: Duration::from_millis(20),
         };
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
         let runtime = SessionRuntime::new(
             registry,
             store,
@@ -576,6 +817,7 @@ mod tests {
             idle_timeouts,
             bus_handle.publisher(),
             chrono_tz::UTC,
+            messenger,
         );
         (runtime, sub)
     }
@@ -819,6 +1061,114 @@ mod tests {
         );
     }
 
+    // `start_paused` isn't about idle-timeout logic here (the one-minute
+    // idle timeouts below are never actually reached) — it protects the
+    // `tokio::time::timeout` backstops from firing spuriously. Those wrap a
+    // *real* timer: if the OS starves this test's single worker thread for
+    // longer than the backstop under heavy contention (many parallel test
+    // threads plus a concurrent build reproduces this locally), the timer
+    // has already elapsed the instant the thread resumes, even though the
+    // awaited event was sitting ready the whole time — a false failure, not
+    // a hang. A paused/virtual clock only "elapses" via explicit advancement
+    // when nothing else can make progress, so a stalled OS thread can never
+    // cause it to expire out from under a message that already arrived.
+    #[tokio::test(start_paused = true)]
+    async fn stop_with_a_pending_message_resumes_the_session_to_deliver_it() {
+        // A message delivered while the turn is blocked on the model call
+        // never reaches a tool-call checkpoint to be drained by the turn
+        // itself. Stopping the session then must not let that message
+        // vanish when `interrupt_rx` is dropped — `finish_run` drains it and
+        // resumes the session as a new run instead.
+        let bus_handle = crate::bus::spawn_broker();
+        let mut result_sub: crate::bus::Subscriber<AgentResultEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let mut spawn_sub: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            3,
+            IdleTimeouts {
+                scheduled: Duration::from_mins(1),
+                spawned: Duration::from_mins(1),
+                external: Duration::from_mins(1),
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+
+        let address = SessionAddress::from("spawned-researcher-000t");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(BlockingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+            }),
+        );
+
+        // `wait_for` polls observable registry state rather than sleeping a
+        // guessed duration; the recv() timeouts below are a bounded backstop
+        // against a genuine hang, not the primary means of pacing the test —
+        // both events are driven by BlockingProvider's deterministic
+        // never-resolves-until-cancelled gate and the bus's own delivery,
+        // neither of which depends on wall-clock timing.
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("session should reach running while blocked on the model call");
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from(MAIN_ADDRESS),
+                    from_category: "main".to_string(),
+                    content: "don't forget this".to_string(),
+                    hop_count: 0,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered
+        );
+
+        assert!(runtime.registry.stop(&address));
+
+        let result_event = tokio::time::timeout(Duration::from_secs(10), result_sub.recv())
+            .await
+            .expect("stopped run should still publish a result")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result_event.status, AgentResultStatus::Cancelled));
+
+        let spawn_event = tokio::time::timeout(Duration::from_secs(10), spawn_sub.recv())
+            .await
+            .expect("the pending message must resume the session as a new run rather than vanish")
+            .unwrap()
+            .unwrap();
+        assert_eq!(spawn_event.address, address);
+        assert!(spawn_event.prompt.contains("don't forget this"));
+    }
+
     struct PanickingProvider;
 
     #[async_trait]
@@ -911,6 +1261,7 @@ mod tests {
             depth: 1,
             purpose: "research the thing".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         };
         store.begin_run(&info).await;
@@ -953,7 +1304,7 @@ mod tests {
         };
 
         let registry = SessionRegistry::new();
-        registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry.register(info.clone(), CancellationToken::new());
         let bus_handle = crate::bus::spawn_broker();
         let mut sub: crate::bus::Subscriber<AgentResultEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
@@ -1065,6 +1416,10 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
         let runtime = SessionRuntime::new(
             registry,
             store,
@@ -1076,6 +1431,7 @@ mod tests {
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
+            messenger,
         );
 
         let first = SessionAddress::from("spawned-first-0001");
@@ -1165,6 +1521,7 @@ mod tests {
             depth: 1,
             purpose: "check things".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         };
         let event = build_result_event(
@@ -1205,6 +1562,7 @@ mod tests {
             depth: 1,
             purpose: "research".to_string(),
             agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
             started_at: Utc::now(),
         };
         let event = build_result_event(
@@ -1216,5 +1574,321 @@ mod tests {
         );
         assert_eq!(event.session_address, info.address);
         assert_eq!(event.run_id, "run-7");
+    }
+
+    /// Provider that returns canned responses in sequence, one per call —
+    /// unlike `MockProvider`, which always returns the same response — so a
+    /// test can distinguish a run's first turn from its second.
+    struct SequencedProvider {
+        responses: Vec<String>,
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SequencedProvider {
+        fn new(responses: Vec<&str>) -> Self {
+            Self {
+                responses: responses.into_iter().map(str::to_string).collect(),
+                call_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for SequencedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            let idx = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let response = self
+                .responses
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| "no more responses configured".to_string());
+            Ok(InferenceResponse::new(response, vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "sequenced"
+        }
+    }
+
+    fn make_sequenced_resources(responses: Vec<&str>) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
+        SubAgentResources {
+            provider: Box::new(SequencedProvider::new(responses)),
+            tools: crate::tools::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+        }
+    }
+
+    /// Build a runtime with a longer, fixed idle window (rather than
+    /// `test_runtime`'s 20ms) so a test has a reliable window to deliver a
+    /// message while the session is genuinely idle, without racing a
+    /// timeout that would complete the run out from under it.
+    async fn test_runtime_with_idle_window(
+        idle_window: Duration,
+    ) -> (SessionRuntime, crate::bus::Subscriber<AgentResultEvent>) {
+        let bus_handle = crate::bus::spawn_broker();
+        let sub = bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            3,
+            IdleTimeouts {
+                scheduled: idle_window,
+                spawned: idle_window,
+                external: idle_window,
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+        (runtime, sub)
+    }
+
+    #[tokio::test]
+    async fn wait_idle_treats_a_message_racing_the_timeout_as_a_wake() {
+        // A zero-length idle window is already elapsed the instant the
+        // future is first polled, so the biased select's timeout arm can win
+        // even with a message already sitting in the channel — exactly the
+        // race `wait_idle`'s post-timeout `try_recv` exists to catch.
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
+            from: SessionAddress::from(MAIN_ADDRESS),
+            from_category: "main".to_string(),
+            content: "just in time".to_string(),
+            hop_count: 0,
+        }))
+        .unwrap();
+
+        let stop_token = CancellationToken::new();
+        match wait_idle(&stop_token, Duration::ZERO, &mut rx).await {
+            IdleOutcome::Woken(msg) => assert_eq!(msg.content, "just in time"),
+            IdleOutcome::TimedOut => panic!(
+                "a message already queued when the timeout fired must still wake the session"
+            ),
+            IdleOutcome::Stopped => panic!("stop token was never cancelled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_idle_times_out_when_the_channel_is_genuinely_empty() {
+        let (_tx, mut rx) = mpsc::channel(4);
+        let stop_token = CancellationToken::new();
+        assert!(matches!(
+            wait_idle(&stop_token, Duration::from_millis(5), &mut rx).await,
+            IdleOutcome::TimedOut
+        ));
+    }
+
+    #[tokio::test]
+    async fn idle_session_wakes_for_agent_message_and_runs_a_second_turn() {
+        let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        let address = SessionAddress::from("spawned-researcher-0008");
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(make_sequenced_resources(vec!["first done", "second done"])),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+            info.state == SessionState::Idle
+        })
+        .await
+        .expect("session should go idle after its first turn");
+
+        // Exactly what `AgentMessenger::send` does to deliver to a live
+        // session — see `crate::background::messaging`.
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from(MAIN_ADDRESS),
+                    from_category: "main".to_string(),
+                    content: "any updates?".to_string(),
+                    hop_count: 0,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered,
+            "the idle session should still be live in the registry"
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+            .await
+            .expect("the run should eventually complete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.summary, "second done",
+            "the run should complete with its second turn's own summary"
+        );
+
+        let transcript_path = event
+            .transcript_path
+            .expect("completed run should have a transcript");
+        let contents = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let transcript = record.get("transcript").unwrap().as_array().unwrap();
+        let joined: String = transcript
+            .iter()
+            .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("first done"),
+            "transcript should keep the first turn's output: {joined}"
+        );
+        assert!(
+            joined.contains("any updates?"),
+            "transcript should record the delivered agent message: {joined}"
+        );
+        assert!(
+            joined.contains("second done"),
+            "transcript should include the second turn's output: {joined}"
+        );
+
+        // One run, one completion — the wake extended the existing run
+        // rather than starting a new one.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), sub.recv())
+                .await
+                .is_err(),
+            "a single message-driven wake should not produce a second run"
+        );
+    }
+
+    /// `SubAgentResources` built with a real (non-disabled) observer whose
+    /// thresholds are set to fire on essentially any content, paired with a
+    /// mock provider that always finds one observation — so a turn's
+    /// messages always cross the force threshold and get staged.
+    fn make_sequenced_resources_with_eager_observer(
+        responses: Vec<&str>,
+    ) -> (SubAgentResources, crate::workspace::layout::WorkspaceLayout) {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(&dir);
+        let search_index = Arc::new(
+            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+        );
+        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = Arc::new(crate::memory::merge_writer::MemoryMergeWriter::new(
+            reflector,
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        ));
+        let observer = Arc::new(crate::memory::observer::Observer::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                r#"{"observations": [{"content": "staged a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
+            )),
+            crate::memory::observer::ObserverConfig {
+                threshold_tokens: 1,
+                force_threshold_tokens: 1,
+                ..crate::memory::observer::ObserverConfig::default()
+            },
+        ));
+        let resources = SubAgentResources {
+            provider: Box::new(SequencedProvider::new(responses)),
+            tools: crate::tools::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout: layout.clone(),
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+        };
+        (resources, layout)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn staging_runs_after_every_turn_not_just_once() {
+        // Unlike the other idle-wake tests, this run's completion genuinely
+        // depends on its *second* idle wait timing out with no further input
+        // — there's no explicit stop here, so the idle timeout is the only
+        // thing that ever moves the run from `idle` to `completing`. Pausing
+        // the clock (`start_paused = true`) makes that wait resolve the
+        // instant nothing else is progressing, regardless of host speed,
+        // instead of requiring a real sleep to survive a slow or throttled
+        // CI runner. The 300ms window itself is unchanged; only the wait
+        // for it is now driven by virtual, not wall-clock, time.
+        let (runtime, mut sub) = test_runtime_with_idle_window(Duration::from_millis(300)).await;
+        let address = SessionAddress::from("spawned-researcher-0009");
+        let (resources, layout) = make_sequenced_resources_with_eager_observer(vec![
+            "first turn done",
+            "second turn done",
+        ]);
+        runtime.spawn(sample_request(address.as_ref()), Some(resources));
+
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
+            info.state == SessionState::Idle
+        })
+        .await
+        .expect("session should go idle after its first turn");
+
+        assert_eq!(
+            runtime.registry.deliver(
+                &address,
+                Interrupt::AgentMessage(AgentMessageEvent {
+                    from: SessionAddress::from(MAIN_ADDRESS),
+                    from_category: "main".to_string(),
+                    content: "keep going".to_string(),
+                    hop_count: 0,
+                }),
+            ),
+            crate::background::registry::DeliverOutcome::Delivered
+        );
+
+        // This recv() is a bounded backstop against a genuine hang, not the
+        // primary pacing mechanism — the run's completion is driven by the
+        // (instant) SequencedProvider and the bus's own delivery, both
+        // independent of wall-clock timing.
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
+            .await
+            .expect("the run should eventually complete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.summary, "second turn done");
+
+        // Each turn crossed the (tiny) force threshold on its own and staged
+        // its own observation — if staging only ran once, at the end, there
+        // would be one merged observation here, not two.
+        let log = crate::memory::log_store::load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        let matching = log
+            .observations
+            .iter()
+            .filter(|o| o.source.session_address.as_deref() == Some(address.as_ref()))
+            .count();
+        assert_eq!(
+            matching, 2,
+            "each of the run's two turns should have staged its own observation"
+        );
     }
 }
