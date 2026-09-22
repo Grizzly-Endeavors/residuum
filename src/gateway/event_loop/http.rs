@@ -106,6 +106,9 @@ pub fn build_gateway_app(
         .merge(tracing_router)
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
+        .layer(axum::middleware::from_fn(
+            crate::gateway::cross_site::reject_cross_site_requests,
+        ))
 }
 
 /// Build the tracing API router with all observability endpoints.
