@@ -20,6 +20,7 @@ import type {
   SessionCategory,
   SessionListResponse,
   SessionTranscriptResponse,
+  WorkbenchInfo,
   WorkbenchToolSummary,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
@@ -356,9 +357,9 @@ export async function fetchWorkbenchTools(): Promise<WorkbenchToolSummary[]> {
   return apiFetch<WorkbenchToolSummary[]>("/api/workbench/tools");
 }
 
-/** Where a tool's sandboxed page is served, for the tool frame's `src`. */
-export function workbenchToolPageUrl(name: string): string {
-  return `/api/workbench/tools/${encodeURIComponent(name)}`;
+/** Where tools are served, locally and through the relay. Not cached: the relay connection changes. */
+export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
+  return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
 /** Delete a tool and its data files. Throws `ApiError` (404 if already gone). */
