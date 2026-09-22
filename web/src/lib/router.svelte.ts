@@ -13,6 +13,7 @@ import {
   parseLocation,
   type AppLocation,
   type ChatLocation,
+  type WorkbenchLocation,
 } from "./routes";
 import type { SettingsSection } from "./types";
 
@@ -21,6 +22,7 @@ type HistoryMode = "push" | "replace";
 class Router {
   chat = $state<ChatLocation>(MAIN_CHAT);
   settings = $state<SettingsSection | null>(null);
+  workbench = $state<WorkbenchLocation | null>(null);
 
   private started = false;
 
@@ -32,14 +34,14 @@ class Router {
     window.addEventListener("popstate", () => this.syncFromUrl());
   }
 
-  /** Show a run in the main pane, leaving settings if open. */
+  /** Show a run in the main pane, leaving settings or the workbench if open. */
   openSession(runId: string): void {
-    this.go({ chat: { ...this.chat, runId }, settings: null }, "push");
+    this.go({ chat: { ...this.chat, runId }, settings: null, workbench: null }, "push");
   }
 
-  /** Return the main pane to the main chat, leaving settings if open. */
+  /** Return the main pane to the main chat, leaving settings or the workbench if open. */
   openMainChat(): void {
-    this.go({ chat: { ...this.chat, runId: null }, settings: null }, "push");
+    this.go({ chat: { ...this.chat, runId: null }, settings: null, workbench: null }, "push");
   }
 
   /**
@@ -47,26 +49,54 @@ class Router {
    * the shown session continues in a new run.
    */
   replaceSession(runId: string): void {
-    this.go({ chat: { ...this.chat, runId }, settings: this.settings }, "replace");
+    this.go(
+      { chat: { ...this.chat, runId }, settings: this.settings, workbench: this.workbench },
+      "replace",
+    );
   }
 
   /**
-   * Open or close the workspace panel. From settings this is a move back to
-   * the chat side, so it adds history like any other change of place.
+   * Open or close the workspace panel. From settings or the workbench this is
+   * a move back to the chat side, so it adds history like any other change of
+   * place.
    */
   setWorkspace(open: boolean): void {
-    const mode = this.settings === null ? "replace" : "push";
-    this.go({ chat: { ...this.chat, workspace: open }, settings: null }, mode);
+    const onChatSide = this.settings === null && this.workbench === null;
+    this.go(
+      { chat: { ...this.chat, workspace: open }, settings: null, workbench: null },
+      onChatSide ? "replace" : "push",
+    );
   }
 
   openSettings(section: SettingsSection = "runtime"): void {
-    this.go({ chat: this.chat, settings: section }, "push");
+    this.go({ chat: this.chat, settings: section, workbench: null }, "push");
   }
 
   /** Leave settings for the chat side as it was before settings opened. */
   closeSettings(): void {
     if (this.settings === null) return;
-    this.go({ chat: this.chat, settings: null }, "push");
+    this.go({ chat: this.chat, settings: null, workbench: null }, "push");
+  }
+
+  /** Open the workbench: a tool, or the tool list when `tool` is null. */
+  openWorkbench(tool: string | null = null): void {
+    this.go({ chat: this.chat, settings: null, workbench: { tool, full: false } }, "push");
+  }
+
+  /**
+   * Show the open tool filling the window, or return it to the Residuum UI.
+   * A view mode of the same place, so it replaces history rather than adding.
+   */
+  setWorkbenchFull(full: boolean): void {
+    const tool = this.workbench?.tool ?? null;
+    if (tool === null) return;
+    this.go({ chat: this.chat, settings: null, workbench: { tool, full } }, "replace");
+  }
+
+  /** Leave the workbench for the chat side as it was before it opened. */
+  closeWorkbench(): void {
+    if (this.workbench === null) return;
+    this.go({ chat: this.chat, settings: null, workbench: null }, "push");
   }
 
   private go(location: AppLocation, mode: HistoryMode): void {
@@ -74,6 +104,7 @@ class Router {
     const current = `${window.location.pathname}${window.location.search}`;
     this.chat = location.chat;
     this.settings = location.settings;
+    this.workbench = location.workbench;
     if (url === current) return;
     if (mode === "push") {
       window.history.pushState(null, "", url);
@@ -90,6 +121,7 @@ class Router {
     );
     this.chat = location.chat;
     this.settings = location.settings;
+    this.workbench = location.workbench;
     if (corrected) window.history.replaceState(null, "", formatLocation(location));
   }
 }

@@ -23,6 +23,7 @@ pub mod secrets;
 pub(crate) mod sessions;
 pub mod tracing_api;
 pub mod update;
+pub(crate) mod workbench;
 pub mod workspace;
 
 mod embedded {

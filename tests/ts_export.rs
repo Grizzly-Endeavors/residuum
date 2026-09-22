@@ -10,7 +10,9 @@
 mod ts_export {
     use ts_rs::TS;
 
-    use residuum::gateway::protocol::{ClientMessage, ServerMessage, SessionListResponse};
+    use residuum::gateway::protocol::{
+        ClientMessage, ServerMessage, SessionListResponse, WorkbenchToolSummary,
+    };
     use residuum::inference::ImageData;
 
     #[test]
@@ -28,6 +30,8 @@ mod ts_export {
         // HTTP response type for `GET /api/sessions` (its `SessionSummary`
         // items are also carried by the `session_started` frame).
         SessionListResponse::export_all(&cfg).unwrap();
+        // HTTP response items for `GET /api/workbench/tools`.
+        WorkbenchToolSummary::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

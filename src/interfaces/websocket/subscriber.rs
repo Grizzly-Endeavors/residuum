@@ -2,7 +2,8 @@
 
 use crate::bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
-    ResponseEvent, SessionEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, topics,
+    ResponseEvent, SessionEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent,
+    topics,
 };
 use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
@@ -55,6 +56,8 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
+    /// Workbench tool file changes, so an open tool view reloads live.
+    pub workbench: Subscriber<WorkbenchEvent>,
     pub file_registry: crate::gateway::file_server::FileRegistry,
 }
 
@@ -79,6 +82,7 @@ impl WsSubscribers {
             inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
             session: bus_handle.subscribe(topics::Sessions).await?,
+            workbench: bus_handle.subscribe(topics::Workbench).await?,
             file_registry,
         })
     }
@@ -153,6 +157,17 @@ impl WsSubscribers {
                         Ok(Some(session_event)) => Some(
                             crate::gateway::sessions::session_event_to_server_message(session_event),
                         ),
+                        _ => return None,
+                    }
+                }
+                event = self.workbench.recv() => {
+                    match event {
+                        Ok(Some(WorkbenchEvent::Updated { name })) => {
+                            Some(ServerMessage::WorkbenchToolUpdated { name })
+                        }
+                        Ok(Some(WorkbenchEvent::Removed { name })) => {
+                            Some(ServerMessage::WorkbenchToolRemoved { name })
+                        }
                         _ => return None,
                     }
                 }

@@ -14,6 +14,7 @@
   import UserInboxDrawer from "./components/UserInboxDrawer.svelte";
   import SessionsSidebar from "./components/SessionsSidebar.svelte";
   import SessionView from "./components/SessionView.svelte";
+  import Workbench from "./components/Workbench.svelte";
   import { userInbox } from "./lib/inbox.svelte";
   import { router } from "./lib/router.svelte";
 
@@ -24,8 +25,9 @@
   let mode = $state<"loading" | "setup" | "running">("loading");
   router.start();
 
-  let activeView = $derived.by<"chat" | "workspace" | "settings">(() => {
+  let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench">(() => {
     if (router.settings !== null) return "settings";
+    if (router.workbench !== null) return "workbench";
     return router.chat.workspace ? "workspace" : "chat";
   });
   let workspaceMounted = $state(false);
@@ -180,32 +182,45 @@
     }}
   />
 {:else}
-  <Header
-    status={ws.transport.status}
-    {activeView}
-    onOpenChat={() => router.setWorkspace(false)}
-    onOpenWorkspace={() => router.setWorkspace(activeView !== "workspace")}
-    onOpenSettings={() => {
-      if (activeView === "settings") router.closeSettings();
-      else router.openSettings();
-    }}
-    onOpenFeedback={() => openFeedback("bug")}
-    onOpenInbox={() => {
-      inboxOpen = true;
-    }}
-    sessionsToggle={activeView === "settings"
-      ? undefined
-      : {
-          open: sidebarOpen,
-          liveCount: sessions.live.length,
-          onToggle: () => setSidebarOpen(!sidebarOpen),
-        }}
-  />
+  <!-- A workbench tool in full view fills the window on its own. -->
+  {#if !router.workbench?.full}
+    <Header
+      status={ws.transport.status}
+      {activeView}
+      onOpenChat={() => router.setWorkspace(false)}
+      onOpenWorkspace={() => router.setWorkspace(activeView !== "workspace")}
+      onOpenSettings={() => {
+        if (activeView === "settings") router.closeSettings();
+        else router.openSettings();
+      }}
+      onOpenWorkbench={() => {
+        if (activeView === "workbench") router.closeWorkbench();
+        else router.openWorkbench();
+      }}
+      onOpenFeedback={() => openFeedback("bug")}
+      onOpenInbox={() => {
+        inboxOpen = true;
+      }}
+      sessionsToggle={activeView === "settings" || activeView === "workbench"
+        ? undefined
+        : {
+            open: sidebarOpen,
+            liveCount: sessions.live.length,
+            onToggle: () => setSidebarOpen(!sidebarOpen),
+          }}
+    />
+  {/if}
   {#if activeView === "settings"}
     <Settings
       section={router.settings ?? "runtime"}
       onSelectSection={(section) => router.openSettings(section)}
       onClose={() => router.closeSettings()}
+    />
+  {:else if activeView === "workbench"}
+    <Workbench
+      tool={router.workbench?.tool ?? null}
+      full={router.workbench?.full ?? false}
+      onClose={() => router.closeWorkbench()}
     />
   {:else}
     <div class="app-body">

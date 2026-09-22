@@ -7,7 +7,7 @@
 use super::events::{
     AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent,
     NotificationEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
-    ToolActivityEvent, TurnLifecycleEvent,
+    ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -111,6 +111,17 @@ impl Topic for Inbox {
 }
 
 impl Carries<NotificationEvent> for Inbox {}
+
+/// Workbench tool file changes, for web UI views showing a tool live.
+pub struct Workbench;
+
+impl Topic for Workbench {
+    fn topic_id(&self) -> TopicId {
+        TopicId::Workbench
+    }
+}
+
+impl Carries<WorkbenchEvent> for Workbench {}
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -118,6 +118,13 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
+    /// Path to the workbench directory: single-file HTML tools the agent builds
+    /// for the user, served in the web UI at `/workbench/{name}`.
+    #[must_use]
+    pub fn workbench_dir(&self) -> PathBuf {
+        self.root.join("workbench")
+    }
+
     /// Path to BOOTSTRAP.md -- first-run guidance, deleted after first conversation.
     #[must_use]
     pub fn bootstrap_md(&self) -> PathBuf {
@@ -253,6 +260,7 @@ impl WorkspaceLayout {
             self.episodes_dir(),
             self.search_index_dir(),
             self.skills_dir(),
+            self.workbench_dir(),
             self.agent_inbox_dir(),
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),

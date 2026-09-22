@@ -13,6 +13,7 @@ This skill provides reference documentation for every major workspace system. Ac
 |--------|-------|-------------|-----------|
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
 | Wiki | `read_file`, `write_file`, `edit_file` | `wiki/` | the `wiki` skill |
+| Workbench | `read_file`, `write_file`, `edit_file` | `workbench/` | the `workbench` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
 | Inbox | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* | [inbox](references/inbox.md) |
 | Scheduled Actions | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` | [scheduled-actions](references/scheduled-actions.md) |
@@ -49,6 +50,7 @@ workspace/
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run
 ├── skills/                  # Workspace-level skills (also sub-agent roles)
+├── workbench/               # Interactive HTML tools shown in the web UI's Workbench
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
 └── inbox/                   # Active inbox items

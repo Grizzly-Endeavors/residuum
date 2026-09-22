@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { relativeTime } from "../../lib/time";
   import { onMount } from "svelte";
   import type { UpdateStatusResponse } from "../../lib/types";
   import { fetchUpdateStatus, triggerUpdateCheck, applyUpdate } from "../../lib/api";
@@ -49,23 +50,6 @@
       errorMsg = userErrorMessage(e, { action: "Couldn't apply the update." });
       applying = false;
     }
-  }
-
-  function relativeTime(iso: string): string {
-    const now = Date.now();
-    const then = new Date(iso).getTime();
-    const diff = Math.floor((now - then) / 1000);
-    if (diff < 60) return "just now";
-    if (diff < 3600) {
-      const m = Math.floor(diff / 60);
-      return `${m}m ago`;
-    }
-    if (diff < 86400) {
-      const h = Math.floor(diff / 3600);
-      return `${h}h ago`;
-    }
-    const d = Math.floor(diff / 86400);
-    return `${d}d ago`;
   }
 </script>
 

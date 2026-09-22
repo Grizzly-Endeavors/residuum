@@ -1,0 +1,336 @@
+/* ── Workbench ────────────────────────────────────────────────────────── */
+/* Tools sit on the bench as stone slabs, each with a vein seam down its    */
+/* left edge. The seam flares once when the agent writes to the tool: the   */
+/* only motion here, and it means "this just changed".                      */
+
+.workbench-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workbench-title {
+  margin: 0;
+}
+
+/* Headings take focus only programmatically, to announce where the user */
+/* landed; they are not controls, so they get no focus ring. */
+.workbench-title:focus-visible,
+.workbench-tool-title:focus-visible {
+  box-shadow: none;
+}
+
+.workbench-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.workbench-column {
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: var(--s-6) var(--s-4) var(--s-7);
+}
+
+.workbench-note {
+  margin: 0 0 var(--s-5);
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  font-weight: 300;
+  color: var(--text-muted);
+}
+
+/* ── Slabs ────────────────────────────────────────────────────────────── */
+
+.workbench-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workbench-slab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--elev-1);
+  transition:
+    border-color var(--dur-quick),
+    background-color var(--dur-quick);
+}
+
+.workbench-slab::before {
+  content: "";
+  position: absolute;
+  top: var(--s-2);
+  bottom: var(--s-2);
+  left: -1px;
+  width: 2px;
+  border-radius: 1px;
+  background: linear-gradient(to bottom, transparent, var(--vein-dim), transparent);
+  opacity: 0.45;
+  transition: opacity var(--dur-default) var(--ease-out-stone);
+}
+
+.workbench-slab:hover,
+.workbench-slab:focus-within {
+  border-color: var(--border);
+  background: var(--bg-raised);
+}
+
+.workbench-slab:hover::before,
+.workbench-slab:focus-within::before {
+  opacity: 1;
+}
+
+.workbench-slab.just-changed::before {
+  background: linear-gradient(to bottom, transparent, var(--vein-bright), transparent);
+  animation: workbench-seam-flare 2400ms var(--ease-out-stone);
+}
+
+@keyframes workbench-seam-flare {
+  0% {
+    opacity: 0.45;
+    box-shadow: none;
+  }
+  18% {
+    opacity: 1;
+    box-shadow: 0 0 12px 1px rgba(90, 163, 240, 0.55);
+  }
+  100% {
+    opacity: 0.45;
+    box-shadow: none;
+  }
+}
+
+.workbench-slab-link {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+  padding: var(--s-4) var(--s-5);
+  color: var(--text);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+}
+
+.workbench-slab-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.workbench-slab-title {
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  font-weight: 400;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.workbench-slab-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.workbench-slab-path {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.workbench-slab.just-changed .workbench-slab-time {
+  color: var(--vein-bright);
+}
+
+.workbench-slab-actions {
+  padding-right: var(--s-4);
+  flex-shrink: 0;
+}
+
+/* Delete stays out of the way until the slab is in play. Touch screens have */
+/* no hover, so it stays visible there. */
+@media (hover: hover) {
+  .workbench-delete {
+    opacity: 0;
+    transition: opacity var(--dur-quick);
+  }
+
+  .workbench-slab:hover .workbench-delete,
+  .workbench-slab:focus-within .workbench-delete,
+  .workbench-delete.armed {
+    opacity: 1;
+  }
+}
+
+/* ── Empty and error states ───────────────────────────────────────────── */
+
+.workbench-empty {
+  padding: var(--s-6) 0;
+}
+
+.workbench-empty-title {
+  margin: 0 0 var(--s-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.workbench-empty p {
+  max-width: 60ch;
+  margin: 0 0 var(--s-4);
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  font-weight: 300;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+
+/* ── Tool view ────────────────────────────────────────────────────────── */
+
+.workbench-tool {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.workbench-tool-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-4);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.workbench-tool-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex: 1;
+  min-width: 0;
+}
+
+.workbench-tool-title {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--fs-lg);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workbench-tool-heading .workbench-slab-path {
+  white-space: nowrap;
+}
+
+.workbench-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-deep);
+}
+
+/* Pages with no background of their own would otherwise show the dark UI */
+/* through, leaving default black text unreadable. */
+.workbench-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease-out-stone);
+}
+
+.workbench-frame.loaded {
+  opacity: 1;
+}
+
+.workbench-frame.hidden {
+  visibility: hidden;
+}
+
+.workbench-removed {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: var(--s-7) var(--s-4);
+}
+
+@media (max-width: 600px) {
+  .workbench-column {
+    padding: var(--s-5) var(--s-4) var(--s-6);
+  }
+
+  .workbench-slab-link {
+    padding: var(--s-3) var(--s-4);
+  }
+
+  .workbench-tool-heading .workbench-slab-path {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-slab.just-changed::before {
+    animation: none;
+    opacity: 1;
+  }
+
+  .workbench-frame {
+    transition: none;
+  }
+}
+
+/* ── Full view ────────────────────────────────────────────────────────── */
+/* The tool fills the window. The one way back stays in the corner, faint  */
+/* until reached for, so it never covers much of the tool.                  */
+
+.workbench-tool.full .workbench-stage {
+  background: var(--bg-deep);
+}
+
+.workbench-exit-full {
+  position: fixed;
+  top: var(--s-2);
+  right: var(--s-2);
+  z-index: 10;
+  background: var(--bg-surface);
+  opacity: 0.35;
+  transition:
+    opacity var(--dur-quick),
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.workbench-exit-full:hover,
+.workbench-exit-full:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .workbench-exit-full {
+    opacity: 0.8;
+  }
+}

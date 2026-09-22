@@ -95,6 +95,12 @@ pub fn build_gateway_app(
         tz: state.tz,
     });
 
+    let workbench_router =
+        web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
+            dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
+                .workbench_dir(),
+        });
+
     axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state)
@@ -104,6 +110,7 @@ pub fn build_gateway_app(
         .merge(cloud_router)
         .merge(update_router)
         .merge(tracing_router)
+        .merge(workbench_router)
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
         .layer(axum::middleware::from_fn(

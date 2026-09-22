@@ -6,14 +6,14 @@ const IN_SESSION = { runId: "run-1790000000000-0a1b2c3d", workspace: true };
 describe("parseLocation", () => {
   it("reads the root as the main chat", () => {
     expect(parseLocation("/", "", IN_SESSION)).toEqual({
-      location: { chat: MAIN_CHAT, settings: null },
+      location: { chat: MAIN_CHAT, settings: null, workbench: null },
       corrected: false,
     });
   });
 
   it("reads a session path and the workspace flag", () => {
     expect(parseLocation("/sessions/run-1-ab", "?workspace", MAIN_CHAT)).toEqual({
-      location: { chat: { runId: "run-1-ab", workspace: true }, settings: null },
+      location: { chat: { runId: "run-1-ab", workspace: true }, settings: null, workbench: null },
       corrected: false,
     });
   });
@@ -25,21 +25,21 @@ describe("parseLocation", () => {
 
   it("keeps the chat side as it was when opening settings", () => {
     expect(parseLocation("/settings/memory", "", IN_SESSION)).toEqual({
-      location: { chat: IN_SESSION, settings: "memory" },
+      location: { chat: IN_SESSION, settings: "memory", workbench: null },
       corrected: false,
     });
   });
 
   it("sends bare /settings to the first section", () => {
     expect(parseLocation("/settings", "", MAIN_CHAT)).toEqual({
-      location: { chat: MAIN_CHAT, settings: "runtime" },
+      location: { chat: MAIN_CHAT, settings: "runtime", workbench: null },
       corrected: true,
     });
   });
 
   it("corrects an unknown settings section to the first section", () => {
     expect(parseLocation("/settings/nope", "", MAIN_CHAT)).toEqual({
-      location: { chat: MAIN_CHAT, settings: "runtime" },
+      location: { chat: MAIN_CHAT, settings: "runtime", workbench: null },
       corrected: true,
     });
   });
@@ -48,11 +48,57 @@ describe("parseLocation", () => {
     "corrects %s to the main chat",
     (path) => {
       expect(parseLocation(path, "", IN_SESSION)).toEqual({
-        location: { chat: MAIN_CHAT, settings: null },
+        location: { chat: MAIN_CHAT, settings: null, workbench: null },
         corrected: true,
       });
     },
   );
+
+  it("reads the workbench list and keeps the chat side", () => {
+    expect(parseLocation("/workbench", "", IN_SESSION)).toEqual({
+      location: { chat: IN_SESSION, settings: null, workbench: { tool: null, full: false } },
+      corrected: false,
+    });
+  });
+
+  it("reads a workbench tool", () => {
+    expect(parseLocation("/workbench/pricing-explorer", "", MAIN_CHAT)).toEqual({
+      location: {
+        chat: MAIN_CHAT,
+        settings: null,
+        workbench: { tool: "pricing-explorer", full: false },
+      },
+      corrected: false,
+    });
+  });
+
+  it.each(["/workbench/Bad_Name", "/workbench/a--b", "/workbench/%E0%A4%A", "/workbench/x.html"])(
+    "corrects %s to the workbench list",
+    (path) => {
+      expect(parseLocation(path, "", MAIN_CHAT)).toEqual({
+        location: { chat: MAIN_CHAT, settings: null, workbench: { tool: null, full: false } },
+        corrected: true,
+      });
+    },
+  );
+
+  it("reads a tool in full view", () => {
+    expect(parseLocation("/workbench/chart", "?full", MAIN_CHAT)).toEqual({
+      location: { chat: MAIN_CHAT, settings: null, workbench: { tool: "chart", full: true } },
+      corrected: false,
+    });
+  });
+
+  it("drops full view from the tool list", () => {
+    expect(parseLocation("/workbench", "?full", MAIN_CHAT)).toEqual({
+      location: { chat: MAIN_CHAT, settings: null, workbench: { tool: null, full: false } },
+      corrected: true,
+    });
+  });
+
+  it("corrects a nested workbench path to the main chat", () => {
+    expect(parseLocation("/workbench/a/b", "", MAIN_CHAT).location.workbench).toBeNull();
+  });
 
   it("tolerates a trailing slash", () => {
     expect(parseLocation("/sessions/run-1/", "", MAIN_CHAT).corrected).toBe(false);
@@ -61,11 +107,26 @@ describe("parseLocation", () => {
 
 describe("formatLocation", () => {
   it.each<[AppLocation, string]>([
-    [{ chat: MAIN_CHAT, settings: null }, "/"],
-    [{ chat: { runId: null, workspace: true }, settings: null }, "/?workspace"],
-    [{ chat: { runId: "run-1", workspace: false }, settings: null }, "/sessions/run-1"],
-    [{ chat: { runId: "run-1", workspace: true }, settings: null }, "/sessions/run-1?workspace"],
-    [{ chat: IN_SESSION, settings: "agent-keys" }, "/settings/agent-keys"],
+    [{ chat: MAIN_CHAT, settings: null, workbench: null }, "/"],
+    [{ chat: { runId: null, workspace: true }, settings: null, workbench: null }, "/?workspace"],
+    [
+      { chat: { runId: "run-1", workspace: false }, settings: null, workbench: null },
+      "/sessions/run-1",
+    ],
+    [
+      { chat: { runId: "run-1", workspace: true }, settings: null, workbench: null },
+      "/sessions/run-1?workspace",
+    ],
+    [{ chat: IN_SESSION, settings: "agent-keys", workbench: null }, "/settings/agent-keys"],
+    [{ chat: IN_SESSION, settings: null, workbench: { tool: null, full: false } }, "/workbench"],
+    [
+      { chat: MAIN_CHAT, settings: null, workbench: { tool: "chart", full: false } },
+      "/workbench/chart",
+    ],
+    [
+      { chat: MAIN_CHAT, settings: null, workbench: { tool: "chart", full: true } },
+      "/workbench/chart?full",
+    ],
   ])("formats %j as %s", (location, url) => {
     expect(formatLocation(location)).toBe(url);
   });
@@ -74,6 +135,7 @@ describe("formatLocation", () => {
     const location: AppLocation = {
       chat: { runId: "run/odd id", workspace: true },
       settings: null,
+      workbench: null,
     };
     const url = new URL(formatLocation(location), "http://localhost");
     expect(parseLocation(url.pathname, url.search, MAIN_CHAT)).toEqual({

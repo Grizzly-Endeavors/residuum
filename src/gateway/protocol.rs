@@ -171,6 +171,22 @@ pub enum SessionCommandErrorCode {
     DeliveryFailed,
 }
 
+/// One tool in `GET /api/workbench/tools`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkbenchToolSummary {
+    /// Tool name, as used in `/workbench/{name}`.
+    pub name: String,
+    /// The page's `<title>`, or the name when it has none.
+    pub title: String,
+    /// When the page was last modified (RFC 3339, UTC).
+    #[ts(type = "string")]
+    pub modified_at: DateTime<Utc>,
+    /// Page size in bytes.
+    #[ts(type = "number")]
+    pub size: u64,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -406,6 +422,16 @@ pub enum ServerMessage {
         code: SessionCommandErrorCode,
         /// Human-readable explanation, suitable to show the user.
         message: String,
+    },
+    /// A workbench tool's page was created or modified.
+    WorkbenchToolUpdated {
+        /// Tool name, as used in `/workbench/{name}`.
+        name: String,
+    },
+    /// A workbench tool's page was deleted.
+    WorkbenchToolRemoved {
+        /// Tool name, as used in `/workbench/{name}`.
+        name: String,
     },
 }
 

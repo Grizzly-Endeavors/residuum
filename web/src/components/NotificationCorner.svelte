@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { relativeTime } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
   import { notifications } from "../lib/notifications.svelte";
   import { clickOutside } from "../lib/actions/clickOutside";
@@ -42,17 +43,6 @@
     } else {
       confirmingClear = true;
     }
-  }
-
-  function relativeTime(then: Date): string {
-    const seconds = Math.max(0, Math.round((now - then.getTime()) / 1000));
-    if (seconds < 45) return "just now";
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.round(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.round(hours / 24);
-    return `${days}d ago`;
   }
 </script>
 
@@ -102,7 +92,7 @@
             {#each notifications.history as item (item.id)}
               <div class="notif-dropdown-item kind-{item.kind}">
                 <div class="notif-dropdown-item-message">{item.message}</div>
-                <div class="notif-dropdown-item-time">{relativeTime(item.timestamp)}</div>
+                <div class="notif-dropdown-item-time">{relativeTime(item.timestamp, now)}</div>
               </div>
             {/each}
           {/if}
