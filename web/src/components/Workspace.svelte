@@ -5,6 +5,7 @@
   import { fetchWorkspaceFiles, fetchWorkspaceFile, putWorkspaceFile } from "../lib/api";
   import { toast } from "../lib/toast.svelte";
   import { Icon } from "../lib/icons";
+  import { userErrorMessage } from "../lib/errors";
   import FileTree from "./FileTree.svelte";
   import Modal from "./Modal.svelte";
 
@@ -60,7 +61,10 @@
       const entries = await fetchWorkspaceFiles(path || undefined);
       treeCache = { ...treeCache, [path]: entries };
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      error = userErrorMessage(e, {
+        action: "Couldn't list this folder.",
+        notFound: "It may have been moved or deleted.",
+      });
     }
   }
 
@@ -104,7 +108,10 @@
       editContent = content;
       mobileEditorOpen = true;
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      error = userErrorMessage(e, {
+        action: "Couldn't open this file.",
+        notFound: "It may have been moved or deleted.",
+      });
       fileContent = "";
       editContent = "";
     } finally {
@@ -121,8 +128,7 @@
       fileContent = editContent;
       toast.success("Saved.");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(`Save failed. ${msg}`);
+      toast.error(userErrorMessage(e, { action: "Couldn't save this file." }));
     } finally {
       saving = false;
     }

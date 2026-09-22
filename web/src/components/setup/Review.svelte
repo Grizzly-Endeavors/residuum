@@ -2,6 +2,7 @@
   import type { SetupWizardState } from "../../lib/types";
   import { generateConfigToml, generateProvidersToml, generateMcpJson } from "../../lib/toml";
   import { storeSecret, completeSetup } from "../../lib/api";
+  import { userErrorMessage } from "../../lib/errors";
 
   interface Props {
     wizardState: SetupWizardState;
@@ -69,8 +70,7 @@
     try {
       await storeAllSecrets();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      validationMsg = "Failed to store secrets: " + message;
+      validationMsg = userErrorMessage(err, { action: "Couldn't store your API keys." });
       validationClass = "error";
       saving = false;
       return;
@@ -93,8 +93,7 @@
         saving = false;
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      validationMsg = "Network error: " + message;
+      validationMsg = userErrorMessage(err, { action: "Couldn't save the configuration." });
       validationClass = "error";
       saving = false;
     }

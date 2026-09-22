@@ -5,6 +5,7 @@
   import { parseProvidersToml, serializeProvidersToml } from "../lib/settings-toml";
   import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
+  import { userErrorMessage } from "../lib/errors";
 
   let { disabled = false }: { disabled?: boolean } = $props();
 
@@ -47,7 +48,7 @@
         ws.send({ type: "reload" });
         currentLevel = newLevel;
       } catch (err: unknown) {
-        toast.error(`Save failed. ${String(err)}`);
+        toast.error(userErrorMessage(err, { action: "Couldn't change the thinking level." }));
       }
     });
 

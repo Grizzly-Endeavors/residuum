@@ -6,6 +6,7 @@
   import { fetchModels, type ModelEntry } from "../lib/models";
   import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
+  import { userErrorMessage } from "../lib/errors";
   import { clickOutside } from "../lib/actions/clickOutside";
 
   let { disabled = false }: { disabled?: boolean } = $props();
@@ -69,7 +70,7 @@
         ws.send({ type: "reload" });
         currentModel = modelId;
       } catch (err: unknown) {
-        toast.error(`Save failed. ${String(err)}`);
+        toast.error(userErrorMessage(err, { action: "Couldn't switch the model." }));
       }
     });
 
