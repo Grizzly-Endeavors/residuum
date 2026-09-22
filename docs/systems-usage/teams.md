@@ -35,7 +35,7 @@ In a direct message every message goes to the agent.
 
 In group chats and standard channels the agent acts only on messages that @mention it. The bot's own mention is stripped from the text; mentions of other people are kept as `@Name`.
 
-When the app manifest grants the resource-specific consent permissions `ChatMessage.Read.Chat` and `ChannelMessage.Read.Group`, Teams also delivers the messages that don't mention the bot. Those are held in memory — never written to disk, and lost on restart — up to `[teams] context_messages` per conversation (default 20; `0` disables). When the bot is next @mentioned there, the held messages are handed to the agent as a single background message placed just before the mention:
+When the app manifest grants the resource-specific consent permissions `ChatMessage.Read.Chat` and `ChannelMessage.Read.Group`, Teams also delivers the messages that don't mention the bot. Those are held in memory (the same buffer Discord and Telegram use for their own unmentioned messages) — never written to disk, and lost on restart — up to `[teams] context_messages` per conversation (default 20; `0` disables). When the bot is next @mentioned there, the held messages are handed to the agent as a single background message placed just before the mention:
 
 ```
 Previous conversation in group chat "Launch prep" since you were last mentioned there. This is background only; the message that mentions you follows.
@@ -81,4 +81,4 @@ port = 7701
 
 ## Code
 
-`src/interfaces/teams/`: `mod.rs` (listener, worker, reply routing), `auth.rs` (token validation), `handler.rs` (activity handling), `connector.rs` (outbound calls), `context_buffer.rs`, `store.rs`, `subscriber.rs`, `activity.rs` (wire types).
+`src/interfaces/teams/`: `mod.rs` (listener, worker, reply routing), `auth.rs` (token validation), `handler.rs` (activity handling), `connector.rs` (outbound calls), `store.rs`, `subscriber.rs`, `activity.rs` (wire types). The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Discord and Telegram.

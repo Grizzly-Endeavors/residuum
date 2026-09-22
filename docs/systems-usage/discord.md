@@ -25,7 +25,17 @@ Every message the agent sees records who sent it and where, e.g. `[From: bear vi
 
 In a direct message every message goes to the agent.
 
-In a server channel or thread the agent acts only on messages that @mention the bot (a reply that pings the bot counts). The bot's own mention is stripped from the text; other mentions are kept. Unmentioned messages are ignored and never stored.
+In a server channel or thread the agent acts only on messages that @mention the bot (a reply that pings the bot counts). The bot's own mention is stripped from the text; other mentions are kept.
+
+Messages that don't mention the bot are held in memory — never written to disk, and lost on restart — up to `[discord] context_messages` per channel (default 20; `0` disables). When the bot is next @mentioned there, the held messages are handed to the agent as a single background message placed just before the mention:
+
+```
+Previous conversation in #builds (Eng Team) since you were last mentioned there. This is background only; the message that mentions you follows.
+[14:05] Sam: build is red again
+[14:06] Priya: looks like the migration step
+```
+
+The buffer for that channel is emptied when it is delivered, so each message reaches the agent at most once.
 
 ## Where replies go
 
@@ -49,10 +59,11 @@ Long replies are split into 2000-character messages. A typing indicator shows in
 [discord]
 token = "${RESIDUUM_DISCORD_TOKEN}"   # or secret:discord; RESIDUUM_DISCORD_TOKEN also works on its own
 respond_to_others = false
+context_messages = 20
 ```
 
 Changing any `[discord]` value restarts the Discord connection on reload.
 
 ## Code
 
-`src/interfaces/discord/`: `mod.rs` (connection, shared state, reply routing), `handler.rs` (inbound messages and slash commands), `channels.rs` (server channel labels, mention handling, conversation listing), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Telegram and Teams; the directory `list_conversations` reads is `src/interfaces/conversations.rs`.
+`src/interfaces/discord/`: `mod.rs` (connection, shared state, reply routing), `handler.rs` (inbound messages and slash commands), `channels.rs` (server channel labels, mention handling, conversation listing), `subscriber.rs` (outbound delivery). Owner and conversation state is `src/interfaces/chat_state.rs`, shared with Telegram and Teams; the directory `list_conversations` reads is `src/interfaces/conversations.rs`. The unmentioned-message buffer is `src/interfaces/context_buffer.rs`, shared with Telegram and Teams.
