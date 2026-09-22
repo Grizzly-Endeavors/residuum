@@ -7,6 +7,7 @@ use serenity::async_trait;
 use serenity::builder::{
     CreateCommand, CreateInteractionResponse, CreateInteractionResponseMessage,
 };
+use serenity::http::Http;
 use serenity::model::application::Interaction;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
@@ -58,7 +59,7 @@ impl EventHandler for DiscordHandler {
         if msg.author.bot {
             return;
         }
-        let Some(addressed) = self.addressed_to_agent(&ctx, &msg).await else {
+        let Some(addressed) = self.addressed_to_agent(&ctx.http, &msg).await else {
             return;
         };
         {
@@ -219,7 +220,7 @@ impl DiscordHandler {
     /// DMs are also recorded, and the first one claims ownership. An
     /// unmentioned server message is buffered as context instead, and `None`
     /// is returned.
-    async fn addressed_to_agent(&self, ctx: &Context, msg: &Message) -> Option<Addressed> {
+    async fn addressed_to_agent(&self, http: &Http, msg: &Message) -> Option<Addressed> {
         let Some(guild_id) = msg.guild_id else {
             let channel_key = msg.channel_id.to_string();
             if let Err(e) = self
@@ -248,7 +249,7 @@ impl DiscordHandler {
             buffer_unmentioned(&self.state, &channel_key, msg, self.tz);
             return None;
         }
-        let label = guild_channel_label(&self.state, &ctx.http, guild_id, msg.channel_id).await;
+        let label = guild_channel_label(&self.state, http, guild_id, msg.channel_id).await;
         let context = render_context(&label, &self.state.context_buffer.drain(&channel_key));
         Some(Addressed {
             location: label,
@@ -371,4 +372,202 @@ async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
 
     tracing::info!("discord slash commands registered");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    use serenity::model::id::{ChannelId, UserId};
+
+    use super::*;
+    use crate::interfaces::chat_state::ChatStateStore;
+    use crate::interfaces::context_buffer::ContextBuffer;
+    use crate::interfaces::reply_targets::ReplyTargets;
+
+    async fn state(context_messages: usize) -> (Arc<DiscordState>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(DiscordState {
+            respond_to_others: false,
+            store: ChatStateStore::load(dir.path().join("discord_state.json"))
+                .await
+                .unwrap(),
+            reply_targets: ReplyTargets::default(),
+            bot_id: OnceLock::new(),
+            channel_labels: Mutex::new(HashMap::new()),
+            context_buffer: ContextBuffer::new(context_messages),
+        });
+        (state, dir)
+    }
+
+    fn handler(state: Arc<DiscordState>) -> DiscordHandler {
+        DiscordHandler {
+            state,
+            publisher: crate::bus::spawn_broker().publisher(),
+            inbox_dir: std::env::temp_dir(),
+            reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
+            command_tx: tokio::sync::mpsc::channel(1).0,
+            stop_tx: tokio::sync::mpsc::channel(1).0,
+            tz: chrono_tz::UTC,
+        }
+    }
+
+    /// Shared server/channel/bot ids for the guild-message fixtures below.
+    const GUILD_ID: u64 = 1000;
+    const CHANNEL_ID: u64 = 5000;
+    const BOT_ID: u64 = 999;
+
+    /// `Message` is `#[non_exhaustive]`, so serenity fixtures are built the
+    /// way the gateway itself produces them: deserialized from JSON.
+    fn discord_message(json: serde_json::Value) -> Message {
+        serde_json::from_value(json).expect("valid minimal discord message fixture")
+    }
+
+    fn dm(msg_id: u64, author_id: u64, author_name: &str, content: &str) -> Message {
+        discord_message(serde_json::json!({
+            "id": msg_id,
+            "channel_id": author_id,
+            "author": {"id": author_id, "username": author_name},
+            "content": content,
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0,
+        }))
+    }
+
+    /// An unmentioned server channel message from `author`.
+    fn chatter(msg_id: u64, author_id: u64, author_name: &str, content: &str) -> Message {
+        discord_message(serde_json::json!({
+            "id": msg_id,
+            "channel_id": CHANNEL_ID,
+            "guild_id": GUILD_ID,
+            "author": {"id": author_id, "username": author_name},
+            "content": content,
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0,
+        }))
+    }
+
+    /// A server channel message from `author` that @mentions the bot.
+    fn mention(msg_id: u64, author_id: u64, author_name: &str, content: &str) -> Message {
+        discord_message(serde_json::json!({
+            "id": msg_id,
+            "channel_id": CHANNEL_ID,
+            "guild_id": GUILD_ID,
+            "author": {"id": author_id, "username": author_name},
+            "content": content,
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [{"id": BOT_ID, "username": "ResiBot"}],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0,
+        }))
+    }
+
+    #[tokio::test]
+    async fn dm_populates_personal_conversation_and_claims_owner() {
+        let (state, _dir) = state(10).await;
+        let h = handler(Arc::clone(&state));
+        let http = Http::new("test-token");
+        let msg = dm(1, 111, "Bear", "hello");
+
+        let addressed = h
+            .addressed_to_agent(&http, &msg)
+            .await
+            .expect("dm is always addressed");
+        assert_eq!(addressed.location, "direct message");
+        assert_eq!(addressed.text, "hello");
+        assert_eq!(addressed.conversation_id, "111");
+        assert_eq!(addressed.kind, ConversationKind::Personal);
+        assert_eq!(addressed.context, None);
+        assert!(
+            matches!(state.store.standing_of(Some("111")).await, Standing::Owner),
+            "first DM sender becomes the owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn unmentioned_server_message_is_buffered_not_addressed() {
+        let (state, _dir) = state(10).await;
+        state.bot_id.set(UserId::new(BOT_ID)).unwrap();
+        let h = handler(Arc::clone(&state));
+        let http = Http::new("test-token");
+        let msg = chatter(2, 222, "Sam", "build is red");
+
+        assert!(h.addressed_to_agent(&http, &msg).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mention_carries_the_chatter_since_the_last_mention() {
+        let (state, _dir) = state(10).await;
+        state.bot_id.set(UserId::new(BOT_ID)).unwrap();
+        state.cache_label(ChannelId::new(CHANNEL_ID), "#builds (Eng)".to_string());
+        let h = handler(Arc::clone(&state));
+        let http = Http::new("test-token");
+
+        let unmentioned = chatter(2, 222, "Sam", "build is red");
+        assert!(
+            h.addressed_to_agent(&http, &unmentioned).await.is_none(),
+            "unmentioned chatter is buffered, not addressed"
+        );
+
+        let mentioned = mention(3, 333, "Bear", "<@999> can you look?");
+        let addressed = h
+            .addressed_to_agent(&http, &mentioned)
+            .await
+            .expect("mention is addressed");
+        assert_eq!(addressed.text, "can you look?");
+        assert_eq!(addressed.kind, ConversationKind::Channel);
+        assert_eq!(addressed.conversation_id, CHANNEL_ID.to_string());
+        let context = addressed.context.expect("buffered chatter attached");
+        assert!(context.contains("Sam: build is red"), "{context}");
+
+        let mentioned_again = mention(4, 333, "Bear", "<@999> thanks");
+        let addressed_again = h
+            .addressed_to_agent(&http, &mentioned_again)
+            .await
+            .expect("second mention is addressed");
+        assert_eq!(
+            addressed_again.context, None,
+            "already-delivered chatter is not repeated"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_buffer_is_bounded_by_context_messages() {
+        let (state, _dir) = state(1).await;
+        state.bot_id.set(UserId::new(BOT_ID)).unwrap();
+        state.cache_label(ChannelId::new(CHANNEL_ID), "#builds".to_string());
+        let h = handler(Arc::clone(&state));
+        let http = Http::new("test-token");
+
+        h.addressed_to_agent(&http, &chatter(2, 222, "Sam", "first"))
+            .await;
+        h.addressed_to_agent(&http, &chatter(3, 222, "Sam", "second"))
+            .await;
+
+        let mentioned = mention(4, 333, "Bear", "<@999> hi");
+        let addressed = h.addressed_to_agent(&http, &mentioned).await.unwrap();
+        let context = addressed.context.expect("one buffered message fits");
+        assert!(!context.contains("first"), "{context}");
+        assert!(context.contains("second"), "{context}");
+    }
 }
