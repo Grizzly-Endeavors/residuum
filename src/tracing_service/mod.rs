@@ -9,7 +9,7 @@ mod otel;
 mod sanitize;
 mod submit;
 
-pub use sanitize::sanitize_spans;
+pub use sanitize::{redact_agent_key_values, sanitize_spans};
 
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::config::{OtelEndpoint, TracingConfig};
-use crate::util::telemetry::SpanBufferHandle;
+use crate::util::telemetry::{CompletedSpan, SpanBufferHandle};
 
 /// Runtime tracing state that can diverge from persisted config.
 ///
@@ -178,6 +178,18 @@ pub struct SubmissionReceipt {
 pub struct TracingService {
     state: Arc<RwLock<TracingState>>,
     span_buffer: SpanBufferHandle,
+    /// Source of the agent-key redactor applied to every export.
+    agent_keys: Option<crate::agent_keys::SharedAgentKeys>,
+}
+
+/// Replace agent-key values in `spans` using `agent_keys`' current redactor.
+async fn redact_with(
+    agent_keys: Option<&crate::agent_keys::SharedAgentKeys>,
+    spans: &mut [CompletedSpan],
+) {
+    if let Some(keys) = agent_keys {
+        redact_agent_key_values(spans, &keys.redactor().await);
+    }
 }
 
 impl TracingService {
@@ -191,7 +203,20 @@ impl TracingService {
                 streaming_cancel: None,
             })),
             span_buffer,
+            agent_keys: None,
         }
+    }
+
+    /// Redact agent-key values from every span this service exports.
+    #[must_use]
+    pub fn with_agent_keys(mut self, agent_keys: crate::agent_keys::SharedAgentKeys) -> Self {
+        self.agent_keys = Some(agent_keys);
+        self
+    }
+
+    /// Replace agent-key values in `spans` with their markers.
+    async fn redact_agent_keys(&self, spans: &mut [CompletedSpan]) {
+        redact_with(self.agent_keys.as_ref(), spans).await;
     }
 
     /// Get the current tracing status.
@@ -322,6 +347,7 @@ impl TracingService {
             sanitize_spans(&mut spans);
         }
         drop(state);
+        self.redact_agent_keys(&mut spans).await;
 
         let otel_spans = otel::convert_spans(&spans);
         let span_count = otel_spans.len();
@@ -360,6 +386,7 @@ impl TracingService {
         let cancel_clone = cancel.clone();
         let buffer = self.span_buffer.clone();
         let service_state = Arc::clone(&self.state);
+        let agent_keys = self.agent_keys.clone();
 
         tokio::spawn(async move {
             tracing::info!("trace streaming task started");
@@ -383,6 +410,7 @@ impl TracingService {
                         }
                         let endpoints = cfg_snapshot.config.otel_endpoints.clone();
                         drop(cfg_snapshot);
+                        redact_with(agent_keys.as_ref(), &mut spans).await;
 
                         let otel_spans = otel::convert_spans(&spans);
                         for ep in &endpoints {
@@ -432,7 +460,8 @@ impl TracingService {
     /// documented receipt shape.
     pub async fn send_bug_report(&self, report: BugReport) -> Result<SubmissionReceipt> {
         let endpoint = self.state.read().await.config.feedback_endpoint.clone();
-        let spans = self.span_buffer.snapshot();
+        let mut spans = self.span_buffer.snapshot();
+        self.redact_agent_keys(&mut spans).await;
         submit::submit_bug_report(&endpoint, report, spans).await
     }
 

@@ -4,6 +4,7 @@
 //! tool call arguments) from spans before they are exported to external
 //! endpoints. Controlled by the `sanitize_content` config flag.
 
+use crate::agent_keys::Redactor;
 use crate::util::telemetry::CompletedSpan;
 
 /// Field names whose values should be redacted in trace exports.
@@ -40,6 +41,29 @@ pub fn sanitize_spans(spans: &mut [CompletedSpan]) {
                 event.message = REDACTED.to_string();
             }
             sanitize_fields(&mut event.fields);
+        }
+    }
+}
+
+/// Replace every agent-key value in span and event fields and event
+/// messages with its `[agent-key:<name>]` marker.
+///
+/// Value-based, so it runs regardless of `sanitize_content`: the name-based
+/// pass above only covers fields it knows to be content-bearing, and a
+/// credential can surface in any field (an error string, a URL, a command).
+pub fn redact_agent_key_values(spans: &mut [CompletedSpan], redactor: &Redactor) {
+    if redactor.is_empty() {
+        return;
+    }
+    for span in spans {
+        for (_, value) in &mut span.fields {
+            redactor.redact_in_place(value);
+        }
+        for event in &mut span.events {
+            redactor.redact_in_place(&mut event.message);
+            for (_, value) in &mut event.fields {
+                redactor.redact_in_place(value);
+            }
         }
     }
 }
@@ -149,5 +173,32 @@ mod tests {
         sanitize_spans(&mut spans);
 
         assert_eq!(spans[0].events[0].message, "");
+    }
+
+    #[test]
+    fn agent_key_values_are_redacted_from_any_field_and_message() {
+        let redactor = Redactor::from_entries([("api", "sk-trace-secret-1")]);
+        let mut spans = vec![make_span(
+            vec![("command", "curl -H 'x: sk-trace-secret-1'")],
+            vec![make_event(
+                "request failed with sk-trace-secret-1",
+                vec![("error", "bad token sk-trace-secret-1")],
+            )],
+        )];
+
+        redact_agent_key_values(&mut spans, &redactor);
+
+        assert_eq!(
+            spans[0].fields[0].1, "curl -H 'x: [agent-key:api]'",
+            "unlisted span fields must be redacted too"
+        );
+        assert_eq!(
+            spans[0].events[0].message, "request failed with [agent-key:api]",
+            "event messages must be redacted"
+        );
+        assert_eq!(
+            spans[0].events[0].fields[0].1, "bad token [agent-key:api]",
+            "event fields must be redacted"
+        );
     }
 }

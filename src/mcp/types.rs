@@ -36,6 +36,8 @@ pub struct McpServerEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Environment variables to pass to the server process (only used for stdio transport).
+    /// Values support `${agent-key:<name>}` references, resolved from the agent
+    /// key store at connect time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
     /// Transport type (defaults to stdio).
@@ -43,7 +45,8 @@ pub struct McpServerEntry {
     pub transport: McpTransport,
     /// HTTP headers to send with requests (only used for http transport).
     /// Header values support `${VAR}` and `${VAR:-default}` env var interpolation
-    /// which is expanded at connect time.
+    /// and `${agent-key:<name>}` agent key references, all expanded at connect
+    /// time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
 }

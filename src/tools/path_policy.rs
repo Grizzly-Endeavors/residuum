@@ -1,13 +1,53 @@
 //! Write-scoping policy for file tools.
 //!
-//! Blocks writes to unconditionally protected paths (e.g. config files).
-//! All other workspace writes are unrestricted.
+//! Blocks writes to unconditionally protected paths (config files and
+//! credential stores). All other workspace writes are unrestricted.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
+
+use crate::config::Config;
+use crate::workspace::layout::WorkspaceLayout;
+
+/// Paths the file tools may never write: user-managed config, both
+/// credential stores, and `mcp.json`/`channels.toml` unless the matching
+/// agent ability (`agent.modify_mcp`/`agent.modify_channels`) is on.
+///
+/// The one definition of the blocked set, used at startup and on every
+/// config reload.
+#[must_use]
+pub fn blocked_write_paths(cfg: &Config, layout: &WorkspaceLayout) -> HashSet<PathBuf> {
+    let mut blocked = always_blocked_paths(&cfg.config_dir);
+    if !cfg.agent.modify_mcp {
+        blocked.insert(layout.mcp_json());
+    }
+    if !cfg.agent.modify_channels {
+        blocked.insert(layout.channels_toml());
+    }
+    blocked
+}
+
+/// Config and credential-store files in `config_dir` that are blocked
+/// regardless of agent abilities.
+fn always_blocked_paths(config_dir: &Path) -> HashSet<PathBuf> {
+    [
+        "config.toml",
+        "config.example.toml",
+        "providers.toml",
+        "providers.example.toml",
+        crate::config::secrets::ENCRYPTED_FILE,
+        crate::config::secrets::KEY_FILE,
+        crate::agent_keys::ENCRYPTED_FILE,
+        crate::agent_keys::KEY_FILE,
+        crate::agent_keys::LOCK_FILE,
+    ]
+    .into_iter()
+    .map(|name| config_dir.join(name))
+    .collect()
+}
 
 /// Shared path policy, checked by `WriteTool` and `EditTool` before every write.
 pub type SharedPathPolicy = Arc<RwLock<PathPolicy>>;
@@ -72,9 +112,11 @@ impl PathPolicy {
 
         if self.blocked_paths.contains(&canonical) {
             tracing::warn!(path = %path.display(), "write rejected: blocked path");
-            return Err(
-                "writes to config files are not allowed — config.toml is user-managed".to_string(),
-            );
+            return Err(format!(
+                "writes to {} are not allowed — it is user-managed configuration or credential \
+                 storage",
+                path.display()
+            ));
         }
 
         Ok(())
@@ -242,8 +284,27 @@ mod tests {
             .check_write(&cfg_dir.join("config.toml"))
             .unwrap_err();
         assert!(
-            err.contains("config files"),
-            "error should mention config files: {err}"
+            err.contains("config.toml") && err.contains("user-managed"),
+            "error should name the path and say it is user-managed: {err}"
         );
+    }
+
+    #[test]
+    fn blocked_write_paths_cover_both_credential_stores() {
+        let config_dir = Path::new("/cfg");
+        let blocked = always_blocked_paths(config_dir);
+        for name in [
+            "config.toml",
+            "secrets.toml.enc",
+            "secrets.key",
+            "agent-keys.toml.enc",
+            "agent-keys.key",
+            "agent-keys.lock",
+        ] {
+            assert!(
+                blocked.contains(&config_dir.join(name)),
+                "{name} should be write-blocked"
+            );
+        }
     }
 }

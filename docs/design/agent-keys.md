@@ -84,7 +84,7 @@ Base64 of a value embedded mid-stream in a larger encoded blob (e.g. HTTP basic 
 
 ## MCP
 
-`mcp.json` stdio `env` values and HTTP `headers` values accept `agent-key:<name>`, resolved from the agent store when the server connects. An unknown name fails that server's connection visibly. MCP servers resolve from the agent store only, never the system store — `mcp.json` is agent-editable when `agent.modify_mcp` is on, and a `secret:` reference there would let the agent route a provider key into a server it controls.
+`mcp.json` stdio `env` values and HTTP `headers` values accept `${agent-key:<name>}` anywhere in the value (e.g. `Bearer ${agent-key:github_token}`), resolved from the agent store when the server connects. An unknown name fails that server's connection visibly. MCP servers resolve from the agent store only, never the system store — `mcp.json` is agent-editable when `agent.modify_mcp` is on, and a `secret:` reference there would let the agent route a provider key into a server it controls.
 
 ## Scheduled work
 

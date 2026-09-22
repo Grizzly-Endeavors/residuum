@@ -269,6 +269,7 @@ async fn build_runtime(
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
         tools_path: parts.tools_path,
+        agent_keys: parts.agent_keys,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
         notify_handles: infra.notify_handles,

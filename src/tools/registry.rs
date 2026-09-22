@@ -6,6 +6,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
+use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointRegistry, SessionAddress};
@@ -15,8 +16,9 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult, actions,
-    background, edit, exec, file_bug_report, inbox, memory_get, memory_search, message_agent,
-    ollama_web_search, read, send_message, skills, submit_feedback, web_fetch, write,
+    agent_keys, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
+    message_agent, ollama_web_search, read, send_message, skills, submit_feedback, web_fetch,
+    write,
 };
 
 /// Registry of available tools.
@@ -24,6 +26,9 @@ pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
     /// Effective `PATH` handle injected into the `exec` tool at registration.
     tools_path: Option<SharedToolsPath>,
+    /// Agent key store injected into the `exec` tool at registration, and
+    /// the source of the redactor applied to every tool result.
+    agent_keys: Option<SharedAgentKeys>,
 }
 
 impl Default for ToolRegistry {
@@ -52,7 +57,14 @@ impl Default for ToolRegistry {
 /// `gateway::startup::tools::init_tool_registry`.
 pub struct SubagentToolDeps {
     pub tracker: SharedFileTracker,
+    /// The main agent's write policy, shared so a session is blocked from
+    /// the same paths and picks up the same config reloads.
     pub path_policy: SharedPathPolicy,
+    /// The main agent's live tool `PATH`, so a session's `exec` resolves the
+    /// same binaries.
+    pub tools_path: SharedToolsPath,
+    /// The shared agent key store.
+    pub agent_keys: SharedAgentKeys,
     pub skill_state: SharedSkillState,
     pub tz: chrono_tz::Tz,
     pub hybrid_searcher: Arc<HybridSearcher>,
@@ -93,6 +105,7 @@ impl ToolRegistry {
         Self {
             tools: Vec::new(),
             tools_path: None,
+            agent_keys: None,
         }
     }
 
@@ -102,6 +115,24 @@ impl ToolRegistry {
     /// tool prepends the configured tool directories to spawned commands.
     pub fn set_tools_path(&mut self, tools_path: SharedToolsPath) {
         self.tools_path = Some(tools_path);
+    }
+
+    /// Set the agent key store injected into the `exec` tool and used to
+    /// redact tool results.
+    ///
+    /// Call before [`register_defaults`](Self::register_defaults) so the `exec`
+    /// tool can expose and mint keys.
+    pub fn set_agent_keys(&mut self, agent_keys: SharedAgentKeys) {
+        self.agent_keys = Some(agent_keys);
+    }
+
+    /// The redactor for every current agent-key value; empty when no key
+    /// store is attached.
+    pub async fn redactor(&self) -> Redactor {
+        match &self.agent_keys {
+            Some(keys) => keys.redactor().await,
+            None => Redactor::default(),
+        }
     }
 
     /// Register a tool in the registry.
@@ -163,7 +194,18 @@ impl ToolRegistry {
             Arc::clone(&policy),
         )));
         self.register(Box::new(edit::EditTool::new(tracker, policy)));
-        self.register(Box::new(exec::ExecTool::new(self.tools_path.clone())));
+        self.register(Box::new(exec::ExecTool::new(
+            self.tools_path.clone(),
+            self.agent_keys.clone(),
+        )));
+    }
+
+    /// Register agent key tools (`agent_keys_list`, `agent_key_delete`).
+    pub fn register_agent_key_tools(&mut self, keys: SharedAgentKeys) {
+        self.register(Box::new(agent_keys::AgentKeysListTool::new(Arc::clone(
+            &keys,
+        ))));
+        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(keys)));
     }
 
     /// Register the `memory_search` tool with a shared hybrid searcher.
@@ -317,6 +359,8 @@ impl ToolRegistry {
         let SubagentToolDeps {
             tracker,
             path_policy,
+            tools_path,
+            agent_keys,
             skill_state,
             tz,
             hybrid_searcher,
@@ -343,9 +387,12 @@ impl ToolRegistry {
         } = deps;
 
         let mut registry = Self::new();
+        registry.set_tools_path(tools_path);
+        registry.set_agent_keys(Arc::clone(&agent_keys));
 
         // Core I/O tools
         registry.register_defaults(tracker, path_policy);
+        registry.register_agent_key_tools(agent_keys);
 
         // Skill tools: activate, deactivate
         registry.register_skill_tools(Arc::clone(&skill_state));
