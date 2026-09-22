@@ -5,16 +5,17 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
+use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::EndpointRegistry;
+use crate::bus::{EndpointRegistry, SessionAddress};
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult, actions,
-    background, edit, exec, file_bug_report, inbox, memory_get, memory_search, ollama_web_search,
-    read, send_message, skills, submit_feedback, web_fetch, write,
+    background, edit, exec, file_bug_report, inbox, memory_get, memory_search, message_agent,
+    ollama_web_search, read, send_message, skills, submit_feedback, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -180,6 +181,21 @@ impl ToolRegistry {
         self.register(Box::new(background::ListAgentsTool::new(registry)));
     }
 
+    /// Register the `message_agent` tool, identifying this registry's owner
+    /// as `self_address` (category `self_category`) to whoever it messages.
+    pub fn register_message_agent_tool(
+        &mut self,
+        self_address: SessionAddress,
+        self_category: String,
+        messenger: Arc<AgentMessenger>,
+    ) {
+        self.register(Box::new(message_agent::MessageAgentTool::new(
+            self_address,
+            self_category,
+            messenger,
+        )));
+    }
+
     /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
     pub(crate) fn register_spawn_tool(
         &mut self,
@@ -218,6 +234,9 @@ impl ToolRegistry {
         publisher: crate::bus::Publisher,
         action_store: Arc<Mutex<ActionStore>>,
         action_notify: Arc<Notify>,
+        session_address: SessionAddress,
+        session_category: String,
+        messenger: Arc<AgentMessenger>,
     ) -> Self {
         let mut registry = Self::new();
 
@@ -246,6 +265,7 @@ impl ToolRegistry {
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher);
         registry.register_list_endpoints_tool(endpoint_registry);
+        registry.register_message_agent_tool(session_address, session_category, messenger);
 
         // Web fetch
         registry.register_web_fetch_tool();

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
+use crate::background::registry::SessionCategory;
 use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
@@ -69,8 +70,16 @@ async fn handle_spawn_request(
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
     let skill = event.skill.as_ref().map(|s| s.as_ref().to_string());
+    let category = SessionCategory::from_trigger(&event.source);
 
-    let resources = build_spawn_resources(ctx, &event.model_tier, skill.as_deref()).await?;
+    let resources = build_spawn_resources(
+        ctx,
+        &event.model_tier,
+        skill.as_deref(),
+        &event.address,
+        category,
+    )
+    .await?;
 
     let request = SessionSpawnRequest {
         address: event.address,

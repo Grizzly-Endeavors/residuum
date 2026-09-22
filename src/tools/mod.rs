@@ -12,6 +12,7 @@ pub(crate) mod list_conversations;
 pub(crate) mod list_endpoints;
 pub mod memory_get;
 pub mod memory_search;
+pub mod message_agent;
 pub(crate) mod ollama_web_search;
 pub mod path_policy;
 mod read;

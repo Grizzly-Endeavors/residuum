@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
 use crate::agent::{Agent, AgentConfig};
-use crate::background::registry::SessionRegistry;
+use crate::background::messaging::AgentMessenger;
+use crate::background::registry::{MAIN_ADDRESS, SessionRegistry};
+use crate::bus::SessionAddress;
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
@@ -28,6 +30,7 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub publisher: &'a crate::bus::Publisher,
     pub tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     pub tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    pub agent_messenger: &'a Arc<AgentMessenger>,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -91,6 +94,11 @@ pub(super) fn init_tool_registry(
 
     tools.register_send_message_tool(deps.endpoint_registry.clone(), deps.publisher.clone());
     tools.register_list_endpoints_tool(deps.endpoint_registry.clone());
+    tools.register_message_agent_tool(
+        SessionAddress::from(MAIN_ADDRESS),
+        MAIN_ADDRESS.to_string(),
+        Arc::clone(deps.agent_messenger),
+    );
 
     let override_tx = tokio::sync::watch::Sender::new(None);
     let override_tx_for_runtime = override_tx.clone();

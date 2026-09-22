@@ -9,9 +9,17 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::interrupt::Interrupt;
 use crate::bus::{EventTrigger, SessionAddress, SkillName};
+
+/// Capacity of a session's interrupt channel: agent messages delivered to it
+/// (mid-turn, or to wake it while idle). Sized like the main agent's own
+/// interrupt channel — deliveries are infrequent relative to this, so the
+/// buffer exists to smooth bursts, not as a throughput bound.
+const INTERRUPT_CHANNEL_CAPACITY: usize = 32;
 
 /// The well-known address of the main agent. Never present in the registry
 /// (main is not a session), but used as the `spawner` value for sessions
@@ -127,21 +135,46 @@ pub struct SessionInfo {
     pub started_at: DateTime<Utc>,
 }
 
-/// A registered session's bookkeeping: its metadata plus the token that
-/// cancels its in-flight turn or idle wait.
+/// A registered session's bookkeeping: its metadata, the token that cancels
+/// its in-flight turn or idle wait, and the sender half of its interrupt
+/// channel — how a message addressed to this session actually reaches it
+/// (an interrupt at its next tool-call boundary while running, or the input
+/// for a new turn while idle; see `crate::background::messaging`).
 struct SessionEntry {
     info: SessionInfo,
     stop_token: CancellationToken,
+    interrupt_tx: mpsc::Sender<Interrupt>,
 }
 
-/// Registry of every live (running, idle, or completing) session.
+/// What's needed to resume a completed session as a new run at the same
+/// address: enough of its last run's identity to fork it again, plus a
+/// pointer to what that run produced.
+#[derive(Debug, Clone)]
+pub struct ResumePoint {
+    /// Run id of the run that completed.
+    pub previous_run_id: String,
+    /// Episode the completed run was merged into, if any.
+    pub previous_episode_id: Option<String>,
+    /// What triggered the original run — determines the resumed run's
+    /// category the same way it did the first time.
+    pub trigger: EventTrigger,
+    /// Human-readable source label carried over to the resumed run.
+    pub source_label: String,
+    /// Skill the original run executed with, if any, carried over so the
+    /// resumed run keeps the same role.
+    pub agent_skill: Option<SkillName>,
+}
+
+/// Registry of every live (running, idle, or completing) session, plus a
+/// standing record of what's needed to resume a completed one.
 ///
-/// Completed sessions are removed; their addresses remain valid for
-/// messaging (once messaging exists, in Phase 3) but they no longer appear
-/// in discovery.
+/// Live sessions are removed once completed; their resume points are not —
+/// an address must keep working for messaging across idle gaps and after
+/// completion, for as long as the process runs.
 #[derive(Default)]
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<SessionAddress, SessionEntry>>,
+    resume_points: Mutex<HashMap<SessionAddress, ResumePoint>>,
 }
 
 impl SessionRegistry {
@@ -152,11 +185,75 @@ impl SessionRegistry {
     }
 
     /// Register a new session run, replacing any existing entry at the same
-    /// address (a resumed run in a later phase would land here).
-    pub fn register(&self, info: SessionInfo, stop_token: CancellationToken) {
+    /// address (a resumed run lands here the same way a fresh one does).
+    ///
+    /// Returns the receiver half of the session's interrupt channel, for the
+    /// runtime to drive the run's turns with.
+    #[must_use]
+    pub fn register(
+        &self,
+        info: SessionInfo,
+        stop_token: CancellationToken,
+    ) -> mpsc::Receiver<Interrupt> {
+        let (interrupt_tx, interrupt_rx) = mpsc::channel(INTERRUPT_CHANNEL_CAPACITY);
         let address = info.address.clone();
         let mut guard = self.lock();
-        guard.insert(address, SessionEntry { info, stop_token });
+        guard.insert(
+            address,
+            SessionEntry {
+                info,
+                stop_token,
+                interrupt_tx,
+            },
+        );
+        interrupt_rx
+    }
+
+    /// Deliver a message to a live session by address: an interrupt at its
+    /// next tool-call boundary while running, or the input for a new turn
+    /// while idle — the runtime on the other end of the channel decides
+    /// which, depending on whether it currently owns the receiver inside an
+    /// active turn or in its idle wait.
+    ///
+    /// Returns `true` if a live session was found and the message was
+    /// handed to its channel. `false` means the address is not currently
+    /// live — the caller should fall back to [`Self::resume_point`] to
+    /// decide between resuming a completed session and reporting an unknown
+    /// address. A full or closed channel is logged and also reported as
+    /// `false` — vanishingly unlikely (32-deep, drained continuously by a
+    /// live run) and not worth a third outcome for callers to handle.
+    pub fn deliver(&self, address: &SessionAddress, message: Interrupt) -> bool {
+        let guard = self.lock();
+        let Some(entry) = guard.get(address) else {
+            return false;
+        };
+        match entry.interrupt_tx.try_send(message) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(address = %address, error = %e, "failed to deliver agent message to live session");
+                false
+            }
+        }
+    }
+
+    /// Record what's needed to resume a session as a new run once its
+    /// current run completes. Overwrites any previous resume point at the
+    /// same address, since only the most recent run's pointer matters.
+    pub fn record_resume_point(&self, address: &SessionAddress, point: ResumePoint) {
+        self.resume_points
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(address.clone(), point);
+    }
+
+    /// Look up a completed session's resume point, if it has ever run.
+    #[must_use]
+    pub fn resume_point(&self, address: &SessionAddress) -> Option<ResumePoint> {
+        self.resume_points
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(address)
+            .cloned()
     }
 
     /// Update a session's lifecycle state. No-op if the address is unknown
@@ -339,7 +436,7 @@ mod tests {
     fn register_and_get_round_trips() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0001");
-        registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry.register(info.clone(), CancellationToken::new());
 
         let got = registry.get(&info.address).unwrap();
         assert_eq!(got.address, info.address);
@@ -350,7 +447,7 @@ mod tests {
     fn set_state_updates_existing_session() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0002");
-        registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry.register(info.clone(), CancellationToken::new());
 
         registry.set_state(&info.address, SessionState::Idle);
         assert_eq!(
@@ -371,7 +468,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0003");
         let token = CancellationToken::new();
-        registry.register(info.clone(), token.clone());
+        let _rx = registry.register(info.clone(), token.clone());
 
         assert!(registry.stop(&info.address));
         assert!(token.is_cancelled());
@@ -388,7 +485,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let mut info = sample_info("spawned-researcher-0004");
         info.state = SessionState::Completing;
-        registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry.register(info.clone(), CancellationToken::new());
 
         assert!(!registry.stop(&info.address));
     }
@@ -405,9 +502,9 @@ mod tests {
         let running_token = CancellationToken::new();
         let idle_token = CancellationToken::new();
         let completing_token = CancellationToken::new();
-        registry.register(running.clone(), running_token.clone());
-        registry.register(idle.clone(), idle_token.clone());
-        registry.register(completing.clone(), completing_token.clone());
+        let _running_rx = registry.register(running.clone(), running_token.clone());
+        let _idle_rx = registry.register(idle.clone(), idle_token.clone());
+        let _completing_rx = registry.register(completing.clone(), completing_token.clone());
 
         let signalled = registry.stop_all();
 
@@ -433,7 +530,7 @@ mod tests {
     fn remove_takes_session_out_of_live_list() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0005");
-        registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry.register(info.clone(), CancellationToken::new());
 
         assert_eq!(registry.list_live().len(), 1);
         let removed = registry.remove(&info.address).unwrap();
@@ -448,8 +545,8 @@ mod tests {
         earlier.started_at = Utc::now() - chrono::Duration::seconds(60);
         let later = sample_info("spawned-b-0002");
 
-        registry.register(later.clone(), CancellationToken::new());
-        registry.register(earlier.clone(), CancellationToken::new());
+        let _later_rx = registry.register(later.clone(), CancellationToken::new());
+        let _earlier_rx = registry.register(earlier.clone(), CancellationToken::new());
 
         let mut live = registry.list_live().into_iter();
         assert_eq!(live.next().unwrap().address, earlier.address);
@@ -461,7 +558,7 @@ mod tests {
     fn subagent_snapshot_reflects_live_sessions() {
         let registry = SessionRegistry::new();
         let info = sample_info("spawned-researcher-0006");
-        registry.register(info.clone(), CancellationToken::new());
+        let _rx = registry.register(info.clone(), CancellationToken::new());
 
         let snapshot = registry.subagent_snapshot();
         assert_eq!(snapshot.len(), 1);
@@ -495,5 +592,61 @@ mod tests {
         let b = generate_run_id();
         assert_ne!(a, b);
         assert!(a.starts_with("run-"));
+    }
+
+    fn sample_agent_message() -> Interrupt {
+        Interrupt::AgentMessage(crate::bus::AgentMessageEvent {
+            from: SessionAddress::from(MAIN_ADDRESS),
+            from_category: "main".to_string(),
+            content: "hello".to_string(),
+            hop_count: 0,
+        })
+    }
+
+    #[test]
+    fn deliver_sends_to_a_live_session_channel() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0007");
+        let mut rx = registry.register(info.clone(), CancellationToken::new());
+
+        assert!(registry.deliver(&info.address, sample_agent_message()));
+        let received = rx.try_recv().expect("message should be queued");
+        assert!(matches!(received, Interrupt::AgentMessage(_)));
+    }
+
+    #[test]
+    fn deliver_returns_false_for_unknown_address() {
+        let registry = SessionRegistry::new();
+        assert!(!registry.deliver(&SessionAddress::from("ghost"), sample_agent_message()));
+    }
+
+    #[test]
+    fn resume_point_round_trips() {
+        let registry = SessionRegistry::new();
+        let address = SessionAddress::from("spawned-researcher-0008");
+        let point = ResumePoint {
+            previous_run_id: "run-1".to_string(),
+            previous_episode_id: Some("ep-1".to_string()),
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            agent_skill: Some(SkillName::from("researcher")),
+        };
+        registry.record_resume_point(&address, point.clone());
+
+        let found = registry
+            .resume_point(&address)
+            .expect("resume point should be recorded");
+        assert_eq!(found.previous_run_id, "run-1");
+        assert_eq!(found.previous_episode_id.as_deref(), Some("ep-1"));
+    }
+
+    #[test]
+    fn resume_point_is_none_for_a_session_that_never_ran() {
+        let registry = SessionRegistry::new();
+        assert!(
+            registry
+                .resume_point(&SessionAddress::from("never-existed"))
+                .is_none()
+        );
     }
 }

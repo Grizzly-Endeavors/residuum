@@ -2,13 +2,14 @@
 
 use anyhow::Context as _;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
-use crate::agent::interrupt::dead_interrupt_rx;
+use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
-use crate::bus::Publisher;
+use crate::bus::{AgentMessageEvent, Publisher};
 use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -18,14 +19,43 @@ use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
-use super::types::{SubAgentBuildConfig, SubAgentConfig};
+use super::types::SubAgentBuildConfig;
 
-/// Output from a completed session turn.
-pub(crate) struct SubAgentOutput {
-    /// The final text response (last assistant message).
-    pub summary: String,
-    /// Full conversation transcript (all messages exchanged during the turn).
-    pub messages: Vec<Message>,
+/// What kicks off one of a session's turns.
+///
+/// A run's first turn is always [`Self::Initial`] — the source-specific task
+/// prompt and context the design calls "fork contents". Every later turn in
+/// the same run (the session was idle and an agent message arrived) is
+/// [`Self::AgentMessage`] instead: the message becomes the turn's input,
+/// formatted with the sender's address and category so the session can
+/// reply.
+pub(crate) enum TurnKickoff {
+    /// The run's first turn: the task prompt, plus any source-specific
+    /// context (a pulse/action/webhook payload, or a resume pointer).
+    Initial {
+        prompt: String,
+        context: Option<String>,
+    },
+    /// A later turn, started because a message reached this session while it
+    /// was idle.
+    AgentMessage(AgentMessageEvent),
+}
+
+impl TurnKickoff {
+    /// Render this kickoff as the turn's opening user message.
+    fn into_message_text(self) -> String {
+        match self {
+            Self::Initial { prompt, context } => {
+                let mut parts = Vec::new();
+                if let Some(ctx) = context {
+                    parts.push(ctx);
+                }
+                parts.push(prompt);
+                parts.join("\n\n")
+            }
+            Self::AgentMessage(msg) => msg.format_for_agent(),
+        }
+    }
 }
 
 /// Everything needed to run a session turn, gathered at fork time.
@@ -95,6 +125,9 @@ pub async fn build_subagent_resources(
         observer,
         merge_writer,
         episode_skip_token_floor,
+        session_address,
+        session_category,
+        messenger,
     } = config;
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
@@ -145,6 +178,9 @@ pub async fn build_subagent_resources(
         publisher,
         action_store,
         action_notify,
+        session_address,
+        session_category.as_str().to_string(),
+        messenger,
     );
 
     Ok(SubAgentResources {
@@ -164,11 +200,14 @@ pub async fn build_subagent_resources(
     })
 }
 
-/// Execute one session turn.
+/// Execute one turn of a session's run.
 ///
-/// Builds the turn's starting user message from the task prompt and context
-/// alone — identity, the observation snapshot, and skills are carried in the
-/// system message that `execute_turn` assembles itself, the same way the main
+/// `recent_messages` is the run's whole history so far — empty on the run's
+/// first turn, carrying every prior turn's messages on a later one, so a
+/// session that wakes from idle to handle an agent message still has its
+/// earlier context. `kickoff` becomes this turn's opening user message:
+/// identity, the observation snapshot, and skills are carried in the system
+/// message that `execute_turn` assembles itself, the same way the main
 /// agent's turns are, so nothing is injected twice.
 ///
 /// `stop_token` is the session's own token: cancelling it (via `stop_agent`)
@@ -177,20 +216,31 @@ pub async fn build_subagent_resources(
 /// that point.
 ///
 /// `transcript_sink`, when given, receives every message as it's produced
-/// (the initial user message here, then each model response and tool
-/// result inside `execute_turn`) so the run's transcript survives a crash
-/// mid-turn in the session store.
+/// (the kickoff message here, then each model response and tool result
+/// inside `execute_turn`) so the run's transcript survives a crash mid-turn
+/// in the session store.
+///
+/// `interrupt_rx` is the run's own long-lived interrupt channel: draining it
+/// here is what delivers an agent message to a *running* turn at its next
+/// tool-call boundary. Between turns, the caller drains the same channel
+/// itself to decide whether to wake for another turn (see
+/// `crate::background::runtime`).
+///
+/// Returns this turn's final text response. The full transcript is left in
+/// `recent_messages` for the caller.
 ///
 /// # Errors
 /// Returns an error if the model call fails.
 #[tracing::instrument(skip_all, fields(run.id = %run_id))]
 pub(crate) async fn execute_subagent(
     run_id: &str,
-    config: &SubAgentConfig,
+    kickoff: TurnKickoff,
+    recent_messages: &mut RecentMessages,
     resources: &SubAgentResources,
     stop_token: &CancellationToken,
     transcript_sink: Option<&dyn crate::agent::turn::TranscriptSink>,
-) -> Result<SubAgentOutput, anyhow::Error> {
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+) -> Result<String, anyhow::Error> {
     // Build skills context from this session's isolated skill state
     let active_instructions: Option<String> = {
         let guard = resources.skill_state.lock().await;
@@ -201,29 +251,17 @@ pub(crate) async fn execute_subagent(
         active_instructions: active_instructions.as_deref(),
     };
 
-    // Build the user message: source-specific context, then the prompt. No
-    // identity/wiki/skills content here — that lives in the system message.
-    let mut user_parts = Vec::new();
-
-    if let Some(ctx) = &config.context {
-        user_parts.push(ctx.clone());
-    }
-
-    user_parts.push(config.prompt.clone());
-
-    let combined_prompt = user_parts.join("\n\n");
-    let initial_message = Message::user(combined_prompt);
-    let mut recent_messages = RecentMessages::new();
-    recent_messages.push(initial_message.clone());
+    // No identity/wiki/skills content here — that lives in the system message.
+    let kickoff_message = Message::user(kickoff.into_message_text());
+    recent_messages.push(kickoff_message.clone());
     if let Some(sink) = transcript_sink {
-        sink.append(&[initial_message]).await;
+        sink.append(&[kickoff_message]).await;
     }
 
     // No broker needed: sessions pass `None` for both endpoints, so
     // streaming events are never published. A noop publisher satisfies
     // the type without spawning a background task.
     let publisher = Publisher::noop();
-    let mut interrupt_rx = dead_interrupt_rx();
 
     let memory_ctx = MemoryContext {
         observations: resources.observations.as_deref(),
@@ -253,10 +291,10 @@ pub(crate) async fn execute_subagent(
         &turn_resources,
         &memory_ctx,
         &prompt_ctx,
-        &mut recent_messages,
+        recent_messages,
         &events,
         None,
-        &mut interrupt_rx,
+        interrupt_rx,
         None,
     )
     .await?;
@@ -264,9 +302,7 @@ pub(crate) async fn execute_subagent(
     if texts.is_empty() {
         tracing::warn!(run_id = %run_id, "session turn produced no text output");
     }
-    let summary = texts.pop().unwrap_or_default();
-    let messages = recent_messages.messages().to_vec();
-    Ok(SubAgentOutput { summary, messages })
+    Ok(texts.pop().unwrap_or_default())
 }
 
 /// Test-only layout, observer, and merge writer, backed by a leaked temp
@@ -299,10 +335,18 @@ pub(crate) fn test_memory_extras() -> (
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::interrupt::dead_interrupt_rx;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
     use async_trait::async_trait;
+
+    fn initial(prompt: &str, context: Option<&str>) -> TurnKickoff {
+        TurnKickoff::Initial {
+            prompt: prompt.to_string(),
+            context: context.map(str::to_string),
+        }
+    }
 
     struct MockSubAgentProvider {
         response: String,
@@ -350,57 +394,54 @@ mod tests {
     #[tokio::test]
     async fn subagent_returns_summary() {
         let resources = make_resources("3 new emails found");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
 
-        let config = SubAgentConfig {
-            prompt: "check emails".to_string(),
-            context: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
-        };
-
-        let output = execute_subagent(
+        let summary = execute_subagent(
             "run-001",
-            &config,
+            initial("check emails", None),
+            &mut recent_messages,
             &resources,
             &CancellationToken::new(),
             None,
+            &mut interrupt_rx,
         )
         .await
         .unwrap();
-        assert_eq!(output.summary, "3 new emails found");
+        assert_eq!(summary, "3 new emails found");
     }
 
     #[tokio::test]
     async fn subagent_captures_full_transcript() {
         let resources = make_resources("done");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
 
-        let config = SubAgentConfig {
-            prompt: "do work".to_string(),
-            context: None,
-            model_tier: crate::config::BackgroundModelTier::Small,
-        };
-
-        let output = execute_subagent(
+        let summary = execute_subagent(
             "run-002",
-            &config,
+            initial("do work", None),
+            &mut recent_messages,
             &resources,
             &CancellationToken::new(),
             None,
+            &mut interrupt_rx,
         )
         .await
         .unwrap();
-        assert_eq!(output.summary, "done");
+        assert_eq!(summary, "done");
+        let messages = recent_messages.messages();
         assert!(
-            output.messages.len() >= 2,
+            messages.len() >= 2,
             "transcript should contain at least user + assistant messages, got {}",
-            output.messages.len()
+            messages.len()
         );
-        let first = output.messages.first().unwrap();
+        let first = messages.first().unwrap();
         assert_eq!(first.role, crate::inference::Role::User);
         assert!(
             first.content.contains("do work"),
             "user message should contain the prompt"
         );
-        let last = output.messages.last().unwrap();
+        let last = messages.last().unwrap();
         assert_eq!(last.role, crate::inference::Role::Assistant);
         assert_eq!(last.content, "done");
     }
@@ -408,29 +449,103 @@ mod tests {
     #[tokio::test]
     async fn subagent_user_message_carries_only_context_and_prompt() {
         let resources = make_resources("result");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
 
-        let config = SubAgentConfig {
-            prompt: "check emails".to_string(),
-            context: Some("extra context".to_string()),
-            model_tier: crate::config::BackgroundModelTier::Medium,
-        };
-
-        let output = execute_subagent(
+        execute_subagent(
             "run-ctx",
-            &config,
+            initial("check emails", Some("extra context")),
+            &mut recent_messages,
             &resources,
             &CancellationToken::new(),
             None,
+            &mut interrupt_rx,
         )
         .await
         .unwrap();
-        let first = output.messages.first().unwrap();
+        let first = recent_messages.messages().first().unwrap();
         assert_eq!(first.role, crate::inference::Role::User);
         assert_eq!(
             first.content, "extra context\n\ncheck emails",
             "the user message must carry only source context and the task prompt — \
              identity, wiki, and skills belong in the system message, assembled once \
              by execute_turn, not duplicated here"
+        );
+    }
+
+    #[tokio::test]
+    async fn subagent_agent_message_kickoff_names_sender_and_category() {
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        execute_subagent(
+            "run-msg",
+            TurnKickoff::AgentMessage(AgentMessageEvent {
+                from: crate::bus::SessionAddress::from("main"),
+                from_category: "main".to_string(),
+                content: "how's it going?".to_string(),
+                hop_count: 0,
+            }),
+            &mut recent_messages,
+            &resources,
+            &CancellationToken::new(),
+            None,
+            &mut interrupt_rx,
+        )
+        .await
+        .unwrap();
+
+        let first = recent_messages.messages().first().unwrap();
+        assert_eq!(
+            first.content,
+            "[Agent Message from main (main)]\nhow's it going?"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_agent_message_is_drained_within_the_same_running_turn() {
+        // A message already sitting in the interrupt channel before the
+        // turn's tool loop starts is drained at the loop's first checkpoint
+        // — the same "next tool-call boundary" delivery a message arriving
+        // mid-turn gets. This is what distinguishes delivery to a *running*
+        // session from delivery to an *idle* one: no second
+        // `execute_subagent` call, no second kickoff — it lands inside the
+        // run's existing turn.
+        let resources = make_resources("wrapping up");
+
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
+            from: crate::bus::SessionAddress::from("main"),
+            from_category: "main".to_string(),
+            content: "any updates?".to_string(),
+            hop_count: 0,
+        }))
+        .unwrap();
+
+        let mut recent_messages = RecentMessages::new();
+        let summary = execute_subagent(
+            "run-interrupt",
+            initial("keep working", None),
+            &mut recent_messages,
+            &resources,
+            &CancellationToken::new(),
+            None,
+            &mut rx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary, "wrapping up");
+        let messages = recent_messages.messages();
+        assert!(
+            messages.iter().any(|m| m.content.contains("any updates?")),
+            "the queued agent message should be injected into the running turn, got {messages:?}"
+        );
+        assert_eq!(
+            messages.first().unwrap().content,
+            "keep working",
+            "the original kickoff should still be the turn's first message"
         );
     }
 
@@ -488,18 +603,16 @@ mod tests {
             episode_skip_token_floor: 2000,
         };
 
-        let config = SubAgentConfig {
-            prompt: "continue the task".to_string(),
-            context: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
-        };
-
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
             "run-fork",
-            &config,
+            initial("continue the task", None),
+            &mut recent_messages,
             &resources,
             &CancellationToken::new(),
             None,
+            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -578,21 +691,25 @@ mod tests {
             merge_writer,
             episode_skip_token_floor: 2000,
         };
-        let config = SubAgentConfig {
-            prompt: "do work".to_string(),
-            context: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
-        };
-
         let stop_token = CancellationToken::new();
         stop_token.cancel();
 
-        let output = execute_subagent("run-stop", &config, &resources, &stop_token, None)
-            .await
-            .unwrap();
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+        execute_subagent(
+            "run-stop",
+            initial("do work", None),
+            &mut recent_messages,
+            &resources,
+            &stop_token,
+            None,
+            &mut interrupt_rx,
+        )
+        .await
+        .unwrap();
         assert!(
-            output
-                .messages
+            recent_messages
+                .messages()
                 .iter()
                 .any(|m| m.content.contains("do work")),
             "the pre-turn user message should survive a stop"
@@ -642,12 +759,6 @@ mod tests {
             merge_writer,
             episode_skip_token_floor: 2000,
         };
-        let config = SubAgentConfig {
-            prompt: "do work".to_string(),
-            context: None,
-            model_tier: crate::config::BackgroundModelTier::Medium,
-        };
-
         let store_dir = tempfile::tempdir().unwrap();
         let store = crate::background::store::SessionStore::new(store_dir.path().to_path_buf());
         let started_at = chrono::Utc::now();
@@ -660,12 +771,16 @@ mod tests {
         let stop_token = CancellationToken::new();
         stop_token.cancel();
 
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
             "run-stop-note",
-            &config,
+            initial("do work", None),
+            &mut recent_messages,
             &resources,
             &stop_token,
             Some(&sink),
+            &mut interrupt_rx,
         )
         .await
         .unwrap();

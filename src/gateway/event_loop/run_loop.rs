@@ -259,6 +259,7 @@ async fn build_runtime(
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
+        agent_messenger: parts.agent_messenger,
         action_store: parts.action_store,
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,

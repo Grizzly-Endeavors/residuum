@@ -210,6 +210,9 @@ pub(crate) struct GatewayRuntime {
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
+    /// Routes `message_agent` deliveries by address. Constant for the
+    /// process lifetime — cloned into `spawn_context` on every reload.
+    pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,

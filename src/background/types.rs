@@ -5,13 +5,16 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
-use crate::bus::{EndpointRegistry, Publisher};
+use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
+
+use super::messaging::AgentMessenger;
+use super::registry::SessionCategory;
 
 /// Configuration for a single session run's turn.
 #[derive(Debug, Clone)]
@@ -71,6 +74,13 @@ pub struct SubAgentBuildConfig {
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub episode_skip_token_floor: usize,
+    /// This session's own address, so its `message_agent` tool can identify
+    /// itself as the sender.
+    pub session_address: SessionAddress,
+    /// This session's category, for the same reason.
+    pub session_category: SessionCategory,
+    /// Shared agent-messaging service, for the session's `message_agent` tool.
+    pub messenger: std::sync::Arc<AgentMessenger>,
 }
 
 #[cfg(test)]
