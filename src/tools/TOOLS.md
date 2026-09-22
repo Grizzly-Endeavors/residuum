@@ -56,7 +56,7 @@ On error (returned as `is_error = true`):
 On success: `"wrote {N} bytes to {path}"`
 
 On error:
-- `PathPolicy` rejects the write path (targets a protected config file)
+- `PathPolicy` rejects the write path (targets a protected config or credential-store file)
 - File already exists but has not been read via `read_file` first
 - Directory creation fails
 - Write fails
@@ -95,7 +95,7 @@ On error:
 On success: `"edited {path}: {description}"` where description is e.g. `"replaced line(s) 5"` or `"deleted line(s) 2-4"`.
 
 On error:
-- `PathPolicy` rejects the path (targets a protected config file)
+- `PathPolicy` rejects the path (targets a protected config or credential-store file)
 - File does not exist
 - File has not been read via `read_file` first
 - Hash mismatch on `start_line` or `end_line` (file changed since last read)
@@ -110,14 +110,18 @@ On error:
 **Source:** `exec.rs` · `ExecTool`
 
 **Description sent to LLM:**
-> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). The description sent to the LLM reflects the current platform.
+> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
+
+The description sent to the LLM reflects the current platform.
 
 ### Input
 
-| Parameter      | Type    | Required | Description                               |
-|----------------|---------|----------|-------------------------------------------|
-| `command`      | string  | yes      | The shell command to execute              |
-| `timeout_secs` | integer | no       | Timeout in seconds (default: 120)         |
+| Parameter         | Type     | Required | Description                               |
+|-------------------|----------|----------|-------------------------------------------|
+| `command`         | string   | yes      | The shell command to execute              |
+| `timeout_secs`    | integer  | no       | Timeout in seconds (default: 120)         |
+| `keys`            | string[] | no       | Agent key names to expose to this command, each as its uppercased name (`github_token` → `$GITHUB_TOKEN`) |
+| `store_output_as` | object   | no       | `{ name, description? }` — store stdout as an agent key instead of returning it |
 
 ### Output
 
@@ -129,12 +133,67 @@ On timeout: `"command timed out after {N} seconds"`.
 
 Output is capped at 100 KB; larger output is truncated with `\n... (output truncated)`.
 
+With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
+
+With `store_output_as`:
+- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.**
+- Non-zero exit: `"command exited with code {N}; nothing was stored and stdout was discarded"` plus stderr.
+- Empty stdout: `"command produced no stdout; nothing was stored"`.
+- A name that is invalid or belongs to a user-created key is refused before the command runs (`"... Nothing was run."`).
+- A value that fails storage rules (shorter than 8 characters): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+
+stderr in a `store_output_as` result is redacted against the new value as well as every existing key.
+
 ### Side effects
 
 Commands are resolved against the configured tool `PATH`: the directories in
 `[tools].path` and the default `~/.residuum/bin`, prepended to the inherited
 `PATH`. Binaries dropped into those dirs are runnable without a rebuild. See
 [Tool PATH](../../docs/systems-usage/tools.md).
+
+Named keys are set only in the spawned child's environment. `store_output_as` writes to the agent key store. Every agent-key value in the result — this tool's or any other — is replaced with `[agent-key:<name>]` by the turn loop before the result is recorded or sent anywhere. See [Agent keys](../../docs/systems-usage/agent-keys.md).
+
+---
+
+## `agent_keys_list`
+
+**Source:** `agent_keys.rs` · `AgentKeysListTool`
+
+**Description sent to LLM:**
+> List the agent keys (API keys, tokens) available to exec. Shows each key's name, the environment variable it is exposed as, who created it, and its description. Values are never shown; use a key by naming it in exec's `keys` parameter.
+
+### Input
+
+None.
+
+### Output
+
+`"{N} agent key(s). Expose one to a command with exec's \`keys\` parameter; values are redacted from all output."` followed by one line per key: `"- {name} -> ${ENV_VAR} (created by user|agent): {description}"` (`(no description)` when empty).
+
+With no keys: a message saying the user can add one with `residuum agent-keys set <name>` or in the web UI, and that the agent can mint one with exec's `store_output_as`.
+
+On error: `"couldn't read the agent key store: {reason}"`.
+
+---
+
+## `agent_key_delete`
+
+**Source:** `agent_keys.rs` · `AgentKeyDeleteTool`
+
+**Description sent to LLM:**
+> Delete an agent key you created (e.g. a minted token that is no longer needed). Keys the user created can't be deleted this way.
+
+### Input
+
+| Parameter | Type   | Required | Description                        |
+|-----------|--------|----------|------------------------------------|
+| `name`    | string | yes      | Name of the agent key to delete    |
+
+### Output
+
+On success: `"deleted agent key '{name}'"`.
+
+On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created by the user; only keys the agent created can be replaced or deleted by the agent"`, or a store read/write failure.
 
 ---
 

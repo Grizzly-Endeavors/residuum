@@ -36,6 +36,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. That's it �
 - Main chat turns are recorded in history when they end. A chat message starting with `drop` loses the connection mid-turn: `drop finish …` ends the turn while disconnected, `drop compress …` also compresses history into a new episode (forcing a history reload), and any other `drop …` finishes the turn live after the page reconnects
 - Config files are loaded from `../assets/*.example.*` and can be edited in the UI
 - Secrets can be added and removed (stored in memory)
+- Agent keys list with one user key and one agent-saved key, and can be added and removed (stored in memory)
 
 ### What's NOT mocked
 

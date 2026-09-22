@@ -524,6 +524,9 @@ fn build_spawn_context(
             crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
         ),
         web_search_backend: new_cfg.web_search.standalone_backend.clone(),
+        tools_path: Arc::clone(&rt.tools_path),
+        path_policy: Arc::clone(&rt.path_policy),
+        agent_keys: Arc::clone(&rt.agent_keys),
     })
 }
 
@@ -748,22 +751,12 @@ async fn reload_tools_path(rt: &GatewayRuntime, new_cfg: &Config) {
 
 /// Update path policy with new agent ability gates.
 async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    let mut blocked: Vec<std::path::PathBuf> = vec![
-        new_cfg.config_dir.join("config.toml"),
-        new_cfg.config_dir.join("config.example.toml"),
-        new_cfg.config_dir.join("providers.toml"),
-        new_cfg.config_dir.join("providers.example.toml"),
-    ];
-    if !new_cfg.agent.modify_mcp {
-        blocked.push(rt.layout.mcp_json());
-    }
-    if !new_cfg.agent.modify_channels {
-        blocked.push(rt.layout.channels_toml());
-    }
     rt.path_policy
         .write()
         .await
-        .set_blocked_paths(blocked.into_iter().collect());
+        .set_blocked_paths(crate::tools::path_policy::blocked_write_paths(
+            new_cfg, &rt.layout,
+        ));
     tracing::debug!(
         modify_mcp = new_cfg.agent.modify_mcp,
         modify_channels = new_cfg.agent.modify_channels,

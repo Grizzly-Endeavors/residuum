@@ -11,6 +11,9 @@ import type {
   SecretResponse,
   ValidateResponse,
   SecretsListResponse,
+  AgentKeyInfo,
+  AgentKeysListResponse,
+  SetAgentKeyResponse,
   WorkspaceEntry,
   CloudStatusResponse,
   UpdateStatusResponse,
@@ -279,6 +282,32 @@ export async function listSecrets(): Promise<string[]> {
 
 export async function deleteSecret(name: string): Promise<void> {
   await apiFetchText(`/api/secrets/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+// ── Agent keys API wrappers ─────────────────────────────────────────
+
+/** Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchAgentKeys(): Promise<AgentKeyInfo[]> {
+  const data = await apiFetch<AgentKeysListResponse>("/api/agent-keys");
+  return data.keys;
+}
+
+export async function storeAgentKey(
+  name: string,
+  value: string,
+  description: string,
+): Promise<SetAgentKeyResponse> {
+  return apiFetch<SetAgentKeyResponse>("/api/agent-keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, value, description }),
+  });
+}
+
+export async function deleteAgentKey(name: string): Promise<void> {
+  await apiFetchText(`/api/agent-keys/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }

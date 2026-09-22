@@ -1,5 +1,6 @@
 //! CLI subcommand dispatch using clap.
 
+mod agent_keys;
 mod bug_report;
 mod feedback;
 mod logs;
@@ -37,6 +38,11 @@ enum Command {
     Logs(logs::LogsArgs),
     /// Interactive or flag-driven configuration wizard
     Setup(setup::SetupArgs),
+    /// Manage keys and tokens the agent can use in commands
+    AgentKeys {
+        #[command(subcommand)]
+        command: agent_keys::AgentKeysCommand,
+    },
     /// Manage encrypted secret storage
     Secret {
         #[command(subcommand)]
@@ -85,6 +91,7 @@ pub async fn run() -> Result<(), FatalError> {
 
     match command {
         Command::Secret { command } => secret::run_secret_command(&command),
+        Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
             logs::run_logs_command(args).await

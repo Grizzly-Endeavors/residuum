@@ -19,7 +19,6 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::skills::{SharedSkillState, SkillState};
-use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
@@ -143,9 +142,10 @@ pub struct SubAgentResources {
 /// Build isolated session resources from the main agent's shared state.
 ///
 /// Clones the skill index so the session starts with the same view of
-/// available skills, but operates on its own independent copies of
-/// `SkillState` and `PathPolicy`. The `McpRegistry` is shared (ref-counted)
-/// so servers are not duplicated.
+/// available skills, but operates on its own independent copy of
+/// `SkillState`. The `McpRegistry`, write `PathPolicy`, tool `PATH`, and
+/// agent key store are shared (ref-counted) with the main agent, so servers
+/// are not duplicated and a session is held to the same write policy.
 ///
 /// When `config.skill` is set, that skill is activated on the session's own
 /// skill state so its body arrives as the session's role instructions.
@@ -187,6 +187,9 @@ pub async fn build_subagent_resources(
         tracing_service,
         tracing_client_context,
         web_search_backend,
+        tools_path,
+        path_policy,
+        agent_keys,
     } = config;
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
@@ -208,9 +211,6 @@ pub async fn build_subagent_resources(
             .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
     }
 
-    // Fresh isolated path policy
-    let path_policy = PathPolicy::new_shared();
-
     // Fresh file tracker (tracks reads within this sub-agent turn only)
     let tracker = FileTracker::new_shared();
 
@@ -223,7 +223,9 @@ pub async fn build_subagent_resources(
 
     let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
         tracker,
-        path_policy: Arc::clone(&path_policy),
+        path_policy,
+        tools_path,
+        agent_keys,
         skill_state: Arc::clone(&skill_state),
         tz,
         hybrid_searcher,

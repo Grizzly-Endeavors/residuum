@@ -511,7 +511,7 @@ async fn execute_tool(
         ))
     };
 
-    let (output, is_error, images) = match result {
+    let (mut output, is_error, images) = match result {
         Ok(r) => (r.output, r.is_error, r.images),
         Err(e) => {
             let source = match (&e, used_mcp) {
@@ -529,6 +529,22 @@ async fn execute_tool(
             (e.to_string(), true, vec![])
         }
     };
+
+    // The one redaction point for tool output: everything downstream (the
+    // web UI activity feed, recent_messages, transcripts, episodes, the
+    // search index, and the next provider call) reads this string.
+    if resources
+        .tools
+        .redactor()
+        .await
+        .redact_in_place(&mut output)
+    {
+        tracing::debug!(
+            tool_name = %tool_call.name,
+            tool_call_id = %tool_call.id,
+            "redacted agent key values from tool output"
+        );
+    }
 
     events
         .publish_tool_activity(
@@ -883,6 +899,84 @@ mod tests {
         assert!(
             !msg.content.starts_with("unknown tool:"),
             "should not surface the confusing 'unknown tool' registry-lookup message: {}",
+            msg.content
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_tool_redacts_agent_key_values_before_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = crate::agent_keys::AgentKeys::new_shared(dir.path());
+        keys.set(
+            "api_key",
+            "sk-live-redactme42",
+            None,
+            crate::agent_keys::KeyCreator::User,
+        )
+        .await
+        .unwrap();
+
+        let mut tools = ToolRegistry::new();
+        tools.set_agent_keys(keys);
+        tools.register_defaults(
+            crate::tools::FileTracker::new_shared(),
+            crate::tools::PathPolicy::new_shared(),
+        );
+
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "exec".to_string(),
+            arguments: serde_json::json!({
+                "command": "echo \"Authorization: Bearer $API_KEY\"",
+                "keys": ["api_key"]
+            }),
+        };
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        execute_tool(&tool_call, &resources, &mut recent, &events).await;
+
+        let msg = recent
+            .messages()
+            .first()
+            .expect("a tool-result message should have been recorded");
+        assert!(
+            !msg.content.contains("sk-live-redactme42"),
+            "the key value must never reach history: {}",
+            msg.content
+        );
+        assert!(
+            msg.content
+                .contains("Authorization: Bearer [agent-key:api_key]"),
+            "the value should be replaced by its marker: {}",
             msg.content
         );
     }

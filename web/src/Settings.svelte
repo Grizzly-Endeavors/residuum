@@ -33,6 +33,7 @@
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
   import MCP from "./components/settings/MCP.svelte";
+  import AgentKeys from "./components/settings/AgentKeys.svelte";
   import Modal from "./components/Modal.svelte";
   import { Icon } from "./lib/icons";
   import { toast } from "./lib/toast.svelte";
@@ -84,6 +85,7 @@
     { id: "memory", label: "Memory" },
     { id: "integrations", label: "Integrations" },
     { id: "mcp", label: "MCP" },
+    { id: "agent-keys", label: "Agent keys" },
   ];
 
   let simple = $derived(settingsMode === "simple");
@@ -505,6 +507,8 @@
         <Integrations bind:fields={configFields} {simple} />
       {:else if activeSection === "mcp"}
         <MCP bind:servers={mcpServers} />
+      {:else if activeSection === "agent-keys"}
+        <AgentKeys />
       {/if}
     </div>
   </div>

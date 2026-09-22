@@ -24,6 +24,10 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub action_notify: &'a Arc<tokio::sync::Notify>,
     pub skill_state: &'a SharedSkillState,
     pub tools_path: &'a crate::tools::SharedToolsPath,
+    /// Shared write policy — the same instance sessions fork with and
+    /// config reloads update.
+    pub path_policy: &'a crate::tools::SharedPathPolicy,
+    pub agent_keys: &'a crate::agent_keys::SharedAgentKeys,
     pub session_registry: &'a Arc<SessionRegistry>,
     pub endpoint_registry: &'a EndpointRegistry,
     pub publisher: &'a crate::bus::Publisher,
@@ -57,29 +61,14 @@ pub(super) fn init_tool_registry(
     deps: &ToolRegistryDeps<'_>,
 ) -> (
     ToolRegistry,
-    crate::tools::SharedPathPolicy,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
-    let mut blocked_paths: Vec<std::path::PathBuf> = vec![
-        cfg.config_dir.join("config.toml"),
-        cfg.config_dir.join("config.example.toml"),
-        cfg.config_dir.join("providers.toml"),
-        cfg.config_dir.join("providers.example.toml"),
-    ];
-    if !cfg.agent.modify_mcp {
-        blocked_paths.push(layout.mcp_json());
-    }
-    if !cfg.agent.modify_channels {
-        blocked_paths.push(layout.channels_toml());
-    }
-    let blocked: std::collections::HashSet<std::path::PathBuf> =
-        blocked_paths.into_iter().collect();
-    tracing::debug!(blocked_paths = ?blocked, "path policy configured");
-    let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(blocked);
     let mut tools = ToolRegistry::new();
     tools.set_tools_path(Arc::clone(deps.tools_path));
+    tools.set_agent_keys(Arc::clone(deps.agent_keys));
     let file_tracker = crate::tools::FileTracker::new_shared();
-    tools.register_defaults(file_tracker, Arc::clone(&path_policy));
+    tools.register_defaults(file_tracker, Arc::clone(deps.path_policy));
+    tools.register_agent_key_tools(Arc::clone(deps.agent_keys));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
     tools.register_action_tools(
@@ -87,7 +76,6 @@ pub(super) fn init_tool_registry(
         Arc::clone(deps.action_notify),
         tz,
     );
-    let path_policy_for_runtime = Arc::clone(&path_policy);
     tools.register_skill_tools(Arc::clone(deps.skill_state));
     tools.register_inbox_tools(
         layout.agent_inbox_dir(),
@@ -147,7 +135,7 @@ pub(super) fn init_tool_registry(
         tracing::info!("registered ollama_web_search tool");
     }
 
-    (tools, path_policy_for_runtime, override_tx_for_runtime)
+    (tools, override_tx_for_runtime)
 }
 
 /// Create the agent, load observations, recent context, and restore messages.
@@ -284,6 +272,8 @@ mod tests {
         action_notify: Arc<tokio::sync::Notify>,
         skill_state: SharedSkillState,
         tools_path: crate::tools::SharedToolsPath,
+        path_policy: crate::tools::SharedPathPolicy,
+        agent_keys: crate::agent_keys::SharedAgentKeys,
         session_registry: Arc<SessionRegistry>,
         endpoint_registry: EndpointRegistry,
         publisher: Publisher,
@@ -316,6 +306,8 @@ mod tests {
         let action_notify = Arc::new(tokio::sync::Notify::new());
         let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
         let tools_path: crate::tools::SharedToolsPath = Arc::new(tokio::sync::RwLock::new(None));
+        let path_policy = PathPolicy::new_shared();
+        let agent_keys = crate::agent_keys::AgentKeys::new_shared(dir);
         let session_registry = Arc::new(SessionRegistry::new());
         let endpoint_registry = EndpointRegistry::from_config(&cfg, &[]);
         let publisher = Publisher::noop();
@@ -342,6 +334,8 @@ mod tests {
             action_notify,
             skill_state,
             tools_path,
+            path_policy,
+            agent_keys,
             session_registry,
             endpoint_registry,
             publisher,
@@ -369,6 +363,8 @@ mod tests {
             action_notify: &h.action_notify,
             skill_state: &h.skill_state,
             tools_path: &h.tools_path,
+            path_policy: &h.path_policy,
+            agent_keys: &h.agent_keys,
             session_registry: &h.session_registry,
             endpoint_registry: &h.endpoint_registry,
             publisher: &h.publisher,
@@ -377,15 +373,16 @@ mod tests {
             agent_messenger: &h.agent_messenger,
             hop_counter: &h.hop_counter,
         };
-        let (main_tools, _, _) =
-            init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
+        let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 
         let session_tools =
             crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
                 tracker: FileTracker::new_shared(),
-                path_policy: PathPolicy::new_shared(),
+                path_policy: Arc::clone(&h.path_policy),
+                tools_path: Arc::clone(&h.tools_path),
+                agent_keys: Arc::clone(&h.agent_keys),
                 skill_state: Arc::clone(&h.skill_state),
                 tz: chrono_tz::UTC,
                 hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),

@@ -126,6 +126,12 @@ pub struct SubAgentBuildConfig {
     /// `cfg.web_search.standalone_backend` so the session's tool registry can
     /// gate `ollama_web_search` the same way the main agent's does.
     pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
+    /// Main's live tool `PATH` (see [`crate::tools::SubagentToolDeps::tools_path`]).
+    pub tools_path: crate::tools::SharedToolsPath,
+    /// Main's write policy (see [`crate::tools::SubagentToolDeps::path_policy`]).
+    pub path_policy: crate::tools::SharedPathPolicy,
+    /// The shared agent key store.
+    pub agent_keys: crate::agent_keys::SharedAgentKeys,
 }
 
 #[cfg(test)]

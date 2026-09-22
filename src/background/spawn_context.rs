@@ -79,6 +79,14 @@ pub(crate) struct SpawnContext {
     /// a newly forked session gates `ollama_web_search` the same way the
     /// main agent's own (startup-time) check does.
     pub(crate) web_search_backend: Option<crate::config::StandaloneBackendConfig>,
+    /// Main's live tool `PATH`, shared so a session's `exec` resolves the
+    /// same binaries and sees config reloads.
+    pub(crate) tools_path: crate::tools::SharedToolsPath,
+    /// Main's write policy, shared so a session is blocked from the same
+    /// config and credential files and sees config reloads.
+    pub(crate) path_policy: crate::tools::SharedPathPolicy,
+    /// The shared agent key store.
+    pub(crate) agent_keys: crate::agent_keys::SharedAgentKeys,
 }
 
 /// Build isolated `SubAgentResources` for a new session run at a given tier.
@@ -191,6 +199,9 @@ pub(crate) async fn build_spawn_resources(
         tracing_service: Arc::clone(&ctx.tracing_service),
         tracing_client_context: Arc::clone(&ctx.tracing_client_context),
         web_search_backend: ctx.web_search_backend.clone(),
+        tools_path: Arc::clone(&ctx.tools_path),
+        path_policy: Arc::clone(&ctx.path_policy),
+        agent_keys: Arc::clone(&ctx.agent_keys),
     };
 
     build_subagent_resources(

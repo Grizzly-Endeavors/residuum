@@ -17,6 +17,7 @@ import { WebSocketServer, WebSocket } from "ws";
 interface MockState {
   mode: "setup" | "running";
   secrets: Map<string, string>;
+  agentKeys: Map<string, { value: string; description: string; created_by: "user" | "agent" }>;
   configToml: string;
   providersToml: string;
   mcpJson: string;
@@ -258,6 +259,24 @@ function createState(): MockState {
     secrets: new Map([
       ["anthropic_key", "sk-ant-mock-xxxx"],
       ["openai_key", "sk-mock-xxxx"],
+    ]),
+    agentKeys: new Map([
+      [
+        "github_token",
+        {
+          value: "ghp_mock_xxxxxxxx",
+          description: "Fine-grained token, read/write on my repos",
+          created_by: "user",
+        },
+      ],
+      [
+        "cf_session",
+        {
+          value: "cf_mock_xxxxxxxx",
+          description: "Short-lived Cloudflare API token minted for DNS updates",
+          created_by: "agent",
+        },
+      ],
     ]),
     configToml: loadAsset("config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
@@ -955,6 +974,48 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         } catch {
           json(res, 200, []);
         }
+        return;
+      }
+
+      // ── Agent keys ─────────────────────────────────────────────────────
+      if (path === "/api/agent-keys" && method === "GET") {
+        const keys = [...state.agentKeys.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, k]) => ({
+            name,
+            env_var: name.toUpperCase(),
+            description: k.description,
+            created_by: k.created_by,
+          }));
+        json(res, 200, { keys });
+        return;
+      }
+
+      if (path === "/api/agent-keys" && method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        if (!/^[a-z][a-z0-9_]{0,63}$/.test(body.name) || String(body.value).length < 8) {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("key name or value is invalid");
+          return;
+        }
+        state.agentKeys.set(body.name, {
+          value: body.value,
+          description: body.description ?? "",
+          created_by: "user",
+        });
+        json(res, 200, { name: body.name, env_var: body.name.toUpperCase() });
+        return;
+      }
+
+      const agentKeyDelete = path.match(/^\/api\/agent-keys\/(.+)$/);
+      if (agentKeyDelete && method === "DELETE") {
+        const name = decodeURIComponent(agentKeyDelete[1]);
+        if (!state.agentKeys.delete(name)) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end(`no agent key named '${name}'`);
+          return;
+        }
+        json(res, 200, { deleted: true });
         return;
       }
 

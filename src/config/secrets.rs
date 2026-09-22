@@ -20,8 +20,8 @@ use aes_gcm_siv::{Aes256GcmSiv, KeyInit, Nonce};
 use crate::util::FatalError;
 
 /// File names within the config directory.
-const KEY_FILE: &str = "secrets.key";
-const ENCRYPTED_FILE: &str = "secrets.toml.enc";
+pub(crate) const KEY_FILE: &str = "secrets.key";
+pub(crate) const ENCRYPTED_FILE: &str = "secrets.toml.enc";
 
 /// Nonce size for AES-256-GCM-SIV (96 bits / 12 bytes).
 const NONCE_SIZE: usize = 12;
@@ -52,7 +52,7 @@ impl SecretStore {
             });
         }
 
-        let key = load_key(config_dir)?;
+        let key = load_key(&config_dir.join(KEY_FILE))?;
         let ciphertext = std::fs::read(&enc_path).map_err(|e| {
             FatalError::Config(format!(
                 "failed to read secrets file at {}: {e}",
@@ -104,7 +104,7 @@ impl SecretStore {
 
     /// Serialize and encrypt the store to disk.
     fn save(&self, config_dir: &Path) -> Result<(), FatalError> {
-        let key = load_or_create_key(config_dir)?;
+        let key = load_or_create_key(&config_dir.join(KEY_FILE))?;
         let plaintext = serialize_secrets_toml(&self.secrets)?;
         let ciphertext = encrypt(&plaintext, &key)?;
 
@@ -119,9 +119,8 @@ impl SecretStore {
 }
 
 /// Load an existing key file, or return an error if it doesn't exist.
-fn load_key(config_dir: &Path) -> Result<[u8; 32], FatalError> {
-    let key_path = config_dir.join(KEY_FILE);
-    let bytes = std::fs::read(&key_path).map_err(|e| {
+pub(crate) fn load_key(key_path: &Path) -> Result<[u8; 32], FatalError> {
+    let bytes = std::fs::read(key_path).map_err(|e| {
         FatalError::Config(format!(
             "failed to read secret key at {}: {e}",
             key_path.display()
@@ -137,25 +136,25 @@ fn load_key(config_dir: &Path) -> Result<[u8; 32], FatalError> {
     })
 }
 
-/// Load an existing key or generate a new one on first use.
-fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], FatalError> {
-    let key_path = config_dir.join(KEY_FILE);
+/// Load an existing key or generate a new one (mode 0600) on first use.
+pub(crate) fn load_or_create_key(key_path: &Path) -> Result<[u8; 32], FatalError> {
     if key_path.exists() {
-        return load_key(config_dir);
+        return load_key(key_path);
     }
 
     // Generate a new random key
     let key: [u8; 32] = rand::random();
 
-    // Ensure config dir exists
-    std::fs::create_dir_all(config_dir).map_err(|e| {
-        FatalError::Config(format!(
-            "failed to create config directory {}: {e}",
-            config_dir.display()
-        ))
-    })?;
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            FatalError::Config(format!(
+                "failed to create config directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
 
-    std::fs::write(&key_path, key).map_err(|e| {
+    std::fs::write(key_path, key).map_err(|e| {
         FatalError::Config(format!(
             "failed to write secret key at {}: {e}",
             key_path.display()
@@ -163,7 +162,7 @@ fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], FatalError> {
     })?;
 
     // Set permissions to 0o600 (owner-only read/write)
-    set_file_mode_600(&key_path)?;
+    set_file_mode_600(key_path)?;
 
     tracing::info!(path = %key_path.display(), "generated new encryption key");
 
@@ -200,7 +199,7 @@ fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
             tracing::warn!(
                 path = %path.display(),
                 exit_code = ?s.code(),
-                "icacls failed to restrict file permissions — secrets.key may be readable by other users"
+                "icacls failed to restrict file permissions — the key file may be readable by other users"
             );
             Ok(())
         }
@@ -208,7 +207,7 @@ fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "could not run icacls — secrets.key may be readable by other users"
+                "could not run icacls — the key file may be readable by other users"
             );
             Ok(())
         }
@@ -224,7 +223,7 @@ fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
 /// Encrypt plaintext using AES-256-GCM-SIV with a random nonce.
 ///
 /// Output format: nonce (12 bytes) || ciphertext + auth tag.
-fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, FatalError> {
+pub(crate) fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, FatalError> {
     let cipher = Aes256GcmSiv::new(key.into());
     let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -240,7 +239,7 @@ fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, FatalError> {
 }
 
 /// Decrypt ciphertext produced by [`encrypt`].
-fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, FatalError> {
+pub(crate) fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, FatalError> {
     if data.len() < NONCE_SIZE {
         return Err(FatalError::Config(
             "encrypted secrets file is too short (missing nonce)".to_string(),
@@ -308,7 +307,7 @@ mod tests {
     #[test]
     fn create_key_and_encrypt_decrypt_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let key = load_or_create_key(dir.path()).unwrap();
+        let key = load_or_create_key(&dir.path().join(KEY_FILE)).unwrap();
 
         let plaintext = "[secrets]\ntest_key = \"my-secret-value\"";
         let ciphertext = encrypt(plaintext, &key).unwrap();

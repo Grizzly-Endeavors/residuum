@@ -233,6 +233,8 @@ pub(crate) struct GatewayRuntime {
     pub mcp_registry: SharedMcpRegistry,
     /// Shared, reloadable effective `PATH` for spawned children (exec + MCP stdio).
     pub tools_path: crate::tools::SharedToolsPath,
+    /// Shared agent key store (exec, MCP, trace redaction, sessions).
+    pub agent_keys: crate::agent_keys::SharedAgentKeys,
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,

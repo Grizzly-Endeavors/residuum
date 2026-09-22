@@ -46,6 +46,7 @@ pub(crate) struct GatewayComponents {
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
     pub tools_path: SharedToolsPath,
+    pub agent_keys: crate::agent_keys::SharedAgentKeys,
     pub skill_state: SharedSkillState,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub pulse_enabled: bool,
@@ -231,6 +232,11 @@ struct StartupSpawnContextInputs<'a> {
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     /// Standalone web search backend config, mirroring `cfg.web_search.standalone_backend`.
     web_search_backend: Option<crate::config::StandaloneBackendConfig>,
+    /// Main's tool `PATH`, write policy, and agent key store — shared, not
+    /// copied, so sessions see the same live state as main.
+    tools_path: &'a SharedToolsPath,
+    path_policy: &'a crate::tools::SharedPathPolicy,
+    agent_keys: &'a crate::agent_keys::SharedAgentKeys,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
@@ -266,6 +272,9 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         tracing_service: Arc::clone(inputs.tracing_service),
         tracing_client_context: Arc::clone(inputs.tracing_client_context),
         web_search_backend: inputs.web_search_backend,
+        tools_path: Arc::clone(inputs.tools_path),
+        path_policy: Arc::clone(inputs.path_policy),
+        agent_keys: Arc::clone(inputs.agent_keys),
     })
 }
 
@@ -334,8 +343,9 @@ async fn init_session_runtime(
 async fn init_mcp_servers(
     layout: &WorkspaceLayout,
     tools_path: SharedToolsPath,
+    agent_keys: crate::agent_keys::SharedAgentKeys,
 ) -> SharedMcpRegistry {
-    let mcp_registry = crate::mcp::McpRegistry::new_shared_with_tools_path(tools_path);
+    let mcp_registry = crate::mcp::McpRegistry::new_shared_with_spawn_env(tools_path, agent_keys);
     match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
         Ok(servers) => {
             if !servers.is_empty() {
@@ -456,21 +466,25 @@ fn init_channels_and_registry(
 /// gateway (or a config reload) needs before it can build tools.
 struct NetworkingComponents {
     tools_path: SharedToolsPath,
+    agent_keys: crate::agent_keys::SharedAgentKeys,
     mcp_registry: SharedMcpRegistry,
     channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
     endpoint_registry: EndpointRegistry,
 }
 
-/// Build the shared tools `PATH`, connect workspace MCP servers, and load
-/// the channel/endpoint registry.
+/// Build the shared tools `PATH` and agent key store, connect workspace MCP
+/// servers, and load the channel/endpoint registry.
 async fn init_networking(cfg: &Config, layout: &WorkspaceLayout) -> NetworkingComponents {
     let tools_path: SharedToolsPath =
         Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
-    let mcp_registry = init_mcp_servers(layout, Arc::clone(&tools_path)).await;
+    let agent_keys = crate::agent_keys::AgentKeys::new_shared(&cfg.config_dir);
+    let mcp_registry =
+        init_mcp_servers(layout, Arc::clone(&tools_path), Arc::clone(&agent_keys)).await;
     connect_web_search_mcp(cfg, &mcp_registry).await;
     let (channel_configs, endpoint_registry) = init_channels_and_registry(layout, cfg);
     NetworkingComponents {
         tools_path,
+        agent_keys,
         mcp_registry,
         channel_configs,
         endpoint_registry,
@@ -534,6 +548,7 @@ pub(crate) async fn spawn_notify_subscribers(
 /// installed (e.g. during tests where the tracing layer wasn't wired).
 fn init_tracing_service(
     cfg: &Config,
+    agent_keys: &crate::agent_keys::SharedAgentKeys,
 ) -> (
     Arc<crate::tracing_service::TracingService>,
     Arc<crate::tracing_service::ClientContext>,
@@ -546,10 +561,10 @@ fn init_tracing_service(
             );
             handle
         });
-    let service = Arc::new(crate::tracing_service::TracingService::new(
-        cfg.tracing.clone(),
-        buffer,
-    ));
+    let service = Arc::new(
+        crate::tracing_service::TracingService::new(cfg.tracing.clone(), buffer)
+            .with_agent_keys(Arc::clone(agent_keys)),
+    );
     let client_context =
         Arc::new(crate::tracing_service::client_context::gather_for_bug_report(cfg));
     (service, client_context)
@@ -583,10 +598,9 @@ async fn build_tools_and_agent(
     inputs: ToolsAndAgentInputs<'_>,
 ) -> (
     Agent,
-    crate::tools::SharedPathPolicy,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
-    let (tools, path_policy_for_runtime, output_topic_override_tx) = tools::init_tool_registry(
+    let (tools, output_topic_override_tx) = tools::init_tool_registry(
         inputs.cfg,
         inputs.layout,
         inputs.mem,
@@ -617,7 +631,7 @@ async fn build_tools_and_agent(
     )
     .await;
 
-    (agent, path_policy_for_runtime, output_topic_override_tx)
+    (agent, output_topic_override_tx)
 }
 
 /// Inputs to [`build_main_agent`], gathered because building the main agent
@@ -631,6 +645,7 @@ struct MainAgentInputs<'a> {
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,
     net: &'a NetworkingComponents,
+    path_policy: &'a crate::tools::SharedPathPolicy,
     action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: &'a Arc<tokio::sync::Notify>,
     skill_state: &'a SharedSkillState,
@@ -649,7 +664,6 @@ async fn build_main_agent(
     inputs: MainAgentInputs<'_>,
 ) -> (
     Agent,
-    crate::tools::SharedPathPolicy,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
     // Main's current-turn hop counter, created once and shared between the
@@ -667,6 +681,8 @@ async fn build_main_agent(
             action_notify: inputs.action_notify,
             skill_state: inputs.skill_state,
             tools_path: &inputs.net.tools_path,
+            path_policy: inputs.path_policy,
+            agent_keys: &inputs.net.agent_keys,
             session_registry: inputs.session_registry,
             endpoint_registry: &inputs.net.endpoint_registry,
             publisher: inputs.publisher,
@@ -718,7 +734,10 @@ pub(crate) async fn initialize(
     let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
         init_session_runtime(cfg, &layout, publisher, &session_observer, &merge_writer).await;
     let net = init_networking(cfg, &layout).await;
-    let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
+    let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
+    let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(
+        crate::tools::path_policy::blocked_write_paths(cfg, &layout),
+    );
 
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg,
@@ -740,28 +759,31 @@ pub(crate) async fn initialize(
         tracing_service: &tracing_service,
         tracing_client_context: &tracing_client_context,
         web_search_backend: cfg.web_search.standalone_backend.clone(),
+        tools_path: &net.tools_path,
+        path_policy: &path_policy,
+        agent_keys: &net.agent_keys,
     });
 
-    let (agent, path_policy_for_runtime, output_topic_override_tx) =
-        build_main_agent(MainAgentInputs {
-            cfg,
-            layout: &layout,
-            mem: &mem,
-            tz,
-            identity,
-            provider: providers.provider,
-            options: providers.options,
-            net: &net,
-            action_store: &action_store,
-            action_notify: &action_notify,
-            skill_state: &skill_state,
-            session_registry: &session_registry,
-            publisher,
-            tracing_service: &tracing_service,
-            tracing_client_context: &tracing_client_context,
-            agent_messenger: &agent_messenger,
-        })
-        .await;
+    let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
+        cfg,
+        layout: &layout,
+        mem: &mem,
+        tz,
+        identity,
+        provider: providers.provider,
+        options: providers.options,
+        net: &net,
+        path_policy: &path_policy,
+        action_store: &action_store,
+        action_notify: &action_notify,
+        skill_state: &skill_state,
+        session_registry: &session_registry,
+        publisher,
+        tracing_service: &tracing_service,
+        tracing_client_context: &tracing_client_context,
+        agent_messenger: &agent_messenger,
+    })
+    .await;
 
     Ok(GatewayComponents {
         layout,
@@ -774,6 +796,7 @@ pub(crate) async fn initialize(
         action_notify,
         mcp_registry: net.mcp_registry,
         tools_path: net.tools_path,
+        agent_keys: net.agent_keys,
         skill_state,
         hybrid_searcher: mem.hybrid_searcher,
         pulse_enabled: cfg.pulse_enabled,
@@ -786,7 +809,7 @@ pub(crate) async fn initialize(
         agent_messenger,
         conversation_router,
         spawn_context,
-        path_policy: path_policy_for_runtime,
+        path_policy,
         output_topic_override_tx,
         tracing_service,
         tracing_client_context,

@@ -27,6 +27,12 @@ Same `mcpServers` map format used by Claude Code/Desktop. `${VAR}` /
 `env`. A bad entry (missing `command`/`url`, unrecognized transport) drops
 just that server — never a hard failure.
 
+To give a server a credential without writing it into `mcp.json`, reference
+an agent key: `"env": { "GITHUB_TOKEN": "${agent-key:github_token}" }` or
+`"headers": { "Authorization": "Bearer ${agent-key:remote_api}" }`. It is
+resolved when the server connects; an unknown key fails that server's
+connection. See [agent-keys](agent-keys.md).
+
 ## Tools
 
 No dedicated tools — once a server is running, its tools are merged directly

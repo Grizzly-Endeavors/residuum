@@ -4,7 +4,7 @@ Background tasks let the agent run work without blocking the main conversation. 
 
 ## Sessions
 
-A session is a fork of the main agent with its own identity, memory snapshot, and tool registry, running off the main thread.
+A session is a fork of the main agent with its own identity, memory snapshot, and tool registry, running off the main thread. Its tools share the main agent's live tool `PATH`, write policy (the same config and credential files are blocked), and [agent key](agent-keys.md) store.
 
 **What's included in a session's fork:**
 - The main agent's full identity and system prompt content — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki root index, the skills index — assembled once in the system message, exactly as it is for the main agent.

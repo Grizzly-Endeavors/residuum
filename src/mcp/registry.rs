@@ -9,6 +9,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::agent_keys::SharedAgentKeys;
 use crate::inference::ToolDefinition;
 use crate::tools::{SharedToolsPath, ToolError, ToolResult};
 
@@ -96,6 +97,10 @@ pub struct McpRegistry {
     /// handle so tool dirs become resolvable. An entry's own `PATH` in its
     /// `env` still wins (applied after the injected value at spawn time).
     tools_path: Option<SharedToolsPath>,
+    /// Agent key store that `${agent-key:<name>}` references in an entry's
+    /// `env` and `headers` resolve against. `None` in bare registries
+    /// (tests), where any such reference fails the connection.
+    agent_keys: Option<SharedAgentKeys>,
     /// Names of built-in agent tools that reserve the shared tool namespace.
     ///
     /// A built-in always wins a name collision (it is dispatched first in the
@@ -120,6 +125,7 @@ impl McpRegistry {
         Self {
             servers: Vec::new(),
             tools_path: None,
+            agent_keys: None,
             reserved_tool_names: HashSet::new(),
         }
     }
@@ -131,14 +137,63 @@ impl McpRegistry {
     }
 
     /// Create a new shared registry that prepends the configured tool
-    /// directories to the `PATH` of spawned stdio servers.
+    /// directories to the `PATH` of spawned stdio servers and resolves
+    /// `${agent-key:<name>}` references from `agent_keys`.
     #[must_use]
-    pub fn new_shared_with_tools_path(tools_path: SharedToolsPath) -> SharedMcpRegistry {
+    pub fn new_shared_with_spawn_env(
+        tools_path: SharedToolsPath,
+        agent_keys: SharedAgentKeys,
+    ) -> SharedMcpRegistry {
         Arc::new(RwLock::new(Self {
             servers: Vec::new(),
             tools_path: Some(tools_path),
+            agent_keys: Some(agent_keys),
             reserved_tool_names: HashSet::new(),
         }))
+    }
+
+    /// `entry` with every `${agent-key:<name>}` reference in its `env` and
+    /// `headers` values resolved. Borrows the entry unchanged when it has no
+    /// references, so a broken key store never blocks unrelated servers.
+    async fn resolve_agent_keys<'e>(
+        &self,
+        entry: &'e McpServerEntry,
+    ) -> Result<std::borrow::Cow<'e, McpServerEntry>, anyhow::Error> {
+        let referenced = entry
+            .env
+            .values()
+            .chain(entry.headers.values())
+            .any(|v| crate::agent_keys::has_references(v));
+        if !referenced {
+            return Ok(std::borrow::Cow::Borrowed(entry));
+        }
+        let Some(keys) = &self.agent_keys else {
+            anyhow::bail!(
+                "mcp server '{}' references agent keys, but no agent key store is available",
+                entry.name
+            );
+        };
+        let snapshot = keys.snapshot().await.map_err(|e| {
+            anyhow::anyhow!("mcp server '{}' references agent keys: {e}", entry.name)
+        })?;
+        let expand = |map: &std::collections::HashMap<String, String>, kind: &str| {
+            map.iter()
+                .map(|(k, v)| {
+                    crate::agent_keys::expand_references(v, &snapshot.store)
+                        .map(|expanded| (k.clone(), expanded))
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "mcp server '{}' {kind} '{k}' references an agent key: {e}",
+                                entry.name
+                            )
+                        })
+                })
+                .collect::<Result<std::collections::HashMap<_, _>, _>>()
+        };
+        let mut resolved = entry.clone();
+        resolved.env = expand(&entry.env, "env var")?;
+        resolved.headers = expand(&entry.headers, "header")?;
+        Ok(std::borrow::Cow::Owned(resolved))
     }
 
     /// Reserve the built-in tool namespace so colliding MCP tools are shadowed
@@ -232,7 +287,14 @@ impl McpRegistry {
             Some(handle) => handle.read().await.clone(),
             None => None,
         };
-        let client = match McpClient::connect(entry, tools_path.as_deref()).await {
+        let resolved = match self.resolve_agent_keys(entry).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.mark_failed_if_tracked(&entry.name, &e.to_string());
+                return Err(e);
+            }
+        };
+        let client = match McpClient::connect(&resolved, tools_path.as_deref()).await {
             Ok(c) => c,
             Err(e) => {
                 self.mark_failed_if_tracked(&entry.name, &e.to_string());
@@ -856,6 +918,57 @@ mod tests {
         assert!(
             matches!(server.status, McpStatus::Failed(_)),
             "server should be marked failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_key_references_resolve_from_the_agent_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = crate::agent_keys::AgentKeys::new_shared(dir.path());
+        keys.set(
+            "gh",
+            "ghp_mcp_value_1",
+            None,
+            crate::agent_keys::KeyCreator::User,
+        )
+        .await
+        .unwrap();
+        let registry = McpRegistry {
+            agent_keys: Some(keys),
+            ..McpRegistry::new()
+        };
+
+        let mut with_ref = entry("gh-server", "gh-mcp");
+        with_ref
+            .env
+            .insert("GITHUB_TOKEN".to_string(), "${agent-key:gh}".to_string());
+        let resolved = registry.resolve_agent_keys(&with_ref).await.unwrap();
+        assert_eq!(
+            resolved.env.get("GITHUB_TOKEN").map(String::as_str),
+            Some("ghp_mcp_value_1"),
+            "env reference should resolve to the key value"
+        );
+
+        let mut missing = entry("broken", "x");
+        missing.headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${agent-key:nope}".to_string(),
+        );
+        let err = registry.resolve_agent_keys(&missing).await.unwrap_err();
+        assert!(
+            err.to_string().contains("no agent key named 'nope'"),
+            "unknown key should fail the connection visibly: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn entries_without_references_skip_the_key_store() {
+        let registry = McpRegistry::new();
+        let plain = entry("plain", "x");
+        let resolved = registry.resolve_agent_keys(&plain).await.unwrap();
+        assert!(
+            matches!(resolved, std::borrow::Cow::Borrowed(_)),
+            "an entry without references must not need a key store"
         );
     }
 }
