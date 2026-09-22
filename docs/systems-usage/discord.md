@@ -27,7 +27,7 @@ In a direct message every message goes to the agent.
 
 In a server channel or thread the agent acts only on messages that @mention the bot (a reply that pings the bot counts). The bot's own mention is stripped from the text; other mentions are kept.
 
-Messages that don't mention the bot are held in memory — never written to disk, and lost on restart — up to `[discord] context_messages` per channel (default 20; `0` disables). When the bot is next @mentioned there, the held messages are handed to the agent as a single background message placed just before the mention:
+Messages that don't mention the bot are held in memory — never written to disk, and lost on restart — up to `[discord] context_messages` per channel (default 20; `0` disables), across at most 256 channels at once; past that, the channel that went longest without new chatter is dropped. When the bot is next @mentioned there, the held messages are handed to the agent as a single background message placed just before the mention:
 
 ```
 Previous conversation in #builds (Eng Team) since you were last mentioned there. This is background only; the message that mentions you follows.

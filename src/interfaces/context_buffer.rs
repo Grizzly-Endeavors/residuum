@@ -22,48 +22,102 @@ pub(crate) struct BufferedMessage {
     pub(crate) at: NaiveDateTime,
 }
 
-/// Per-conversation ring buffers, capped at `capacity` messages each.
+/// Most conversations held at once. A bot in many busy servers or groups
+/// sees chatter in far more conversations than it is ever mentioned in, so
+/// without a bound the map would grow for as long as the process runs. The
+/// conversation that went longest without new chatter is dropped first.
+const MAX_BUFFERED_CONVERSATIONS: usize = 256;
+
+/// One conversation's held messages, plus when it last received one.
+#[derive(Default)]
+struct ConversationBuffer {
+    messages: VecDeque<BufferedMessage>,
+    last_recorded: u64,
+}
+
+#[derive(Default)]
+struct BufferState {
+    conversations: HashMap<String, ConversationBuffer>,
+    /// Monotonic counter ordering `record` calls, for least-recent eviction.
+    clock: u64,
+}
+
+/// Per-conversation ring buffers, capped at `capacity` messages each and at
+/// [`MAX_BUFFERED_CONVERSATIONS`] conversations overall.
 pub(crate) struct ContextBuffer {
     capacity: usize,
-    conversations: std::sync::Mutex<HashMap<String, VecDeque<BufferedMessage>>>,
+    max_conversations: usize,
+    state: std::sync::Mutex<BufferState>,
 }
 
 impl ContextBuffer {
     pub(crate) fn new(capacity: usize) -> Self {
+        Self::with_conversation_limit(capacity, MAX_BUFFERED_CONVERSATIONS)
+    }
+
+    fn with_conversation_limit(capacity: usize, max_conversations: usize) -> Self {
         Self {
             capacity,
-            conversations: std::sync::Mutex::new(HashMap::new()),
+            max_conversations,
+            state: std::sync::Mutex::new(BufferState::default()),
         }
     }
 
     /// Remember a message, evicting the oldest once the conversation is full.
     pub(crate) fn record(&self, conversation_id: &str, message: BufferedMessage) {
-        if self.capacity == 0 {
+        if self.capacity == 0 || self.max_conversations == 0 {
             return;
         }
-        let mut conversations = self.lock();
-        let buffer = conversations
+        let mut state = self.lock();
+        state.clock += 1;
+        let now = state.clock;
+        if !state.conversations.contains_key(conversation_id)
+            && state.conversations.len() >= self.max_conversations
+        {
+            evict_least_recent(&mut state.conversations);
+        }
+        let buffer = state
+            .conversations
             .entry(conversation_id.to_string())
             .or_default();
-        if buffer.len() == self.capacity {
-            buffer.pop_front();
+        if buffer.messages.len() == self.capacity {
+            buffer.messages.pop_front();
         }
-        buffer.push_back(message);
+        buffer.messages.push_back(message);
+        buffer.last_recorded = now;
     }
 
     /// Take everything buffered for a conversation, oldest first.
     pub(crate) fn drain(&self, conversation_id: &str) -> Vec<BufferedMessage> {
         self.lock()
+            .conversations
             .remove(conversation_id)
-            .map(Vec::from)
+            .map(|buffer| Vec::from(buffer.messages))
             .unwrap_or_default()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, VecDeque<BufferedMessage>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BufferState> {
         // The map holds plain data; a panic mid-update cannot leave it inconsistent.
-        self.conversations
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn evict_least_recent(conversations: &mut HashMap<String, ConversationBuffer>) {
+    let Some(oldest) = conversations
+        .iter()
+        .min_by_key(|(_, buffer)| buffer.last_recorded)
+        .map(|(id, _)| id.clone())
+    else {
+        return;
+    };
+    if let Some(dropped) = conversations.remove(&oldest) {
+        tracing::debug!(
+            conversation = %oldest,
+            dropped_messages = dropped.messages.len(),
+            "context buffer full; dropped the least recently active conversation"
+        );
     }
 }
 
@@ -96,6 +150,20 @@ mod tests {
                 .and_hms_opt(14, minute, 0)
                 .unwrap(),
         }
+    }
+
+    #[test]
+    fn drops_the_least_recently_active_conversation_at_the_limit() {
+        let buffer = ContextBuffer::with_conversation_limit(5, 2);
+        buffer.record("a", msg("Jane", "in a", 1));
+        buffer.record("b", msg("Sam", "in b", 2));
+        // "a" is active again, so "b" is now the least recent.
+        buffer.record("a", msg("Jane", "again in a", 3));
+        buffer.record("c", msg("Kim", "in c", 4));
+
+        assert!(buffer.drain("b").is_empty(), "b should have been dropped");
+        assert_eq!(buffer.drain("a").len(), 2);
+        assert_eq!(buffer.drain("c"), vec![msg("Kim", "in c", 4)]);
     }
 
     #[test]

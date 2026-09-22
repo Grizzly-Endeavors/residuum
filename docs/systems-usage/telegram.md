@@ -27,7 +27,7 @@ In a group or supergroup the agent acts only on messages addressed to the bot:
 
 With Telegram's default privacy mode these are also the only group messages the bot receives, so everything else in the group stays invisible to Residuum. **To have the bot see and buffer unaddressed group messages, turn off privacy mode for the bot in [@BotFather](https://t.me/BotFather)** (`/mybots` → your bot → *Bot Settings* → *Group Privacy* → *Turn off*), or make the bot a group admin, which grants it the same visibility. This is a platform restriction, not something Residuum can work around from its side.
 
-Once the bot receives them, unaddressed group messages are held in memory — never written to disk, and lost on restart — up to `[telegram] context_messages` per group (default 20; `0` disables). When the bot is next addressed there, the held messages are handed to the agent as a single background message placed just before the addressed one:
+Once the bot receives them, unaddressed group messages are held in memory — never written to disk, and lost on restart — up to `[telegram] context_messages` per group (default 20; `0` disables), across at most 256 groups at once; past that, the group that went longest without new chatter is dropped. When the bot is next addressed there, the held messages are handed to the agent as a single background message placed just before the addressed one:
 
 ```
 Previous conversation in group "Launch prep" since you were last mentioned there. This is background only; the message that mentions you follows.
