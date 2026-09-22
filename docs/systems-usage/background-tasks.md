@@ -44,7 +44,7 @@ A session run moves through: `forking` → `running` → `idle` → `completing`
 - **completing** — the idle timeout elapsed, or the session was stopped via `stop_agent`. A completing run no longer accepts messages into itself; one addressed to it is queued for the resume that follows once it clears (see [Messaging](#messaging)).
 - **completed** — the run's final transcript and metadata are recorded in the session store, and the result is delivered. The session is no longer listed by `list_agents`, though its address stays meaningful: a message to it starts a new run at the same address (see [Messaging](#messaging)).
 
-Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing.
+Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing. Either way the run is reported as cancelled; a run that simply idles out keeps its last turn's outcome.
 
 ### Idle Timeouts
 
@@ -86,7 +86,7 @@ Two limits, both configurable in `[background]`:
 | Limit | Config key | Default | Effect |
 |-------|-----------|---------|--------|
 | Soft | `hop_soft_limit` | 8 | The delivered message carries a note asking the receiver to reply only if a reply is actually needed. |
-| Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session. |
+| Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session, and shown as an error on that session in the web UI. |
 
 A hard-limit refusal never reaches the target — the tool result is the only thing the sender sees.
 
@@ -137,7 +137,7 @@ No parameters. Lists the main agent plus every live (running or idle) session: a
 |-----------|------|----------|-------|
 | `address` | string | yes | Stops the session at this address. |
 
-The main agent cannot be stopped this way. To stop the main-agent turn itself — the conversation the user is having — see [Turn Control](turn-control.md) instead; that's a user-facing interface control, not a tool.
+The owner can also stop a session, or message it, from the web UI (see [Web UI](#web-ui)). The main agent cannot be stopped this way. To stop the main-agent turn itself — the conversation the user is having — see [Turn Control](turn-control.md) instead; that's a user-facing interface control, not a tool.
 
 ## Model Tiers
 
@@ -190,7 +190,7 @@ The session runtime uses a semaphore bounded by `max_concurrent` in the `[backgr
 
 ## Result Routing
 
-A `spawned` session's turn result is relayed to its **direct spawner** — main, or whichever session spawned it — through the same agent-messaging path as `message_agent`, hop counts included. This happens after every turn in the run, not just once at completion, and a nested session relays to its own spawner rather than to main. Every outcome is relayed, not just a completed turn with output: a completed turn with no text response, a failed turn, a cancelled/stopped turn, and a turn whose task panicked (reported as failed) all relay a clear status line naming the session and what happened, so the spawner is never left simply not knowing. A relay failure (the spawner is busy, or unreachable — e.g. it restarted and lost its resume point) is never silent: it's logged and recorded as a note in the session's own transcript.
+A `spawned` session's turn result is relayed to its **direct spawner** — main, or whichever session spawned it — through the same agent-messaging path as `message_agent`, hop counts included. This happens after every turn in the run, not just once at completion, and a nested session relays to its own spawner rather than to main. Every outcome is relayed, not just a completed turn with output: a completed turn with no text response, a failed turn, a cancelled/stopped turn, and a turn whose task panicked (reported as failed) all relay a clear status line naming the session and what happened, so the spawner is never left simply not knowing. A relay failure (the spawner is busy, or unreachable — e.g. it restarted and lost its resume point) is never silent: it's logged, recorded as a note in the session's own transcript, and shown as an error on the session in the web UI (see [Web UI](#web-ui)).
 
 `scheduled` and `external` results still flow through the pub/sub bus to the notification router, which delivers them per the disposition the producing agent declared (inbox, or inbox plus urgent fanout). `spawned` results no longer pass through that router at all — the per-turn relay above replaces it.
 
@@ -207,3 +207,52 @@ Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json
 At startup, any run left incomplete by a prior process exit goes through the full completion pipeline — skip check, final observation, merge — from its persisted transcript before normal operation resumes, then is marked completed.
 
 The record carries the session's address, run id, category, source label, spawner, depth, purpose, lifecycle timestamps, the episode id once merged, and the full message transcript once the run completes.
+
+## Web UI
+
+The web UI follows sessions live over its existing WebSocket and reads their history over HTTP. Protocol types are generated for the web client into `web/src/lib/generated/` (`cargo test --test ts_export` regenerates them); `SessionSummary`, `SessionListResponse`, and the enums below are exported alongside `ServerMessage`/`ClientMessage`.
+
+### Session summary
+
+Both the listing and the `session_started` frame describe a run as a `SessionSummary`: `address`, `run_id`, `category` (`scheduled` | `external` | `spawned`), `source_label`, `state` (`forking` | `running` | `idle` | `completing` | `completed`), `spawner` (address or `null`), `depth`, `purpose`, `started_at` and `completed_at` (RFC 3339 UTC; `completed_at` is `null` until the run completes), `episode_id` (`null` unless the run was merged into an episode), and `interrupted` (`true` when startup recovery completed the run after a process exit).
+
+### Live events (server → client)
+
+Every session publishes the same turn events the main agent does, as their own `session_*` frames tagged with `address` and `run_id`. The main agent's frames (`turn_started`, `response`, `error`, and so on) keep their shape and never carry session activity, so a client that ignores `session_*` frames is unaffected.
+
+| Frame | Fields | When |
+|-------|--------|------|
+| `session_started` | `session: SessionSummary` | A run was registered (state `forking`) — a fresh fork or a resume. |
+| `session_state_changed` | `address`, `run_id`, `state` | The run moved to `running`, `idle`, or `completing`. |
+| `session_completed` | `address`, `run_id`, `status` (`completed` \| `cancelled` \| `failed`), `error` (the failure when `failed`, else `null`), `episode_id` | The run was recorded in the store and is no longer live. There is no separate `completed` state change. |
+| `session_turn_started` / `session_turn_ended` | `address`, `run_id`, `turn_id` | Brackets each turn. `turn_ended` is sent whatever the outcome. `turn_id` is `<run_id>-t<n>`, numbering the run's turns from 1. |
+| `session_tool_call` | `address`, `run_id`, `id`, `name`, `arguments` | Verbose only. |
+| `session_tool_result` | `address`, `run_id`, `tool_call_id`, `name`, `output`, `is_error` | Verbose only. |
+| `session_broadcast_response` | `address`, `run_id`, `content` | Intermediate text the session emitted alongside tool calls. For a conversation session, the same text is also delivered to its own conversation (see [Conversation Routing](#conversation-routing)). |
+| `session_response` | `address`, `run_id`, `turn_id`, `content` | A turn's final text response (not sent for a turn with no text, or one that was stopped). |
+| `session_error` | `address`, `run_id`, `message` | A failed turn, a message refused at the hop limit (on both the sender's and the receiver's stream, when each is a live session), a result relay that couldn't be delivered, a deferred delivery that failed, or a panicked session task. |
+
+Tool call and result frames follow the connection's verbose setting (`set_verbose`), the same as the main agent's. A turn's frames arrive in order: `session_state_changed` (`running`), `session_turn_started`, any intermediate/tool frames, `session_response` or `session_error`, `session_turn_ended`, then `session_state_changed` (`idle`) — and at the end of the run, `session_state_changed` (`completing`) followed by `session_completed`.
+
+### Control (client → server)
+
+| Message | Fields | Reply (to this connection only) |
+|---------|--------|---------------------------------|
+| `session_send_message` | `id`, `address`, `content` | `session_message_delivered` (`id`, `address`, `outcome`: `live` \| `resumed` \| `queued`) or `session_command_failed`. |
+| `session_stop` | `id`, `address` | `session_stop_requested` (`id`, `address`) or `session_command_failed`. The run's `completing` state change and `session_completed` follow. |
+
+`session_command_failed` carries `id`, `address`, `code`, and a plain-language `message`. Codes: `invalid_request` (empty message, or `main` as the target — main is messaged from the main chat), `unknown_address` (no session has ever run there in this process), `busy` (the session is live but its message queue is full — retry shortly), `not_live` (nothing to stop: the session is already finishing or has completed), `delivery_failed` (the message couldn't be handed over).
+
+A sidebar message is delivered like any agent message, at hop count 0: an interrupt at the next tool-call boundary while the session is running, a new turn while it's idle, a new run at the same address once it has completed (`resumed`), or a new run once a finishing run has cleared (`queued`). The session sees it labelled as the owner's message rather than an agent's, sent from the reserved sender address `owner`; the owner reads the session's reply in the sidebar, so the session answers in its response rather than with `message_agent`.
+
+### HTTP endpoints
+
+**`GET /api/sessions`** returns a `SessionListResponse`:
+
+- `live` — every live session (forking, running, idle, or completing) from the registry, newest first. Always complete; not paginated.
+- `completed` — one page of completed runs from the session store, newest first (by start time, then run id).
+- `next_cursor` — an opaque string to pass back as `before` for the next page, or `null` on the last page.
+
+Query parameters: `category` (`scheduled` | `external` | `spawned`; filters both lists), `limit` (completed runs per page, 1–200, default 50), `before` (a `next_cursor` from a previous response). An unknown category, an out-of-range limit, or a malformed cursor is a `400`; pass back only a `next_cursor` the server returned. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
+
+**`GET /api/sessions/runs/{run_id}/transcript`** returns `{ session: SessionSummary, messages: RecentMessage[] }`. `messages` has the same shape `GET /api/chat/history` returns, so the chat's message components render it. A live run's transcript is read from its incremental transcript file, current to the last message produced, and `session` reflects its live state; a completed run's comes from its final record. Runs don't record per-message times, so every message carries the run's start time (in the configured timezone, like chat history). A run id containing anything but ASCII letters, digits, `-`, and `_` is a `400`; an unknown run is a `404`.

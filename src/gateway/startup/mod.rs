@@ -54,6 +54,7 @@ pub(crate) struct GatewayComponents {
     pub http_client: SharedHttpClient,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
+    pub session_store: Arc<SessionStore>,
     pub agent_messenger: Arc<AgentMessenger>,
     pub conversation_router: Arc<ConversationRouter>,
     pub spawn_context: Arc<SpawnContext>,
@@ -243,7 +244,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
     })
 }
 
-/// Create the session registry, messenger, store, and runtime.
+/// Create the session registry, store, messenger, and runtime.
 ///
 /// The messenger is built here (rather than alongside the rest of
 /// `SpawnContext`) because the runtime itself now depends on it too — to
@@ -259,9 +260,9 @@ async fn init_session_runtime(
     publisher: &crate::bus::Publisher,
     session_observer: &Observer,
     merge_writer: &MemoryMergeWriter,
-    episode_skip_token_floor: usize,
 ) -> (
     Arc<SessionRegistry>,
+    Arc<SessionStore>,
     Arc<AgentMessenger>,
     Arc<SessionRuntime>,
     Arc<ConversationRouter>,
@@ -273,7 +274,7 @@ async fn init_session_runtime(
         observer: session_observer,
         merge_writer,
         layout,
-        episode_skip_token_floor,
+        episode_skip_token_floor: cfg.background.episode_skip_token_floor,
         tz: cfg.timezone,
     };
     let recovered = store.recover_incomplete_runs(&recovery_env).await;
@@ -293,7 +294,7 @@ async fn init_session_runtime(
 
     let runtime = Arc::new(SessionRuntime::new(
         Arc::clone(&registry),
-        store,
+        Arc::clone(&store),
         cfg.background.max_concurrent,
         &cfg.background,
         publisher.clone(),
@@ -301,7 +302,7 @@ async fn init_session_runtime(
         Arc::clone(&messenger),
     ));
     let conversation_router = Arc::new(ConversationRouter::new(Arc::clone(&messenger)));
-    (registry, messenger, runtime, conversation_router)
+    (registry, store, messenger, runtime, conversation_router)
 }
 
 /// Load and connect workspace MCP servers.
@@ -669,16 +670,8 @@ pub(crate) async fn initialize(
         &mem,
         providers.embedding_provider.clone(),
     )?;
-    let (session_registry, agent_messenger, session_runtime, conversation_router) =
-        init_session_runtime(
-            cfg,
-            &layout,
-            publisher,
-            &session_observer,
-            &merge_writer,
-            cfg.background.episode_skip_token_floor,
-        )
-        .await;
+    let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
+        init_session_runtime(cfg, &layout, publisher, &session_observer, &merge_writer).await;
     let net = init_networking(cfg, &layout).await;
 
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
@@ -741,6 +734,7 @@ pub(crate) async fn initialize(
         http_client: http.clone(),
         session_runtime,
         session_registry,
+        session_store,
         agent_messenger,
         conversation_router,
         spawn_context,

@@ -30,11 +30,14 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::hop::HopLimits;
 use crate::agent::interrupt::Interrupt;
-use crate::bus::{AgentMessageEvent, MessageEvent, Publisher, SessionAddress, topics};
+use crate::bus::{
+    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, topics,
+};
 use crate::config::BackgroundModelTier;
 use crate::inference::Message;
 use crate::interfaces::types::InboundMessage;
 
+use super::events::publish_session_event;
 use super::registry::{DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry};
 use super::store::SessionStore;
 
@@ -266,14 +269,13 @@ impl AgentMessenger {
              ({hop_count} >= {}); it was not delivered.",
             self.hop_limits.hard
         );
-        record_note_if_live_session(&self.registry, &self.store, from, &note).await;
-        record_note_if_live_session(
-            &self.registry,
-            &self.store,
-            &SessionAddress::from(to),
-            &note,
-        )
-        .await;
+        let sinks = NoteSinks {
+            registry: &self.registry,
+            store: &self.store,
+            publisher: &self.publisher,
+        };
+        record_note_if_live_session(sinks, from, &note).await;
+        record_note_if_live_session(sinks, &SessionAddress::from(to), &note).await;
     }
 
     /// Deliver to the main agent by publishing a `MessageEvent` on the
@@ -668,25 +670,44 @@ async fn resume_or_start_conversation_after_clear(
     }
 }
 
-/// Best-effort: append `note` to `address`'s live transcript sidecar, if it
-/// names a currently-registered session. A no-op for `main` (which has no
-/// session-store transcript) and for an address with no live entry (nothing
-/// to append into that would actually surface). Free function (not a
-/// method) so it can be shared between [`AgentMessenger::refuse_hop_limit`]
-/// and [`deferred_resume`], which runs on a detached task with no
-/// `&AgentMessenger` to call through.
-async fn record_note_if_live_session(
-    registry: &SessionRegistry,
-    store: &SessionStore,
-    address: &SessionAddress,
-    note: &str,
-) {
+/// Best-effort: append `note` to `address`'s live transcript sidecar and
+/// publish it as an error event on that session's stream (so the web UI
+/// shows it on the affected session), if `address` names a
+/// currently-registered session. A no-op for `main` (which has no
+/// session-store transcript or session stream) and for an address with no
+/// live entry (nothing to append into that would actually surface). Free
+/// function (not a method) so it can be shared between
+/// [`AgentMessenger::refuse_hop_limit`] and [`deferred_resume`], which runs
+/// on a detached task with no `&AgentMessenger` to call through.
+async fn record_note_if_live_session(sinks: NoteSinks<'_>, address: &SessionAddress, note: &str) {
     if address.as_ref() == MAIN_ADDRESS {
         return;
     }
-    if let Some(info) = registry.get(address) {
-        store.append_note(&info.run_id, info.started_at, note).await;
+    if let Some(info) = sinks.registry.get(address) {
+        sinks
+            .store
+            .append_note(&info.run_id, info.started_at, note)
+            .await;
+        publish_session_event(
+            sinks.publisher,
+            address,
+            &info.run_id,
+            SessionEventKind::Error {
+                message: note.to_string(),
+            },
+        )
+        .await;
     }
+}
+
+/// Where [`record_note_if_live_session`] records a note: the registry to
+/// find the session's live run, the store holding its transcript, and the
+/// publisher for its event stream.
+#[derive(Clone, Copy)]
+struct NoteSinks<'a> {
+    registry: &'a SessionRegistry,
+    store: &'a SessionStore,
+    publisher: &'a Publisher,
 }
 
 /// Wait for `address` to leave the registry, then re-run the same
@@ -743,8 +764,11 @@ async fn resume_or_deliver_after_clear(
             let reason = "the resumed session's interrupt channel is saturated";
             tracing::error!(address = %address, from = %msg.from, reason, "deferred delivery failed");
             record_note_if_live_session(
-                registry,
-                store,
+                NoteSinks {
+                    registry,
+                    store,
+                    publisher,
+                },
                 &msg.from,
                 &format!(
                     "[Deferred Delivery Failed] your message to {address} could not be \
@@ -766,8 +790,11 @@ async fn resume_or_deliver_after_clear(
                     "session left the registry with no resume point recorded; deferred message not delivered"
                 );
                 record_note_if_live_session(
-                    registry,
-                    store,
+                    NoteSinks {
+                        registry,
+                        store,
+                        publisher,
+                    },
                     &msg.from,
                     &format!(
                         "[Deferred Delivery Failed] your message to {address} could not be \
@@ -789,8 +816,11 @@ async fn resume_or_deliver_after_clear(
             {
                 tracing::error!(error = %e, address = %address, "failed to deliver deferred resume");
                 record_note_if_live_session(
-                    registry,
-                    store,
+                    NoteSinks {
+                        registry,
+                        store,
+                        publisher,
+                    },
                     &msg.from,
                     &format!(
                         "[Deferred Delivery Failed] your message to {address} could not be \
@@ -1773,6 +1803,68 @@ mod tests {
                 .iter()
                 .any(|m| m.content.contains("Message Loop Limit")),
             "receiver transcript should record the refusal, got {receiver_transcript:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_limit_refusal_is_an_error_event_on_both_live_sessions() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut events: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let sender_info = sample_live_info(
+            "spawned-sender-0002",
+            crate::background::registry::SessionState::Running,
+        );
+        let receiver_info = sample_live_info(
+            "spawned-receiver-0002",
+            crate::background::registry::SessionState::Idle,
+        );
+        let _sender_rx = registry
+            .register(sender_info.clone(), CancellationToken::new())
+            .unwrap();
+        let _receiver_rx = registry
+            .register(receiver_info.clone(), CancellationToken::new())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let messenger = AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::new(SessionStore::new(dir.path().to_path_buf())),
+            HopLimits { soft: 5, hard: 3 },
+        );
+
+        let outcome = messenger
+            .send(
+                receiver_info.address.as_ref(),
+                sender_info.address.clone(),
+                "spawned".to_string(),
+                "loop!".to_string(),
+                3,
+            )
+            .await;
+        assert!(matches!(outcome, Err(SendError::HopLimitExceeded { .. })));
+
+        let mut tagged = Vec::new();
+        for _ in 0..2 {
+            let event = events.recv().await.unwrap().unwrap();
+            assert!(
+                matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Message Loop Limit")),
+                "a refusal must surface as an error event, got {:?}",
+                event.kind
+            );
+            tagged.push((event.address.to_string(), event.run_id));
+        }
+        assert!(
+            tagged.contains(&(sender_info.address.to_string(), sender_info.run_id.clone())),
+            "the sender's stream must show the refusal, got {tagged:?}"
+        );
+        assert!(
+            tagged.contains(&(
+                receiver_info.address.to_string(),
+                receiver_info.run_id.clone()
+            )),
+            "the receiver's stream must show the refusal, got {tagged:?}"
         );
     }
 }

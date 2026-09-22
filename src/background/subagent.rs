@@ -9,8 +9,10 @@ use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{EventContext, SessionConversationTarget, TurnResources, execute_turn};
-use crate::bus::{AgentMessageEvent, EndpointName, Publisher, SessionAddress};
+use crate::agent::turn::{
+    EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
+};
+use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, InferenceProvider, Message, MessageSender};
 use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
@@ -259,12 +261,22 @@ pub async fn build_subagent_resources(
     })
 }
 
-/// Where a conversation session delivers its intermediate turn text: its own
-/// address, the interface endpoint its conversation lives on, the
-/// conversation id itself, and a real bus publisher to reach it with.
-pub(crate) struct ConversationOutput<'a> {
+/// Which run a session turn belongs to, and the publisher its streaming
+/// events (tool activity, intermediate text) go out on, tagged with the
+/// session's address and run id.
+pub(crate) struct SessionTurnIdentity<'a> {
     pub(crate) publisher: &'a Publisher,
-    pub(crate) session_address: &'a SessionAddress,
+    pub(crate) address: &'a SessionAddress,
+    pub(crate) run_id: &'a str,
+}
+
+/// Where a conversation session additionally delivers its intermediate turn
+/// text: the interface endpoint its conversation lives on, and the
+/// conversation id itself. Reuses `identity`'s address and publisher rather
+/// than carrying its own — every session already has both for the
+/// unconditional session-stream event, so a conversation session's extra
+/// chat delivery only needs to name the conversation.
+pub(crate) struct ConversationOutput<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) conversation_id: &'a str,
 }
@@ -305,19 +317,19 @@ pub(crate) struct TurnExecution<'a> {
 /// [`TurnExecution`]'s field docs for what each one does.
 ///
 /// `conversation_output`, when given, is where this turn's intermediate
-/// (pre-tool-call) text is delivered — a conversation session's own address,
-/// conversation, and a real bus publisher. `None` for every other session
-/// category: their intermediate text uses a noop publisher and goes
-/// nowhere, since there is no conversation of theirs to send it to.
+/// (pre-tool-call) text is additionally delivered — a conversation
+/// session's own conversation, alongside the session-stream event every
+/// session's turn publishes via `identity`. `None` for every other session
+/// category: they have no conversation of their own to send it to.
 ///
 /// Returns this turn's final text response. The full transcript is left in
 /// `recent_messages` for the caller.
 ///
 /// # Errors
 /// Returns an error if the model call fails.
-#[tracing::instrument(skip_all, fields(run.id = %run_id))]
+#[tracing::instrument(skip_all, fields(run.id = %identity.run_id))]
 pub(crate) async fn execute_subagent(
-    run_id: &str,
+    identity: &SessionTurnIdentity<'_>,
     kickoff: TurnKickoff,
     recent_messages: &mut RecentMessages,
     resources: &SubAgentResources,
@@ -351,25 +363,6 @@ pub(crate) async fn execute_subagent(
         sink.append(&kickoff_messages).await;
     }
 
-    // A session with no conversation of its own (scheduled, spawned) has no
-    // legitimate audience for intermediate text, so it keeps the noop
-    // publisher and an unset output endpoint — `EventContext` then never
-    // publishes anything for it, the same as before this parameter existed.
-    let noop_publisher = Publisher::noop();
-    let output_endpoint = conversation_output
-        .as_ref()
-        .map(|out| EndpointName::from(out.endpoint));
-    let (publisher, session_conversation) = match &conversation_output {
-        Some(out) => (
-            out.publisher,
-            Some(SessionConversationTarget {
-                session_address: out.session_address,
-                conversation_id: out.conversation_id,
-            }),
-        ),
-        None => (&noop_publisher, None),
-    };
-
     let memory_ctx = MemoryContext {
         observations: resources.observations.as_deref(),
         recent_context: resources.recent_context.as_deref(),
@@ -389,11 +382,16 @@ pub(crate) async fn execute_subagent(
     };
 
     let events = EventContext {
-        publisher,
-        output_endpoint: output_endpoint.as_ref(),
-        tool_activity_endpoint: None,
-        correlation_id: "",
-        session_conversation,
+        publisher: identity.publisher,
+        target: EventTarget::Session {
+            address: identity.address,
+            run_id: identity.run_id,
+        },
+        session_conversation: conversation_output.map(|out| SessionConversationTarget {
+            session_address: identity.address,
+            endpoint: out.endpoint,
+            conversation_id: out.conversation_id,
+        }),
     };
     // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
@@ -409,7 +407,7 @@ pub(crate) async fn execute_subagent(
     .await?;
 
     if texts.is_empty() {
-        tracing::warn!(run_id = %run_id, "session turn produced no text output");
+        tracing::warn!(run_id = %identity.run_id, "session turn produced no text output");
     }
     Ok(texts.pop().unwrap_or_default())
 }
@@ -449,6 +447,16 @@ mod tests {
     use crate::mcp::McpRegistry;
     use crate::skills::{SkillIndex, SkillState};
     use async_trait::async_trait;
+
+    /// A turn identity with no broker behind it: these tests exercise the
+    /// turn itself, not the events it publishes (see the runtime's tests).
+    fn test_identity(run_id: &'static str) -> SessionTurnIdentity<'static> {
+        SessionTurnIdentity {
+            publisher: Box::leak(Box::new(Publisher::noop())),
+            address: Box::leak(Box::new(SessionAddress::from("spawned-test-0001"))),
+            run_id,
+        }
+    }
 
     fn initial(prompt: &str, context: Option<&str>) -> TurnKickoff {
         TurnKickoff::Initial {
@@ -510,7 +518,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         let summary = execute_subagent(
-            "run-001",
+            &test_identity("run-001"),
             initial("check emails", None),
             &mut recent_messages,
             &resources,
@@ -533,7 +541,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         let summary = execute_subagent(
-            "run-002",
+            &test_identity("run-002"),
             initial("do work", None),
             &mut recent_messages,
             &resources,
@@ -571,7 +579,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         execute_subagent(
-            "run-ctx",
+            &test_identity("run-ctx"),
             initial("check emails", Some("extra context")),
             &mut recent_messages,
             &resources,
@@ -601,7 +609,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         execute_subagent(
-            "run-msg",
+            &test_identity("run-msg"),
             TurnKickoff::AgentMessage(AgentMessageEvent {
                 from: crate::bus::SessionAddress::from("main"),
                 from_category: "main".to_string(),
@@ -643,7 +651,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         execute_subagent(
-            "run-conv-initial",
+            &test_identity("run-conv-initial"),
             TurnKickoff::Initial {
                 prompt: "can you look at this?".to_string(),
                 context: None,
@@ -677,7 +685,7 @@ mod tests {
         let mut interrupt_rx = dead_interrupt_rx();
 
         execute_subagent(
-            "run-conv-initial-ctx",
+            &test_identity("run-conv-initial-ctx"),
             TurnKickoff::Initial {
                 prompt: "thoughts?".to_string(),
                 context: Some("[14:00] Sam: build is red".to_string()),
@@ -730,7 +738,7 @@ mod tests {
         };
 
         execute_subagent(
-            "run-external",
+            &test_identity("run-external"),
             TurnKickoff::External(inbound),
             &mut recent_messages,
             &resources,
@@ -776,7 +784,7 @@ mod tests {
 
         let mut recent_messages = RecentMessages::new();
         let summary = execute_subagent(
-            "run-interrupt",
+            &test_identity("run-interrupt"),
             initial("keep working", None),
             &mut recent_messages,
             &resources,
@@ -832,7 +840,7 @@ mod tests {
 
         let mut recent_messages = RecentMessages::new();
         let summary = execute_subagent(
-            "run-conv-interrupt",
+            &test_identity("run-conv-interrupt"),
             initial("keep working", None),
             &mut recent_messages,
             &resources,
@@ -914,7 +922,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
-            "run-fork",
+            &test_identity("run-fork"),
             initial("continue the task", None),
             &mut recent_messages,
             &resources,
@@ -1029,19 +1037,28 @@ mod tests {
 
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+        let mut conv_sub: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
             .subscribe(crate::bus::topics::Endpoint(
                 crate::bus::EndpointName::from("discord"),
             ))
             .await
             .unwrap();
+        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> = bus_handle
+            .subscribe(crate::bus::topics::Sessions)
+            .await
+            .unwrap();
 
         let address = crate::bus::SessionAddress::from("external-discord-chan-1");
+        let identity = SessionTurnIdentity {
+            publisher: &publisher,
+            address: &address,
+            run_id: "run-conv-tool",
+        };
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
 
         let summary = execute_subagent(
-            "run-conv-tool",
+            &identity,
             initial("can you check the build?", None),
             &mut recent_messages,
             &resources,
@@ -1051,8 +1068,6 @@ mod tests {
                 interrupt_rx: &mut interrupt_rx,
             },
             Some(ConversationOutput {
-                publisher: &publisher,
-                session_address: &address,
                 endpoint: "discord",
                 conversation_id: "chan-1",
             }),
@@ -1062,7 +1077,7 @@ mod tests {
 
         assert_eq!(summary, "build is green");
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
             .await
             .expect("intermediate text should reach the conversation promptly")
             .unwrap()
@@ -1070,6 +1085,25 @@ mod tests {
         assert_eq!(event.content, "checking the build now");
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
+
+        let session_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
+                .await
+                .expect(
+                    "the session-stream event should also be published, same as any other session",
+                )
+                .unwrap()
+                .unwrap();
+        assert_eq!(session_event.address, address);
+        assert_eq!(session_event.run_id, "run-conv-tool");
+        assert!(
+            matches!(
+                session_event.kind,
+                crate::bus::SessionEventKind::Intermediate { ref content }
+                    if content == "checking the build now"
+            ),
+            "a conversation session's intermediate text must reach the web sessions stream too"
+        );
     }
 
     #[tokio::test]
@@ -1121,7 +1155,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
-            "run-stop",
+            &test_identity("run-stop"),
             initial("do work", None),
             &mut recent_messages,
             &resources,
@@ -1202,7 +1236,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
         execute_subagent(
-            "run-stop-note",
+            &test_identity("run-stop-note"),
             initial("do work", None),
             &mut recent_messages,
             &resources,

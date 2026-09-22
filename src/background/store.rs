@@ -7,8 +7,12 @@
 //! [`TranscriptSink`]/[`RunTranscriptSink`]), so a crash mid-turn loses at
 //! most the message currently in flight. On completion, the full transcript
 //! is folded into the metadata file itself, so a finished run's web-facing
-//! read path is a single file; only startup recovery of a run that never
-//! reached a terminal state reads the sibling JSONL.
+//! read path is a single file; the sibling JSONL is read only for runs that
+//! haven't reached a terminal state — a live run's transcript in the web UI,
+//! and recovery of a run whose process exited or whose task panicked.
+//!
+//! [`SessionStore::list_completed_runs`] pages through finished runs newest
+//! first for the web UI's sessions listing.
 
 use std::path::{Path, PathBuf};
 
@@ -88,6 +92,162 @@ impl RunRecord {
             transcript: Vec::new(),
         }
     }
+}
+
+/// A run record as the listing reads it: every [`RunRecord`] field except
+/// the transcript, which serde skips over without allocating it — a
+/// completed run's record can hold a long transcript, and a listing page
+/// reads dozens of records.
+#[derive(Deserialize)]
+struct RunRecordHeader {
+    address: String,
+    run_id: String,
+    category: String,
+    source_label: String,
+    spawner: Option<String>,
+    depth: u32,
+    purpose: String,
+    agent_skill: Option<String>,
+    started_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+    state: String,
+    #[serde(default)]
+    interrupted: bool,
+    #[serde(default)]
+    episode_id: Option<String>,
+}
+
+impl From<RunRecordHeader> for RunRecord {
+    fn from(header: RunRecordHeader) -> Self {
+        Self {
+            address: header.address,
+            run_id: header.run_id,
+            category: header.category,
+            source_label: header.source_label,
+            spawner: header.spawner,
+            depth: header.depth,
+            purpose: header.purpose,
+            agent_skill: header.agent_skill,
+            started_at: header.started_at,
+            completed_at: header.completed_at,
+            state: header.state,
+            interrupted: header.interrupted,
+            episode_id: header.episode_id,
+            transcript: Vec::new(),
+        }
+    }
+}
+
+/// Position in the newest-first listing of completed runs: everything
+/// strictly older than this run (by start time, then run id) comes after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunCursor {
+    /// Start time of the last run on the previous page.
+    pub started_at: DateTime<Utc>,
+    /// Run id of the last run on the previous page.
+    pub run_id: String,
+}
+
+impl RunCursor {
+    /// Encode as an opaque, URL-safe string: `<start nanos>_<run id>`.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let nanos = self
+            .started_at
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| self.started_at.timestamp_millis().saturating_mul(1_000_000));
+        format!("{nanos}_{}", self.run_id)
+    }
+
+    /// Decode a string produced by [`Self::encode`]. `None` if it is
+    /// malformed or its run id is not a valid run id.
+    #[must_use]
+    pub fn decode(raw: &str) -> Option<Self> {
+        let (nanos, run_id) = raw.split_once('_')?;
+        let nanos: i64 = nanos.parse().ok()?;
+        if !is_valid_run_id(run_id) {
+            return None;
+        }
+        Some(Self {
+            started_at: DateTime::from_timestamp_nanos(nanos),
+            run_id: run_id.to_string(),
+        })
+    }
+
+    fn sort_key(&self) -> (DateTime<Utc>, &str) {
+        (self.started_at, &self.run_id)
+    }
+}
+
+/// One page of completed runs, newest first.
+#[derive(Debug)]
+pub struct CompletedRunPage {
+    /// Completed runs' records, without their transcripts.
+    pub runs: Vec<RunRecord>,
+    /// Where the next page starts, or `None` if this is the last page.
+    pub next: Option<RunCursor>,
+}
+
+/// Longest run id accepted from outside (the web API).
+const MAX_RUN_ID_LEN: usize = 128;
+
+/// Whether `run_id` has the shape of a run id this store can hold: ASCII
+/// letters, digits, `-`, and `_` only, so it can never name a path outside
+/// the store when it comes from a client.
+#[must_use]
+pub fn is_valid_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= MAX_RUN_ID_LEN
+        && run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Directory entries of `dir` whose names satisfy `keep`, sorted newest
+/// (lexicographically greatest) first. A missing directory reads as empty.
+async fn sorted_dir_names_desc(
+    dir: &Path,
+    keep: impl Fn(&str) -> bool,
+) -> anyhow::Result<Vec<String>> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!(
+                "failed to read sessions directory {}",
+                dir.display()
+            )));
+        }
+    };
+    let mut names = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .with_context(|| format!("failed to read directory entry in {}", dir.display()))?
+    {
+        if let Some(name) = entry.file_name().to_str()
+            && keep(name)
+        {
+            names.push(name.to_string());
+        }
+    }
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    Ok(names)
+}
+
+/// Whether `name` looks like a month directory (`YYYY-MM`).
+fn is_month_dir(name: &str) -> bool {
+    name.len() == 7
+        && name.as_bytes().get(4) == Some(&b'-')
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| i == 4 || b.is_ascii_digit())
+}
+
+/// Whether `name` looks like a day directory (`DD`).
+fn is_day_dir(name: &str) -> bool {
+    name.len() == 2 && name.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Durable on-disk record of every session run.
@@ -286,6 +446,111 @@ impl SessionStore {
             record.transcript.clone()
         };
         Ok(Some((record, transcript)))
+    }
+
+    /// List completed runs newest first (by start time, then run id), one
+    /// page of at most `limit` at a time, optionally only those in
+    /// `category` (a [`SessionCategory`](super::registry::SessionCategory)
+    /// label). `before` continues from a previous page's
+    /// [`CompletedRunPage::next`].
+    ///
+    /// Runs that haven't completed yet are skipped — they are live, and
+    /// listed from the registry instead. Walks the date directories newest
+    /// first and stops as soon as the page is full, so a page costs only the
+    /// days it spans. A record that can't be read or parsed is logged and
+    /// skipped rather than failing the whole page.
+    ///
+    /// # Errors
+    /// Returns an error if a sessions directory cannot be read.
+    pub async fn list_completed_runs(
+        &self,
+        category: Option<&str>,
+        before: Option<&RunCursor>,
+        limit: usize,
+    ) -> anyhow::Result<CompletedRunPage> {
+        let cursor_month = before.map(|c| c.started_at.format("%Y-%m").to_string());
+        let cursor_day = before.map(|c| c.started_at.format("%d").to_string());
+        let mut runs: Vec<RunRecord> = Vec::new();
+
+        'months: for month in sorted_dir_names_desc(&self.sessions_dir, is_month_dir).await? {
+            let in_cursor_month = cursor_month.as_deref() == Some(month.as_str());
+            if cursor_month
+                .as_deref()
+                .is_some_and(|cm| month.as_str() > cm)
+            {
+                continue;
+            }
+            let month_dir = self.sessions_dir.join(&month);
+            for day in sorted_dir_names_desc(&month_dir, is_day_dir).await? {
+                if in_cursor_month && cursor_day.as_deref().is_some_and(|cd| day.as_str() > cd) {
+                    continue;
+                }
+                let mut day_runs = self
+                    .read_completed_day(&month_dir.join(&day), category, before)
+                    .await?;
+                day_runs.sort_unstable_by(|a, b| {
+                    (b.started_at, &b.run_id).cmp(&(a.started_at, &a.run_id))
+                });
+                runs.extend(day_runs);
+                if runs.len() > limit {
+                    break 'months;
+                }
+            }
+        }
+
+        let next = if runs.len() > limit {
+            runs.truncate(limit);
+            runs.last().map(|last| RunCursor {
+                started_at: last.started_at,
+                run_id: last.run_id.clone(),
+            })
+        } else {
+            None
+        };
+        Ok(CompletedRunPage { runs, next })
+    }
+
+    /// Read every completed run record in one day directory that matches
+    /// `category` and sorts strictly after `before`.
+    async fn read_completed_day(
+        &self,
+        day_dir: &Path,
+        category: Option<&str>,
+        before: Option<&RunCursor>,
+    ) -> anyhow::Result<Vec<RunRecord>> {
+        let file_names = sorted_dir_names_desc(day_dir, |name| {
+            Path::new(name).extension().is_some_and(|ext| ext == "json")
+        })
+        .await?;
+        let mut runs = Vec::new();
+        for name in file_names {
+            let path = day_dir.join(&name);
+            let contents = match tokio::fs::read_to_string(&path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to read session run record for listing, skipping it");
+                    continue;
+                }
+            };
+            let header: RunRecordHeader = match serde_json::from_str(&contents) {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to parse session run record for listing, skipping it");
+                    continue;
+                }
+            };
+            if header.state != "completed" {
+                continue;
+            }
+            if category.is_some_and(|c| header.category != c) {
+                continue;
+            }
+            if before.is_some_and(|c| (header.started_at, header.run_id.as_str()) >= c.sort_key()) {
+                continue;
+            }
+            runs.push(RunRecord::from(header));
+        }
+        Ok(runs)
     }
 
     /// Finalize a run's record: set its terminal state, completion time,

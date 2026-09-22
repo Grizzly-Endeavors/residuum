@@ -310,12 +310,15 @@ mod gateway_integration {
                     }
                 }
                 // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
-                // Cancel not handled in test stub
+                // Cancel, and the session commands are not handled in the
+                // test stub
                 ClientMessage::SetVerbose { .. }
                 | ClientMessage::Reload
                 | ClientMessage::ServerCommand { .. }
                 | ClientMessage::InboxAdd { .. }
-                | ClientMessage::Cancel { .. } => {}
+                | ClientMessage::Cancel { .. }
+                | ClientMessage::SessionSendMessage { .. }
+                | ClientMessage::SessionStop { .. } => {}
             }
         }
 

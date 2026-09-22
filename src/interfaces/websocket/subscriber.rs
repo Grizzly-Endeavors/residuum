@@ -2,7 +2,7 @@
 
 use crate::bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
-    ResponseEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, topics,
+    ResponseEvent, SessionEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
@@ -52,6 +52,9 @@ pub struct WsSubscribers {
     pub notice: Subscriber<NoticeEvent>,
     pub inline_output: Subscriber<InlineOutputEvent>,
     pub error: Subscriber<ErrorEvent>,
+    /// Agent session lifecycle and turn events, forwarded as the
+    /// `session_*` frames. Main-agent frames never come from here.
+    pub session: Subscriber<SessionEvent>,
     pub file_registry: crate::gateway::file_server::FileRegistry,
 }
 
@@ -75,6 +78,7 @@ impl WsSubscribers {
             notice: bus_handle.subscribe(system_topic()).await?,
             inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
+            session: bus_handle.subscribe(topics::Sessions).await?,
             file_registry,
         })
     }
@@ -141,6 +145,14 @@ impl WsSubscribers {
                         Ok(Some(InlineOutputEvent { message })) => {
                             Some(ServerMessage::InlineOutput { message })
                         }
+                        _ => return None,
+                    }
+                }
+                event = self.session.recv() => {
+                    match event {
+                        Ok(Some(session_event)) => Some(
+                            crate::gateway::sessions::session_event_to_server_message(session_event),
+                        ),
                         _ => return None,
                     }
                 }
@@ -460,5 +472,43 @@ mod tests {
             ServerMessage::Error { reply_to: Some(id), message }
                 if id == "c1" && message == "something went wrong"
         ));
+    }
+
+    #[tokio::test]
+    async fn session_event_maps_to_session_frame() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            EndpointName::from("ws"),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
+
+        pub_.publish(
+            topics::Sessions,
+            SessionEvent {
+                address: crate::bus::SessionAddress::from("spawned-x-0001"),
+                run_id: "run-x".into(),
+                kind: crate::bus::SessionEventKind::Response {
+                    turn_id: "run-x-t1".into(),
+                    content: "found it".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(
+            matches!(
+                msg,
+                ServerMessage::SessionResponse { address, run_id, turn_id, content }
+                    if address == "spawned-x-0001" && run_id == "run-x"
+                        && turn_id == "run-x-t1" && content == "found it"
+            ),
+            "a session response must arrive as a session-tagged frame, never as a main `response`"
+        );
     }
 }
