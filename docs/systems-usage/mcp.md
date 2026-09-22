@@ -12,7 +12,7 @@ Server definitions live in `config/mcp.json` (workspace-level, via `WorkspaceLay
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
-      "env": { "SOME_TOKEN": "${MY_TOKEN:-}" }
+      "env": { "SOME_TOKEN": "${agent-key:some_token}" }
     },
     "hosted-search": {
       "type": "http",
@@ -34,9 +34,13 @@ The loader (`crate::workspace::config::load_mcp_servers_map`, in `src/workspace/
 
 Both paths perform the MCP handshake via `rmcp`'s `ServiceExt::serve`; a spawn/dial failure or a handshake failure both surface as connection errors, and the caller (the registry) marks the server `Failed` with that reason.
 
+## `${agent-key:<name>}` references
+
+Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` anywhere in the value. `McpRegistry::connect` resolves them against the agent key store before spawning or dialing, so the value reaches the server without ever appearing in `mcp.json`. An unknown key, or an unterminated reference, fails that server's connection with an error naming the problem; an entry with no references never touches the store. References resolve only against the agent key store, never the system secret store. See [Agent keys](agent-keys.md).
+
 ## `${VAR}` / `${VAR:-default}` expansion
 
-`expand_env_vars` (`src/mcp/client.rs`) expands `${VAR}` and `${VAR:-default}` patterns against the process's own environment. It is currently applied only to HTTP server **header values** at connect time (`expand_header_env_vars`) — a missing variable with no default resolves to an empty string; an empty (but set) variable does **not** trigger the default, which diverges from POSIX shell semantics. Stdio `env` entries are passed through to the child process as literal strings without this expansion.
+`expand_env_vars` (`src/mcp/client.rs`) expands `${VAR}` and `${VAR:-default}` patterns against the process's own environment. It applies only to HTTP server **header values** at connect time (`expand_header_env_vars`), after agent key references are resolved — a missing variable with no default resolves to an empty string; an empty (but set) variable does **not** trigger the default, which diverges from POSIX shell semantics. Stdio `env` entries are passed through to the child process as literal strings without this expansion.
 
 ## Registry and reconciliation
 

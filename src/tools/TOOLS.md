@@ -110,7 +110,7 @@ On error:
 **Source:** `exec.rs` · `ExecTool`
 
 **Description sent to LLM:**
-> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). To use a credential, name it in `keys` and reference its environment variable (e.g. $GITHUB_TOKEN); agent_keys_list shows what exists. To save a credential a command prints (e.g. a freshly minted token), set `store_output_as`: stdout is stored as an agent key and never shown to you.
+> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). Use `keys` to expose agent keys as environment variables (see agent_keys_list); use `store_output_as` to store stdout as a new agent key instead of returning it.
 
 The description sent to the LLM reflects the current platform.
 

@@ -1,6 +1,6 @@
 # Agent Keys
 
-**Status:** in implementation on `feat/agent-keys`.
+**Status:** implemented. This is the design as proposed; `docs/systems-usage/agent-keys.md` describes the system as built.
 
 ## Goal
 
