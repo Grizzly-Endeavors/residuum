@@ -58,7 +58,11 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Fatal
         secret_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
-    let app = web::config_api_router(api_state).fallback(get(web::static_handler));
+    let app = web::config_api_router(api_state)
+        .fallback(get(web::static_handler))
+        .layer(axum::middleware::from_fn(
+            super::cross_site::reject_cross_site_requests,
+        ));
 
     // Resolve gateway bind/port from env vars and defaults (no config file during setup)
     let gateway_cfg = crate::config::resolve::resolve_default_gateway_config();
