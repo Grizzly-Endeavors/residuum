@@ -8,11 +8,11 @@
 #   schedule: duration string — "30m", "2h", "24h"
 #   active_hours: optional — "HH:MM-HH:MM" in configured timezone
 #                 supports overnight windows (e.g. "22:00-06:00")
-#   agent: ~ (plain sub-agent) | "main" (wake turn) | "skill-name" (sub-agent
-#          with that skill activated as its role)
+#   agent: ~ (plain session, no skill) | "skill-name" (session with that
+#          skill activated as its role). "main" is no longer accepted — every
+#          session fork already carries the main agent's identity and a
+#          memory snapshot.
 #   model_tier: optional — "small" (default) | "medium" | "large"
-#   include_identity: optional — true renders SOUL.md/AGENTS.md into the
-#          sub-agent's prompt; default false
 
 # ── Built-in pulses ─────────────────────────────────────────────
 # On by default. Comment out to disable; edit freely to tune.
@@ -22,7 +22,6 @@ pulses:
     schedule: "7d"
     agent: "introspection"
     model_tier: "large"
-    include_identity: true
     tasks:
       - name: find_patterns
         prompt: "Review the past few weeks of episodes and observations with memory_search and memory_get. Look for: tasks the user does repeatedly by hand, topics they keep returning to, requests mentioned but never finished, and friction they keep hitting. Keep only the few strongest findings."
@@ -67,24 +66,22 @@ pulses:
 #    enabled: true
 #    schedule: "24h"
 #    active_hours: "07:00-09:00"
-#    agent: "main"
 #    tasks:
 #      - name: inbox_review
 #        prompt: "Check the inbox for anything that arrived overnight. Summarize items that need attention and archive anything purely informational."
 #      - name: todays_agenda
 #        prompt: "Check for any scheduled actions firing today. Give the user a brief rundown of what is on the plate."
 #      - name: greet
-#        prompt: "Send the user a short good-morning message with the highlights from the above tasks. Keep it conversational, not a report. If nothing needs attention, just say good morning."
+#        prompt: "Write a short, conversational good-morning summary with the highlights from the above tasks. End with HEARTBEAT_URGENT so it reaches the user now instead of waiting in the inbox. If nothing needs attention, just say good morning and skip the urgent marker."
 #
 #  - name: nightly_review
 #    enabled: true
 #    schedule: "24h"
 #    active_hours: "20:00-22:00"
-#    agent: "main"
 #    tasks:
 #      - name: progress_check
 #        prompt: "Review what the user worked on today based on conversation history. Note what got done and what is still open."
 #      - name: loose_ends
 #        prompt: "Check for unread inbox items, unfinished tasks, or anything that was mentioned but not resolved. Flag anything the user should know about before tomorrow."
 #      - name: wrap_up
-#        prompt: "Send the user a brief end-of-day summary. Mention accomplishments, anything left open, and what might need attention tomorrow. Keep it short and human. Finally ask if the user has anything you should be aware of for tomorrow (e.g., meetings, deadlines, or tasks)."
+#        prompt: "Write a brief end-of-day summary. Mention accomplishments, anything left open, and what might need attention tomorrow. Keep it short and human, and ask if there is anything to be aware of for tomorrow (e.g., meetings, deadlines, or tasks). End with HEARTBEAT_URGENT so it reaches the user now instead of waiting in the inbox."

@@ -21,7 +21,7 @@ use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
     EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress,
-    SessionEventKind, SessionResponseEvent, SkillName, topics,
+    SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
 use crate::interfaces::types::InboundMessage;
@@ -1224,14 +1224,15 @@ fn build_result_event(
     transcript_path: Option<std::path::PathBuf>,
     tz: chrono_tz::Tz,
 ) -> AgentResultEvent {
-    let disposition =
-        if matches!(info.trigger, EventTrigger::Pulse) && summary.contains(HEARTBEAT_OK) {
-            ResultDisposition::Silent
-        } else if summary.contains(HEARTBEAT_URGENT) {
-            ResultDisposition::Urgent
-        } else {
-            ResultDisposition::Normal
-        };
+    let disposition = if matches!(info.trigger, EventTrigger::Pulse)
+        && ends_with_sentinel(&summary, HEARTBEAT_OK)
+    {
+        ResultDisposition::Silent
+    } else if ends_with_sentinel(&summary, HEARTBEAT_URGENT) {
+        ResultDisposition::Urgent
+    } else {
+        ResultDisposition::Normal
+    };
 
     AgentResultEvent {
         session_address: info.address.clone(),
@@ -2437,6 +2438,43 @@ mod tests {
             action_event.disposition,
             ResultDisposition::Normal,
             "HEARTBEAT_OK only silences pulse-triggered runs"
+        );
+    }
+
+    #[test]
+    fn build_result_event_does_not_silence_a_summary_merely_mentioning_heartbeat_ok() {
+        // A substantial pulse summary that discusses the sentinel in prose
+        // (rather than ending with it) is real content and must reach the
+        // owner normally, not be silenced by a plain substring match.
+        let info = SessionInfo {
+            address: SessionAddress::from("scheduled-check-0001"),
+            run_id: "run-1".to_string(),
+            category: SessionCategory::Scheduled,
+            trigger: EventTrigger::Pulse,
+            source_label: "pulse:check".to_string(),
+            state: SessionState::Completing,
+            spawner: None,
+            depth: 1,
+            purpose: "check things".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
+            started_at: Utc::now(),
+        };
+        let summary = "Found something worth flagging. The instruction to omit \
+             HEARTBEAT_OK was honored, so this note does not end with it."
+            .to_string();
+        let event = build_result_event(
+            &info,
+            AgentResultStatus::Completed,
+            summary,
+            None,
+            chrono_tz::UTC,
+        );
+        assert_eq!(
+            event.disposition,
+            ResultDisposition::Normal,
+            "a summary that merely mentions HEARTBEAT_OK mid-text must not be silenced"
         );
     }
 

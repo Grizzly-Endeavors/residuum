@@ -716,6 +716,16 @@ impl SessionStore {
     /// Run the full completion pipeline (skip check, extraction, merge) for
     /// a recovered run, using its last transcript message as the stand-in
     /// "final turn summary" (see [`Self::recover_if_incomplete`]).
+    ///
+    /// Only an `Assistant` message stands in as the summary. A process exit
+    /// can leave the transcript ending on the run's own kickoff `User`
+    /// message (a crash before the model ever replied), and that prompt
+    /// routinely contains the literal string `HEARTBEAT_OK` itself — every
+    /// pulse and action prompt template tells the model to return it when
+    /// there's nothing to report. Treating that prompt text as the summary
+    /// would make the skip check's `ends_with_sentinel` check see a false
+    /// positive and silently drop a run that never got to do any work at
+    /// all.
     async fn run_completion_pipeline(
         &self,
         record: &RunRecord,
@@ -724,6 +734,7 @@ impl SessionStore {
     ) -> Option<String> {
         let summary = transcript
             .last()
+            .filter(|m| m.role == crate::inference::Role::Assistant)
             .map(|m| m.content.clone())
             .unwrap_or_default();
         let tag = crate::memory::types::SourceTag::session(
@@ -1016,6 +1027,69 @@ mod tests {
         assert!(
             recovered_record.episode_id.is_some(),
             "a substantial recovered transcript should be merged into an episode"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_incomplete_runs_ignores_heartbeat_ok_in_the_kickoff_prompt_itself() {
+        // A crash before the model ever replies leaves the transcript ending
+        // on its own `User` kickoff message — and every pulse/action prompt
+        // template tells the model to return HEARTBEAT_OK when there's
+        // nothing to report, so that literal text routinely appears in the
+        // prompt itself. The stand-in summary must not be read from a
+        // non-`Assistant` message, or this pulse prompt would be
+        // misdetected as the run having "ended with HEARTBEAT_OK" and a
+        // substantial, never-actually-run transcript would be skipped.
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut info = sample_info();
+        info.run_id = "run-test-kickoff-only".to_string();
+        store.begin_run(&info).await;
+
+        let padding = "a".repeat(9000);
+        let kickoff = format!(
+            "You are running a scheduled pulse check. If nothing actionable was \
+             found, return the exact string HEARTBEAT_OK. {padding}"
+        );
+        store
+            .append_transcript(&info.run_id, info.started_at, &[Message::user(kickoff)])
+            .await;
+        let path = store.run_path(&info.run_id, info.started_at);
+
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        let search_index = std::sync::Arc::new(
+            crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
+        );
+        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
+        let merge_writer = crate::memory::merge_writer::MemoryMergeWriter::new(
+            reflector,
+            layout.clone(),
+            search_index,
+            None,
+            None,
+        );
+        let observer = crate::memory::observer::Observer::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                r#"{"observations": [{"content": "recovered a finding", "timestamp": "2026-02-21T14:30", "visibility": "background"}]}"#,
+            )),
+            crate::memory::observer::ObserverConfig::default(),
+        );
+        let env = SessionMemoryEnv {
+            observer: &observer,
+            merge_writer: &merge_writer,
+            layout: &layout,
+            episode_skip_token_floor: 2000,
+            tz: chrono_tz::UTC,
+        };
+        let recovered = store.recover_incomplete_runs(&env).await;
+        assert_eq!(recovered, 1);
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let recovered_record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert!(
+            recovered_record.episode_id.is_some(),
+            "a substantial transcript interrupted before any assistant reply must not be \
+             skipped just because its own kickoff prompt mentions HEARTBEAT_OK"
         );
     }
 
