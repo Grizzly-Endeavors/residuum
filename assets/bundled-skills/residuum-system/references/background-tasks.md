@@ -53,9 +53,9 @@ Pulses and actions route by an `agent` field naming a skill; `agent: "main"` is 
 
 The main agent handles only the owner's own DM and the web UI. Every other conversation Discord/Telegram/Teams admits — a group chat, a channel, or a non-owner's DM — routes to that conversation's own `external` session instead, even when the owner is the one talking there. Admission (owner claim, `respond_to_others`) is unchanged and happens first; routing only decides who handles an already-admitted message.
 
-Delivery follows the same rules as Messaging below — interrupt if running, new turn if idle, deferred resume if completing — except a conversation message is always hop 0, and an address with no prior run starts a brand-new session instead of erroring as unknown. The session sees the same `[From: name via interface (location)]` attribution and buffered chatter each interface page describes.
+Delivery follows the same rules as Messaging below — interrupt if running, new turn if idle, deferred resume if completing — except a conversation message is always hop 0, and an address with no prior run starts a brand-new session instead of erroring as unknown. The session sees the same `[From: name via interface (location)]` attribution and buffered chatter each interface page describes. A message that arrives while its session's interrupt channel is saturated is not delivered: an error is logged and main gets a notice naming the session and conversation.
 
-A conversation session's turn output goes straight back to its own conversation and **never falls back to the owner's DM** — unlike main's own proactive output. If the interface can't deliver it, the output is dropped, an error is logged naming the session and conversation, and main gets a notice to decide whether the owner needs telling.
+A conversation session's turn output — final response and any intermediate pre-tool-call text, the same as main posts mid-turn — goes straight back to its own conversation and **never falls back to the owner's DM** — unlike main's own proactive output. If the interface can't deliver it, the output is dropped, an error is logged naming the session and conversation, and main gets a notice to decide whether the owner needs telling.
 
 ## Tools
 
