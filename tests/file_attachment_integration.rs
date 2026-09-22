@@ -45,7 +45,7 @@ mod tests {
             .unwrap();
 
         let registry = make_registry();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({
@@ -142,7 +142,7 @@ mod tests {
             .unwrap();
 
         let registry = make_registry();
-        let tool = SendMessageTool::new(registry, publisher);
+        let tool = SendMessageTool::new(registry, publisher, false);
 
         let result = tool
             .execute(serde_json::json!({

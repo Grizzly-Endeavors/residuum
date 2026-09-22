@@ -69,6 +69,10 @@ impl ConversationSource for TelegramState {
     async fn conversations(&self) -> anyhow::Result<Vec<KnownConversation>> {
         Ok(self.store.known_conversations().await)
     }
+
+    async fn owner_dm_conversation_id(&self) -> Option<String> {
+        self.store.owner().await.map(|o| o.dm_conversation_id)
+    }
 }
 
 /// Telegram interface adapter that routes private and addressed group messages to the agent.
