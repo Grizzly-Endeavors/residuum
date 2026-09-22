@@ -69,11 +69,24 @@ Agents message each other by address with the `message_agent` tool, available to
 - **`main`** — delivered as an interrupt at the next tool-call boundary if a main turn is running, otherwise it starts a main turn.
 - **running session** — delivered as an interrupt at the session's next tool-call boundary, through the same interrupt channel `stop_agent` uses to end a turn. If that channel is saturated (vanishingly unlikely — 32 deep, drained continuously by a live run), the tool returns an error telling the sender to retry shortly, rather than silently falling back to a resume that would double-register the address.
 - **idle session** — starts another turn in the same run, with the message as that turn's input. The run's transcript and per-turn memory staging (see [Memory](#memory)) span every turn this way, not just the first.
-- **completing session** — the run is tearing down and no longer accepts input; the message waits for it to fully leave the registry (recording its resume point on the way out) and is then delivered by resuming it as a new run, the same as a completed session below. A message still queued in a run's own interrupt channel at the moment its teardown drains it (e.g. one delivered just as a stop lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
+- **completing session** — the run is tearing down (its completion pipeline — memory merge, transcript write — may still be running) and no longer accepts input into itself. Delivery does not block on that pipeline: the tool call returns immediately reporting the message is queued, while a background task waits for the run to fully leave the registry (recording its resume point on the way out) and then delivers the message by resuming the session as a new run, the same as a completed session below. A message still queued in a run's own interrupt channel at the moment its teardown drains it (e.g. one delivered just as a stop lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
 - **completed session** — the session is resumed as a new run at the same address, forked the same way any other session is, carrying the previous run's model tier, spawner, and depth. The new run's context carries a pointer back to the previous run's episode id, or its run id if that run produced no episode, retrievable with `memory_get`. The sender's tool result says the session had completed and was resumed.
 - **unknown address** — an address that has never run reports an error naming `list_agents` as the way to find live sessions.
 
 Every delivered message names the sender's address and category, so the recipient knows who to reply to. If delivery requires publishing an event (a resume, or handoff to main) and that publish fails, the tool returns an error rather than reporting success — the sender should not assume the message arrived.
+
+### Hop Counts
+
+Every agent message carries a hop count, used to bound message loops. Input that originates outside the agent system — a user message, a pulse or action firing, a webhook, a web sidebar message — is hop `0`. A message an agent sends during a turn carries one more than the highest hop count among the inputs that drove that turn: the turn's kickoff input, plus any agent messages drained as interrupts during it. A `subagent_spawn` task brief carries the same rule — one more than the spawning turn's highest input hop count — so the new session's first turn starts at that hop count; a resumed session's new run instead starts at the hop count of the message that triggered the resume (that message *is* its first turn's input). Result relays (see [Result Routing](#result-routing)) count as agent messages for this purpose. The main agent tracks its own current-turn hop count the same way a session does.
+
+Two limits, both configurable in `[background]`:
+
+| Limit | Config key | Default | Effect |
+|-------|-----------|---------|--------|
+| Soft | `hop_soft_limit` | 8 | The delivered message carries a note asking the receiver to reply only if a reply is actually needed. |
+| Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session. |
+
+A hard-limit refusal never reaches the target — the tool result is the only thing the sender sees.
 
 ## Nesting
 
@@ -165,7 +178,9 @@ The session runtime uses a semaphore bounded by `max_concurrent` in the `[backgr
 
 ## Result Routing
 
-Every session's result flows through the pub/sub bus to the notification router, which delivers it according to the disposition the producing agent declared. A `spawned` session's result relays back to the main agent, tagged with its address; `scheduled` and `external` results go through the inbox/urgent-fanout rules.
+A `spawned` session's turn result is relayed to its **direct spawner** — main, or whichever session spawned it — through the same agent-messaging path as `message_agent`, hop counts included. This happens after every turn in the run, not just once at completion, and a nested session relays to its own spawner rather than to main. A relay failure (e.g. the spawner is busy or unknown) is never silent: it's logged and recorded as a note in the session's own transcript.
+
+`scheduled` and `external` results still flow through the pub/sub bus to the notification router, which delivers them per the disposition the producing agent declared (inbox, or inbox plus urgent fanout). `spawned` results no longer pass through that router at all — the per-turn relay above replaces it.
 
 See [notifications.md](notifications.md) for the full routing model.
 

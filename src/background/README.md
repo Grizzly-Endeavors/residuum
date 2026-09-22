@@ -15,10 +15,9 @@ The module owns:
 - **Agent messaging** (`messaging.rs`): routes a `message_agent` call to its target by address — an interrupt into a running or idle session's channel, a fresh `SpawnRequestEvent` to resume a completed one, or a `MessageEvent` to main's own inbound path.
 
 The module does **not** handle:
-- **Channel delivery.** Each completed run publishes its own `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels, or a relay to the main agent) and delivers to them. This is unchanged by agent messaging: `message_agent` is a distinct, addressed delivery path, not a replacement for the disposition-based result routing.
+- **Channel delivery.** A `scheduled`/`external` run's completion still publishes its own `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels) and delivers to them. A `spawned` run's result never reaches that router: it relays directly to its spawner via `AgentMessenger` after every turn (see "Result Routing" below), so `message_agent` and the disposition-based router are two distinct, non-overlapping delivery paths.
 - **Skill discovery.** `crate::skills` owns the index; this module activates a named skill on the session's own `SkillState` and lets that failure fail the fork.
 - **Persisting a merge.** `session_memory.rs` decides what to merge and when; `crate::memory::merge_writer::MemoryMergeWriter` is the single serialized writer that actually allocates episode ids, appends the observation log, indexes, embeds, and checks the reflector — shared with the main agent's own observation flow so numbering never races.
-- **Nesting.** Sessions cannot yet spawn further sessions — `subagent_spawn` is main-only, and `build_subagent_registry()` omits it. Messaging exists independently of nesting.
 
 ## How It Works
 
@@ -28,7 +27,7 @@ The module does **not** handle:
 
 **`SessionRuntime`** (`runtime.rs`): holds the concurrency `Semaphore`, an `Arc<SessionRegistry>`, an `Arc<SessionStore>`, and the per-category `IdleTimeouts` resolved once from `BackgroundConfig` at construction (like `max_concurrent`, a config reload does not resize this — the semaphore and timeouts are fixed for the runtime's lifetime). `spawn()` registers the session as `forking` synchronously, then drives the rest of the lifecycle — however many turns it takes — on a detached task.
 
-**`AgentMessenger`** (`messaging.rs`): the `message_agent` tool's routing target. `send(to, from, from_category, content)` checks `to` against `MAIN_ADDRESS` first (publishes a `MessageEvent` on the `UserMessage` bus topic — the main event loop's own inbound path already implements interrupt-if-running/new-turn-if-idle), then tries `SessionRegistry::deliver()` (a live session), then falls back to `SessionRegistry::resume_point()` (publish a fresh `SpawnRequestEvent` at the same address) before reporting an unknown address. Needs only an `Arc<SessionRegistry>` and a `Publisher` — resuming a completed session goes through the ordinary spawn-listener path rather than forking directly, so the messenger never needs a `SpawnContext`.
+**`AgentMessenger`** (`messaging.rs`): the `message_agent` tool's routing target. `send(to, from, from_category, content, hop_count)` refuses outright once `hop_count` reaches the configured hard limit (logged at `warn`, with a best-effort transcript note on whichever side is a live session), otherwise checks `to` against `MAIN_ADDRESS` first (publishes a `MessageEvent` on the `UserMessage` bus topic — the main event loop's own inbound path already implements interrupt-if-running/new-turn-if-idle), then tries `SessionRegistry::deliver()` (a live session — a `completing` target is handed to a detached task that waits for it to clear rather than blocking the caller), then falls back to `SessionRegistry::resume_point()` (publish a fresh `SpawnRequestEvent` at the same address) before reporting an unknown address. Needs an `Arc<SessionRegistry>`, a `Publisher`, an `Arc<SessionStore>` (for the hop-limit transcript note), and the configured `HopLimits` — resuming a completed session goes through the ordinary spawn-listener path rather than forking directly, so the messenger never needs a `SpawnContext`.
 
 **`SessionStore`** (`store.rs`): writes a `RunRecord` (metadata: address, run id, category, lifecycle timestamps, episode id once merged) at fork time and again at completion, both to the same date-partitioned path. The transcript itself lives in a sibling `.transcript.jsonl` file, appended to via `append_transcript()`/`RunTranscriptSink` as the run progresses; on completion the full transcript is also folded into the metadata file so a finished run's read path is one file. `recover_incomplete_runs()` runs once at startup, sweeping the store for any run left in a non-terminal state by a prior process exit, running the full completion memory pipeline against its persisted transcript, and marking it `completed` with `interrupted: true`.
 
@@ -64,17 +63,22 @@ Every producer generates the session's address itself, up front — `subagent_sp
 2. **Run the turn.** Once a permit is held, the registry moves to `Running` and `execute_subagent()` (`subagent.rs`) runs the turn through the shared `execute_turn()` executor, with the session's own `CancellationToken` wired in as `TurnResources.stop_token`, a `RunTranscriptSink` wired in as `TurnResources.transcript_sink`, and the run's own live interrupt channel receiver passed through as `execute_turn`'s `interrupt_rx`. This is what makes `stop_agent` cooperative (cancelling ends the turn at its next checkpoint with the transcript so far intact) and what delivers an agent message to a *running* session: `execute_turn`'s existing checkpoint-based draining picks it up at the next tool-call boundary, exactly like a main-agent user message.
 3. **Stage after the turn.** `SessionMemory::maybe_stage()` checks the run's accumulated transcript against the session's own `Observer` thresholds; crossing the force threshold extracts the unstaged tail immediately, mirroring the main agent's own rotation. This runs after every turn, not just once, so a multi-turn run stages incrementally. Staged observations are held locally, invisible to any other agent until the run completes.
 4. **Go idle.** The permit is released (it's a stack-scoped guard); the registry moves to `Idle`. `wait_idle()` then races the `CancellationToken`, `tokio::time::sleep(idle_timeout)`, and the same interrupt channel's `recv()` — whichever fires first ends the idle wait. An `Interrupt::AgentMessage` received here becomes the next turn's `TurnKickoff::AgentMessage`, looping back to step 1 instead of ending the run.
-5. **Complete.** Once idle ends in a stop or timeout (not a wake), the registry moves to `Completing`. `complete_session_memory()` runs the skip check, a final extraction over whatever wasn't staged, and the merge into global memory (see below). The registry's `record_resume_point()` captures this run's id, episode id (if any), trigger, source label, and skill before `SessionStore::complete_run()` overwrites the run's metadata record with its final state, full transcript, and episode id, and an `AgentResultEvent` — tagged with the session's address and run id — is published on the bus. The registry's live entry is then removed; the session no longer appears in `list_agents`, though its store record and resume point remain.
+5. **Complete.** Once idle ends in a stop or timeout (not a wake), the registry moves to `Completing`. `complete_session_memory()` runs the skip check, a final extraction over whatever wasn't staged, and the merge into global memory (see below). The registry's `record_resume_point()` captures this run's id, episode id (if any), trigger, source label, and skill before `SessionStore::complete_run()` overwrites the run's metadata record with its final state, full transcript, and episode id, and an `AgentResultEvent` — tagged with the session's address and run id — is published on the bus (the notification router treats a `spawned` result on this event as already handled — see "Result Routing" — and discards it there). The registry's live entry is then removed, notifying `SessionRegistry::wait_until_clear()`'s waiters; the session no longer appears in `list_agents`, though its store record and resume point remain.
+
+Between steps 2 and 4, a `spawned` session with a spawner relays that turn's final response via `AgentMessenger::relay_result_to_spawner()` (`runtime.rs`) — after every turn, not only at step 5 — so a multi-turn run reports progress incrementally rather than only once at the end.
 
 #### Agent Messaging
 
-`message_agent` (`crate::tools::message_agent::MessageAgentTool`) is registered for both the main agent and every session, each instance carrying its own address and category so it can identify itself as the sender. It calls `AgentMessenger::send()`, which:
-- for `main`, publishes a `MessageEvent` on `UserMessage` — the same bus path a relayed session result already uses, which the main event loop treats as an interrupt when a turn is running and as a fresh turn's input when idle;
-- for a live session (any state `SessionRegistry` still has an entry for), calls `SessionRegistry::deliver()`, which hands an `Interrupt::AgentMessage` to that session's interrupt channel — picked up by a running turn's next checkpoint, or by the idle wait if the session isn't currently in a turn;
-- for a completed session (no live entry, but a `ResumePoint` recorded), publishes a fresh `SpawnRequestEvent` at the same address — carrying the delivered message as the new run's prompt and a pointer to the previous run's episode (or run id) as its context — which the ordinary spawn listener picks up exactly like any other fork request;
+`message_agent` (`crate::tools::message_agent::MessageAgentTool`) is registered for both the main agent and every session, each instance carrying its own address, category, and a `HopCounter` clone so it can identify itself as the sender and compute the outgoing hop count (`hop_counter.outgoing()`, one more than the current turn's). It calls `AgentMessenger::send()`, which:
+- refuses outright if `hop_count` has reached the configured hard limit, before touching `to` at all;
+- for `main`, publishes a `MessageEvent` on `UserMessage` — the same bus path a relayed session result already uses, which the main event loop treats as an interrupt when a turn is running and as a fresh turn's input when idle; the hop count is recorded under the published `MessageEvent`'s id (`AgentMessenger::take_main_hop()`) rather than carried on the shared, interface-facing `MessageEvent` type itself;
+- for a live session (any state `SessionRegistry` still has an entry for), calls `SessionRegistry::deliver()`, which hands an `Interrupt::AgentMessage` to that session's interrupt channel — picked up by a running turn's next checkpoint, or by the idle wait if the session isn't currently in a turn; a `completing` target's delivery is handed to a detached task (`deferred_resume()`) that awaits `wait_until_clear()` before resuming it, so the sender's call returns immediately rather than blocking on that run's own completion pipeline;
+- for a completed session (no live entry, but a `ResumePoint` recorded), publishes a fresh `SpawnRequestEvent` at the same address — carrying the delivered message as the new run's prompt, that message's own hop count as the new run's starting hop count, and a pointer to the previous run's episode (or run id) as its context — which the ordinary spawn listener picks up exactly like any other fork request;
 - otherwise, reports the address unknown.
 
-Every delivered message is formatted (`AgentMessageEvent::format_for_agent()`) naming the sender's address and category, so the recipient can reply.
+Every delivered message is formatted (`AgentMessageEvent::format_for_agent()`) naming the sender's address and category, so the recipient can reply. At or above the soft hop limit, the content also carries a note asking the receiver to reply only if needed.
+
+Every session (and the main agent) tracks a `HopCounter` (`crate::agent::hop`) for whichever turn is currently running: set to the turn's kickoff input's hop count at the start (`TurnKickoff::hop_count()` for a session, or the looked-up `take_main_hop()` value for main), and raised (never lowered) whenever `agent::turn::drain_interrupts()` processes an `Interrupt::AgentMessage` mid-turn. `message_agent`/`subagent_spawn` read the same `HopCounter` instance to compute what they send.
 
 #### Incremental Transcript Persistence
 
@@ -96,7 +100,9 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 
 ### Result Routing
 
-`notify::router` subscribes to the bus `Background` topic and routes each `AgentResultEvent` by the disposition its session declared (via `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in its summary — computed in `runtime.rs::build_result_event`, using the same rule the old bridge module used): `Silent` results are discarded; `spawned`-category results (`EventTrigger::Agent`) relay to the main agent; everything else files to the inbox, plus every configured notification channel when `Urgent`.
+A `spawned` session's turn result is relayed to its **direct spawner** — the address recorded in `SessionInfo.spawner`, main or another session — via `AgentMessenger::send()`, from `maybe_relay_result()`/`relay_result_to_spawner()` in `runtime.rs`, after every turn (not only at completion), carrying the normal hop-count rules. A relay failure is never silent: it's logged at `warn` and appended as a system note to the run's own transcript (both the in-progress sidecar and, since it's also pushed onto `recent_messages`, the run's final completed record).
+
+`notify::router` subscribes to the bus `Background` topic and routes each `AgentResultEvent` by the disposition its session declared (via `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in its summary — computed in `runtime.rs::build_result_event`, using the same rule the old bridge module used): `Silent` results are discarded; `spawned`-category results (`EventTrigger::Agent`) are discarded here too, since they were already relayed per-turn as above; everything else files to the inbox, plus every configured notification channel when `Urgent`.
 
 ---
 
@@ -122,9 +128,21 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 
 ---
 
-**Decision: No sub-to-session nesting yet.**
+**Decision: Nesting is depth-capped, not unbounded or disabled.**
 
-**Why:** Depth-capped nesting (a session spawning another session) is a real part of the design but is a separate piece of work from messaging. `build_subagent_registry()` still registers `stop_agent`, `list_agents`, and now `message_agent` for a session's own tool set (any session can inspect, stop, or message any other) but omits `subagent_spawn`, keeping the spawn tree exactly two levels deep (main → spawned) until nesting lands.
+**Why:** `build_subagent_registry()` registers `subagent_spawn` (alongside `stop_agent`, `list_agents`, and `message_agent`) for every session's own tool set, so a session can spawn further sessions the same way main does. Unbounded nesting would rely on the concurrency limit alone to bound fan-out; a session at `subagent_depth_cap` (`[background]`, default 2; main is depth 0) has its own `subagent_spawn` refuse with an explanatory error instead, so a runaway spawn chain fails fast and visibly rather than silently consuming the whole permit pool.
+
+---
+
+**Decision: Hop counts bound message loops independently of the depth cap.**
+
+**Why:** The depth cap bounds how deep a *spawn tree* can grow, but two sessions (or a session and main) messaging each other back and forth never spawns anything new — depth alone can't catch that loop. A hop count carried on every agent message, incremented once per turn it passes through, catches it instead: a soft limit (`hop_soft_limit`, default 8) nudges the model to stop replying once a reply isn't adding anything, and a hard limit (`hop_hard_limit`, default 32) refuses delivery outright so a genuine loop can't run forever. Because a `subagent_spawn` task brief also carries a hop count (the spawning turn's plus one), a chain of spawns is bounded by the same mechanism as a chain of replies, not just by the depth cap.
+
+---
+
+**Decision: Delivery to a `completing` target hands the wait off to a detached task instead of blocking the sender.**
+
+**Why:** A `completing` run's teardown includes its full memory-merge pipeline, which can make an LLM call — the old code awaited that inline inside `AgentMessenger::send()`, so a `message_agent` tool call could block for however long that pipeline took. The resume point it needs also isn't guaranteed to exist the instant a run enters `Completing` (`finish_run` records it partway through teardown, before removing the entry) — this rules out reading it immediately and firing a resume synchronously. Spawning the wait (`deferred_resume()`, driven by `SessionRegistry::wait_until_clear()`) and returning a `Queued` outcome right away keeps the sender's turn moving; the resume itself still only ever fires once the previous run has genuinely cleared, which is what makes it safe to read the resume point at that point instead of racing it.
 
 ---
 
@@ -184,7 +202,7 @@ The main agent's own observation flow (`crate::gateway::memory`) goes through th
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | Module exports: `SessionRegistry`, `SessionRuntime`, `SessionStore`, `AgentMessenger`/`DeliveryOutcome`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`. |
+| `mod.rs` | Module exports: `SessionRegistry`, `SessionRuntime`, `SessionStore`, `AgentMessenger`/`DeliveryOutcome`/`SendError`, `SubAgentResources`/`build_subagent_resources`, `SubAgentBuildConfig`/`SubAgentConfig`, and a re-export of `HopCounter`/`HopLimits` from `crate::agent::hop` (defined there, alongside the main agent, since both main and sessions track one). |
 | `registry.rs` | `SessionRegistry`, `SessionInfo`, `SessionCategory`, `SessionState`, `ResumePoint`, address/run-id generation, the interrupt-channel plumbing (`register()`/`deliver()`). |
 | `store.rs` | `SessionStore`, `RunRecord`, `RunTranscriptSink`: per-run metadata persistence, the incrementally-appended transcript file, and the startup incomplete-run recovery sweep. |
 | `session_memory.rs` | `SessionMemory`, `SessionMemoryEnv`, `complete_session_memory()`: per-turn staging and the completion pipeline that merges into global memory. |

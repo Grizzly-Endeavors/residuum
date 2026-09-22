@@ -45,14 +45,16 @@ Pulses and actions route by an `agent` field naming a skill; `agent: "main"` is 
 
 ## Messaging
 
-`message_agent` sends text to an address, available to main and every session. Delivery depends on the target's state: `main` and a running session get it as an interrupt at the next tool-call boundary (a saturated channel — vanishingly unlikely — errors back to the sender rather than silently resuming a duplicate run); an idle session starts another turn in the same run with it as input (so a run can span several turns, and per-turn memory staging runs after each one); a completing session's message waits for it to fully leave the registry, then resumes it as a new run, same as below; a completed session is resumed as a new run at the same address carrying the previous run's model tier, spawner, and depth, with a pointer to its previous run's episode (or run id, for `memory_get`) in the new run's context. An address that has never run reports an error pointing at `list_agents`. Every delivered message names the sender's address and category, and a failed publish (to main, or as a resume) errors back to the sender instead of reporting success.
+`message_agent` sends text to an address, available to main and every session. Delivery depends on the target's state: `main` and a running session get it as an interrupt at the next tool-call boundary (a saturated channel — vanishingly unlikely — errors back to the sender rather than silently resuming a duplicate run); an idle session starts another turn in the same run with it as input (so a run can span several turns, and per-turn memory staging runs after each one); a completing session's message is queued — the tool call returns immediately rather than blocking on that run's own completion pipeline (memory merge, transcript write), and a background task resumes the session as a new run once it clears; a completed session is resumed as a new run at the same address carrying the previous run's model tier, spawner, and depth, with a pointer to its previous run's episode (or run id, for `memory_get`) in the new run's context. An address that has never run reports an error pointing at `list_agents`. Every delivered message names the sender's address and category, and a failed publish (to main, or as a resume) errors back to the sender instead of reporting success.
+
+**Hop counts.** Every agent message carries a hop count, bounding message loops. External-origin input (user message, pulse/action, webhook, web sidebar) is hop 0; a message sent during a turn carries one more than the highest hop count among that turn's inputs (kickoff plus any drained agent-message interrupts); a `subagent_spawn` task brief carries the spawning turn's hop count plus one, and a resumed session starts at the triggering message's hop count. Two configurable limits in `[background]`: `hop_soft_limit` (default 8) adds a "reply only if needed" note to the delivered message; `hop_hard_limit` (default 32) refuses delivery outright, with a `warn` log and a best-effort transcript note on whichever side is a live session.
 
 ## Tools
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
 | `message_agent` | `to`, `message` | Send text to `main` or a session address. See Messaging above. |
-| `subagent_spawn` | `task`, `skill`, `model` | Fork a session. Returns its address immediately. Each turn's result relays through the notification router, tagged with the address. |
+| `subagent_spawn` | `task`, `skill`, `model` | Fork a session. Returns its address immediately. Each turn's result relays to its direct spawner via the agent-messaging path, tagged with the address. |
 | `list_agents` | *(none)* | List main plus every live session, with category, state, depth, spawner, elapsed time, and purpose. |
 | `stop_agent` | `address` | Stop a live session by address. |
 
@@ -68,7 +70,7 @@ A session's result is a **self-report**, not a verified outcome. When the task i
 
 ## Result Routing
 
-Every session result flows through the pub/sub bus to the notification router. `spawned` results relay back to the main agent, tagged with the session's address. `scheduled` and `external` results file to the inbox, additionally pushed to every configured notification channel when the summary contains `HEARTBEAT_URGENT`.
+A `spawned` session's turn result relays to its **direct spawner** (main, or whichever session spawned it) via the agent-messaging path, hop counts included, after every turn — not just at completion — and a relay failure is logged and noted in the session's own transcript, never silently dropped. `scheduled` and `external` results still flow through the pub/sub bus to the notification router: filed to the inbox, additionally pushed to every configured notification channel when the summary contains `HEARTBEAT_URGENT`. `spawned` results no longer pass through that router.
 
 ## Memory
 

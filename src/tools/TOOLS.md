@@ -624,7 +624,7 @@ main — always live
   [{address}] {source_label} — category: {scheduled|external|spawned} — state: {forking|running|idle|completing} — depth: {N} — spawner: {address|-} — running {elapsed}s — purpose: {prompt/task preview, up to 120 chars}
 ```
 
-`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions (they have no spawner in Phase 1).
+`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one.
 
 ---
 
@@ -653,7 +653,7 @@ A spawned session is a `spawned`-category fork of the main agent, running off th
 
 On success: `"Session {address} spawned with skill '{name}'."`, or `"Session {address} spawned."` when no skill was named. `{address}` is generated synchronously (e.g. `spawned-researcher-3f9a`) and returned before the session actually starts running.
 
-The session runs in the background via the session runtime. Its result from each turn is relayed back to the main agent, tagged with its address.
+The session runs in the background via the session runtime. Its result from each turn is relayed to its **direct spawner** — the agent that called `subagent_spawn` — tagged with its address; for a nested spawn (a session spawning a session), that's the spawning session, not necessarily main.
 
 ### Nesting and the depth cap
 
@@ -668,7 +668,7 @@ The session runs in the background via the session runtime. Its result from each
 - Spawning past the depth cap → `is_error = true`, e.g. `"cannot spawn: nesting depth cap (2) reached at depth 2 — handle this task directly instead of spawning further, or have a shallower agent spawn it"`
 - Bus publish failure → `Execution` error
 
-**Side effects:** Publishes a `SpawnRequestEvent` (carrying the pre-generated address, the caller's address as `spawner`, and the computed `depth`) to the bus. The spawn listener picks it up, builds the session's fork resources, and hands it to the session runtime (visible via `list_agents`, cancellable via `stop_agent`). Each turn's result is delivered through the bus notification system.
+**Side effects:** Publishes a `SpawnRequestEvent` (carrying the pre-generated address, the caller's address as `spawner`, the computed `depth`, and a `hop_count` one more than the calling turn's current hop count) to the bus. The spawn listener picks it up, builds the session's fork resources, and hands it to the session runtime (visible via `list_agents`, cancellable via `stop_agent`). Each turn's result is relayed directly to the spawner via `AgentMessenger` (see `message_agent` below), not through the bus notification router.
 
 ---
 
@@ -690,23 +690,27 @@ The session runs in the background via the session runtime. Its result from each
 
 - Delivered to main: `"Message delivered to main."`
 - Delivered to a live session: `"Message delivered to {address}."`
-- Delivered to a completed (or completing) session: `"Session {address} had completed; message delivered by resuming it as a new run."` (`is_error = false` — the resume itself is not a failure)
+- The target session is completing: `"Session {address} is completing; your message will be delivered once it finishes, resuming it as a new run."` (`is_error = false`) — the call returns immediately; delivery itself happens on a detached task once the run clears (see Side effects).
+- Delivered to a completed session: `"Session {address} had completed; message delivered by resuming it as a new run."` (`is_error = false` — the resume itself is not a failure)
 - Unknown address (`is_error = true`): `"no such agent '{to}'. Use list_agents to see live sessions; a completed session's address only works again once it has run at least once."`
 - Messaging yourself (`is_error = true`): `"cannot message yourself"`
 - Target's interrupt channel is saturated (`is_error = true`, vanishingly unlikely): `"agent {address} is busy, try again shortly"` — never falls back to a resume, which would double-register the address.
+- Hop count at or above the configured hard limit (`is_error = true`): a message explaining the loop limit was reached and delivery was refused. The message never reaches `to`; logged at `warn` with both addresses and the hop count, and a best-effort note is recorded in the transcript of whichever side is a live, addressable session.
 - A publish (to main, or as a resume spawn request) failed at the bus (`is_error = true`): a message naming what failed. The tool never reports success when delivery didn't actually happen.
 
 ### Errors
 
 - Missing or empty `to`/`message` → `InvalidArguments`
 
-**Side effects:** Routes through the shared `AgentMessenger` (`crate::background::messaging`):
-- **main** — publishes a `MessageEvent` on the `UserMessage` bus topic, formatted with the sender's address and category, reusing the main event loop's existing interrupt-if-running/new-turn-if-idle handling.
-- **running/idle session** — delivers an `Interrupt::AgentMessage` through the session's own interrupt channel (registered in the `SessionRegistry` at fork time). A running turn drains it at its next tool-call boundary; an idle session wakes and runs another turn in the same run, with the message as that turn's input.
-- **completing session** — the run no longer accepts messages into itself; `AgentMessenger` waits for it to fully leave the registry (its resume point is always recorded before that happens) and then resumes it, same as a completed session below. A message still queued in a run's own interrupt channel when its teardown drains it (e.g. one delivered just as `stop_agent` lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
-- **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model tier and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. The spawn listener itself refuses a spawn/resume for an address still registered as running/idle/forking (logged as an error — should only happen if something else raced the registry), and defers one for a completing address until it clears.
+**Hop counts:** every delivered message carries a hop count — one more than the highest hop count among the inputs driving the sender's current turn (its kickoff input, plus any agent messages drained mid-turn). At or above `hop_soft_limit` (`[background]`, default 8) the delivered content carries an added note asking the receiver to reply only if a reply is actually needed. At or above `hop_hard_limit` (default 32) delivery is refused outright (see Output above).
 
-**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent).
+**Side effects:** Routes through the shared `AgentMessenger` (`crate::background::messaging`):
+- **main** — publishes a `MessageEvent` on the `UserMessage` bus topic, formatted with the sender's address and category, reusing the main event loop's existing interrupt-if-running/new-turn-if-idle handling. The hop count is recorded under the published event's id, since `MessageEvent` itself carries no hop-count field.
+- **running/idle session** — delivers an `Interrupt::AgentMessage` through the session's own interrupt channel (registered in the `SessionRegistry` at fork time). A running turn drains it at its next tool-call boundary; an idle session wakes and runs another turn in the same run, with the message as that turn's input.
+- **completing session** — the run no longer accepts messages into itself. `AgentMessenger` hands the wait to a detached task (`wait_until_clear()` on a `tokio::sync::Notify`, not polling) and returns immediately; once the run actually leaves the registry (its resume point is always recorded before that happens), the task resumes it, same as a completed session below. A message still queued in a run's own interrupt channel when its teardown drains it (e.g. one delivered just as `stop_agent` lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
+- **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model tier, the delivered message's own hop count as the new run's starting hop count, and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. The spawn listener itself refuses a spawn/resume for an address still registered as running/idle/forking (logged as an error — should only happen if something else raced the registry), and defers one for a completing address until it clears.
+
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent), and holding a clone of that agent's current-turn `HopCounter`.
 
 ---
 

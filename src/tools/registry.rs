@@ -247,7 +247,9 @@ impl ToolRegistry {
     /// messages, alongside `session_category` and the shared `messenger`.
     /// `send_message` from this registry refuses the owner's DM on every
     /// chat interface and the web UI (only the main agent talks to the
-    /// owner).
+    /// owner). `hop_counter` is this session's current-turn hop counter,
+    /// shared with `message_agent`/`subagent_spawn` so they compute outgoing
+    /// hop counts from the same value the session runtime updates.
     #[expect(
         clippy::too_many_arguments,
         reason = "session registry needs all tool dependencies"
