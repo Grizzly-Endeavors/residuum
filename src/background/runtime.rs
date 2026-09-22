@@ -1115,7 +1115,11 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        // Generous timeouts throughout: this test has proven flaky on the
+        // self-hosted CI runner under load even at several seconds, despite
+        // passing reliably (and quickly) locally under equivalent or heavier
+        // simulated CPU contention.
+        wait_for(&runtime, &address, Duration::from_secs(15), |info| {
             info.state == SessionState::Running
         })
         .await
@@ -1136,14 +1140,14 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let result_event = tokio::time::timeout(Duration::from_secs(2), result_sub.recv())
+        let result_event = tokio::time::timeout(Duration::from_secs(30), result_sub.recv())
             .await
             .expect("stopped run should still publish a result")
             .unwrap()
             .unwrap();
         assert!(matches!(result_event.status, AgentResultStatus::Cancelled));
 
-        let spawn_event = tokio::time::timeout(Duration::from_secs(2), spawn_sub.recv())
+        let spawn_event = tokio::time::timeout(Duration::from_secs(30), spawn_sub.recv())
             .await
             .expect("the pending message must resume the session as a new run rather than vanish")
             .unwrap()
@@ -1824,7 +1828,7 @@ mod tests {
         // `make_sequenced_resources_with_eager_observer`), which is
         // meaningfully slower under CI load than the disabled-observer path
         // most other tests here use.
-        wait_for(&runtime, &address, Duration::from_secs(5), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(15), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -1843,7 +1847,7 @@ mod tests {
             crate::background::registry::DeliverOutcome::Delivered
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(30), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
