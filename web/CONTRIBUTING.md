@@ -31,7 +31,8 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. That's it â
 
 - All REST endpoints return realistic fake data
 - WebSocket simulates chat responses with tool calls and delays
-- Agent sessions: two live sessions and a page-able list of finished ones. Messaging a session simulates a turn (include "busy" in the message to see a delivery failure), messaging a finished one resumes it, and a chat message starting with `spawn` starts a spawned session that relays its result to the main chat
+- Agent sessions: live sessions (including a Discord conversation session) and a page-able list of finished ones. Messaging a session simulates a turn (include "busy" in the message to see a delivery failure), messaging a finished one resumes it, and a chat message starting with `spawn` starts a spawned session that relays its result to the main chat. Transcripts load after a short delay, so the loading state and anything racing it can be tried by hand
+- `POST /api/mock/missed-relay` records a session result in the main chat's history and drops the WebSocket, to exercise catching up after a reconnect
 - Config files are loaded from `../assets/*.example.*` and can be edited in the UI
 - Secrets can be added and removed (stored in memory)
 
