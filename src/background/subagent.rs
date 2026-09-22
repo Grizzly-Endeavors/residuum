@@ -9,9 +9,12 @@ use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use crate::agent::turn::{
+    EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
+};
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
-use crate::inference::{CompletionOptions, InferenceProvider, Message};
+use crate::inference::{CompletionOptions, InferenceProvider, Message, MessageSender};
+use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -24,12 +27,12 @@ use super::types::SubAgentBuildConfig;
 
 /// What kicks off one of a session's turns.
 ///
-/// A run's first turn is always [`Self::Initial`] — the source-specific task
-/// prompt and context the design calls "fork contents". Every later turn in
-/// the same run (the session was idle and an agent message arrived) is
-/// [`Self::AgentMessage`] instead: the message becomes the turn's input,
-/// formatted with the sender's address and category so the session can
-/// reply.
+/// A run's first turn is always [`Self::Initial`], unless the session was
+/// started by a conversation message, in which case it's [`Self::External`]
+/// from the start too. Every later turn in the same run started because a
+/// message reached the session while it was idle is either
+/// [`Self::AgentMessage`] (another agent addressed it) or [`Self::External`]
+/// (a new message arrived in its conversation).
 pub(crate) enum TurnKickoff {
     /// The run's first turn: the task prompt, plus any source-specific
     /// context (a pulse/action/webhook payload, or a resume pointer).
@@ -38,10 +41,21 @@ pub(crate) enum TurnKickoff {
         context: Option<String>,
         /// Hop count of this run's first turn (see [`super::types::SubAgentConfig::hop_count`]).
         hop_count: u32,
+        /// Who sent this kickoff, for a conversation-triggered session —
+        /// attributes the opening message the same way main attributes an
+        /// inbound chat message. `None` for every other trigger, which keeps
+        /// the original single-message rendering (no attribution line).
+        sender: Option<MessageSender>,
     },
-    /// A later turn, started because a message reached this session while it
-    /// was idle.
+    /// A later turn, started because another agent's message reached this
+    /// session while it was idle.
     AgentMessage(AgentMessageEvent),
+    /// A turn — the run's first, or a later one reached while idle — kicked
+    /// off by an inbound conversation message: sender attribution and any
+    /// buffered context arrive with it exactly as they do for the main
+    /// agent (see [`InboundMessage::into_history_messages`]). Always hop
+    /// count 0: inbound conversation messages are external input.
+    External(InboundMessage),
 }
 
 impl TurnKickoff {
@@ -51,23 +65,44 @@ impl TurnKickoff {
         match self {
             Self::Initial { hop_count, .. } => *hop_count,
             Self::AgentMessage(msg) => msg.hop_count,
+            Self::External(_) => 0,
         }
     }
 
-    /// Render this kickoff as the turn's opening user message.
-    fn into_message_text(self) -> String {
+    /// Render this kickoff as the turn's opening message(s).
+    fn into_messages(self) -> Vec<Message> {
         match self {
             Self::Initial {
-                prompt, context, ..
+                prompt,
+                context,
+                sender: None,
+                ..
             } => {
+                // No sender: preserve the original single-message rendering
+                // exactly, for every trigger that isn't a conversation
+                // (pulses, actions, webhooks, agent spawns).
                 let mut parts = Vec::new();
                 if let Some(ctx) = context {
                     parts.push(ctx);
                 }
                 parts.push(prompt);
-                parts.join("\n\n")
+                vec![Message::user(parts.join("\n\n"))]
             }
-            Self::AgentMessage(msg) => msg.format_for_agent(),
+            Self::Initial {
+                prompt,
+                context,
+                sender: Some(sender),
+                ..
+            } => {
+                let mut msgs = Vec::new();
+                if let Some(ctx) = context {
+                    msgs.push(Message::system(ctx));
+                }
+                msgs.push(Message::user(prompt).with_sender(Some(sender)));
+                msgs
+            }
+            Self::AgentMessage(msg) => vec![Message::user(msg.format_for_agent())],
+            Self::External(inbound) => inbound.into_history_messages(),
         }
     }
 }
@@ -235,6 +270,39 @@ pub(crate) struct SessionTurnIdentity<'a> {
     pub(crate) run_id: &'a str,
 }
 
+/// Where a conversation session additionally delivers its intermediate turn
+/// text: the interface endpoint its conversation lives on, and the
+/// conversation id itself. Reuses `identity`'s address and publisher rather
+/// than carrying its own — every session already has both for the
+/// unconditional session-stream event, so a conversation session's extra
+/// chat delivery only needs to name the conversation.
+pub(crate) struct ConversationOutput<'a> {
+    pub(crate) endpoint: &'a str,
+    pub(crate) conversation_id: &'a str,
+}
+
+/// A turn's control-flow handles — cancellation, transcript persistence, and
+/// the run's own interrupt channel — grouped into one argument so
+/// `execute_subagent`'s parameter count stays within clippy's limit.
+pub(crate) struct TurnExecution<'a> {
+    /// The session's own token: cancelling it (via `stop_agent`) aborts an
+    /// in-flight model call or ends the turn at its next checkpoint, leaving
+    /// `recent_messages` — and therefore the transcript — intact up to that
+    /// point.
+    pub(crate) stop_token: &'a CancellationToken,
+    /// When given, receives every message as it's produced (the kickoff
+    /// message, then each model response and tool result inside
+    /// `execute_turn`) so the run's transcript survives a crash mid-turn in
+    /// the session store.
+    pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
+    /// The run's own long-lived interrupt channel: draining it is what
+    /// delivers an agent message to a *running* turn at its next tool-call
+    /// boundary. Between turns, the caller drains the same channel itself to
+    /// decide whether to wake for another turn (see
+    /// `crate::background::runtime`).
+    pub(crate) interrupt_rx: &'a mut mpsc::Receiver<Interrupt>,
+}
+
 /// Execute one turn of a session's run.
 ///
 /// `recent_messages` is the run's whole history so far — empty on the run's
@@ -245,21 +313,14 @@ pub(crate) struct SessionTurnIdentity<'a> {
 /// message that `execute_turn` assembles itself, the same way the main
 /// agent's turns are, so nothing is injected twice.
 ///
-/// `stop_token` is the session's own token: cancelling it (via `stop_agent`)
-/// aborts an in-flight model call or ends the turn at its next checkpoint,
-/// leaving `recent_messages` — and therefore the transcript — intact up to
-/// that point.
+/// `turn` groups this turn's control-flow handles — see
+/// [`TurnExecution`]'s field docs for what each one does.
 ///
-/// `transcript_sink`, when given, receives every message as it's produced
-/// (the kickoff message here, then each model response and tool result
-/// inside `execute_turn`) so the run's transcript survives a crash mid-turn
-/// in the session store.
-///
-/// `interrupt_rx` is the run's own long-lived interrupt channel: draining it
-/// here is what delivers an agent message to a *running* turn at its next
-/// tool-call boundary. Between turns, the caller drains the same channel
-/// itself to decide whether to wake for another turn (see
-/// `crate::background::runtime`).
+/// `conversation_output`, when given, is where this turn's intermediate
+/// (pre-tool-call) text is additionally delivered — a conversation
+/// session's own conversation, alongside the session-stream event every
+/// session's turn publishes via `identity`. `None` for every other session
+/// category: they have no conversation of their own to send it to.
 ///
 /// Returns this turn's final text response. The full transcript is left in
 /// `recent_messages` for the caller.
@@ -272,10 +333,14 @@ pub(crate) async fn execute_subagent(
     kickoff: TurnKickoff,
     recent_messages: &mut RecentMessages,
     resources: &SubAgentResources,
-    stop_token: &CancellationToken,
-    transcript_sink: Option<&dyn crate::agent::turn::TranscriptSink>,
-    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    turn: TurnExecution<'_>,
+    conversation_output: Option<ConversationOutput<'_>>,
 ) -> Result<String, anyhow::Error> {
+    let TurnExecution {
+        stop_token,
+        transcript_sink,
+        interrupt_rx,
+    } = turn;
     // Build skills context from this session's isolated skill state
     let active_instructions: Option<String> = {
         let guard = resources.skill_state.lock().await;
@@ -292,10 +357,10 @@ pub(crate) async fn execute_subagent(
     resources.hop_counter.set(kickoff.hop_count());
 
     // No identity/wiki/skills content here — that lives in the system message.
-    let kickoff_message = Message::user(kickoff.into_message_text());
-    recent_messages.push(kickoff_message.clone());
+    let kickoff_messages = kickoff.into_messages();
+    recent_messages.extend(kickoff_messages.clone());
     if let Some(sink) = transcript_sink {
-        sink.append(&[kickoff_message]).await;
+        sink.append(&kickoff_messages).await;
     }
 
     let memory_ctx = MemoryContext {
@@ -322,6 +387,11 @@ pub(crate) async fn execute_subagent(
             address: identity.address,
             run_id: identity.run_id,
         },
+        session_conversation: conversation_output.map(|out| SessionConversationTarget {
+            session_address: identity.address,
+            endpoint: out.endpoint,
+            conversation_id: out.conversation_id,
+        }),
     };
     // Session turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
@@ -393,6 +463,7 @@ mod tests {
             prompt: prompt.to_string(),
             context: context.map(str::to_string),
             hop_count: 0,
+            sender: None,
         }
     }
 
@@ -451,9 +522,12 @@ mod tests {
             initial("check emails", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -471,9 +545,12 @@ mod tests {
             initial("do work", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -506,9 +583,12 @@ mod tests {
             initial("check emails", Some("extra context")),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -538,9 +618,12 @@ mod tests {
             }),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -550,6 +633,133 @@ mod tests {
             first.content,
             "[Agent Message from main (main)]\nhow's it going?"
         );
+    }
+
+    fn sample_sender() -> MessageSender {
+        MessageSender {
+            name: "Jane".to_string(),
+            id: "discord-jane".to_string(),
+            interface: "discord".to_string(),
+            location: Some("#builds".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_kickoff_with_a_sender_carries_attribution_not_joined_text() {
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        execute_subagent(
+            &test_identity("run-conv-initial"),
+            TurnKickoff::Initial {
+                prompt: "can you look at this?".to_string(),
+                context: None,
+                hop_count: 0,
+                sender: Some(sample_sender()),
+            },
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let first = recent_messages.messages().first().unwrap();
+        // Attribution is structured metadata (`sender`), not baked into
+        // `content` — the raw prompt stays clean, matching how the main
+        // agent stores its own attributed messages.
+        assert_eq!(first.content, "can you look at this?");
+        assert_eq!(first.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
+    }
+
+    #[tokio::test]
+    async fn initial_kickoff_with_a_sender_and_context_splits_into_two_messages() {
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        execute_subagent(
+            &test_identity("run-conv-initial-ctx"),
+            TurnKickoff::Initial {
+                prompt: "thoughts?".to_string(),
+                context: Some("[14:00] Sam: build is red".to_string()),
+                hop_count: 0,
+                sender: Some(sample_sender()),
+            },
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let messages = recent_messages.messages();
+        let [context, user, ..] = messages else {
+            panic!("expected context then user message, got {messages:?}");
+        };
+        assert_eq!(context.role, crate::inference::Role::System);
+        assert_eq!(context.content, "[14:00] Sam: build is red");
+        assert_eq!(user.role, crate::inference::Role::User);
+        assert_eq!(user.content, "thoughts?");
+    }
+
+    #[tokio::test]
+    async fn external_kickoff_carries_sender_and_buffered_context() {
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        let inbound = InboundMessage {
+            id: "m1".to_string(),
+            content: "can you check the build?".to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "discord".to_string(),
+                sender: Some(sample_sender()),
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "chan-1".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    is_owner: false,
+                }),
+            },
+            timestamp: chrono::Utc::now(),
+            images: vec![],
+            context: Some("[14:00] Sam: build is red".to_string()),
+        };
+
+        execute_subagent(
+            &test_identity("run-external"),
+            TurnKickoff::External(inbound),
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let messages = recent_messages.messages();
+        let [context, user, ..] = messages else {
+            panic!("expected context then user message, got {messages:?}");
+        };
+        assert_eq!(context.role, crate::inference::Role::System);
+        assert_eq!(context.content, "[14:00] Sam: build is red");
+        assert_eq!(user.content, "can you check the build?");
+        assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
     }
 
     #[tokio::test]
@@ -578,9 +788,12 @@ mod tests {
             initial("keep working", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut rx,
+            },
             None,
-            &mut rx,
         )
         .await
         .unwrap();
@@ -595,6 +808,59 @@ mod tests {
             messages.first().unwrap().content,
             "keep working",
             "the original kickoff should still be the turn's first message"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_conversation_message_is_drained_within_the_same_running_turn() {
+        // Mirrors `queued_agent_message_is_drained_within_the_same_running_turn`
+        // for `Interrupt::UserMessage`: a conversation session's running turn
+        // must pick up a new message from its own conversation the same way,
+        // via the shared `execute_turn` interrupt draining.
+        let resources = make_resources("wrapping up");
+
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Interrupt::UserMessage(InboundMessage {
+            id: "m2".to_string(),
+            content: "any updates?".to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "discord".to_string(),
+                sender: Some(sample_sender()),
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "chan-1".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    is_owner: false,
+                }),
+            },
+            timestamp: chrono::Utc::now(),
+            images: vec![],
+            context: None,
+        }))
+        .unwrap();
+
+        let mut recent_messages = RecentMessages::new();
+        let summary = execute_subagent(
+            &test_identity("run-conv-interrupt"),
+            initial("keep working", None),
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary, "wrapping up");
+        let messages = recent_messages.messages();
+        assert!(
+            messages.iter().any(|m| m.content == "any updates?"
+                && m.sender.as_ref().map(|s| s.name.as_str()) == Some("Jane")),
+            "the queued conversation message should be injected into the running turn \
+             with its sender attribution intact, got {messages:?}"
         );
     }
 
@@ -660,9 +926,12 @@ mod tests {
             initial("continue the task", None),
             &mut recent_messages,
             &resources,
-            &CancellationToken::new(),
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -696,6 +965,144 @@ mod tests {
         assert!(
             !user.content.contains("I am the agent."),
             "identity must not be duplicated into the user message"
+        );
+    }
+
+    /// Returns a tool call plus text on its first call (so `execute_turn`
+    /// takes the intermediate-publish branch and executes a tool), then
+    /// plain text with no tool calls on every call after (ending the turn).
+    struct ToolCallThenTextProvider {
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ToolCallThenTextProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            let n = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                Ok(InferenceResponse::new(
+                    "checking the build now".to_string(),
+                    vec![crate::inference::ToolCall {
+                        id: "call-1".to_string(),
+                        name: "nonexistent_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                    }],
+                ))
+            } else {
+                Ok(InferenceResponse::new("build is green".to_string(), vec![]))
+            }
+        }
+
+        fn model_name(&self) -> &'static str {
+            "tool-call-then-text"
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_sessions_intermediate_text_reaches_its_own_conversation() {
+        // Regression test: a conversation session's pre-tool-call text used
+        // to go nowhere (sessions always ran with a noop publisher and no
+        // output endpoint). With `conversation_output` set, it must reach
+        // the session's own conversation as a `SessionResponseEvent` — the
+        // same event and delivery path its final turn output uses — not
+        // main's `IntermediateEvent`.
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+        let (layout, observer, merge_writer) = test_memory_extras();
+        let resources = SubAgentResources {
+            provider: Box::new(ToolCallThenTextProvider {
+                call_count: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            tools: ToolRegistry::new(),
+            mcp_registry,
+            skill_state,
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut conv_sub: crate::bus::Subscriber<crate::bus::SessionResponseEvent> = bus_handle
+            .subscribe(crate::bus::topics::Endpoint(
+                crate::bus::EndpointName::from("discord"),
+            ))
+            .await
+            .unwrap();
+        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> = bus_handle
+            .subscribe(crate::bus::topics::Sessions)
+            .await
+            .unwrap();
+
+        let address = crate::bus::SessionAddress::from("external-discord-chan-1");
+        let identity = SessionTurnIdentity {
+            publisher: &publisher,
+            address: &address,
+            run_id: "run-conv-tool",
+        };
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+
+        let summary = execute_subagent(
+            &identity,
+            initial("can you check the build?", None),
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            Some(ConversationOutput {
+                endpoint: "discord",
+                conversation_id: "chan-1",
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary, "build is green");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), conv_sub.recv())
+            .await
+            .expect("intermediate text should reach the conversation promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.content, "checking the build now");
+        assert_eq!(event.session_address, address);
+        assert_eq!(event.conversation_id, "chan-1");
+
+        let session_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), session_sub.recv())
+                .await
+                .expect(
+                    "the session-stream event should also be published, same as any other session",
+                )
+                .unwrap()
+                .unwrap();
+        assert_eq!(session_event.address, address);
+        assert_eq!(session_event.run_id, "run-conv-tool");
+        assert!(
+            matches!(
+                session_event.kind,
+                crate::bus::SessionEventKind::Intermediate { ref content }
+                    if content == "checking the build now"
+            ),
+            "a conversation session's intermediate text must reach the web sessions stream too"
         );
     }
 
@@ -752,9 +1159,12 @@ mod tests {
             initial("do work", None),
             &mut recent_messages,
             &resources,
-            &stop_token,
+            TurnExecution {
+                stop_token: &stop_token,
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
             None,
-            &mut interrupt_rx,
         )
         .await
         .unwrap();
@@ -830,9 +1240,12 @@ mod tests {
             initial("do work", None),
             &mut recent_messages,
             &resources,
-            &stop_token,
-            Some(&sink),
-            &mut interrupt_rx,
+            TurnExecution {
+                stop_token: &stop_token,
+                transcript_sink: Some(&sink),
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
         )
         .await
         .unwrap();

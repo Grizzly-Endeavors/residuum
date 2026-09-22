@@ -43,6 +43,9 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> SpawnRequestEvent {
         spawner: None,
         depth: MAIN_DEPTH + 1,
         hop_count: 0,
+        sender: None,
+        conversation: None,
+        inbound: None,
     }
 }
 

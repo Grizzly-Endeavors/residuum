@@ -2,6 +2,7 @@
 //! old fire-and-forget background task spawner. See `docs/design/agent-sessions.md`
 //! for the systems-level design and `README.md` for how the pieces fit together.
 
+pub mod conversation_router;
 pub(crate) mod events;
 pub(crate) mod listener;
 pub mod messaging;
@@ -15,6 +16,7 @@ pub mod types;
 
 pub use crate::agent::hop::HopCounter;
 pub(crate) use crate::agent::hop::HopLimits;
+pub use conversation_router::ConversationRouter;
 pub use messaging::{AgentMessenger, DeliveryOutcome, SendError};
 pub use registry::{DeliverOutcome, SessionRegistry};
 pub use runtime::SessionRuntime;

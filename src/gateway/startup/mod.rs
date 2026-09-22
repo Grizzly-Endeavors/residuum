@@ -11,6 +11,7 @@ use std::sync::Arc;
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::SessionRuntime;
+use crate::background::conversation_router::ConversationRouter;
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
@@ -55,6 +56,7 @@ pub(crate) struct GatewayComponents {
     pub session_registry: Arc<SessionRegistry>,
     pub session_store: Arc<SessionStore>,
     pub agent_messenger: Arc<AgentMessenger>,
+    pub conversation_router: Arc<ConversationRouter>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
@@ -263,6 +265,7 @@ async fn init_session_runtime(
     Arc<SessionStore>,
     Arc<AgentMessenger>,
     Arc<SessionRuntime>,
+    Arc<ConversationRouter>,
 ) {
     let registry = Arc::new(SessionRegistry::new());
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
@@ -298,7 +301,8 @@ async fn init_session_runtime(
         cfg.timezone,
         Arc::clone(&messenger),
     ));
-    (registry, store, messenger, runtime)
+    let conversation_router = Arc::new(ConversationRouter::new(Arc::clone(&messenger)));
+    (registry, store, messenger, runtime, conversation_router)
 }
 
 /// Load and connect workspace MCP servers.
@@ -571,6 +575,70 @@ async fn build_tools_and_agent(
     (agent, path_policy_for_runtime, output_topic_override_tx)
 }
 
+/// Inputs to [`build_main_agent`], gathered because building the main agent
+/// needs this many independent pieces.
+struct MainAgentInputs<'a> {
+    cfg: &'a Config,
+    layout: &'a WorkspaceLayout,
+    mem: &'a memory::MemoryComponents,
+    tz: chrono_tz::Tz,
+    identity: IdentityFiles,
+    provider: Box<dyn crate::inference::InferenceProvider>,
+    options: crate::inference::CompletionOptions,
+    net: &'a NetworkingComponents,
+    action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
+    action_notify: &'a Arc<tokio::sync::Notify>,
+    skill_state: &'a SharedSkillState,
+    session_registry: &'a Arc<SessionRegistry>,
+    publisher: &'a crate::bus::Publisher,
+    tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    agent_messenger: &'a Arc<AgentMessenger>,
+}
+
+/// Create main's hop counter and build the agent from it, wrapping
+/// [`build_tools_and_agent`]'s `ToolsAndAgentInputs`/`ToolRegistryDeps`
+/// assembly. Split out of `initialize` purely to keep that function's line
+/// count down.
+async fn build_main_agent(
+    inputs: MainAgentInputs<'_>,
+) -> (
+    Agent,
+    crate::tools::SharedPathPolicy,
+    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
+) {
+    // Main's current-turn hop counter, created once and shared between the
+    // `Agent` and the `message_agent`/`subagent_spawn` tools registered
+    // against it, so they always agree on the current turn's hop count.
+    let hop_counter = crate::agent::HopCounter::new(0);
+
+    build_tools_and_agent(ToolsAndAgentInputs {
+        cfg: inputs.cfg,
+        layout: inputs.layout,
+        mem: inputs.mem,
+        tz: inputs.tz,
+        tool_deps: ToolRegistryDeps {
+            action_store: inputs.action_store,
+            action_notify: inputs.action_notify,
+            skill_state: inputs.skill_state,
+            tools_path: &inputs.net.tools_path,
+            session_registry: inputs.session_registry,
+            endpoint_registry: &inputs.net.endpoint_registry,
+            publisher: inputs.publisher,
+            tracing_service: inputs.tracing_service,
+            tracing_client_context: inputs.tracing_client_context,
+            agent_messenger: inputs.agent_messenger,
+            hop_counter: &hop_counter,
+        },
+        mcp_registry: &inputs.net.mcp_registry,
+        provider: inputs.provider,
+        options: inputs.options,
+        identity: inputs.identity,
+        hop_counter: hop_counter.clone(),
+    })
+    .await
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -602,7 +670,7 @@ pub(crate) async fn initialize(
         &mem,
         providers.embedding_provider.clone(),
     )?;
-    let (session_registry, session_store, agent_messenger, session_runtime) =
+    let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
         init_session_runtime(cfg, &layout, publisher, &session_observer, &merge_writer).await;
     let net = init_networking(cfg, &layout).await;
 
@@ -626,36 +694,24 @@ pub(crate) async fn initialize(
     });
 
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
-
-    // Main's current-turn hop counter, created once and shared between the
-    // `Agent` and the `message_agent`/`subagent_spawn` tools registered
-    // against it, so they always agree on the current turn's hop count.
-    let hop_counter = crate::agent::HopCounter::new(0);
-
     let (agent, path_policy_for_runtime, output_topic_override_tx) =
-        build_tools_and_agent(ToolsAndAgentInputs {
+        build_main_agent(MainAgentInputs {
             cfg,
             layout: &layout,
             mem: &mem,
             tz,
-            tool_deps: ToolRegistryDeps {
-                action_store: &action_store,
-                action_notify: &action_notify,
-                skill_state: &skill_state,
-                tools_path: &net.tools_path,
-                session_registry: &session_registry,
-                endpoint_registry: &net.endpoint_registry,
-                publisher,
-                tracing_service: &tracing_service,
-                tracing_client_context: &tracing_client_context,
-                agent_messenger: &agent_messenger,
-                hop_counter: &hop_counter,
-            },
-            mcp_registry: &net.mcp_registry,
+            identity,
             provider: providers.provider,
             options: providers.options,
-            identity,
-            hop_counter: hop_counter.clone(),
+            net: &net,
+            action_store: &action_store,
+            action_notify: &action_notify,
+            skill_state: &skill_state,
+            session_registry: &session_registry,
+            publisher,
+            tracing_service: &tracing_service,
+            tracing_client_context: &tracing_client_context,
+            agent_messenger: &agent_messenger,
         })
         .await;
 
@@ -680,6 +736,7 @@ pub(crate) async fn initialize(
         session_registry,
         session_store,
         agent_messenger,
+        conversation_router,
         spawn_context,
         path_policy: path_policy_for_runtime,
         output_topic_override_tx,

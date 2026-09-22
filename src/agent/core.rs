@@ -312,6 +312,7 @@ impl Agent {
                 tool_activity_endpoint,
                 correlation_id,
             },
+            session_conversation: None,
         };
         execute_turn(
             &resources,

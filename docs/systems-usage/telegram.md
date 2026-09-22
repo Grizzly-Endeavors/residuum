@@ -15,6 +15,10 @@ Commands (`/stop`, `/reload`, `/inbox`, …) run only for the owner in either mo
 
 Every message the agent sees records who sent it and where, e.g. `[From: Bear Flinn via telegram (group "Launch prep")]` — see [Message Senders](memory.md#message-senders).
 
+## Conversation routing
+
+Only the owner's own private chat reaches the main agent. Every other admitted conversation — a group or supergroup, and a non-owner's private chat when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that chat, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group — a group is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that chat — see [Where replies go](#where-replies-go).
+
 ## Private chats and groups
 
 In a private chat every message goes to the agent.
@@ -39,9 +43,10 @@ The buffer for that group is emptied when it is delivered, so each message reach
 
 ## Where replies go
 
-- A reply goes to the chat the message came from.
-- `send_message` with a `conversation` from `list_conversations` posts into that private chat or group. If Telegram refuses the post (the bot was removed, or can't write there), the owner gets an error message saying so.
-- Other proactive output — `send_message` without a conversation, results routed through `idle_channel = "telegram"`, background turns — goes to the owner's chat. Until an owner exists it is dropped with a warning in the log.
+- A private-chat reply goes to the owner from the main agent's own conversation.
+- A group's reply comes from that group's own session and always goes back to that same group. It never falls back to the owner's chat: if Telegram refuses the post (the bot was removed, or can't write there), the output is dropped, the error is logged naming the session and chat, and main gets a notice so the owner can be told if it matters.
+- `send_message` with a `conversation` from `list_conversations` posts into that private chat or group, from whichever agent (main or a session) calls it. If Telegram refuses the post, main's own send gets an error message to the owner the same way it always has; a session's send is subject to the same never-falls-back rule as its own replies above.
+- Other proactive output from main — `send_message` without a conversation, results routed through `idle_channel = "telegram"`, background turns — goes to the owner's chat. Until an owner exists it is dropped with a warning in the log.
 - System notices and errors go only to the owner's chat, never into a group.
 
 Long replies are split into 4096-character messages. A typing indicator shows while a turn runs. Files the agent sends go out as photos, audio, or documents by type; captions longer than Telegram's 1024-character limit are followed by the full text.

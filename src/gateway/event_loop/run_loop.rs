@@ -264,6 +264,7 @@ async fn build_runtime(
         session_registry: parts.session_registry,
         session_store: parts.session_store,
         agent_messenger: parts.agent_messenger,
+        conversation_router: parts.conversation_router,
         action_store: parts.action_store,
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
@@ -588,7 +589,17 @@ async fn handle_bus_event(
                 images: msg_event.images,
                 context: msg_event.context,
             };
-            handle_inbound_message(message, rt, observe_deadline, idle_deadline).await;
+            if message.origin.belongs_to_main() {
+                handle_inbound_message(message, rt, observe_deadline, idle_deadline).await;
+            } else {
+                // A group chat, a channel, or a non-owner DM: routes to that
+                // conversation's session instead of the main agent's turn.
+                // Spawned rather than awaited so a slow conversation delivery
+                // (a completing target's teardown) never holds up the main
+                // event loop.
+                let router = Arc::clone(&rt.conversation_router);
+                tokio::spawn(async move { router.route(message).await });
+            }
             BusEventAction::Continue
         }
         Ok(None) => {

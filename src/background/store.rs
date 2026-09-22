@@ -829,6 +829,7 @@ mod tests {
             purpose: "research the thing".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: Utc::now(),
         }
     }

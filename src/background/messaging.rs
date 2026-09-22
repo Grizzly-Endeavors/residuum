@@ -33,7 +33,9 @@ use crate::agent::interrupt::Interrupt;
 use crate::bus::{
     AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, topics,
 };
-use crate::interfaces::types::MessageOrigin;
+use crate::config::BackgroundModelTier;
+use crate::inference::Message;
+use crate::interfaces::types::InboundMessage;
 
 use super::events::publish_session_event;
 use super::registry::{DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry};
@@ -131,6 +133,14 @@ impl AgentMessenger {
             hop_limits,
             pending_main_hops: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The bus publisher this messenger delivers with, for a caller (e.g.
+    /// [`super::conversation_router::ConversationRouter`]) that needs to
+    /// publish a notice of its own alongside an ordinary delivery.
+    #[must_use]
+    pub(crate) fn publisher(&self) -> Publisher {
+        self.publisher.clone()
     }
 
     /// Recover the hop count of an agent message delivered to main, given
@@ -294,18 +304,7 @@ impl AgentMessenger {
             content,
             hop_count,
         };
-        let event = MessageEvent {
-            id: format!("agent-msg-{}", uuid::Uuid::new_v4()),
-            content: msg.format_for_agent(),
-            origin: MessageOrigin {
-                endpoint: "background".to_string(),
-                sender: None,
-                conversation: None,
-            },
-            timestamp: chrono::Utc::now().naive_utc(),
-            images: Vec::new(),
-            context: None,
-        };
+        let event = MessageEvent::from_background(msg.format_for_agent());
         let message_id = event.id.clone();
         self.pending_main_hops
             .lock()
@@ -375,10 +374,12 @@ impl AgentMessenger {
         .await
     }
 
-    /// Resume a session as a new run, combining several buffered agent
-    /// messages into a single kickoff prompt. The resumed run's hop count is
-    /// the highest hop count among the combined messages — together they're
-    /// the inputs driving its first turn.
+    /// Resume a session as a new run, combining several buffered messages
+    /// (agent messages, conversation messages, or a mix — anything that can
+    /// land in a session's interrupt channel) into a single kickoff prompt.
+    /// The resumed run's hop count is the highest hop count among the
+    /// combined messages — together they're the inputs driving its first
+    /// turn.
     ///
     /// Used when a run's own interrupt channel still holds messages at the
     /// moment its teardown drains it (see
@@ -390,19 +391,310 @@ impl AgentMessenger {
     ///
     /// Returns [`SendError::PublishFailed`] if publishing the resume spawn
     /// request fails.
-    pub(crate) async fn resume_with_messages(
+    pub(crate) async fn resume_with_pending(
         &self,
         address: &SessionAddress,
         point: &ResumePoint,
-        messages: &[AgentMessageEvent],
+        pending: &[PendingInput],
     ) -> Result<(), SendError> {
-        let combined = messages
+        let combined = pending
             .iter()
-            .map(AgentMessageEvent::format_for_agent)
+            .map(PendingInput::render_for_resume)
             .collect::<Vec<_>>()
             .join("\n\n");
-        let hop_count = messages.iter().map(|m| m.hop_count).max().unwrap_or(0);
+        let hop_count = pending
+            .iter()
+            .map(PendingInput::hop_count)
+            .max()
+            .unwrap_or(0);
         publish_resume(&self.publisher, address, point, combined, hop_count).await
+    }
+
+    /// Deliver an inbound conversation message to its session by its
+    /// deterministic address, per the delivery rules: an interrupt at the
+    /// next tool-call boundary if it's running, a new turn if it's idle, a
+    /// deferred resume if its current run is completing, and — unlike
+    /// [`Self::send`], which requires the target to already exist — a fresh
+    /// spawn if no run has ever executed at this address (the first message
+    /// in a brand-new conversation).
+    ///
+    /// Inbound conversation messages are external input, so unlike
+    /// [`Self::send`] this carries no hop-count check: they are always hop
+    /// `0`, below both limits by construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendError::Busy`] if the target is live but its interrupt
+    /// channel is saturated, and [`SendError::PublishFailed`] if starting or
+    /// resuming the session failed at the bus.
+    pub(crate) async fn deliver_conversation(
+        &self,
+        address: &SessionAddress,
+        inbound: InboundMessage,
+        spawn: ConversationSpawn,
+    ) -> Result<ConversationDeliveryOutcome, SendError> {
+        match self
+            .registry
+            .deliver(address, Interrupt::UserMessage(inbound.clone()))
+        {
+            DeliverOutcome::Delivered => {
+                return Ok(ConversationDeliveryOutcome::Live(address.clone()));
+            }
+            DeliverOutcome::Full => return Err(SendError::Busy(address.clone())),
+            DeliverOutcome::Completing => {
+                // Mirrors `send`'s own `Completing` branch: hand the wait
+                // off to a detached task rather than blocking the caller
+                // (an interface's inbound handler) on however long the
+                // completing run's own teardown takes.
+                let registry = Arc::clone(&self.registry);
+                let publisher = self.publisher.clone();
+                let deferred_address = address.clone();
+                tokio::spawn(async move {
+                    deferred_conversation_resume(
+                        registry,
+                        publisher,
+                        deferred_address,
+                        inbound,
+                        spawn,
+                    )
+                    .await;
+                });
+                return Ok(ConversationDeliveryOutcome::Queued(address.clone()));
+            }
+            DeliverOutcome::NotLive => {}
+        }
+
+        if let Some(point) = self.registry.resume_point(address) {
+            publish_conversation_resume(&self.publisher, address, &point, &inbound).await?;
+            Ok(ConversationDeliveryOutcome::Resumed(address.clone()))
+        } else {
+            publish_conversation_spawn(&self.publisher, address.clone(), inbound, spawn).await?;
+            Ok(ConversationDeliveryOutcome::Started(address.clone()))
+        }
+    }
+}
+
+/// A message that can arrive in a session's interrupt channel, held together
+/// only for [`AgentMessenger::resume_with_pending`]'s combined-kickoff
+/// rendering when a run's teardown drains a mix of both kinds.
+#[derive(Debug, Clone)]
+pub(crate) enum PendingInput {
+    /// Another agent addressed this session (`message_agent`).
+    Agent(AgentMessageEvent),
+    /// A new message arrived in this session's own conversation.
+    External(InboundMessage),
+}
+
+impl PendingInput {
+    fn hop_count(&self) -> u32 {
+        match self {
+            Self::Agent(m) => m.hop_count,
+            // Inbound conversation messages are external input: hop 0.
+            Self::External(_) => 0,
+        }
+    }
+
+    /// Render this input as it would read in a resumed run's opening prompt.
+    fn render_for_resume(&self) -> String {
+        match self {
+            Self::Agent(m) => m.format_for_agent(),
+            Self::External(m) => {
+                let mut parts = Vec::new();
+                if let Some(ctx) = &m.context {
+                    parts.push(ctx.clone());
+                }
+                // Reuses `Message::attributed_content`'s formatting rather
+                // than hand-rolling the `[From: …]` prefix a second time, so
+                // the two stay in sync if that format ever changes.
+                let attributed = Message::user(m.content.clone())
+                    .with_sender(m.origin.sender.clone())
+                    .attributed_content()
+                    .into_owned();
+                parts.push(attributed);
+                parts.join("\n\n")
+            }
+        }
+    }
+}
+
+/// Parameters for starting a brand-new conversation session when no run has
+/// ever executed at its deterministic address.
+#[derive(Debug, Clone)]
+pub(crate) struct ConversationSpawn {
+    /// Human-readable source label (e.g. `"discord:#builds"`).
+    pub(crate) source_label: String,
+    /// Model tier to run the session at.
+    pub(crate) model_tier: BackgroundModelTier,
+}
+
+/// Outcome of delivering an inbound conversation message to its session.
+#[derive(Debug, Clone)]
+pub(crate) enum ConversationDeliveryOutcome {
+    /// Delivered into a live (running or idle) session.
+    Live(SessionAddress),
+    /// No run had ever executed at this address; a fresh one was started.
+    Started(SessionAddress),
+    /// The session had completed a previous run; a new run was started,
+    /// picking up from where it left off.
+    Resumed(SessionAddress),
+    /// The session's current run is completing; delivery was handed to a
+    /// detached task that starts or resumes the session once that run
+    /// clears the registry.
+    Queued(SessionAddress),
+}
+
+/// Build the `SpawnRequestEvent` that starts a brand-new conversation
+/// session, and publish it for the spawn listener to pick up.
+async fn publish_conversation_spawn(
+    publisher: &Publisher,
+    address: SessionAddress,
+    inbound: InboundMessage,
+    spawn: ConversationSpawn,
+) -> Result<(), SendError> {
+    let Some(conversation) = inbound.origin.conversation.as_ref() else {
+        // The router only ever calls this for messages it has already
+        // classified as conversation input (see
+        // `MessageOrigin::belongs_to_main`), so this is an internal
+        // inconsistency, not a real-world input this needs to tolerate.
+        tracing::error!(
+            address = %address,
+            "conversation spawn requested for an inbound message with no conversation context"
+        );
+        return Err(SendError::PublishFailed(
+            "internal error: no conversation context on an external message".to_string(),
+        ));
+    };
+    let conversation_id = conversation.id.clone();
+    let original_inbound = inbound.clone();
+    let event = crate::bus::SpawnRequestEvent {
+        address,
+        skill: None,
+        source_label: spawn.source_label,
+        prompt: inbound.content,
+        context: inbound.context,
+        source: crate::bus::EventTrigger::Conversation,
+        model_tier: spawn.model_tier,
+        spawner: None,
+        depth: crate::background::registry::MAIN_DEPTH + 1,
+        hop_count: 0,
+        sender: inbound.origin.sender,
+        conversation: Some(crate::bus::ConversationTarget {
+            endpoint: inbound.origin.endpoint,
+            conversation_id,
+        }),
+        inbound: Some(original_inbound),
+    };
+    publisher
+        .publish(topics::Background, event)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to publish conversation spawn request");
+            SendError::PublishFailed("failed to start a conversation session".to_string())
+        })
+}
+
+/// Build the `SpawnRequestEvent` that resumes a completed conversation
+/// session as a new run, carrying the previous run's pointer alongside the
+/// new inbound message.
+async fn publish_conversation_resume(
+    publisher: &Publisher,
+    address: &SessionAddress,
+    point: &ResumePoint,
+    inbound: &InboundMessage,
+) -> Result<(), SendError> {
+    let context = match &inbound.context {
+        Some(ctx) => format!("{}\n\n{ctx}", pointer_note(point)),
+        None => pointer_note(point),
+    };
+    let event = crate::bus::SpawnRequestEvent {
+        address: address.clone(),
+        skill: point.agent_skill.clone(),
+        source_label: point.source_label.clone(),
+        prompt: inbound.content.clone(),
+        context: Some(context),
+        source: point.trigger.clone(),
+        model_tier: point.model_tier,
+        spawner: point.spawner.clone(),
+        depth: point.depth,
+        hop_count: 0,
+        sender: inbound.origin.sender.clone(),
+        conversation: point.conversation_target.clone(),
+        inbound: Some(inbound.clone()),
+    };
+    publisher.publish(topics::Background, event).await.map_err(|e| {
+        tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
+        SendError::PublishFailed(format!("failed to resume conversation session {address}"))
+    })
+}
+
+/// Wait for `address` to leave the registry, then re-run the same
+/// live-vs-start-vs-resume decision [`AgentMessenger::deliver_conversation`]
+/// makes for a fresh call — the deferred half of its `Completing` branch, run
+/// on its own detached task so the original caller never blocks on it.
+async fn deferred_conversation_resume(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    inbound: InboundMessage,
+    spawn: ConversationSpawn,
+) {
+    loop {
+        registry.wait_until_clear(&address).await;
+        let done = resume_or_start_conversation_after_clear(
+            &registry, &publisher, &address, &inbound, &spawn,
+        )
+        .await;
+        if done {
+            return;
+        }
+        // Falling through loops back to `wait_until_clear` again — another
+        // resume raced in and is already tearing down once more.
+    }
+}
+
+/// The decision `deferred_conversation_resume` makes once `address` has been
+/// observed clear: deliver into a run that already won the race, resume from
+/// its resume point, or start a fresh run if it never had one. Returns
+/// `false` only for [`DeliverOutcome::Completing`] (another resume raced in
+/// and is *already* tearing down again), telling the caller to wait and
+/// retry — every other outcome, success or failure, is final.
+async fn resume_or_start_conversation_after_clear(
+    registry: &SessionRegistry,
+    publisher: &Publisher,
+    address: &SessionAddress,
+    inbound: &InboundMessage,
+    spawn: &ConversationSpawn,
+) -> bool {
+    match registry.deliver(address, Interrupt::UserMessage(inbound.clone())) {
+        DeliverOutcome::Delivered => true,
+        DeliverOutcome::Completing => false,
+        DeliverOutcome::Full => {
+            tracing::error!(
+                address = %address,
+                "deferred conversation delivery failed: interrupt channel saturated; message dropped"
+            );
+            true
+        }
+        DeliverOutcome::NotLive => {
+            let result = match registry.resume_point(address) {
+                Some(point) => {
+                    publish_conversation_resume(publisher, address, &point, inbound).await
+                }
+                None => {
+                    publish_conversation_spawn(
+                        publisher,
+                        address.clone(),
+                        inbound.clone(),
+                        spawn.clone(),
+                    )
+                    .await
+                }
+            };
+            if let Err(e) = result {
+                tracing::error!(error = %e, address = %address, "failed to deliver deferred conversation message");
+            }
+            true
+        }
     }
 }
 
@@ -596,6 +888,19 @@ async fn publish_resume(
         spawner: point.spawner.clone(),
         depth: point.depth,
         hop_count,
+        // An agent message carries no sender attribution; a conversation
+        // session's own conversation target is still carried over, though,
+        // so a resume triggered by `message_agent` doesn't strand it.
+        sender: None,
+        conversation: point.conversation_target.clone(),
+        // This resume was triggered by a plain agent message
+        // (`message_agent`/`resume_with_pending`), never an inbound
+        // conversation message — even when `point.trigger` is
+        // `Conversation` (a previously conversation-triggered session,
+        // resumed by an agent addressing it directly). A race-guard delivery
+        // for this request must fall back to `Interrupt::AgentMessage`, not
+        // fabricate a `UserMessage` with no real sender.
+        inbound: None,
     };
 
     publisher
@@ -661,6 +966,7 @@ mod tests {
             model_tier,
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
+            conversation_target: None,
         }
     }
 
@@ -680,6 +986,7 @@ mod tests {
             purpose: "research".to_string(),
             agent_skill: None,
             model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: None,
             started_at: chrono::Utc::now(),
         }
     }
@@ -1096,6 +1403,7 @@ mod tests {
                 model_tier: crate::config::BackgroundModelTier::Small,
                 spawner: None,
                 depth: 1,
+                conversation_target: None,
             },
         );
 
@@ -1117,7 +1425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_with_messages_combines_all_drained_messages_into_one_prompt() {
+    async fn resume_with_pending_combines_all_drained_agent_messages_into_one_prompt() {
         let (messenger, registry, bus_handle) = messenger();
         let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
@@ -1127,22 +1435,22 @@ mod tests {
         registry.record_resume_point(&address, point.clone());
 
         let messages = vec![
-            AgentMessageEvent {
+            PendingInput::Agent(AgentMessageEvent {
                 from: SessionAddress::from(MAIN_ADDRESS),
                 from_category: "main".to_string(),
                 content: "first".to_string(),
                 hop_count: 1,
-            },
-            AgentMessageEvent {
+            }),
+            PendingInput::Agent(AgentMessageEvent {
                 from: SessionAddress::from("spawned-other-0001"),
                 from_category: "spawned".to_string(),
                 content: "second".to_string(),
                 hop_count: 5,
-            },
+            }),
         ];
 
         messenger
-            .resume_with_messages(&address, &point, &messages)
+            .resume_with_pending(&address, &point, &messages)
             .await
             .unwrap();
 
@@ -1155,6 +1463,219 @@ mod tests {
             event.hop_count, 5,
             "the resumed run's hop count must be the highest among the combined messages"
         );
+    }
+
+    fn sample_inbound(content: &str, buffered: Option<&str>) -> InboundMessage {
+        InboundMessage {
+            id: "conv-1".to_string(),
+            content: content.to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "discord".to_string(),
+                sender: Some(crate::inference::MessageSender {
+                    name: "Jane".to_string(),
+                    id: "discord-jane".to_string(),
+                    interface: "discord".to_string(),
+                    location: Some("#builds".to_string()),
+                }),
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "chan-1".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    is_owner: false,
+                }),
+            },
+            timestamp: chrono::Utc::now(),
+            images: vec![],
+            context: buffered.map(str::to_string),
+        }
+    }
+
+    fn conversation_spawn() -> ConversationSpawn {
+        ConversationSpawn {
+            source_label: "discord:#builds".to_string(),
+            model_tier: crate::config::BackgroundModelTier::Medium,
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_with_pending_combines_agent_and_conversation_messages() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-0004");
+        let point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Small);
+        registry.record_resume_point(&address, point.clone());
+
+        let pending = vec![
+            PendingInput::Agent(AgentMessageEvent {
+                from: SessionAddress::from(MAIN_ADDRESS),
+                from_category: "main".to_string(),
+                content: "checking in".to_string(),
+                hop_count: 2,
+            }),
+            PendingInput::External(sample_inbound("any updates?", None)),
+        ];
+
+        messenger
+            .resume_with_pending(&address, &point, &pending)
+            .await
+            .unwrap();
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert!(event.prompt.contains("checking in"));
+        assert!(event.prompt.contains("any updates?"));
+        assert!(event.prompt.contains("Jane"), "{}", event.prompt);
+        assert_eq!(
+            event.hop_count, 2,
+            "the agent message's hop count is higher than the conversation message's (always 0)"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_to_a_live_session_delivers_via_registry() {
+        let (messenger, registry, _bus_handle) = messenger();
+        let info = sample_live_info(
+            "external-discord-0001",
+            crate::background::registry::SessionState::Idle,
+        );
+        let mut rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let outcome = messenger
+            .deliver_conversation(
+                &info.address,
+                sample_inbound("hi again", None),
+                conversation_spawn(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Live(addr) if addr == info.address));
+
+        let received = rx.try_recv().expect("message should be queued");
+        assert!(matches!(received, Interrupt::UserMessage(_)));
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_with_no_prior_run_starts_a_fresh_session() {
+        let (messenger, _registry, bus_handle) = messenger();
+        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-brand-new");
+        let outcome = messenger
+            .deliver_conversation(
+                &address,
+                sample_inbound(
+                    "can you check the build?",
+                    Some("[14:00] Sam: build is red"),
+                ),
+                conversation_spawn(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Started(addr) if addr == address));
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert_eq!(event.address, address);
+        assert_eq!(event.prompt, "can you check the build?");
+        assert_eq!(event.context.as_deref(), Some("[14:00] Sam: build is red"));
+        assert_eq!(event.hop_count, 0);
+        assert!(matches!(event.source, EventTrigger::Conversation));
+        assert_eq!(event.spawner, None);
+        assert_eq!(event.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
+        let target = event.conversation.expect("conversation target must be set");
+        assert_eq!(target.endpoint, "discord");
+        assert_eq!(target.conversation_id, "chan-1");
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_to_a_completed_session_resumes_it() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let address = SessionAddress::from("external-discord-0002");
+        let mut point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Large);
+        point.conversation_target = Some(crate::bus::ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "chan-1".to_string(),
+        });
+        registry.record_resume_point(&address, point);
+
+        let outcome = messenger
+            .deliver_conversation(
+                &address,
+                sample_inbound("still there?", None),
+                conversation_spawn(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Resumed(addr) if addr == address));
+
+        let event = sub.recv().await.unwrap().unwrap();
+        assert_eq!(event.address, address);
+        assert!(event.prompt.contains("still there?"));
+        assert_eq!(
+            event.model_tier,
+            crate::config::BackgroundModelTier::Large,
+            "a resumed conversation session must keep its previous model tier"
+        );
+        let target = event
+            .conversation
+            .expect("conversation target must carry over");
+        assert_eq!(target.conversation_id, "chan-1");
+    }
+
+    #[tokio::test]
+    async fn deliver_conversation_to_a_completing_session_queues_and_resumes_once_clear() {
+        let (messenger, registry, bus_handle) = messenger();
+        let mut sub: Subscriber<crate::bus::SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+        let info = sample_live_info(
+            "external-discord-0003",
+            crate::background::registry::SessionState::Completing,
+        );
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+        registry.record_resume_point(
+            &info.address,
+            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+        );
+
+        let address = info.address.clone();
+        let run_id = info.run_id.clone();
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            messenger.deliver_conversation(
+                &address,
+                sample_inbound("any updates?", None),
+                conversation_spawn(),
+            ),
+        )
+        .await
+        .expect("deliver_conversation must return promptly for a completing target")
+        .unwrap();
+        assert!(matches!(outcome, ConversationDeliveryOutcome::Queued(addr) if addr == address));
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
+                .await
+                .is_err(),
+            "the resume must wait for the completing run to clear before publishing"
+        );
+
+        registry.remove(&address, &run_id);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("the deferred resume should publish once the entry clears")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.address, address);
+        assert!(event.prompt.contains("any updates?"));
     }
 
     #[tokio::test]

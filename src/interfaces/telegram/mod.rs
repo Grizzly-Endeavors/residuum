@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use teloxide::types::ChatId;
 
+use crate::bus::Publisher;
 use crate::config::TelegramConfig;
 use crate::gateway::event_loop::AdapterSenders;
 use crate::interfaces::chat_state::{ChatRef, ChatStateStore};
@@ -40,6 +41,9 @@ pub(super) struct TelegramState {
     /// Unaddressed group messages held for the next time the bot is
     /// addressed, by chat.
     context_buffer: ContextBuffer,
+    /// For notifying main when a conversation session's output can't be
+    /// delivered (see `subscriber::deliver_session_response`).
+    publisher: Publisher,
 }
 
 impl TelegramState {
@@ -122,6 +126,7 @@ impl TelegramInterface {
             store: ChatStateStore::load(layout.telegram_state_json()).await?,
             reply_targets: ReplyTargets::default(),
             context_buffer: ContextBuffer::new(self.cfg.context_messages),
+            publisher: self.senders.publisher.clone(),
         });
         let _registration = self
             .senders
