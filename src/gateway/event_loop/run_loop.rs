@@ -75,6 +75,7 @@ struct SpawnedHandles {
     file_registry: crate::gateway::file_server::FileRegistry,
     webhooks: crate::interfaces::webhook::WebhookTable,
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -146,6 +147,10 @@ async fn spawn_server_and_adapters(
         parts.layout.channels_toml(),
         core.reload_tx.clone(),
     ));
+    let workbench_watcher_handle = Some(crate::workbench::watcher::spawn_workbench_watcher(
+        parts.layout.workbench_dir(),
+        core.publisher.clone(),
+    ));
 
     Ok(SpawnedHandles {
         server_handle,
@@ -159,6 +164,7 @@ async fn spawn_server_and_adapters(
         file_registry,
         webhooks,
         watcher_handle,
+        workbench_watcher_handle,
     })
 }
 
@@ -306,6 +312,7 @@ async fn build_runtime(
         teams_handle: spawned.adapters.teams_handle,
         teams_shutdown_tx: spawned.adapters.teams_shutdown_tx,
         watcher_handle: spawned.watcher_handle,
+        workbench_watcher_handle: spawned.workbench_watcher_handle,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         stop_tx: core.stop_tx,
@@ -484,6 +491,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(h) = rt.watcher_handle.take() {
         h.abort();
     }
+    if let Some(h) = rt.workbench_watcher_handle.take() {
+        h.abort();
+    }
     rt.http_shutdown_tx.send(true).ok();
     tracing::info!("graceful shutdown complete");
 }
@@ -547,12 +557,14 @@ async fn next_log_only_task_exit(
     telegram: &mut Option<tokio::task::JoinHandle<()>>,
     teams: &mut Option<tokio::task::JoinHandle<()>>,
     watcher: &mut Option<tokio::task::JoinHandle<()>>,
+    workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
     tokio::select! {
         result = poll_handle(discord) => ("discord adapter", result),
         result = poll_handle(telegram) => ("telegram adapter", result),
         result = poll_handle(teams) => ("teams adapter", result),
         result = poll_handle(watcher) => ("workspace watcher", result),
+        result = poll_handle(workbench_watcher) => ("workbench watcher", result),
     }
 }
 
@@ -751,6 +763,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 &mut rt.telegram_handle,
                 &mut rt.teams_handle,
                 &mut rt.watcher_handle,
+                &mut rt.workbench_watcher_handle,
             ) => {
                 log_adapter_task_exit(task_name, &result);
             }

@@ -258,6 +258,11 @@ export class FeedStore {
         // Agent session activity belongs to the sessions surface, never
         // the main chat feed.
         break;
+
+      case "workbench_tool_updated":
+      case "workbench_tool_removed":
+        // Workbench live reload belongs to the workbench views.
+        break;
     }
   }
 

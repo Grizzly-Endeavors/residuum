@@ -15,6 +15,7 @@ export type {
   SessionRunStatus,
   SessionState,
   SessionSummary,
+  WorkbenchToolSummary,
 } from "./generated/protocol";
 
 // Local aliases for use within this file

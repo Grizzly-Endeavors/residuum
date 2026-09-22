@@ -21,4 +21,5 @@ pub mod tracing_service;
 pub(crate) mod tunnel;
 pub mod update;
 pub mod util;
+pub(crate) mod workbench;
 pub mod workspace;

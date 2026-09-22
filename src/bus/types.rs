@@ -72,6 +72,8 @@ pub enum TopicId {
     Notification(NotifyName),
     /// The user inbox for incoming notifications.
     Inbox,
+    /// Workbench tool file changes.
+    Workbench,
 }
 
 impl fmt::Display for TopicId {
@@ -83,6 +85,7 @@ impl fmt::Display for TopicId {
             Self::UserMessage => f.write_str("user:message"),
             Self::Notification(name) => write!(f, "notification:{name}"),
             Self::Inbox => f.write_str("inbox"),
+            Self::Workbench => f.write_str("workbench"),
         }
     }
 }
