@@ -59,6 +59,59 @@ pub enum ToolError {
     /// Invalid arguments provided to the tool.
     #[error("invalid arguments: {0}")]
     InvalidArguments(String),
+
+    /// A model's tool call carried a name that isn't a plausible identifier
+    /// (whitespace, angle brackets, or other markup). Real tool names are
+    /// always `[a-zA-Z0-9_-]`, so this shape means the inference provider
+    /// failed to parse the model's native tool-call syntax into the
+    /// structured `tool_calls` field and leaked raw template markup into the
+    /// name instead — dispatching it to the tool or MCP registry would only
+    /// ever produce a confusing "unknown tool" lookup failure.
+    #[error(
+        "malformed tool name '{0}': the provider likely failed to parse your tool-call syntax \
+         into structured JSON; retry using the exact tool name as plain text with arguments as \
+         a JSON object"
+    )]
+    MalformedName(String),
+}
+
+/// Maximum length of a well-formed tool name.
+///
+/// Matches the `[a-zA-Z0-9_-]{1,64}` shape OpenAI-compatible APIs require of
+/// function names, which every built-in and MCP tool name in this codebase
+/// already satisfies.
+const MAX_PLAUSIBLE_TOOL_NAME_LEN: usize = 64;
+
+/// Number of characters kept when a malformed tool name is logged or reported
+/// back to the model, so a large blob of leaked markup doesn't flood the log
+/// or the transcript.
+const TOOL_NAME_DISPLAY_LIMIT: usize = 80;
+
+/// Whether `name` could plausibly be a real tool name.
+///
+/// Every built-in and MCP tool name in this codebase is `[a-zA-Z0-9_-]`, at
+/// most 64 characters. Anything else — whitespace, angle brackets, control
+/// characters — means a model's tool-call name field was not cleanly parsed
+/// by the inference provider, not that a genuinely unknown tool was
+/// requested.
+#[must_use]
+pub fn is_plausible_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_PLAUSIBLE_TOOL_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Truncate a raw, possibly-malformed tool name for safe logging or display.
+#[must_use]
+pub fn truncate_tool_name_for_display(name: &str) -> String {
+    if name.chars().count() <= TOOL_NAME_DISPLAY_LIMIT {
+        name.to_string()
+    } else {
+        let head: String = name.chars().take(TOOL_NAME_DISPLAY_LIMIT).collect();
+        format!("{head}...")
+    }
 }
 
 /// Result of a tool execution.
@@ -142,5 +195,84 @@ mod tests {
         let result = ToolResult::error("failed");
         assert!(result.is_error, "error result should be error");
         assert_eq!(result.output, "failed", "output should match");
+    }
+
+    #[test]
+    fn plausible_tool_name_accepts_real_tool_names() {
+        for name in [
+            "write_file",
+            "read_file",
+            "skill_activate",
+            "exec",
+            "a",
+            "a-b_c9",
+        ] {
+            assert!(is_plausible_tool_name(name), "'{name}' should be plausible");
+        }
+    }
+
+    #[test]
+    fn plausible_tool_name_rejects_leaked_glm_markup() {
+        // Mirrors the malformed name Fireworks/vLLM have shipped for GLM tool
+        // calls when the model's native `<arg_key>`/`<arg_value>` template
+        // syntax isn't cleanly parsed into structured `tool_calls`.
+        let name = "write_file\tcontent</arg_key><arg_value># Hello";
+        assert!(
+            !is_plausible_tool_name(name),
+            "leaked markup should be rejected"
+        );
+    }
+
+    #[test]
+    fn plausible_tool_name_rejects_empty_and_oversized() {
+        assert!(!is_plausible_tool_name(""), "empty name should be rejected");
+        let too_long = "a".repeat(MAX_PLAUSIBLE_TOOL_NAME_LEN + 1);
+        assert!(
+            !is_plausible_tool_name(&too_long),
+            "oversized name should be rejected"
+        );
+        let exactly_max = "a".repeat(MAX_PLAUSIBLE_TOOL_NAME_LEN);
+        assert!(
+            is_plausible_tool_name(&exactly_max),
+            "max-length name should be accepted"
+        );
+    }
+
+    #[test]
+    fn plausible_tool_name_rejects_whitespace_and_angle_brackets() {
+        for name in ["write file", "write\nfile", "<tool_call>", "write_file>"] {
+            assert!(!is_plausible_tool_name(name), "'{name}' should be rejected");
+        }
+    }
+
+    #[test]
+    fn truncate_tool_name_leaves_short_names_untouched() {
+        assert_eq!(truncate_tool_name_for_display("write_file"), "write_file");
+    }
+
+    #[test]
+    fn truncate_tool_name_caps_long_names() {
+        let raw = "x".repeat(200);
+        let truncated = truncate_tool_name_for_display(&raw);
+        assert_eq!(
+            truncated.chars().count(),
+            TOOL_NAME_DISPLAY_LIMIT + 3,
+            "should keep the limit plus the ellipsis"
+        );
+        assert!(truncated.ends_with("..."), "should be marked as truncated");
+    }
+
+    #[test]
+    fn malformed_name_error_is_actionable() {
+        let err = ToolError::MalformedName("write_file\tcontent</arg_key>".to_string());
+        let message = err.to_string();
+        assert!(
+            message.contains("provider likely failed to parse"),
+            "message should explain the likely cause: {message}"
+        );
+        assert!(
+            message.contains("retry using the exact tool name"),
+            "message should tell the model how to recover: {message}"
+        );
     }
 }

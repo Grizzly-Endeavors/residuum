@@ -954,6 +954,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_passes_through_a_malformed_tool_call_name_verbatim() {
+        // Fireworks (and vLLM, upstream) have shipped tool-call parsers for
+        // GLM models that fail to strip the model's own `<arg_key>`/
+        // `<arg_value>` tool-call template out of a structured response,
+        // leaking it into `function.name` instead of a clean `write_file`.
+        // This client has no name/markup parsing of its own — it's a thin
+        // OpenAI-compatible wire decoder — so it must pass the field through
+        // exactly as the API returned it. Downstream (`agent::turn`) is
+        // responsible for recognizing the shape is bogus and failing
+        // legibly instead of chasing it through the tool registries.
+        let mock_server = MockServer::start().await;
+        let malformed_name = "write_file\tcontent</arg_key><arg_value># Hello";
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_glm_1",
+                            "type": "function",
+                            "function": {
+                                "name": malformed_name,
+                                "arguments": "{}"
+                            }
+                        }]
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_fireworks_client(mock_server.uri(), None);
+        let messages = vec![Message::user("write a file")];
+
+        let response = client
+            .complete(&messages, &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.tool_calls.first().map(|t| t.name.as_str()),
+            Some(malformed_name),
+            "the client must not attempt to repair or hand-parse markup out of the tool name; \
+             that decision belongs to the caller, not the wire-format decoder"
+        );
+    }
+
+    #[tokio::test]
     async fn api_error_401() {
         let mock_server = MockServer::start().await;
 
