@@ -19,3 +19,4 @@ mac/DerivedData/
 mac/build/
 .superpowers/
 CLAUDE.local.md
+.playwright-mcp/
