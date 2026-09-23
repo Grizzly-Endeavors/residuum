@@ -77,6 +77,12 @@ jobs:
         if: runner.os == 'macOS'
         uses: dtolnay/rust-toolchain@stable
 
+      # rust-toolchain.toml tracks stable; self-hosted runners keep whatever
+      # stable they last installed, so bring it current before building.
+      - name: Update Rust toolchain
+        if: runner.os != 'macOS'
+        run: rustup update stable --no-self-update
+
       - name: Setup Node.js (macOS)
         if: runner.os == 'macOS'
         uses: actions/setup-node@v7

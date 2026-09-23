@@ -67,6 +67,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # rust-toolchain.toml tracks stable; self-hosted runners keep whatever
+      # stable they last installed, so bring it current before building.
+      - name: Update Rust toolchain
+        run: rustup update stable --no-self-update
+
       # build.rs refuses to compile without web/dist, which gets embedded in the binary
       - name: Build web assets
         run: cd web && npm ci && npm run build

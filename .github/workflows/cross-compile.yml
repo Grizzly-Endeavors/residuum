@@ -78,6 +78,11 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
+      # rust-toolchain.toml tracks stable; self-hosted runners keep whatever
+      # stable they last installed, so bring it current before building.
+      - name: Update Rust toolchain
+        run: rustup update stable --no-self-update
+
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
