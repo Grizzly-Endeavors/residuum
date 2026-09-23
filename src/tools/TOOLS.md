@@ -92,7 +92,7 @@ Each `edits` entry:
 - Edits apply in order to an in-memory copy; each sees the result of the ones before it. The file is written once, only if every edit succeeds.
 - `old_string` is matched exactly first. It must occur exactly once unless `replace_all` is set.
 - Only when there is no exact match, the tool retries comparing whole lines with leading and trailing whitespace trimmed. That match is used only if it occurs exactly once; `new_string` is still written verbatim, and the result carries a note naming the edit.
-- Line breaks in `old_string` and `new_string` are converted to the file's own style, so CRLF files stay CRLF. A missing trailing newline is preserved.
+- Line breaks in `old_string` and `new_string` are converted to the style most of the file's lines use, so CRLF files stay CRLF. A missing trailing newline is preserved.
 
 ### Output
 

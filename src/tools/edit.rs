@@ -129,6 +129,13 @@ fn parse_edit_request(raw: &Value, number: usize) -> Result<EditRequest, ToolErr
     })
 }
 
+/// The line break most of `text`'s lines use, so a stray CRLF doesn't convert an LF file.
+fn dominant_line_ending(text: &str) -> &'static str {
+    let crlf = text.matches("\r\n").count();
+    let lf_only = text.matches('\n').count() - crlf;
+    if crlf > lf_only { "\r\n" } else { "\n" }
+}
+
 /// Rewrite every line break in `text` to `eol`, whatever style the model sent.
 fn normalize_line_endings(text: &str, eol: &str) -> String {
     let lf = text.replace("\r\n", "\n");
@@ -302,11 +309,7 @@ fn record_replacement(spans: &mut Vec<Range<usize>>, replaced: &Range<usize>, ne
 
 /// Apply every edit in order to `original`. On failure returns which edit failed and why.
 fn apply_edits(original: &str, edits: &[EditRequest]) -> Result<BatchOutcome, String> {
-    let eol = if original.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    };
+    let eol = dominant_line_ending(original);
     let mut text = original.to_string();
     let mut changed_spans = Vec::new();
     let mut replacements = 0;
@@ -784,6 +787,21 @@ mod tests {
         assert_eq!(
             updated, "uno\r\ndos\r\nextra\r\nthree\r\n",
             "new lines should use the file's CRLF endings"
+        );
+    }
+
+    #[tokio::test]
+    async fn stray_crlf_does_not_convert_lf_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "mixed.txt", "a\r\nb\nc\nd\n").await;
+
+        let result = run(&tool, &path, vec![edit("c\n", "c\nnew1\nnew2\n")]).await;
+
+        assert!(!result.is_error, "edit should succeed: {}", result.output);
+        let updated = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            updated, "a\r\nb\nc\nnew1\nnew2\nd\n",
+            "new lines should follow the file's majority LF style"
         );
     }
 
