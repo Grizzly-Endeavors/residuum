@@ -46,6 +46,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> SpawnRequestEvent {
         sender: None,
         conversation: None,
         inbound: None,
+        images: Vec::new(),
     }
 }
 

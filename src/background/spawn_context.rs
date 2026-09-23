@@ -89,6 +89,28 @@ pub(crate) struct SpawnContext {
     pub(crate) agent_keys: crate::agent_keys::SharedAgentKeys,
 }
 
+/// Identity and origin of the session [`build_spawn_resources`] is forking,
+/// grouped into one struct to keep that function's argument count down.
+pub(crate) struct NewSessionContext {
+    /// This new session's own address, threaded into its `subagent_spawn`
+    /// tool so any session it spawns in turn records the right spawner.
+    pub(crate) own_address: SessionAddress,
+    /// This new session's own depth from the main agent (main = 0).
+    pub(crate) own_depth: u32,
+    /// This session's category, carried into `SubAgentBuildConfig` so its
+    /// `message_agent` tool can report it.
+    pub(crate) category: SessionCategory,
+    /// Hop count of this session's first turn (see
+    /// [`super::types::SubAgentConfig::hop_count`]).
+    pub(crate) hop_count: u32,
+    /// What triggered this session, carried into its `SubagentToolDeps`.
+    pub(crate) trigger: crate::bus::EventTrigger,
+    /// The conversation this session replies to, for a conversation-triggered
+    /// session, carried into its `SubagentToolDeps`. `None` for every other
+    /// trigger.
+    pub(crate) conversation_target: Option<crate::bus::ConversationTarget>,
+}
+
 /// Build isolated `SubAgentResources` for a new session run at a given tier.
 ///
 /// Resolves the model tier to a concrete provider spec, constructs the provider,
@@ -98,12 +120,16 @@ pub(crate) struct SpawnContext {
 /// narrative at fork time, per the design's "Fork contents": a session never
 /// sees merges that happen after it forked.
 ///
-/// `own_address` and `own_depth` are this new session's own address and
-/// depth, threaded into its `subagent_spawn` tool so any session it spawns in
-/// turn records the right spawner and depth (see "Nesting" in the design).
-/// `own_address` and `category` are also carried into `SubAgentBuildConfig`
-/// so the fork's `message_agent` tool can name itself as the sender of any
-/// message it sends.
+/// `session.own_address` and `session.own_depth` are this new session's own
+/// address and depth, threaded into its `subagent_spawn` tool so any session
+/// it spawns in turn records the right spawner and depth (see "Nesting" in
+/// the design). `session.own_address` and `session.category` are also
+/// carried into `SubAgentBuildConfig` so the fork's `message_agent` tool can
+/// name itself as the sender of any message it sends. `session.trigger` and
+/// `session.conversation_target` are carried the same way into the session's
+/// `SubagentToolDeps`, so a tool running in this session can tell what
+/// started it and, for a conversation-triggered session, which endpoint and
+/// conversation it replies to.
 ///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key), the
@@ -113,11 +139,16 @@ pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
     skill: Option<&str>,
-    own_address: SessionAddress,
-    own_depth: u32,
-    category: SessionCategory,
-    hop_count: u32,
+    session: NewSessionContext,
 ) -> Result<SubAgentResources, anyhow::Error> {
+    let NewSessionContext {
+        own_address,
+        own_depth,
+        category,
+        hop_count,
+        trigger,
+        conversation_target,
+    } = session;
     let specs = ctx
         .background_config
         .models
@@ -194,6 +225,8 @@ pub(crate) async fn build_spawn_resources(
         own_depth,
         subagent_depth_cap: ctx.background_config.subagent_depth_cap,
         session_category: category,
+        trigger,
+        conversation_target,
         messenger: Arc::clone(&ctx.messenger),
         hop_counter: HopCounter::new(hop_count),
         tracing_service: Arc::clone(&ctx.tracing_service),

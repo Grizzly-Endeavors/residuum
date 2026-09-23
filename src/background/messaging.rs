@@ -31,10 +31,10 @@ use std::sync::{Arc, Mutex};
 use crate::agent::hop::HopLimits;
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, topics,
+    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName, topics,
 };
 use crate::config::BackgroundModelTier;
-use crate::inference::Message;
+use crate::inference::{ImageData, Message};
 use crate::interfaces::types::InboundMessage;
 
 use super::events::publish_session_event;
@@ -370,6 +370,7 @@ impl AgentMessenger {
             point,
             msg.format_for_agent(),
             hop_count,
+            Vec::new(),
         )
         .await
     }
@@ -407,7 +408,8 @@ impl AgentMessenger {
             .map(PendingInput::hop_count)
             .max()
             .unwrap_or(0);
-        publish_resume(&self.publisher, address, point, combined, hop_count).await
+        let images = pending.iter().flat_map(PendingInput::images).collect();
+        publish_resume(&self.publisher, address, point, combined, hop_count, images).await
     }
 
     /// Deliver an inbound conversation message to its session by its
@@ -494,6 +496,16 @@ impl PendingInput {
         }
     }
 
+    /// Images this input carries, if any. An agent message has no images of
+    /// its own; an inbound conversation message's images travel with it into
+    /// the resumed run's opening turn.
+    fn images(&self) -> Vec<ImageData> {
+        match self {
+            Self::Agent(_) => Vec::new(),
+            Self::External(m) => m.images.clone(),
+        }
+    }
+
     /// Render this input as it would read in a resumed run's opening prompt.
     fn render_for_resume(&self) -> String {
         match self {
@@ -525,6 +537,9 @@ pub(crate) struct ConversationSpawn {
     pub(crate) source_label: String,
     /// Model tier to run the session at.
     pub(crate) model_tier: BackgroundModelTier,
+    /// Skill to activate for the new session, if any. `None` for every
+    /// caller today — no router currently maps a conversation to a skill.
+    pub(crate) skill: Option<SkillName>,
 }
 
 /// Outcome of delivering an inbound conversation message to its session.
@@ -568,7 +583,7 @@ async fn publish_conversation_spawn(
     let original_inbound = inbound.clone();
     let event = crate::bus::SpawnRequestEvent {
         address,
-        skill: None,
+        skill: spawn.skill,
         source_label: spawn.source_label,
         prompt: inbound.content,
         context: inbound.context,
@@ -582,6 +597,7 @@ async fn publish_conversation_spawn(
             endpoint: inbound.origin.endpoint,
             conversation_id,
         }),
+        images: original_inbound.images.clone(),
         inbound: Some(original_inbound),
     };
     publisher
@@ -619,6 +635,7 @@ async fn publish_conversation_resume(
         hop_count: 0,
         sender: inbound.origin.sender.clone(),
         conversation: point.conversation_target.clone(),
+        images: inbound.images.clone(),
         inbound: Some(inbound.clone()),
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
@@ -839,6 +856,7 @@ async fn resume_or_deliver_after_clear(
                 &point,
                 msg.format_for_agent(),
                 hop_count,
+                Vec::new(),
             )
             .await
             {
@@ -873,6 +891,7 @@ async fn publish_resume(
     point: &ResumePoint,
     prompt: String,
     hop_count: u32,
+    images: Vec<ImageData>,
 ) -> Result<(), SendError> {
     let event = crate::bus::SpawnRequestEvent {
         address: address.clone(),
@@ -901,6 +920,7 @@ async fn publish_resume(
         // for this request must fall back to `Interrupt::AgentMessage`, not
         // fabricate a `UserMessage` with no real sender.
         inbound: None,
+        images,
     };
 
     publisher
@@ -967,6 +987,7 @@ mod tests {
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
             conversation_target: None,
+            recorded_at: chrono::Utc::now(),
         }
     }
 
@@ -1139,10 +1160,12 @@ mod tests {
             .unwrap();
         // A resume point existing here would be wrong to use — a busy
         // channel must error, never fall through to a resume.
-        registry.record_resume_point(
-            &info.address,
-            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
-        );
+        registry
+            .record_resume_point(
+                &info.address,
+                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+            )
+            .await;
 
         for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
             assert!(
@@ -1199,10 +1222,12 @@ mod tests {
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
             .unwrap();
-        registry.record_resume_point(
-            &info.address,
-            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
-        );
+        registry
+            .record_resume_point(
+                &info.address,
+                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+            )
+            .await;
 
         let address = info.address.clone();
         let run_id = info.run_id.clone();
@@ -1310,10 +1335,12 @@ mod tests {
         let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
         let publisher = bus_handle.publisher();
         let address = SessionAddress::from("spawned-researcher-race2");
-        registry.record_resume_point(
-            &address,
-            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
-        );
+        registry
+            .record_resume_point(
+                &address,
+                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+            )
+            .await;
 
         let msg = AgentMessageEvent {
             from: SessionAddress::from(MAIN_ADDRESS),
@@ -1341,10 +1368,12 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("spawned-researcher-0002");
-        registry.record_resume_point(
-            &address,
-            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
-        );
+        registry
+            .record_resume_point(
+                &address,
+                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+            )
+            .await;
 
         let outcome = messenger
             .send(
@@ -1392,20 +1421,23 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
 
         let address = SessionAddress::from("spawned-researcher-0003");
-        registry.record_resume_point(
-            &address,
-            ResumePoint {
-                previous_run_id: "run-quiet".to_string(),
-                previous_episode_id: None,
-                trigger: EventTrigger::Agent,
-                source_label: "agent:researcher".to_string(),
-                agent_skill: None,
-                model_tier: crate::config::BackgroundModelTier::Small,
-                spawner: None,
-                depth: 1,
-                conversation_target: None,
-            },
-        );
+        registry
+            .record_resume_point(
+                &address,
+                ResumePoint {
+                    previous_run_id: "run-quiet".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "agent:researcher".to_string(),
+                    agent_skill: None,
+                    model_tier: crate::config::BackgroundModelTier::Small,
+                    spawner: None,
+                    depth: 1,
+                    conversation_target: None,
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
 
         messenger
             .send(
@@ -1432,7 +1464,7 @@ mod tests {
 
         let address = SessionAddress::from("spawned-researcher-0004");
         let point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Small);
-        registry.record_resume_point(&address, point.clone());
+        registry.record_resume_point(&address, point.clone()).await;
 
         let messages = vec![
             PendingInput::Agent(AgentMessageEvent {
@@ -1494,6 +1526,7 @@ mod tests {
         ConversationSpawn {
             source_label: "discord:#builds".to_string(),
             model_tier: crate::config::BackgroundModelTier::Medium,
+            skill: None,
         }
     }
 
@@ -1505,7 +1538,7 @@ mod tests {
 
         let address = SessionAddress::from("external-discord-0004");
         let point = sample_resume_point("run-old", crate::config::BackgroundModelTier::Small);
-        registry.record_resume_point(&address, point.clone());
+        registry.record_resume_point(&address, point.clone()).await;
 
         let pending = vec![
             PendingInput::Agent(AgentMessageEvent {
@@ -1602,7 +1635,7 @@ mod tests {
             endpoint: "discord".to_string(),
             conversation_id: "chan-1".to_string(),
         });
-        registry.record_resume_point(&address, point);
+        registry.record_resume_point(&address, point).await;
 
         let outcome = messenger
             .deliver_conversation(
@@ -1640,10 +1673,12 @@ mod tests {
         let _rx = registry
             .register(info.clone(), CancellationToken::new())
             .unwrap();
-        registry.record_resume_point(
-            &info.address,
-            sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
-        );
+        registry
+            .record_resume_point(
+                &info.address,
+                sample_resume_point("run-old", crate::config::BackgroundModelTier::Large),
+            )
+            .await;
 
         let address = info.address.clone();
         let run_id = info.run_id.clone();

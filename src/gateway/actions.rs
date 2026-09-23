@@ -59,6 +59,7 @@ async fn publish_action_spawn(
         sender: None,
         conversation: None,
         inbound: None,
+        images: Vec::new(),
     };
 
     if let Err(e) = publisher.publish(topics::Background, spawn_event).await {

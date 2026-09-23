@@ -6,9 +6,11 @@
 //! context read this registry rather than any lower-level task map.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, mpsc};
@@ -262,7 +264,7 @@ struct SessionEntry {
 /// What's needed to resume a completed session as a new run at the same
 /// address: enough of its last run's identity to fork it again, plus a
 /// pointer to what that run produced.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumePoint {
     /// Run id of the run that completed.
     pub previous_run_id: String,
@@ -288,6 +290,17 @@ pub struct ResumePoint {
     /// The conversation the original run replied to, carried over so a
     /// resumed conversation session still knows where to send its output.
     pub conversation_target: Option<ConversationTarget>,
+    /// When this resume point was recorded, set by
+    /// [`SessionRegistry::record_resume_point`] regardless of what a caller
+    /// passes in — the timestamp a resume point's persisted copy is pruned
+    /// against on load (see [`Self::MAX_AGE_DAYS`]).
+    pub recorded_at: DateTime<Utc>,
+}
+
+impl ResumePoint {
+    /// Age past which a persisted resume point is pruned on load, rather
+    /// than kept forever for an address nobody has messaged in months.
+    const MAX_AGE_DAYS: i64 = 90;
 }
 
 /// Registry of every live (running, idle, or completing) session, plus a
@@ -295,11 +308,21 @@ pub struct ResumePoint {
 ///
 /// Live sessions are removed once completed; their resume points are not —
 /// an address must keep working for messaging across idle gaps and after
-/// completion, for as long as the process runs.
+/// completion, for as long as the process runs, and — for a registry built
+/// with [`Self::load`] — across a restart too, since resume points are
+/// persisted write-through to disk as they're recorded.
 #[derive(Default)]
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<SessionAddress, SessionEntry>>,
     resume_points: Mutex<HashMap<SessionAddress, ResumePoint>>,
+    /// Where resume points are persisted write-through as they're recorded.
+    /// `None` for a registry built with [`Self::new`] — resume points then
+    /// live only in memory, as every unit test wants.
+    persist_path: Option<PathBuf>,
+    /// Held across snapshot-and-write so concurrent recordings reach disk in
+    /// the order they were recorded; without it an older snapshot could land
+    /// after a newer one and drop the newer resume point on restart.
+    persist_lock: tokio::sync::Mutex<()>,
     /// Notified whenever any session is removed, so [`Self::wait_until_clear`]
     /// can wake without polling. A single registry-wide `Notify` rather than
     /// one per address: removals are infrequent, and a waiter re-checks its
@@ -309,10 +332,33 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
-    /// Create an empty registry.
+    /// Create an empty registry with no persistence: resume points live only
+    /// in memory and are lost on restart. Used by every unit test, and by
+    /// any caller that doesn't need resume points to survive a process exit.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a registry whose resume points are persisted write-through to
+    /// `persist_path`, loading whatever is already there.
+    ///
+    /// A missing file starts with no resume points, the same as
+    /// [`Self::new`]. A file that exists but fails to read or parse is
+    /// logged at `warn` with the path and error and likewise starts empty —
+    /// a corrupt or unreadable resume-points file must never block startup,
+    /// since the worst case is only that in-flight resumes fall back to
+    /// fresh sessions. Entries older than [`ResumePoint::MAX_AGE_DAYS`] are
+    /// dropped on load rather than kept (and immediately eligible for
+    /// pruning) forever.
+    #[must_use]
+    pub async fn load(persist_path: PathBuf) -> Self {
+        let resume_points = load_resume_points(&persist_path).await;
+        Self {
+            resume_points: Mutex::new(resume_points),
+            persist_path: Some(persist_path),
+            ..Self::default()
+        }
     }
 
     /// Register a new session run, refusing if the address already names a
@@ -427,11 +473,34 @@ impl SessionRegistry {
     /// Record what's needed to resume a session as a new run once its
     /// current run completes. Overwrites any previous resume point at the
     /// same address, since only the most recent run's pointer matters.
-    pub fn record_resume_point(&self, address: &SessionAddress, point: ResumePoint) {
-        self.resume_points
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(address.clone(), point);
+    ///
+    /// Stamps `point.recorded_at` with the current time regardless of what
+    /// the caller passed, since that field exists only to let a later load
+    /// prune stale entries, not to record when the underlying run actually
+    /// completed. When this registry was built with [`Self::load`], the
+    /// updated map is written through to disk before returning — a resume
+    /// point that only exists in memory would be lost on the next restart,
+    /// defeating the point of persisting it at all. A write failure is
+    /// logged at `warn` with the path and error; the in-memory record still
+    /// stands either way, so a message to this address still resumes it for
+    /// as long as this process keeps running.
+    pub async fn record_resume_point(&self, address: &SessionAddress, mut point: ResumePoint) {
+        point.recorded_at = Utc::now();
+        let _persist_guard = self.persist_lock.lock().await;
+        let snapshot = {
+            let mut guard = self
+                .resume_points
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.insert(address.clone(), point);
+            self.persist_path.as_ref().map(|_| guard.clone())
+        };
+        let (Some(path), Some(snapshot)) = (self.persist_path.as_ref(), snapshot) else {
+            return;
+        };
+        if let Err(e) = persist_resume_points(path, &snapshot).await {
+            tracing::warn!(path = %path.display(), error = %e, "failed to persist resume points to disk");
+        }
     }
 
     /// Look up a completed session's resume point, if it has ever run.
@@ -559,6 +628,59 @@ impl SessionRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// Load persisted resume points from `path`, pruning entries older than
+/// [`ResumePoint::MAX_AGE_DAYS`].
+///
+/// A missing file, or one that fails to read or parse, produces an empty map
+/// rather than an error — see [`SessionRegistry::load`] for why a load
+/// failure here must never block startup.
+async fn load_resume_points(path: &Path) -> HashMap<SessionAddress, ResumePoint> {
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return HashMap::new(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to read persisted resume points, starting with none"
+            );
+            return HashMap::new();
+        }
+    };
+    if contents.trim().is_empty() {
+        return HashMap::new();
+    }
+    let points: HashMap<SessionAddress, ResumePoint> = match serde_json::from_str(&contents) {
+        Ok(points) => points,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to parse persisted resume points, starting with none"
+            );
+            return HashMap::new();
+        }
+    };
+    let cutoff = Utc::now() - chrono::Duration::days(ResumePoint::MAX_AGE_DAYS);
+    points
+        .into_iter()
+        .filter(|(_, point)| point.recorded_at >= cutoff)
+        .collect()
+}
+
+/// Write `points` to `path` atomically (temp file plus rename), replacing
+/// whatever was there.
+///
+/// # Errors
+/// Returns an error if serialization or the underlying write fails.
+async fn persist_resume_points(
+    path: &Path,
+    points: &HashMap<SessionAddress, ResumePoint>,
+) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(points).context("failed to serialize resume points")?;
+    crate::util::fs::atomic_write(path, &json).await
 }
 
 /// Generate a unique run id, distinct from the session's address and unique
@@ -1104,12 +1226,9 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn resume_point_round_trips() {
-        let registry = SessionRegistry::new();
-        let address = SessionAddress::from("spawned-researcher-0008");
-        let point = ResumePoint {
-            previous_run_id: "run-1".to_string(),
+    fn sample_resume_point(run_id: &str) -> ResumePoint {
+        ResumePoint {
+            previous_run_id: run_id.to_string(),
             previous_episode_id: Some("ep-1".to_string()),
             trigger: EventTrigger::Agent,
             source_label: "agent:researcher".to_string(),
@@ -1118,8 +1237,19 @@ mod tests {
             spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
             depth: 1,
             conversation_target: None,
-        };
-        registry.record_resume_point(&address, point.clone());
+            // Overwritten by `record_resume_point` on every real path;
+            // tests that write a resume point straight to disk (bypassing
+            // the registry) set this explicitly instead.
+            recorded_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_point_round_trips() {
+        let registry = SessionRegistry::new();
+        let address = SessionAddress::from("spawned-researcher-0008");
+        let point = sample_resume_point("run-1");
+        registry.record_resume_point(&address, point.clone()).await;
 
         let found = registry
             .resume_point(&address)
@@ -1137,6 +1267,159 @@ mod tests {
             registry
                 .resume_point(&SessionAddress::from("never-existed"))
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn record_resume_point_on_a_registry_built_with_new_never_touches_disk() {
+        // `new()` is what every other test in the codebase uses; it must
+        // stay a pure in-memory registry with no persistence path.
+        let registry = SessionRegistry::new();
+        let address = SessionAddress::from("spawned-researcher-mem-only");
+        registry
+            .record_resume_point(&address, sample_resume_point("run-1"))
+            .await;
+        assert!(registry.resume_point(&address).is_some());
+    }
+
+    #[tokio::test]
+    async fn record_resume_point_persists_write_through_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume_points.json");
+        let registry = SessionRegistry::load(path.clone()).await;
+        let address = SessionAddress::from("spawned-researcher-persisted");
+
+        registry
+            .record_resume_point(&address, sample_resume_point("run-1"))
+            .await;
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let on_disk: HashMap<SessionAddress, ResumePoint> =
+            serde_json::from_str(&contents).unwrap();
+        assert_eq!(
+            on_disk
+                .get(&address)
+                .expect("the recorded point should be on disk")
+                .previous_run_id,
+            "run-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resume_point_survives_a_simulated_restart() {
+        // A registry rebuilt from the same persisted file stands in for a
+        // process restart; it must still resolve the address to its previous
+        // run and episode.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume_points.json");
+        let address = SessionAddress::from("external-discord-restart-test");
+
+        {
+            let registry = SessionRegistry::load(path.clone()).await;
+            let mut point = sample_resume_point("run-before-restart");
+            point.previous_episode_id = Some("ep-before-restart".to_string());
+            registry.record_resume_point(&address, point).await;
+        }
+        // The first registry (and everything it held in memory) is dropped
+        // here, standing in for the process exiting.
+
+        let restarted = SessionRegistry::load(path).await;
+        let found = restarted
+            .resume_point(&address)
+            .expect("the resume point must survive the simulated restart");
+        assert_eq!(found.previous_run_id, "run-before-restart");
+        assert_eq!(
+            found.previous_episode_id.as_deref(),
+            Some("ep-before-restart")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_recordings_all_reach_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume_points.json");
+        let registry = std::sync::Arc::new(SessionRegistry::load(path.clone()).await);
+
+        let recordings = (0..32).map(|i| {
+            let registry = std::sync::Arc::clone(&registry);
+            tokio::spawn(async move {
+                let address = SessionAddress::from(format!("external-concurrent-{i}"));
+                registry
+                    .record_resume_point(&address, sample_resume_point(&format!("run-{i}")))
+                    .await;
+            })
+        });
+        for handle in recordings {
+            handle.await.unwrap();
+        }
+
+        let restarted = SessionRegistry::load(path).await;
+        for i in 0..32 {
+            let address = SessionAddress::from(format!("external-concurrent-{i}"));
+            assert!(
+                restarted.resume_point(&address).is_some(),
+                "resume point {i} must be on disk after concurrent recordings"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn load_from_a_missing_file_starts_with_no_resume_points() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.json");
+        let registry = SessionRegistry::load(path).await;
+        assert!(
+            registry
+                .resume_point(&SessionAddress::from("anything"))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn load_from_a_corrupt_file_starts_empty_instead_of_blocking_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume_points.json");
+        tokio::fs::write(&path, "not valid json").await.unwrap();
+
+        let registry = SessionRegistry::load(path).await;
+        assert!(
+            registry
+                .resume_point(&SessionAddress::from("anything"))
+                .is_none(),
+            "a corrupt persisted file must not block startup or panic — it should just \
+             start with no resume points, as if the file were empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_prunes_entries_older_than_the_max_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume_points.json");
+
+        let mut stale = sample_resume_point("run-stale");
+        stale.recorded_at = Utc::now() - chrono::Duration::days(ResumePoint::MAX_AGE_DAYS + 1);
+        let mut fresh = sample_resume_point("run-fresh");
+        fresh.recorded_at = Utc::now() - chrono::Duration::days(1);
+
+        let mut on_disk = HashMap::new();
+        on_disk.insert(SessionAddress::from("spawned-stale"), stale);
+        on_disk.insert(SessionAddress::from("spawned-fresh"), fresh);
+        tokio::fs::write(&path, serde_json::to_string(&on_disk).unwrap())
+            .await
+            .unwrap();
+
+        let registry = SessionRegistry::load(path).await;
+        assert!(
+            registry
+                .resume_point(&SessionAddress::from("spawned-stale"))
+                .is_none(),
+            "an entry older than the max age must be pruned on load"
+        );
+        assert!(
+            registry
+                .resume_point(&SessionAddress::from("spawned-fresh"))
+                .is_some(),
+            "an entry within the max age must survive pruning"
         );
     }
 }

@@ -463,7 +463,8 @@ async fn recover_from_panic(
     }
 
     env.registry
-        .record_resume_point(&info.address, resume_point(info, episode_id.clone()));
+        .record_resume_point(&info.address, resume_point(info, episode_id.clone()))
+        .await;
 
     let transcript_path = env
         .store
@@ -505,6 +506,9 @@ fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
         spawner: info.spawner.clone(),
         depth: info.depth,
         conversation_target: info.conversation_target.clone(),
+        // Overwritten by `SessionRegistry::record_resume_point` on every
+        // real path; set here only so the struct literal is complete.
+        recorded_at: chrono::Utc::now(),
     }
 }
 
@@ -620,6 +624,17 @@ async fn after_turn(
     maybe_output_to_conversation(info, status, summary, env).await;
 }
 
+/// Build a run's first-turn kickoff from its `SubAgentConfig`.
+fn initial_kickoff(config: SubAgentConfig) -> TurnKickoff {
+    TurnKickoff::Initial {
+        prompt: config.prompt,
+        context: config.context,
+        hop_count: config.hop_count,
+        sender: config.sender,
+        images: config.images,
+    }
+}
+
 /// Drive one session run from permit acquisition through completion.
 ///
 /// A run is one or more turns: the first is always the fork's task prompt;
@@ -640,12 +655,7 @@ async fn run_session(
 ) {
     let mut recent_messages = RecentMessages::new();
     let mut memory = SessionMemory::new();
-    let mut kickoff = TurnKickoff::Initial {
-        prompt: config.prompt,
-        context: config.context,
-        hop_count: config.hop_count,
-        sender: config.sender,
-    };
+    let mut kickoff = initial_kickoff(config);
     // Assigned on the loop's first iteration, which always runs at least
     // once (the run's initial turn), so both are definitely initialized by
     // the time anything after the loop reads them.
@@ -839,7 +849,8 @@ async fn finish_run(
 
     let point = resume_point(info, episode_id.clone());
     env.registry
-        .record_resume_point(&info.address, point.clone());
+        .record_resume_point(&info.address, point.clone())
+        .await;
 
     let transcript_path = env
         .store
@@ -1051,6 +1062,7 @@ async fn maybe_output_to_conversation(
         content: summary.to_string(),
         attachment: None,
         timestamp: crate::time::now_local(env.tz),
+        is_final: true,
     };
     if let Err(e) = env
         .publisher
@@ -1357,6 +1369,7 @@ mod tests {
                 hop_count: 0,
                 sender: None,
                 inbound: None,
+                images: Vec::new(),
             },
             conversation_target: None,
         }
@@ -1401,6 +1414,7 @@ mod tests {
                 hop_count: 0,
                 sender: None,
                 inbound: None,
+                images: Vec::new(),
             },
             conversation_target: Some(ConversationTarget {
                 endpoint: "discord".to_string(),
@@ -1451,6 +1465,7 @@ mod tests {
             hop_count: 0,
             sender: None,
             inbound: Some(losing_inbound),
+            images: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
@@ -2914,6 +2929,10 @@ mod tests {
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
         assert_eq!(event.content, "the build is green");
+        assert!(
+            event.is_final,
+            "a run's completed turn output must be marked final"
+        );
     }
 
     #[tokio::test]

@@ -211,6 +211,15 @@ mod tests {
     /// (see its doc comment) — keep the two lists in sync.
     const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
 
+    /// Tools registered only for a session, never for main — the reverse of
+    /// [`MAIN_ONLY_TOOLS`]. Empty today: every session-only tool proposed so
+    /// far (e.g. an A2A task-update tool registered only for sessions started
+    /// from that endpoint) is still to be added. When one lands, add it here
+    /// and to `ToolRegistry::build_subagent_registry`'s doc comment, with a
+    /// comment explaining why it's session-only — don't just leave main
+    /// without it silently.
+    const SESSION_ONLY_TOOLS: &[&str] = &[];
+
     /// A minimal but fully populated `Config`, with every optional
     /// tool-gating switch turned on (here: an Ollama standalone web search
     /// backend), so `session_registry_matches_main_minus_documented_allowlist`
@@ -376,6 +385,8 @@ mod tests {
             own_depth: 1,
             depth_cap: h.cfg.background.subagent_depth_cap,
             session_category: category.to_string(),
+            trigger: crate::bus::EventTrigger::Agent,
+            conversation_target: None,
             messenger: Arc::clone(&h.agent_messenger),
             hop_counter: h.hop_counter.clone(),
             tracing_service: Arc::clone(&h.tracing_service),
@@ -423,13 +434,14 @@ mod tests {
             .iter()
             .filter(|name| !MAIN_ONLY_TOOLS.contains(&name.as_str()))
             .cloned()
+            .chain(SESSION_ONLY_TOOLS.iter().map(ToString::to_string))
             .collect();
         expected.sort();
 
         assert_eq!(
             session_names, expected,
-            "session registry must carry every main tool except the documented \
-             main-only allowlist ({MAIN_ONLY_TOOLS:?})"
+            "session registry must equal main minus the main-only allowlist \
+             ({MAIN_ONLY_TOOLS:?}) plus the session-only allowlist ({SESSION_ONLY_TOOLS:?})"
         );
     }
 

@@ -220,6 +220,14 @@ impl WorkspaceLayout {
         self.root.join("memory/sessions")
     }
 
+    /// Path to `memory/sessions/resume_points.json` -- persisted resume
+    /// points, keyed by session address, loaded when the session registry is
+    /// constructed at startup.
+    #[must_use]
+    pub fn resume_points_json(&self) -> PathBuf {
+        self.sessions_dir().join("resume_points.json")
+    }
+
     /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).
     #[must_use]
     pub fn pulse_state_json(&self) -> PathBuf {
@@ -411,6 +419,11 @@ mod tests {
             layout.scheduled_actions_json(),
             PathBuf::from("/tmp/ws/scheduled_actions.json"),
             "scheduled_actions_json path"
+        );
+        assert_eq!(
+            layout.resume_points_json(),
+            PathBuf::from("/tmp/ws/memory/sessions/resume_points.json"),
+            "resume_points_json path"
         );
     }
 

@@ -288,6 +288,11 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
 /// At startup, any run left in the store from a prior process exit goes
 /// through the full completion pipeline (skip check, final observation,
 /// merge) from its persisted transcript before normal operation begins.
+///
+/// The registry itself loads its resume points from
+/// `layout.resume_points_json()`, so a message to a session that completed
+/// before a restart still resumes it with a pointer back to its previous
+/// episode, rather than starting a fresh session with no memory of it.
 async fn init_session_runtime(
     cfg: &Config,
     layout: &WorkspaceLayout,
@@ -301,7 +306,7 @@ async fn init_session_runtime(
     Arc<SessionRuntime>,
     Arc<ConversationRouter>,
 ) {
-    let registry = Arc::new(SessionRegistry::new());
+    let registry = Arc::new(SessionRegistry::load(layout.resume_points_json()).await);
     let store = Arc::new(SessionStore::new(layout.sessions_dir()));
 
     let recovery_env = crate::background::session_memory::SessionMemoryEnv {

@@ -6,7 +6,7 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 
 ## Sessions
 
-A session is a fork of the main agent with its own identity, memory snapshot, and tool registry. The fork's system message carries the full main-agent identity — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki index, the skills index — assembled once, exactly as it is for the main agent, plus a snapshot of the global observation log and recent-context narrative taken at fork time. It never sees the main agent's live, unobserved conversation; the user message carries only the task prompt (or pulse/action/webhook input) and any explicit context the spawner passed.
+A session is a fork of the main agent with its own identity, memory snapshot, and tool registry. The fork's system message carries the full main-agent identity — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki index, the skills index — assembled once, exactly as it is for the main agent, plus a snapshot of the global observation log and recent-context narrative taken at fork time. It never sees the main agent's live, unobserved conversation; the user message carries only the task prompt (or pulse/action/webhook input) and any explicit context the spawner passed. A conversation-triggered spawn or resume also carries any images attached to the triggering message into that first turn.
 
 Sessions share the MCP registry with the main agent.
 
@@ -90,7 +90,7 @@ A session's result is a **self-report**, not a verified outcome. When the task i
 
 ## Result Routing
 
-A `spawned` session's turn result relays to its **direct spawner** (main, or whichever session spawned it) via the agent-messaging path, hop counts included, after every turn — not just at completion. Every outcome relays, not just a completed turn with output: a turn that produced no text, failed, was cancelled, or panicked (reported as failed) all relay a clear status line naming the session and what happened, so the spawner is never left not knowing. A relay failure — the spawner is busy, or unreachable (e.g. it restarted and lost its resume point) — is logged and noted in the session's own transcript, never silently dropped. `scheduled` and `external` results flow through the pub/sub bus to the notification router: filed to the inbox, additionally pushed to every configured notification channel when the summary contains `HEARTBEAT_URGENT`. `spawned` results do not pass through that router. `artifact` results go nowhere on their own — the artifact reads them from the session stream — and the router discards them even when urgent.
+A `spawned` session's turn result relays to its **direct spawner** (main, or whichever session spawned it) via the agent-messaging path, hop counts included, after every turn — not just at completion. Every outcome relays, not just a completed turn with output: a turn that produced no text, failed, was cancelled, or panicked (reported as failed) all relay a clear status line naming the session and what happened, so the spawner is never left not knowing. A relay failure — the spawner is busy, or unreachable (e.g. it restarted, so its live run is gone even though its resume point persists across the restart) — is logged and noted in the session's own transcript, never silently dropped. `scheduled` and `external` results flow through the pub/sub bus to the notification router: filed to the inbox, additionally pushed to every configured notification channel when the summary contains `HEARTBEAT_URGENT`. `spawned` results do not pass through that router. `artifact` results go nowhere on their own — the artifact reads them from the session stream — and the router discards them even when urgent.
 
 ## Memory
 
@@ -103,6 +103,8 @@ The session runtime enforces a configurable concurrency limit via a semaphore (`
 ## Session Store
 
 Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. While the run is live, its transcript is durably appended to a sibling `<run-id>.transcript.jsonl` file after every model response and tool result — a crash mid-turn loses at most the message in flight. On completion the full transcript is folded into the metadata file too, so a finished run's record is one self-contained file. A stopped run keeps its transcript up to the point it was stopped, and merges into memory like any other run. At startup, any run left incomplete by a prior process exit goes through the full completion pipeline (skip check, final observation, merge) from its persisted transcript before normal operation resumes, then is marked completed.
+
+Each session's resume point (previous run id, episode pointer, trigger, source label, skill, model tier, spawner, depth) is persisted write-through to `memory/sessions/resume_points.json` as it's recorded, and reloaded when the session registry starts — so messaging a completed session's address still resumes it with its episode pointer intact after a restart, not just within one process's lifetime. Entries older than 90 days are pruned on load; a load or parse failure logs a warning and starts empty rather than blocking startup.
 
 ## Gotchas
 

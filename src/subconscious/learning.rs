@@ -172,6 +172,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         sender: None,
         conversation: None,
         inbound: None,
+        images: Vec::new(),
     }
 }
 
