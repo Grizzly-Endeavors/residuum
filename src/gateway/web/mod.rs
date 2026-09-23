@@ -61,6 +61,19 @@ pub(crate) struct ConfigApiState {
 
 /// Build the config API router.
 pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
+    // Scoped to just this route via `route_layer` (which wraps every route
+    // already registered on *this* router value): axum's default 2 MiB body
+    // limit stays in place for every other endpoint, while text writes get
+    // the 8 MiB the workspace file API promises.
+    let workspace_file_router = axum::Router::new()
+        .route(
+            "/api/workspace/file",
+            get(workspace::api_workspace_file_read).put(workspace::api_workspace_file_write),
+        )
+        .route_layer(axum::extract::DefaultBodyLimit::max(
+            workspace::TEXT_FILE_LIMIT_BYTES,
+        ));
+
     axum::Router::new()
         .route("/api/status", get(config::api_status))
         .route("/api/config/raw", get(config::api_config_raw_get))
@@ -95,10 +108,7 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
         .route("/api/workspace/files", get(workspace::api_workspace_files))
-        .route(
-            "/api/workspace/file",
-            get(workspace::api_workspace_file_read).put(workspace::api_workspace_file_write),
-        )
+        .merge(workspace_file_router)
         .route("/api/inbox", get(inbox::api_inbox_list))
         .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
         .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
