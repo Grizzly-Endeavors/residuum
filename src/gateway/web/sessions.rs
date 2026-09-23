@@ -430,6 +430,7 @@ pub(crate) async fn api_session_start(
         sender: None,
         conversation: None,
         inbound: None,
+        images: Vec::new(),
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {
         tracing::warn!(artifact = %artifact, address = %address, error = %e, "failed to publish an artifact's session start");
@@ -1193,20 +1194,24 @@ mod tests {
     async fn message_resumes_a_completed_session() {
         let (state, fx) = state();
         let mut spawns = subscribe_spawns(&fx).await;
-        state.registry.record_resume_point(
-            &SessionAddress::from("artifact-wiki-0001"),
-            ResumePoint {
-                previous_run_id: "run-old".to_string(),
-                previous_episode_id: None,
-                trigger: EventTrigger::Artifact("wiki".to_string()),
-                source_label: "artifact:wiki".to_string(),
-                agent_skill: None,
-                model_tier: BackgroundModelTier::Medium,
-                spawner: None,
-                depth: 1,
-                conversation_target: None,
-            },
-        );
+        state
+            .registry
+            .record_resume_point(
+                &SessionAddress::from("artifact-wiki-0001"),
+                ResumePoint {
+                    previous_run_id: "run-old".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Artifact("wiki".to_string()),
+                    source_label: "artifact:wiki".to_string(),
+                    agent_skill: None,
+                    model_tier: BackgroundModelTier::Medium,
+                    spawner: None,
+                    depth: 1,
+                    conversation_target: None,
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
 
         let resumed = message(
             &state,
