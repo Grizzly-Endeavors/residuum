@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Well-known notification channel name for system-level notices and errors.
 pub const SYSTEM_CHANNEL: &str = "system";
 
@@ -12,7 +14,8 @@ pub const SYSTEM_CHANNEL: &str = "system";
 macro_rules! newtype_string {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
         pub struct $name(String);
 
         impl fmt::Display for $name {

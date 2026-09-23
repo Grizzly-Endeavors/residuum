@@ -6,6 +6,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::inference::retry::RetryConfig;
 
 use super::constants::{
@@ -522,7 +524,8 @@ impl BackgroundModelsConfig {
 }
 
 /// Which model tier a background task requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BackgroundModelTier {
     /// Small/fast model for simple tasks.
     Small,

@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use chrono::NaiveDateTime;
+use serde::{Deserialize, Serialize};
 
 use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
@@ -16,7 +17,8 @@ use crate::interfaces::types::{InboundMessage, MessageOrigin};
 // ---------------------------------------------------------------------------
 
 /// What triggered a background event or notification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EventTrigger {
     /// A recurring pulse (cron-style schedule).
     Pulse,
@@ -230,6 +232,10 @@ pub struct SessionResponseEvent {
     pub attachment: Option<FileAttachment>,
     /// Local timestamp.
     pub timestamp: NaiveDateTime,
+    /// Whether this is the run's final output (`true`, from
+    /// `maybe_output_to_conversation`) or intermediate pre-tool-call text
+    /// emitted mid-turn (`false`, from `EventContext::publish_intermediate`).
+    pub is_final: bool,
 }
 
 /// Push notification for notify channels.
@@ -488,11 +494,18 @@ pub struct SpawnRequestEvent {
     /// misattributed as a plain agent message from `main`. `None` for every
     /// other trigger.
     pub inbound: Option<InboundMessage>,
+    /// Images attached to this run's kickoff message, carried into its first
+    /// turn alongside `prompt`/`context`. Populated for a `Conversation`-
+    /// triggered spawn or resume from the triggering inbound message's
+    /// images (or, for a resume combining several buffered messages, every
+    /// buffered message's images); empty for every other trigger, which have
+    /// no images of their own.
+    pub images: Vec<ImageData>,
 }
 
 /// The conversation an `external` conversation session replies to: which
 /// interface endpoint, and which conversation on it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationTarget {
     /// Endpoint name the conversation lives on (e.g. `"discord"`).
     pub endpoint: String,
