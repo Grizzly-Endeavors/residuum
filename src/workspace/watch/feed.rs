@@ -20,6 +20,7 @@ use super::batcher::{ChangeBatcher, PathState, ReadyBatch, resolve_changes};
 use super::classify::{WorkspaceRoots, classify};
 use super::{WatchHealth, WorkspaceResyncReason};
 use crate::bus::{Publisher, WorkspaceEvent, topics};
+use crate::workspace::access::is_blocked_path;
 
 /// Raw notifications buffered between the OS watcher's thread and the
 /// batching loop. Past this, notifications are dropped and the next batch
@@ -47,6 +48,7 @@ pub(crate) fn spawn_change_feed(
         let sink = RawSink {
             tx: raw_tx,
             overflowed: Arc::clone(&overflowed),
+            roots: WorkspaceRoots::new(&root),
         };
 
         let Some(mut backend) = start_backend(&root, Mode::Native, &sink).await else {
@@ -181,10 +183,30 @@ fn start_polling(root: &Path, sink: RawSink) -> notify::Result<PollWatcher> {
 struct RawSink {
     tx: mpsc::Sender<RawEvent>,
     overflowed: Arc<AtomicBool>,
+    roots: WorkspaceRoots,
+}
+
+impl RawSink {
+    /// Whether `event` only touches paths the access policy hides. Residuum
+    /// writes its memory index and databases constantly; dropping those
+    /// notifications here keeps that churn from filling the buffer and
+    /// forcing resyncs on watchers that never see those paths anyway.
+    fn only_hidden_paths(&self, event: &notify::Event) -> bool {
+        !event.need_rescan()
+            && !event.paths.is_empty()
+            && event.paths.iter().all(|path| {
+                self.roots
+                    .relative(path)
+                    .is_some_and(|relative| is_blocked_path(&relative))
+            })
+    }
 }
 
 impl notify::EventHandler for RawSink {
     fn handle_event(&mut self, event: RawEvent) {
+        if event.as_ref().is_ok_and(|e| self.only_hidden_paths(e)) {
+            return;
+        }
         match self.tx.try_send(event) {
             Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -545,6 +567,35 @@ mod tests {
     }
 
     #[test]
+    fn the_sink_drops_events_that_only_touch_hidden_paths() {
+        let root = std::path::PathBuf::from("/workspace");
+        let (tx, _rx) = mpsc::channel(4);
+        let sink = RawSink {
+            tx,
+            overflowed: Arc::new(AtomicBool::new(false)),
+            roots: WorkspaceRoots::new(&root),
+        };
+        let event = |paths: &[&str]| {
+            paths.iter().fold(
+                notify::Event::new(EventKind::Modify(ModifyKind::Any)),
+                |e, p| e.add_path(root.join(p)),
+            )
+        };
+
+        assert!(
+            sink.only_hidden_paths(&event(&["memory/.index/seg.bin", "memory/vectors.db-wal"]))
+        );
+        assert!(!sink.only_hidden_paths(&event(&["memory/.index/seg.bin", "wiki/a.md"])));
+        assert!(!sink.only_hidden_paths(&event(&["wiki/a.md"])));
+        assert!(!sink.only_hidden_paths(&event(&[])));
+        let rescan = event(&["memory/.index/seg.bin"]).set_flag(notify::event::Flag::Rescan);
+        assert!(
+            !sink.only_hidden_paths(&rescan),
+            "a rescan must always reach the loop"
+        );
+    }
+
+    #[test]
     fn repeated_warnings_are_throttled_and_counted() {
         let t0 = Instant::now();
         let mut warning = ThrottledWarning::default();
@@ -606,6 +657,7 @@ mod tests {
         let sink = RawSink {
             tx: raw_tx,
             overflowed: Arc::clone(&overflowed),
+            roots: WorkspaceRoots::new(dir.path()),
         };
         let backend = start_backend(dir.path(), Mode::Polling, &sink)
             .await
