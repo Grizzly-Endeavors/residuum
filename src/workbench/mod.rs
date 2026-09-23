@@ -590,8 +590,9 @@ mod tests {
             &["workspace-tree", "model-complete"],
         );
         assert!(out.contains(r#"<script>{const __RESIDUUM_ARTIFACT__="pricing-explorer";"#));
+        // Windows checkouts may give the SDK source CRLF line endings.
         assert!(
-            out.contains("})();\n}</script>"),
+            out.replace("\r\n", "\n").contains("})();\n}</script>"),
             "context constants stay block-scoped to the SDK"
         );
         assert!(out.contains(r#"const __RESIDUUM_VERSION__="2026.09.23";"#));
