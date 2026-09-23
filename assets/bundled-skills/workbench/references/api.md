@@ -6,6 +6,10 @@ What a workbench artifact can reach through `residuum.fetch` and `residuum.on`. 
 
 Three values are embedded into the page when it loads, not fetched: `residuum.artifact` is the artifact's own name, `residuum.version` is Residuum's version, and `residuum.features` is a frozen array of feature ids this build supports. Check a feature id before relying on the capability it names, since an older Residuum build won't have it.
 
+## Artifact State
+
+`residuum.state.get()` and `residuum.state.set(value)` are sugar over the workspace file API for one file, `workbench/<name>.state.json` — no separate endpoint. `get()` resolves to the parsed value, `null` when the file doesn't exist yet, and rejects with an `Error` if the saved content isn't valid JSON. `set(value)` writes `JSON.stringify(value)` unconditionally (last write wins); use `residuum.fetch` against `/api/workspace/file` directly with `If-Match` for conflict detection.
+
 ## Endpoints Worth Calling
 
 | Method and path | Returns / does |
@@ -18,6 +22,8 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 | `GET /api/inbox` | The user's inbox: `[{ id, title, body, source, timestamp, read, attachments }]`. |
 | `PUT /api/inbox/<id>/read` | Marks an inbox item read. |
 | `POST /api/inbox/<id>/archive` | Archives an inbox item. |
+| `POST /api/agent-inbox` | Body `{ title?, body }` adds an item to the agent's own inbox (what the `/inbox` command and `inbox_list`/`inbox_read` work from) — there's no equivalent for the user's inbox. `title` defaults to the body's first line, cut to 60 characters. Blank `body` answers `400`. Returns `{ id }`. |
+| `GET /api/memory/search?q=<query>&limit=<1..50, default 10>&source=observations\|episodes\|wiki&date_from=&date_to=` | The same hybrid search the `memory_search` tool runs. Returns `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, where `semantic` says whether vector search contributed. Blank `q`, an unrecognized `source`, or a malformed date answers `400`. |
 | `GET /api/sessions` | Agent sessions: `{ live, completed, next_cursor }`. Filters: `?category=scheduled\|external\|spawned`, `?address=<address>`, `?before=<next_cursor>`, `?limit=1..200` (default 50). |
 | `GET /api/sessions/runs/<run_id>/transcript` | One session run's transcript. |
 | `GET /api/chat/history` | Recent main-chat messages. |

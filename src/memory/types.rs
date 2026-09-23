@@ -76,6 +76,23 @@ impl DocSource {
             _ => None,
         }
     }
+
+    /// Parse a caller's user-facing source filter name (`"observations"`,
+    /// `"episodes"`, `"wiki"`) onto this vocabulary. Shared by the
+    /// `memory_search` tool and the `/api/memory/search` HTTP endpoint, the
+    /// only two boundaries where this name is user-supplied. `None` means
+    /// the value isn't one of the three names; callers distinguish that from
+    /// "no filter given" themselves, since this function only sees a value
+    /// that was actually supplied.
+    #[must_use]
+    pub fn from_query_str(value: &str) -> Option<Self> {
+        match value {
+            "observations" => Some(Self::Observation),
+            "episodes" => Some(Self::Chunk),
+            "wiki" => Some(Self::Wiki),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for DocSource {
@@ -467,6 +484,26 @@ mod tests {
         assert_eq!(DocSource::from_index_value("episodes"), None);
         assert_eq!(DocSource::from_index_value(""), None);
         assert_eq!(DocSource::from_index_value("Observation"), None);
+    }
+
+    #[test]
+    fn doc_source_from_query_str_maps_user_facing_names() {
+        assert_eq!(
+            DocSource::from_query_str("observations"),
+            Some(DocSource::Observation)
+        );
+        assert_eq!(
+            DocSource::from_query_str("episodes"),
+            Some(DocSource::Chunk)
+        );
+        assert_eq!(DocSource::from_query_str("wiki"), Some(DocSource::Wiki));
+    }
+
+    #[test]
+    fn doc_source_from_query_str_rejects_unknown_name() {
+        assert_eq!(DocSource::from_query_str("observation"), None);
+        assert_eq!(DocSource::from_query_str(""), None);
+        assert_eq!(DocSource::from_query_str("Wiki"), None);
     }
 
     #[test]

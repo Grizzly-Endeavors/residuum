@@ -266,13 +266,7 @@ async fn handle_client_message(
             let tz = state.tz;
             let tx = local_tx.clone();
             tokio::spawn(async move {
-                let title: String = body
-                    .lines()
-                    .next()
-                    .unwrap_or("Inbox message")
-                    .chars()
-                    .take(60)
-                    .collect();
+                let title = crate::inbox::derive_title(&body);
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
                         tx.send(ServerMessage::Notice {

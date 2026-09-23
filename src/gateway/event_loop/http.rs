@@ -40,6 +40,7 @@ pub fn build_gateway_app(
     update_api_state: web::update::UpdateApiState,
     tracing_api_state: web::tracing_api::TracingApiState,
     workbench_serving: crate::workbench::server::WorkbenchServing,
+    memory_api_state: web::memory::MemoryApiState,
 ) -> axum::Router {
     use axum::routing::{get, post};
 
@@ -104,6 +105,9 @@ pub fn build_gateway_app(
             tunnel_status_rx: state.tunnel_status_rx.clone(),
         });
 
+    let agent_inbox_router = web::inbox::agent_inbox_api_router(state.clone());
+    let memory_router = web::memory::memory_api_router(memory_api_state);
+
     axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state)
@@ -114,6 +118,8 @@ pub fn build_gateway_app(
         .merge(update_router)
         .merge(tracing_router)
         .merge(workbench_router)
+        .merge(agent_inbox_router)
+        .merge(memory_router)
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
         .layer(axum::middleware::from_fn(
