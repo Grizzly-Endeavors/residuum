@@ -867,7 +867,7 @@ On success: `"bug report submitted: RR-XXXXXXXXXX"`.
 
 On submission failure (network issue, upstream rejection, rate limit): `is_error = true` with the upstream error message; for 429 responses the `Retry-After` header is included.
 
-**Side effects:** Submits a sanitized OTLP trace dump and the runtime client context (version, OS, model) to the developer ingest service via `agent-residuum.com/api/v1/bug-report`. Span content is forcibly sanitized regardless of the runtime `sanitize_content` toggle.
+**Side effects:** Submits a sanitized OTLP trace dump and the runtime client context (version, OS, model, and an allowlist of configuration toggles, counts, and enums: never keys, paths, URLs, or names) to the developer ingest service via `agent-residuum.com/api/v1/bug-report`. Span content is forcibly sanitized regardless of the runtime `sanitize_content` toggle.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService` and a runtime client context snapshot taken at fork time.
 
