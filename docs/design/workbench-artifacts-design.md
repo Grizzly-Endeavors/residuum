@@ -47,7 +47,7 @@ Things that name the *place* stay: `/workbench` UI routes, `workbench/` folder, 
 
 ### 2. Workspace access policy
 
-One module owns the rule for which workspace paths are hidden from the HTTP file API and the change feed. It matches on **path segments**, not substrings: any segment named `.index`, and database files (`.db`, `.sqlite`) plus their sidecar files (`-wal`, `-shm`, `-journal`). Every file endpoint (listing, read, write, raw, tree, batch read, delete, mkdir, move) and the change feed consult it. A blocked path answers `403` on direct access and is silently absent from listings, trees, and change events.
+One module owns the rule for which workspace paths are hidden from the HTTP file API and the change feed. It matches on **path segments**, not substrings: any segment named `.index`, database files (`.db`, `.sqlite`) plus their sidecar files (`-wal`, `-shm`, `-journal`), and the temporary files Residuum's atomic writes create and rename away (`.<name>.<random>.residuum-tmp`). Every file endpoint (listing, read, write, raw, tree, batch read, delete, mkdir, move) and the change feed consult it. A blocked path answers `403` on direct access and is silently absent from listings, trees, and change events.
 
 Every path a request names (including the root `path` of a tree request) keeps today's rule: it is canonicalized and must stay inside the workspace. Recursive walks (tree) never follow symlinks they encounter below that root and omit them.
 

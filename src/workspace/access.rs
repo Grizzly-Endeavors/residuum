@@ -2,9 +2,9 @@
 //! change feed must never expose.
 //!
 //! One pure function owns the rule, matched by path segment rather than
-//! substring, so every caller (listing, read, write, and — in later phases —
-//! raw access, tree walks, batch reads, delete/mkdir/move, and the change
-//! feed) agrees on what is hidden.
+//! substring, so every caller agrees on what is hidden: internal index
+//! directories, database files and their sidecars, and the temporary files
+//! atomic writes create and rename away.
 
 use std::path::Path;
 
@@ -37,6 +37,10 @@ pub fn is_blocked_path(relative: &str) -> bool {
 /// Returns true if `name` (a bare file name, no directory components) is a
 /// blocked database file or one of its sidecar files.
 fn is_blocked_file_name(name: &str) -> bool {
+    if crate::util::fs::is_atomic_write_temp(name) {
+        return true;
+    }
+
     let base = name
         .strip_suffix("-wal")
         .or_else(|| name.strip_suffix("-shm"))
@@ -72,6 +76,12 @@ mod tests {
         assert!(is_blocked_path("store.sqlite-wal"));
         assert!(is_blocked_path("store.sqlite-shm"));
         assert!(is_blocked_path("store.sqlite-journal"));
+    }
+
+    #[test]
+    fn blocks_in_flight_atomic_write_temp_files() {
+        assert!(is_blocked_path("wiki/.page.md.0badf00d.residuum-tmp"));
+        assert!(!is_blocked_path("wiki/.page.md.tmp"));
     }
 
     #[test]
