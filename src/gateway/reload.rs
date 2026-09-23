@@ -265,7 +265,8 @@ fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpe
         .collect()
 }
 
-/// Backup `config.toml` and `providers.toml` before reload.
+/// Copy `config.toml` and `providers.toml` to `.bak` files after they load
+/// successfully, keeping a copy of the last config that worked.
 ///
 /// Best-effort: logs a warning on failure but never panics.
 pub fn backup_config(config_dir: &std::path::Path) {
@@ -274,39 +275,12 @@ pub fn backup_config(config_dir: &std::path::Path) {
         let dst = config_dir.join(format!("{name}.bak"));
         if src.exists() {
             if let Err(err) = std::fs::copy(&src, &dst) {
-                tracing::warn!(file = %name, error = %err, "failed to back up before reload");
+                tracing::warn!(file = %name, error = %err, "failed to back up config");
             } else {
                 tracing::debug!(file = %name, "backed up to .bak");
             }
         }
     }
-}
-
-/// Restore `.bak` files for `config.toml` and `providers.toml` after a failed reload.
-///
-/// Returns `true` if at least one file was restored successfully.
-pub fn rollback_config(config_dir: &std::path::Path) -> bool {
-    let mut any_restored = false;
-    for name in &["config.toml", "providers.toml"] {
-        let backup = config_dir.join(format!("{name}.bak"));
-        let target = config_dir.join(name);
-        if !backup.exists() {
-            continue;
-        }
-        match std::fs::copy(&backup, &target) {
-            Ok(_) => {
-                tracing::info!(file = %name, "restored from backup");
-                any_restored = true;
-            }
-            Err(err) => {
-                tracing::warn!(file = %name, error = %err, "failed to restore from backup");
-            }
-        }
-    }
-    if !any_restored {
-        tracing::warn!("no config backups found, cannot rollback");
-    }
-    any_restored
 }
 
 /// Shut down an adapter task and wait up to 5 seconds for it to stop.
@@ -332,18 +306,21 @@ async fn shutdown_adapter(
 
 /// Handle an in-place root config reload.
 ///
-/// Backs up current config files, loads new config, diffs old vs new, and
-/// applies only the changed subsystems. On failure, rolls back and notifies
-/// clients.
+/// Loads the new config, diffs old vs new, and applies only the changed
+/// subsystems. On failure the running config stays in effect, the files on
+/// disk are left as the user wrote them, and clients are notified.
 pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
-    backup_config(&rt.config_dir);
 
     let new_cfg = match Config::load_at(&rt.config_dir) {
-        Ok(cfg) => cfg,
+        Ok(cfg) => {
+            // Only a config that loaded replaces the backup, so the backup is
+            // always the last one that worked.
+            backup_config(&rt.config_dir);
+            cfg
+        }
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
-            rollback_config(&rt.config_dir);
             publish_notice(
                 &rt.publisher,
                 format!("config reload failed (keeping current config): {err}"),
@@ -1366,37 +1343,6 @@ mod tests {
             "# providers\n",
             "providers.toml backup content should match original"
         );
-    }
-
-    #[test]
-    fn rollback_config_restores_original() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config.toml");
-        let providers = dir.path().join("providers.toml");
-        let config_bak = dir.path().join("config.toml.bak");
-        let providers_bak = dir.path().join("providers.toml.bak");
-
-        std::fs::write(&config_bak, "timezone = \"UTC\"\n").unwrap();
-        std::fs::write(&config, "BROKEN").unwrap();
-        std::fs::write(&providers_bak, "# providers\n").unwrap();
-        std::fs::write(&providers, "BROKEN").unwrap();
-
-        assert!(rollback_config(dir.path()), "rollback should succeed");
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            "timezone = \"UTC\"\n",
-        );
-        assert_eq!(
-            std::fs::read_to_string(&providers).unwrap(),
-            "# providers\n",
-        );
-    }
-
-    #[test]
-    fn rollback_config_fails_without_backup() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
-        assert!(!rollback_config(dir.path()));
     }
 
     #[test]

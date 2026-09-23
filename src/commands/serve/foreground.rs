@@ -4,6 +4,7 @@ use residuum::config::Config;
 use residuum::util::FatalError;
 
 use super::ServeArgs;
+use super::startup_config::{ConfigProblem, classify_load_error};
 
 /// Run the gateway in foreground mode (called as `residuum serve --foreground`).
 ///
@@ -85,10 +86,6 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
     }
 
     let config_dir = residuum::config::Config::config_dir()?;
-    // Determine first-boot from disk state: if a backup exists, the gateway
-    // has previously loaded a valid config, so this is a restart.
-    let is_first_boot = !config_dir.join("config.toml.bak").exists();
-
     loop {
         Config::bootstrap_at_dir(&config_dir)?;
         match Config::load_at(&config_dir) {
@@ -109,38 +106,19 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
                 }
                 break;
             }
-            Err(err) if !is_first_boot => {
-                // Config broken on restart — try restoring from backup
-                tracing::warn!(error = %err, "config invalid, attempting rollback from backup");
-                if residuum::gateway::rollback_config(&config_dir) {
-                    if let Err(retry_err) = Config::load_at(&config_dir) {
-                        return Err(FatalError::Config(format!(
-                            "config invalid after rollback: {retry_err}\n\n\
-                             fix {}/config.toml and providers.toml manually, then restart",
-                            config_dir.display()
-                        )));
+            Err(err) => match classify_load_error(&config_dir, &err) {
+                ConfigProblem::NotSetUp => {
+                    tracing::info!(error = %err, "config not set up yet, starting setup wizard");
+                    // Box::pin reduces stack frame size — this future is large
+                    match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
+                        residuum::gateway::setup::SetupExit::ConfigSaved => {
+                            tracing::debug!("setup complete, loading configuration");
+                        }
+                        residuum::gateway::setup::SetupExit::Shutdown => break,
                     }
-                    tracing::info!("config restored from backup, starting gateway");
-                    continue;
                 }
-                tracing::warn!("config rollback failed: no backup available");
-                return Err(FatalError::Config(format!(
-                    "config invalid and rollback failed: {err}\n\n\
-                     fix {}/config.toml and providers.toml manually, then restart",
-                    config_dir.display()
-                )));
-            }
-            Err(err) => {
-                // First boot — setup wizard
-                tracing::warn!(error = %err, "config invalid, starting setup wizard");
-                // Box::pin reduces stack frame size — this future is large
-                match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
-                    residuum::gateway::setup::SetupExit::ConfigSaved => {
-                        tracing::debug!("setup complete, loading configuration");
-                    }
-                    residuum::gateway::setup::SetupExit::Shutdown => break,
-                }
-            }
+                ConfigProblem::Invalid(invalid) => return Err(invalid),
+            },
         }
     }
     Ok(())

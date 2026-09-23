@@ -96,6 +96,29 @@ impl Config {
         Ok(cfg)
     }
 
+    /// Check that `config.toml` and `providers.toml` in `config_dir` are
+    /// well-formed: valid TOML containing only known keys.
+    ///
+    /// Missing files pass. Semantic checks (required values, model specs)
+    /// are left to [`load_at`](Self::load_at), so this separates a malformed
+    /// file from one that is merely not configured yet.
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` naming the file and the parse error.
+    pub fn check_files_parse_at(config_dir: &std::path::Path) -> Result<(), FatalError> {
+        read_optional_toml::<deserialize::ConfigFile>(
+            &config_dir.join("config.toml"),
+            "config.toml",
+        )
+        .map_err(FatalError::Config)?;
+        read_optional_toml::<deserialize::ProvidersFile>(
+            &config_dir.join("providers.toml"),
+            "providers.toml",
+        )
+        .map_err(FatalError::Config)?;
+        Ok(())
+    }
+
     /// Validate a TOML string as a config file without saving it.
     ///
     /// Parses the TOML into the raw config structure, then runs full resolution
