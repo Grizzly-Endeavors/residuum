@@ -112,12 +112,13 @@ Phase 1 comes first. Phases 2 and 3 can proceed in parallel after it. Phases 4�
 - **Preconditions:** Phase 2.
 - **Shape when done:**
   - The `artifact` category, trigger, source label, defaults, idle timeout setting, and result delivery behave as the design's §8 describes. Every place that enumerates session categories (Rust and web) handles `artifact`.
-  - The HTTP endpoints in §8 exist with their contracts, including the message endpoint's status-per-code mapping, artifact sender attribution, and stop-all by artifact.
+  - The HTTP endpoints in §8 exist with their contracts, including the message endpoint's status-per-code mapping and artifact sender attribution.
+  - An artifact session's `message_agent` to `main` fails with the design's tool error; its inbox tool still works.
   - The artifact idle timeout appears in the web UI settings beside the other per-category idle timeouts.
   - `residuum.sessions.start` returns a handle whose `on`, `send`, and `stop` work.
   - Feature id `artifact-sessions` is listed.
 - **Verification:**
-  - Rust tests: an artifact session's turn output is not relayed to main and its completion is not routed to the inbox; category and trigger round-trip through the store; the idle timeout setting applies; start without the identity header answers `400`; stop and message endpoints match the WebSocket commands' outcomes and error codes, with the design's HTTP status per code; a message sent with the identity header reaches the session attributed to the artifact, and one without it is attributed to the owner; the artifact filter returns only that artifact's sessions; stop-all stops only that artifact's live sessions.
+  - Rust tests: an artifact session's turn output is not relayed to main and its completion is not routed to the inbox; its `message_agent` to `main` is refused while its user-inbox tool succeeds; category and trigger round-trip through the store; the idle timeout setting applies; start without the identity header answers `400`; stop and message endpoints match the WebSocket commands' outcomes and error codes, with the design's HTTP status per code; a message sent with the identity header reaches the session attributed to the artifact, and one without it is attributed to the owner; the artifact filter returns only that artifact's sessions.
   - Web unit tests: artifact sessions group under their category; the SDK handle filters frames to its address.
   - Manually: an artifact starts a session that edits a file, streams its output into the page, and the result never appears in main chat or the inbox.
 
@@ -127,22 +128,22 @@ Phase 1 comes first. Phases 2 and 3 can proceed in parallel after it. Phases 4�
 - **Preconditions:** Phases 7 and 8.
 - **Shape when done:**
   - Every stoppable session row has a stop button in every category; artifact sessions show and link to their artifact.
-  - The artifact bar shows live sessions and in-flight model calls for the open artifact, and its Stop control aborts calls, stops sessions via stop-all, and unloads the frame into a stopped state with Restart, as the design's §9 describes.
+  - The artifact bar's activity indicator and panel list each live session the artifact started with its own stop button, and the in-flight model call count with Cancel calls. Stop page unloads the frame into a stopped state with Restart and aborts model calls without stopping sessions (design §9).
   - Closing an artifact leaves its sessions running.
 - **Verification:**
-  - Web unit tests: stop buttons appear for stoppable states only; the activity count follows session frames and in-flight calls; Stop issues the stop-all request, aborts calls, and unloads the frame; Restart reloads it.
-  - Manually: an artifact looping on `residuum.ask` and `residuum.sessions.start` is fully halted by one press of Stop, and the halted sessions show as stopped in the sessions list.
+  - Web unit tests: stop buttons appear for stoppable states only; the panel's session list follows session frames; stopping one session from the panel leaves the others running; Cancel calls aborts in-flight calls only; Stop page unloads the frame and aborts calls but issues no session stops; Restart reloads it.
+  - Manually: an artifact looping on `residuum.ask` and `residuum.sessions.start` stops starting new work after Stop page; its already-started sessions keep running and can each be stopped from the panel or the sessions list.
 
 ## Phase 10 — Inbox, memory search, and artifact state
 
 - **Modules:** inbox HTTP API; a memory search HTTP endpoint with access to the hybrid searcher; SDK state helper.
 - **Preconditions:** Phase 2.
 - **Shape when done:**
-  - `POST /api/inbox`, `POST /api/agent-inbox`, and `GET /api/memory/search` behave as the design's §11 describes, with the source attributed to the artifact.
+  - `POST /api/agent-inbox` and `GET /api/memory/search` behave as the design's §11 describes, with the source attributed to the artifact.
   - `residuum.state.get` and `residuum.state.set` exist.
   - Feature ids `inbox-add`, `memory-search`, and `artifact-state` are listed.
 - **Verification:**
-  - Rust tests: items land in the right inbox with the right source and default title; blank bodies are refused; memory search validates its parameters, maps `source`, clamps `limit`, and reports `semantic`.
+  - Rust tests: items land in the agent inbox with the artifact source and default title; blank bodies are refused; memory search validates its parameters, maps `source`, clamps `limit`, and reports `semantic`.
   - SDK tests or manual check: `state.get` returns `null` before the first `set` and the saved value after.
   - Manually: an artifact files an agent-inbox item and it appears where the `/inbox` command's items do; an artifact's search box returns memory results.
 
@@ -155,5 +156,5 @@ Phase 1 comes first. Phases 2 and 3 can proceed in parallel after it. Phases 4�
   - `docs/systems-usage/workbench.md` describes the complete system, with no references to removed behavior.
   - This design and its phases document move to `docs/archive/` with their status updated.
 - **Verification:**
-  - End to end, locally and through the relay, an agent-built wiki-graph artifact: loads a 300-page wiki in one tree request, updates live as the agent and a background session edit pages, re-syncs after a network drop, summarizes a page with `ask`, starts a session that writes a new page (which then appears via the change feed), files an inbox item, and is fully halted by Stop.
+  - End to end, locally and through the relay, an agent-built wiki-graph artifact: loads a 300-page wiki in one tree request, updates live as the agent and a background session edit pages, re-syncs after a network drop, summarizes a page with `ask`, starts a session that writes a new page (which then appears via the change feed), files an agent-inbox item, and after Stop page starts no new work while its running session can be stopped on its own.
   - Every capability in the design's feature list is present in `residuum.features`.
