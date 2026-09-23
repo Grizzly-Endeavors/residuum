@@ -250,6 +250,29 @@
   border-color: rgba(59, 139, 219, 0.28);
 }
 
+/* The row's click target: a transparent button stretched over the whole
+   row, so the row opens the session from anywhere except the controls that
+   sit above it (the artifact link, the stop button — both given their own
+   stacking so they intercept their own clicks first). */
+.session-row-select {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.session-row-select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 /* The seam: a vein of light down the row's left edge while the session is
    working, dimmer while it waits, and dark once it's done. */
 .session-row-seam {
@@ -312,12 +335,76 @@
   color: var(--text-muted);
 }
 
+/* Sits above the row's stretched select button so it opens the artifact
+   instead of the session. */
+button.session-row-artifact-link {
+  position: relative;
+  z-index: 2;
+  padding: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color var(--dur-quick);
+}
+
+button.session-row-artifact-link:hover,
+button.session-row-artifact-link:focus-visible {
+  color: var(--vein-bright);
+  text-decoration: underline;
+}
+
+button.session-row-artifact-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 2px;
+}
+
 .session-row-time {
   flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--text-muted);
   font-feature-settings: "tnum";
+}
+
+/* Sits above the row's stretched select button so it stops the session
+   instead of opening it. */
+.session-row-stop {
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.session-row-stop:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--error-bg);
+  border-color: rgba(192, 57, 43, 0.35);
+}
+
+.session-row-stop:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.session-row-stop:disabled {
+  color: var(--disabled-text);
+  cursor: not-allowed;
 }
 
 .session-row-purpose {

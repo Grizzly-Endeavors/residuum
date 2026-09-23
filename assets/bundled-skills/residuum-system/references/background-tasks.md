@@ -60,6 +60,7 @@ A workbench artifact can start a session with `residuum.sessions.start` (see the
 - Your turn output goes to the artifact that started you, and nowhere else: it is never relayed to main, and your completion is not filed to the inbox or pushed to notification channels.
 - `message_agent` to `main` fails with a tool error. To bring something to the user's attention, file it with `user_inbox_add`.
 - Sessions you spawn relay their results to you, as usual.
+- The owner sees you in the artifact's own activity panel (sessions it started, model calls in flight) as well as the sessions sidebar, and can stop you from either place; stopping the artifact's page never stops you.
 
 ## Conversation Routing
 
@@ -116,4 +117,4 @@ Each session's resume point (previous run id, episode pointer, trigger, source l
 
 ## Web UI
 
-The owner sees sessions in the web UI's sessions sidebar: live sessions with their category, source label, state, and running time, plus a paginated list of finished runs. Opening one shows its transcript and live activity, with a message box and a stop button. A message the owner sends from there arrives labelled as coming from the owner via the web UI; answer it in your response, which the owner reads in that view. Results a session relays to `main`, and `message_agent` calls to `main`, show in the main chat as compact items linking to the sending session.
+The owner sees sessions in the web UI's sessions sidebar: live sessions with their category, source label, state, and running time, plus a paginated list of finished runs. Every row in a stoppable state (forking, running, idle) carries its own stop button, in every category, so the owner can stop one straight from the list; an artifact session's row also links to the artifact that started it. Opening a session shows its transcript and live activity, with a message box and a stop button. A message the owner sends from there arrives labelled as coming from the owner via the web UI; answer it in your response, which the owner reads in that view. Results a session relays to `main`, and `message_agent` calls to `main`, show in the main chat as compact items linking to the sending session.

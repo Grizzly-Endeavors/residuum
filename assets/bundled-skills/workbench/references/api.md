@@ -87,7 +87,7 @@ Load with `GET /api/workspace/tree`, start watching before that first load, and 
 
 ## Agent Sessions
 
-`await residuum.sessions.start({ prompt, context, skill, model })` starts a session: a full fork of the agent, with its tools and memory, working on `prompt`. `context` is extra text it reads first, `skill` a skill to run as, `model` one of `"small"`, `"medium"` (default), `"large"`. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. It shows in the web UI's sessions sidebar under Artifacts, where the user can watch or stop it, and it keeps running if the page closes.
+`await residuum.sessions.start({ prompt, context, skill, model })` starts a session: a full fork of the agent, with its tools and memory, working on `prompt`. `context` is extra text it reads first, `skill` a skill to run as, `model` one of `"small"`, `"medium"` (default), `"large"`. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. It shows in the artifact's own activity panel (the bar above the page) and the web UI's sessions sidebar under Artifacts, where the user can watch or stop it with its own stop button; it keeps running if the page closes, and Stop page on that same bar unloads the page without stopping it.
 
 It resolves to a handle:
 

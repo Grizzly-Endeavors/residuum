@@ -346,6 +346,12 @@ export interface BridgeDeps {
   watchWorkspace: (prefixes: readonly string[]) => void;
   /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
   onEscape: () => void;
+  /**
+   * Called whenever the number of this frame's in-flight model calls
+   * changes, so a host component can mirror `modelCallsInFlight` into its
+   * own reactive state (the bridge itself holds no Svelte state).
+   */
+  onModelCallsChanged?: (count: number) => void;
   /** Waits before a retry. Defaults to a real timer; injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -404,6 +410,16 @@ export class WorkbenchBridge {
   /** Aborts every model call currently in flight for this frame. */
   cancelModelCalls(): void {
     for (const controller of this.modelCallControllers.values()) controller.abort();
+  }
+
+  private trackModelCall(id: string, controller: AbortController): void {
+    this.modelCallControllers.set(id, controller);
+    this.deps.onModelCallsChanged?.(this.modelCallControllers.size);
+  }
+
+  private untrackModelCall(id: string): void {
+    this.modelCallControllers.delete(id);
+    this.deps.onModelCallsChanged?.(this.modelCallControllers.size);
   }
 
   /**
@@ -537,7 +553,7 @@ export class WorkbenchBridge {
     const isModelCall = isModelCompletePath(check.url);
     const limiter = isModelCall ? this.modelCalls : this.requests;
     const controller = isModelCall ? new AbortController() : null;
-    if (controller) this.modelCallControllers.set(request.id, controller);
+    if (controller) this.trackModelCall(request.id, controller);
 
     let resp: Response;
     try {
@@ -554,7 +570,7 @@ export class WorkbenchBridge {
       });
       return;
     } finally {
-      if (controller) this.modelCallControllers.delete(request.id);
+      if (controller) this.untrackModelCall(request.id);
     }
     const body = await resp.arrayBuffer();
     const relayed: RelayedResponse = {

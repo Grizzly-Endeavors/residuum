@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
+  import { router } from "../lib/router.svelte";
   import { Icon } from "../lib/icons";
   import type { SessionView } from "../lib/sessions.svelte";
   import {
@@ -34,6 +35,7 @@
     return summary.interrupted ? "interrupted" : "finished";
   });
   let spawnerIsSession = $derived(summary?.spawner != null && summary.spawner !== "main");
+  let artifact = $derived(summary ? sessionArtifact(summary) : null);
 
   // Move focus to the heading whenever a different session is opened, so
   // screen reader and keyboard users land at the top of what just replaced
@@ -113,10 +115,19 @@
           <dt>Kind</dt>
           <dd>{categoryDescription(summary.category)}</dd>
         </div>
-        {#if sessionArtifact(summary)}
+        {#if artifact}
           <div>
             <dt>Started by</dt>
-            <dd>the workbench artifact {sessionArtifact(summary)}</dd>
+            <dd>
+              the workbench artifact
+              <button
+                type="button"
+                class="session-meta-link"
+                onclick={() => router.openWorkbench(artifact)}
+              >
+                {artifact}
+              </button>
+            </dd>
           </div>
         {/if}
         {#if summary.spawner}

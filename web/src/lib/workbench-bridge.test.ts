@@ -465,6 +465,77 @@ describe("WorkbenchBridge", () => {
     expect(h.frame.posted[0]).toHaveProperty("error");
   });
 
+  it("reports the in-flight model call count through onModelCallsChanged as calls start and finish", async () => {
+    const release: (() => void)[] = [];
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise<Response>((resolve) =>
+          release.push(() => {
+            resolve(new Response("{}", { status: 200 }));
+          }),
+        ),
+    );
+    const counts: number[] = [];
+    const h = harness({ fetch: fetchImpl, onModelCallsChanged: (count) => counts.push(count) });
+
+    const calls = Promise.all(
+      Array.from({ length: 2 }, (_, n) =>
+        h.bridge.handleMessage(h.frame, ARTIFACTS, {
+          ...fetchMsg("/api/model/complete", "POST"),
+          id: `model-${n}`,
+        }),
+      ),
+    );
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+    expect(counts).toEqual([1, 2]);
+
+    while (release.length > 0) release.shift()?.();
+    await calls;
+    expect(counts).toEqual([1, 2, 1, 0]);
+  });
+
+  it("cancelModelCalls leaves ordinary requests untouched", async () => {
+    const ordinaryReleased: (() => void)[] = [];
+    const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (requestUrl(input).includes("/api/model/complete")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+        });
+      }
+      return new Promise<Response>((resolve) => {
+        ordinaryReleased.push(() => {
+          resolve(new Response("{}", { status: 200 }));
+        });
+      });
+    });
+    const h = harness({ fetch: fetchImpl });
+
+    const ordinary = h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/status"),
+      id: "ord-1",
+    });
+    const modelCall = h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/model/complete", "POST"),
+      id: "model-1",
+    });
+    await vi.waitFor(() => {
+      expect(h.bridge.modelCallsInFlight).toBe(1);
+    });
+
+    h.bridge.cancelModelCalls();
+    await modelCall;
+    expect(h.frame.posted.find((m) => m.id === "model-1")).toHaveProperty("error");
+    expect(h.frame.posted.find((m) => m.id === "ord-1")).toBeUndefined();
+
+    ordinaryReleased.shift()?.();
+    await ordinary;
+    expect(h.frame.posted.find((m) => m.id === "ord-1")?.result).toMatchObject({ status: 200 });
+  });
+
   it("aborts in-flight model calls when the bridge is torn down", async () => {
     const fetchImpl = vi.fn(
       (_input: RequestInfo | URL, init?: RequestInit) =>

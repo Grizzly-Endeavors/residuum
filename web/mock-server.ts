@@ -15,8 +15,8 @@ import { WebSocketServer, WebSocket } from "ws";
 /** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
 const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
 
-/** The detectable capabilities the mock implements. */
-const MOCK_FEATURES: readonly string[] = ["model-complete"];
+/** The detectable capabilities the mock implements (a subset of `src/features.rs`). */
+const MOCK_FEATURES: readonly string[] = ["model-complete", "artifact-sessions", "artifact-state"];
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -48,6 +48,13 @@ interface MockState {
   /** Close every WebSocket, as if the connection dropped. Set by `setupWebSocket`. */
   dropSockets: () => void;
   /**
+   * Send a frame to every connected WebSocket client, the way a session
+   * frame reaches the sidebar. Set by `setupWebSocket`; the REST handlers
+   * for the artifact session endpoints use it to announce sessions they
+   * start, stop, or message the same way the WebSocket command handlers do.
+   */
+  broadcast: (frame: Record<string, unknown>) => void;
+  /**
    * Set once a "drop compress" chat message has simulated the observer
    * compressing history into `ep-004`: how many `extraRecent` entries went
    * into that episode.
@@ -61,6 +68,13 @@ interface MockState {
  * can be exercised by hand.
  */
 const TRANSCRIPT_DELAY_MS = 700;
+
+/**
+ * Model calls are slowed down so they're visibly "in flight" in an
+ * artifact's activity panel for a moment, long enough to exercise Cancel
+ * calls and Stop page by hand.
+ */
+const MODEL_CALL_DELAY_MS = 3000;
 
 // ─── Agent sessions ────────────────────────────────────────────────────────────
 
@@ -270,6 +284,131 @@ function createSessions(): MockSessions {
   return { live, completed, transcripts, runCounter: 0 };
 }
 
+// Session lifecycle helpers shared by the WebSocket command handlers and the
+// REST endpoints that start, stop, and message sessions on an artifact's
+// behalf (`POST /api/sessions` and friends) — both need to mutate the same
+// in-memory sessions and announce it over the same broadcast channel.
+
+function recordMessage(
+  sessions: MockSessions,
+  session: MockSession,
+  message: Record<string, unknown>,
+) {
+  const list = sessions.transcripts.get(session.run_id) ?? [];
+  list.push({ timestamp: session.started_at, visibility: "user", ...message });
+  sessions.transcripts.set(session.run_id, list);
+}
+
+function setSessionState(
+  broadcast: (frame: Record<string, unknown>) => void,
+  session: MockSession,
+  next: MockSession["state"],
+) {
+  session.state = next;
+  broadcast({
+    type: "session_state_changed",
+    address: session.address,
+    run_id: session.run_id,
+    state: next,
+  });
+}
+
+function completeSession(
+  sessions: MockSessions,
+  broadcast: (frame: Record<string, unknown>) => void,
+  session: MockSession,
+  status: "completed" | "cancelled" | "failed",
+  error: string | null,
+) {
+  setSessionState(broadcast, session, "completing");
+  setTimeout(() => {
+    sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
+    session.state = "completed";
+    session.completed_at = new Date().toISOString();
+    session.episode_id = status === "completed" ? "ep-301" : null;
+    sessions.completed.unshift(session);
+    broadcast({
+      type: "session_completed",
+      address: session.address,
+      run_id: session.run_id,
+      status,
+      error,
+      episode_id: session.episode_id,
+    });
+  }, 800);
+}
+
+// One turn: running → tool → reply → idle, relaying to main when spawned by it.
+function runSessionTurn(
+  sessions: MockSessions,
+  broadcast: (frame: Record<string, unknown>) => void,
+  session: MockSession,
+  reply: string,
+) {
+  const turnId = `${session.run_id}-t${Date.now()}`;
+  const toolId = `tc_s_${Date.now()}`;
+  setSessionState(broadcast, session, "running");
+  broadcast({
+    type: "session_turn_started",
+    address: session.address,
+    run_id: session.run_id,
+    turn_id: turnId,
+  });
+  setTimeout(() => {
+    broadcast({
+      type: "session_broadcast_response",
+      address: session.address,
+      run_id: session.run_id,
+      content: "Checking the notes first.",
+    });
+    broadcast({
+      type: "session_tool_call",
+      address: session.address,
+      run_id: session.run_id,
+      id: toolId,
+      name: "memory_search",
+      arguments: { query: "fallback" },
+    });
+  }, 500);
+  setTimeout(() => {
+    broadcast({
+      type: "session_tool_result",
+      address: session.address,
+      run_id: session.run_id,
+      tool_call_id: toolId,
+      name: "memory_search",
+      output: "1 result: notification-routing.md",
+      is_error: false,
+    });
+  }, 1200);
+  setTimeout(() => {
+    if (!sessions.live.includes(session) || session.state !== "running") return;
+    recordMessage(sessions, session, { role: "assistant", content: reply });
+    broadcast({
+      type: "session_response",
+      address: session.address,
+      run_id: session.run_id,
+      turn_id: turnId,
+      content: reply,
+    });
+    broadcast({
+      type: "session_turn_ended",
+      address: session.address,
+      run_id: session.run_id,
+      turn_id: turnId,
+    });
+    setSessionState(broadcast, session, "idle");
+    if (session.spawner === "main") {
+      broadcast({
+        type: "session_message_to_main",
+        address: session.address,
+        run_id: session.run_id,
+        content: reply,
+      });
+    }
+  }, 2400);
+}
+
 function loadAsset(filename: string): string {
   try {
     return readFileSync(resolve(__dirname, "..", "assets", filename), "utf-8");
@@ -293,6 +432,8 @@ const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
   <label for="people">People</label><input id="people" type="number" value="3">
   <output id="each"></output>
   <button id="ask">Ask Residuum about this split</button>
+  <button id="burst">Fire 3 calls at once</button>
+  <button id="spawn">Start a background session</button>
   <script>
     const each = document.getElementById("each");
     const update = () => {
@@ -306,6 +447,19 @@ const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
       residuum
         .ask("Is " + each.textContent + " right? Answer in one short sentence.")
         .then((r) => alert(r.content))
+        .catch((e) => alert(e.message)),
+    );
+    // For exercising the activity panel's "Cancel calls": three calls in
+    // flight at once, long enough to see and cancel before they resolve.
+    document.getElementById("burst").addEventListener("click", () => {
+      for (let i = 0; i < 3; i++) {
+        residuum.ask("Sanity check #" + (i + 1) + " on " + each.textContent).catch(() => {});
+      }
+    });
+    // For exercising the activity panel's session list and stop buttons.
+    document.getElementById("spawn").addEventListener("click", () =>
+      residuum.sessions
+        .start({ prompt: "Double check this tip split against last month's dinner out." })
         .catch((e) => alert(e.message)),
     );
   </script>
@@ -467,6 +621,7 @@ function createState(): MockState {
     sessions: createSessions(),
     extraRecent: [],
     dropSockets: () => {},
+    broadcast: () => {},
     compressedAt: null,
     inboxItems: [
       {
@@ -887,6 +1042,13 @@ function text(res: ServerResponse, status: number, body: string) {
   res.end(body);
 }
 
+/** The name-shaped `X-Residuum-Artifact` header, or `null` when it's absent or malformed. */
+function artifactIdentity(req: IncomingMessage): string | null {
+  const raw = req.headers["x-residuum-artifact"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value) ? value : null;
+}
+
 // ─── REST middleware ───────────────────────────────────────────────────────────
 
 function setupRestMiddleware(server: ViteDevServer, state: MockState) {
@@ -989,6 +1151,131 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         }
         await new Promise((done) => setTimeout(done, TRANSCRIPT_DELAY_MS));
         json(res, 200, { session, messages: state.sessions.transcripts.get(runId) ?? [] });
+        return;
+      }
+
+      // POST /api/sessions — start an artifact session, the endpoint
+      // `residuum.sessions.start` calls through the bridge.
+      if (path === "/api/sessions" && method === "POST") {
+        const artifactName = artifactIdentity(req);
+        if (!artifactName) {
+          json(res, 400, {
+            error:
+              "starting a session needs the X-Residuum-Artifact header: sessions are started by workbench artifacts, through residuum.sessions.start",
+          });
+          return;
+        }
+        const body = JSON.parse((await readBody(req)) || "{}");
+        const prompt: string = typeof body.prompt === "string" ? body.prompt : "";
+        if (!prompt.trim()) {
+          json(res, 400, { error: "prompt must not be empty" });
+          return;
+        }
+        const sessions = state.sessions;
+        sessions.runCounter++;
+        const session: MockSession = {
+          address: `artifact-${artifactName}-${(0x1000 + sessions.runCounter).toString(16)}`,
+          run_id: `run-artifact-${sessions.runCounter}`,
+          category: "artifact",
+          source_label: `artifact:${artifactName}`,
+          state: "forking",
+          spawner: null,
+          depth: 1,
+          purpose: prompt.slice(0, 140),
+          started_at: new Date().toISOString(),
+          completed_at: null,
+          episode_id: null,
+          interrupted: false,
+        };
+        sessions.live.unshift(session);
+        recordMessage(sessions, session, {
+          role: "user",
+          content: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]\n\n${prompt}`,
+        });
+        state.broadcast({ type: "session_started", session });
+        setTimeout(
+          () =>
+            runSessionTurn(sessions, state.broadcast, session, `Working on it: ${prompt.slice(0, 80)}.`),
+          400,
+        );
+        json(res, 202, { address: session.address });
+        return;
+      }
+
+      // POST /api/sessions/:address/stop — stop any live session.
+      const sessionStopMatch = /^\/api\/sessions\/([^/]+)\/stop$/.exec(path);
+      if (sessionStopMatch && method === "POST") {
+        const address = decodeURIComponent(sessionStopMatch[1]);
+        const sessions = state.sessions;
+        if (address === "main") {
+          json(res, 400, { error: "main can't be stopped this way", code: "invalid_request" });
+          return;
+        }
+        const live = sessions.live.find((s) => s.address === address);
+        if (!live || live.state === "completing") {
+          json(res, 404, {
+            error: `${address} isn't running, so there's nothing to stop.`,
+            code: "not_live",
+          });
+          return;
+        }
+        completeSession(sessions, state.broadcast, live, "cancelled", null);
+        json(res, 202, { address });
+        return;
+      }
+
+      // POST /api/sessions/:address/messages — message any session, attributed
+      // to the artifact naming itself with the identity header, or the owner.
+      const sessionMessageMatch = /^\/api\/sessions\/([^/]+)\/messages$/.exec(path);
+      if (sessionMessageMatch && method === "POST") {
+        const address = decodeURIComponent(sessionMessageMatch[1]);
+        const body = JSON.parse((await readBody(req)) || "{}");
+        const content: string = typeof body.content === "string" ? body.content : "";
+        if (!content.trim() || address === "main") {
+          json(res, 400, {
+            error: content.trim() ? "main can't be messaged this way" : "content must not be empty",
+            code: "invalid_request",
+          });
+          return;
+        }
+        const artifactName = artifactIdentity(req);
+        const label = artifactName
+          ? `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`
+          : "[Message from the owner via the web UI — your response in this turn is shown to them directly]";
+        const sessions = state.sessions;
+        const live = sessions.live.find((s) => s.address === address);
+        if (live) {
+          recordMessage(sessions, live, { role: "user", content: `${label}\n${content}` });
+          runSessionTurn(sessions, state.broadcast, live, `Understood: "${content.slice(0, 60)}".`);
+          json(res, 200, { outcome: "live" });
+          return;
+        }
+        const prev = sessions.completed.find((s) => s.address === address);
+        if (!prev) {
+          json(res, 404, {
+            error: `There's no session called ${address}. It may have been from before a restart.`,
+            code: "unknown_address",
+          });
+          return;
+        }
+        sessions.runCounter++;
+        const resumed: MockSession = {
+          ...prev,
+          run_id: `run-resumed-http-${sessions.runCounter}`,
+          state: "forking",
+          started_at: new Date().toISOString(),
+          completed_at: null,
+          episode_id: null,
+          interrupted: false,
+        };
+        sessions.live.unshift(resumed);
+        recordMessage(sessions, resumed, { role: "user", content: `${label}\n${content}` });
+        state.broadcast({ type: "session_started", session: resumed });
+        setTimeout(
+          () => runSessionTurn(sessions, state.broadcast, resumed, "Picking this back up."),
+          400,
+        );
+        json(res, 200, { outcome: "resumed" });
         return;
       }
 
@@ -1192,6 +1479,9 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
           return;
         }
         const content = `Mock model reply to: ${prompt.slice(0, 200)}`;
+        // A brief artificial delay, so a call is visibly "in flight" in the
+        // artifact activity panel long enough to see and, if wanted, cancel.
+        await new Promise((done) => setTimeout(done, MODEL_CALL_DELAY_MS));
         json(res, 200, {
           content,
           model: "mock/small",
@@ -1318,111 +1608,19 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
   state.dropSockets = () => {
     for (const client of wss.clients) client.terminate();
   };
+  state.broadcast = broadcast;
 
-  function setState(session: MockSession, next: MockSession["state"]) {
-    session.state = next;
-    broadcast({
-      type: "session_state_changed",
-      address: session.address,
-      run_id: session.run_id,
-      state: next,
-    });
-  }
-
-  function record(session: MockSession, message: Record<string, unknown>) {
-    const list = sessions.transcripts.get(session.run_id) ?? [];
-    list.push({ timestamp: session.started_at, visibility: "user", ...message });
-    sessions.transcripts.set(session.run_id, list);
-  }
-
-  function complete(
+  const setState = (session: MockSession, next: MockSession["state"]) =>
+    setSessionState(broadcast, session, next);
+  const record = (session: MockSession, message: Record<string, unknown>) =>
+    recordMessage(sessions, session, message);
+  const complete = (
     session: MockSession,
     status: "completed" | "cancelled" | "failed",
     error: string | null,
-  ) {
-    setState(session, "completing");
-    setTimeout(() => {
-      sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
-      session.state = "completed";
-      session.completed_at = new Date().toISOString();
-      session.episode_id = status === "completed" ? "ep-301" : null;
-      sessions.completed.unshift(session);
-      broadcast({
-        type: "session_completed",
-        address: session.address,
-        run_id: session.run_id,
-        status,
-        error,
-        episode_id: session.episode_id,
-      });
-    }, 800);
-  }
-
-  // One turn: running → tool → reply → idle, relaying to main when spawned by it.
-  function runTurn(session: MockSession, reply: string) {
-    const turnId = `${session.run_id}-t${Date.now()}`;
-    const toolId = `tc_s_${Date.now()}`;
-    setState(session, "running");
-    broadcast({
-      type: "session_turn_started",
-      address: session.address,
-      run_id: session.run_id,
-      turn_id: turnId,
-    });
-    setTimeout(() => {
-      broadcast({
-        type: "session_broadcast_response",
-        address: session.address,
-        run_id: session.run_id,
-        content: "Checking the notes first.",
-      });
-      broadcast({
-        type: "session_tool_call",
-        address: session.address,
-        run_id: session.run_id,
-        id: toolId,
-        name: "memory_search",
-        arguments: { query: "fallback" },
-      });
-    }, 500);
-    setTimeout(() => {
-      broadcast({
-        type: "session_tool_result",
-        address: session.address,
-        run_id: session.run_id,
-        tool_call_id: toolId,
-        name: "memory_search",
-        output: "1 result: notification-routing.md",
-        is_error: false,
-      });
-    }, 1200);
-    setTimeout(() => {
-      if (!sessions.live.includes(session) || session.state !== "running") return;
-      record(session, { role: "assistant", content: reply });
-      broadcast({
-        type: "session_response",
-        address: session.address,
-        run_id: session.run_id,
-        turn_id: turnId,
-        content: reply,
-      });
-      broadcast({
-        type: "session_turn_ended",
-        address: session.address,
-        run_id: session.run_id,
-        turn_id: turnId,
-      });
-      setState(session, "idle");
-      if (session.spawner === "main") {
-        broadcast({
-          type: "session_message_to_main",
-          address: session.address,
-          run_id: session.run_id,
-          content: reply,
-        });
-      }
-    }, 2400);
-  }
+  ) => completeSession(sessions, broadcast, session, status, error);
+  const runTurn = (session: MockSession, reply: string) =>
+    runSessionTurn(sessions, broadcast, session, reply);
 
   function spawnSession(purpose: string): MockSession {
     sessions.runCounter++;

@@ -112,7 +112,7 @@ await session.send("Add a section on sources.");
 await session.stop();
 ```
 
-Write the prompt as a complete task brief: the session can't see the page or the main chat. Ask for the result in the shape the page will show (a sentence, a list, JSON). Show the session's progress and errors in the page, and give the user a way to stop it; the session keeps running if the page closes, and it idles for 10 minutes after its last turn so follow-up `send` calls land in the same run. The user can also watch or stop it from the web UI's sessions sidebar, under Artifacts.
+Write the prompt as a complete task brief: the session can't see the page or the main chat. Ask for the result in the shape the page will show (a sentence, a list, JSON). Show the session's progress and errors in the page, and give the user a way to stop it; the session keeps running if the page closes, and it idles for 10 minutes after its last turn so follow-up `send` calls land in the same run. The user can also watch or stop it from the artifact's own activity panel (the bar above the page) or the web UI's sessions sidebar, under Artifacts — stopping the page itself (Stop page, on that same bar) never stops the sessions it started.
 
 ## One-shot Model Calls
 
