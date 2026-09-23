@@ -1,12 +1,15 @@
-//! A2A caller-key management API endpoints, and the client-side "remote
-//! agents" endpoints: `GET /api/a2a/agents` (live status) and
-//! `GET`/`PUT /api/a2a/agents/raw` (the `config/a2a.json` editor).
+//! A2A web API endpoints: caller-key management, the client-side "remote
+//! agents" endpoints (`GET /api/a2a/agents` for live status and
+//! `GET`/`PUT /api/a2a/agents/raw` for the `config/a2a.json` editor), and
+//! the settings page's `GET /api/a2a/status` and `GET /api/a2a/card`.
 //!
 //! Each request opens its own handle on the key store; writes are serialized
 //! across handles and processes by the store's file lock, so the web UI,
 //! the CLI, and the running A2A listener never lose each other's updates.
 
+use std::path::Path as FsPath;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -15,8 +18,11 @@ use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::a2a::{
-    A2aClientHub, A2aKeyError, A2aKeyInfo, A2aKeys, AgentSnapshot, AgentSource, AgentStatus,
+    A2aClientHub, A2aKeyError, A2aKeyInfo, A2aKeys, AUTH_CHECK_PATH, AgentCardFile, AgentSnapshot,
+    AgentSource, AgentStatus, CardError, CardRuntime, build_agent_card,
 };
+use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
+use crate::workspace::layout::WorkspaceLayout;
 
 use super::ConfigApiState;
 use super::config::ValidateResponse;
@@ -259,6 +265,176 @@ pub(super) async fn api_a2a_agents_raw_put(
     }))
 }
 
+/// `[a2a]` settings as currently written in `config.toml`, resolved with the
+/// same defaults `crate::config::resolve::resolve_a2a_config` uses. Parsed
+/// standalone from the raw file — rather than through `Config::load_at`, which
+/// validates the whole config — so an unrelated broken section elsewhere in
+/// `config.toml` never breaks this status check.
+struct A2aStatusConfig {
+    enabled: bool,
+    port: u16,
+    public_url: Option<String>,
+    visibility: A2aVisibility,
+    gateway_bind: String,
+}
+
+impl Default for A2aStatusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: DEFAULT_A2A_PORT,
+            public_url: None,
+            visibility: A2aVisibility::default(),
+            gateway_bind: "127.0.0.1".to_string(),
+        }
+    }
+}
+
+fn read_a2a_status_config(config_dir: &FsPath) -> A2aStatusConfig {
+    let default = A2aStatusConfig::default();
+    let Ok(raw) = std::fs::read_to_string(config_dir.join("config.toml")) else {
+        return default;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&raw) else {
+        return default;
+    };
+    let a2a_table = value.get("a2a").and_then(toml::Value::as_table);
+    let gateway_table = value.get("gateway").and_then(toml::Value::as_table);
+    A2aStatusConfig {
+        enabled: a2a_table
+            .and_then(|t| t.get("enabled"))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(default.enabled),
+        port: a2a_table
+            .and_then(|t| t.get("port"))
+            .and_then(toml::Value::as_integer)
+            .and_then(|v| u16::try_from(v).ok())
+            .unwrap_or(default.port),
+        public_url: a2a_table
+            .and_then(|t| t.get("public_url"))
+            .and_then(toml::Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
+        visibility: match a2a_table
+            .and_then(|t| t.get("visibility"))
+            .and_then(toml::Value::as_str)
+        {
+            Some("private") => A2aVisibility::Private,
+            _ => A2aVisibility::Public,
+        },
+        gateway_bind: gateway_table
+            .and_then(|t| t.get("bind"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(default.gateway_bind),
+    }
+}
+
+impl A2aStatusConfig {
+    /// The `A2aConfig` shape [`CardRuntime::from_config`] expects, so the
+    /// status/card endpoints compute the base URL exactly the way the running
+    /// listener does.
+    fn as_a2a_config(&self) -> A2aConfig {
+        A2aConfig {
+            enabled: self.enabled,
+            port: self.port,
+            public_url: self.public_url.clone(),
+            visibility: self.visibility,
+        }
+    }
+}
+
+/// Whether something currently answers the A2A listener's health-check path
+/// on loopback. A direct probe rather than reading in-process adapter state,
+/// so this endpoint needs no wiring into the gateway's adapter lifecycle — it
+/// answers the same question an outside caller would get.
+async fn probe_listener_running(port: u16) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(format!("http://127.0.0.1:{port}{AUTH_CHECK_PATH}"))
+        .send()
+        .await
+        .is_ok()
+}
+
+/// Plain-language explanation of a broken workspace agent-card file, for the
+/// settings page — never the raw `CardError` display, which names internal
+/// error kinds a non-technical user has no use for.
+fn plain_card_error(e: &CardError) -> String {
+    match e {
+        CardError::Read { path, .. } => format!(
+            "Couldn't read the agent card file at {path}. Residuum writes one automatically \
+             on first run, so if it's missing something else may have removed it."
+        ),
+        CardError::Parse { path, message } => {
+            format!("The agent card file at {path} isn't valid JSON: {message}")
+        }
+        CardError::Invalid { path, message } => {
+            format!("The agent card file at {path} has a problem: {message}")
+        }
+    }
+}
+
+/// Response body for `GET /api/a2a/status`.
+#[derive(Serialize)]
+pub(super) struct A2aStatusResponse {
+    enabled: bool,
+    port: u16,
+    visibility: &'static str,
+    public_url: Option<String>,
+    listener_running: bool,
+    card_error: Option<String>,
+}
+
+/// `GET /api/a2a/status` — whether A2A is on, how other agents can reach it,
+/// and whether the listener or the workspace agent card currently have a
+/// problem.
+///
+/// `public_url` is the configured `[a2a] public_url` when set, and `null`
+/// otherwise. Once the relay tunnel can supply an address automatically,
+/// filling this in from the tunnel status instead is a one-line change here.
+pub(super) async fn api_a2a_status(State(state): State<ConfigApiState>) -> Json<A2aStatusResponse> {
+    let cfg = read_a2a_status_config(&state.config_dir);
+    let listener_running = if cfg.enabled {
+        probe_listener_running(cfg.port).await
+    } else {
+        false
+    };
+    let card_path = WorkspaceLayout::new(&state.workspace_dir).agent_card_json();
+    let card_error = AgentCardFile::load(&card_path)
+        .err()
+        .map(|e| plain_card_error(&e));
+
+    Json(A2aStatusResponse {
+        enabled: cfg.enabled,
+        port: cfg.port,
+        visibility: cfg.visibility.as_str(),
+        public_url: cfg.public_url.clone(),
+        listener_running,
+        card_error,
+    })
+}
+
+/// `GET /api/a2a/card` — the Agent Card as the listener would currently serve
+/// it, or a `503` with a plain-language error if the workspace
+/// `agent-card.json` file is invalid.
+pub(super) async fn api_a2a_card(
+    State(state): State<ConfigApiState>,
+) -> Result<Json<a2a::AgentCard>, (StatusCode, String)> {
+    let cfg = read_a2a_status_config(&state.config_dir);
+    let card_path = WorkspaceLayout::new(&state.workspace_dir).agent_card_json();
+    let file = AgentCardFile::load(&card_path)
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, plain_card_error(&e)))?;
+    let runtime = CardRuntime::from_config(&cfg.as_a2a_config(), &cfg.gateway_bind);
+    Ok(Json(build_agent_card(&file, &runtime)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +619,154 @@ mod tests {
         };
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(!result.valid);
+    }
+
+    fn write_config(dir: &std::path::Path, toml: &str) {
+        std::fs::write(dir.join("config.toml"), toml).unwrap();
+    }
+
+    fn write_card(state: &ConfigApiState, json: &str) {
+        let path = WorkspaceLayout::new(&state.workspace_dir).agent_card_json();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
+    const VALID_CARD: &str =
+        r#"{"name": "Test Agent", "description": "does things", "skills": []}"#;
+
+    async fn free_port() -> u16 {
+        tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[tokio::test]
+    async fn status_defaults_when_config_and_card_are_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = api_a2a_status(State(test_state(dir.path()))).await.0;
+        assert!(status.enabled, "a2a is enabled by default");
+        assert_eq!(status.port, DEFAULT_A2A_PORT);
+        assert_eq!(status.visibility, "public");
+        assert_eq!(status.public_url, None);
+        assert!(
+            !status.listener_running,
+            "nothing is listening on the default port in this test"
+        );
+        assert!(
+            status.card_error.is_some(),
+            "a missing agent card file should surface as an error, not silently succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reads_public_url_and_private_visibility_from_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        write_config(
+            dir.path(),
+            &format!(
+                "[a2a]\nenabled = true\nport = {port}\nvisibility = \"private\"\n\
+                 public_url = \"https://example.com/a2a/laptop\"\n"
+            ),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(state)).await.0;
+        assert_eq!(status.port, port);
+        assert_eq!(status.visibility, "private");
+        assert_eq!(
+            status.public_url.as_deref(),
+            Some("https://example.com/a2a/laptop")
+        );
+        assert!(status.card_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn status_reports_listener_running_when_something_answers_auth_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = true\nport = {port}\n"),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let router = axum::Router::new().route(
+            AUTH_CHECK_PATH,
+            axum::routing::get(|| async { StatusCode::NO_CONTENT }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let status = api_a2a_status(State(state)).await.0;
+        assert!(status.listener_running);
+    }
+
+    #[tokio::test]
+    async fn status_never_probes_a_disabled_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        // Nothing listens on `port`: if the handler probed it anyway despite
+        // `enabled = false`, it would (correctly) report `false` too, so this
+        // only exercises the disabled branch's own reported fields.
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = false\nport = {port}\n"),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(state)).await.0;
+        assert!(!status.enabled);
+        assert!(!status.listener_running);
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_returns_the_served_card_when_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        write_config(
+            dir.path(),
+            &format!("[a2a]\nenabled = true\nport = {port}\n"),
+        );
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let card = api_a2a_card(State(state)).await.unwrap().0;
+        assert_eq!(card.name, "Test Agent");
+        assert!(card.skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_is_503_with_a_plain_message_when_the_card_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        write_card(&state, "not json");
+
+        let Err((status, message)) = api_a2a_card(State(state)).await else {
+            panic!("an invalid card file should be rejected");
+        };
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            message.contains("agent card"),
+            "error should name the problem in plain language: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_is_503_when_the_card_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let Err((status, _)) = api_a2a_card(State(test_state(dir.path()))).await else {
+            panic!("a missing card file should be rejected");
+        };
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 }
