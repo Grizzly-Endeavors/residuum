@@ -182,8 +182,8 @@ async fn spawn_server_and_adapters(
     let file_registry = crate::gateway::file_server::FileRegistry::new();
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
-    let (workspace_watch_health_tx, workspace_watch_health) =
-        tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
+    let (workbench_watcher_handle, change_feed_handle, workspace_watch_health) =
+        spawn_change_feed_tasks(core, &parts.layout).await;
     let state = GatewayState {
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
@@ -241,8 +241,6 @@ async fn spawn_server_and_adapters(
         parts.layout.agent_card_json(),
         core.reload_tx.clone(),
     ));
-    let (workbench_watcher_handle, change_feed_handle) =
-        spawn_change_feed_tasks(core, &parts.layout, workspace_watch_health_tx).await;
 
     Ok(SpawnedHandles {
         server_handle,
@@ -265,15 +263,18 @@ async fn spawn_server_and_adapters(
 }
 
 /// Start the workspace change feed and the artifact reload watcher that
-/// follows it. Returns their handles (reload watcher first).
+/// follows it. Returns their handles (reload watcher first) and the feed's
+/// health.
 async fn spawn_change_feed_tasks(
     core: &GatewayCore,
     layout: &crate::workspace::layout::WorkspaceLayout,
-    health_tx: tokio::sync::watch::Sender<crate::workspace::watch::WatchHealth>,
 ) -> (
     Option<tokio::task::JoinHandle<()>>,
     Option<tokio::task::JoinHandle<()>>,
+    tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 ) {
+    let (health_tx, health) =
+        tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
     let workbench_watcher = match crate::workbench::watcher::spawn_workbench_watcher(
         layout.workbench_dir(),
         &core.bus_handle,
@@ -292,7 +293,7 @@ async fn spawn_change_feed_tasks(
         core.publisher.clone(),
         health_tx,
     );
-    (workbench_watcher, Some(change_feed))
+    (workbench_watcher, Some(change_feed), health)
 }
 
 /// Update, lifecycle, and model-call channels bundled to reduce argument
