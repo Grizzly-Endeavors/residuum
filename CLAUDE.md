@@ -28,7 +28,7 @@ Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon)
 - **Path separators, endianness, pointer width**: use `std` abstractions, not platform-specific assumptions
 - **FFI code**: test against the aarch64 target when touching unsafe/FFI boundaries
 
-CI does not cross-compile by default; when it does, it runs clippy with `-D warnings` for each target, not just `cargo check`. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
+CI does not cross-compile by default; when it does, it runs clippy with `-D warnings` for each target and the test suite on a Windows runner. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
 
 ### Lint Rules
 

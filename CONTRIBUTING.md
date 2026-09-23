@@ -28,11 +28,11 @@ All changes go through pull requests.
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
 4. The quality gate is the pre-commit hook, not CI: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. A maintainer re-runs them locally before merging a contributor's PR.
-5. Cross-platform clippy checks (aarch64 Linux, Windows, macOS) are opt-in; see below
+5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
-### Cross-Platform Compile Checks
+### Cross-Platform Checks
 
-The pre-commit hook only builds for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build. It runs when:
+The pre-commit hook only builds for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build, and runs the full test suite on a Windows runner, where `cfg(windows)` code actually executes. It runs when:
 
 - the PR carries the `cross-compile` label (adding the label starts a run, and every later push re-runs it)
 - the PR changes `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` (automatic)

@@ -1,4 +1,4 @@
-name: Cross-Platform Compile Checks
+name: Cross-Platform Checks
 
 # Opt-in: runs on a PR carrying the `cross-compile` label, on a PR that changes
 # dependencies or the toolchain, or by hand with
@@ -123,3 +123,45 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features --target aarch64-apple-darwin -- -D warnings
+
+  # Runs the test suite on real Windows, where cfg(windows) code actually
+  # executes: file permissions, PID locking, process spawning, and re-exec.
+  windows-tests:
+    name: Tests (Windows)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache cargo registry and target dir
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x86_64-msvc-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            windows-x86_64-msvc-cargo-
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Test
+        run: cargo test --quiet --all-features
