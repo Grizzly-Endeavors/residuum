@@ -132,11 +132,30 @@
     }
   }
 
-  function send(content) {
-    if (typeof content !== "string" || content.trim() === "") {
-      return Promise.reject(new TypeError("residuum.send needs a non-empty string"));
+  function ask(promptOrRequest) {
+    let body;
+    if (typeof promptOrRequest === "string") {
+      body = { prompt: promptOrRequest };
+    } else if (promptOrRequest && typeof promptOrRequest === "object") {
+      body = promptOrRequest;
+    } else {
+      return Promise.reject(
+        new TypeError("residuum.ask needs a prompt string or a request object"),
+      );
     }
-    return request("send", { content }).then(() => undefined);
+    return fetchVia("/api/model/complete", { method: "POST", body }).then((resp) =>
+      resp
+        .json()
+        .catch(() => null)
+        .then((data) => {
+          if (!resp.ok) {
+            throw new Error(
+              data && data.error ? data.error : `model call failed (${resp.status})`,
+            );
+          }
+          return data;
+        }),
+    );
   }
 
   function subscribe() {
@@ -324,7 +343,7 @@
     version: __RESIDUUM_VERSION__,
     features: Object.freeze(__RESIDUUM_FEATURES__.slice()),
     fetch: fetchVia,
-    send,
+    ask,
     on,
     state: Object.freeze({ get: stateGet, set: stateSet }),
     sessions: Object.freeze({ start: startSession }),
