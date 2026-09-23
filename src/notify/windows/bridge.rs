@@ -34,11 +34,11 @@ impl NotificationBridge for WindowsBridge {
         let title = self.app_name.clone();
         let body = batch_aggregator::truncate_body(&notif.content, 200);
 
-        post_toast(self, &title, &body).await;
+        post_toast(self, &title, &body, notif.urgent).await;
     }
 
-    async fn deliver_summary(&self, title: &str, body: &str, _urgent: bool) {
-        post_toast(self, title, body).await;
+    async fn deliver_summary(&self, title: &str, body: &str, urgent: bool) {
+        post_toast(self, title, body, urgent).await;
     }
 
     fn app_name(&self) -> &str {
@@ -50,21 +50,31 @@ impl NotificationBridge for WindowsBridge {
     }
 }
 
+/// Show a Toast. An urgent one uses the `Reminder` scenario, which stays on
+/// screen until dismissed, the Windows counterpart of the macOS
+/// `time_sensitive` interruption level.
 #[cfg(target_os = "windows")]
-async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str) {
+async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str, urgent: bool) {
     let app_id = bridge.app_id.clone();
     let title = title.to_string();
     let body = body.to_string();
     let sound = bridge.sound;
 
-    // spawn_blocking because winrt-notification's show() is synchronous; the
+    // spawn_blocking because tauri-winrt-notification's show() is synchronous; the
     // join result is only interesting if the task panicked, which we can't
     // act on here, so it's intentionally not inspected.
     let _join_result = tokio::task::spawn_blocking(move || {
-        use winrt_notification::Toast;
+        use tauri_winrt_notification::{Scenario, Toast};
         let mut toast = Toast::new(&app_id).title(&title).text1(&body);
         if !sound {
             toast = toast.sound(None);
+        }
+        if urgent {
+            // Windows only honors the Reminder scenario on a toast with at
+            // least one button; without one it shows as a normal toast.
+            toast = toast
+                .scenario(Scenario::Reminder)
+                .add_button("Dismiss", "dismiss");
         }
         if let Err(e) = toast.show() {
             tracing::warn!(error = %e, "failed to show Windows Toast notification");
@@ -74,6 +84,6 @@ async fn post_toast(bridge: &WindowsBridge, title: &str, body: &str) {
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn post_toast(_bridge: &WindowsBridge, _title: &str, _body: &str) {
+async fn post_toast(_bridge: &WindowsBridge, _title: &str, _body: &str, _urgent: bool) {
     // No-op on non-Windows platforms
 }
