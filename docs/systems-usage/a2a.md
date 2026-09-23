@@ -95,4 +95,4 @@ An unauthenticated request is refused according to [visibility](#visibility). `G
 
 ## Code
 
-`src/a2a/`: `keys.rs` and `keys_runtime.rs` (the caller-key store and its shared runtime handle), `card.rs` (the workspace agent-card file, validation, and the live `CardState`), `auth.rs` (the middleware, `Caller`, and the `TunnelNonceSource` seam a later stream fills from the real tunnel connection), `listener.rs` (the axum listener and the `StubHandler` placeholder). `src/commands/a2a.rs` is the CLI; `src/gateway/web/a2a.rs` is the web API.
+`src/a2a/`: `keys.rs` and `keys_runtime.rs` (the caller-key store and its shared runtime handle), `card.rs` (the workspace agent-card file, validation, and the live `CardState`), `auth.rs` (the middleware, `Caller`, and the `TunnelNonceSource` trait that supplies the tunnel nonce sibling attestation checks against — currently always `NoTunnel`, so no sibling request authenticates), `listener.rs` (the axum listener and the `StubHandler` placeholder). `src/commands/a2a.rs` is the CLI; `src/gateway/web/a2a.rs` is the web API.

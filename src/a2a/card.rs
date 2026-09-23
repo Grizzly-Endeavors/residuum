@@ -124,8 +124,8 @@ pub struct CardRuntime {
     /// is served at this exact URL, HTTP+JSON (REST) at `{base}/rest`.
     ///
     /// This is `[a2a] public_url` when set, or a local fallback
-    /// (`http://{bind}:{port}`) otherwise. A later stream fills it from the
-    /// connected relay's origin when no `public_url` is configured.
+    /// (`http://{bind}:{port}`) otherwise — good for same-host and
+    /// same-network callers, not for callers over the public internet.
     pub interfaces_base_url: String,
     /// Who may reach this agent without a caller key. Not reflected in the
     /// card's content — a private agent's card is simply never served to an
@@ -138,9 +138,6 @@ impl CardRuntime {
     /// Build runtime facts from the resolved `[a2a]` config and the
     /// gateway's bind address: `public_url` when set, otherwise a local
     /// fallback pointing at this instance's own A2A port.
-    ///
-    /// A later stream prefers the connected relay's origin over the local
-    /// fallback when no `public_url` is configured.
     #[must_use]
     pub fn from_config(a2a: &crate::config::A2aConfig, gateway_bind: &str) -> Self {
         let interfaces_base_url = a2a
