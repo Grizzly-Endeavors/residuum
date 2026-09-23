@@ -73,7 +73,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
 | [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
 | [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
-| [A2A](a2a.md) | Lets other agents (including a user's own other instances) reach this agent over the Agent2Agent protocol | *(interface — no tools)* | `[a2a]` in `config.toml`, `residuum a2a keys`, `config/agent-card.json` |
+| [A2A](a2a.md) | Lets other agents (including a user's own other instances) delegate tasks to this agent, and lets this agent delegate to them, over the Agent2Agent protocol | `list_agents`, `message_agent`, `stop_agent` (addresses `a2a:<name>`); `a2a_task_update` (A2A sessions only) | `[a2a]` in `config.toml`, `residuum a2a keys`, `config/agent-card.json`, `config/a2a.json` |
 
 ## What This Is Not
 
