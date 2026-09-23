@@ -239,6 +239,7 @@ async fn spawn_server_and_adapters(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
         parts.layout.agent_card_json(),
+        parts.layout.a2a_agents_json(),
         core.reload_tx.clone(),
     ));
 
@@ -447,6 +448,8 @@ async fn build_runtime(
         a2a_handle: spawned.adapters.a2a_handle,
         a2a_shutdown_tx: spawned.adapters.a2a_shutdown_tx,
         a2a_card_state: spawned.adapters.a2a_card_state,
+        a2a_hub: parts.a2a_hub,
+        a2a_tracker: parts.a2a_tracker,
         watcher_handle: spawned.watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         change_feed_handle: spawned.change_feed_handle,
@@ -537,6 +540,12 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
         }
     }
+
+    // Reload the A2A client's remote agents. Bad entries are skipped with a
+    // warning; a read/parse failure keeps the current agents.
+    rt.a2a_hub
+        .reload_from_file(&rt.layout.a2a_agents_json(), &rt.agent_keys)
+        .await;
 
     // Reload the agent card, if A2A is enabled. On failure the listener
     // keeps serving the last good card; the operator still needs to know.

@@ -533,6 +533,8 @@ fn build_spawn_context(
         tools_path: Arc::clone(&rt.tools_path),
         path_policy: Arc::clone(&rt.path_policy),
         agent_keys: Arc::clone(&rt.agent_keys),
+        a2a_hub: Arc::clone(&rt.a2a_hub),
+        a2a_tracker: Arc::clone(&rt.a2a_tracker),
     })
 }
 

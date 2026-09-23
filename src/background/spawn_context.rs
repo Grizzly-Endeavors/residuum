@@ -87,6 +87,11 @@ pub(crate) struct SpawnContext {
     pub(crate) path_policy: crate::tools::SharedPathPolicy,
     /// The shared agent key store.
     pub(crate) agent_keys: crate::agent_keys::SharedAgentKeys,
+    /// Remote A2A agents this instance's client can reach, shared with main.
+    pub(crate) a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents, shared with
+    /// main.
+    pub(crate) a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -235,6 +240,8 @@ pub(crate) async fn build_spawn_resources(
         tools_path: Arc::clone(&ctx.tools_path),
         path_policy: Arc::clone(&ctx.path_policy),
         agent_keys: Arc::clone(&ctx.agent_keys),
+        a2a_hub: Arc::clone(&ctx.a2a_hub),
+        a2a_tracker: Arc::clone(&ctx.a2a_tracker),
     };
 
     build_subagent_resources(

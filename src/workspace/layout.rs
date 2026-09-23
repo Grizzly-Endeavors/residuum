@@ -222,6 +222,28 @@ impl WorkspaceLayout {
         self.root.join("config/agent-card.json")
     }
 
+    /// Path to `config/a2a.json` — the remote A2A agents this instance's
+    /// client can reach, keyed by name.
+    #[must_use]
+    pub fn a2a_agents_json(&self) -> PathBuf {
+        self.root.join("config/a2a.json")
+    }
+
+    /// Path to the A2A client state directory (`root/a2a/`): the outbound
+    /// task tracker's persisted state.
+    #[must_use]
+    pub fn a2a_dir(&self) -> PathBuf {
+        self.root.join("a2a")
+    }
+
+    /// Path to `a2a/outbound.json` — persisted state for tasks this
+    /// instance started on other agents, so the remote task tracker resumes
+    /// watching them across a restart.
+    #[must_use]
+    pub fn a2a_outbound_json(&self) -> PathBuf {
+        self.a2a_dir().join("outbound.json")
+    }
+
     /// Path to the session store directory: per-run metadata and transcripts,
     /// organized by date.
     ///
@@ -286,6 +308,7 @@ impl WorkspaceLayout {
             self.user_inbox_archive_dir(),
             self.user_inbox_attachments_dir(),
             self.config_dir(),
+            self.a2a_dir(),
         ]
     }
 }
@@ -391,6 +414,30 @@ mod tests {
             layout.subconscious_md(),
             PathBuf::from("/tmp/ws/SUBCONSCIOUS.md"),
             "subconscious_md path"
+        );
+    }
+
+    #[test]
+    fn layout_a2a_client_paths() {
+        let layout = WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            layout.a2a_agents_json(),
+            PathBuf::from("/tmp/ws/config/a2a.json"),
+            "a2a_agents_json path"
+        );
+        assert_eq!(
+            layout.a2a_dir(),
+            PathBuf::from("/tmp/ws/a2a"),
+            "a2a_dir path"
+        );
+        assert_eq!(
+            layout.a2a_outbound_json(),
+            PathBuf::from("/tmp/ws/a2a/outbound.json"),
+            "a2a_outbound_json path"
+        );
+        assert!(
+            layout.required_dirs().contains(&layout.a2a_dir()),
+            "a2a dir should be a required dir"
         );
     }
 

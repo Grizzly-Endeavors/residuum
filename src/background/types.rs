@@ -144,6 +144,11 @@ pub struct SubAgentBuildConfig {
     pub path_policy: crate::tools::SharedPathPolicy,
     /// The shared agent key store.
     pub agent_keys: crate::agent_keys::SharedAgentKeys,
+    /// Remote A2A agents this instance's client can reach, shared with main.
+    pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents, shared with
+    /// main.
+    pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 #[cfg(test)]
