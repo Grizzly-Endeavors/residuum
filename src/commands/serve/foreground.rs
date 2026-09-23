@@ -239,6 +239,7 @@ fn relaunch(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn resolve_exe_path_strips_deleted_suffix() {
         let raw = std::path::Path::new("/usr/bin/residuum (deleted)");
