@@ -57,7 +57,7 @@ jobs:
           echo "Cross-compile: $run ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
 
   cross-check:
-    name: Compile check (${{ matrix.target }})
+    name: Clippy (${{ matrix.target }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: lab-runners
@@ -81,11 +81,13 @@ jobs:
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Compile check
-        run: cargo check --all-targets --all-features --target ${{ matrix.target }}
+      # Clippy rather than check, so code behind a cfg for another platform is
+      # held to the same lints as the host build
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
 
   macos-check:
-    name: Compile check (aarch64-apple-darwin)
+    name: Clippy (aarch64-apple-darwin)
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
@@ -95,6 +97,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -117,5 +121,5 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
-      - name: Compile check
-        run: cargo check --all-targets --all-features --target aarch64-apple-darwin
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --target aarch64-apple-darwin -- -D warnings

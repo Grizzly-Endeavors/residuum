@@ -28,17 +28,19 @@ All changes go through pull requests.
 2. Make your changes and commit frequently
 3. Push your branch and open a PR against `main`
 4. The quality gate is the pre-commit hook, not CI: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. A maintainer re-runs them locally before merging a contributor's PR.
-5. Cross-platform compile checks (aarch64 Linux, Windows, macOS) are opt-in; see below
+5. Cross-platform clippy checks (aarch64 Linux, Windows, macOS) are opt-in; see below
 
 ### Cross-Platform Compile Checks
 
-The pre-commit hook only builds for your own platform. `.github/workflows/cross-compile.yml` runs `cargo check` for the other release targets, and it runs when:
+The pre-commit hook only builds for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build. It runs when:
 
 - the PR carries the `cross-compile` label (adding the label starts a run, and every later push re-runs it)
 - the PR changes `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` (automatic)
 - you dispatch it by hand, with or without a PR: `gh workflow run cross-compile.yml --ref <branch>`
 
 Opt in when a change touches anything platform-sensitive: `unsafe` or FFI code, `#[cfg(target_os = ...)]` / `#[cfg(windows)]` / `#[cfg(unix)]` branches, filesystem paths, process spawning, signals, or file permissions. Anything else that slips through gets caught by the release build, which compiles every target.
+
+From Linux, the Windows and aarch64 Linux targets can also be linted locally once installed (`rustup target add x86_64-pc-windows-gnu`): `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings`.
 
 ### Branch Naming
 
