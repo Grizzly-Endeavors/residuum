@@ -644,7 +644,16 @@
   }
 
   .a2a-status-text {
+    font-size: 12px;
     font-weight: 500;
+  }
+
+  /* Hints that sit directly in a section rather than inside a
+     .settings-field, which is the only place the shared rule styles them. */
+  p.field-hint {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 4px 0 8px;
   }
 
   .a2a-visibility-badge {
