@@ -152,7 +152,7 @@ A part that fails to save or download doesn't drop the message — it adds the s
 
 ### Restarts
 
-At startup, every task left `SUBMITTED` or `WORKING` from a previous run of the process is resumed automatically: a synthetic continuation message ("Residuum restarted while this task was in progress. Continue where you left off.", marked `residuum.synthetic` in its metadata) is sent through the handler as that task's caller, in the background. Each task's continuation runs independently and is logged (info on completion, warn/error on failure) — a continuation that can't be delivered leaves the task record intact for the next real message to reach it.
+At startup, every task left `SUBMITTED` or `WORKING` from a previous run of the process is resumed automatically: a synthetic continuation message is sent through the handler as that task's caller, in the background, once the session spawner is ready. It says the process restarted, asks the session to continue and report with `a2a_task_update`, and repeats the caller's own messages on the task (each up to 2,000 characters), so the resumed session knows which task it is finishing even when the interrupted run left no episode. It is marked `residuum.synthetic` in its metadata and is never repeated in a later continuation. Each task's continuation runs independently and is logged (info on completion, warn/error on failure) — a continuation that can't be delivered leaves the task record intact for the next real message to reach it.
 
 ## Client: reaching other agents
 

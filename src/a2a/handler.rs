@@ -327,9 +327,7 @@ impl RequestHandler for ResiduumA2aHandler {
 pub fn continuation_request(task: &Task) -> SendMessageRequest {
     let mut message = a2a::Message::new(
         a2a::Role::User,
-        vec![a2a::Part::text(
-            "[Residuum restarted while this task was in progress. Continue where you left off.]",
-        )],
+        vec![a2a::Part::text(continuation_text(task))],
     );
     message.task_id = Some(task.id.clone());
     message.context_id = Some(task.context_id.clone());
@@ -345,6 +343,57 @@ pub fn continuation_request(task: &Task) -> SendMessageRequest {
         metadata: None,
         tenant: None,
     }
+}
+
+/// Longest excerpt of any one caller message repeated in a continuation.
+const CONTINUATION_EXCERPT_CHARS: usize = 2000;
+
+/// The continuation prompt: what happened, plus the caller's own messages on
+/// the task, so the resumed session knows which task it is finishing even
+/// when the interrupted run left no episode behind.
+fn continuation_text(task: &Task) -> String {
+    let mut text = String::from(
+        "[Residuum restarted while this A2A task was in progress. Continue it where you \
+         left off, then report the outcome with a2a_task_update.]",
+    );
+    let requests: Vec<String> = task
+        .history
+        .iter()
+        .flatten()
+        .filter(|message| message.role == a2a::Role::User && !is_synthetic(message))
+        .map(|message| {
+            let joined: String = message
+                .parts
+                .iter()
+                .filter_map(|part| match &part.content {
+                    a2a::PartContent::Text(part_text) => Some(part_text.as_str()),
+                    a2a::PartContent::Raw(_)
+                    | a2a::PartContent::Url(_)
+                    | a2a::PartContent::Data(_) => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            joined.chars().take(CONTINUATION_EXCERPT_CHARS).collect()
+        })
+        .filter(|excerpt: &String| !excerpt.is_empty())
+        .collect();
+    if !requests.is_empty() {
+        text.push_str("\n\nThe caller's messages on this task, oldest first:");
+        for request in requests {
+            text.push_str("\n- ");
+            text.push_str(&request);
+        }
+    }
+    text
+}
+
+fn is_synthetic(message: &a2a::Message) -> bool {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(super::task_store::SYNTHETIC_METADATA_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// `ServiceParams` carrying just the caller header, for the restart
@@ -398,5 +447,69 @@ pub async fn resume_in_progress_tasks(
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_message(text: &str, synthetic: bool) -> a2a::Message {
+        let mut message = a2a::Message::new(a2a::Role::User, vec![a2a::Part::text(text)]);
+        if synthetic {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert(
+                super::super::task_store::SYNTHETIC_METADATA_KEY.to_string(),
+                serde_json::Value::Bool(true),
+            );
+            message.metadata = Some(metadata);
+        }
+        message
+    }
+
+    fn task_with_history(history: Vec<a2a::Message>) -> Task {
+        Task {
+            id: "task-1".to_string(),
+            context_id: "ctx-1".to_string(),
+            status: a2a::TaskStatus {
+                state: a2a::TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
+            artifacts: None,
+            history: Some(history),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn continuation_repeats_the_callers_messages_but_not_earlier_continuations() {
+        let task = task_with_history(vec![
+            user_message("write a poem about lighthouses", false),
+            user_message("[Residuum restarted while ...]", true),
+            a2a::Message::new(a2a::Role::Agent, vec![a2a::Part::text("working on it")]),
+            user_message("make it rhyme", false),
+        ]);
+        let text = continuation_text(&task);
+        assert!(text.contains("- write a poem about lighthouses"), "{text}");
+        assert!(text.contains("- make it rhyme"), "{text}");
+        assert!(
+            !text.contains("working on it"),
+            "agent messages are not repeated: {text}"
+        );
+        assert_eq!(
+            text.matches("Residuum restarted").count(),
+            1,
+            "earlier synthetic continuations are not repeated: {text}"
+        );
+    }
+
+    #[test]
+    fn continuation_request_targets_the_task_and_is_marked_synthetic() {
+        let task = task_with_history(vec![user_message("hello", false)]);
+        let req = continuation_request(&task);
+        assert_eq!(req.message.task_id.as_deref(), Some("task-1"));
+        assert_eq!(req.message.context_id.as_deref(), Some("ctx-1"));
+        assert!(is_synthetic(&req.message));
     }
 }

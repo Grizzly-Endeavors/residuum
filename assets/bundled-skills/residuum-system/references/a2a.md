@@ -10,6 +10,8 @@ Keep `name` and `description` non-empty and every skill `id` unique — an inval
 
 **`a2a_task_update`** is the tool a session started from the `a2a` endpoint uses to report its task's outcome: `{state: "completed" | "input_required" | "failed", message, artifacts?}`. Call it when you're done, when you need more from the caller before continuing, or when you can't finish — `message` is the only thing the caller ever sees, so put your real answer there, not just a summary of what you did. A session that never calls it still resolves once its run ends (completed with its last reply, cancelled, or failed), but calling it explicitly is how you ask the caller a question (`input_required`) or attach artifacts.
 
+If Residuum restarts while an A2A task is unfinished, the task's session receives a message saying so and repeating the caller's requests on that task. Finish that task (not any other) and report it with `a2a_task_update`.
+
 ## What you don't control
 
 - **Caller keys** (the credentials other agents present) are managed by the user with `residuum a2a keys create|list|revoke` or Settings → A2A. You have no tool for minting, listing, or revoking them.
