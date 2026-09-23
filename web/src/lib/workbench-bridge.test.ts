@@ -90,6 +90,36 @@ describe("parseArtifactRequest", () => {
     ).toMatchObject({ kind: "fetch", id: "req-1" });
   });
 
+  it("accepts an ArrayBuffer body", () => {
+    const body = new Uint8Array([1, 2, 3]).buffer;
+    expect(
+      parseArtifactRequest({
+        tag: BRIDGE_TAG,
+        kind: "fetch",
+        id: "req-1",
+        path: "/api/workspace/raw",
+        method: "PUT",
+        headers: {},
+        body,
+      }),
+    ).toMatchObject({ kind: "fetch", body });
+  });
+
+  it("accepts a Blob body", () => {
+    const body = new Blob([new Uint8Array([1, 2, 3])]);
+    expect(
+      parseArtifactRequest({
+        tag: BRIDGE_TAG,
+        kind: "fetch",
+        id: "req-1",
+        path: "/api/workspace/raw",
+        method: "PUT",
+        headers: {},
+        body,
+      }),
+    ).toMatchObject({ kind: "fetch", body });
+  });
+
   it.each([
     null,
     "string",
@@ -188,6 +218,32 @@ describe("WorkbenchBridge", () => {
     const result = reply?.result as RelayedResponse;
     expect(result.status).toBe(200);
     expect(new TextDecoder().decode(result.body)).toBe('{"ok":true}');
+  });
+
+  it("relays a binary ArrayBuffer body unchanged, byte for byte", async () => {
+    const bytes = new Uint8Array([0, 1, 2, 253, 254, 255]);
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/workspace/raw?path=image.bin", "PUT"),
+      body: bytes.buffer,
+    });
+    expect(h.deps.fetch).toHaveBeenCalledWith(
+      "/api/workspace/raw?path=image.bin",
+      expect.objectContaining({ method: "PUT", body: bytes.buffer }),
+    );
+  });
+
+  it("relays a Blob body unchanged", async () => {
+    const blob = new Blob([new Uint8Array([9, 9, 9])]);
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/workspace/raw?path=image.bin", "PUT"),
+      body: blob,
+    });
+    expect(h.deps.fetch).toHaveBeenCalledWith(
+      "/api/workspace/raw?path=image.bin",
+      expect.objectContaining({ method: "PUT", body: blob }),
+    );
   });
 
   it("stamps the artifact identity header, overwriting any spoofed value regardless of casing", async () => {

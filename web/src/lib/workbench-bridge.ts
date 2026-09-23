@@ -130,13 +130,20 @@ export function checkArtifactRequest(method: string, path: string, origin: strin
 
 // ── Messages ─────────────────────────────────────────────────────────
 
+/**
+ * A relayed request's body. The SDK sends binary bodies (`ArrayBuffer`,
+ * typed arrays, `Blob`) unchanged rather than JSON-encoding them; the bridge
+ * relays whichever shape it receives without inspecting it further.
+ */
+type FetchRequestBody = string | ArrayBuffer | Blob | null;
+
 interface FetchRequest {
   kind: "fetch";
   id: string;
   path: string;
   method: string;
   headers: Record<string, string>;
-  body: string | null;
+  body: FetchRequestBody;
 }
 
 interface SendRequest {
@@ -172,6 +179,16 @@ function isStringMap(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((v) => typeof v === "string");
 }
 
+/** Whether `value` is one of the body shapes `residuum.fetch` may send unencoded. */
+function isValidFetchBody(value: unknown): value is FetchRequestBody {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    value instanceof ArrayBuffer ||
+    (typeof Blob !== "undefined" && value instanceof Blob)
+  );
+}
+
 /** Validate an SDK message. `null` when it isn't a well-formed bridge request. */
 export function parseArtifactRequest(data: unknown): ArtifactRequest | null {
   if (!isRecord(data) || data.tag !== BRIDGE_TAG) return null;
@@ -182,7 +199,7 @@ export function parseArtifactRequest(data: unknown): ArtifactRequest | null {
         typeof data.path === "string" &&
         typeof data.method === "string" &&
         isStringMap(data.headers) &&
-        (data.body === null || typeof data.body === "string")
+        isValidFetchBody(data.body)
       ) {
         return {
           kind: "fetch",
