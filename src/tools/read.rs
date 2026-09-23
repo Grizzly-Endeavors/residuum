@@ -7,7 +7,6 @@ use base64::Engine;
 use serde_json::Value;
 
 use super::file_tracker::SharedFileTracker;
-use super::line_hash::line_hash;
 use super::{Tool, ToolError, ToolResult};
 use crate::inference::{ImageData, ToolDefinition};
 
@@ -20,7 +19,7 @@ const DEFAULT_MAX_LINES: usize = 2000;
 /// Maximum characters per output line before truncation.
 const MAX_CHARS_PER_LINE: usize = 2000;
 
-/// Tool that reads file contents with hash-tagged line numbers.
+/// Tool that reads file contents with numbered lines.
 pub struct ReadTool {
     tracker: SharedFileTracker,
 }
@@ -70,8 +69,9 @@ impl Tool for ReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Read the contents of a file. Each output line is tagged with a \
-                          content hash (e.g. `1:f1a3\\thello`) for use with edit_file. \
+            description: "Read the contents of a file. Each output line is prefixed with its \
+                          line number and a tab (e.g. `   1\\thello`); the prefix is not part of \
+                          the file, so leave it out of edit_file's old_string. \
                           By default returns the first 2000 lines; use offset/limit for larger files. \
                           Lines longer than 2000 characters are truncated. \
                           Image files (JPEG, PNG, GIF, WebP) are returned as inline images \
@@ -168,18 +168,11 @@ impl Tool for ReadTool {
             .iter()
             .enumerate()
             .map(|(i, line)| {
-                let hash = line_hash(line);
-                let line_num = start + i + 1;
-
-                // Truncate long lines (UTF-8 safe)
-                if line.len() > MAX_CHARS_PER_LINE {
+                let (formatted, was_truncated) = format_numbered_line(start + i + 1, line);
+                if was_truncated {
                     truncated_count += 1;
-                    let boundary = line.floor_char_boundary(MAX_CHARS_PER_LINE);
-                    let truncated = line.get(..boundary).unwrap_or_default();
-                    format!("{line_num:>4}:{hash}\t{truncated} ... (truncated)")
-                } else {
-                    format!("{line_num:>4}:{hash}\t{line}")
                 }
+                formatted
             })
             .collect();
 
@@ -207,6 +200,20 @@ impl Tool for ReadTool {
             let header = warnings.join("\n");
             Ok(ToolResult::success(format!("{header}\n\n{body}")))
         }
+    }
+}
+
+/// Format one line the way `read_file` shows it: right-aligned line number, a tab, the text.
+///
+/// Lines longer than `MAX_CHARS_PER_LINE` are cut at a UTF-8 boundary; the returned flag
+/// reports whether that happened.
+pub(super) fn format_numbered_line(line_num: usize, line: &str) -> (String, bool) {
+    if line.len() > MAX_CHARS_PER_LINE {
+        let boundary = line.floor_char_boundary(MAX_CHARS_PER_LINE);
+        let truncated = line.get(..boundary).unwrap_or_default();
+        (format!("{line_num:>4}\t{truncated} ... (truncated)"), true)
+    } else {
+        (format!("{line_num:>4}\t{line}"), false)
     }
 }
 
@@ -317,9 +324,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_includes_hash_tags() {
+    async fn output_prefixes_line_numbers() {
         let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("hash_test.txt");
+        let file_path = dir.path().join("numbered.txt");
         tokio::fs::write(&file_path, "hello\nworld\n")
             .await
             .unwrap();
@@ -330,17 +337,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Each line should have format "   N:xx\tcontent"
-        for output_line in result.output.lines() {
-            assert!(
-                output_line.contains(':'),
-                "output line should contain hash separator: {output_line}"
-            );
-            assert!(
-                output_line.contains('\t'),
-                "output line should contain tab: {output_line}"
-            );
-        }
+        assert_eq!(
+            result.output, "   1\thello\n   2\tworld",
+            "each line should be its number, a tab, then the text"
+        );
     }
 
     #[tokio::test]

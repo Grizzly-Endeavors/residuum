@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1a3\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
+> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
 
 ### Input
 
@@ -21,7 +21,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 ### Output
 
-**Text files:** lines formatted as `{line_num:>4}:{hash}\t{content}` joined by newlines, optionally preceded by warning lines.
+**Text files:** lines formatted as `{line_num:>4}\t{content}` joined by newlines, optionally preceded by warning lines.
 
 Warnings prepended when:
 - File exceeds 2000 lines and no explicit `limit`/`offset` was given
@@ -70,38 +70,44 @@ On error:
 **Source:** `edit.rs` · `EditTool`
 
 **Description sent to LLM:**
-> Edit a file using line:hash anchors from read_file output. Validates content hashes before applying changes to detect stale edits. Operations: 'replace' (replace exact range; end_line required — use the same anchor as start_line for a single-line replacement), 'insert_after' (insert after a line; use start_line '0' to insert at file start), 'delete' (remove line or range; end_line optional for ranges). Use this over write_file when updating existing content.
+> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Use this over write_file when changing part of an existing file.
 
 ### Input
 
-| Parameter    | Type   | Required | Description                                                                 |
-|--------------|--------|----------|-----------------------------------------------------------------------------|
-| `path`       | string | yes      | Path to the file to edit                                                    |
-| `operation`  | string | yes      | One of: `"replace"`, `"insert_after"`, `"delete"`                          |
-| `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3b2"`). Use `"0"` for insert at file start |
-| `end_line`   | string | no*      | End line anchor `"N:hash"`. Required for `replace` (use same anchor as `start_line` for single-line). Optional for `delete`. Not used by `insert_after`. |
-| `content`    | string | no**     | New content. Required for `replace` and `insert_after`; omitted for `delete` |
+| Parameter | Type   | Required | Description                                          |
+|-----------|--------|----------|------------------------------------------------------|
+| `path`    | string | yes      | Path to the file to edit                             |
+| `edits`   | array  | yes      | Replacements to apply, in order (at least one entry) |
 
-\* `end_line` is required when `operation` is `replace`.
-\*\* `content` is required when `operation` is `replace` or `insert_after`.
+Each `edits` entry:
 
-**Operations:**
-- `replace` — replaces `start_line` through `end_line` with `content`. Both anchors are required — pass the same anchor for both to replace a single line.
-- `insert_after` — inserts `content` after `start_line` (use `"0"` to insert at file start)
-- `delete` — removes `start_line` through `end_line`; cannot delete all lines from a file
+| Field         | Type    | Required | Description                                                                 |
+|---------------|---------|----------|-----------------------------------------------------------------------------|
+| `old_string`  | string  | yes      | Exact text to replace; must be non-empty and differ from `new_string`       |
+| `new_string`  | string  | yes      | Replacement text; empty deletes `old_string`                                |
+| `replace_all` | boolean | no       | Replace every occurrence instead of requiring exactly one (default `false`) |
+
+### Matching
+
+- Edits apply in order to an in-memory copy; each sees the result of the ones before it. The file is written once, only if every edit succeeds.
+- `old_string` is matched exactly first. It must occur exactly once unless `replace_all` is set.
+- Only when there is no exact match, the tool retries comparing whole lines with leading and trailing whitespace trimmed. That match is used only if it occurs exactly once; `new_string` is still written verbatim, and the result carries a note naming the edit.
+- Line breaks in `old_string` and `new_string` are converted to the file's own style, so CRLF files stay CRLF. A missing trailing newline is preserved.
 
 ### Output
 
-On success: `"edited {path}: {description}"` where description is e.g. `"replaced line(s) 5"` or `"deleted line(s) 2-4"`.
+On success: `"edited {path} ({N} replacement(s))"`, then one `note:` line per edit that matched only after ignoring whitespace, a blank line, and a preview of the changed regions in the final file. The preview uses `read_file`'s `{line_num:>4}\t{content}` format with 2 lines of context, separates regions with `   …`, and is capped at 60 lines.
 
-On error:
+On error (returned as `is_error = true`; nothing is written):
 - `PathPolicy` rejects the path (targets a protected config or credential-store file)
-- File does not exist
+- File does not exist (points to `write_file`)
 - File has not been read via `read_file` first
-- Hash mismatch on `start_line` or `end_line` (file changed since last read)
-- Line number out of bounds
-- Attempt to delete all lines from a file
-- `replace` called without `end_line`
+- An edit fails, reported as `"edit {i} of {n}: {reason}. No changes were written to {path}"`, where the reason is one of:
+  - `old_string` matches several places without `replace_all` (lists up to 10 line numbers)
+  - `old_string` is not found (with a hint when it includes `read_file`'s line-number prefix)
+  - no exact match, and the whitespace-insensitive retry matches several places (lists line numbers)
+
+Malformed arguments (missing `path` or `edits`, an empty `edits` list, an entry missing `old_string`/`new_string`, an empty `old_string`, or identical `old_string` and `new_string`) return a `ToolError::InvalidArguments`.
 
 ---
 
