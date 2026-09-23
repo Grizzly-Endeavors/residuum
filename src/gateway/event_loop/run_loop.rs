@@ -87,6 +87,8 @@ struct SpawnedHandles {
     workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     workbench_serving: crate::workbench::server::WorkbenchServing,
     workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Raised by [`build_runtime`] once the session spawn listener is up.
+    sessions_ready_tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// Start the workbench artifacts listener beside the gateway.
@@ -255,12 +257,14 @@ async fn spawn_server_and_adapters(
         },
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
+    let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
     let a2a_deps = A2aListenerDeps {
         session_registry: Arc::clone(&parts.session_registry),
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
         bus_handle: core.bus_handle.clone(),
         tunnel_status_rx: tunnel_status_rx.clone(),
+        sessions_ready: sessions_ready_rx,
     };
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, a2a_deps).await;
     let (tunnel_handle, tunnel_shutdown_tx) =
@@ -295,6 +299,7 @@ async fn spawn_server_and_adapters(
         workspace_watch_health,
         workbench_serving,
         workbench_listener_shutdown_tx,
+        sessions_ready_tx,
     })
 }
 
@@ -423,6 +428,7 @@ async fn build_runtime(
     cloud_config: Option<crate::config::CloudConfig>,
 ) -> Result<GatewayRuntime, FatalError> {
     let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
+    spawned.sessions_ready_tx.send_replace(true);
     let pulse_state_path = parts.layout.pulse_state_json();
 
     Ok(GatewayRuntime {

@@ -990,6 +990,8 @@ async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             skill_state: Arc::clone(&rt.skill_state),
             bus_handle: rt.bus_handle.clone(),
             tunnel_status_rx: rt.tunnel_status_rx.clone(),
+            // The session spawner has been running since startup.
+            sessions_ready: tokio::sync::watch::channel(true).1,
         };
         match crate::gateway::event_loop::build_a2a_listener(new_cfg, deps, rx).await {
             Ok((handle, card_state, public_url)) => {

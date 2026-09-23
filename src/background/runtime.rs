@@ -213,6 +213,12 @@ impl SessionRuntime {
             )
             .await;
             env.store.begin_run(&info).await;
+            // Recorded again with the episode on completion; recording it at
+            // start too means a process crash mid-run still leaves the next
+            // message a pointer back to this run instead of a fresh start.
+            env.registry
+                .record_resume_point(&info.address, resume_point(&info, None))
+                .await;
 
             // Cloned up front so cleanup still has something to work with if
             // the task panics — the originals (including `resources`, which
@@ -1958,6 +1964,47 @@ mod tests {
             matches!(event.status, AgentResultStatus::Cancelled),
             "a session stopped mid-turn must report cancelled, not completed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_session_already_has_a_resume_point() {
+        let (runtime, _sub) = test_runtime(3).await;
+        let address = SessionAddress::from("spawned-researcher-0009");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                provider: Box::new(BlockingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
+            }),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("session should reach running while blocked on the model call");
+        let info = runtime.registry.get(&address).unwrap();
+
+        let point = runtime
+            .registry
+            .resume_point(&address)
+            .expect("a crash mid-run must still leave a resume point for the next message");
+        assert_eq!(point.previous_run_id, info.run_id);
+        assert!(point.previous_episode_id.is_none());
+        assert!(runtime.registry.stop(&address));
     }
 
     // `start_paused` isn't about idle-timeout logic here (the one-minute

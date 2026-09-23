@@ -55,6 +55,10 @@ pub(crate) struct A2aListenerDeps {
     pub skill_state: SharedSkillState,
     pub bus_handle: BusHandle,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    /// Turns `true` once the session spawn listener is subscribed. Restart
+    /// continuations wait on it: a session spawn published before then has
+    /// no listener and would be lost.
+    pub sessions_ready: tokio::sync::watch::Receiver<bool>,
 }
 
 /// State bundle for the smaller, cross-cutting API routers, grouped so
@@ -429,10 +433,18 @@ pub(crate) async fn build_a2a_listener(
         Arc::clone(&task_store),
     ));
 
-    tokio::spawn(crate::a2a::resume_in_progress_tasks(
-        Arc::clone(&handler),
-        Arc::clone(&task_store),
-    ));
+    let resume_handler = Arc::clone(&handler);
+    let resume_store = Arc::clone(&task_store);
+    let mut sessions_ready = deps.sessions_ready.clone();
+    tokio::spawn(async move {
+        if sessions_ready.wait_for(|ready| *ready).await.is_err() {
+            tracing::error!(
+                "session spawner never became ready; a2a tasks left in progress were not resumed"
+            );
+            return;
+        }
+        crate::a2a::resume_in_progress_tasks(resume_handler, resume_store).await;
+    });
 
     let listener = crate::a2a::A2aListener::new(
         cfg.a2a.clone(),
