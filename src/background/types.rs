@@ -8,7 +8,7 @@ use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
-use crate::inference::MessageSender;
+use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::types::InboundMessage;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -46,6 +46,11 @@ pub struct SubAgentConfig {
     /// with correct sender attribution, instead of a plain agent message
     /// misattributed to `main`. `None` for every other trigger.
     pub inbound: Option<InboundMessage>,
+    /// Images attached to this run's kickoff message, carried into its
+    /// first turn's opening message. Populated for a conversation-triggered
+    /// spawn or resume; empty for every other trigger, which have no images
+    /// of their own.
+    pub images: Vec<ImageData>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display
@@ -107,6 +112,13 @@ pub struct SubAgentBuildConfig {
     /// This session's category, for `message_agent` to report alongside
     /// `own_address`.
     pub session_category: SessionCategory,
+    /// What triggered this session, carried into `SubagentToolDeps` so a
+    /// tool running in it can tell what started it.
+    pub trigger: crate::bus::EventTrigger,
+    /// The conversation this session replies to, for a conversation-triggered
+    /// session, carried into `SubagentToolDeps`. `None` for every other
+    /// trigger.
+    pub conversation_target: Option<crate::bus::ConversationTarget>,
     /// Shared agent-messaging service, for the session's `message_agent` tool.
     pub messenger: std::sync::Arc<AgentMessenger>,
     /// This session's current-turn hop counter, seeded from the input hop

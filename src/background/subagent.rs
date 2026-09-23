@@ -13,7 +13,7 @@ use crate::agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
-use crate::inference::{CompletionOptions, InferenceProvider, Message, MessageSender};
+use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
 use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -45,6 +45,10 @@ pub(crate) enum TurnKickoff {
         /// inbound chat message. `None` for every other trigger, which keeps
         /// the original single-message rendering (no attribution line).
         sender: Option<MessageSender>,
+        /// Images attached to the triggering message, for a
+        /// conversation-triggered spawn or resume. Empty for every other
+        /// trigger.
+        images: Vec<ImageData>,
     },
     /// A later turn, started because another agent's message reached this
     /// session while it was idle.
@@ -75,6 +79,7 @@ impl TurnKickoff {
                 prompt,
                 context,
                 sender: None,
+                images,
                 ..
             } => {
                 // No sender: preserve the original single-message rendering
@@ -85,19 +90,31 @@ impl TurnKickoff {
                     parts.push(ctx);
                 }
                 parts.push(prompt);
-                vec![Message::user(parts.join("\n\n"))]
+                let text = parts.join("\n\n");
+                let user = if images.is_empty() {
+                    Message::user(text)
+                } else {
+                    Message::user_with_images(text, images)
+                };
+                vec![user]
             }
             Self::Initial {
                 prompt,
                 context,
                 sender: Some(sender),
+                images,
                 ..
             } => {
                 let mut msgs = Vec::new();
                 if let Some(ctx) = context {
                     msgs.push(Message::system(ctx));
                 }
-                msgs.push(Message::user(prompt).with_sender(Some(sender)));
+                let user = if images.is_empty() {
+                    Message::user(prompt)
+                } else {
+                    Message::user_with_images(prompt, images)
+                };
+                msgs.push(user.with_sender(Some(sender)));
                 msgs
             }
             Self::AgentMessage(msg) => vec![msg.to_history_message()],
@@ -182,6 +199,8 @@ pub async fn build_subagent_resources(
         own_depth,
         subagent_depth_cap,
         session_category,
+        trigger,
+        conversation_target,
         messenger,
         hop_counter,
         tracing_service,
@@ -244,6 +263,8 @@ pub async fn build_subagent_resources(
         own_depth,
         depth_cap: subagent_depth_cap,
         session_category: session_category.as_str().to_string(),
+        trigger,
+        conversation_target,
         messenger,
         hop_counter: hop_counter.clone(),
         tracing_service,
@@ -472,6 +493,7 @@ mod tests {
             context: context.map(str::to_string),
             hop_count: 0,
             sender: None,
+            images: Vec::new(),
         }
     }
 
@@ -665,6 +687,7 @@ mod tests {
                 context: None,
                 hop_count: 0,
                 sender: Some(sample_sender()),
+                images: Vec::new(),
             },
             &mut recent_messages,
             &resources,
@@ -699,6 +722,7 @@ mod tests {
                 context: Some("[14:00] Sam: build is red".to_string()),
                 hop_count: 0,
                 sender: Some(sample_sender()),
+                images: Vec::new(),
             },
             &mut recent_messages,
             &resources,
@@ -720,6 +744,45 @@ mod tests {
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert_eq!(user.role, crate::inference::Role::User);
         assert_eq!(user.content, "thoughts?");
+    }
+
+    #[tokio::test]
+    async fn initial_kickoff_with_images_attaches_them_to_the_user_message() {
+        // Regression test: a conversation spawn's or resume's first turn
+        // must not silently drop images attached to the triggering message.
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+        let image = ImageData {
+            media_type: "image/png".to_string(),
+            data: "base64-data".to_string(),
+        };
+
+        execute_subagent(
+            &test_identity("run-conv-initial-images"),
+            TurnKickoff::Initial {
+                prompt: "what's in this screenshot?".to_string(),
+                context: None,
+                hop_count: 0,
+                sender: None,
+                images: vec![image.clone()],
+            },
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let first = recent_messages.messages().first().unwrap();
+        assert_eq!(first.content, "what's in this screenshot?");
+        assert_eq!(first.images.len(), 1);
+        assert_eq!(first.images.first().unwrap().data, image.data);
     }
 
     #[tokio::test]

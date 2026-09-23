@@ -9,7 +9,7 @@ use crate::agent::HopCounter;
 use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::{EndpointRegistry, SessionAddress};
+use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, SessionAddress};
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
@@ -54,7 +54,11 @@ impl Default for ToolRegistry {
 /// main's. `web_search_backend` mirrors main's
 /// `cfg.web_search.standalone_backend`: `ollama_web_search` is registered
 /// only when it names the `"ollama"` backend, exactly like
-/// `gateway::startup::tools::init_tool_registry`.
+/// `gateway::startup::tools::init_tool_registry`. `trigger` and
+/// `conversation_target` describe what started this session (and, for a
+/// conversation-triggered one, which endpoint/conversation it replies to);
+/// no tool reads them yet, but they're carried through for a future
+/// session-only tool that needs to know.
 pub struct SubagentToolDeps {
     pub tracker: SharedFileTracker,
     /// The main agent's write policy, shared so a session is blocked from
@@ -89,6 +93,14 @@ pub struct SubagentToolDeps {
     /// This session's category, for `message_agent` to report alongside
     /// `own_address`.
     pub session_category: String,
+    /// What triggered this session. Not consumed by any tool yet — carried
+    /// through so a future session-only tool can tell what started it.
+    pub trigger: EventTrigger,
+    /// The conversation this session replies to, for a conversation-triggered
+    /// session. `None` for every other trigger. Not consumed by any tool
+    /// yet — carried through so a future session-only tool can tell which
+    /// endpoint and conversation it runs against.
+    pub conversation_target: Option<ConversationTarget>,
     pub messenger: Arc<AgentMessenger>,
     pub hop_counter: HopCounter,
     pub tracing_service: Arc<crate::tracing_service::TracingService>,
@@ -379,6 +391,10 @@ impl ToolRegistry {
             own_depth,
             depth_cap,
             session_category,
+            // Not read by any tool yet — reserved for a future session-only
+            // tool (see `SubagentToolDeps::trigger`/`conversation_target`).
+            trigger: _trigger,
+            conversation_target: _conversation_target,
             messenger,
             hop_counter,
             tracing_service,

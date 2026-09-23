@@ -410,20 +410,23 @@ mod tests {
     #[tokio::test]
     async fn owner_message_to_a_completed_session_resumes_it() {
         let registry = Arc::new(SessionRegistry::new());
-        registry.record_resume_point(
-            &SessionAddress::from("spawned-b-0001"),
-            ResumePoint {
-                previous_run_id: "run-old".to_string(),
-                previous_episode_id: None,
-                trigger: EventTrigger::Agent,
-                source_label: "agent:researcher".to_string(),
-                agent_skill: None,
-                model_tier: crate::config::BackgroundModelTier::Medium,
-                spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
-                depth: 1,
-                conversation_target: None,
-            },
-        );
+        registry
+            .record_resume_point(
+                &SessionAddress::from("spawned-b-0001"),
+                ResumePoint {
+                    previous_run_id: "run-old".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "agent:researcher".to_string(),
+                    agent_skill: None,
+                    model_tier: crate::config::BackgroundModelTier::Medium,
+                    spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+                    depth: 1,
+                    conversation_target: None,
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
         let (messenger, bus, _dir) = messenger(&registry);
         let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> =
             bus.subscribe(crate::bus::topics::Background).await.unwrap();

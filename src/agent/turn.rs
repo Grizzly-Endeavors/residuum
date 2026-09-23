@@ -170,6 +170,7 @@ impl EventContext<'_> {
                         content: content.to_string(),
                         attachment: None,
                         timestamp: chrono::Utc::now().naive_utc(),
+                        is_final: false,
                     },
                 )
                 .await
@@ -752,6 +753,10 @@ mod tests {
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
         assert!(event.attachment.is_none());
+        assert!(
+            !event.is_final,
+            "intermediate turn text must not be marked as the run's final output"
+        );
 
         assert!(
             tokio::time::timeout(

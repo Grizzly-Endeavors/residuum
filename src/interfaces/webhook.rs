@@ -226,6 +226,7 @@ async fn route_webhook_content(
                 sender: None,
                 conversation: None,
                 inbound: None,
+                images: Vec::new(),
             };
             if let Err(e) = state
                 .publisher

@@ -238,10 +238,14 @@ async fn fork_and_spawn(
         ctx,
         &event.model_tier,
         skill.as_deref(),
-        event.address.clone(),
-        event.depth,
-        category,
-        event.hop_count,
+        crate::background::spawn_context::NewSessionContext {
+            own_address: event.address.clone(),
+            own_depth: event.depth,
+            category,
+            hop_count: event.hop_count,
+            trigger: event.source.clone(),
+            conversation_target: event.conversation.clone(),
+        },
     )
     .await?;
 
@@ -259,6 +263,7 @@ async fn fork_and_spawn(
             hop_count: event.hop_count,
             sender: event.sender,
             inbound: event.inbound,
+            images: event.images,
         },
         conversation_target: event.conversation,
     };
@@ -327,6 +332,7 @@ mod tests {
                 endpoint: inbound.origin.endpoint.clone(),
                 conversation_id: "chan-1".to_string(),
             }),
+            images: inbound.images.clone(),
             inbound: Some(inbound),
         }
     }

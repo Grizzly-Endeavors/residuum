@@ -68,6 +68,7 @@ impl ConversationRouter {
         let spawn = ConversationSpawn {
             source_label: format!("{}:{label}", message.origin.endpoint),
             model_tier: self.model_tier,
+            skill: None,
         };
 
         let conversation_id = conversation.id.clone();
