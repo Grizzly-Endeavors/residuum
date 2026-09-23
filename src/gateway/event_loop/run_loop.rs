@@ -159,6 +159,36 @@ fn build_api_states(
     }
 }
 
+/// Build the `GatewayState` the HTTP app's routes share, bundling the
+/// pieces `spawn_server_and_adapters` has already built or spawned by this
+/// point — split out purely to keep that function under the line-count lint.
+fn build_gateway_state(
+    core: &GatewayCore,
+    parts: &crate::gateway::startup::GatewayComponents,
+    tunnel_status_rx: &tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+    file_registry: &crate::gateway::file_server::FileRegistry,
+    webhooks: &crate::interfaces::webhook::WebhookTable,
+    workspace_watch_health: &tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+) -> GatewayState {
+    GatewayState {
+        reload_tx: core.reload_tx.clone(),
+        command_tx: core.command_tx.clone(),
+        stop_tx: core.stop_tx.clone(),
+        agent_inbox_dir: parts.layout.agent_inbox_dir(),
+        tz: parts.tz,
+        tunnel_status_rx: tunnel_status_rx.clone(),
+        publisher: core.publisher.clone(),
+        bus_handle: core.bus_handle.clone(),
+        file_registry: file_registry.clone(),
+        webhooks: webhooks.clone(),
+        session_registry: Arc::clone(&parts.session_registry),
+        session_store: Arc::clone(&parts.session_store),
+        agent_messenger: Arc::clone(&parts.agent_messenger),
+        skill_state: Arc::clone(&parts.skill_state),
+        workspace_watch_health: workspace_watch_health.clone(),
+    }
+}
+
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
 async fn spawn_server_and_adapters(
     core: &GatewayCore,
@@ -186,23 +216,14 @@ async fn spawn_server_and_adapters(
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let (workbench_watcher_handle, change_feed_handle, workspace_watch_health) =
         spawn_change_feed_tasks(core, &parts.layout).await;
-    let state = GatewayState {
-        reload_tx: core.reload_tx.clone(),
-        command_tx: core.command_tx.clone(),
-        stop_tx: core.stop_tx.clone(),
-        agent_inbox_dir: parts.layout.agent_inbox_dir(),
-        tz: parts.tz,
-        tunnel_status_rx: tunnel_status_rx.clone(),
-        publisher: core.publisher.clone(),
-        bus_handle: core.bus_handle.clone(),
-        file_registry: file_registry.clone(),
-        webhooks: webhooks.clone(),
-        session_registry: Arc::clone(&parts.session_registry),
-        session_store: Arc::clone(&parts.session_store),
-        agent_messenger: Arc::clone(&parts.agent_messenger),
-        skill_state: Arc::clone(&parts.skill_state),
-        workspace_watch_health: workspace_watch_health.clone(),
-    };
+    let state = build_gateway_state(
+        core,
+        parts,
+        &tunnel_status_rx,
+        &file_registry,
+        &webhooks,
+        &workspace_watch_health,
+    );
     let tracing_service = Arc::clone(&parts.tracing_service);
     let (workbench_serving, workbench_listener_shutdown_tx) =
         start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;

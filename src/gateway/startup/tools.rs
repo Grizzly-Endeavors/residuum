@@ -540,10 +540,10 @@ mod tests {
     /// Only a session started from the `a2a` endpoint gets `a2a_task_update`
     /// — an ordinary session (any other `conversation_target`, including
     /// none at all) never does.
-    #[test]
-    fn only_an_a2a_conversation_session_gets_the_a2a_task_update_tool() {
+    #[tokio::test]
+    async fn only_an_a2a_conversation_session_gets_the_a2a_task_update_tool() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let h = build_harness(dir.path());
+        let h = build_harness(dir.path()).await;
 
         let a2a_tools = session_registry_for(
             &h,

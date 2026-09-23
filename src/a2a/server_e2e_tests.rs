@@ -289,6 +289,8 @@ struct RuntimeDeps {
     skill_state: crate::skills::SharedSkillState,
     workspace_dir: PathBuf,
     layout: WorkspaceLayout,
+    a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 /// Build the scripted-provider queue/call-log and spawn the mini background
@@ -324,6 +326,8 @@ fn start_scripted_sessions(
         hybrid_searcher,
         tracing_service,
         tracing_client_context,
+        a2a_hub: deps.a2a_hub,
+        a2a_tracker: deps.a2a_tracker,
         response_delay,
     };
     spawn_mini_background_listener(deps.bus_handle, mini_deps);
@@ -410,6 +414,15 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         Arc::clone(&messenger),
     ));
 
+    let a2a_hub = crate::a2a::A2aClientHub::new_shared();
+    let a2a_tracker = crate::a2a::RemoteTaskTracker::load(
+        layout.a2a_outbound_json(),
+        Arc::clone(&a2a_hub),
+        Arc::clone(&messenger),
+        layout.agent_inbox_dir(),
+    )
+    .await;
+
     let (queue, seen) = start_scripted_sessions(
         Arc::clone(&runtime),
         RuntimeDeps {
@@ -419,6 +432,8 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
             skill_state: Arc::clone(&skill_state),
             workspace_dir: workspace_dir.clone(),
             layout: layout.clone(),
+            a2a_hub,
+            a2a_tracker,
         },
         opts.response_delay,
     );
@@ -478,6 +493,8 @@ struct MiniListenerDeps {
     hybrid_searcher: Arc<crate::memory::search::HybridSearcher>,
     tracing_service: Arc<crate::tracing_service::TracingService>,
     tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+    a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     response_delay: Duration,
 }
 
@@ -553,6 +570,8 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         tracing_service: Arc::clone(&deps.tracing_service),
         tracing_client_context: Arc::clone(&deps.tracing_client_context),
         web_search_backend: None,
+        a2a_hub: Arc::clone(&deps.a2a_hub),
+        a2a_tracker: Arc::clone(&deps.a2a_tracker),
     });
 
     SubAgentResources {

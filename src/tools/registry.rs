@@ -484,19 +484,12 @@ impl ToolRegistry {
             hop_counter.clone(),
         );
 
-        // A2A task-outcome signal — session-only, registered only when this
-        // session was started from the `a2a` endpoint (see
-        // `SESSION_ONLY_TOOLS` in `gateway::startup::tools`).
-        if conversation_target
-            .as_ref()
-            .is_some_and(|target| target.endpoint == "a2a")
-        {
-            registry.register(Box::new(a2a_task_update::A2aTaskUpdateTool::new(
-                own_address.clone(),
-                publisher.clone(),
-                workspace_dir,
-            )));
-        }
+        registry.register_a2a_task_update_tool(
+            conversation_target.as_ref(),
+            own_address.clone(),
+            publisher.clone(),
+            workspace_dir,
+        );
 
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
@@ -516,20 +509,47 @@ impl ToolRegistry {
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
 
-        // Ollama Cloud web search tool, gated the same way as main's
-        // (see `gateway::startup::tools::init_tool_registry`).
-        if let Some(backend) = &web_search_backend
-            && backend.name == "ollama"
-        {
-            let base_url = backend
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.ollama.com".to_string());
-            registry.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
-            tracing::info!("registered ollama_web_search tool for session");
-        }
+        registry.register_ollama_web_search_tool_if_configured(web_search_backend.as_ref());
 
         registry
+    }
+
+    /// Register `a2a_task_update` when `conversation_target` names the
+    /// `a2a` endpoint — session-only (see `SESSION_ONLY_TOOLS` in
+    /// `gateway::startup::tools`).
+    fn register_a2a_task_update_tool(
+        &mut self,
+        conversation_target: Option<&ConversationTarget>,
+        own_address: SessionAddress,
+        publisher: crate::bus::Publisher,
+        workspace_dir: PathBuf,
+    ) {
+        if conversation_target.is_some_and(|target| target.endpoint == "a2a") {
+            self.register(Box::new(a2a_task_update::A2aTaskUpdateTool::new(
+                own_address,
+                publisher,
+                workspace_dir,
+            )));
+        }
+    }
+
+    /// Register `ollama_web_search`, gated the same way as main's (see
+    /// `gateway::startup::tools::init_tool_registry`): only when
+    /// `backend` names the `"ollama"` standalone web search backend.
+    fn register_ollama_web_search_tool_if_configured(
+        &mut self,
+        backend: Option<&crate::config::StandaloneBackendConfig>,
+    ) {
+        let Some(backend) = backend else { return };
+        if backend.name != "ollama" {
+            return;
+        }
+        let base_url = backend
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.ollama.com".to_string());
+        self.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+        tracing::info!("registered ollama_web_search tool for session");
     }
 
     /// Register the `web_fetch` tool for fetching web page content.
