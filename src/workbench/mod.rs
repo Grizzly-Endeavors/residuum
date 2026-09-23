@@ -289,7 +289,9 @@ pub(crate) fn inject_sdk(html: &str, artifact: &str, version: &str, features: &[
         embed_as_script_json(version),
         embed_as_script_json(features),
     );
-    let script = format!("<script>{context}{SDK_JS}</script>");
+    // The block scopes the context constants to the SDK, keeping them out of
+    // the page's global scope where an artifact's own names could collide.
+    let script = format!("<script>{{{context}{SDK_JS}}}</script>");
     let mut out = String::with_capacity(html.len() + script.len());
     out.push_str(html.get(..insert_at).unwrap_or_default());
     out.push_str(&script);
@@ -587,7 +589,11 @@ mod tests {
             "2026.09.23",
             &["workspace-tree", "model-complete"],
         );
-        assert!(out.contains(r#"const __RESIDUUM_ARTIFACT__="pricing-explorer";"#));
+        assert!(out.contains(r#"<script>{const __RESIDUUM_ARTIFACT__="pricing-explorer";"#));
+        assert!(
+            out.contains("})();\n}</script>"),
+            "context constants stay block-scoped to the SDK"
+        );
         assert!(out.contains(r#"const __RESIDUUM_VERSION__="2026.09.23";"#));
         assert!(
             out.contains(r#"const __RESIDUUM_FEATURES__=["workspace-tree","model-complete"];"#)

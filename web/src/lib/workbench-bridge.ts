@@ -229,15 +229,19 @@ class ConcurrencyLimiter {
 
   async run<T>(task: () => Promise<T>): Promise<T> {
     if (this.active >= this.limit) {
+      // Wait for a finishing task to hand over its slot.
       await new Promise<void>((resolve) => this.queue.push(resolve));
+    } else {
+      this.active += 1;
     }
-    this.active += 1;
     try {
       return await task();
     } finally {
-      this.active -= 1;
-      // FIFO: whoever queued first runs next.
-      this.queue.shift()?.();
+      // FIFO: the slot passes straight to whoever queued first, so a caller
+      // arriving in between can't take it and push the count past the limit.
+      const next = this.queue.shift();
+      if (next) next();
+      else this.active -= 1;
     }
   }
 }
