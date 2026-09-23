@@ -73,6 +73,44 @@
     );
   }
 
+  function statePath() {
+    return `workbench/${__RESIDUUM_ARTIFACT__}.state.json`;
+  }
+
+  async function errorFromResponse(res, fallback) {
+    let message;
+    try {
+      message = await res.text();
+    } catch {
+      message = "";
+    }
+    return new Error(message || fallback);
+  }
+
+  async function stateGet() {
+    const res = await fetchVia(`/api/workspace/file?path=${encodeURIComponent(statePath())}`);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw await errorFromResponse(res, `residuum.state.get failed with status ${res.status}`);
+    }
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw new Error(`residuum.state.get: saved state is not valid JSON (${err.message})`);
+    }
+  }
+
+  async function stateSet(value) {
+    const res = await fetchVia("/api/workspace/file", {
+      method: "PUT",
+      body: { path: statePath(), content: JSON.stringify(value) },
+    });
+    if (!res.ok) {
+      throw await errorFromResponse(res, `residuum.state.set failed with status ${res.status}`);
+    }
+  }
+
   function send(content) {
     if (typeof content !== "string" || content.trim() === "") {
       return Promise.reject(new TypeError("residuum.send needs a non-empty string"));
@@ -133,5 +171,6 @@
     fetch: fetchVia,
     send,
     on,
+    state: Object.freeze({ get: stateGet, set: stateSet }),
   });
 })();
