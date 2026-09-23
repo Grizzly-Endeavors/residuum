@@ -34,6 +34,7 @@
   import Integrations from "./components/settings/Integrations.svelte";
   import MCP from "./components/settings/MCP.svelte";
   import AgentKeys from "./components/settings/AgentKeys.svelte";
+  import A2a from "./components/settings/A2a.svelte";
   import Modal from "./components/Modal.svelte";
   import { Icon } from "./lib/icons";
   import { toast } from "./lib/toast.svelte";
@@ -93,6 +94,7 @@
     { id: "integrations", label: "Integrations" },
     { id: "mcp", label: "MCP" },
     { id: "agent-keys", label: "Agent keys" },
+    { id: "a2a", label: "A2A" },
   ];
 
   let simple = $derived(settingsMode === "simple");
@@ -516,6 +518,8 @@
         <MCP bind:servers={mcpServers} />
       {:else if activeSection === "agent-keys"}
         <AgentKeys />
+      {:else if activeSection === "a2a"}
+        <A2a bind:fields={configFields} {simple} />
       {/if}
     </div>
   </div>

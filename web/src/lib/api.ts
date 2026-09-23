@@ -14,6 +14,13 @@ import type {
   AgentKeyInfo,
   AgentKeysListResponse,
   SetAgentKeyResponse,
+  A2aStatusResponse,
+  A2aAgentCard,
+  A2aKeyInfo,
+  A2aKeysListResponse,
+  CreateA2aKeyResponse,
+  A2aRemoteAgent,
+  A2aAgentsRawResponse,
   WorkspaceEntry,
   CloudStatusResponse,
   UpdateStatusResponse,
@@ -37,6 +44,7 @@ export const CACHE_KEY_MCP_CATALOG = "GET /api/mcp-catalog";
 export const CACHE_KEY_CONFIG_RAW = "GET /api/config/raw";
 export const CACHE_KEY_PROVIDERS_RAW = "GET /api/providers/raw";
 export const CACHE_KEY_MCP_RAW = "GET /api/mcp/raw";
+export const CACHE_KEY_A2A_AGENTS_RAW = "GET /api/a2a/agents/raw";
 
 // ── Error class + fetch helpers ─────────────────────────────────────
 
@@ -312,6 +320,85 @@ export async function deleteAgentKey(name: string): Promise<void> {
   await apiFetchText(`/api/agent-keys/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
+}
+
+// ── A2A API wrappers ──────────────────────────────────────────────────
+
+/** Live A2A status. Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchA2aStatus(): Promise<A2aStatusResponse> {
+  return apiFetch<A2aStatusResponse>("/api/a2a/status");
+}
+
+/**
+ * The Agent Card as currently served. Throws `ApiError` — including a `503`
+ * (`status` on the error) when the workspace agent card file is invalid,
+ * whose body is the plain-language reason.
+ */
+export async function fetchA2aCard(): Promise<A2aAgentCard> {
+  return apiFetch<A2aAgentCard>("/api/a2a/card");
+}
+
+/** Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchA2aKeys(): Promise<A2aKeyInfo[]> {
+  const data = await apiFetch<A2aKeysListResponse>("/api/a2a/keys");
+  return data.keys;
+}
+
+export async function createA2aKey(
+  name: string,
+  description: string,
+): Promise<CreateA2aKeyResponse> {
+  return apiFetch<CreateA2aKeyResponse>("/api/a2a/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description: description || undefined }),
+  });
+}
+
+export async function revokeA2aKey(name: string): Promise<void> {
+  await apiFetchText(`/api/a2a/keys/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Remote agents from `config/a2a.json` plus any discovered siblings.
+ * Throws `ApiError` on failure; the caller surfaces it.
+ */
+export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
+  return apiFetch<A2aRemoteAgent[]>("/api/a2a/agents");
+}
+
+export async function fetchA2aAgentsRaw(): Promise<string> {
+  return cachedFetch(CACHE_KEY_A2A_AGENTS_RAW, async () => {
+    const data = await apiFetch<A2aAgentsRawResponse>("/api/a2a/agents/raw");
+    return data.content;
+  });
+}
+
+/**
+ * Save `config/a2a.json`. Unlike the config/providers/mcp raw editors, a
+ * validation failure (`400`) is reported as `{ valid: false, error }` rather
+ * than thrown, so the editor can show the reason inline. Any other failure
+ * (network, `5xx`) still throws `ApiError` for the caller to surface.
+ */
+export async function putA2aAgentsRaw(
+  content: string,
+): Promise<{ valid: boolean; error?: string }> {
+  const resp = await fetch("/api/a2a/agents/raw", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (resp.ok) {
+    invalidate(CACHE_KEY_A2A_AGENTS_RAW);
+    return { valid: true };
+  }
+  if (resp.status === 400) {
+    const data = (await resp.json()) as { error: string };
+    return { valid: false, error: data.error };
+  }
+  throw new ApiError(resp.status, resp.statusText, await resp.text());
 }
 
 // ── Agent sessions API wrappers ─────────────────────────────────────

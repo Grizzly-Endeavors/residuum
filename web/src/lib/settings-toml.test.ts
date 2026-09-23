@@ -65,3 +65,39 @@ describe("background idle timeouts", () => {
     expect(out).toContain("idle_timeout_artifact_minutes = 25");
   });
 });
+
+describe("a2a settings", () => {
+  it("defaults to enabled with no section emitted", () => {
+    const fields = parseConfigToml("");
+    expect(fields.a2a_enabled).toBe(true);
+    expect(fields.a2a_port).toBe("");
+    expect(fields.a2a_visibility).toBe("");
+    expect(serializeConfigToml(fields)).not.toContain("[a2a]");
+  });
+
+  it("round-trips a disabled, private agent with a custom port and public URL", () => {
+    const toml =
+      '[a2a]\nenabled = false\nport = 7799\npublic_url = "https://example.com/a2a/laptop"\nvisibility = "private"\n';
+    const fields = parseConfigToml(toml);
+    expect(fields.a2a_enabled).toBe(false);
+    expect(fields.a2a_port).toBe("7799");
+    expect(fields.a2a_public_url).toBe("https://example.com/a2a/laptop");
+    expect(fields.a2a_visibility).toBe("private");
+
+    const out = serializeConfigToml(fields);
+    expect(out).toContain("[a2a]");
+    expect(out).toContain("enabled = false");
+    expect(out).toContain("port = 7799");
+    expect(out).toContain('public_url = "https://example.com/a2a/laptop"');
+    expect(out).toContain('visibility = "private"');
+  });
+
+  it("omits the default port and public visibility even when the section is otherwise emitted", () => {
+    const fields = parseConfigToml("");
+    fields.a2a_enabled = false;
+    const out = serializeConfigToml(fields);
+    expect(out).toContain("[a2a]");
+    expect(out).not.toContain("port = 7702");
+    expect(out).not.toContain('visibility = "public"');
+  });
+});

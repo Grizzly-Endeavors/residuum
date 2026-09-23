@@ -209,7 +209,8 @@ export type SettingsSection =
   | "memory"
   | "integrations"
   | "mcp"
-  | "agent-keys";
+  | "agent-keys"
+  | "a2a";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 
@@ -292,6 +293,68 @@ export interface SecretsListResponse {
 
 export interface DeleteSecretResponse {
   deleted: boolean;
+}
+
+// ── A2A types ────────────────────────────────────────────────────────
+
+/** How this agent is reachable over A2A, and any live problem with it. */
+export interface A2aStatusResponse {
+  enabled: boolean;
+  port: number;
+  visibility: "public" | "private";
+  /** This agent's own tunnel/reverse proxy origin, or null when none is set. */
+  public_url: string | null;
+  /** Whether something is currently answering on the A2A port. */
+  listener_running: boolean;
+  /** Plain-language problem with the workspace agent card, or null if it's fine. */
+  card_error: string | null;
+}
+
+/** One caller key other agents can present to reach this one. Never carries the token. */
+export interface A2aKeyInfo {
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+export interface A2aKeysListResponse {
+  keys: A2aKeyInfo[];
+}
+
+/** Response from creating a caller key — the token is shown only here, once. */
+export interface CreateA2aKeyResponse {
+  name: string;
+  token: string;
+}
+
+/** One skill this agent (or a remote agent's card) advertises. */
+export interface A2aCardSkill {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+/** The fields of the served Agent Card this settings page shows a preview of. */
+export interface A2aAgentCard {
+  name: string;
+  description: string;
+  skills: A2aCardSkill[];
+}
+
+export type A2aAgentStatus = "pending" | "ok" | "error";
+
+/** A remote agent listed in `config/a2a.json`, or discovered as a sibling instance. */
+export interface A2aRemoteAgent {
+  name: string;
+  url: string;
+  source: "config" | "sibling";
+  status: A2aAgentStatus;
+  error: string | null;
+  card: A2aAgentCard | null;
+}
+
+export interface A2aAgentsRawResponse {
+  content: string;
 }
 
 // ── Workspace types ─────────────────────────────────────────────────

@@ -96,6 +96,10 @@ export interface ConfigFields {
   teams_respond_to_others: boolean;
   teams_context_messages: string;
   teams_port: string;
+  a2a_enabled: boolean;
+  a2a_port: string;
+  a2a_public_url: string;
+  a2a_visibility: string;
   webhooks: WebhookFormEntry[];
   // cloud
   cloud_enabled: boolean;
@@ -178,6 +182,10 @@ export function defaultConfigFields(): ConfigFields {
     teams_respond_to_others: false,
     teams_context_messages: "",
     teams_port: "",
+    a2a_enabled: true,
+    a2a_port: "",
+    a2a_public_url: "",
+    a2a_visibility: "",
     webhooks: [],
     cloud_enabled: true,
     cloud_token: "",
@@ -331,6 +339,14 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.teams_respond_to_others = bool(teams.respond_to_others, false);
     fields.teams_context_messages = str(teams.context_messages);
     fields.teams_port = str(teams.port);
+  }
+
+  const a2a = doc.a2a as Record<string, unknown> | undefined;
+  if (a2a) {
+    fields.a2a_enabled = bool(a2a.enabled, true);
+    fields.a2a_port = str(a2a.port);
+    fields.a2a_public_url = str(a2a.public_url);
+    fields.a2a_visibility = str(a2a.visibility);
   }
 
   const webhooks = doc.webhooks as Record<string, Record<string, unknown>> | undefined;
@@ -668,6 +684,23 @@ export function serializeConfigToml(f: ConfigFields): string {
     if (f.teams_context_messages && f.teams_context_messages !== "20")
       lines.push(`context_messages = ${f.teams_context_messages}`);
     if (f.teams_port && f.teams_port !== "7701") lines.push(`port = ${f.teams_port}`);
+  }
+
+  // a2a — enabled by default, so the section is only emitted when something
+  // deviates from the default (matches the `[cloud]` pattern above).
+  if (
+    !f.a2a_enabled ||
+    (f.a2a_port && f.a2a_port !== "7702") ||
+    f.a2a_public_url ||
+    (f.a2a_visibility && f.a2a_visibility !== "public")
+  ) {
+    lines.push("");
+    lines.push("[a2a]");
+    if (!f.a2a_enabled) lines.push("enabled = false");
+    if (f.a2a_port && f.a2a_port !== "7702") lines.push(`port = ${f.a2a_port}`);
+    if (f.a2a_public_url) lines.push(`public_url = "${escapeTomlString(f.a2a_public_url)}"`);
+    if (f.a2a_visibility && f.a2a_visibility !== "public")
+      lines.push(`visibility = "${escapeTomlString(f.a2a_visibility)}"`);
   }
 
   // webhooks
