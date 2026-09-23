@@ -93,13 +93,16 @@ async fn start_workbench_listener(
     crate::workbench::server::WorkbenchServing,
     Option<tokio::sync::watch::Sender<bool>>,
 ) {
-    // Teams' configured port stays free for it, and so does its default, so
-    // enabling Teams later can't collide with the artifacts listener.
+    // Teams' and A2A's configured ports stay free for them, and so do their
+    // defaults, so enabling either later can't collide with the artifacts
+    // listener.
     let reserved_ports = [
         cfg.teams
             .as_ref()
             .map_or(crate::config::DEFAULT_TEAMS_PORT, |teams| teams.port),
         crate::config::DEFAULT_TEAMS_PORT,
+        cfg.a2a.port,
+        crate::config::DEFAULT_A2A_PORT,
     ];
     crate::workbench::server::start(
         &cfg.gateway.bind,
@@ -230,6 +233,7 @@ async fn spawn_server_and_adapters(
     let watcher_handle = Some(watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
+        parts.layout.agent_card_json(),
         core.reload_tx.clone(),
     ));
     let workbench_watcher_handle = Some(crate::workbench::watcher::spawn_workbench_watcher(
@@ -403,6 +407,9 @@ async fn build_runtime(
         telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
         teams_handle: spawned.adapters.teams_handle,
         teams_shutdown_tx: spawned.adapters.teams_shutdown_tx,
+        a2a_handle: spawned.adapters.a2a_handle,
+        a2a_shutdown_tx: spawned.adapters.a2a_shutdown_tx,
+        a2a_card_state: spawned.adapters.a2a_card_state,
         watcher_handle: spawned.watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         workbench_listener_shutdown_tx: spawned.workbench_listener_shutdown_tx,
@@ -488,6 +495,31 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
+        }
+    }
+
+    // Reload the agent card, if A2A is enabled. On failure the listener
+    // keeps serving the last good card; the operator still needs to know.
+    if let Some(card_state) = &rt.a2a_card_state {
+        let card_runtime = crate::a2a::CardRuntime::from_config(&rt.cfg.a2a, &rt.cfg.gateway.bind);
+        if let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) {
+            tracing::warn!(error = %e, "failed to reload agent-card.json, keeping the last good card");
+            if let Err(publish_err) = rt
+                .publisher
+                .publish(
+                    crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                        crate::bus::SYSTEM_CHANNEL,
+                    )),
+                    crate::bus::NoticeEvent {
+                        message: format!(
+                            "agent-card.json failed to reload, still serving the previous card: {e}"
+                        ),
+                    },
+                )
+                .await
+            {
+                tracing::warn!(error = %publish_err, "failed to publish agent card reload notice");
+            }
         }
     }
 
@@ -581,6 +613,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
         tx.send(true).ok();
     }
     if let Some(tx) = rt.teams_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(tx) = rt.a2a_shutdown_tx.take() {
         tx.send(true).ok();
     }
     if let Some(h) = rt.watcher_handle.take() {

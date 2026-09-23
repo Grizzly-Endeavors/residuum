@@ -210,6 +210,7 @@ mod tests {
             discord: None,
             telegram: None,
             teams: None,
+            a2a: crate::config::A2aConfig::default(),
             webhooks: HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },

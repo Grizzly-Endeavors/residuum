@@ -43,6 +43,8 @@ fn always_blocked_paths(config_dir: &Path) -> HashSet<PathBuf> {
         crate::agent_keys::ENCRYPTED_FILE,
         crate::agent_keys::KEY_FILE,
         crate::agent_keys::LOCK_FILE,
+        crate::a2a::KEYS_FILE,
+        crate::a2a::LOCK_FILE,
     ]
     .into_iter()
     .map(|name| config_dir.join(name))
@@ -300,6 +302,8 @@ mod tests {
             "agent-keys.toml.enc",
             "agent-keys.key",
             "agent-keys.lock",
+            "a2a-keys.toml",
+            "a2a-keys.lock",
         ] {
             assert!(
                 blocked.contains(&config_dir.join(name)),

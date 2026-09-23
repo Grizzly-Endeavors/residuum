@@ -198,6 +198,63 @@ impl std::fmt::Debug for TeamsConfig {
     }
 }
 
+/// Who can reach an A2A-enabled agent without presenting a caller key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum A2aVisibility {
+    /// The Agent Card and every route answer unauthenticated requests
+    /// (still subject to the auth layer's per-request caller checks for
+    /// anything beyond the card).
+    #[default]
+    Public,
+    /// Every route, including the Agent Card, answers a plain 404 to a
+    /// caller without a valid key or sibling attestation — indistinguishable
+    /// from an agent that doesn't exist.
+    Private,
+}
+
+impl A2aVisibility {
+    /// Lowercase label, as stored in config and shown in status output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+        }
+    }
+}
+
+impl std::fmt::Display for A2aVisibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Validated `Agent2Agent` (A2A) protocol configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A2aConfig {
+    /// Whether the A2A listener runs at all.
+    pub enabled: bool,
+    /// Port for the dedicated A2A protocol listener (bound on the gateway's address).
+    pub port: u16,
+    /// Public URL other agents should use to reach this instance's A2A
+    /// interfaces, when this instance runs its own tunnel/reverse proxy
+    /// rather than relying on the relay's origin.
+    pub public_url: Option<String>,
+    /// Who may reach this agent without a caller key.
+    pub visibility: A2aVisibility,
+}
+
+impl Default for A2aConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: super::constants::DEFAULT_A2A_PORT,
+            public_url: None,
+            visibility: A2aVisibility::default(),
+        }
+    }
+}
+
 /// Routing target for a named webhook.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WebhookRouting {
@@ -742,6 +799,8 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
     /// Microsoft Teams bot configuration (None if `[teams]` section absent).
     pub teams: Option<TeamsConfig>,
+    /// `Agent2Agent` (A2A) protocol configuration.
+    pub a2a: A2aConfig,
     /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEntry>,
     /// Skills subsystem configuration.
@@ -793,6 +852,7 @@ impl fmt::Debug for Config {
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
             .field("teams", &self.teams)
+            .field("a2a", &self.a2a)
             .field(
                 "webhooks",
                 &format_args!("{} configured", self.webhooks.len()),

@@ -31,6 +31,11 @@ pub struct AdapterHandles {
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub teams_handle: Option<tokio::task::JoinHandle<()>>,
     pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
+    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// The live agent card, so a workspace-file reload can update it without
+    /// restarting the listener. `None` when A2A is disabled.
+    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
 }
 
 /// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
@@ -283,6 +288,16 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
         teams_shutdown_tx = Some(tx);
     }
 
+    let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state) = (None, None, None);
+    if cfg.a2a.enabled {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (handle, card_state) = build_a2a_listener(cfg, rx);
+        a2a_handle = Some(handle);
+        a2a_shutdown_tx = Some(tx);
+        a2a_card_state = Some(card_state);
+        tracing::info!(visibility = %cfg.a2a.visibility, "a2a interface started");
+    }
+
     AdapterHandles {
         discord_handle,
         discord_shutdown_tx,
@@ -290,5 +305,38 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
         telegram_shutdown_tx,
         teams_handle,
         teams_shutdown_tx,
+        a2a_handle,
+        a2a_shutdown_tx,
+        a2a_card_state,
     }
+}
+
+/// Build the live agent card and spawn the A2A listener task. Shared between
+/// initial startup and reload: both rebuild the listener from scratch when
+/// `[a2a]` changes, since a visibility flip and a new base URL both need a
+/// fresh card as well as a fresh listener.
+pub(crate) fn build_a2a_listener(
+    cfg: &Config,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> (tokio::task::JoinHandle<()>, crate::a2a::SharedCardState) {
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
+    let card_runtime = crate::a2a::CardRuntime::from_config(&cfg.a2a, &cfg.gateway.bind);
+    let card_state =
+        crate::a2a::CardState::load_or_default(&layout.agent_card_json(), &card_runtime);
+    let keys = crate::a2a::A2aKeys::new_shared(&cfg.config_dir);
+    let listener = crate::a2a::A2aListener::new(
+        cfg.a2a.clone(),
+        cfg.gateway.bind.clone(),
+        Arc::new(crate::a2a::StubHandler),
+        Arc::clone(&card_state),
+        keys,
+        Arc::new(crate::a2a::NoTunnel),
+        shutdown_rx,
+    );
+    let handle = crate::util::spawn_monitored("a2a", async move {
+        if let Err(e) = listener.start().await {
+            tracing::error!(error = %e, "a2a interface failed");
+        }
+    });
+    (handle, card_state)
 }

@@ -1,5 +1,6 @@
 //! CLI subcommand dispatch using clap.
 
+mod a2a;
 mod agent_keys;
 mod bug_report;
 mod feedback;
@@ -42,6 +43,11 @@ enum Command {
     AgentKeys {
         #[command(subcommand)]
         command: agent_keys::AgentKeysCommand,
+    },
+    /// Manage the A2A protocol listener
+    A2a {
+        #[command(subcommand)]
+        command: a2a::A2aCommand,
     },
     /// Manage encrypted secret storage
     Secret {
@@ -92,6 +98,7 @@ pub async fn run() -> Result<(), FatalError> {
     match command {
         Command::Secret { command } => secret::run_secret_command(&command),
         Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
+        Command::A2a { ref command } => a2a::run_a2a_command(command).await,
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
             logs::run_logs_command(args).await

@@ -14,6 +14,7 @@ use tokio::sync::watch;
 
 use super::ReloadSignal;
 
+mod a2a;
 mod agent_keys;
 pub(crate) mod artifact_identity;
 pub mod cloud;
@@ -114,6 +115,9 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
             "/api/agent-keys/{name}",
             delete(agent_keys::api_agent_keys_delete),
         )
+        .route("/api/a2a/keys", get(a2a::api_a2a_keys_list))
+        .route("/api/a2a/keys", post(a2a::api_a2a_keys_create))
+        .route("/api/a2a/keys/{name}", delete(a2a::api_a2a_keys_revoke))
         .route("/api/secrets", post(secrets::api_secrets_set))
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))

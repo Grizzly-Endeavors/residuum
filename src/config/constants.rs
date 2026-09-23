@@ -131,5 +131,8 @@ pub(super) const DEFAULT_TELEGRAM_CONTEXT_MESSAGES: usize = 20;
 /// Default port for the dedicated Teams messaging listener.
 pub(crate) const DEFAULT_TEAMS_PORT: u16 = 7701;
 
+/// Default port for the dedicated A2A protocol listener.
+pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
+
 /// Default relay WebSocket URL.
 pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";

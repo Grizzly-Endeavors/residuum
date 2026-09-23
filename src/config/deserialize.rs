@@ -61,6 +61,8 @@ pub(crate) struct ConfigFile {
     pub(super) web_search: Option<WebSearchConfigFile>,
     /// Tracing and observability configuration.
     pub(super) tracing: Option<TracingConfigFile>,
+    /// `Agent2Agent` (A2A) protocol configuration.
+    pub(super) a2a: Option<A2aConfigFile>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).
@@ -313,6 +315,22 @@ pub(super) struct TeamsConfigFile {
     pub(super) context_messages: Option<usize>,
     /// Port for the dedicated Teams messaging listener.
     pub(super) port: Option<u16>,
+}
+
+/// Raw TOML `[a2a]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct A2aConfigFile {
+    /// Whether the A2A listener runs at all.
+    pub(super) enabled: Option<bool>,
+    /// Port for the dedicated A2A protocol listener.
+    pub(super) port: Option<u16>,
+    /// Public URL other agents should use to reach this instance's A2A
+    /// interfaces (own tunnel/reverse proxy). Empty or absent when the relay
+    /// is expected to supply the public origin instead.
+    pub(super) public_url: Option<String>,
+    /// `"public"` (default) or `"private"`.
+    pub(super) visibility: Option<String>,
 }
 
 /// Raw TOML `[webhooks.<name>]` entry.

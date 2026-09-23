@@ -12,23 +12,26 @@ use crate::util::FatalError;
 use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{
-    DEFAULT_CLOUD_RELAY_URL, DEFAULT_DISCORD_CONTEXT_MESSAGES, DEFAULT_FEEDBACK_ENDPOINT,
-    DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TEAMS_CONTEXT_MESSAGES,
-    DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES, DEFAULT_TIMEOUT_SECS,
+    DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_DISCORD_CONTEXT_MESSAGES,
+    DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS,
+    DEFAULT_TEAMS_CONTEXT_MESSAGES, DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
+    DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
-    AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
-    DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile, ProviderEntryFile,
-    ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TeamsConfigFile,
-    TelegramConfigFile, ToolsConfigFile, TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
+    A2aConfigFile, AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile,
+    ConfigFile, DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile,
+    ProviderEntryFile, ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile,
+    TeamsConfigFile, TelegramConfigFile, ToolsConfigFile, TracingConfigFile, WebSearchConfigFile,
+    WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
-    AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
-    LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig,
-    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig,
-    ToolsConfig, TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    A2aConfig, A2aVisibility, AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig,
+    GatewayConfig, IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint,
+    ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
+    SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
+    WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -51,15 +54,7 @@ pub(crate) fn from_file_and_env(
     let mut resolved_models =
         models::resolve_all_model_specs(models_section, providers_map, &secrets)?;
 
-    // Workspace dir: env > file > default
-    let workspace_dir = std::env::var("RESIDUUM_WORKSPACE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
-        .map(|s| {
-            let expanded = shellexpand::tilde(&s);
-            PathBuf::from(expanded.as_ref())
-        })
-        .map_or_else(default_workspace_dir, Ok)?;
+    let workspace_dir = resolve_workspace_dir_setting(file)?;
 
     let timeout_secs = file
         .and_then(|f| f.timeout_secs)
@@ -86,6 +81,7 @@ pub(crate) fn from_file_and_env(
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
     let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), &secrets)?;
+    let a2a = resolve_a2a_config(file.and_then(|f| f.a2a.as_ref()))?;
     let webhooks = resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), &secrets)?;
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let tools = resolve_tools_config(file.and_then(|f| f.tools.as_ref()), config_dir);
@@ -150,6 +146,7 @@ pub(crate) fn from_file_and_env(
         discord,
         telegram,
         teams,
+        a2a,
         webhooks,
         skills,
         tools,
@@ -164,6 +161,23 @@ pub(crate) fn from_file_and_env(
         role_overrides: resolved_models.role_overrides,
         config_dir: config_dir.to_path_buf(),
     })
+}
+
+/// Resolve the workspace root directory: env var, then config file, then the
+/// platform default. `~` in an explicit value is expanded.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the default workspace directory can't be
+/// determined (no config value was given to fall back from).
+fn resolve_workspace_dir_setting(file: Option<&ConfigFile>) -> Result<PathBuf, FatalError> {
+    std::env::var("RESIDUUM_WORKSPACE")
+        .ok()
+        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
+        .map(|s| {
+            let expanded = shellexpand::tilde(&s);
+            PathBuf::from(expanded.as_ref())
+        })
+        .map_or_else(default_workspace_dir, Ok)
 }
 
 /// Resolve the timezone from env var or config file.
@@ -402,6 +416,47 @@ fn resolve_teams_config(
             .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),
         port: section.port.unwrap_or(DEFAULT_TEAMS_PORT),
     }))
+}
+
+/// Resolve `Agent2Agent` (A2A) protocol configuration from the TOML section.
+///
+/// Enabled by default: every request the listener answers still goes
+/// through the auth layer, so turning it on by default costs nothing until
+/// a caller key or sibling instance actually exists to use it.
+///
+/// # Errors
+/// Returns `FatalError::Config` if `visibility` names anything other than
+/// `"public"` or `"private"`.
+fn resolve_a2a_config(section: Option<&A2aConfigFile>) -> Result<A2aConfig, FatalError> {
+    let default = A2aConfig::default();
+    let Some(section) = section else {
+        return Ok(default);
+    };
+
+    let visibility = match section.visibility.as_deref().map(str::trim) {
+        None | Some("") => A2aVisibility::default(),
+        Some("public") => A2aVisibility::Public,
+        Some("private") => A2aVisibility::Private,
+        Some(other) => {
+            return Err(FatalError::Config(format!(
+                "[a2a] visibility must be \"public\" or \"private\", got \"{other}\""
+            )));
+        }
+    };
+
+    let public_url = section
+        .public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    Ok(A2aConfig {
+        enabled: section.enabled.unwrap_or(default.enabled),
+        port: section.port.unwrap_or(DEFAULT_A2A_PORT),
+        public_url,
+        visibility,
+    })
 }
 
 /// Expand `${ENV_VAR}` references in a token string.
@@ -2212,6 +2267,71 @@ app_password = "s"
         )
         .unwrap();
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("teams"));
+    }
+
+    // ── A2A config ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a2a_absent_resolves_to_open_defaults() {
+        let cfg = resolve_with("timezone = \"UTC\"\n").unwrap();
+        assert!(cfg.a2a.enabled, "enabled by default");
+        assert_eq!(cfg.a2a.port, DEFAULT_A2A_PORT);
+        assert_eq!(cfg.a2a.public_url, None);
+        assert_eq!(cfg.a2a.visibility, A2aVisibility::Public);
+    }
+
+    #[test]
+    fn a2a_section_honours_overrides() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[a2a]
+enabled = false
+port = 9999
+public_url = "https://example.com/a2a/laptop"
+visibility = "private"
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.a2a.enabled);
+        assert_eq!(cfg.a2a.port, 9999);
+        assert_eq!(
+            cfg.a2a.public_url.as_deref(),
+            Some("https://example.com/a2a/laptop")
+        );
+        assert_eq!(cfg.a2a.visibility, A2aVisibility::Private);
+    }
+
+    #[test]
+    fn a2a_empty_public_url_resolves_to_none() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[a2a]
+public_url = "   "
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.a2a.public_url, None);
+    }
+
+    #[test]
+    fn a2a_invalid_visibility_is_an_error() {
+        let err = resolve_with(
+            r#"
+timezone = "UTC"
+
+[a2a]
+visibility = "hidden"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("visibility"),
+            "error should mention visibility: {err}"
+        );
     }
 
     // ── Cloud config ───────────────────────────────────────────────────────

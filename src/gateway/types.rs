@@ -32,7 +32,8 @@ pub enum ReloadSignal {
     None,
     /// Full root config reload (config.toml changed).
     Root,
-    /// Workspace-level reload (mcp.json or channels.toml changed).
+    /// Workspace-level reload (`mcp.json`, `channels.toml`, or
+    /// `agent-card.json` changed).
     Workspace,
 }
 
@@ -296,6 +297,11 @@ pub(crate) struct GatewayRuntime {
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub teams_handle: Option<tokio::task::JoinHandle<()>>,
     pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
+    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// The live agent card, so a workspace-file reload can update it without
+    /// restarting the listener. `None` when A2A is disabled.
+    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Whether the workbench artifacts listener is running, and on which port.

@@ -211,6 +211,13 @@ impl WorkspaceLayout {
         self.root.join("config/channels.toml")
     }
 
+    /// Path to `config/agent-card.json` — the A2A agent card: what this
+    /// agent advertises to other agents that reach it over A2A.
+    #[must_use]
+    pub fn agent_card_json(&self) -> PathBuf {
+        self.root.join("config/agent-card.json")
+    }
+
     /// Path to the session store directory: per-run metadata and transcripts,
     /// organized by date.
     ///
@@ -370,6 +377,11 @@ mod tests {
             layout.channels_toml(),
             PathBuf::from("/tmp/ws/config/channels.toml"),
             "channels_toml path"
+        );
+        assert_eq!(
+            layout.agent_card_json(),
+            PathBuf::from("/tmp/ws/config/agent-card.json"),
+            "agent_card_json path"
         );
         assert_eq!(
             layout.subconscious_md(),
