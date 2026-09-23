@@ -49,6 +49,11 @@ done
 mkdir -p "$VM_DIR"
 chmod 700 "$VM_DIR"
 
+# The sparse disk grows to about 30 GiB by the end of provisioning, and a full
+# filesystem mid-install surfaces in the guest as a disk error.
+free_gib=$(( $(df --output=avail -k "$VM_DIR" | tail -1) / 1024 / 1024 ))
+[ "$free_gib" -ge 40 ] || die "only ${free_gib} GiB free for $VM_DIR; the VM needs at least 40 GiB. Set RESIDUUM_WINVM_DIR to a larger filesystem (not a tmpfs such as /tmp)."
+
 info "generating credentials in $VM_DIR"
 password="Rv-$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')!"
 printf '%s\n' "$password" > "$PASSWORD_FILE"
