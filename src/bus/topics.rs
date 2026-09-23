@@ -112,7 +112,7 @@ impl Topic for Inbox {
 
 impl Carries<NotificationEvent> for Inbox {}
 
-/// Workbench tool file changes, for web UI views showing a tool live.
+/// Workbench artifact file changes, for web UI views showing an artifact live.
 pub struct Workbench;
 
 impl Topic for Workbench {

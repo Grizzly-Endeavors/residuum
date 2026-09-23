@@ -50,7 +50,7 @@ workspace/
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run
 ├── skills/                  # Workspace-level skills (also sub-agent roles)
-├── workbench/               # Interactive HTML tools shown in the web UI's Workbench
+├── workbench/               # Interactive HTML artifacts shown in the web UI's Workbench
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
 └── inbox/                   # Active inbox items

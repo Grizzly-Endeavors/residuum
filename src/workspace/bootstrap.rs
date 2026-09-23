@@ -56,7 +56,7 @@ const MEMORY_ANALYST_SKILL_MD: &str =
 /// of the `memory_tending` and `wiki_lint` pulses.
 const WIKI_SKILL_MD: &str = include_str!("../../assets/bundled-skills/wiki/SKILL.md");
 
-/// Built-in `workbench` skill: building interactive HTML tools in `workbench/`
+/// Built-in `workbench` skill: building interactive HTML artifacts in `workbench/`
 /// that the web UI shows sandboxed, with the injected `residuum` SDK.
 const WORKBENCH_SKILL_MD: &str = include_str!("../../assets/bundled-skills/workbench/SKILL.md");
 
@@ -561,7 +561,7 @@ mod tests {
         );
         assert!(
             layout.workbench_dir().is_dir(),
-            "the workbench folder exists for tools"
+            "the workbench folder exists for artifacts"
         );
 
         let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))

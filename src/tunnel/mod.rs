@@ -50,7 +50,7 @@ type TunnelSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>
 pub(crate) struct ForwardTargets {
     /// The main gateway listener: web UI, API, WebSocket.
     pub main: u16,
-    /// The workbench tools listener, when it is running.
+    /// The workbench artifacts listener, when it is running.
     pub workbench: Option<u16>,
 }
 
@@ -58,8 +58,8 @@ pub(crate) struct ForwardTargets {
 const CAPABILITIES_HEADER: &str = "x-residuum-capabilities";
 
 /// Capability: requests tagged [`protocol::Surface::Workbench`] are routed to
-/// the workbench tools listener. Advertised even while that listener is down,
-/// so the relay forwards tool requests and they get an explanation back
+/// the workbench artifacts listener. Advertised even while that listener is down,
+/// so the relay forwards artifact requests and they get an explanation back
 /// rather than the relay's generic "update Residuum" page.
 const WORKBENCH_SURFACE_CAPABILITY: &str = "workbench-surface";
 
@@ -101,7 +101,7 @@ pub(crate) enum TunnelStatus {
         /// Public origin of the web UI through the relay, when the relay
         /// announces it.
         origin: Option<String>,
-        /// Public origin of the workbench tools through the relay, when the
+        /// Public origin of the workbench artifacts through the relay, when the
         /// relay announces it.
         workbench_origin: Option<String>,
     },

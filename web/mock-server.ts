@@ -33,9 +33,9 @@ interface MockState {
     attachments: string[];
   }>;
   sessions: MockSessions;
-  /** Workbench tools: name → page HTML and modification time. */
-  workbenchTools: Map<string, { html: string; modifiedAt: string }>;
-  /** Port of the mock tools listener, once it is listening. */
+  /** Workbench artifacts: name → page HTML and modification time. */
+  workbenchArtifacts: Map<string, { html: string; modifiedAt: string }>;
+  /** Port of the mock artifacts listener, once it is listening. */
   workbenchPort: number | null;
   /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
   extraRecent: Array<Record<string, unknown>>;
@@ -257,7 +257,7 @@ function loadAsset(filename: string): string {
   }
 }
 
-const MOCK_WORKBENCH_TOOL = `<!doctype html>
+const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
 <html><head><title>Tip Splitter</title>
 <style>
   body { margin: 0; padding: 32px; background: #14181f; color: #e6e8ec; font: 16px system-ui; }
@@ -287,32 +287,33 @@ const MOCK_WORKBENCH_TOOL = `<!doctype html>
   </script>
 </body></html>`;
 
-/** Serve a tool page the way the tools listener does: SDK injected. */
+/** Serve an artifact page the way the artifacts listener does: SDK injected. */
 function workbenchPage(html: string): string {
   const sdk = readFileSync(resolve(__dirname, "..", "assets", "workbench", "sdk.js"), "utf-8");
   return html.replace("<head>", `<head><script>${sdk}</script>`);
 }
 
 /**
- * A second origin for tools, like the gateway's tools listener: `/{tool}/`
- * serves the tool's page. Listens on any free port and records it.
+ * A second origin for artifacts, like the gateway's artifacts listener:
+ * `/{artifact}/` serves the artifact's page. Listens on any free port and
+ * records it.
  */
-function startMockToolsListener(state: MockState) {
+function startMockArtifactsListener(state: MockState) {
   const server = createServer((req, res) => {
     const match = /^\/([a-z0-9-]+)\/(\?.*)?$/.exec(req.url ?? "");
-    const tool = match ? state.workbenchTools.get(match[1] ?? "") : undefined;
-    if (!tool) {
+    const artifact = match ? state.workbenchArtifacts.get(match[1] ?? "") : undefined;
+    if (!artifact) {
       res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("There's no workbench tool here.");
+      res.end("There's no workbench artifact here.");
       return;
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(workbenchPage(tool.html));
+    res.end(workbenchPage(artifact.html));
   });
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     state.workbenchPort = typeof address === "object" && address !== null ? address.port : null;
-    console.log(`  [mock] Workbench tools on http://localhost:${state.workbenchPort}`);
+    console.log(`  [mock] Workbench artifacts on http://localhost:${state.workbenchPort}`);
   });
 }
 
@@ -320,8 +321,8 @@ function createState(): MockState {
   return {
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
     workbenchPort: null,
-    workbenchTools: new Map([
-      ["tip-splitter", { html: MOCK_WORKBENCH_TOOL, modifiedAt: new Date().toISOString() }],
+    workbenchArtifacts: new Map([
+      ["tip-splitter", { html: MOCK_WORKBENCH_ARTIFACT, modifiedAt: new Date().toISOString() }],
     ]),
     secrets: new Map([
       ["anthropic_key", "sk-ant-mock-xxxx"],
@@ -1109,15 +1110,15 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       }
 
       // ── Workbench ─────────────────────────────────────────────────────
-      if (path === "/api/workbench/tools" && method === "GET") {
+      if (path === "/api/workbench/artifacts" && method === "GET") {
         json(
           res,
           200,
-          [...state.workbenchTools].map(([name, tool]) => ({
+          [...state.workbenchArtifacts].map(([name, artifact]) => ({
             name,
-            title: /<title>([^<]*)<\/title>/i.exec(tool.html)?.[1]?.trim() || name,
-            modified_at: tool.modifiedAt,
-            size: tool.html.length,
+            title: /<title>([^<]*)<\/title>/i.exec(artifact.html)?.[1]?.trim() || name,
+            modified_at: artifact.modifiedAt,
+            size: artifact.html.length,
           })),
         );
         return;
@@ -1127,18 +1128,18 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         json(res, 200, {
           port: state.workbenchPort,
           unavailable_reason:
-            state.workbenchPort === null ? "The mock tools listener isn't up yet." : null,
+            state.workbenchPort === null ? "The mock artifacts listener isn't up yet." : null,
           relay: null,
         });
         return;
       }
 
-      const toolMatch = path.match(/^\/api\/workbench\/tools\/([^/]+)$/);
-      if (toolMatch) {
-        const name = decodeURIComponent(toolMatch[1] ?? "");
+      const artifactMatch = path.match(/^\/api\/workbench\/artifacts\/([^/]+)$/);
+      if (artifactMatch) {
+        const name = decodeURIComponent(artifactMatch[1] ?? "");
         if (method === "DELETE") {
-          if (!state.workbenchTools.delete(name)) {
-            text(res, 404, "That tool no longer exists. It may already have been deleted.");
+          if (!state.workbenchArtifacts.delete(name)) {
+            text(res, 404, "That artifact no longer exists. It may already have been deleted.");
             return;
           }
           json(res, 200, { removed: [`${name}.html`] });
@@ -1662,7 +1663,7 @@ export function mockServerPlugin(): Plugin {
 
       setupRestMiddleware(server, state);
       setupWebSocket(server, state);
-      startMockToolsListener(state);
+      startMockArtifactsListener(state);
 
       const modeLabel = state.mode === "setup" ? "setup" : "running";
       console.log("");

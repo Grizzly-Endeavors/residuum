@@ -1,7 +1,7 @@
 /* ── Workbench ────────────────────────────────────────────────────────── */
-/* Tools sit on the bench as stone slabs, each with a vein seam down its    */
-/* left edge. The seam flares once when the agent writes to the tool: the   */
-/* only motion here, and it means "this just changed".                      */
+/* Artifacts sit on the bench as stone slabs, each with a vein seam down    */
+/* its left edge. The seam flares once when the agent writes to the        */
+/* artifact: the only motion here, and it means "this just changed".        */
 
 .workbench-view {
   display: flex;
@@ -18,7 +18,7 @@
 /* Headings take focus only programmatically, to announce where the user */
 /* landed; they are not controls, so they get no focus ring. */
 .workbench-title:focus-visible,
-.workbench-tool-title:focus-visible {
+.workbench-artifact-title:focus-visible {
   box-shadow: none;
 }
 
@@ -199,16 +199,16 @@
   color: var(--text-muted);
 }
 
-/* ── Tool view ────────────────────────────────────────────────────────── */
+/* ── Artifact view ────────────────────────────────────────────────────── */
 
-.workbench-tool {
+.workbench-artifact {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-.workbench-tool-bar {
+.workbench-artifact-bar {
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -218,7 +218,7 @@
   flex-shrink: 0;
 }
 
-.workbench-tool-heading {
+.workbench-artifact-heading {
   display: flex;
   align-items: baseline;
   gap: var(--s-3);
@@ -226,7 +226,7 @@
   min-width: 0;
 }
 
-.workbench-tool-title {
+.workbench-artifact-title {
   margin: 0;
   font-family: var(--font-body);
   font-size: var(--fs-lg);
@@ -236,7 +236,7 @@
   text-overflow: ellipsis;
 }
 
-.workbench-tool-heading .workbench-slab-path {
+.workbench-artifact-heading .workbench-slab-path {
   white-space: nowrap;
 }
 
@@ -286,7 +286,7 @@
     padding: var(--s-3) var(--s-4);
   }
 
-  .workbench-tool-heading .workbench-slab-path {
+  .workbench-artifact-heading .workbench-slab-path {
     display: none;
   }
 }
@@ -303,10 +303,10 @@
 }
 
 /* ── Full view ────────────────────────────────────────────────────────── */
-/* The tool fills the window. The one way back stays in the corner, faint  */
-/* until reached for, so it never covers much of the tool.                  */
+/* The artifact fills the window. The one way back stays in the corner,    */
+/* faint until reached for, so it never covers much of the artifact.        */
 
-.workbench-tool.full .workbench-stage {
+.workbench-artifact.full .workbench-stage {
   background: var(--bg-deep);
 }
 

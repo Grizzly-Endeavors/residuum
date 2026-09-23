@@ -56,7 +56,7 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
-    /// Workbench tool file changes, so an open tool view reloads live.
+    /// Workbench artifact file changes, so an open artifact view reloads live.
     pub workbench: Subscriber<WorkbenchEvent>,
     pub file_registry: crate::gateway::file_server::FileRegistry,
 }
@@ -163,10 +163,10 @@ impl WsSubscribers {
                 event = self.workbench.recv() => {
                     match event {
                         Ok(Some(WorkbenchEvent::Updated { name })) => {
-                            Some(ServerMessage::WorkbenchToolUpdated { name })
+                            Some(ServerMessage::ArtifactUpdated { name })
                         }
                         Ok(Some(WorkbenchEvent::Removed { name })) => {
-                            Some(ServerMessage::WorkbenchToolRemoved { name })
+                            Some(ServerMessage::ArtifactRemoved { name })
                         }
                         _ => return None,
                     }

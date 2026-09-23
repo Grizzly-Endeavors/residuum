@@ -76,8 +76,8 @@ web/
 │   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
 │   │   ├── Header.svelte           # Top bar with navigation
-│   │   ├── Workbench.svelte        # Workbench tool list; hosts the open tool
-│   │   ├── WorkbenchTool.svelte    # One tool in its sandboxed frame; full view
+│   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
+│   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
 │   │   ├── settings/               # Settings sub-panels
 │   │   └── setup/                  # Setup wizard steps
 │   └── lib/
@@ -86,11 +86,11 @@ web/
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
-│       ├── routes.ts             # URL <-> location: session, workspace flag, settings section, workbench tool
+│       ├── routes.ts             # URL <-> location: session, workspace flag, settings section, workbench artifact
 │       ├── router.svelte.ts      # Current location; push/replace history, back/forward
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
-│       ├── workbench-bridge.ts   # What workbench tools may call, relayed from their frames on the tools origin
-│       ├── workbench.ts          # Where tools are served: relay origin or this host on the tools port
+│       ├── workbench-bridge.ts   # What workbench artifacts may call, relayed from their frames on the artifacts origin
+│       ├── workbench.ts          # Where artifacts are served: relay origin or this host on the artifacts port
 │       ├── time.ts               # Relative times ("5m ago")
 │       ├── generated/            # Protocol types generated from Rust (cargo test --test ts_export)
 │       ├── types.ts              # TypeScript types for API and messages

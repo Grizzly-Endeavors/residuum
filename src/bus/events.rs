@@ -618,25 +618,21 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-/// A workbench tool file (`workbench/<name>.html`) appeared, changed, or was
-/// deleted.
+/// A workbench artifact file (`workbench/<name>.html`) appeared, changed, or
+/// was deleted.
 ///
 /// Carried on [`super::topics::Workbench`] so open workbench views can reload
-/// the tool live while the agent edits it.
+/// the artifact live while the agent edits it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchEvent {
-    /// The tool's page was created or modified.
+    /// The artifact's page was created or modified.
     Updated {
-        /// Tool name (the file stem).
+        /// Artifact name (the file stem).
         name: String,
     },
-    /// The tool's page was deleted.
+    /// The artifact's page was deleted.
     Removed {
-        /// Tool name (the file stem).
+        /// Artifact name (the file stem).
         name: String,
     },
 }

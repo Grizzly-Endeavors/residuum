@@ -182,7 +182,7 @@
     }}
   />
 {:else}
-  <!-- A workbench tool in full view fills the window on its own. -->
+  <!-- A workbench artifact in full view fills the window on its own. -->
   {#if !router.workbench?.full}
     <Header
       status={ws.transport.status}
@@ -218,7 +218,7 @@
     />
   {:else if activeView === "workbench"}
     <Workbench
-      tool={router.workbench?.tool ?? null}
+      artifact={router.workbench?.artifact ?? null}
       full={router.workbench?.full ?? false}
       onClose={() => router.closeWorkbench()}
     />

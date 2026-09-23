@@ -289,12 +289,12 @@ code: SessionCommandErrorCode,
 /**
  * Human-readable explanation, suitable to show the user.
  */
-message: string, } | { "type": "workbench_tool_updated", 
+message: string, } | { "type": "artifact_updated", 
 /**
- * Tool name, as used in `/workbench/{name}`.
+ * Artifact name, as used in `/workbench/{name}`.
  */
-name: string, } | { "type": "workbench_tool_removed", 
+name: string, } | { "type": "artifact_removed", 
 /**
- * Tool name, as used in `/workbench/{name}`.
+ * Artifact name, as used in `/workbench/{name}`.
  */
 name: string, };
