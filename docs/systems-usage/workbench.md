@@ -57,6 +57,16 @@ The handle follows the session through the live frames the artifact already rece
 
 Failures reject with an `Error` carrying the gateway's plain-language message, plus `code` and `status` where the gateway gave them. `GET /api/sessions?artifact=<name>` lists the sessions an artifact started, live and finished. Closing the artifact does not stop its sessions.
 
+## Visibility and stop controls
+
+Nothing limits how many model calls or sessions an artifact runs; instead the user can always see what it's doing and stop it. Stopping is granular: nothing stops every session at once, and stopping the page is separate from stopping its sessions.
+
+The bar above an open artifact shows an activity toggle naming how many live sessions it started and how many model calls are in flight (`0 sessions`, or `2 sessions · 1 call` once there's something to report). Opening it lists each live session with its purpose, state, a link to its session view, and its own stop button (for a session in a stoppable state — forking, running, or idle), sourced from the sessions store's `live` list rather than a dedicated fetch, so it never drifts from what the sessions sidebar shows for the same runs. The model calls in flight are shown as a count with a **Cancel calls** action, which aborts every one of the artifact's calls at once — calls are short and interchangeable, so they're cancelled together rather than individually.
+
+A separate **Stop page** control unloads the artifact's frame: its bridge tears down (aborting any model calls still in flight) and the iframe is removed, ending any loop running in the page. It does not touch the artifact's sessions — they keep running and stay listed in the activity panel and the sessions sidebar for individual stopping. The stopped state shows a **Restart** button, which reloads the frame into a fresh document with a new bridge.
+
+The sessions sidebar gives every session row in a stoppable state its own stop button, in every category, not only Artifacts. An artifact session's row also links to the artifact that started it.
+
 ## Security model
 
 The web UI has no login of its own (the relay authenticates remote access), so anything running on the UI's origin can call every endpoint. Artifacts are agent-written pages that load third-party scripts, so they never get that origin:
