@@ -380,6 +380,10 @@ mod tests {
             session_registry,
             session_store,
             agent_messenger,
+            skill_state: crate::skills::SkillState::new_shared(
+                crate::skills::SkillIndex::default(),
+                vec![],
+            ),
         }
     }
 
