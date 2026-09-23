@@ -883,17 +883,20 @@ pub(super) async fn api_workspace_mkdir(
 }
 
 /// Get `to_path` ready to receive a rename: creates its missing parent
-/// directories, and — when `overwrite` is set — removes whatever already
-/// exists there. Without `overwrite`, an existing destination answers
-/// `409`.
+/// directories, and checks what already exists there. Without `overwrite`,
+/// an existing destination answers `409`.
 ///
-/// `tokio::fs::rename` can't be relied on to replace an existing target
-/// portably (Windows refuses outright; Unix refuses a non-empty directory),
-/// so the destination is cleared first rather than left to the rename call.
+/// A file replacing a file is left to the rename itself, which replaces the
+/// target in one step on every platform (on Windows `std::fs::rename` uses
+/// `MOVEFILE_REPLACE_EXISTING`), so a failed move never loses the existing
+/// file. Only when a directory is involved on either side is the destination
+/// cleared first, since no platform renames over a non-empty directory or
+/// between a file and a directory.
 async fn ready_move_destination(
     to_path: &Path,
     to_relative: &str,
     overwrite: bool,
+    source_is_dir: bool,
 ) -> Result<(), (StatusCode, String)> {
     let to_exists = match tokio::fs::metadata(to_path).await {
         Ok(meta) => Some(meta),
@@ -929,6 +932,9 @@ async fn ready_move_destination(
     let Some(existing) = to_exists else {
         return Ok(());
     };
+    if !existing.is_dir() && !source_is_dir {
+        return Ok(());
+    }
     if existing.is_dir() {
         tokio::fs::remove_dir_all(to_path).await.map_err(|e| {
             (
@@ -1010,7 +1016,14 @@ pub(super) async fn api_workspace_move(
         .into_response());
     }
 
-    ready_move_destination(&to_path, to_relative, req.overwrite).await?;
+    if from_metadata.is_dir() && to_path.starts_with(&from_path) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("can't move {from_relative} into itself ({to_relative})"),
+        ));
+    }
+
+    ready_move_destination(&to_path, to_relative, req.overwrite, from_metadata.is_dir()).await?;
 
     tokio::fs::rename(&from_path, &to_path).await.map_err(|e| {
         (
@@ -2191,6 +2204,33 @@ mod tests {
             "a-content"
         );
         assert!(!ws_dir.join("a.md").exists());
+    }
+
+    #[tokio::test]
+    async fn move_directory_into_itself_answers_400() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("notes"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("notes/a.md"), "a")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "notes".to_string(),
+                to: "notes/archive".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(ws_dir.join("notes/a.md").exists());
     }
 
     #[tokio::test]
