@@ -319,6 +319,10 @@ pub struct SessionRegistry {
     /// `None` for a registry built with [`Self::new`] — resume points then
     /// live only in memory, as every unit test wants.
     persist_path: Option<PathBuf>,
+    /// Held across snapshot-and-write so concurrent recordings reach disk in
+    /// the order they were recorded; without it an older snapshot could land
+    /// after a newer one and drop the newer resume point on restart.
+    persist_lock: tokio::sync::Mutex<()>,
     /// Notified whenever any session is removed, so [`Self::wait_until_clear`]
     /// can wake without polling. A single registry-wide `Notify` rather than
     /// one per address: removals are infrequent, and a waiter re-checks its
@@ -482,6 +486,7 @@ impl SessionRegistry {
     /// as long as this process keeps running.
     pub async fn record_resume_point(&self, address: &SessionAddress, mut point: ResumePoint) {
         point.recorded_at = Utc::now();
+        let _persist_guard = self.persist_lock.lock().await;
         let snapshot = {
             let mut guard = self
                 .resume_points
@@ -1302,11 +1307,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_resume_point_survives_a_simulated_restart() {
-        // Regression test for the core fix: resume points used to live only
-        // in the in-memory `SessionRegistry`, so a process restart lost
-        // every pointer back to a session's previous episode. A registry
-        // rebuilt from the same persisted file — standing in for a restart —
-        // must still resolve the address.
+        // A registry rebuilt from the same persisted file stands in for a
+        // process restart; it must still resolve the address to its previous
+        // run and episode.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resume_points.json");
         let address = SessionAddress::from("external-discord-restart-test");
@@ -1329,6 +1332,35 @@ mod tests {
             found.previous_episode_id.as_deref(),
             Some("ep-before-restart")
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_recordings_all_reach_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resume_points.json");
+        let registry = std::sync::Arc::new(SessionRegistry::load(path.clone()).await);
+
+        let recordings = (0..32).map(|i| {
+            let registry = std::sync::Arc::clone(&registry);
+            tokio::spawn(async move {
+                let address = SessionAddress::from(format!("external-concurrent-{i}"));
+                registry
+                    .record_resume_point(&address, sample_resume_point(&format!("run-{i}")))
+                    .await;
+            })
+        });
+        for handle in recordings {
+            handle.await.unwrap();
+        }
+
+        let restarted = SessionRegistry::load(path).await;
+        for i in 0..32 {
+            let address = SessionAddress::from(format!("external-concurrent-{i}"));
+            assert!(
+                restarted.resume_point(&address).is_some(),
+                "resume point {i} must be on disk after concurrent recordings"
+            );
+        }
     }
 
     #[tokio::test]
