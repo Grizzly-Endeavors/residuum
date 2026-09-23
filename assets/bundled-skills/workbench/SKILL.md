@@ -54,6 +54,9 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 | `await residuum.send(text)` | Sends `text` to you as a chat message, labelled with the artifact's name. Works only inside a click or key-press handler; otherwise it rejects. |
 | `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all). Returns an unsubscribe function. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch` and `send` reject. |
+| `residuum.artifact` | This artifact's own name. |
+| `residuum.version` | Residuum's version. |
+| `residuum.features` | Frozen array of feature ids this build supports. |
 
 Read `references/api.md` for the endpoints worth calling, the event types, and which routes are blocked.
 
