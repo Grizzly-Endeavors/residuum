@@ -48,8 +48,8 @@ observer_force_threshold_tokens = 60000 # hard threshold: observe immediately, b
 
 # Hybrid search tuning (BM25 + vector merge).
 # [memory.search]
-# vector_weight = 0.7              # weight for vector similarity (0.0–1.0)
-# text_weight = 0.3                # weight for BM25 text scores (0.0–1.0)
+# vector_weight = 0.7              # relative weight for vector similarity
+# text_weight = 0.3                # relative weight for BM25 text scores (weights are normalized to sum to 1)
 # min_score = 0.35                 # minimum hybrid score threshold
 # candidate_multiplier = 4         # over-fetch multiplier for pre-merge retrieval
 # temporal_decay = false            # enable temporal decay scoring

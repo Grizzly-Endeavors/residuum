@@ -82,9 +82,9 @@ impl Default for MemoryConfig {
 /// Validated hybrid search configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchConfig {
-    /// Weight for vector similarity scores in hybrid merge (0.0–1.0).
+    /// Weight for vector similarity scores in hybrid merge; sums to 1.0 with `text_weight`.
     pub vector_weight: f64,
-    /// Weight for BM25 text scores in hybrid merge (0.0–1.0).
+    /// Weight for BM25 text scores in hybrid merge; sums to 1.0 with `vector_weight`.
     pub text_weight: f64,
     /// Minimum hybrid score threshold for results.
     pub min_score: f64,

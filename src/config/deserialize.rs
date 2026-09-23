@@ -213,9 +213,9 @@ pub(super) struct MemoryConfigFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SearchConfigFile {
-    /// Weight for vector similarity scores in hybrid merge (0.0–1.0).
+    /// Relative weight for vector similarity scores in hybrid merge.
     pub(super) vector_weight: Option<f64>,
-    /// Weight for BM25 text scores in hybrid merge (0.0–1.0).
+    /// Relative weight for BM25 text scores in hybrid merge.
     pub(super) text_weight: Option<f64>,
     /// Minimum hybrid score threshold for results.
     pub(super) min_score: Option<f64>,

@@ -704,10 +704,10 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
 
     if let Some(s) = section {
         if let Some(v) = s.vector_weight {
-            cfg.vector_weight = v;
+            cfg.vector_weight = valid_search_weight("vector_weight", v, cfg.vector_weight);
         }
         if let Some(v) = s.text_weight {
-            cfg.text_weight = v;
+            cfg.text_weight = valid_search_weight("text_weight", v, cfg.text_weight);
         }
         if let Some(v) = s.min_score {
             cfg.min_score = v;
@@ -741,18 +741,42 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
         }
     }
 
+    // Normalized so the merged score stays in [0, 1], the range `min_score`
+    // is expressed in. Only the ratio between the two weights is meaningful.
     let sum = cfg.vector_weight + cfg.text_weight;
-    if (sum - 1.0).abs() > 0.01 {
+    if sum > 0.0 {
+        cfg.vector_weight /= sum;
+        cfg.text_weight /= sum;
+    } else {
+        let defaults = SearchConfig::default();
         tracing::warn!(
             section = "memory.search",
-            vector_weight = cfg.vector_weight,
-            text_weight = cfg.text_weight,
-            sum,
-            "vector_weight + text_weight should sum to ~1.0"
+            default_vector_weight = defaults.vector_weight,
+            default_text_weight = defaults.text_weight,
+            "vector_weight and text_weight are both zero; using defaults"
         );
+        cfg.vector_weight = defaults.vector_weight;
+        cfg.text_weight = defaults.text_weight;
     }
 
     cfg
+}
+
+/// A hybrid search weight from config, or `fallback` when it is negative or
+/// not a finite number.
+fn valid_search_weight(key: &str, value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        tracing::warn!(
+            section = "memory.search",
+            key,
+            value,
+            default = fallback,
+            "search weight must be a non-negative number; using default"
+        );
+        fallback
+    }
 }
 
 /// Resolve web search configuration from TOML section.
@@ -1788,6 +1812,47 @@ main = "anthropic/claude-sonnet-4-6"
             search.candidate_multiplier, 8,
             "candidate_multiplier should be custom"
         );
+    }
+
+    fn assert_search_weights(toml_src: &str, expected_vector: f64, expected_text: f64) {
+        let section: SearchConfigFile = toml::from_str(toml_src).unwrap();
+        let cfg = resolve_search_config(Some(&section));
+        assert!(
+            (cfg.vector_weight - expected_vector).abs() < 1e-9
+                && (cfg.text_weight - expected_text).abs() < 1e-9,
+            "{toml_src:?}: expected ({expected_vector}, {expected_text}), got ({}, {})",
+            cfg.vector_weight,
+            cfg.text_weight
+        );
+    }
+
+    #[test]
+    fn search_weights_normalize_to_sum_one() {
+        assert_search_weights("vector_weight = 0.9\ntext_weight = 0.9\n", 0.5, 0.5);
+        assert_search_weights("vector_weight = 3.0\ntext_weight = 1.0\n", 0.75, 0.25);
+    }
+
+    #[test]
+    fn search_weights_single_override_keeps_other_default() {
+        // text_weight stays at its 0.3 default, so 0.3 / (0.3 + 0.3)
+        assert_search_weights("vector_weight = 0.3\n", 0.5, 0.5);
+    }
+
+    #[test]
+    fn search_weight_zero_disables_that_signal() {
+        assert_search_weights("vector_weight = 0.0\ntext_weight = 0.4\n", 0.0, 1.0);
+    }
+
+    #[test]
+    fn search_weights_both_zero_fall_back_to_defaults() {
+        assert_search_weights("vector_weight = 0.0\ntext_weight = 0.0\n", 0.7, 0.3);
+    }
+
+    #[test]
+    fn search_weight_negative_or_non_finite_uses_default() {
+        assert_search_weights("vector_weight = -1.0\ntext_weight = 0.3\n", 0.7, 0.3);
+        assert_search_weights("vector_weight = 0.7\ntext_weight = nan\n", 0.7, 0.3);
+        assert_search_weights("vector_weight = inf\ntext_weight = 0.3\n", 0.7, 0.3);
     }
 
     #[test]

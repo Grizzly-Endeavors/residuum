@@ -88,7 +88,7 @@ Semantic similarity search via embeddings. Available when an embedding provider 
 
 ### Hybrid Search Flow
 
-BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge → optional temporal decay → filter by min_score → return top N.
+BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge (`vector_weight` and `text_weight`, rescaled to sum to 1 so the merged score stays in [0,1]; only their ratio matters) → optional temporal decay → filter by min_score → return top N.
 
 Temporal decay never applies to wiki pages: they hold maintained knowledge, and staleness is handled by their `stale_after` field and the `wiki_lint` pulse rather than by age.
 

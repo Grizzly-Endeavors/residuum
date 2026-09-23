@@ -14,7 +14,7 @@
         id="mem-observer-threshold"
         type="number"
         bind:value={fields.observer_threshold_tokens}
-        placeholder="Default: 2000"
+        placeholder="Default: 30000"
       />
       <span class="field-hint">Token count before the observer fires.</span>
     </div>
@@ -24,7 +24,7 @@
         id="mem-reflector-threshold"
         type="number"
         bind:value={fields.reflector_threshold_tokens}
-        placeholder="Default: 8000"
+        placeholder="Default: 40000"
       />
       <span class="field-hint">Token count before the reflector compresses memories.</span>
     </div>
@@ -44,7 +44,7 @@
         id="mem-observer-force"
         type="number"
         bind:value={fields.observer_force_threshold_tokens}
-        placeholder="Default: 6000"
+        placeholder="Default: 60000"
       />
       <span class="field-hint">Forces immediate observation, bypassing cooldown.</span>
     </div>
@@ -60,9 +60,12 @@
           type="number"
           step="0.05"
           bind:value={fields.search_vector_weight}
-          placeholder="Default: 0.6"
+          placeholder="Default: 0.7"
         />
-        <span class="field-hint">Weight for vector similarity in hybrid search (0.0-1.0).</span>
+        <span class="field-hint"
+          >Relative weight of vector similarity in hybrid search. Only the ratio to the text weight
+          matters.</span
+        >
       </div>
       <div class="settings-field">
         <label for="mem-text-weight">Text Weight</label>
@@ -71,9 +74,12 @@
           type="number"
           step="0.05"
           bind:value={fields.search_text_weight}
-          placeholder="Default: 0.4"
+          placeholder="Default: 0.3"
         />
-        <span class="field-hint">Weight for BM25 text scores in hybrid search (0.0-1.0).</span>
+        <span class="field-hint"
+          >Relative weight of BM25 text scores in hybrid search. Only the ratio to the vector weight
+          matters.</span
+        >
       </div>
       <div class="settings-field">
         <label for="mem-min-score">Min Score</label>
@@ -82,7 +88,7 @@
           type="number"
           step="0.01"
           bind:value={fields.search_min_score}
-          placeholder="Default: 0.3"
+          placeholder="Default: 0.35"
         />
         <span class="field-hint">Minimum hybrid score threshold for results.</span>
       </div>
@@ -92,7 +98,7 @@
           id="mem-candidate-multiplier"
           type="number"
           bind:value={fields.search_candidate_multiplier}
-          placeholder="Default: 3"
+          placeholder="Default: 4"
         />
         <span class="field-hint">Multiplier on limit for candidate retrieval before merge.</span>
       </div>
