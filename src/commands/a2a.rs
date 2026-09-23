@@ -1,5 +1,7 @@
 //! `a2a` subcommand: manage caller keys for the A2A protocol listener.
 
+use std::path::PathBuf;
+
 use residuum::a2a::A2aKeys;
 use residuum::config::Config;
 use residuum::util::FatalError;
@@ -42,7 +44,16 @@ pub(super) async fn run_a2a_command(command: &A2aCommand) -> Result<(), FatalErr
 }
 
 async fn run_a2a_keys_command(command: &A2aKeysCommand) -> Result<(), FatalError> {
-    let keys = A2aKeys::new(Config::config_dir()?);
+    run_a2a_keys_command_at(Config::config_dir()?, command).await
+}
+
+/// [`run_a2a_keys_command`] against an explicit config directory, so the
+/// dispatch logic is testable without touching the real `~/.residuum`.
+async fn run_a2a_keys_command_at(
+    config_dir: PathBuf,
+    command: &A2aKeysCommand,
+) -> Result<(), FatalError> {
+    let keys = A2aKeys::new(config_dir);
 
     match command {
         A2aKeysCommand::Create { name, description } => {
@@ -90,4 +101,77 @@ async fn run_a2a_keys_command(command: &A2aKeysCommand) -> Result<(), FatalError
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn create_list_revoke_roundtrip_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Create {
+                name: "laptop".to_string(),
+                description: Some("my other instance".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        run_a2a_keys_command_at(dir.path().to_path_buf(), &A2aKeysCommand::List)
+            .await
+            .unwrap();
+
+        run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Revoke {
+                name: "laptop".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let keys = A2aKeys::new(dir.path());
+        assert!(keys.snapshot().await.unwrap().list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_on_an_empty_store_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        run_a2a_keys_command_at(dir.path().to_path_buf(), &A2aKeysCommand::List)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_with_invalid_name_reports_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Create {
+                name: "Bad Name".to_string(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("couldn't create A2A caller key"));
+    }
+
+    #[tokio::test]
+    async fn revoke_unknown_key_reports_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Revoke {
+                name: "nope".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("couldn't revoke A2A caller key"));
+    }
 }
