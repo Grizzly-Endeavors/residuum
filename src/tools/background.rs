@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::a2a::{A2aClientHub, AgentStatus, RemoteTaskTracker};
+use crate::a2a::{A2aClientHub, AgentSource, AgentStatus, RemoteTaskTracker};
 use crate::agent::HopCounter;
 use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
@@ -210,7 +210,12 @@ impl Tool for ListAgentsTool {
                 AgentStatus::Ok(card) => format!("online — {}", card.description),
                 AgentStatus::Error(e) => format!("error — {e}"),
             };
-            let mut line = format!("  [a2a:{}] {status}", agent.name);
+            let instance_note = if agent.source == AgentSource::Sibling {
+                " (your instance)"
+            } else {
+                ""
+            };
+            let mut line = format!("  [a2a:{}]{instance_note} {status}", agent.name);
             if let Some(card) = agent.card()
                 && !card.skills.is_empty()
             {
@@ -763,5 +768,40 @@ mod tests {
             result.output
         );
         assert!(result.output.contains("task-1"), "got: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn list_agents_labels_a_sibling_as_your_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        hub.register_external(
+            "laptop".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            std::collections::HashMap::new(),
+            AgentSource::Sibling,
+        )
+        .await;
+        hub.register_external(
+            "colleague".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            std::collections::HashMap::new(),
+            AgentSource::Config,
+        )
+        .await;
+        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(!result.is_error);
+        assert!(
+            result.output.contains("[a2a:laptop] (your instance)"),
+            "got: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("[a2a:colleague] (your instance)"),
+            "a config-sourced agent must not be labeled as the user's own instance: {}",
+            result.output
+        );
     }
 }

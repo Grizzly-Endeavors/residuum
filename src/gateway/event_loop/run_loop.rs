@@ -212,6 +212,10 @@ async fn spawn_server_and_adapters(
     let (tunnel_status_tx, tunnel_status_rx) =
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
     let tunnel_status_tx = Arc::new(tunnel_status_tx);
+    // Both the hub and this receiver survive a config reload (the tunnel is
+    // restarted in place, not rebuilt), so one long-lived task spawned here
+    // at cold start stays correct across reloads without being respawned.
+    crate::a2a::spawn_sibling_discovery(Arc::clone(&parts.a2a_hub), tunnel_status_rx.clone());
 
     let file_registry = crate::gateway::file_server::FileRegistry::new();
     file_registry.spawn_cleanup_task();

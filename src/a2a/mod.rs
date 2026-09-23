@@ -38,6 +38,7 @@ pub use keys_runtime::{A2aKeys, SharedA2aKeys};
 pub use listener::{A2aListener, StubHandler};
 pub use task_store::{FileTaskStore, SharedTaskStore};
 
+pub(crate) use client::spawn_sibling_discovery;
 pub(crate) use public_url::{A2aPublicUrl, SharedA2aPublicUrl};
 pub(crate) use task_store::DelegatingTaskStore;
 
