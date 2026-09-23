@@ -60,6 +60,17 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     // Detect whether the child will enter setup mode (no PID file until setup completes)
     let needs_setup = args.setup || !config_dir.join("config.toml").exists();
 
+    // Catch an invalid config here, where the user can see the error. The
+    // child takes its PID lock before loading config, so the startup poll
+    // below would report success before the child exits.
+    if !needs_setup
+        && let Err(err) = residuum::config::Config::load_at(&config_dir)
+        && let super::startup_config::ConfigProblem::Invalid(invalid) =
+            super::startup_config::classify_load_error(&config_dir, &err)
+    {
+        return Err(invalid);
+    }
+
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
         println!("welcome to residuum!");

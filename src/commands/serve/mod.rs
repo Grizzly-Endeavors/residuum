@@ -2,6 +2,7 @@
 
 mod daemon;
 mod foreground;
+mod startup_config;
 
 pub(super) use daemon::run_serve_command;
 pub(super) use foreground::run_serve_foreground;

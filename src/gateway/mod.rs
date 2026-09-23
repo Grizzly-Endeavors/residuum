@@ -18,5 +18,4 @@ pub(crate) mod web;
 mod ws;
 
 pub use event_loop::run_gateway;
-pub use reload::{backup_config, rollback_config};
 pub use types::{GatewayExit, ReloadSignal, ServerCommand};
