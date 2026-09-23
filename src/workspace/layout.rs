@@ -118,7 +118,7 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
-    /// Path to the workbench directory: single-file HTML tools the agent builds
+    /// Path to the workbench directory: single-file HTML artifacts the agent builds
     /// for the user, served in the web UI at `/workbench/{name}`.
     #[must_use]
     pub fn workbench_dir(&self) -> PathBuf {

@@ -1,12 +1,12 @@
-//! Workbench: interactive tools the agent builds for the user.
+//! Workbench: interactive artifacts the agent builds for the user.
 //!
-//! A tool is either a single page, `<workspace>/workbench/<name>.html`, or a
+//! An artifact is either a single page, `<workspace>/workbench/<name>.html`, or a
 //! folder, `<workspace>/workbench/<name>/` with an `index.html` and any other
-//! files it loads. `<name>` is kebab-case. The tools listener
+//! files it loads. `<name>` is kebab-case. The artifacts listener
 //! ([`server`]) serves them on their own origin at `/<name>/`; the web UI
 //! lists them at `/workbench` and shows one at `/workbench/<name>`. Files
-//! beside a tool that share its `<name>.` prefix (for example
-//! `<name>.state.json`) are that tool's saved data: not part of the tool, not
+//! beside an artifact that share its `<name>.` prefix (for example
+//! `<name>.state.json`) are that artifact's saved data: not part of the artifact, not
 //! watched for reloads, and deleted with it.
 
 pub(crate) mod server;
@@ -18,30 +18,30 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 
-use crate::gateway::protocol::WorkbenchToolSummary;
+use crate::gateway::protocol::ArtifactSummary;
 
 /// Files larger than this are refused rather than served.
-pub(crate) const MAX_TOOL_FILE_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// A folder tool's files are counted up to this many when listing and
+/// A folder artifact's files are counted up to this many when listing and
 /// watching, so a runaway folder can't stall either.
 const MAX_FOLDER_FILES: usize = 5_000;
 
 /// Only the start of a page is scanned for its `<title>` when listing.
 const TITLE_SCAN_BYTES: usize = 64 * 1024;
 
-const MAX_TOOL_NAME_LEN: usize = 64;
+const MAX_ARTIFACT_NAME_LEN: usize = 64;
 
 /// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../assets/workbench/sdk.js");
 
-/// Whether `name` is a valid tool name: lowercase ASCII letters and digits in
+/// Whether `name` is a valid artifact name: lowercase ASCII letters and digits in
 /// hyphen-separated words, at most 64 characters. Names carry no path
 /// separators or dots, so a valid name always resolves inside the workbench.
 #[must_use]
-pub(crate) fn is_valid_tool_name(name: &str) -> bool {
+pub(crate) fn is_valid_artifact_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_TOOL_NAME_LEN
+        && name.len() <= MAX_ARTIFACT_NAME_LEN
         && name.split('-').all(|word| {
             !word.is_empty()
                 && word
@@ -50,58 +50,58 @@ pub(crate) fn is_valid_tool_name(name: &str) -> bool {
         })
 }
 
-/// Where a tool lives.
+/// Where an artifact lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ToolKind {
+pub(crate) enum ArtifactKind {
     /// `<name>.html`.
     Page(PathBuf),
     /// `<name>/`, entered through `<name>/index.html`.
     Folder(PathBuf),
 }
 
-/// A tool found in the workbench directory.
+/// An artifact found in the workbench directory.
 #[derive(Debug, Clone)]
-pub(crate) struct DiscoveredTool {
+pub(crate) struct DiscoveredArtifact {
     pub name: String,
-    pub kind: ToolKind,
-    /// Newest modification time among the tool's files.
+    pub kind: ArtifactKind,
+    /// Newest modification time among the artifact's files.
     pub modified: Option<SystemTime>,
-    /// Total size of the tool's files.
+    /// Total size of the artifact's files.
     pub size: u64,
-    /// Number of files in the tool.
+    /// Number of files in the artifact.
     pub files: usize,
 }
 
-impl DiscoveredTool {
-    /// The HTML page the tool opens with.
+impl DiscoveredArtifact {
+    /// The HTML page the artifact opens with.
     fn entry_page(&self) -> PathBuf {
         match &self.kind {
-            ToolKind::Page(path) => path.clone(),
-            ToolKind::Folder(dir) => dir.join("index.html"),
+            ArtifactKind::Page(path) => path.clone(),
+            ArtifactKind::Folder(dir) => dir.join("index.html"),
         }
     }
 }
 
-/// Find every tool in `dir`. A missing directory is an empty workbench.
-/// Symlinks are skipped, so a tool can never expose files from outside the
+/// Find every artifact in `dir`. A missing directory is an empty workbench.
+/// Symlinks are skipped, so an artifact can never expose files from outside the
 /// workbench. When both `<name>.html` and `<name>/` exist, the folder wins.
 ///
 /// # Errors
 /// Returns an error if the directory exists but cannot be read.
-pub(crate) async fn discover_tools(dir: &Path) -> std::io::Result<Vec<DiscoveredTool>> {
+pub(crate) async fn discover_artifacts(dir: &Path) -> std::io::Result<Vec<DiscoveredArtifact>> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
 
-    let mut tools: Vec<DiscoveredTool> = Vec::new();
+    let mut artifacts: Vec<DiscoveredArtifact> = Vec::new();
     while let Some(entry) = read_dir.next_entry().await? {
         let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
         let file_type = entry.file_type().await?;
-        let found = if file_type.is_dir() && is_valid_tool_name(&file_name) {
+        let found = if file_type.is_dir() && is_valid_artifact_name(&file_name) {
             if !tokio::fs::symlink_metadata(entry.path().join("index.html"))
                 .await
                 .is_ok_and(|m| m.is_file())
@@ -109,9 +109,9 @@ pub(crate) async fn discover_tools(dir: &Path) -> std::io::Result<Vec<Discovered
                 continue;
             }
             let (modified, size, files) = folder_stats(entry.path()).await?;
-            DiscoveredTool {
+            DiscoveredArtifact {
                 name: file_name,
-                kind: ToolKind::Folder(entry.path()),
+                kind: ArtifactKind::Folder(entry.path()),
                 modified,
                 size,
                 files,
@@ -119,12 +119,12 @@ pub(crate) async fn discover_tools(dir: &Path) -> std::io::Result<Vec<Discovered
         } else if file_type.is_file()
             && let Some(name) = file_name
                 .strip_suffix(".html")
-                .filter(|stem| is_valid_tool_name(stem))
+                .filter(|stem| is_valid_artifact_name(stem))
         {
             let metadata = entry.metadata().await?;
-            DiscoveredTool {
+            DiscoveredArtifact {
                 name: name.to_string(),
-                kind: ToolKind::Page(entry.path()),
+                kind: ArtifactKind::Page(entry.path()),
                 modified: metadata.modified().ok(),
                 size: metadata.len(),
                 files: 1,
@@ -133,16 +133,16 @@ pub(crate) async fn discover_tools(dir: &Path) -> std::io::Result<Vec<Discovered
             continue;
         };
 
-        match tools.iter_mut().find(|t| t.name == found.name) {
-            Some(existing) if matches!(found.kind, ToolKind::Folder(_)) => *existing = found,
+        match artifacts.iter_mut().find(|t| t.name == found.name) {
+            Some(existing) if matches!(found.kind, ArtifactKind::Folder(_)) => *existing = found,
             Some(_) => {}
-            None => tools.push(found),
+            None => artifacts.push(found),
         }
     }
-    Ok(tools)
+    Ok(artifacts)
 }
 
-/// Newest modification time, total size, and file count of a folder tool,
+/// Newest modification time, total size, and file count of a folder artifact,
 /// walking at most [`MAX_FOLDER_FILES`] files and skipping symlinks.
 async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64, usize)> {
     let mut newest: Option<SystemTime> = None;
@@ -171,35 +171,35 @@ async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64
     Ok((newest, size, files))
 }
 
-/// List the tools in `dir` for the web UI, most recently modified first.
+/// List the artifacts in `dir` for the web UI, most recently modified first.
 ///
 /// # Errors
 /// Returns an error if the directory exists but cannot be read.
-pub(crate) async fn list_tools(dir: &Path) -> std::io::Result<Vec<WorkbenchToolSummary>> {
-    let mut tools = Vec::new();
-    for tool in discover_tools(dir).await? {
-        let title = match read_title(&tool.entry_page()).await {
+pub(crate) async fn list_artifacts(dir: &Path) -> std::io::Result<Vec<ArtifactSummary>> {
+    let mut artifacts = Vec::new();
+    for artifact in discover_artifacts(dir).await? {
+        let title = match read_title(&artifact.entry_page()).await {
             Ok(title) => title,
             Err(e) => {
-                tracing::warn!(tool = %tool.name, error = %e, "failed to read workbench tool title");
+                tracing::warn!(artifact = %artifact.name, error = %e, "failed to read workbench artifact title");
                 None
             }
         };
-        tools.push(WorkbenchToolSummary {
-            title: title.unwrap_or_else(|| tool.name.clone()),
-            modified_at: tool
+        artifacts.push(ArtifactSummary {
+            title: title.unwrap_or_else(|| artifact.name.clone()),
+            modified_at: artifact
                 .modified
                 .map_or(DateTime::<Utc>::UNIX_EPOCH, DateTime::<Utc>::from),
-            size: tool.size,
-            name: tool.name,
+            size: artifact.size,
+            name: artifact.name,
         });
     }
-    tools.sort_by(|a, b| {
+    artifacts.sort_by(|a, b| {
         b.modified_at
             .cmp(&a.modified_at)
             .then_with(|| a.name.cmp(&b.name))
     });
-    Ok(tools)
+    Ok(artifacts)
 }
 
 async fn read_title(path: &Path) -> std::io::Result<Option<String>> {
@@ -280,71 +280,71 @@ pub(crate) fn inject_sdk(html: &str) -> String {
     out
 }
 
-/// Why a tool file could not be served.
+/// Why an artifact file could not be served.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ToolFileError {
-    #[error("no workbench tool named {0:?}")]
-    NoSuchTool(String),
-    #[error("workbench tool {tool:?} has no file {path:?}")]
-    NotFound { tool: String, path: String },
+pub(crate) enum ArtifactFileError {
+    #[error("no workbench artifact named {0:?}")]
+    NoSuchArtifact(String),
+    #[error("workbench artifact {artifact:?} has no file {path:?}")]
+    NotFound { artifact: String, path: String },
     #[error(
-        "{path:?} in workbench tool {tool:?} is {size} bytes, over the {MAX_TOOL_FILE_BYTES}-byte limit"
+        "{path:?} in workbench artifact {artifact:?} is {size} bytes, over the {MAX_ARTIFACT_FILE_BYTES}-byte limit"
     )]
     TooLarge {
-        tool: String,
+        artifact: String,
         path: String,
         size: u64,
     },
-    #[error("failed to read {path:?} in workbench tool {tool:?}: {source}")]
+    #[error("failed to read {path:?} in workbench artifact {artifact:?}: {source}")]
     Io {
-        tool: String,
+        artifact: String,
         path: String,
         #[source]
         source: std::io::Error,
     },
 }
 
-/// A tool file ready to serve.
+/// An artifact file ready to serve.
 #[derive(Debug)]
-pub(crate) struct ToolFile {
+pub(crate) struct ArtifactFile {
     pub bytes: Vec<u8>,
     pub content_type: String,
 }
 
-/// Read file `rest` of tool `name` (`""` for the tool's page). HTML gets the
+/// Read file `rest` of artifact `name` (`""` for the artifact's page). HTML gets the
 /// SDK injected.
 ///
-/// `rest` is a `/`-separated path relative to a folder tool. A trailing `/`
+/// `rest` is a `/`-separated path relative to a folder artifact. A trailing `/`
 /// means that directory's `index.html`. Segments that are empty, `.`, `..`,
 /// or start with `.` are refused, and the resolved file must stay inside the
-/// tool's folder after symlinks. A single-page tool has no other files.
+/// artifact's folder after symlinks. A single-page artifact has no other files.
 ///
 /// # Errors
-/// Returns [`ToolFileError`] when the tool or file does not exist, the file
+/// Returns [`ArtifactFileError`] when the artifact or file does not exist, the file
 /// is too large, or it cannot be read.
-pub(crate) async fn read_tool_file(
+pub(crate) async fn read_artifact_file(
     dir: &Path,
     name: &str,
     rest: &str,
-) -> Result<ToolFile, ToolFileError> {
-    let tool = discover_tools(dir)
+) -> Result<ArtifactFile, ArtifactFileError> {
+    let artifact = discover_artifacts(dir)
         .await
         .ok()
-        .and_then(|tools| tools.into_iter().find(|t| t.name == name))
-        .ok_or_else(|| ToolFileError::NoSuchTool(name.to_string()))?;
-    let not_found = || ToolFileError::NotFound {
-        tool: name.to_string(),
+        .and_then(|artifacts| artifacts.into_iter().find(|t| t.name == name))
+        .ok_or_else(|| ArtifactFileError::NoSuchArtifact(name.to_string()))?;
+    let not_found = || ArtifactFileError::NotFound {
+        artifact: name.to_string(),
         path: rest.to_string(),
     };
 
-    let path = match &tool.kind {
-        ToolKind::Page(page) if rest.is_empty() || rest == "index.html" => page.clone(),
-        ToolKind::Page(_) => return Err(not_found()),
-        ToolKind::Folder(root) => resolve_in_folder(root, rest).await.ok_or_else(not_found)?,
+    let path = match &artifact.kind {
+        ArtifactKind::Page(page) if rest.is_empty() || rest == "index.html" => page.clone(),
+        ArtifactKind::Page(_) => return Err(not_found()),
+        ArtifactKind::Folder(root) => resolve_in_folder(root, rest).await.ok_or_else(not_found)?,
     };
 
-    let io_err = |source| ToolFileError::Io {
-        tool: name.to_string(),
+    let io_err = |source| ArtifactFileError::Io {
+        artifact: name.to_string(),
         path: rest.to_string(),
         source,
     };
@@ -352,9 +352,9 @@ pub(crate) async fn read_tool_file(
     if !metadata.is_file() {
         return Err(not_found());
     }
-    if metadata.len() > MAX_TOOL_FILE_BYTES {
-        return Err(ToolFileError::TooLarge {
-            tool: name.to_string(),
+    if metadata.len() > MAX_ARTIFACT_FILE_BYTES {
+        return Err(ArtifactFileError::TooLarge {
+            artifact: name.to_string(),
             path: rest.to_string(),
             size: metadata.len(),
         });
@@ -363,7 +363,7 @@ pub(crate) async fn read_tool_file(
 
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     if mime.essence_str() == "text/html" {
-        Ok(ToolFile {
+        Ok(ArtifactFile {
             bytes: inject_sdk(&String::from_utf8_lossy(&bytes)).into_bytes(),
             content_type: "text/html; charset=utf-8".to_string(),
         })
@@ -375,14 +375,14 @@ pub(crate) async fn read_tool_file(
         } else {
             mime.essence_str().to_string()
         };
-        Ok(ToolFile {
+        Ok(ArtifactFile {
             bytes,
             content_type,
         })
     }
 }
 
-/// Resolve `rest` inside a folder tool, or `None` if it names nothing there.
+/// Resolve `rest` inside a folder artifact, or `None` if it names nothing there.
 async fn resolve_in_folder(root: &Path, rest: &str) -> Option<PathBuf> {
     let mut path = root.to_path_buf();
     let wants_index = rest.is_empty() || rest.ends_with('/');
@@ -401,14 +401,14 @@ async fn resolve_in_folder(root: &Path, rest: &str) -> Option<PathBuf> {
     canonical.starts_with(&canonical_root).then_some(canonical)
 }
 
-/// Why a tool could not be deleted.
+/// Why an artifact could not be deleted.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ToolDeleteError {
-    #[error("invalid tool name {0:?}: use lowercase letters, digits, and single hyphens")]
+pub(crate) enum ArtifactDeleteError {
+    #[error("invalid artifact name {0:?}: use lowercase letters, digits, and single hyphens")]
     InvalidName(String),
-    #[error("workbench tool {0:?} does not exist")]
+    #[error("workbench artifact {0:?} does not exist")]
     NotFound(String),
-    #[error("failed to delete workbench tool {name:?}: {source}")]
+    #[error("failed to delete workbench artifact {name:?}: {source}")]
     Io {
         name: String,
         #[source]
@@ -416,18 +416,21 @@ pub(crate) enum ToolDeleteError {
     },
 }
 
-/// Delete a tool (its page, or its whole folder) and its data files (regular
+/// Delete an artifact (its page, or its whole folder) and its data files (regular
 /// files named `<name>.*`). Returns the entries removed.
 ///
 /// # Errors
-/// Returns [`ToolDeleteError`] if the name is invalid, the tool does not
+/// Returns [`ArtifactDeleteError`] if the name is invalid, the artifact does not
 /// exist, or something cannot be removed. Entries removed before a failure
 /// stay removed.
-pub(crate) async fn delete_tool(dir: &Path, name: &str) -> Result<Vec<String>, ToolDeleteError> {
-    if !is_valid_tool_name(name) {
-        return Err(ToolDeleteError::InvalidName(name.to_string()));
+pub(crate) async fn delete_artifact(
+    dir: &Path,
+    name: &str,
+) -> Result<Vec<String>, ArtifactDeleteError> {
+    if !is_valid_artifact_name(name) {
+        return Err(ArtifactDeleteError::InvalidName(name.to_string()));
     }
-    let io_err = |source| ToolDeleteError::Io {
+    let io_err = |source| ArtifactDeleteError::Io {
         name: name.to_string(),
         source,
     };
@@ -440,7 +443,7 @@ pub(crate) async fn delete_tool(dir: &Path, name: &str) -> Result<Vec<String>, T
         .await
         .is_ok_and(|m| m.is_file());
     if !has_folder && !has_page {
-        return Err(ToolDeleteError::NotFound(name.to_string()));
+        return Err(ArtifactDeleteError::NotFound(name.to_string()));
     }
 
     let mut removed = Vec::new();
@@ -474,9 +477,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_names() {
+    fn artifact_names() {
         for good in ["a", "pricing-explorer", "sdlc-pipeline-v2", "x9"] {
-            assert!(is_valid_tool_name(good), "{good} should be valid");
+            assert!(is_valid_artifact_name(good), "{good} should be valid");
         }
         for bad in [
             "",
@@ -491,7 +494,7 @@ mod tests {
             "space name",
             &"a".repeat(65),
         ] {
-            assert!(!is_valid_tool_name(bad), "{bad:?} should be invalid");
+            assert!(!is_valid_artifact_name(bad), "{bad:?} should be invalid");
         }
     }
 
@@ -556,7 +559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tools_covers_pages_and_folders_newest_first() {
+    async fn list_artifacts_covers_pages_and_folders_newest_first() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         write(&p.join("older.html"), "<title>Older</title>");
@@ -573,10 +576,10 @@ mod tests {
         write(&p.join("graph/index.html"), "<title>Wiki Graph</title>");
         write(&p.join("graph/lib/app.js"), "x");
 
-        let tools = list_tools(p).await.unwrap();
-        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        let artifacts = list_artifacts(p).await.unwrap();
+        let names: Vec<_> = artifacts.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["graph", "older"]);
-        let titles: Vec<_> = tools.iter().map(|t| t.title.as_str()).collect();
+        let titles: Vec<_> = artifacts.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["Wiki Graph", "Older"]);
     }
 
@@ -588,19 +591,19 @@ mod tests {
             &dir.path().join("chart/index.html"),
             "<title>Folder</title>",
         );
-        let tools = discover_tools(dir.path()).await.unwrap();
-        assert_eq!(tools.len(), 1);
+        let artifacts = discover_artifacts(dir.path()).await.unwrap();
+        assert_eq!(artifacts.len(), 1);
         assert!(matches!(
-            tools.first().map(|t| &t.kind),
-            Some(ToolKind::Folder(_))
+            artifacts.first().map(|t| &t.kind),
+            Some(ArtifactKind::Folder(_))
         ));
     }
 
     #[tokio::test]
-    async fn list_tools_missing_dir_is_empty() {
+    async fn list_artifacts_missing_dir_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
-            list_tools(&dir.path().join("nope"))
+            list_artifacts(&dir.path().join("nope"))
                 .await
                 .unwrap()
                 .is_empty()
@@ -616,7 +619,7 @@ mod tests {
         write(&p.join("graph/lib/app.js"), "console.log(1)");
         write(&p.join("graph/docs/index.html"), "<p>docs</p>");
 
-        let page = read_tool_file(p, "single", "").await.unwrap();
+        let page = read_artifact_file(p, "single", "").await.unwrap();
         assert!(
             String::from_utf8(page.bytes)
                 .unwrap()
@@ -624,18 +627,18 @@ mod tests {
         );
         assert_eq!(page.content_type, "text/html; charset=utf-8");
 
-        let index = read_tool_file(p, "graph", "").await.unwrap();
+        let index = read_artifact_file(p, "graph", "").await.unwrap();
         assert!(
             String::from_utf8(index.bytes)
                 .unwrap()
                 .contains("window.residuum")
         );
 
-        let script = read_tool_file(p, "graph", "lib/app.js").await.unwrap();
+        let script = read_artifact_file(p, "graph", "lib/app.js").await.unwrap();
         assert_eq!(script.bytes, b"console.log(1)");
         assert!(script.content_type.contains("javascript"));
 
-        let nested = read_tool_file(p, "graph", "docs/").await.unwrap();
+        let nested = read_artifact_file(p, "graph", "docs/").await.unwrap();
         assert!(
             String::from_utf8(nested.bytes)
                 .unwrap()
@@ -643,12 +646,12 @@ mod tests {
         );
 
         assert!(matches!(
-            read_tool_file(p, "single", "other.js").await,
-            Err(ToolFileError::NotFound { .. })
+            read_artifact_file(p, "single", "other.js").await,
+            Err(ArtifactFileError::NotFound { .. })
         ));
         assert!(matches!(
-            read_tool_file(p, "missing", "").await,
-            Err(ToolFileError::NoSuchTool(_))
+            read_artifact_file(p, "missing", "").await,
+            Err(ArtifactFileError::NoSuchArtifact(_))
         ));
     }
 
@@ -669,8 +672,8 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    read_tool_file(p, "graph", rest).await,
-                    Err(ToolFileError::NotFound { .. })
+                    read_artifact_file(p, "graph", rest).await,
+                    Err(ArtifactFileError::NotFound { .. })
                 ),
                 "{rest} must not resolve"
             );
@@ -689,23 +692,23 @@ mod tests {
         std::os::unix::fs::symlink(&secret, dir.path().join("graph/leak.html")).unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("linked")).unwrap();
 
-        let names: Vec<_> = list_tools(dir.path())
+        let names: Vec<_> = list_artifacts(dir.path())
             .await
             .unwrap()
             .into_iter()
             .map(|t| t.name)
             .collect();
         assert_eq!(names, ["graph"]);
-        assert!(read_tool_file(dir.path(), "leak", "").await.is_err());
+        assert!(read_artifact_file(dir.path(), "leak", "").await.is_err());
         assert!(
-            read_tool_file(dir.path(), "graph", "leak.html")
+            read_artifact_file(dir.path(), "graph", "leak.html")
                 .await
                 .is_err()
         );
     }
 
     #[tokio::test]
-    async fn delete_tool_removes_page_and_data_only() {
+    async fn delete_artifact_removes_page_and_data_only() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         write(&p.join("chart.html"), "x");
@@ -713,26 +716,26 @@ mod tests {
         write(&p.join("chart-two.html"), "x");
         write(&p.join("chartx.json"), "{}");
 
-        let removed = delete_tool(p, "chart").await.unwrap();
+        let removed = delete_artifact(p, "chart").await.unwrap();
         assert_eq!(removed, ["chart.html", "chart.state.json"]);
         assert!(p.join("chart-two.html").exists());
         assert!(p.join("chartx.json").exists());
 
         assert!(matches!(
-            delete_tool(p, "chart").await,
-            Err(ToolDeleteError::NotFound(_))
+            delete_artifact(p, "chart").await,
+            Err(ArtifactDeleteError::NotFound(_))
         ));
     }
 
     #[tokio::test]
-    async fn delete_tool_removes_a_folder_and_its_data() {
+    async fn delete_artifact_removes_a_folder_and_its_data() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         write(&p.join("graph/index.html"), "x");
         write(&p.join("graph/lib/app.js"), "x");
         write(&p.join("graph.state.json"), "{}");
 
-        let removed = delete_tool(p, "graph").await.unwrap();
+        let removed = delete_artifact(p, "graph").await.unwrap();
         assert_eq!(removed, ["graph.state.json", "graph/"]);
         assert!(!p.join("graph").exists());
     }

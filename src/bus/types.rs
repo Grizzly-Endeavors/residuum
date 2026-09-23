@@ -72,7 +72,7 @@ pub enum TopicId {
     Notification(NotifyName),
     /// The user inbox for incoming notifications.
     Inbox,
-    /// Workbench tool file changes.
+    /// Workbench artifact file changes.
     Workbench,
 }
 

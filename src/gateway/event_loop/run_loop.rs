@@ -80,7 +80,7 @@ struct SpawnedHandles {
     workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
-/// Start the workbench tools listener beside the gateway.
+/// Start the workbench artifacts listener beside the gateway.
 async fn start_workbench_listener(
     cfg: &Config,
     workbench_dir: &std::path::Path,
@@ -89,7 +89,7 @@ async fn start_workbench_listener(
     Option<tokio::sync::watch::Sender<bool>>,
 ) {
     // Teams' configured port stays free for it, and so does its default, so
-    // enabling Teams later can't collide with the tools listener.
+    // enabling Teams later can't collide with the artifacts listener.
     let reserved_ports = [
         cfg.teams
             .as_ref()

@@ -1,9 +1,9 @@
-//! Polls the workbench directory and publishes a [`WorkbenchEvent`] whenever a
-//! tool is added, changed, or removed, so open tool views reload live.
+//! Polls the workbench directory and publishes a [`WorkbenchEvent`] whenever an
+//! artifact is added, changed, or removed, so open artifact views reload live.
 //!
-//! Only tools are watched: a page, or any file inside a folder tool. A tool's
-//! saved data sits beside it (`<name>.state.json`) and is not watched, so a
-//! tool saving its state never reloads itself.
+//! Only artifacts are watched: a page, or any file inside a folder artifact. An artifact's
+//! saved data sits beside it (`<name>.state.json`) and is not watched, so an
+//! artifact saving its state never reloads itself.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use crate::bus::{Publisher, WorkbenchEvent, topics};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// What identifies one version of a tool: newest file time, total size, and
+/// What identifies one version of an artifact: newest file time, total size, and
 /// file count (so adding or removing a file registers even when times don't
 /// move).
 type PageStamp = (Option<SystemTime>, u64, usize);
@@ -66,10 +66,15 @@ pub(crate) fn spawn_workbench_watcher(dir: PathBuf, publisher: Publisher) -> Joi
 }
 
 async fn scan(dir: &Path) -> std::io::Result<HashMap<String, PageStamp>> {
-    Ok(super::discover_tools(dir)
+    Ok(super::discover_artifacts(dir)
         .await?
         .into_iter()
-        .map(|tool| (tool.name, (tool.modified, tool.size, tool.files)))
+        .map(|artifact| {
+            (
+                artifact.name,
+                (artifact.modified, artifact.size, artifact.files),
+            )
+        })
         .collect())
 }
 
@@ -132,7 +137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scan_watches_only_tools() {
+    async fn scan_watches_only_artifacts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("chart.html"), "x").unwrap();
         std::fs::write(dir.path().join("chart.state.json"), "{}").unwrap();
@@ -142,7 +147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_file_in_a_folder_tool_changes_its_stamp() {
+    async fn a_new_file_in_a_folder_artifact_changes_its_stamp() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("graph")).unwrap();
         std::fs::write(dir.path().join("graph/index.html"), "x").unwrap();

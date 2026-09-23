@@ -171,11 +171,11 @@ pub enum SessionCommandErrorCode {
     DeliveryFailed,
 }
 
-/// One tool in `GET /api/workbench/tools`.
+/// One artifact in `GET /api/workbench/artifacts`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct WorkbenchToolSummary {
-    /// Tool name, as used in `/workbench/{name}`.
+pub struct ArtifactSummary {
+    /// Artifact name, as used in `/workbench/{name}`.
     pub name: String,
     /// The page's `<title>`, or the name when it has none.
     pub title: String,
@@ -187,27 +187,28 @@ pub struct WorkbenchToolSummary {
     pub size: u64,
 }
 
-/// `GET /api/workbench/info`: where workbench tools are served.
+/// `GET /api/workbench/info`: where workbench artifacts are served.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchInfo {
-    /// Port of the local tools listener, or `null` when it isn't running.
+    /// Port of the local artifacts listener, or `null` when it isn't running.
     pub port: Option<u16>,
-    /// Plain-language reason the tools listener isn't running, when it isn't.
+    /// Plain-language reason the artifacts listener isn't running, when it
+    /// isn't.
     pub unavailable_reason: Option<String>,
     /// Public origins through the cloud relay, when connected to a relay that
     /// announces them.
     pub relay: Option<WorkbenchRelayOrigins>,
 }
 
-/// The web UI's and the tools' public origins through the cloud relay.
+/// The web UI's and the artifacts' public origins through the cloud relay.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchRelayOrigins {
     /// Origin the web UI is served from through the relay.
     pub ui_origin: String,
-    /// Origin the tools are served from through the relay.
-    pub tools_origin: String,
+    /// Origin the artifacts are served from through the relay.
+    pub artifacts_origin: String,
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -446,14 +447,14 @@ pub enum ServerMessage {
         /// Human-readable explanation, suitable to show the user.
         message: String,
     },
-    /// A workbench tool's page was created or modified.
-    WorkbenchToolUpdated {
-        /// Tool name, as used in `/workbench/{name}`.
+    /// A workbench artifact's page was created or modified.
+    ArtifactUpdated {
+        /// Artifact name, as used in `/workbench/{name}`.
         name: String,
     },
-    /// A workbench tool's page was deleted.
-    WorkbenchToolRemoved {
-        /// Tool name, as used in `/workbench/{name}`.
+    /// A workbench artifact's page was deleted.
+    ArtifactRemoved {
+        /// Artifact name, as used in `/workbench/{name}`.
         name: String,
     },
 }

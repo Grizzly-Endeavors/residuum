@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Surface {
-    /// The workbench tools listener, for `{user}.workbench.<relay>` hosts.
+    /// The workbench artifacts listener, for `{user}.workbench.<relay>` hosts.
     Workbench,
 }
 
@@ -27,7 +27,7 @@ pub(crate) enum TunnelFrame {
         /// Public origin of this user's web UI through the relay.
         #[serde(default)]
         origin: Option<String>,
-        /// Public origin of this user's workbench tools through the relay.
+        /// Public origin of this user's workbench artifacts through the relay.
         #[serde(default)]
         workbench_origin: Option<String>,
     },

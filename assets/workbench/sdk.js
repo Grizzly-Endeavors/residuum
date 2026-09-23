@@ -1,8 +1,8 @@
-// Residuum workbench SDK, injected into every HTML page a workbench tool serves.
+// Residuum workbench SDK, injected into every HTML page a workbench artifact serves.
 //
-// Tools run on their own origin, so they cannot call the gateway directly.
+// Artifacts run on their own origin, so they cannot call the gateway directly.
 // Every call is relayed over postMessage to the Residuum web UI hosting the
-// frame, which enforces what tools may reach.
+// frame, which enforces what artifacts may reach.
 (() => {
   "use strict";
   if (window.residuum) return;
@@ -16,7 +16,7 @@
 
   const notEmbedded = () =>
     new Error(
-      "This tool is not open inside Residuum. Open it from the Workbench page to use the Residuum API.",
+      "This artifact is not open inside Residuum. Open it from the Workbench page to use the Residuum API.",
     );
 
   function post(message) {
@@ -114,9 +114,9 @@
     else entry.resolve(msg.result);
   });
 
-  // Esc leaves full view in the Residuum UI. Keys pressed inside the tool
-  // never reach the page around it, so forward Esc unless the tool used it.
-  // Listening on window runs after the tool's own handlers.
+  // Esc leaves full view in the Residuum UI. Keys pressed inside the artifact
+  // never reach the page around it, so forward Esc unless the artifact used it.
+  // Listening on window runs after the artifact's own handlers.
   window.addEventListener("keydown", (event) => {
     if (embedded && event.key === "Escape" && !event.defaultPrevented) post({ kind: "escape" });
   });

@@ -39,7 +39,7 @@ fn next_backoff(current: Duration) -> Duration {
 ///
 /// The tunnel forwards HTTP requests and WebSocket connections from the relay
 /// to the local residuum instance: the main listener on `cfg.local_port`, and
-/// workbench tool requests to `workbench_port` when that listener is running.
+/// workbench artifact requests to `workbench_port` when that listener is running.
 ///
 /// # Errors
 ///
@@ -320,12 +320,12 @@ where
 /// The local port for a request's surface, or why it can't be served.
 ///
 /// A workbench request is never sent to the main listener: that would serve
-/// the web UI and API on the tools' origin.
+/// the web UI and API on the artifacts' origin.
 fn forward_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16, &'static str> {
     match surface {
         None => Ok(targets.main),
         Some(Surface::Workbench) => targets.workbench.ok_or(
-            "Workbench tools aren't available on this Residuum instance right now: its tools listener isn't running. Check Residuum's logs for why it couldn't start.",
+            "Workbench artifacts aren't available on this Residuum instance right now: its artifacts listener isn't running. Check Residuum's logs for why it couldn't start.",
         ),
     }
 }
@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn workbench_requests_only_reach_a_running_tools_listener() {
+    fn workbench_requests_only_reach_a_running_artifacts_listener() {
         let running = ForwardTargets {
             main: 7700,
             workbench: Some(7702),

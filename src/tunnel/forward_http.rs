@@ -16,7 +16,7 @@ const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 ///
 /// Redirects go back to the browser untouched: following them here would
 /// serve the target under the original URL, breaking the page's relative URLs
-/// (a workbench tool at `/{tool}` redirects to `/{tool}/`).
+/// (a workbench artifact at `/{artifact}` redirects to `/{artifact}/`).
 ///
 /// # Errors
 /// Returns an error if the client cannot be built.
