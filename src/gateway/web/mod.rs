@@ -199,6 +199,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn serve_embedded_returns_manifest_content_type() {
+        let resp = serve_embedded("manifest.webmanifest").unwrap();
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap();
+        assert_eq!(
+            ct.to_str().unwrap(),
+            "application/manifest+json",
+            "web app manifest should be served with the manifest content type"
+        );
+    }
+
     #[tokio::test]
     async fn static_handler_serves_app_shell_for_client_routes() {
         for path in [
