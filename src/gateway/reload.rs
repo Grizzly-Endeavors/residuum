@@ -426,6 +426,15 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     reload_providers(rt, new_cfg, http_client.clone()).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
+    // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
+    // /api/model/complete` resolves providers from this reload without the
+    // HTTP router being rebuilt. `.ok()`: the only way this fails is no
+    // receiver remaining, which can't happen while the server is running.
+    rt.model_call_resources_tx
+        .send(Arc::new(
+            crate::gateway::web::model::ModelCallResources::from_spawn_context(&rt.spawn_context),
+        ))
+        .ok();
     reload_web_search(rt, new_cfg).await;
     reload_memory_thresholds(rt, new_cfg).await;
     rt.pulse_enabled = new_cfg.pulse_enabled;
@@ -677,6 +686,9 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let memory_api_state = crate::gateway::web::memory::MemoryApiState {
                 hybrid_searcher: std::sync::Arc::clone(&rt.hybrid_searcher),
             };
+            let model_api_state = crate::gateway::web::model::ModelApiState {
+                resources: rt.model_call_resources_tx.subscribe(),
+            };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 config_api_state,
@@ -684,6 +696,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 tracing_api_state,
                 rt.workbench_serving.clone(),
                 memory_api_state,
+                model_api_state,
             );
 
             let new_handle = crate::gateway::event_loop::spawn_server_with_listener(

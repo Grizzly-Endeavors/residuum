@@ -9,6 +9,7 @@
 pub(crate) const FEATURES: &[&str] = &[
     "workspace-tree",
     "workspace-read-batch",
+    "model-complete",
     "inbox-add",
     "memory-search",
     "artifact-state",

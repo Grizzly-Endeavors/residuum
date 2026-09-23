@@ -245,6 +245,12 @@ pub(crate) struct GatewayRuntime {
     pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,
     pub spawn_context: Arc<SpawnContext>,
+    /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
+    /// every config reload, alongside `spawn_context`, so `POST
+    /// /api/model/complete` resolves providers from the current config
+    /// without the HTTP router being rebuilt.
+    pub model_call_resources_tx:
+        tokio::sync::watch::Sender<Arc<crate::gateway::web::model::ModelCallResources>>,
     // Runtime channels + handles
     /// Bus handle for creating publishers/subscribers.
     pub bus_handle: BusHandle,
