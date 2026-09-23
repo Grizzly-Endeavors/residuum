@@ -1,6 +1,6 @@
 # Workbench API Reference
 
-What a workbench artifact can reach through `residuum.fetch`, `residuum.ask`, `residuum.on`, and `residuum.sessions`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
+What a workbench artifact can reach through `residuum.fetch`, `residuum.ask`, `residuum.on`, `residuum.watch`, and `residuum.sessions`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
 
 ## Context
 
@@ -68,8 +68,22 @@ Paths outside `/api/` (including `/ws` and webhooks) are refused with `400`.
 | `notice` | `message` | A system notice appears. |
 | `session_started`, `session_state_changed`, `session_completed` | `session` or `address`, `run_id`, … | A background session starts, changes state, or finishes. For a session this artifact started, use its handle's `on` instead (see Agent Sessions). |
 | `artifact_updated` / `artifact_removed` | `name` | A workbench artifact page is written or deleted. |
+| `connection` | `state`: `"connected"` \| `"disconnected"` | The web UI's connection to Residuum drops or comes back. Sent by the web UI itself, not Residuum. |
 
-`tool_call` and `tool_result` arrive only while the user has verbose mode on.
+`tool_call` and `tool_result` arrive only while the user has verbose mode on. The change feed's frames arrive through `residuum.watch`, below.
+
+## Change Feed
+
+`residuum.watch(prefix, handler)` follows file changes under a workspace-relative `prefix` and returns a function that stops watching. `""` watches the whole workspace. A prefix that is absolute or contains `..` throws a `TypeError`. Needs the `workspace-watch` feature.
+
+- Prefixes match whole path segments: `"wiki"` covers `wiki` and everything under `wiki/`, never `wikipedia/`. A prefix naming a file covers only that file, and a prefix that doesn't exist yet starts matching once it appears. A change to a folder that contains the prefix (renaming `projects` when watching `projects/alpha`) is delivered too.
+- The handler receives `{ type: "workspace_changed", changes: [{ path, kind }] }` with only the changes under its own prefix, sorted by path. `kind` is `created`, `modified`, or `removed`. Treat `created` and `modified` alike: re-read the path. A rename is `removed` for the old path and `created` for the new one. A folder's `created` or `removed` stands for everything inside it.
+- Changes arrive in batches: a batch closes once the workspace is quiet for 300 ms, or 2 s after its first change while writes continue.
+- `{ type: "workspace_resync", reason }` means changes were missed and the artifact should load what it shows again. `reason` is `"overflow"` (too many changes at once: more than 500 under the artifact's prefixes in one batch, or the system dropped notifications), `"watcher_restarted"`, or `"reconnected"` (the web UI's connection dropped and came back). Every handler receives it.
+- Paths under `.index`, database files and their sidecars, and in-flight atomic-write temporaries never appear. Reading a file never produces a change.
+- The web UI shows an error notice when Residuum can't watch the workspace at all; the artifact then receives no change frames.
+
+Load with `GET /api/workspace/tree`, start watching before that first load, and refresh changed files with one `POST /api/workspace/read` per batch (see the skill's "Keep workspace data current" step).
 
 ## Agent Sessions
 
