@@ -35,6 +35,11 @@ const DEFAULT_REFLECTOR_PROMPT: &str =
 
 const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
 
+/// Default `config/agent-card.json` -- what this agent advertises to other
+/// agents reaching it over A2A. See `docs/systems-usage/a2a.md`.
+const DEFAULT_AGENT_CARD: &str =
+    include_str!("../../assets/workspace-bootstrap/config/agent-card.json");
+
 /// Built-in `introspection` skill, used by the reflection pulse to review
 /// episode memory and deliver suggestions.
 const INTROSPECTION_SKILL_MD: &str =
@@ -121,6 +126,10 @@ const SYSTEM_REFS: &[(&str, &str)] = &[
     (
         "subconscious.md",
         include_str!("../../assets/bundled-skills/residuum-system/references/subconscious.md"),
+    ),
+    (
+        "a2a.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/a2a.md"),
     ),
 ];
 
@@ -230,6 +239,7 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
+    write_if_missing(&layout.agent_card_json(), DEFAULT_AGENT_CARD).await?;
 
     // Write bundled skills
     write_bundled_skills(layout).await?;
@@ -431,6 +441,10 @@ mod tests {
             layout.subconscious_md().exists(),
             "SUBCONSCIOUS.md should exist"
         );
+        assert!(
+            layout.agent_card_json().exists(),
+            "config/agent-card.json should exist"
+        );
         assert!(layout.agent_inbox_dir().exists(), "inbox dir should exist");
         assert!(
             layout.agent_inbox_archive_dir().exists(),
@@ -607,6 +621,19 @@ mod tests {
             layout.skills_dir().join("wiki/SKILL.md").exists(),
             "wiki skill should be bundled"
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_default_agent_card_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let card = crate::a2a::AgentCardFile::load(&layout.agent_card_json()).unwrap();
+        assert!(!card.name.trim().is_empty());
+        assert!(!card.description.trim().is_empty());
+        assert!(card.skills.is_empty(), "default card ships no skills");
     }
 
     #[tokio::test]
