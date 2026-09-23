@@ -133,7 +133,10 @@ impl OllamaClient {
             .into_iter()
             .enumerate()
             .map(|(i, tc)| ToolCall {
-                id: format!("call_{i}"),
+                id: tc
+                    .id
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| format!("call_{i}")),
                 name: tc.function.name,
                 arguments: tc.function.arguments,
             })
@@ -161,7 +164,7 @@ impl InferenceProvider for OllamaClient {
         options: &CompletionOptions,
     ) -> Result<InferenceResponse, InferenceError> {
         let url = format!("{}/api/chat", self.base_url);
-        let ollama_messages: Vec<OllamaMessage> = messages.iter().map(Into::into).collect();
+        let ollama_messages = to_ollama_messages(messages);
         let ollama_tools: Vec<OllamaTool> = tools
             .iter()
             .map(|t| OllamaTool {
@@ -257,33 +260,70 @@ struct OllamaMessage {
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
+    /// Name of the tool a result message answers, so the server can match it
+    /// up without relying on message order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_name: Option<String>,
+    /// ID of the tool call a result message answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     images: Option<Vec<String>>,
 }
 
-impl From<&Message> for OllamaMessage {
-    fn from(msg: &Message) -> Self {
-        Self {
-            role: msg.role.as_str().to_string(),
-            content: (!msg.content.is_empty()).then(|| msg.content.clone()),
-            tool_calls: msg.tool_calls.as_ref().map(|calls| {
-                calls
-                    .iter()
-                    .map(|tc| OllamaToolCall {
-                        function: OllamaFunctionCall {
-                            name: tc.name.clone(),
-                            arguments: tc.arguments.clone(),
-                        },
-                    })
-                    .collect()
-            }),
-            images: if msg.images.is_empty() {
-                None
-            } else {
-                Some(msg.images.iter().map(|img| img.data.clone()).collect())
-            },
-        }
-    }
+/// Convert a full conversation into Ollama's wire format, resolving each
+/// tool-result message's `tool_name` from the most recent earlier assistant
+/// tool call with that id.
+fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
+    // Filled in conversation order rather than up front: ids synthesized when
+    // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
+    // a result must resolve against the calls that preceded it.
+    let mut tool_names_by_id: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+
+    messages
+        .iter()
+        .map(|msg| {
+            if let Some(calls) = &msg.tool_calls {
+                for tc in calls {
+                    tool_names_by_id.insert(&tc.id, &tc.name);
+                }
+            }
+            let tool_call_id = msg
+                .tool_call_id
+                .as_ref()
+                .filter(|id| !id.is_empty())
+                .cloned();
+            let tool_name = tool_call_id
+                .as_deref()
+                .and_then(|id| tool_names_by_id.get(id))
+                .map(|name| (*name).to_string());
+
+            OllamaMessage {
+                role: msg.role.as_str().to_string(),
+                content: (!msg.content.is_empty()).then(|| msg.content.clone()),
+                tool_calls: msg.tool_calls.as_ref().map(|calls| {
+                    calls
+                        .iter()
+                        .map(|tc| OllamaToolCall {
+                            id: Some(tc.id.clone()),
+                            function: OllamaFunctionCall {
+                                name: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                            },
+                        })
+                        .collect()
+                }),
+                tool_name,
+                tool_call_id,
+                images: if msg.images.is_empty() {
+                    None
+                } else {
+                    Some(msg.images.iter().map(|img| img.data.clone()).collect())
+                },
+            }
+        })
+        .collect()
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -301,6 +341,8 @@ struct OllamaFunction {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct OllamaToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
     function: OllamaFunctionCall,
 }
 
@@ -505,7 +547,8 @@ mod tests {
     fn message_conversion() {
         let msg = Message::user("Hello");
 
-        let ollama_msg: OllamaMessage = (&msg).into();
+        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
         assert_eq!(
             ollama_msg.content,
@@ -517,7 +560,8 @@ mod tests {
     #[test]
     fn message_conversion_tool_empty_content_is_none() {
         let msg = Message::tool("", "call_1");
-        let ollama_msg: OllamaMessage = (&msg).into();
+        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "tool", "role should be tool");
         assert!(
             ollama_msg.content.is_none(),
@@ -535,14 +579,15 @@ mod tests {
                 arguments: serde_json::json!({"command": "ls"}),
             }]),
         );
-        let ollama_msg: OllamaMessage = (&msg).into();
+        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "assistant", "role should be assistant");
         assert_eq!(
             ollama_msg.content,
             Some("thinking".to_string()),
             "content should match"
         );
-        let tool_calls = ollama_msg.tool_calls.unwrap();
+        let tool_calls = ollama_msg.tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls.len(), 1, "should have one tool call");
         assert_eq!(
             tool_calls.first().unwrap().function.name,
@@ -550,6 +595,11 @@ mod tests {
             "tool call name should match"
         );
         let serialized = serde_json::to_value(tool_calls.first().unwrap()).unwrap();
+        assert_eq!(
+            serialized.get("id").unwrap(),
+            &serde_json::json!("call_0"),
+            "tool call id should be serialized"
+        );
         assert_eq!(
             serialized
                 .get("function")
@@ -569,14 +619,137 @@ mod tests {
             data: "base64data".to_string(),
         }];
         let msg = Message::user_with_images("look at this", images);
-        let ollama_msg: OllamaMessage = (&msg).into();
+        let ollama_msgs = to_ollama_messages(&[msg]);
+        let ollama_msg = ollama_msgs.first().unwrap();
         assert_eq!(ollama_msg.role, "user", "role should be user");
-        let imgs = ollama_msg.images.unwrap();
+        let imgs = ollama_msg.images.clone().unwrap();
         assert_eq!(imgs.len(), 1, "should have one image");
         assert_eq!(
             imgs.first().unwrap(),
             "base64data",
             "image data should match"
+        );
+    }
+
+    #[test]
+    fn tool_result_carries_tool_call_id_and_resolved_name() {
+        let assistant = Message::assistant(
+            "",
+            Some(vec![ToolCall {
+                id: "call_0".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+        );
+        let tool_result = Message::tool("file1\nfile2", "call_0");
+
+        let ollama_msgs = to_ollama_messages(&[assistant, tool_result]);
+        let result_msg = ollama_msgs.get(1).expect("two messages were converted");
+
+        let serialized = serde_json::to_value(result_msg).unwrap();
+        assert_eq!(
+            serialized.get("tool_call_id").unwrap(),
+            &serde_json::json!("call_0"),
+            "tool_call_id should be present"
+        );
+        assert_eq!(
+            serialized.get("tool_name").unwrap(),
+            &serde_json::json!("bash"),
+            "tool_name should be resolved from the matching assistant tool call"
+        );
+    }
+
+    #[test]
+    fn repeated_synthesized_ids_resolve_to_the_preceding_call() {
+        let call = |name: &str| {
+            Message::assistant(
+                "",
+                Some(vec![ToolCall {
+                    id: "call_0".to_string(),
+                    name: name.to_string(),
+                    arguments: serde_json::json!({}),
+                }]),
+            )
+        };
+        let messages = [
+            call("bash"),
+            Message::tool("ls output", "call_0"),
+            call("read_file"),
+            Message::tool("file contents", "call_0"),
+        ];
+
+        let names: Vec<Option<String>> = to_ollama_messages(&messages)
+            .into_iter()
+            .map(|m| m.tool_name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                None,
+                Some("bash".to_string()),
+                None,
+                Some("read_file".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parallel_tool_results_each_resolve_correct_name() {
+        let assistant = Message::assistant(
+            "",
+            Some(vec![
+                ToolCall {
+                    id: "call_0".to_string(),
+                    name: "bash".to_string(),
+                    arguments: serde_json::json!({"command": "ls"}),
+                },
+                ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "a.txt"}),
+                },
+            ]),
+        );
+        let result_0 = Message::tool("file1\nfile2", "call_0");
+        let result_1 = Message::tool("contents", "call_1");
+
+        let ollama_msgs = to_ollama_messages(&[assistant, result_0, result_1]);
+
+        let serialized_0 =
+            serde_json::to_value(ollama_msgs.get(1).expect("three messages were converted"))
+                .unwrap();
+        let serialized_1 =
+            serde_json::to_value(ollama_msgs.get(2).expect("three messages were converted"))
+                .unwrap();
+        assert_eq!(
+            serialized_0.get("tool_name").unwrap(),
+            &serde_json::json!("bash"),
+            "first result should resolve to bash"
+        );
+        assert_eq!(
+            serialized_1.get("tool_name").unwrap(),
+            &serde_json::json!("read_file"),
+            "second result should resolve to read_file"
+        );
+    }
+
+    #[test]
+    fn tool_correlation_fields_omitted_when_absent() {
+        let msg = Message::user("Hello");
+        let ollama_msgs = to_ollama_messages(&[msg]);
+        let serialized = serde_json::to_value(ollama_msgs.first().unwrap()).unwrap();
+
+        assert!(
+            serialized.get("tool_call_id").is_none(),
+            "tool_call_id should be omitted when absent"
+        );
+        assert!(
+            serialized.get("tool_name").is_none(),
+            "tool_name should be omitted when absent"
+        );
+        assert!(
+            serialized.get("tool_calls").is_none(),
+            "tool_calls should be omitted when absent"
         );
     }
 
@@ -684,6 +857,42 @@ mod tests {
         assert!(
             !response.is_complete(),
             "response with tool calls should not be complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_with_tool_call_id_from_server() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "abc123",
+                        "function": {
+                            "name": "bash",
+                            "arguments": {"command": "ls -la"}
+                        }
+                    }]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let messages = vec![Message::user("List files")];
+
+        let response = client
+            .complete(&messages, &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.tool_calls.first().map(|t| &t.id),
+            Some(&"abc123".to_string()),
+            "tool call id should come from the server response when present"
         );
     }
 
