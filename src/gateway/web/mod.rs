@@ -70,7 +70,13 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
     let workspace_file_router = axum::Router::new()
         .route(
             "/api/workspace/file",
-            get(workspace::api_workspace_file_read).put(workspace::api_workspace_file_write),
+            get(workspace::api_workspace_file_read)
+                .put(workspace::api_workspace_file_write)
+                .delete(workspace::api_workspace_delete),
+        )
+        .route(
+            "/api/workspace/raw",
+            get(workspace::api_workspace_raw_read).put(workspace::api_workspace_raw_write),
         )
         .route_layer(axum::extract::DefaultBodyLimit::max(
             workspace::TEXT_FILE_LIMIT_BYTES,
@@ -110,6 +116,8 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
         .route("/api/workspace/files", get(workspace::api_workspace_files))
+        .route("/api/workspace/dir", post(workspace::api_workspace_mkdir))
+        .route("/api/workspace/move", post(workspace::api_workspace_move))
         .merge(workspace_file_router)
         .route(
             "/api/workspace/tree",
