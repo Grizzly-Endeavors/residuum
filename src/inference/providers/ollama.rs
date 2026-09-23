@@ -272,22 +272,23 @@ struct OllamaMessage {
 }
 
 /// Convert a full conversation into Ollama's wire format, resolving each
-/// tool-result message's `tool_name` from the id-to-name map built along the
-/// way from earlier assistant tool calls.
+/// tool-result message's `tool_name` from the most recent earlier assistant
+/// tool call with that id.
 fn to_ollama_messages(messages: &[Message]) -> Vec<OllamaMessage> {
+    // Filled in conversation order rather than up front: ids synthesized when
+    // the server sends none (`call_0`, `call_1`, ...) repeat across turns, so
+    // a result must resolve against the calls that preceded it.
     let mut tool_names_by_id: std::collections::HashMap<&str, &str> =
         std::collections::HashMap::new();
-    for msg in messages {
-        if let Some(calls) = &msg.tool_calls {
-            for tc in calls {
-                tool_names_by_id.insert(&tc.id, &tc.name);
-            }
-        }
-    }
 
     messages
         .iter()
         .map(|msg| {
+            if let Some(calls) = &msg.tool_calls {
+                for tc in calls {
+                    tool_names_by_id.insert(&tc.id, &tc.name);
+                }
+            }
             let tool_call_id = msg
                 .tool_call_id
                 .as_ref()
@@ -655,6 +656,40 @@ mod tests {
             serialized.get("tool_name").unwrap(),
             &serde_json::json!("bash"),
             "tool_name should be resolved from the matching assistant tool call"
+        );
+    }
+
+    #[test]
+    fn repeated_synthesized_ids_resolve_to_the_preceding_call() {
+        let call = |name: &str| {
+            Message::assistant(
+                "",
+                Some(vec![ToolCall {
+                    id: "call_0".to_string(),
+                    name: name.to_string(),
+                    arguments: serde_json::json!({}),
+                }]),
+            )
+        };
+        let messages = [
+            call("bash"),
+            Message::tool("ls output", "call_0"),
+            call("read_file"),
+            Message::tool("file contents", "call_0"),
+        ];
+
+        let names: Vec<Option<String>> = to_ollama_messages(&messages)
+            .into_iter()
+            .map(|m| m.tool_name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                None,
+                Some("bash".to_string()),
+                None,
+                Some("read_file".to_string())
+            ]
         );
     }
 
