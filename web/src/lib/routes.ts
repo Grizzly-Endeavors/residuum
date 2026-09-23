@@ -22,6 +22,7 @@ const SETTINGS_SECTIONS: Record<SettingsSection, true> = {
   integrations: true,
   mcp: true,
   "agent-keys": true,
+  a2a: true,
 };
 
 const DEFAULT_SECTION: SettingsSection = "runtime";

@@ -14,6 +14,13 @@ import type {
   AgentKeyInfo,
   AgentKeysListResponse,
   SetAgentKeyResponse,
+  A2aStatusResponse,
+  A2aAgentCard,
+  A2aKeyInfo,
+  A2aKeysListResponse,
+  CreateA2aKeyResponse,
+  A2aRemoteAgent,
+  A2aAgentsRawResponse,
   WorkspaceEntry,
   CloudStatusResponse,
   UpdateStatusResponse,
@@ -37,6 +44,7 @@ export const CACHE_KEY_MCP_CATALOG = "GET /api/mcp-catalog";
 export const CACHE_KEY_CONFIG_RAW = "GET /api/config/raw";
 export const CACHE_KEY_PROVIDERS_RAW = "GET /api/providers/raw";
 export const CACHE_KEY_MCP_RAW = "GET /api/mcp/raw";
+export const CACHE_KEY_A2A_AGENTS_RAW = "GET /api/a2a/agents/raw";
 
 // ── Error class + fetch helpers ─────────────────────────────────────
 
@@ -49,6 +57,51 @@ export class ApiError extends Error {
   ) {
     super(`${status} ${statusText}: ${body}`);
     this.name = "ApiError";
+  }
+}
+
+/**
+ * The validation result a raw-file PUT reports through a 400. Those
+ * endpoints answer invalid input with `400 {valid: false, error}`, and
+ * `apiFetch` throws on any non-2xx, so callers would otherwise only ever see
+ * a generic failure instead of the validation message.
+ */
+export function validationFromApiError(err: unknown): ValidateResponse | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  try {
+    const parsed: unknown = JSON.parse(err.body);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
+    ) {
+      return { valid: false, error: parsed.error };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function putValidated(
+  path: string,
+  contentType: string,
+  body: string,
+  cacheKey: string,
+): Promise<ValidateResponse> {
+  try {
+    return await apiFetch<ValidateResponse>(path, {
+      method: "PUT",
+      headers: { "Content-Type": contentType },
+      body,
+    });
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(cacheKey);
   }
 }
 
@@ -219,13 +272,7 @@ export async function fetchConfigRaw(): Promise<string> {
 }
 
 export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/config/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
-  });
-  invalidate(CACHE_KEY_CONFIG_RAW);
-  return result;
+  return putValidated("/api/config/raw", "text/plain", toml, CACHE_KEY_CONFIG_RAW);
 }
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
@@ -241,13 +288,7 @@ export async function fetchProvidersRaw(): Promise<string> {
 }
 
 export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/providers/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
-  });
-  invalidate(CACHE_KEY_PROVIDERS_RAW);
-  return result;
+  return putValidated("/api/providers/raw", "text/plain", toml, CACHE_KEY_PROVIDERS_RAW);
 }
 
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
@@ -263,13 +304,7 @@ export async function fetchMcpRaw(): Promise<string> {
 }
 
 export async function putMcpRaw(json: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/mcp/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: json,
-  });
-  invalidate(CACHE_KEY_MCP_RAW);
-  return result;
+  return putValidated("/api/mcp/raw", "application/json", json, CACHE_KEY_MCP_RAW);
 }
 
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */
@@ -312,6 +347,83 @@ export async function deleteAgentKey(name: string): Promise<void> {
   await apiFetchText(`/api/agent-keys/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
+}
+
+// ── A2A API wrappers ──────────────────────────────────────────────────
+
+/** Live A2A status. Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchA2aStatus(): Promise<A2aStatusResponse> {
+  return apiFetch<A2aStatusResponse>("/api/a2a/status");
+}
+
+/**
+ * The Agent Card as currently served. Throws `ApiError` — including a `503`
+ * (`status` on the error) when the workspace agent card file is invalid,
+ * whose body is the plain-language reason.
+ */
+export async function fetchA2aCard(): Promise<A2aAgentCard> {
+  return apiFetch<A2aAgentCard>("/api/a2a/card");
+}
+
+/** Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchA2aKeys(): Promise<A2aKeyInfo[]> {
+  const data = await apiFetch<A2aKeysListResponse>("/api/a2a/keys");
+  return data.keys;
+}
+
+export async function createA2aKey(
+  name: string,
+  description: string,
+): Promise<CreateA2aKeyResponse> {
+  return apiFetch<CreateA2aKeyResponse>("/api/a2a/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description: description || undefined }),
+  });
+}
+
+export async function revokeA2aKey(name: string): Promise<void> {
+  await apiFetchText(`/api/a2a/keys/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Remote agents from `config/a2a.json` plus any discovered siblings.
+ * Throws `ApiError` on failure; the caller surfaces it.
+ */
+export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
+  return apiFetch<A2aRemoteAgent[]>("/api/a2a/agents");
+}
+
+export async function fetchA2aAgentsRaw(): Promise<string> {
+  return cachedFetch(CACHE_KEY_A2A_AGENTS_RAW, async () => {
+    const data = await apiFetch<A2aAgentsRawResponse>("/api/a2a/agents/raw");
+    return data.content;
+  });
+}
+
+/**
+ * Save `config/a2a.json`. Unlike the config/providers/mcp raw editors, a
+ * validation failure (`400`) is reported as `{ valid: false, error }` rather
+ * than thrown, so the editor can show the reason inline. Any other failure
+ * (network, `5xx`) still throws `ApiError` for the caller to surface.
+ */
+export async function putA2aAgentsRaw(content: string): Promise<ValidateResponse> {
+  try {
+    await apiFetchText("/api/a2a/agents/raw", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    return { valid: true };
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(CACHE_KEY_A2A_AGENTS_RAW);
+  }
 }
 
 // ── Agent sessions API wrappers ─────────────────────────────────────

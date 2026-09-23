@@ -24,6 +24,8 @@ interface MockState {
   mode: "setup" | "running";
   secrets: Map<string, string>;
   agentKeys: Map<string, { value: string; description: string; created_by: "user" | "agent" }>;
+  a2aKeys: Map<string, { description: string; created_at: string }>;
+  a2aAgentsJson: string;
   configToml: string;
   providersToml: string;
   mcpJson: string;
@@ -533,6 +535,14 @@ function createState(): MockState {
         },
       ],
     ]),
+    a2aKeys: new Map([
+      ["laptop", { description: "My other instance, before siblings exist", created_at: new Date(Date.now() - 86400000 * 3).toISOString() }],
+    ]),
+    a2aAgentsJson: JSON.stringify(
+      { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
+      null,
+      2,
+    ) + "\n",
     configToml: loadAsset("config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
     mcpJson: loadAsset("mcp.example.json"),
@@ -564,6 +574,7 @@ function createState(): MockState {
       config: [
         { name: "mcp.json", entry_type: "file", size: 1567 },
         { name: "channels.toml", entry_type: "file", size: 834 },
+        { name: "agent-card.json", entry_type: "file", size: 356 },
       ],
       wiki: [
         { name: "index.md", entry_type: "file", size: 512 },
@@ -605,6 +616,22 @@ function createState(): MockState {
         '{\n  "servers": {\n    "filesystem": {\n      "command": "mcp-filesystem",\n      "args": ["--root", "/home/user/projects"]\n    }\n  }\n}',
       "config/channels.toml":
         '[web]\nenabled = true\nport = 3001\n\n[discord]\nenabled = false\ntoken_ref = "secret:discord_token"\n\n[telegram]\nenabled = true\ntoken_ref = "secret:telegram_token"\nchat_id = "123456789"\n',
+      "config/agent-card.json": JSON.stringify(
+        {
+          name: "Residuum agent",
+          description: "A personal AI agent, reachable over the Agent2Agent (A2A) protocol.",
+          skills: [
+            {
+              id: "research",
+              name: "Research",
+              description: "Look into a topic across the web and memory, then report back.",
+              tags: ["research"],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
       "wiki/index.md":
         '---\nokf_version: "0.1"\n---\n\n# Wiki Index\n\n- [projects](projects/index.md) — active projects and their status\n',
       "wiki/log.md":
@@ -1407,6 +1434,113 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
           return;
         }
         json(res, 200, { deleted: true });
+        return;
+      }
+
+      // ── A2A ────────────────────────────────────────────────────────────
+      if (path === "/api/a2a/status" && method === "GET") {
+        json(res, 200, {
+          enabled: true,
+          port: 7702,
+          visibility: "public",
+          public_url: null,
+          listener_running: true,
+          card_error: null,
+        });
+        return;
+      }
+
+      if (path === "/api/a2a/card" && method === "GET") {
+        const card = JSON.parse(state.workspaceFileContents["config/agent-card.json"] ?? "{}");
+        json(res, 200, {
+          name: card.name ?? "Residuum agent",
+          description: card.description ?? "",
+          skills: card.skills ?? [],
+        });
+        return;
+      }
+
+      if (path === "/api/a2a/keys" && method === "GET") {
+        const keys = [...state.a2aKeys.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, k]) => ({ name, description: k.description, created_at: k.created_at }));
+        json(res, 200, { keys });
+        return;
+      }
+
+      if (path === "/api/a2a/keys" && method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        if (!/^[a-z][a-z0-9_]{0,63}$/.test(body.name)) {
+          json(res, 400, { error: `caller key name '${body.name}' is invalid` });
+          return;
+        }
+        if (state.a2aKeys.has(body.name)) {
+          json(res, 409, { error: `an A2A caller key named '${body.name}' already exists` });
+          return;
+        }
+        state.a2aKeys.set(body.name, {
+          description: body.description ?? "",
+          created_at: new Date().toISOString(),
+        });
+        json(res, 200, {
+          name: body.name,
+          token: `rsdm_a2a_mock${Math.random().toString(36).slice(2, 10)}`,
+        });
+        return;
+      }
+
+      const a2aKeyDelete = path.match(/^\/api\/a2a\/keys\/(.+)$/);
+      if (a2aKeyDelete && method === "DELETE") {
+        const name = decodeURIComponent(a2aKeyDelete[1]);
+        if (!state.a2aKeys.delete(name)) {
+          json(res, 404, { error: `no A2A caller key named '${name}'` });
+          return;
+        }
+        json(res, 200, { revoked: true });
+        return;
+      }
+
+      if (path === "/api/a2a/agents" && method === "GET") {
+        json(res, 200, [
+          {
+            name: "research-buddy",
+            url: "https://example.com/a2a/research-buddy",
+            source: "config",
+            status: "ok",
+            error: null,
+            card: {
+              name: "Research Buddy",
+              description: "Digs through papers and reports back with sources.",
+              skills: [{ id: "lit-review", name: "Literature review" }],
+            },
+          },
+          {
+            name: "laptop",
+            url: "https://example.com/a2a/laptop",
+            source: "sibling",
+            status: "pending",
+            error: null,
+            card: null,
+          },
+        ]);
+        return;
+      }
+
+      if (path === "/api/a2a/agents/raw" && method === "GET") {
+        json(res, 200, { content: state.a2aAgentsJson });
+        return;
+      }
+
+      if (path === "/api/a2a/agents/raw" && method === "PUT") {
+        const body = JSON.parse(await readBody(req));
+        try {
+          JSON.parse(body.content);
+        } catch (e) {
+          json(res, 400, { error: `invalid JSON: ${e instanceof Error ? e.message : e}` });
+          return;
+        }
+        state.a2aAgentsJson = body.content;
+        json(res, 200, {});
         return;
       }
 
