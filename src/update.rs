@@ -190,12 +190,12 @@ fn parse_calver(v: &str) -> Option<(u32, u32, u32)> {
 /// or binary replacement fails.
 #[tracing::instrument(skip_all, fields(version = %version))]
 pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
-    let platform = detect_platform()?;
+    let asset = release_asset_name(std::env::consts::OS, std::env::consts::ARCH)?;
     let url = format!(
-        "https://github.com/grizzly-endeavors/residuum/releases/download/{version}/residuum-{platform}"
+        "https://github.com/grizzly-endeavors/residuum/releases/download/{version}/{asset}"
     );
 
-    tracing::info!(version = %version, %platform, "downloading update binary");
+    tracing::info!(version = %version, %asset, "downloading update binary");
 
     let client = http_client()?;
 
@@ -207,7 +207,7 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
 
     if !response.status().is_success() {
         bail!(
-            "update binary download returned HTTP {} — asset may not exist for {platform}",
+            "update binary download returned HTTP {} — release asset {asset} may not exist for {version}",
             response.status()
         );
     }
@@ -296,33 +296,23 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Detect the current platform in the format used by release asset names.
+/// Name of the release asset built for `os`/`arch` (values of
+/// `std::env::consts::OS`/`ARCH`), exactly as `release.yml` uploads it.
 ///
 /// # Errors
 ///
-/// Returns an error for unsupported OS/architecture combinations.
-fn detect_platform() -> anyhow::Result<String> {
-    let os = match std::env::consts::OS {
-        "linux" => "linux",
-        "macos" => "darwin",
-        "windows" => "windows",
-        other => {
-            bail!("unsupported operating system for self-update: {other}");
+/// Returns an error for OS/architecture combinations that have no release build.
+fn release_asset_name(os: &str, arch: &str) -> anyhow::Result<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok("residuum-linux-x86_64"),
+        ("linux", "aarch64") => Ok("residuum-linux-aarch64"),
+        ("macos", "aarch64") => Ok("residuum-macos-aarch64"),
+        ("windows", "x86_64") => Ok("residuum-windows-x86_64.exe"),
+        ("macos", "x86_64") => bail!("macOS x86_64 (Intel) is not supported — Apple Silicon only"),
+        (os, arch) => {
+            bail!("no release build exists for {os} on {arch}, so self-update isn't available")
         }
-    };
-
-    let arch = match std::env::consts::ARCH {
-        arch @ ("x86_64" | "aarch64") => arch,
-        other => {
-            bail!("unsupported architecture for self-update: {other}");
-        }
-    };
-
-    if os == "darwin" && arch == "x86_64" {
-        bail!("macOS x86_64 (Intel) is not supported — Apple Silicon only");
     }
-
-    Ok(format!("{os}-{arch}"))
 }
 
 #[cfg(test)]
@@ -408,18 +398,37 @@ mod tests {
     }
 
     #[test]
-    fn detect_platform_succeeds_on_current_platform() {
-        let result = detect_platform();
+    fn release_asset_name_matches_every_release_build() {
+        // The names must match what the release workflow uploads, or
+        // self-update downloads a URL that 404s.
+        let release_workflow = include_str!("../.github/workflows/release.yml");
+        for (os, arch) in [
+            ("linux", "x86_64"),
+            ("linux", "aarch64"),
+            ("macos", "aarch64"),
+            ("windows", "x86_64"),
+        ] {
+            let asset = release_asset_name(os, arch).unwrap();
+            assert!(
+                release_workflow.contains(&format!("artifact: {asset}\n")),
+                "{os}/{arch} maps to {asset}, which release.yml does not build"
+            );
+        }
+    }
+
+    #[test]
+    fn release_asset_name_rejects_platforms_without_a_build() {
+        assert!(release_asset_name("macos", "x86_64").is_err());
+        assert!(release_asset_name("freebsd", "x86_64").is_err());
+        assert!(release_asset_name("linux", "riscv64").is_err());
+    }
+
+    #[test]
+    fn release_asset_name_supports_the_current_platform() {
+        let result = release_asset_name(std::env::consts::OS, std::env::consts::ARCH);
         assert!(
             result.is_ok(),
-            "detect_platform failed on current platform: {result:?}"
-        );
-        let platform = result.unwrap();
-        assert!(
-            platform == "linux-x86_64"
-                || platform == "linux-aarch64"
-                || platform == "darwin-aarch64",
-            "unexpected platform string: {platform}"
+            "no release asset for this platform: {result:?}"
         );
     }
 }
