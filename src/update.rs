@@ -413,8 +413,9 @@ mod tests {
             ("windows", "x86_64"),
         ] {
             let asset = release_asset_name(os, arch).unwrap();
+            let expected = format!("artifact: {asset}");
             assert!(
-                release_workflow.contains(&format!("artifact: {asset}\n")),
+                release_workflow.lines().any(|line| line.trim() == expected),
                 "{os}/{arch} maps to {asset}, which release.yml does not build"
             );
         }
