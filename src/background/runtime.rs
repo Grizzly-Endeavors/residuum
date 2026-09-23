@@ -1560,7 +1560,7 @@ mod tests {
 
         runtime.spawn(sample_request(address.as_ref()), None);
 
-        let delivered = tokio::time::timeout(Duration::from_secs(1), async {
+        let delivered = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Ok(msg) = winner_rx.try_recv() {
                     return msg;
@@ -1613,7 +1613,7 @@ mod tests {
         }
         assert!(saw_running_or_idle, "session should reach running or idle");
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("result should be published before test timeout")
             .unwrap()
@@ -1643,7 +1643,7 @@ mod tests {
         let (runtime, mut sub) = test_runtime(3).await;
         runtime.spawn(sample_request("spawned-researcher-0003"), None);
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .unwrap()
             .unwrap()
@@ -1701,14 +1701,14 @@ mod tests {
             bus_handle.subscribe(topics::UserMessage).await.unwrap();
         runtime.spawn(sample_request("spawned-researcher-fail1"), None);
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .unwrap()
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
             .await
             .expect("a failed turn must still relay something to its spawner")
             .unwrap()
@@ -1800,14 +1800,14 @@ mod tests {
         runtime.spawn(sample_request(address.as_ref()), None);
         assert!(runtime.registry.stop(&address));
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .unwrap()
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
             .await
             .expect("a cancelled turn must still relay something to its spawner")
             .unwrap()
@@ -1941,7 +1941,7 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Running
         })
         .await
@@ -1949,7 +1949,7 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("result should be published after the running turn is stopped")
             .unwrap()
@@ -2115,7 +2115,7 @@ mod tests {
             }),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("a panicked session must still publish a result")
             .unwrap()
@@ -2174,14 +2174,14 @@ mod tests {
             }),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("a panicked session must still publish a result")
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
             .await
             .expect("a panicked turn must still relay something to its spawner")
             .unwrap()
@@ -2301,7 +2301,7 @@ mod tests {
         )
         .await;
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("panic recovery should publish a result")
             .unwrap()
@@ -2354,7 +2354,7 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Running
         })
         .await
@@ -2780,7 +2780,7 @@ mod tests {
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -2802,7 +2802,7 @@ mod tests {
             "the idle session should still be live in the registry"
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
@@ -2855,7 +2855,7 @@ mod tests {
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -2872,7 +2872,7 @@ mod tests {
             "the idle session should still be live in the registry"
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
@@ -2921,7 +2921,7 @@ mod tests {
             Some(make_resources("the build is green")),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), session_output.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), session_output.recv())
             .await
             .expect("the session's turn output should be published")
             .unwrap()

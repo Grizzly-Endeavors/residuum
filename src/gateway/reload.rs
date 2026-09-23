@@ -682,6 +682,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 session_store: std::sync::Arc::clone(&rt.session_store),
                 agent_messenger: std::sync::Arc::clone(&rt.agent_messenger),
                 skill_state: std::sync::Arc::clone(&rt.skill_state),
+                workspace_watch_health: rt.workspace_watch_health.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
                 config_dir: rt.config_dir.clone(),

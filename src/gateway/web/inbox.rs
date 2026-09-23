@@ -389,6 +389,10 @@ mod tests {
                 crate::skills::SkillIndex::default(),
                 vec![],
             ),
+            workspace_watch_health: tokio::sync::watch::channel(
+                crate::workspace::watch::WatchHealth::Native,
+            )
+            .1,
         }
     }
 

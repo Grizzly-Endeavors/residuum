@@ -53,6 +53,8 @@ fd-lock = "4"
 # A2A protocol (server-side foundation: types, JSON-RPC/REST routers, task store)
 a2a = { package = "a2a-lf", version = "0.3.1", default-features = false }
 a2a-server = { package = "a2a-server-lf", version = "0.4.4", default-features = false }
+# Workspace change feed (OS file notifications)
+notify = "8.2"
 
 # Logging
 tracing = "0.1"

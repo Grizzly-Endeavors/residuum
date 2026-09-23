@@ -8,8 +8,13 @@
 // that decides what an artifact may reach: most of the API is open, but
 // routes that change secrets, credentials, raw config, or Residuum's own
 // lifecycle are refused.
+//
+// The bridge also carries the workspace change feed: it hands the artifact's
+// watched prefixes to the WebSocket coordinator, delivers only the changes
+// under them, and tells the artifact when the connection drops and returns.
 
-import type { ServerMessage } from "./types";
+import type { ServerMessage, WorkspaceChange } from "./types";
+import { changesUnder, normalizeWatchPrefix } from "./workspace-watch";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
 export const BRIDGE_TAG = "residuum-workbench";
@@ -156,12 +161,32 @@ interface SubscribeRequest {
   kind: "subscribe";
 }
 
+/** Replace the artifact's watched workspace prefixes. */
+interface WatchRequest {
+  kind: "watch";
+  id: string;
+  prefixes: string[];
+}
+
+/** The SDK started in a new document; anything the previous one set up is gone. */
+interface ReadyRequest {
+  kind: "ready";
+}
+
 /** The user pressed Esc in the artifact and the artifact didn't handle it. */
 interface EscapeRequest {
   kind: "escape";
 }
 
-type ArtifactRequest = FetchRequest | SubscribeRequest | EscapeRequest;
+type ArtifactRequest =
+  | FetchRequest
+  | SubscribeRequest
+  | WatchRequest
+  | ReadyRequest
+  | EscapeRequest;
+
+/** Most prefixes one artifact may watch; the gateway refuses more. */
+const MAX_WATCH_PREFIXES = 256;
 
 /** A relayed response, rebuilt into a `Response` by the SDK. */
 export interface RelayedResponse {
@@ -213,6 +238,17 @@ export function parseArtifactRequest(data: unknown): ArtifactRequest | null {
       return null;
     case "subscribe":
       return { kind: "subscribe" };
+    case "watch":
+      if (
+        typeof data.id === "string" &&
+        Array.isArray(data.prefixes) &&
+        data.prefixes.every((p) => typeof p === "string")
+      ) {
+        return { kind: "watch", id: data.id, prefixes: data.prefixes };
+      }
+      return null;
+    case "ready":
+      return { kind: "ready" };
     case "escape":
       return { kind: "escape" };
     default:
@@ -304,6 +340,10 @@ export interface BridgeDeps {
   fetch: typeof fetch;
   /** Observe server frames; returns a function that stops observing. */
   onFrame: (listener: (msg: ServerMessage) => void) => () => void;
+  /** Observe the socket connecting and disconnecting; returns a function that stops observing. */
+  onConnectionChange: (listener: (connected: boolean) => void) => () => void;
+  /** Set the workspace prefixes the connection watches for this artifact. `[]` stops watching. */
+  watchWorkspace: (prefixes: readonly string[]) => void;
   /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
   onEscape: () => void;
   /** Waits before a retry. Defaults to a real timer; injectable for tests. */
@@ -312,7 +352,14 @@ export interface BridgeDeps {
 
 export class WorkbenchBridge {
   private subscribed = false;
+  /** The artifact's watched workspace prefixes, normalized. */
+  private watched: string[] = [];
+  /** Whether the current document's SDK announced itself since the last frame load. */
+  private readySinceLoad = false;
+  /** Whether the socket dropped since the artifact last had a live connection. */
+  private missedChanges = false;
   private stopObserving: (() => void) | null = null;
+  private stopObservingConnection: (() => void) | null = null;
   private readonly requests = new ConcurrencyLimiter(MAX_CONCURRENT_REQUESTS);
   private readonly modelCalls = new ConcurrencyLimiter(MAX_CONCURRENT_MODEL_CALLS);
   /** Abort controllers for this frame's in-flight model calls, keyed by request id. */
@@ -329,11 +376,13 @@ export class WorkbenchBridge {
     this.sleep = deps.sleep ?? defaultSleep;
   }
 
-  /** Start forwarding server frames to subscribed artifacts. */
+  /** Start forwarding server frames to subscribed and watching artifacts. */
   start(): void {
     this.stopObserving ??= this.deps.onFrame((frame) => {
-      // Keepalive pongs are transport noise, not events an artifact can act on.
-      if (this.subscribed && frame.type !== "pong") this.post({ kind: "event", frame });
+      this.forwardFrame(frame);
+    });
+    this.stopObservingConnection ??= this.deps.onConnectionChange((connected) => {
+      this.connectionChanged(connected);
     });
   }
 
@@ -341,7 +390,9 @@ export class WorkbenchBridge {
   stop(): void {
     this.stopObserving?.();
     this.stopObserving = null;
-    this.subscribed = false;
+    this.stopObservingConnection?.();
+    this.stopObservingConnection = null;
+    this.resetDocument();
     this.cancelModelCalls();
   }
 
@@ -356,11 +407,61 @@ export class WorkbenchBridge {
   }
 
   /**
-   * The frame loaded a new document (a reload, or the artifact navigated its
-   * frame). It must subscribe again before it receives frames.
+   * The frame finished loading a document (a reload, or the artifact
+   * navigated its frame). A document with the SDK announced itself while it
+   * loaded, which already reset the bridge before it subscribed; any other
+   * document starts with nothing subscribed or watched.
    */
   documentChanged(): void {
+    if (!this.readySinceLoad) this.resetDocument();
+    this.readySinceLoad = false;
+  }
+
+  /** Forget what the previous document subscribed to and watched. */
+  private resetDocument(): void {
     this.subscribed = false;
+    this.setWatched([]);
+  }
+
+  private setWatched(prefixes: string[]): void {
+    if (prefixes.length === 0 && this.watched.length === 0) return;
+    this.watched = prefixes;
+    this.deps.watchWorkspace(prefixes);
+  }
+
+  private forwardFrame(frame: ServerMessage): void {
+    if (frame.type === "workspace_changed") {
+      this.deliverChanges(frame.changes);
+    } else if (frame.type === "workspace_resync") {
+      if (this.watched.length > 0) this.post({ kind: "event", frame });
+    } else if (frame.type !== "workspace_watch_unavailable" && frame.type !== "pong") {
+      // The web UI shows its own notice when live updates are off, and
+      // keepalive pongs are transport noise, not events an artifact can act on.
+      if (this.subscribed) this.post({ kind: "event", frame });
+    }
+  }
+
+  /** Deliver the changes under the artifact's watched prefixes, if any. */
+  private deliverChanges(changes: WorkspaceChange[]): void {
+    if (this.watched.length === 0) return;
+    const matching = changesUnder(changes, this.watched);
+    if (matching.length === 0) return;
+    this.post({ kind: "event", frame: { type: "workspace_changed", changes: matching } });
+  }
+
+  /**
+   * Tell a listening artifact the socket's state. Changes made while it was
+   * down are lost, so a watching artifact is told to resync once it's back.
+   */
+  private connectionChanged(connected: boolean): void {
+    if (!connected) this.missedChanges = true;
+    if (!this.subscribed && this.watched.length === 0) return;
+    const state = connected ? "connected" : "disconnected";
+    this.post({ kind: "event", frame: { type: "connection", state } });
+    if (connected && this.missedChanges && this.watched.length > 0) {
+      this.post({ kind: "event", frame: { type: "workspace_resync", reason: "reconnected" } });
+    }
+    if (connected) this.missedChanges = false;
   }
 
   /**
@@ -374,8 +475,15 @@ export class WorkbenchBridge {
     if (request === null) return;
 
     switch (request.kind) {
+      case "ready":
+        this.resetDocument();
+        this.readySinceLoad = true;
+        return;
       case "subscribe":
         this.subscribed = true;
+        return;
+      case "watch":
+        this.handleWatch(request);
         return;
       case "escape":
         this.deps.onEscape();
@@ -384,6 +492,28 @@ export class WorkbenchBridge {
         await this.handleFetch(request);
         return;
     }
+  }
+
+  private handleWatch(request: WatchRequest): void {
+    if (request.prefixes.length > MAX_WATCH_PREFIXES) {
+      this.reply(request.id, {
+        error: `An artifact can watch at most ${MAX_WATCH_PREFIXES} paths at once.`,
+      });
+      return;
+    }
+    const prefixes = new Set<string>();
+    for (const prefix of request.prefixes) {
+      const normalized = normalizeWatchPrefix(prefix);
+      if (normalized === null) {
+        this.reply(request.id, {
+          error: `Can't watch "${prefix}": watch paths are relative to the workspace, like "wiki", and can't contain "..".`,
+        });
+        return;
+      }
+      prefixes.add(normalized);
+    }
+    this.setWatched([...prefixes].sort());
+    this.reply(request.id, { result: null });
   }
 
   private async handleFetch(request: FetchRequest): Promise<void> {

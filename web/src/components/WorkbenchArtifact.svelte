@@ -53,6 +53,10 @@
       origin: window.location.origin,
       fetch: (input, init) => window.fetch(input, init),
       onFrame: (listener) => ws.onFrame(listener),
+      onConnectionChange: (listener) => ws.onConnectionChange(listener),
+      watchWorkspace: (prefixes) => {
+        ws.watchWorkspace(prefixes);
+      },
       onEscape: () => {
         if (full) onSetFull(false);
       },

@@ -120,6 +120,7 @@ mod gateway_integration {
             &bus,
             ep.clone(),
             file_registry,
+            tokio::sync::watch::channel(residuum::workspace::watch::WatchSet::default()).1,
         )
         .await
         .unwrap();
@@ -310,7 +311,7 @@ mod gateway_integration {
                     }
                 }
                 // SetVerbose (client-side), Reload, ServerCommand, InboxAdd,
-                // Cancel, and the session commands are not handled in the
+                // Cancel, the session commands, and workspace watching are not handled in the
                 // test stub
                 ClientMessage::SetVerbose { .. }
                 | ClientMessage::Reload
@@ -318,7 +319,8 @@ mod gateway_integration {
                 | ClientMessage::InboxAdd { .. }
                 | ClientMessage::Cancel { .. }
                 | ClientMessage::SessionSendMessage { .. }
-                | ClientMessage::SessionStop { .. } => {}
+                | ClientMessage::SessionStop { .. }
+                | ClientMessage::WatchWorkspace { .. } => {}
             }
         }
 

@@ -263,6 +263,12 @@ export class FeedStore {
       case "artifact_removed":
         // Workbench live reload belongs to the workbench views.
         break;
+
+      case "workspace_changed":
+      case "workspace_resync":
+      case "workspace_watch_unavailable":
+        // The change feed belongs to the open artifact and its bridge.
+        break;
     }
   }
 

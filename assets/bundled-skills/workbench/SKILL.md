@@ -5,7 +5,7 @@ description: Build interactive artifacts the user opens in the Residuum web UI �
 
 # Workbench
 
-The workbench holds artifacts you build for the user: each artifact is one HTML page or a folder of files, shown in the web UI at `/workbench/<name>`. An artifact can read Residuum's API, save its own data, stream live events, make one-shot calls to a small model, and run agent sessions whose results come back to the page. This skill does not cover files meant for download or chat attachments; send those as normal files.
+The workbench holds artifacts you build for the user: each artifact is one HTML page or a folder of files, shown in the web UI at `/workbench/<name>`. An artifact can read Residuum's API, save its own data, stay current as workspace files change, stream live events, make one-shot calls to a small model, and run agent sessions whose results come back to the page. This skill does not cover files meant for download or chat attachments; send those as normal files.
 
 ## When to Use
 
@@ -40,7 +40,41 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 
    Binary data (an uploaded image, a rendered chart export) goes through `/api/workspace/raw` instead: `PUT` with an `ArrayBuffer`, typed array, or `Blob` body writes it unchanged, and `GET` reads it back with a guessed `Content-Type`. Delete, create a directory, or move/rename a file with `DELETE /api/workspace/file`, `POST /api/workspace/dir`, and `POST /api/workspace/move` — see `references/api.md` for their exact contracts.
 
-5. **Tell the user where it is:** name the artifact's title and say it's in the web UI under Workbench (`/workbench/<name>`). If you know the address they use for the web UI, give the full link. The full view button (or `F`) lets the artifact fill the window. An open artifact reloads by itself when you save the file, so after an edit, say what changed rather than asking them to refresh.
+5. **Keep workspace data current** when the artifact shows files that change (wiki pages, notes, inbox items, anything you or a background session edit): load the folder once with `GET /api/workspace/tree`, then follow it with `residuum.watch` and refresh only the changed files with one `POST /api/workspace/read`. Start watching before the first load so nothing slips between them. A `workspace_resync` means changes were missed: load everything again. A change to something you don't track as a file (a folder created, renamed, or removed stands for everything inside it) is simplest to handle the same way.
+
+   ```js
+   const pages = new Map(); // path -> text
+   const isPage = (path) => path.endsWith(".md");
+
+   async function loadAll() {
+     const r = await residuum.fetch("/api/workspace/tree?path=wiki&content=true&glob=*.md");
+     pages.clear();
+     for (const e of (await r.json()).entries) if (e.content !== undefined) pages.set(e.path, e.content);
+     render();
+   }
+
+   residuum.watch("wiki", async (frame) => {
+     if (frame.type === "workspace_resync" || frame.changes.some((c) => !isPage(c.path))) {
+       return loadAll();
+     }
+     const gone = frame.changes.filter((c) => c.kind === "removed").map((c) => c.path);
+     const changed = frame.changes.filter((c) => c.kind !== "removed").map((c) => c.path);
+     for (const path of gone) pages.delete(path);
+     if (changed.length > 0) {
+       const r = await residuum.fetch("/api/workspace/read", { method: "POST", body: { paths: changed } });
+       for (const f of (await r.json()).files) {
+         if (f.content !== undefined) pages.set(f.path, f.content);
+         else pages.delete(f.path);
+       }
+     }
+     render();
+   });
+   loadAll();
+   ```
+
+   Check `residuum.features.includes("workspace-watch")` first if the artifact must also work on an older Residuum; without it, reload on a timer or a refresh button instead.
+
+6. **Tell the user where it is:** name the artifact's title and say it's in the web UI under Workbench (`/workbench/<name>`). If you know the address they use for the web UI, give the full link. The full view button (or `F`) lets the artifact fill the window. An open artifact reloads by itself when you save the file, so after an edit, say what changed rather than asking them to refresh.
 
 ## The `residuum` Object
 
@@ -48,7 +82,8 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 |------|------|
 | `await residuum.fetch(path, { method, headers, body })` | Calls Residuum's API and returns a standard `Response`. `path` starts with `/api/`. A plain object `body` is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent as-is. |
 | `await residuum.ask(promptOrRequest)` | One-shot call to a small model. A string is shorthand for `{ prompt: text }`. Resolves to `{ content, json?, model, usage }`; rejects with an `Error` on failure. |
-| `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all). Returns an unsubscribe function. |
+| `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all), including `{ type: "connection", state: "connected" \| "disconnected" }` when Residuum's connection drops or returns. Returns an unsubscribe function. |
+| `residuum.watch(prefix, handler)` | Calls `handler(frame)` when workspace files under `prefix` (a workspace-relative path like `"wiki"`, or `""` for everything) change: `{ type: "workspace_changed", changes: [{ path, kind: "created" \| "modified" \| "removed" }] }`, or `{ type: "workspace_resync", reason }` when changes were missed. Returns an unsubscribe function. |
 | `await residuum.sessions.start({ prompt, context, skill, model })` | Starts an agent session for the artifact and returns a handle: `address`, `on(type, handler)` for that session's frames only, `send(text)`, `stop()`. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch`, `ask`, and `sessions.start` reject. |
 | `residuum.artifact` | This artifact's own name. |
@@ -109,4 +144,5 @@ After writing an artifact, `read_file` it back and confirm:
 - Every `residuum.sessions.start` result shows its `session_response` and `session_error` frames in the page, and the page can stop the session.
 - Every `residuum.ask` prompt includes whatever context the model needs to answer — it sees nothing beyond what's in the call.
 - Every data file the artifact writes is `workbench/<name>.<anything>`, beside the artifact, never a path under `workbench/<name>/`.
+- An artifact that shows workspace files that can change calls `residuum.watch` before its first load and loads everything again on `workspace_resync`.
 - Every relative URL names a file that exists in the artifact's folder (a page artifact has no other files), and no path starts with `/`, which would leave the artifact.

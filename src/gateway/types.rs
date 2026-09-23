@@ -195,6 +195,9 @@ pub(crate) struct GatewayState {
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
     /// The skill index, for checking the skill an artifact's session names.
     pub skill_state: SharedSkillState,
+    /// Whether the workspace change feed is running, so a connection that
+    /// starts watching can be told when live updates are off.
+    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
 }
 
 /// All state needed by the main event loop.
@@ -303,6 +306,12 @@ pub(crate) struct GatewayRuntime {
     /// restarting the listener. `None` when A2A is disabled.
     pub a2a_card_state: Option<crate::a2a::SharedCardState>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The workspace change feed (one recursive watcher over the workspace).
+    pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Whether the change feed is running; handed to the HTTP server's state
+    /// again on a gateway rebind.
+    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// Derives artifact reloads from the change feed.
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Whether the workbench artifacts listener is running, and on which port.
     pub workbench_serving: crate::workbench::server::WorkbenchServing,

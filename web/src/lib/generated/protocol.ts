@@ -14,3 +14,6 @@ export type { SessionSummary } from "./SessionSummary";
 export type { ArtifactSummary } from "./ArtifactSummary";
 export type { WorkbenchInfo } from "./WorkbenchInfo";
 export type { WorkbenchRelayOrigins } from "./WorkbenchRelayOrigins";
+export type { WorkspaceChange } from "./WorkspaceChange";
+export type { WorkspaceChangeKind } from "./WorkspaceChangeKind";
+export type { WorkspaceResyncReason } from "./WorkspaceResyncReason";

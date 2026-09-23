@@ -21,7 +21,7 @@ pub use events::{
     EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, InlineOutputEvent, IntermediateEvent,
     MessageEvent, NoticeEvent, NotificationEvent, ResponseEvent, ResultDisposition, SessionEvent,
     SessionEventKind, SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, ToolCallEvent,
-    ToolResultEvent, TurnLifecycleEvent, WorkbenchEvent, ends_with_sentinel,
+    ToolResultEvent, TurnLifecycleEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};
