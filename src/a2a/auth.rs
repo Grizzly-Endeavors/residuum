@@ -178,10 +178,19 @@ pub async fn auth_middleware(
 
     match (caller, state.visibility) {
         (Some(caller), _) => {
-            if let Ok(value) = HeaderValue::from_str(&caller.header_value()) {
-                req.headers_mut().insert(CALLER_HEADER, value);
+            // The credential has done its job; keep the raw key out of the
+            // SDK's service params, which the handler and executor see.
+            req.headers_mut().remove(header::AUTHORIZATION);
+            match HeaderValue::from_str(&caller.header_value()) {
+                Ok(value) => {
+                    req.headers_mut().insert(CALLER_HEADER, value);
+                    next.run(req).await
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "a2a caller identity is not a valid header value");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
             }
-            next.run(req).await
         }
         (None, A2aVisibility::Public) if card_get => next.run(req).await,
         (None, A2aVisibility::Public) => {
@@ -213,10 +222,11 @@ mod tests {
             .to_string();
         let sibling_present = req.headers().contains_key(SIBLING_HEADER);
         let tunnel_present = req.headers().contains_key(TUNNEL_HEADER);
+        let authorization_present = req.headers().contains_key(header::AUTHORIZATION);
         Response::builder()
             .status(StatusCode::OK)
             .body(Body::from(format!(
-                "{caller}|sibling_hdr={sibling_present}|tunnel_hdr={tunnel_present}"
+                "{caller}|sibling_hdr={sibling_present}|tunnel_hdr={tunnel_present}|authorization_hdr={authorization_present}"
             )))
             .unwrap()
     }
@@ -412,7 +422,10 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        assert_eq!(body, "sibling:alpha|sibling_hdr=false|tunnel_hdr=false");
+        assert_eq!(
+            body,
+            "sibling:alpha|sibling_hdr=false|tunnel_hdr=false|authorization_hdr=false"
+        );
     }
 
     #[tokio::test]
@@ -437,6 +450,10 @@ mod tests {
         assert!(
             body.starts_with("key:laptop|"),
             "the real verified caller must win over a forged header: {body}"
+        );
+        assert!(
+            body.ends_with("|authorization_hdr=false"),
+            "the verified key must not be forwarded to the handler: {body}"
         );
     }
 
