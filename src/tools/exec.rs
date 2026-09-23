@@ -553,10 +553,13 @@ mod tests {
     async fn exec_output_truncated() {
         let tool = ExecTool::new(None, None);
         // Generate more than 100KB of output
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command \"'x' * 204800\""
+        } else {
+            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
+        };
         let result = tool
-            .execute(serde_json::json!({
-                "command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
-            }))
+            .execute(serde_json::json!({ "command": command }))
             .await
             .unwrap();
 
