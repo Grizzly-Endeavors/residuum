@@ -110,6 +110,48 @@ async fn start_workbench_listener(
     .await
 }
 
+/// Bundle of `*ApiState` values `build_gateway_app` needs, split out of
+/// `spawn_server_and_adapters` to keep it under the line-count lint.
+struct ApiStates {
+    config: web::ConfigApiState,
+    update: web::update::UpdateApiState,
+    tracing: web::tracing_api::TracingApiState,
+    memory: web::memory::MemoryApiState,
+    model: web::model::ModelApiState,
+}
+
+fn build_api_states(
+    cfg: &Config,
+    parts: &crate::gateway::startup::GatewayComponents,
+    core: &GatewayCore,
+    update: web::update::UpdateApiState,
+    tracing_service: &Arc<crate::tracing_service::TracingService>,
+    model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
+) -> ApiStates {
+    ApiStates {
+        config: web::ConfigApiState {
+            config_dir: cfg.config_dir.clone(),
+            workspace_dir: parts.layout.root().to_path_buf(),
+            memory_dir: Some(parts.layout.memory_dir()),
+            reload_tx: Some(core.reload_tx.clone()),
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        },
+        update,
+        tracing: web::tracing_api::TracingApiState {
+            service: Arc::clone(tracing_service),
+            client_context: Arc::clone(&parts.tracing_client_context),
+            session_registry: Arc::clone(&parts.session_registry),
+        },
+        memory: web::memory::MemoryApiState {
+            hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
+        },
+        model: web::model::ModelApiState {
+            resources: model_call_resources_rx,
+        },
+    }
+}
+
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
 async fn spawn_server_and_adapters(
     core: &GatewayCore,
@@ -151,41 +193,30 @@ async fn spawn_server_and_adapters(
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
     };
-    let config_api_state = web::ConfigApiState {
-        config_dir: cfg.config_dir.clone(),
-        workspace_dir: parts.layout.root().to_path_buf(),
-        memory_dir: Some(parts.layout.memory_dir()),
-        reload_tx: Some(core.reload_tx.clone()),
-        setup_done: None,
-        secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-    };
+    let tracing_service = Arc::clone(&parts.tracing_service);
+    let (workbench_serving, workbench_listener_shutdown_tx) =
+        start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
     let update_api_state = web::update::UpdateApiState {
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
         gateway_shutdown_tx: gateway_shutdown_tx.clone(),
     };
-    let tracing_service = Arc::clone(&parts.tracing_service);
-    let tracing_api_state = web::tracing_api::TracingApiState {
-        service: Arc::clone(&tracing_service),
-        client_context: Arc::clone(&parts.tracing_client_context),
-        session_registry: Arc::clone(&parts.session_registry),
-    };
-    let (workbench_serving, workbench_listener_shutdown_tx) =
-        start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
-    let memory_api_state = web::memory::MemoryApiState {
-        hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
-    };
-    let model_api_state = web::model::ModelApiState {
-        resources: model_call_resources_rx,
-    };
+    let api_states = build_api_states(
+        cfg,
+        parts,
+        core,
+        update_api_state,
+        &tracing_service,
+        model_call_resources_rx,
+    );
     let app = build_gateway_app(
         state,
-        config_api_state,
-        update_api_state,
-        tracing_api_state,
+        api_states.config,
+        api_states.update,
+        api_states.tracing,
         workbench_serving.clone(),
-        memory_api_state,
-        model_api_state,
+        api_states.memory,
+        api_states.model,
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
