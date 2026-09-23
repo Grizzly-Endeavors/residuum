@@ -9,7 +9,7 @@ For quick cross-platform signal without a VM, the opt-in CI checks (the `cross-c
 - **Hardware virtualization enabled in the firmware.** AMD: "SVM Mode". Intel: "Intel Virtualization Technology (VT-x)". A BIOS or CMOS reset turns it off on some boards. Check with `ls /dev/kvm`. If it's missing, `sudo dmesg | grep -i svm` shows `SVM disabled (by BIOS)` when this is the cause.
 - **KVM access.** Your user must be in the `kvm` group (`sudo usermod -aG kvm $USER`, then log in again).
 - **Host packages** (Debian/Ubuntu): `sudo apt install qemu-system-x86 qemu-utils ovmf swtpm xorriso`.
-- **Disk and memory.** The VM uses 4 vCPUs, 8 GiB of RAM, and an 80 GiB sparse disk (about 30 GiB used after provisioning). Override with `RESIDUUM_WINVM_CPUS`, `RESIDUUM_WINVM_MEMORY_MIB`, and `RESIDUUM_WINVM_DISK_SIZE`.
+- **Disk and memory.** The VM uses 4 vCPUs, 8 GiB of RAM, and an 80 GiB sparse disk (about 30 GiB used after provisioning); `create-vm.sh` requires 40 GiB free in the VM directory, which must be on a real disk, not a tmpfs such as `/tmp`. Override with `RESIDUUM_WINVM_CPUS`, `RESIDUUM_WINVM_MEMORY_MIB`, and `RESIDUUM_WINVM_DISK_SIZE`.
 - **A built web UI** (`npm run build` in `web/`). The harness copies `web/dist` into the guest because `build.rs` requires it.
 
 ## One-time setup
