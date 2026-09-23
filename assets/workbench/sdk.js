@@ -315,11 +315,75 @@
     }
   }
 
+  // ── Workspace change feed ──────────────────────────────────────────
+
+  // Normalizes like the gateway: `/`-separated, no empty or `.` segments,
+  // "" for the whole workspace. Throws for paths outside the workspace.
+  function normalizePrefix(prefix) {
+    if (typeof prefix !== "string") {
+      throw new TypeError("residuum.watch prefix must be a workspace path like 'wiki', or '' for everything");
+    }
+    const segments = prefix.split("/");
+    if (prefix.includes("\\") || prefix.startsWith("/") || segments[0].includes(":")) {
+      throw new TypeError(`residuum.watch can't watch "${prefix}": use a path relative to the workspace, like "wiki"`);
+    }
+    const kept = [];
+    for (const segment of segments) {
+      if (segment === "" || segment === ".") continue;
+      if (segment === "..") throw new TypeError(`residuum.watch can't watch "${prefix}": ".." leaves the workspace`);
+      kept.push(segment);
+    }
+    return kept.join("/");
+  }
+
+  const isWithin = (path, ancestor) =>
+    ancestor === "" || path === ancestor || (path.startsWith(ancestor) && path[ancestor.length] === "/");
+  // A change concerns a prefix when it is the prefix, lies under it, or is a
+  // folder containing it (renaming or removing that folder carries it along).
+  const concerns = (path, prefix) => isWithin(path, prefix) || isWithin(prefix, path);
+
+  const watchers = new Set();
+
+  function syncWatchers() {
+    if (!embedded) return;
+    const prefixes = [...new Set([...watchers].map((w) => w.prefix))];
+    request("watch", { prefixes }).catch((err) => console.error("residuum.watch failed", err));
+  }
+
+  function watch(prefix, handler) {
+    if (typeof handler !== "function") throw new TypeError("residuum.watch handler must be a function");
+    const watcher = { prefix: normalizePrefix(prefix), handler };
+    watchers.add(watcher);
+    syncWatchers();
+    return () => {
+      if (watchers.delete(watcher)) syncWatchers();
+    };
+  }
+
+  function dispatchWorkspace(frame) {
+    for (const watcher of [...watchers]) {
+      let delivered = frame;
+      if (frame.type === "workspace_changed") {
+        const changes = frame.changes.filter((c) => concerns(c.path, watcher.prefix));
+        if (changes.length === 0) continue;
+        delivered = { type: frame.type, changes };
+      }
+      try {
+        watcher.handler(delivered);
+      } catch (err) {
+        console.error("residuum.watch handler failed", err);
+      }
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     const msg = event.data;
     if (!msg || msg.tag !== TAG) return;
     if (msg.kind === "event") {
+      if (msg.frame.type === "workspace_changed" || msg.frame.type === "workspace_resync") {
+        dispatchWorkspace(msg.frame);
+      }
       dispatch(msg.frame);
       return;
     }
@@ -347,5 +411,10 @@
     on,
     state: Object.freeze({ get: stateGet, set: stateSet }),
     sessions: Object.freeze({ start: startSession }),
+    watch,
   });
+
+  // Tell the bridge a new document started, before this page subscribes or
+  // watches anything, so it forgets what the previous document set up.
+  if (embedded) post({ kind: "ready" });
 })();

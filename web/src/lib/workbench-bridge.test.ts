@@ -147,6 +147,9 @@ interface Harness {
   deps: BridgeDeps;
   emit: (msg: ServerMessage) => void;
   escapes: () => number;
+  /** Every watch set handed to the coordinator, in order. */
+  watchSets: (readonly string[])[];
+  setConnected: (connected: boolean) => void;
 }
 
 function harness(overrides: Partial<BridgeDeps> = {}): Harness {
@@ -156,8 +159,17 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     postMessage: (message: unknown) => posted.push(message as Record<string, unknown>),
   };
   let listener: ((msg: ServerMessage) => void) | null = null;
+  let connectionListener: ((connected: boolean) => void) | null = null;
+  const watchSets: (readonly string[])[] = [];
   let escapes = 0;
   const deps: BridgeDeps = {
+    onConnectionChange: (l) => {
+      connectionListener = l;
+      return () => {
+        connectionListener = null;
+      };
+    },
+    watchWorkspace: (prefixes) => watchSets.push(prefixes),
     origin: ORIGIN,
     fetch: vi.fn(() => Promise.resolve(new Response('{"ok":true}', { status: 200 }))),
     onEscape: () => {
@@ -173,7 +185,15 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
   };
   const bridge = new WorkbenchBridge("chart", ARTIFACTS, () => frame, deps);
   bridge.start();
-  return { bridge, frame, deps, emit: (msg) => listener?.(msg), escapes: () => escapes };
+  return {
+    bridge,
+    frame,
+    deps,
+    emit: (msg) => listener?.(msg),
+    escapes: () => escapes,
+    watchSets,
+    setConnected: (connected) => connectionListener?.(connected),
+  };
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -494,5 +514,113 @@ describe("WorkbenchBridge", () => {
     expect(h.escapes()).toBe(1);
     await h.bridge.handleMessage({}, ARTIFACTS, { tag: BRIDGE_TAG, kind: "escape" });
     expect(h.escapes()).toBe(1);
+  });
+});
+
+describe("WorkbenchBridge change feed", () => {
+  const watchMsg = (prefixes: unknown[], id = "req-w"): Record<string, unknown> => ({
+    tag: BRIDGE_TAG,
+    kind: "watch",
+    id,
+    prefixes,
+  });
+  const ready = { tag: BRIDGE_TAG, kind: "ready" };
+  const changed = (...paths: string[]): ServerMessage => ({
+    type: "workspace_changed",
+    changes: paths.map((path) => ({ path, kind: "modified" as const })),
+  });
+  const events = (h: Harness): unknown[] =>
+    h.frame.posted.filter((m) => m.kind === "event").map((m) => m.frame);
+
+  it("hands the artifact's normalized watch set to the coordinator", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki/", "./inbox/user", "wiki"]));
+    expect(h.watchSets).toEqual([["inbox/user", "wiki"]]);
+    expect(h.frame.posted).toContainEqual({
+      tag: BRIDGE_TAG,
+      kind: "result",
+      id: "req-w",
+      result: null,
+    });
+
+    h.bridge.stop();
+    expect(h.watchSets.at(-1)).toEqual([]);
+  });
+
+  it("refuses a prefix outside the workspace and keeps the current set", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki"]));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["notes", "../secrets"], "req-bad"));
+    expect(h.watchSets).toEqual([["wiki"]]);
+    expect(h.frame.posted.find((m) => m.id === "req-bad")).toHaveProperty("error");
+  });
+
+  it("delivers only the changes under the watched prefixes, by whole segments", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki"]));
+    h.emit(changed("wikipedia/a.md", "notes/b.md"));
+    expect(events(h)).toEqual([]);
+
+    h.emit(changed("wiki/a.md", "wikipedia/b.md", "wiki/deep/c.md"));
+    expect(events(h)).toEqual([changed("wiki/a.md", "wiki/deep/c.md")]);
+  });
+
+  it("delivers nothing to an artifact that watches nothing, even when subscribed", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "subscribe" });
+    h.emit(changed("wiki/a.md"));
+    h.emit({ type: "workspace_resync", reason: "overflow" });
+    h.emit({ type: "workspace_watch_unavailable", message: "off" });
+    expect(events(h)).toEqual([]);
+  });
+
+  it("passes server resyncs to a watching artifact", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg([""]));
+    h.emit({ type: "workspace_resync", reason: "watcher_restarted" });
+    expect(events(h)).toEqual([{ type: "workspace_resync", reason: "watcher_restarted" }]);
+  });
+
+  it("sends connection frames and a reconnect resync after the socket returns", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki"]));
+    h.setConnected(false);
+    h.setConnected(true);
+    expect(events(h)).toEqual([
+      { type: "connection", state: "disconnected" },
+      { type: "connection", state: "connected" },
+      { type: "workspace_resync", reason: "reconnected" },
+    ]);
+  });
+
+  it("sends connection frames without a resync to an artifact that only subscribed", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "subscribe" });
+    h.setConnected(false);
+    h.setConnected(true);
+    expect(events(h)).toEqual([
+      { type: "connection", state: "disconnected" },
+      { type: "connection", state: "connected" },
+    ]);
+  });
+
+  it("keeps what a new document set up while it loaded, and forgets the previous document's", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["old"]));
+
+    // The reloaded page announces itself and watches before its load event.
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, ready);
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "subscribe" });
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, watchMsg(["wiki"]));
+    h.bridge.documentChanged();
+    expect(h.watchSets).toEqual([["old"], [], ["wiki"]]);
+
+    h.emit(changed("wiki/a.md", "old/b.md"));
+    h.emit({ type: "artifact_updated", name: "chart" });
+    expect(events(h)).toEqual([changed("wiki/a.md"), { type: "artifact_updated", name: "chart" }]);
+
+    // A page without the SDK never announces itself: its load clears everything.
+    h.bridge.documentChanged();
+    expect(h.watchSets.at(-1)).toEqual([]);
   });
 });

@@ -1501,6 +1501,10 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
           // Silent acknowledge — no response needed
           break;
 
+        case "watch_workspace":
+          // The mock has no workspace to watch, so no change frames follow.
+          break;
+
         case "session_send_message": {
           const id = String(msg.id);
           const address = String(msg.address);

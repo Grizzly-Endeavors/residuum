@@ -12,6 +12,9 @@ export class WsTransport {
   /** Called after the socket connects (before any messages). */
   onConnected: (() => void) | null = null;
 
+  /** Called when an open socket closes, before a reconnect is scheduled. */
+  onDisconnected: (() => void) | null = null;
+
   private ws: WebSocket | null = null;
   private reconnectDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -42,8 +45,10 @@ export class WsTransport {
     };
 
     this.ws.onclose = () => {
+      const wasConnected = this.status === "connected";
       this.status = "disconnected";
       this.stopPing();
+      if (wasConnected) this.onDisconnected?.();
       this.scheduleReconnect();
     };
   }
