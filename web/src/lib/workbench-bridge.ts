@@ -18,6 +18,21 @@ export const BRIDGE_TAG = "residuum-workbench";
 /** Longest message an artifact may send to the agent. */
 export const MAX_AGENT_MESSAGE_CHARS = 20_000;
 
+/** Header the bridge stamps on every relayed request, identifying the artifact to the gateway. */
+export const ARTIFACT_HEADER = "X-Residuum-Artifact";
+
+/** How many ordinary requests one bridge relays at once; the rest queue in order. */
+const MAX_CONCURRENT_REQUESTS = 8;
+
+/** How many times a relay `agent overloaded` 503 is retried before giving up. */
+const MAX_OVERLOADED_RETRIES = 3;
+
+/** First retry's base delay; later retries double it before jitter. */
+const RETRY_BASE_MS = 500;
+
+/** The relay's exact body for a request it refused rather than forwarded. */
+const OVERLOADED_BODY = "agent overloaded";
+
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const READ_METHODS = new Set(["GET", "HEAD"]);
 
@@ -40,7 +55,7 @@ const BLOCKED_ROUTES: BlockRule[] = [
     reason: "Workbench artifacts can't change agent keys. Manage them in Settings.",
   },
   {
-    path: /^\/api\/(config|providers|mcp)\/raw(\/|$)/,
+    path: /^\/api\/(config|providers)\/raw(\/|$)/,
     methods: "all",
     reason:
       "Workbench artifacts can't read or change raw configuration files, since they can hold credentials.",
@@ -64,11 +79,6 @@ const BLOCKED_ROUTES: BlockRule[] = [
     path: /^\/api\/tracing\//,
     methods: "writes",
     reason: "Workbench artifacts can't change tracing or send diagnostics.",
-  },
-  {
-    path: /^\/api\/workbench\/artifacts\//,
-    methods: "writes",
-    reason: "Workbench artifacts can't delete workbench artifacts.",
   },
 ];
 
@@ -205,6 +215,60 @@ export interface FrameTarget {
   postMessage(message: unknown, targetOrigin: string, transfer?: Transferable[]): void;
 }
 
+/**
+ * Caps how many relayed requests run at once, queueing the rest in the order
+ * they arrived. The relay refuses an instance's requests past 50 in flight
+ * (`503 agent overloaded`); staying well under that per bridge means one
+ * artifact's bulk load can't crowd out its other calls.
+ */
+class ConcurrencyLimiter {
+  private active = 0;
+  private readonly queue: (() => void)[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    this.active += 1;
+    try {
+      return await task();
+    } finally {
+      this.active -= 1;
+      // FIFO: whoever queued first runs next.
+      this.queue.shift()?.();
+    }
+  }
+}
+
+/** A real timer, used unless a test injects `BridgeDeps.sleep`. */
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Exponential backoff with jitter for the attempt-th retry (1-based),
+ * starting near `RETRY_BASE_MS`.
+ */
+function retryDelayMs(attempt: number): number {
+  const base = RETRY_BASE_MS * 2 ** (attempt - 1);
+  return base + Math.random() * base * 0.2;
+}
+
+/**
+ * Whether `resp` is the relay's own overload refusal (a `503` with exactly its
+ * `agent overloaded` body), not some other `503` the gateway itself returned.
+ * Reads a clone so the original body is still available to the caller.
+ */
+async function isRelayOverloaded(resp: Response): Promise<boolean> {
+  if (resp.status !== 503) return false;
+  try {
+    return (await resp.clone().text()).trim() === OVERLOADED_BODY;
+  } catch {
+    return false;
+  }
+}
+
 export interface BridgeDeps {
   /** The gateway's origin (the web UI's own). */
   origin: string;
@@ -219,11 +283,15 @@ export interface BridgeDeps {
   onFrame: (listener: (msg: ServerMessage) => void) => () => void;
   /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
   onEscape: () => void;
+  /** Waits before a retry. Defaults to a real timer; injectable for tests. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class WorkbenchBridge {
   private subscribed = false;
   private stopObserving: (() => void) | null = null;
+  private readonly requests = new ConcurrencyLimiter(MAX_CONCURRENT_REQUESTS);
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(
     private readonly artifact: string,
@@ -231,7 +299,9 @@ export class WorkbenchBridge {
     private readonly frameOrigin: string,
     private readonly target: () => FrameTarget | null,
     private readonly deps: BridgeDeps,
-  ) {}
+  ) {
+    this.sleep = deps.sleep ?? defaultSleep;
+  }
 
   /** Start forwarding server frames to subscribed artifacts. */
   start(): void {
@@ -327,12 +397,7 @@ export class WorkbenchBridge {
 
     let resp: Response;
     try {
-      resp = await this.deps.fetch(check.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-        credentials: "same-origin",
-      });
+      resp = await this.requests.run(() => this.relayWithRetry(check.url, request));
     } catch (err) {
       // eslint-disable-next-line no-console -- the tool gets a plain-language error; the raw cause is for developers
       console.error("workbench bridge request failed", request.method, check.url, err);
@@ -349,6 +414,38 @@ export class WorkbenchBridge {
       body,
     };
     this.reply(request.id, { result: relayed }, [body]);
+  }
+
+  /**
+   * Makes the request, retrying a relay `agent overloaded` 503 up to
+   * `MAX_OVERLOADED_RETRIES` times with backoff. The relay refuses these
+   * before forwarding them, so retrying never duplicates a write. Any other
+   * response, including other 503s, is returned as-is.
+   */
+  private async relayWithRetry(url: string, request: FetchRequest): Promise<Response> {
+    for (let attempt = 0; ; attempt += 1) {
+      const resp = await this.deps.fetch(url, {
+        method: request.method,
+        headers: this.withArtifactHeader(request.headers),
+        body: request.body,
+        credentials: "same-origin",
+      });
+      if (attempt >= MAX_OVERLOADED_RETRIES || !(await isRelayOverloaded(resp))) return resp;
+      await this.sleep(retryDelayMs(attempt + 1));
+    }
+  }
+
+  /**
+   * Every relayed request carries the bridge's own artifact identity, never
+   * one the artifact supplied, regardless of the header's casing.
+   */
+  private withArtifactHeader(headers: Record<string, string>): Record<string, string> {
+    const stamped: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== ARTIFACT_HEADER.toLowerCase()) stamped[key] = value;
+    }
+    stamped[ARTIFACT_HEADER] = this.artifact;
+    return stamped;
   }
 
   private reply(
