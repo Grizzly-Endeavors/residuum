@@ -869,7 +869,8 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
         let workbench_port = rt.workbench_serving.port();
         rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(cloud, workbench_port, None, None, shutdown_rx, status_tx)
+                .await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         rt.cloud_config.clone_from(&new_cfg.cloud);

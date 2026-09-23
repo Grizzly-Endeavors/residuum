@@ -6,17 +6,36 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
+use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http as ws_http;
 use tracing::{debug, error, info, warn};
 
 use super::TunnelStatus;
+use super::forward_a2a;
 use super::forward_http;
 use super::forward_ws;
 use super::protocol::{Surface, TunnelFrame};
-use super::{ForwardTargets, TunnelSink, send_frame};
+use super::{ForwardRequest, ForwardTargets, TunnelA2a, TunnelSink, send_frame};
 use crate::config::CloudConfig;
+
+/// The HTTP clients used to forward requests to local listeners: the
+/// buffered client for the main and workbench surfaces, and the streaming
+/// client (no total body timeout) for the A2A surface.
+struct TunnelClients<'a> {
+    client: &'a reqwest::Client,
+    a2a_client: &'a reqwest::Client,
+}
+
+/// The bookkeeping needed to track in-flight A2A streaming forwards so a
+/// later `HttpCancel` can abort the matching one.
+struct A2aStreamTracker<'a> {
+    streams: &'a mut HashMap<String, tokio::task::AbortHandle>,
+    /// Streams report their own `request_id` here on completion, so
+    /// `streams` doesn't grow without bound over the tunnel's lifetime.
+    done_tx: &'a mpsc::Sender<String>,
+}
 
 /// Minimum backoff duration between reconnection attempts.
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
@@ -38,8 +57,12 @@ fn next_backoff(current: Duration) -> Duration {
 /// relay with exponential backoff reconnection.
 ///
 /// The tunnel forwards HTTP requests and WebSocket connections from the relay
-/// to the local residuum instance: the main listener on `cfg.local_port`, and
-/// workbench artifact requests to `workbench_port` when that listener is running.
+/// to the local residuum instance: the main listener on `cfg.local_port`,
+/// workbench artifact requests to `workbench_port` when that listener is
+/// running, and A2A requests to `a2a_port` when that listener is running.
+/// `a2a` controls whether the `a2a`/`a2a-private` capabilities are advertised
+/// on the upgrade at all, independent of whether `a2a_port` is currently
+/// serving.
 ///
 /// # Errors
 ///
@@ -49,15 +72,22 @@ fn next_backoff(current: Duration) -> Duration {
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     workbench_port: Option<u16>,
+    a2a_port: Option<u16>,
+    a2a: Option<TunnelA2a>,
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
 ) {
     let targets = ForwardTargets {
         main: cfg.local_port,
         workbench: workbench_port,
+        a2a: a2a_port,
     };
     let Ok(client) = forward_http::forwarding_client() else {
         error!("failed to build reqwest client");
+        return;
+    };
+    let Ok(a2a_client) = forward_a2a::forwarding_client() else {
+        error!("failed to build A2A reqwest client");
         return;
     };
     let mut backoff = MIN_BACKOFF;
@@ -79,54 +109,29 @@ pub(crate) async fn start_tunnel(
             });
         debug!(url = %cfg.relay_url, "connecting to relay");
 
-        let request = match build_ws_request(&cfg) {
-            Ok(r) => r,
-            Err(e) => {
-                error!(error = %e, "failed to build WebSocket request");
-                tokio::time::sleep(backoff).await;
-                backoff = next_backoff(backoff);
-                continue;
-            }
-        };
-
-        let (ws_stream, _response) = match tokio_tungstenite::connect_async(request).await {
-            Ok(pair) => pair,
-            Err(e) => {
-                warn!(error = %e, backoff_ms = backoff.as_millis(), "failed to connect to relay, will retry");
-                tokio::time::sleep(backoff).await;
-                backoff = next_backoff(backoff);
-                continue;
-            }
-        };
-
-        let (write, mut read) = ws_stream.split();
-        let write = Arc::new(Mutex::new(write));
-
-        // Wait for the Connected frame (15s timeout to avoid blocking
-        // indefinitely if the relay accepts the WS but never sends Connected).
-        let connected_result =
-            tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
-        let (user_id, keepalive_interval_secs, origins) = match connected_result {
-            Err(_) => {
-                warn!(url = %cfg.relay_url, "timed out waiting for Connected frame from relay");
-                tokio::time::sleep(backoff).await;
-                backoff = next_backoff(backoff);
-                continue;
-            }
-            Ok(None) => {
-                warn!(url = %cfg.relay_url, "relay closed connection before sending Connected frame");
-                tokio::time::sleep(backoff).await;
-                backoff = next_backoff(backoff);
-                continue;
-            }
-            Ok(Some(connected)) => connected,
-        };
+        let (write, mut read, user_id, keepalive_interval_secs, origins) =
+            match connect_and_handshake(&cfg, a2a).await {
+                ConnectAttempt::Ready {
+                    write,
+                    read,
+                    user_id,
+                    keepalive_interval_secs,
+                    origins,
+                } => (write, read, user_id, keepalive_interval_secs, origins),
+                ConnectAttempt::Retry => {
+                    tokio::time::sleep(backoff).await;
+                    backoff = next_backoff(backoff);
+                    continue;
+                }
+            };
 
         status_tx
             .send(TunnelStatus::Connected {
                 user_id: user_id.clone(),
                 origin: origins.origin,
                 workbench_origin: origins.workbench_origin,
+                instance: origins.instance,
+                a2a_token: origins.a2a_token,
             })
             .unwrap_or_else(|_| {
                 debug!("status receiver dropped");
@@ -143,8 +148,12 @@ pub(crate) async fn start_tunnel(
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
 
+        let clients = TunnelClients {
+            client: &client,
+            a2a_client: &a2a_client,
+        };
         let action = run_tunnel_loop(
-            &client,
+            clients,
             targets,
             &mut read,
             &write,
@@ -163,6 +172,70 @@ pub(crate) async fn start_tunnel(
     }
 }
 
+/// Outcome of one connect-and-handshake attempt.
+enum ConnectAttempt {
+    /// Connected and handshaked; ready to run the frame loop.
+    Ready {
+        write: Arc<Mutex<TunnelSink>>,
+        read: futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+        >,
+        user_id: String,
+        keepalive_interval_secs: u64,
+        origins: AnnouncedOrigins,
+    },
+    /// Failed; the reason is already logged. The caller should back off and
+    /// retry.
+    Retry,
+}
+
+/// Open the WebSocket connection to the relay and wait for its `Connected`
+/// handshake frame.
+async fn connect_and_handshake(cfg: &CloudConfig, a2a: Option<TunnelA2a>) -> ConnectAttempt {
+    let request = match build_ws_request(cfg, a2a) {
+        Ok(r) => r,
+        Err(e) => {
+            error!(error = %e, "failed to build WebSocket request");
+            return ConnectAttempt::Retry;
+        }
+    };
+
+    let (ws_stream, _response) = match tokio_tungstenite::connect_async(request).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(error = %e, "failed to connect to relay, will retry");
+            return ConnectAttempt::Retry;
+        }
+    };
+
+    let (write, mut read) = ws_stream.split();
+    let write = Arc::new(Mutex::new(write));
+
+    // Wait for the Connected frame (15s timeout to avoid blocking
+    // indefinitely if the relay accepts the WS but never sends Connected).
+    let connected_result =
+        tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
+    let (user_id, keepalive_interval_secs, origins) = match connected_result {
+        Err(_) => {
+            warn!(url = %cfg.relay_url, "timed out waiting for Connected frame from relay");
+            return ConnectAttempt::Retry;
+        }
+        Ok(None) => {
+            warn!(url = %cfg.relay_url, "relay closed connection before sending Connected frame");
+            return ConnectAttempt::Retry;
+        }
+        Ok(Some(connected)) => connected,
+    };
+
+    ConnectAttempt::Ready {
+        write,
+        read,
+        user_id,
+        keepalive_interval_secs,
+        origins,
+    }
+}
+
 /// Result of the inner frame-processing loop.
 enum LoopExit {
     /// Graceful shutdown was requested.
@@ -173,7 +246,7 @@ enum LoopExit {
 
 /// Process tunnel frames until disconnection or shutdown.
 async fn run_tunnel_loop<S>(
-    client: &reqwest::Client,
+    clients: TunnelClients<'_>,
     targets: ForwardTargets,
     read: &mut S,
     write: &Arc<Mutex<TunnelSink>>,
@@ -191,6 +264,13 @@ where
     // channel_id and sender so the frame loop isn't blocked.
     let (ws_open_tx, mut ws_open_rx) = mpsc::channel::<(String, mpsc::Sender<String>)>(16);
 
+    // In-flight A2A streaming forwards, keyed by request_id, so a `HttpCancel`
+    // can abort the matching local request. Streams report their own
+    // completion on `a2a_done_tx` so the map doesn't grow without bound over
+    // the tunnel's lifetime.
+    let mut a2a_streams: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
+    let (a2a_done_tx, mut a2a_done_rx) = mpsc::channel::<String>(64);
+
     let disconnect_reason: String = loop {
         tokio::select! {
             msg = read.next() => {
@@ -199,7 +279,20 @@ where
                         last_frame = tokio::time::Instant::now();
                         match serde_json::from_str::<TunnelFrame>(&text) {
                             Ok(frame) => {
-                                handle_frame(frame, client, targets, write, &mut local_ws_channels, &ws_open_tx).await;
+                                let mut a2a_tracker = A2aStreamTracker {
+                                    streams: &mut a2a_streams,
+                                    done_tx: &a2a_done_tx,
+                                };
+                                handle_frame(
+                                    frame,
+                                    &clients,
+                                    targets,
+                                    write,
+                                    &mut local_ws_channels,
+                                    &ws_open_tx,
+                                    &mut a2a_tracker,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 warn!(error = %e, "failed to parse tunnel frame");
@@ -219,6 +312,9 @@ where
                 local_ws_channels.insert(channel_id.clone(), sender);
                 debug!(channel_id, total = local_ws_channels.len(), "registered local WS channel");
             }
+            Some(request_id) = a2a_done_rx.recv() => {
+                a2a_streams.remove(&request_id);
+            }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     info!("tunnel shutting down");
@@ -230,6 +326,9 @@ where
                         }
                     }
                     local_ws_channels.clear();
+                    for (_, handle) in a2a_streams.drain() {
+                        handle.abort();
+                    }
                     return LoopExit::Shutdown;
                 }
             }
@@ -244,7 +343,10 @@ where
 }
 
 /// Build the HTTP request used to initiate the WebSocket connection with auth.
-fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::Error> {
+fn build_ws_request(
+    cfg: &CloudConfig,
+    a2a: Option<TunnelA2a>,
+) -> Result<ws_http::Request<()>, ws_http::Error> {
     let host = url::Url::parse(&cfg.relay_url)
         .ok()
         .and_then(|u| {
@@ -264,16 +366,18 @@ fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::
     );
     request.headers_mut().insert(
         super::CAPABILITIES_HEADER,
-        ws_http::HeaderValue::from_static(super::WORKBENCH_SURFACE_CAPABILITY),
+        ws_http::HeaderValue::from_str(&super::build_capabilities_header(a2a))?,
     );
     Ok(request)
 }
 
-/// Public origins the relay announced for this user.
+/// Public origins and A2A identity the relay announced for this connection.
 #[derive(Debug, Default)]
 struct AnnouncedOrigins {
     origin: Option<String>,
     workbench_origin: Option<String>,
+    instance: Option<String>,
+    a2a_token: Option<String>,
 }
 
 /// Wait for the initial `Connected` frame from the relay.
@@ -289,6 +393,8 @@ where
                     keepalive_interval_secs,
                     origin,
                     workbench_origin,
+                    instance,
+                    a2a_token,
                 }) => {
                     return Some((
                         user_id,
@@ -296,6 +402,8 @@ where
                         AnnouncedOrigins {
                             origin,
                             workbench_origin,
+                            instance,
+                            a2a_token,
                         },
                     ));
                 }
@@ -319,26 +427,124 @@ where
 
 /// The local port for a request's surface, or why it can't be served.
 ///
-/// A workbench request is never sent to the main listener: that would serve
-/// the web UI and API on the artifacts' origin.
+/// A workbench or A2A request is never sent to the main listener: that would
+/// serve the web UI and API on that surface's origin.
 fn forward_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16, &'static str> {
     match surface {
         None => Ok(targets.main),
         Some(Surface::Workbench) => targets.workbench.ok_or(
             "Workbench artifacts aren't available on this Residuum instance right now: its artifacts listener isn't running. Check Residuum's logs for why it couldn't start.",
         ),
+        Some(Surface::A2a) => targets.a2a.ok_or(
+            "The A2A endpoint isn't available on this Residuum instance right now: its A2A listener isn't running. Check Residuum's logs for why it couldn't start.",
+        ),
     }
+}
+
+/// Spawn the streaming forward for an A2A-surface request and register it in
+/// `tracker.streams` so a later `HttpCancel` can abort it.
+fn spawn_a2a_forward(
+    a2a_client: &reqwest::Client,
+    targets: ForwardTargets,
+    write: &Arc<Mutex<TunnelSink>>,
+    tracker: &mut A2aStreamTracker<'_>,
+    request: ForwardRequest,
+) {
+    let client = a2a_client.clone();
+    let write = Arc::clone(write);
+    let done_tx = tracker.done_tx.clone();
+    let request_id = request.request_id.clone();
+    let request_id_for_task = request_id.clone();
+    let handle = tokio::spawn(async move {
+        match forward_port(targets, Some(Surface::A2a)) {
+            Ok(port) => {
+                forward_a2a::stream_forward(&client, port, request, &write).await;
+            }
+            Err(message) => {
+                forward_a2a::stream_error(&write, &request_id_for_task, 503, message).await;
+            }
+        }
+        if let Err(e) = done_tx.send(request_id_for_task).await {
+            debug!(
+                request_id = %e.0,
+                "A2A stream completion channel closed, tunnel is reconnecting or shutting down"
+            );
+        }
+    });
+    tracker.streams.insert(request_id, handle.abort_handle());
+}
+
+/// Forward a non-A2A `HttpRequest` with the existing buffered behavior: one
+/// local request, one `HttpResponse` frame back.
+fn spawn_buffered_forward(
+    client: &reqwest::Client,
+    targets: ForwardTargets,
+    write: &Arc<Mutex<TunnelSink>>,
+    surface: Option<Surface>,
+    request: ForwardRequest,
+) {
+    let client = client.clone();
+    let write = Arc::clone(write);
+    let ForwardRequest {
+        request_id,
+        method,
+        path,
+        headers,
+        body,
+    } = request;
+    tokio::spawn(async move {
+        let response = match forward_port(targets, surface) {
+            Ok(port) => {
+                forward_http::forward(&client, port, request_id, method, path, headers, body).await
+            }
+            Err(message) => forward_http::text_response(request_id, 503, message),
+        };
+        if let Err(e) = send_frame(&write, &response).await {
+            warn!(error = %e, "failed to send HttpResponse");
+        }
+    });
+}
+
+/// Connect to the local main listener for a `WsOpen` frame and register the
+/// resulting channel with the frame loop once it's ready.
+fn spawn_ws_open(
+    targets: ForwardTargets,
+    write: &Arc<Mutex<TunnelSink>>,
+    ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
+    channel_id: String,
+    path: String,
+    headers: HashMap<String, String>,
+) {
+    let write = Arc::clone(write);
+    let ws_open_tx = ws_open_tx.clone();
+    tokio::spawn(async move {
+        let ch_id = channel_id.clone();
+        let sender =
+            forward_ws::handle_ws_open(targets.main, channel_id, path, headers, write).await;
+        if let Some(tx) = sender {
+            // Send back to the frame loop; if the loop has exited the channel
+            // will be dropped and this is harmless.
+            if let Err(e) = ws_open_tx.send((ch_id.clone(), tx)).await {
+                warn!(channel_id = ch_id, error = %e, "failed to register WS channel with frame loop");
+            }
+        }
+    });
 }
 
 /// Process a single tunnel frame.
 async fn handle_frame(
     frame: TunnelFrame,
-    client: &reqwest::Client,
+    clients: &TunnelClients<'_>,
     targets: ForwardTargets,
     write: &Arc<Mutex<TunnelSink>>,
     local_ws_channels: &mut HashMap<String, mpsc::Sender<String>>,
     ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
+    a2a_tracker: &mut A2aStreamTracker<'_>,
 ) {
+    // Computed unconditionally (cheap) so the catch-all arm below can log
+    // which kind of frame it was without holding onto `frame` past the match.
+    let frame_type = frame.type_name();
+
     match frame {
         TunnelFrame::Ping => {
             let pong = TunnelFrame::Pong;
@@ -354,43 +560,36 @@ async fn handle_frame(
             body,
             surface,
         } => {
-            let client = client.clone();
-            let write = Arc::clone(write);
-            tokio::spawn(async move {
-                let response = match forward_port(targets, surface) {
-                    Ok(port) => {
-                        forward_http::forward(
-                            &client, port, request_id, method, path, headers, body,
-                        )
-                        .await
-                    }
-                    Err(message) => forward_http::text_response(request_id, 503, message),
-                };
-                if let Err(e) = send_frame(&write, &response).await {
-                    warn!(error = %e, "failed to send HttpResponse");
-                }
-            });
+            let request = ForwardRequest {
+                request_id,
+                method,
+                path,
+                headers,
+                body,
+            };
+            if matches!(surface, Some(Surface::A2a)) {
+                spawn_a2a_forward(clients.a2a_client, targets, write, a2a_tracker, request);
+            } else {
+                spawn_buffered_forward(clients.client, targets, write, surface, request);
+            }
+        }
+        TunnelFrame::HttpCancel { request_id } => {
+            if let Some(handle) = a2a_tracker.streams.remove(&request_id) {
+                handle.abort();
+                debug!(request_id, "aborted A2A stream on HttpCancel");
+            } else {
+                debug!(
+                    request_id,
+                    "HttpCancel for unknown or already-finished stream, ignoring"
+                );
+            }
         }
         TunnelFrame::WsOpen {
             channel_id,
             path,
             headers,
         } => {
-            let write = Arc::clone(write);
-            let ws_open_tx = ws_open_tx.clone();
-            tokio::spawn(async move {
-                let ch_id = channel_id.clone();
-                let sender =
-                    forward_ws::handle_ws_open(targets.main, channel_id, path, headers, write)
-                        .await;
-                if let Some(tx) = sender {
-                    // Send back to the frame loop; if the loop has exited the
-                    // channel will be dropped and this is harmless.
-                    if let Err(e) = ws_open_tx.send((ch_id.clone(), tx)).await {
-                        warn!(channel_id = ch_id, error = %e, "failed to register WS channel with frame loop");
-                    }
-                }
-            });
+            spawn_ws_open(targets, write, ws_open_tx, channel_id, path, headers);
         }
         TunnelFrame::WsMessage { channel_id, data } => {
             if let Some(tx) = local_ws_channels.get(&channel_id) {
@@ -409,36 +608,35 @@ async fn handle_frame(
                 debug!(channel_id, "WsClose for unknown channel, ignoring");
             }
         }
-        TunnelFrame::Connected { .. } => {
-            warn!(
-                frame_type = "Connected",
-                "received unexpected frame type from relay"
-            );
-        }
-        TunnelFrame::Pong => {
-            warn!(
-                frame_type = "Pong",
-                "received unexpected frame type from relay"
-            );
-        }
-        TunnelFrame::HttpResponse { .. } => {
-            warn!(
-                frame_type = "HttpResponse",
-                "received unexpected frame type from relay"
-            );
-        }
-        TunnelFrame::WsOpenResult { .. } => {
-            warn!(
-                frame_type = "WsOpenResult",
-                "received unexpected frame type from relay"
-            );
+        TunnelFrame::Connected { .. }
+        | TunnelFrame::Pong
+        | TunnelFrame::HttpResponse { .. }
+        | TunnelFrame::HttpResponseStart { .. }
+        | TunnelFrame::HttpResponseChunk { .. }
+        | TunnelFrame::HttpResponseEnd { .. }
+        | TunnelFrame::WsOpenResult { .. } => {
+            warn!(frame_type, "received unexpected frame type from relay");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::A2aVisibility;
     use super::*;
+
+    /// Bound on every test's individual waits, so a real regression (a
+    /// forward that never answers, a cancel that doesn't actually stop the
+    /// upstream request, ...) fails the test instead of hanging the suite.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Runs `fut`, bounded by [`TEST_TIMEOUT`], panicking with a clear
+    /// message instead of hanging the test suite if it doesn't resolve.
+    async fn with_timeout<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::time::timeout(TEST_TIMEOUT, fut)
+            .await
+            .expect("operation timed out; this would otherwise hang the test suite")
+    }
 
     #[test]
     fn backoff_doubles_with_jitter() {
@@ -508,7 +706,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg).unwrap();
+        let req = build_ws_request(&cfg, None).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
     }
 
@@ -519,7 +717,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg).unwrap();
+        let req = build_ws_request(&cfg, None).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
     }
 
@@ -530,7 +728,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg).unwrap();
+        let req = build_ws_request(&cfg, None).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
     }
 
@@ -541,7 +739,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg).unwrap();
+        let req = build_ws_request(&cfg, None).unwrap();
         assert_eq!(req.headers()["host"], "localhost");
     }
 
@@ -553,6 +751,8 @@ mod tests {
             keepalive_interval_secs: 30,
             origin: Some("https://user-1.agent-residuum.com".to_string()),
             workbench_origin: Some("https://user-1.workbench.agent-residuum.com".to_string()),
+            instance: Some("laptop".to_string()),
+            a2a_token: Some("rsa_abc123".to_string()),
         };
         let json = serde_json::to_string(&frame).unwrap();
         let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
@@ -565,6 +765,8 @@ mod tests {
             origins.workbench_origin.as_deref(),
             Some("https://user-1.workbench.agent-residuum.com")
         );
+        assert_eq!(origins.instance.as_deref(), Some("laptop"));
+        assert_eq!(origins.a2a_token.as_deref(), Some("rsa_abc123"));
     }
 
     #[test]
@@ -572,6 +774,7 @@ mod tests {
         let running = ForwardTargets {
             main: 7700,
             workbench: Some(7702),
+            a2a: None,
         };
         assert_eq!(forward_port(running, None), Ok(7700));
         assert_eq!(forward_port(running, Some(Surface::Workbench)), Ok(7702));
@@ -579,6 +782,7 @@ mod tests {
         let down = ForwardTargets {
             main: 7700,
             workbench: None,
+            a2a: None,
         };
         assert!(
             forward_port(down, Some(Surface::Workbench)).is_err(),
@@ -587,18 +791,60 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_request_advertises_the_workbench_capability() {
+    fn a2a_requests_only_reach_a_running_a2a_listener() {
+        let running = ForwardTargets {
+            main: 7700,
+            workbench: None,
+            a2a: Some(7703),
+        };
+        assert_eq!(forward_port(running, Some(Surface::A2a)), Ok(7703));
+
+        let down = ForwardTargets {
+            main: 7700,
+            workbench: None,
+            a2a: None,
+        };
+        assert!(
+            forward_port(down, Some(Surface::A2a)).is_err(),
+            "an A2A request must never fall back to the main listener"
+        );
+    }
+
+    #[test]
+    fn upgrade_request_advertises_capabilities_without_a2a_by_default() {
         let cfg = CloudConfig {
             relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
             token: "rst_test".to_string(),
             local_port: 7700,
         };
-        let req = build_ws_request(&cfg).unwrap();
+        let req = build_ws_request(&cfg, None).unwrap();
         assert_eq!(
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface")
+            Some("workbench-surface,http-streaming")
+        );
+    }
+
+    #[test]
+    fn upgrade_request_advertises_a2a_when_configured() {
+        let cfg = CloudConfig {
+            relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
+            token: "rst_test".to_string(),
+            local_port: 7700,
+        };
+        let req = build_ws_request(
+            &cfg,
+            Some(TunnelA2a {
+                visibility: A2aVisibility::Private,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            req.headers()
+                .get("x-residuum-capabilities")
+                .and_then(|v| v.to_str().ok()),
+            Some("workbench-surface,http-streaming,a2a,a2a-private")
         );
     }
 
@@ -621,6 +867,8 @@ mod tests {
             keepalive_interval_secs: 15,
             origin: None,
             workbench_origin: None,
+            instance: None,
+            a2a_token: None,
         })
         .unwrap();
         let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = vec![
@@ -651,5 +899,199 @@ mod tests {
         let mut stream = stream::iter(messages);
         let result = wait_for_connected(&mut stream).await;
         assert!(result.is_none());
+    }
+
+    /// A tunnel sink backed by an in-memory loopback WebSocket, paired with the
+    /// server-side end so tests can read back what a `handle_frame` call sent
+    /// without a real relay.
+    async fn loopback_ws() -> (
+        Arc<Mutex<TunnelSink>>,
+        tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let (client_stream, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .unwrap();
+        let server_stream = accept.await.unwrap();
+        let (write, _read) = client_stream.split();
+        (Arc::new(Mutex::new(write)), server_stream)
+    }
+
+    /// Reads the next tunnel frame, bounded by [`TEST_TIMEOUT`] so a stream
+    /// that never sends one fails the test instead of hanging it.
+    async fn recv_ws_frame(
+        server: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> TunnelFrame {
+        with_timeout(async {
+            loop {
+                match server.next().await {
+                    Some(Ok(Message::Text(text))) => return serde_json::from_str(&text).unwrap(),
+                    Some(Ok(_)) => {}
+                    other => panic!("expected a text frame, got {other:?}"),
+                }
+            }
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn handle_frame_streams_503_when_a2a_port_is_missing() {
+        let (write, mut relay) = loopback_ws().await;
+        let client = forward_http::forwarding_client().unwrap();
+        let a2a_client = forward_a2a::forwarding_client().unwrap();
+        let targets = ForwardTargets {
+            main: 7700,
+            workbench: None,
+            a2a: None,
+        };
+        let clients = TunnelClients {
+            client: &client,
+            a2a_client: &a2a_client,
+        };
+        let mut local_ws_channels = HashMap::new();
+        let (ws_open_tx, _ws_open_rx) = mpsc::channel(1);
+        let mut a2a_streams = HashMap::new();
+        let (a2a_done_tx, mut a2a_done_rx) = mpsc::channel(1);
+        let mut a2a_tracker = A2aStreamTracker {
+            streams: &mut a2a_streams,
+            done_tx: &a2a_done_tx,
+        };
+
+        with_timeout(handle_frame(
+            TunnelFrame::HttpRequest {
+                request_id: "req-503".to_string(),
+                method: "GET".to_string(),
+                path: "/a2a/laptop/.well-known/agent-card.json".to_string(),
+                headers: HashMap::new(),
+                body: None,
+                surface: Some(Surface::A2a),
+            },
+            &clients,
+            targets,
+            &write,
+            &mut local_ws_channels,
+            &ws_open_tx,
+            &mut a2a_tracker,
+        ))
+        .await;
+
+        // Wait for the spawned forward to report itself done before reading
+        // the frames it sent.
+        let done_id = with_timeout(a2a_done_rx.recv())
+            .await
+            .expect("the spawned A2A forward should report completion");
+        assert_eq!(done_id, "req-503");
+
+        let start = recv_ws_frame(&mut relay).await;
+        assert!(
+            matches!(start, TunnelFrame::HttpResponseStart { status: 503, .. }),
+            "a missing A2A listener should stream a 503, got {start:?}"
+        );
+        let chunk = recv_ws_frame(&mut relay).await;
+        assert!(matches!(chunk, TunnelFrame::HttpResponseChunk { .. }));
+        let end = recv_ws_frame(&mut relay).await;
+        assert!(matches!(
+            end,
+            TunnelFrame::HttpResponseEnd { error: None, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn http_cancel_aborts_the_in_flight_a2a_stream() {
+        // An SSE server whose first event is delayed well past this test's
+        // assertions, so an unaborted stream could not possibly finish (or
+        // report itself done) within the timeout below.
+        let app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get(|| async {
+                let events = futures_util::stream::once(async {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok::<_, std::convert::Infallible>(
+                        axum::response::sse::Event::default().data("late"),
+                    )
+                });
+                axum::response::sse::Sse::new(events)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let (write, _relay) = loopback_ws().await;
+        let client = forward_http::forwarding_client().unwrap();
+        let a2a_client = forward_a2a::forwarding_client().unwrap();
+        let targets = ForwardTargets {
+            main: 7700,
+            workbench: None,
+            a2a: Some(addr.port()),
+        };
+        let clients = TunnelClients {
+            client: &client,
+            a2a_client: &a2a_client,
+        };
+        let mut local_ws_channels = HashMap::new();
+        let (ws_open_tx, _ws_open_rx) = mpsc::channel(1);
+        let mut a2a_streams = HashMap::new();
+        let (a2a_done_tx, mut a2a_done_rx) = mpsc::channel(1);
+        let mut a2a_tracker = A2aStreamTracker {
+            streams: &mut a2a_streams,
+            done_tx: &a2a_done_tx,
+        };
+
+        with_timeout(handle_frame(
+            TunnelFrame::HttpRequest {
+                request_id: "req-cancel".to_string(),
+                method: "GET".to_string(),
+                path: "/slow".to_string(),
+                headers: HashMap::new(),
+                body: None,
+                surface: Some(Surface::A2a),
+            },
+            &clients,
+            targets,
+            &write,
+            &mut local_ws_channels,
+            &ws_open_tx,
+            &mut a2a_tracker,
+        ))
+        .await;
+        assert!(
+            a2a_tracker.streams.contains_key("req-cancel"),
+            "the forward should be registered for cancellation"
+        );
+
+        with_timeout(handle_frame(
+            TunnelFrame::HttpCancel {
+                request_id: "req-cancel".to_string(),
+            },
+            &clients,
+            targets,
+            &write,
+            &mut local_ws_channels,
+            &ws_open_tx,
+            &mut a2a_tracker,
+        ))
+        .await;
+        assert!(
+            !a2a_tracker.streams.contains_key("req-cancel"),
+            "HttpCancel should remove the stream from tracking immediately"
+        );
+
+        // A forward that ran to completion (or was merely dropped without
+        // being aborted) would still report itself done. An aborted task is
+        // killed at its next await point and never reaches that line, so no
+        // completion should arrive within a window far shorter than the
+        // server's 5s delay.
+        let result = tokio::time::timeout(Duration::from_millis(500), a2a_done_rx.recv()).await;
+        server.abort();
+        assert!(
+            result.is_err(),
+            "an aborted A2A forward must not report completion, got {result:?}"
+        );
     }
 }
