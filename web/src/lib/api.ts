@@ -328,12 +328,15 @@ export async function fetchSessions(query: {
   before?: string;
   limit?: number;
   address?: string;
+  /** Only sessions that workbench artifact started, not sessions those spawned in turn. */
+  artifact?: string;
 }): Promise<SessionListResponse> {
   const params = new URLSearchParams();
   if (query.category) params.set("category", query.category);
   if (query.before) params.set("before", query.before);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.address) params.set("address", query.address);
+  if (query.artifact) params.set("artifact", query.artifact);
   const qs = params.toString();
   return apiFetch<SessionListResponse>(`/api/sessions${qs ? `?${qs}` : ""}`);
 }
