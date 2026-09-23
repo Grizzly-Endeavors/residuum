@@ -140,6 +140,13 @@ async fn build_macos_channel(
 ///
 /// On non-Windows platforms, logs a warning and returns `None`.
 #[cfg(target_os = "windows")]
+#[cfg_attr(
+    target_os = "windows",
+    expect(
+        clippy::unused_async,
+        reason = "signature must match the async macOS variant, which the call site always awaits"
+    )
+)]
 async fn build_windows_channel(
     name: &str,
     kind: &ExternalChannelKind,
@@ -165,10 +172,10 @@ async fn build_windows_channel(
         config.sound = *s;
     }
     if let Some(n) = app_name {
-        config.app_name = n.clone();
+        config.app_name.clone_from(n);
     }
     if let Some(id) = app_id {
-        config.app_id = id.clone();
+        config.app_id.clone_from(id);
     }
 
     match crate::notify::windows::WindowsNativeChannel::new(name, &config) {

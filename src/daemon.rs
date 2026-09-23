@@ -249,7 +249,7 @@ pub fn is_process_running(pid: u32) -> bool {
     }
     let mut exit_code: u32 = 0;
     // SAFETY: handle is valid (non-null check above), exit_code is a valid pointer.
-    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    let ok = unsafe { GetExitCodeProcess(handle, &raw mut exit_code) };
     unsafe { CloseHandle(handle) };
     ok != 0 && exit_code == STILL_ACTIVE as u32
 }

@@ -72,6 +72,13 @@ impl TermSignal {
     ///
     /// Returns an I/O error if the signal handler cannot be registered (Unix only).
     #[cfg(not(unix))]
+    #[cfg_attr(
+        not(unix),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "signature matches the unix variant, which can fail"
+        )
+    )]
     pub fn new() -> std::io::Result<Self> {
         Ok(Self {})
     }

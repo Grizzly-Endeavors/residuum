@@ -184,6 +184,13 @@ fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
 
 /// Restrict file access to the current user via `icacls` (Windows).
 #[cfg(windows)]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "signature matches the unix variant, which can fail"
+    )
+)]
 fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
     let grant_arg = format!("{username}:(F)");
