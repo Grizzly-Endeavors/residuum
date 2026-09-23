@@ -38,6 +38,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     let update_status = crate::update::SharedUpdateStatus::default();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (gateway_shutdown_tx, gateway_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (model_call_resources_tx, model_call_resources_rx) = tokio::sync::watch::channel(Arc::new(
+        web::model::ModelCallResources::from_spawn_context(&parts.spawn_context),
+    ));
 
     let spawned = spawn_server_and_adapters(
         &core,
@@ -46,18 +49,20 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
         &update_status,
         &restart_tx,
         &gateway_shutdown_tx,
+        model_call_resources_rx,
     )
     .await?;
 
-    let update = UpdateChannels {
+    let channels = RuntimeChannels {
         status: update_status,
         restart_tx,
         restart_rx,
         gateway_shutdown_tx,
         gateway_shutdown_rx,
+        model_call_resources_tx,
     };
     let cloud_config = cfg.cloud.clone();
-    let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config).await?;
+    let rt = build_runtime(parts, core, receivers, cfg, spawned, channels, cloud_config).await?;
 
     Ok(run_event_loop(rt).await)
 }
@@ -105,6 +110,48 @@ async fn start_workbench_listener(
     .await
 }
 
+/// Bundle of `*ApiState` values `build_gateway_app` needs, split out of
+/// `spawn_server_and_adapters` to keep it under the line-count lint.
+struct ApiStates {
+    config: web::ConfigApiState,
+    update: web::update::UpdateApiState,
+    tracing: web::tracing_api::TracingApiState,
+    memory: web::memory::MemoryApiState,
+    model: web::model::ModelApiState,
+}
+
+fn build_api_states(
+    cfg: &Config,
+    parts: &crate::gateway::startup::GatewayComponents,
+    core: &GatewayCore,
+    update: web::update::UpdateApiState,
+    tracing_service: &Arc<crate::tracing_service::TracingService>,
+    model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
+) -> ApiStates {
+    ApiStates {
+        config: web::ConfigApiState {
+            config_dir: cfg.config_dir.clone(),
+            workspace_dir: parts.layout.root().to_path_buf(),
+            memory_dir: Some(parts.layout.memory_dir()),
+            reload_tx: Some(core.reload_tx.clone()),
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        },
+        update,
+        tracing: web::tracing_api::TracingApiState {
+            service: Arc::clone(tracing_service),
+            client_context: Arc::clone(&parts.tracing_client_context),
+            session_registry: Arc::clone(&parts.session_registry),
+        },
+        memory: web::memory::MemoryApiState {
+            hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
+        },
+        model: web::model::ModelApiState {
+            resources: model_call_resources_rx,
+        },
+    }
+}
+
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
 async fn spawn_server_and_adapters(
     core: &GatewayCore,
@@ -113,6 +160,7 @@ async fn spawn_server_and_adapters(
     update_status: &crate::update::SharedUpdateStatus,
     restart_tx: &tokio::sync::mpsc::Sender<()>,
     gateway_shutdown_tx: &tokio::sync::mpsc::Sender<()>,
+    model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
 ) -> Result<SpawnedHandles, FatalError> {
     let adapter_senders = AdapterSenders {
         publisher: core.publisher.clone(),
@@ -145,37 +193,30 @@ async fn spawn_server_and_adapters(
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
     };
-    let config_api_state = web::ConfigApiState {
-        config_dir: cfg.config_dir.clone(),
-        workspace_dir: parts.layout.root().to_path_buf(),
-        memory_dir: Some(parts.layout.memory_dir()),
-        reload_tx: Some(core.reload_tx.clone()),
-        setup_done: None,
-        secret_lock: Arc::new(tokio::sync::Mutex::new(())),
-    };
+    let tracing_service = Arc::clone(&parts.tracing_service);
+    let (workbench_serving, workbench_listener_shutdown_tx) =
+        start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
     let update_api_state = web::update::UpdateApiState {
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
         gateway_shutdown_tx: gateway_shutdown_tx.clone(),
     };
-    let tracing_service = Arc::clone(&parts.tracing_service);
-    let tracing_api_state = web::tracing_api::TracingApiState {
-        service: Arc::clone(&tracing_service),
-        client_context: Arc::clone(&parts.tracing_client_context),
-        session_registry: Arc::clone(&parts.session_registry),
-    };
-    let (workbench_serving, workbench_listener_shutdown_tx) =
-        start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
-    let memory_api_state = web::memory::MemoryApiState {
-        hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
-    };
+    let api_states = build_api_states(
+        cfg,
+        parts,
+        core,
+        update_api_state,
+        &tracing_service,
+        model_call_resources_rx,
+    );
     let app = build_gateway_app(
         state,
-        config_api_state,
-        update_api_state,
-        tracing_api_state,
+        api_states.config,
+        api_states.update,
+        api_states.tracing,
         workbench_serving.clone(),
-        memory_api_state,
+        api_states.memory,
+        api_states.model,
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
@@ -214,13 +255,17 @@ async fn spawn_server_and_adapters(
     })
 }
 
-/// Update and lifecycle channels bundled to reduce argument count.
-struct UpdateChannels {
+/// Update, lifecycle, and model-call channels bundled to reduce argument
+/// count on `build_runtime`.
+struct RuntimeChannels {
     status: crate::update::SharedUpdateStatus,
     restart_tx: tokio::sync::mpsc::Sender<()>,
     restart_rx: tokio::sync::mpsc::Receiver<()>,
     gateway_shutdown_tx: tokio::sync::mpsc::Sender<()>,
     gateway_shutdown_rx: tokio::sync::mpsc::Receiver<()>,
+    /// Pushed a fresh `ModelCallResources` on every config reload; stored on
+    /// `GatewayRuntime` so `crate::gateway::reload` can push to it.
+    model_call_resources_tx: tokio::sync::watch::Sender<Arc<web::model::ModelCallResources>>,
 }
 
 /// Handles for bus infrastructure spawned during gateway startup.
@@ -297,7 +342,7 @@ async fn build_runtime(
     receivers: crate::gateway::types::CoreReceivers,
     cfg: Config,
     spawned: SpawnedHandles,
-    update: UpdateChannels,
+    channels: RuntimeChannels,
     cloud_config: Option<crate::config::CloudConfig>,
 ) -> Result<GatewayRuntime, FatalError> {
     let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
@@ -330,6 +375,7 @@ async fn build_runtime(
         bus_infra_handles: infra.bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
+        model_call_resources_tx: channels.model_call_resources_tx,
         bus_handle: core.bus_handle,
         publisher: core.publisher,
         agent_subscriber: infra.agent_subscriber,
@@ -367,11 +413,11 @@ async fn build_runtime(
         file_registry: spawned.file_registry,
         path_policy: parts.path_policy,
         tracing_service: spawned.tracing_service,
-        update_status: update.status,
-        restart_tx: update.restart_tx,
-        restart_rx: update.restart_rx,
-        gateway_shutdown_tx: update.gateway_shutdown_tx,
-        gateway_shutdown_rx: update.gateway_shutdown_rx,
+        update_status: channels.status,
+        restart_tx: channels.restart_tx,
+        restart_rx: channels.restart_rx,
+        gateway_shutdown_tx: channels.gateway_shutdown_tx,
+        gateway_shutdown_rx: channels.gateway_shutdown_rx,
         cfg,
     })
 }

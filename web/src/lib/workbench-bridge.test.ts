@@ -25,6 +25,7 @@ describe("checkArtifactRequest", () => {
     ["POST", "/api/inbox/abc/archive"],
     ["PUT", "/api/mcp/raw"],
     ["DELETE", "/api/workbench/artifacts/chart"],
+    ["POST", "/api/model/complete"],
   ])("allows %s %s", (method, path) => {
     expect(checkArtifactRequest(method, path, ORIGIN)).toEqual({ allowed: true, url: path });
   });
@@ -134,7 +135,6 @@ describe("parseArtifactRequest", () => {
       headers: { a: 1 },
       body: null,
     },
-    { tag: BRIDGE_TAG, kind: "send", id: 3, content: "hi" },
     { tag: BRIDGE_TAG, kind: "eval" },
   ])("rejects %j", (data) => {
     expect(parseArtifactRequest(data)).toBeNull();
@@ -146,7 +146,6 @@ interface Harness {
   frame: FrameTarget & { posted: Record<string, unknown>[] };
   deps: BridgeDeps;
   emit: (msg: ServerMessage) => void;
-  sent: string[];
   escapes: () => number;
 }
 
@@ -157,14 +156,10 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     postMessage: (message: unknown) => posted.push(message as Record<string, unknown>),
   };
   let listener: ((msg: ServerMessage) => void) | null = null;
-  const sent: string[] = [];
   let escapes = 0;
   const deps: BridgeDeps = {
     origin: ORIGIN,
     fetch: vi.fn(() => Promise.resolve(new Response('{"ok":true}', { status: 200 }))),
-    hasUserActivation: () => true,
-    isConnected: () => true,
-    sendToAgent: (content) => sent.push(content),
     onEscape: () => {
       escapes += 1;
     },
@@ -178,7 +173,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
   };
   const bridge = new WorkbenchBridge("chart", ARTIFACTS, () => frame, deps);
   bridge.start();
-  return { bridge, frame, deps, emit: (msg) => listener?.(msg), sent, escapes: () => escapes };
+  return { bridge, frame, deps, emit: (msg) => listener?.(msg), escapes: () => escapes };
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -351,40 +346,128 @@ describe("WorkbenchBridge", () => {
     expect(h.frame.posted[0]).toHaveProperty("error");
   });
 
-  it("sends to the agent after a user gesture, labelled with the artifact", async () => {
-    const h = harness();
-    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      tag: BRIDGE_TAG,
-      kind: "send",
-      id: "s1",
-      content: " pick B ",
+  it("relays model calls in their own lane, separate from the 8-request limit", async () => {
+    const release: (() => void)[] = [];
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise<Response>((resolve) =>
+          release.push(() => {
+            resolve(new Response("{}", { status: 200 }));
+          }),
+        ),
+    );
+    const h = harness({ fetch: fetchImpl });
+
+    // Fill the ordinary-request lane with 8 requests that never resolve.
+    const ordinary = Promise.all(
+      Array.from({ length: 8 }, (_, n) =>
+        h.bridge.handleMessage(h.frame, ARTIFACTS, { ...fetchMsg("/api/status"), id: `ord-${n}` }),
+      ),
+    );
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(8);
     });
-    expect(h.sent).toEqual(['[From workbench artifact "chart"]\npick B']);
-    expect(h.frame.posted[0]).toMatchObject({ id: "s1", result: null });
+
+    // A model call still goes out immediately: it has its own lane.
+    const modelCall = h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/model/complete", "POST"),
+      id: "model-1",
+    });
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(9);
+    });
+
+    while (release.length > 0) release.shift()?.();
+    await Promise.all([ordinary, modelCall]);
   });
 
-  it("refuses to message the agent without a user gesture", async () => {
-    const h = harness({ hasUserActivation: () => false });
-    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      tag: BRIDGE_TAG,
-      kind: "send",
-      id: "s1",
-      content: "hi",
+  it("caps model calls at 4 concurrent, queueing the rest", async () => {
+    const release: (() => void)[] = [];
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise<Response>((resolve) =>
+          release.push(() => {
+            resolve(new Response("{}", { status: 200 }));
+          }),
+        ),
+    );
+    const h = harness({ fetch: fetchImpl });
+
+    const calls = Promise.all(
+      Array.from({ length: 5 }, (_, n) =>
+        h.bridge.handleMessage(h.frame, ARTIFACTS, {
+          ...fetchMsg("/api/model/complete", "POST"),
+          id: `model-${n}`,
+        }),
+      ),
+    );
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
     });
-    expect(h.sent).toEqual([]);
+    // Only 4 are actually fetching; the 5th is queued for a lane slot but is
+    // still tracked (so it can be cancelled before it ever calls fetch).
+    expect(h.bridge.modelCallsInFlight).toBe(5);
+
+    // Releasing one frees a lane slot for the 5th, queued call.
+    release.shift()?.();
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(5);
+    });
+
+    while (release.length > 0) release.shift()?.();
+    await calls;
+  });
+
+  it("cancelModelCalls aborts in-flight model calls and rejects the SDK promise", async () => {
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+        }),
+    );
+    const h = harness({ fetch: fetchImpl });
+
+    const pending = h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/model/complete", "POST"),
+      id: "model-1",
+    });
+    await vi.waitFor(() => {
+      expect(h.bridge.modelCallsInFlight).toBe(1);
+    });
+
+    h.bridge.cancelModelCalls();
+    await pending;
+
+    expect(h.bridge.modelCallsInFlight).toBe(0);
+    expect(h.frame.posted[0]).toMatchObject({ id: "model-1" });
     expect(h.frame.posted[0]).toHaveProperty("error");
   });
 
-  it("refuses to message the agent while disconnected", async () => {
-    const h = harness({ isConnected: () => false });
-    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      tag: BRIDGE_TAG,
-      kind: "send",
-      id: "s1",
-      content: "hi",
+  it("aborts in-flight model calls when the bridge is torn down", async () => {
+    const fetchImpl = vi.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+        }),
+    );
+    const h = harness({ fetch: fetchImpl });
+
+    const pending = h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/model/complete", "POST"),
+      id: "model-1",
     });
-    expect(h.sent).toEqual([]);
-    expect(h.frame.posted[0]).toHaveProperty("error");
+    await vi.waitFor(() => {
+      expect(h.bridge.modelCallsInFlight).toBe(1);
+    });
+
+    h.bridge.stop();
+    await pending;
+
+    expect(h.bridge.modelCallsInFlight).toBe(0);
   });
 
   it("forwards server frames only after the artifact subscribes, until its document changes", async () => {

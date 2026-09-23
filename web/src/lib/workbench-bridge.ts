@@ -7,22 +7,28 @@
 // and this bridge makes them on the artifact's behalf. This is the one place
 // that decides what an artifact may reach: most of the API is open, but
 // routes that change secrets, credentials, raw config, or Residuum's own
-// lifecycle are refused, and messages to the agent need a real click or key
-// press in the artifact.
+// lifecycle are refused.
 
 import type { ServerMessage } from "./types";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
 export const BRIDGE_TAG = "residuum-workbench";
 
-/** Longest message an artifact may send to the agent. */
-export const MAX_AGENT_MESSAGE_CHARS = 20_000;
-
 /** Header the bridge stamps on every relayed request, identifying the artifact to the gateway. */
 export const ARTIFACT_HEADER = "X-Residuum-Artifact";
 
 /** How many ordinary requests one bridge relays at once; the rest queue in order. */
 const MAX_CONCURRENT_REQUESTS = 8;
+
+/**
+ * How many model calls (`POST /api/model/complete`) one bridge relays at
+ * once, kept separate from `MAX_CONCURRENT_REQUESTS` so a burst of slow
+ * model calls never holds up an artifact's ordinary requests.
+ */
+const MAX_CONCURRENT_MODEL_CALLS = 4;
+
+/** The route model calls are identified by, for their own concurrency lane and abort tracking. */
+const MODEL_COMPLETE_PATH = "/api/model/complete";
 
 /** How many times a relay `agent overloaded` 503 is retried before giving up. */
 const MAX_OVERLOADED_RETRIES = 3;
@@ -146,12 +152,6 @@ interface FetchRequest {
   body: FetchRequestBody;
 }
 
-interface SendRequest {
-  kind: "send";
-  id: string;
-  content: string;
-}
-
 interface SubscribeRequest {
   kind: "subscribe";
 }
@@ -161,7 +161,7 @@ interface EscapeRequest {
   kind: "escape";
 }
 
-type ArtifactRequest = FetchRequest | SendRequest | SubscribeRequest | EscapeRequest;
+type ArtifactRequest = FetchRequest | SubscribeRequest | EscapeRequest;
 
 /** A relayed response, rebuilt into a `Response` by the SDK. */
 export interface RelayedResponse {
@@ -209,11 +209,6 @@ export function parseArtifactRequest(data: unknown): ArtifactRequest | null {
           headers: data.headers,
           body: data.body,
         };
-      }
-      return null;
-    case "send":
-      if (typeof data.id === "string" && typeof data.content === "string") {
-        return { kind: "send", id: data.id, content: data.content };
       }
       return null;
     case "subscribe":
@@ -290,16 +285,23 @@ async function isRelayOverloaded(resp: Response): Promise<boolean> {
   }
 }
 
+/** Whether a relayed request's resolved URL is a model call, by route (design §10). */
+function isModelCompletePath(url: string): boolean {
+  const path = url.split("?", 1)[0];
+  return path === MODEL_COMPLETE_PATH;
+}
+
+/** Whether `err` is a `fetch` abort, from this bridge cancelling the request's signal. */
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && (err as { name?: unknown }).name === "AbortError"
+  );
+}
+
 export interface BridgeDeps {
   /** The gateway's origin (the web UI's own). */
   origin: string;
   fetch: typeof fetch;
-  /** Whether the user clicked or typed recently; activation in a frame propagates to its parent. */
-  hasUserActivation: () => boolean;
-  /** Whether messages can reach the agent right now. */
-  isConnected: () => boolean;
-  /** Send a chat message to the main agent as the user. */
-  sendToAgent: (content: string) => void;
   /** Observe server frames; returns a function that stops observing. */
   onFrame: (listener: (msg: ServerMessage) => void) => () => void;
   /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
@@ -312,6 +314,9 @@ export class WorkbenchBridge {
   private subscribed = false;
   private stopObserving: (() => void) | null = null;
   private readonly requests = new ConcurrencyLimiter(MAX_CONCURRENT_REQUESTS);
+  private readonly modelCalls = new ConcurrencyLimiter(MAX_CONCURRENT_MODEL_CALLS);
+  /** Abort controllers for this frame's in-flight model calls, keyed by request id. */
+  private readonly modelCallControllers = new Map<string, AbortController>();
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(
@@ -332,10 +337,22 @@ export class WorkbenchBridge {
     });
   }
 
+  /** Tears the bridge down: stops observing frames and aborts any model calls still in flight. */
   stop(): void {
     this.stopObserving?.();
     this.stopObserving = null;
     this.subscribed = false;
+    this.cancelModelCalls();
+  }
+
+  /** How many model calls this frame has in flight right now. */
+  get modelCallsInFlight(): number {
+    return this.modelCallControllers.size;
+  }
+
+  /** Aborts every model call currently in flight for this frame. */
+  cancelModelCalls(): void {
+    for (const controller of this.modelCallControllers.values()) controller.abort();
   }
 
   /**
@@ -363,42 +380,10 @@ export class WorkbenchBridge {
       case "escape":
         this.deps.onEscape();
         return;
-      case "send":
-        this.handleSend(request);
-        return;
       case "fetch":
         await this.handleFetch(request);
         return;
     }
-  }
-
-  private handleSend(request: SendRequest): void {
-    const content = request.content.trim();
-    if (content === "") {
-      this.reply(request.id, { error: "residuum.send needs a non-empty message." });
-      return;
-    }
-    if (content.length > MAX_AGENT_MESSAGE_CHARS) {
-      this.reply(request.id, {
-        error: `Messages to the agent are limited to ${MAX_AGENT_MESSAGE_CHARS} characters.`,
-      });
-      return;
-    }
-    if (!this.deps.hasUserActivation()) {
-      this.reply(request.id, {
-        error:
-          "Artifacts can only message the agent right after a click or key press in the artifact. Call residuum.send from an event handler.",
-      });
-      return;
-    }
-    if (!this.deps.isConnected()) {
-      this.reply(request.id, {
-        error: "Residuum isn't connected right now, so the message wasn't sent. Try again shortly.",
-      });
-      return;
-    }
-    this.deps.sendToAgent(`[From workbench artifact "${this.artifact}"]\n${content}`);
-    this.reply(request.id, { result: null });
   }
 
   private async handleFetch(request: FetchRequest): Promise<void> {
@@ -416,16 +401,30 @@ export class WorkbenchBridge {
       return;
     }
 
+    // Model calls get their own concurrency lane (separate from ordinary
+    // requests) and an abort signal, tracked per frame so the activity panel
+    // and Stop page (design §9) can cancel them later.
+    const isModelCall = isModelCompletePath(check.url);
+    const limiter = isModelCall ? this.modelCalls : this.requests;
+    const controller = isModelCall ? new AbortController() : null;
+    if (controller) this.modelCallControllers.set(request.id, controller);
+
     let resp: Response;
     try {
-      resp = await this.requests.run(() => this.relayWithRetry(check.url, request));
+      resp = await limiter.run(() => this.relayWithRetry(check.url, request, controller?.signal));
     } catch (err) {
+      if (isAbortError(err)) {
+        this.reply(request.id, { error: "The model call was cancelled." });
+        return;
+      }
       // eslint-disable-next-line no-console -- the tool gets a plain-language error; the raw cause is for developers
       console.error("workbench bridge request failed", request.method, check.url, err);
       this.reply(request.id, {
         error: "Couldn't reach Residuum. Check that it's running, then try again.",
       });
       return;
+    } finally {
+      if (controller) this.modelCallControllers.delete(request.id);
     }
     const body = await resp.arrayBuffer();
     const relayed: RelayedResponse = {
@@ -443,13 +442,18 @@ export class WorkbenchBridge {
    * before forwarding them, so retrying never duplicates a write. Any other
    * response, including other 503s, is returned as-is.
    */
-  private async relayWithRetry(url: string, request: FetchRequest): Promise<Response> {
+  private async relayWithRetry(
+    url: string,
+    request: FetchRequest,
+    signal?: AbortSignal,
+  ): Promise<Response> {
     for (let attempt = 0; ; attempt += 1) {
       const resp = await this.deps.fetch(url, {
         method: request.method,
         headers: this.withArtifactHeader(request.headers),
         body: request.body,
         credentials: "same-origin",
+        signal,
       });
       if (attempt >= MAX_OVERLOADED_RETRIES || !(await isRelayOverloaded(resp))) return resp;
       await this.sleep(retryDelayMs(attempt + 1));

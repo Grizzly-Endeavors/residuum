@@ -16,7 +16,7 @@ import { WebSocketServer, WebSocket } from "ws";
 const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
 
 /** Stand-in for the real feature list, empty until a later phase ships a capability. */
-const MOCK_FEATURES: readonly string[] = [];
+const MOCK_FEATURES: readonly string[] = ["model-complete"];
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -303,7 +303,10 @@ const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
     document.querySelectorAll("input").forEach((i) => i.addEventListener("input", update));
     update();
     document.getElementById("ask").addEventListener("click", () =>
-      residuum.send("Is " + each.textContent + " right?").catch((e) => alert(e.message)),
+      residuum
+        .ask("Is " + each.textContent + " right? Answer in one short sentence.")
+        .then((r) => alert(r.content))
+        .catch((e) => alert(e.message)),
     );
   </script>
 </body></html>`;
@@ -1178,6 +1181,23 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
           json(res, 200, { removed: [`${name}.html`] });
           return;
         }
+      }
+
+      // ── Model calls ──────────────────────────────────────────────────
+      if (path === "/api/model/complete" && method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        const prompt: string = body.prompt ?? body.messages?.at(-1)?.content ?? "";
+        if (!prompt.trim() && !body.messages?.length) {
+          json(res, 400, { error: 'A model call needs a "prompt" or "messages".' });
+          return;
+        }
+        const content = `Mock model reply to: ${prompt.slice(0, 200)}`;
+        json(res, 200, {
+          content,
+          model: "mock/small",
+          usage: { input_tokens: prompt.length, output_tokens: content.length },
+        });
+        return;
       }
 
       // ── Inbox ─────────────────────────────────────────────────────────

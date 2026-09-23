@@ -37,27 +37,6 @@ const MAX_ARTIFACT_NAME_LEN: usize = 64;
 /// The SDK injected into every served HTML file.
 const SDK_JS: &str = include_str!("../../assets/workbench/sdk.js");
 
-/// Header the bridge stamps on every request it relays for an artifact,
-/// naming that artifact. Only the bridge sets it (overwriting any value the
-/// artifact's own request supplied), so gateway endpoints that attribute
-/// work to an artifact can trust it; a direct web UI request never carries
-/// it.
-pub(crate) const ARTIFACT_HEADER: &str = "X-Residuum-Artifact";
-
-/// The source label for a request possibly carrying [`ARTIFACT_HEADER`]:
-/// `"artifact:<name>"` when it does, `"web"` for a direct web UI call.
-#[must_use]
-pub(crate) fn artifact_source(headers: &axum::http::HeaderMap) -> String {
-    match headers
-        .get(ARTIFACT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-    {
-        Some(name) if !name.is_empty() => format!("artifact:{name}"),
-        _ => "web".to_string(),
-    }
-}
-
 /// Whether `name` is a valid artifact name: lowercase ASCII letters and digits in
 /// hyphen-separated words, at most 64 characters. Names carry no path
 /// separators or dots, so a valid name always resolves inside the workbench.
@@ -542,25 +521,6 @@ mod tests {
         ] {
             assert!(!is_valid_artifact_name(bad), "{bad:?} should be invalid");
         }
-    }
-
-    #[test]
-    fn artifact_source_from_header() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(ARTIFACT_HEADER, "pricing-explorer".parse().unwrap());
-        assert_eq!(artifact_source(&headers), "artifact:pricing-explorer");
-    }
-
-    #[test]
-    fn artifact_source_without_header_is_web() {
-        assert_eq!(artifact_source(&axum::http::HeaderMap::new()), "web");
-    }
-
-    #[test]
-    fn artifact_source_blank_header_is_web() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(ARTIFACT_HEADER, "  ".parse().unwrap());
-        assert_eq!(artifact_source(&headers), "web");
     }
 
     #[test]

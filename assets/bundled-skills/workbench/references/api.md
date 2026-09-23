@@ -1,6 +1,6 @@
 # Workbench API Reference
 
-What a workbench artifact can reach through `residuum.fetch`, `residuum.on`, and `residuum.sessions`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
+What a workbench artifact can reach through `residuum.fetch`, `residuum.ask`, `residuum.on`, and `residuum.sessions`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
 
 ## Context
 
@@ -38,6 +38,7 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 | `GET /api/workbench/artifacts` | Every artifact: `[{ name, title, modified_at, size }]`. |
 | `GET /api/status` | `{ mode, version, features }`: `mode` is `"running"` normally, `version` and `features` match `residuum.version` and `residuum.features`. |
 | `GET /api/system/timezone` | The user's configured timezone. |
+| `POST /api/model/complete` | One-shot small-model call — see "Model Calls" below. |
 
 Paths under `workspace/` are relative to the workspace root, so an artifact's data file is `workbench/<name>.state.json`.
 
@@ -97,12 +98,32 @@ The session's frames, all carrying `address` and `run_id`:
 
 `start`, `send`, and `stop` reject with an `Error` whose `message` is plain language; `send` and `stop` failures also carry `code`: `invalid_request`, `unknown_address`, `not_live` (nothing to stop), `busy` (try again shortly), `delivery_failed`. A blank prompt or message rejects with a `TypeError` before anything is sent. `start` also rejects for an unknown `skill` or `model`, and outside the web UI.
 
-## Sending Messages
+## Model Calls
 
-`residuum.send(text)` rejects when:
+`POST /api/model/complete` (`residuum.ask` wraps it) sends one request to the background `small` model and gets one answer back. No tools, no memory, no identity files — the model sees only what the request contains.
 
-- it isn't called during a click or key press in the artifact;
-- `text` is empty or over 20,000 characters;
-- Residuum is disconnected.
+Request, either shorthand or the full form:
 
-Catch the rejection and show its `message` in the page.
+```json
+{ "prompt": "..." }
+```
+
+```json
+{
+  "system": "...",
+  "messages": [{ "role": "user", "content": "...", "images": [{ "media_type": "image/png", "data": "<base64>" }] }],
+  "schema": { "...": "JSON Schema" },
+  "max_tokens": 1024,
+  "temperature": 0.2
+}
+```
+
+`schema`, when given, asks for structured output; the response's `json` is the parsed result. `max_tokens` and `temperature` override the small tier's defaults when given.
+
+Response:
+
+```json
+{ "content": "...", "json": { "...": "only when schema was given" }, "model": "provider/model", "usage": { "input_tokens": 0, "output_tokens": 0 } }
+```
+
+`residuum.ask` rejects with an `Error` on any non-2xx: `400` for a malformed request (no `prompt`/`messages`, a message role other than `user`/`assistant`, empty content), `502` when the provider fails or returns unparsable structured output, `504` on a provider timeout. Catch the rejection and show its `message` in the page.

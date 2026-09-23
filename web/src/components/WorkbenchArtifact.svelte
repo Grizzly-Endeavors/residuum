@@ -2,7 +2,6 @@
   import { onMount, tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { artifactUrl, type ArtifactsOrigin } from "../lib/workbench";
-  import { notifications } from "../lib/notifications.svelte";
   import { WorkbenchBridge } from "../lib/workbench-bridge";
   import { Icon } from "../lib/icons";
 
@@ -53,15 +52,6 @@
     const active = new WorkbenchBridge(name, frameOrigin, () => frame?.contentWindow ?? null, {
       origin: window.location.origin,
       fetch: (input, init) => window.fetch(input, init),
-      hasUserActivation: () => navigator.userActivation.isActive,
-      isConnected: () => ws.transport.status === "connected",
-      sendToAgent: (content) => {
-        ws.sendChat(content);
-        notifications.surface(
-          "notice",
-          `"${title}" sent Residuum a message. The reply is in chat.`,
-        );
-      },
       onFrame: (listener) => ws.onFrame(listener),
       onEscape: () => {
         if (full) onSetFull(false);
