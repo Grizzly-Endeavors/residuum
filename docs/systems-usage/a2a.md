@@ -40,7 +40,7 @@ The caller gives the token as `Authorization: Bearer <token>`.
 
 **Storage.** `~/.residuum/a2a-keys.toml`, mode 0600 on Unix, holds each key's name, description, a `sha256:<hex>` hash of the token, and its creation time — never the token itself. The store is unencrypted because there is nothing in it worth encrypting at rest: the hash's only job is to reject a stolen credential's replay, which it already does. `~/.residuum/a2a-keys.lock` serializes writes from the CLI, the web UI, and the running listener so none of them lose a concurrent change. Both files are write-blocked for `write_file` and `edit_file`, like the other credential stores.
 
-**Web UI:** `GET /api/a2a/keys` (metadata only), `POST /api/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/a2a/keys/{name}`. Like the rest of the config API, this is unauthenticated and meant to stay on loopback.
+**Web UI:** `GET /api/a2a/keys` (metadata only), `POST /api/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/a2a/keys/{name}`. Like the rest of the config API, this is unauthenticated and meant to stay on loopback. Settings → A2A in the web UI wraps these three (see [Web UI](#web-ui) below).
 
 A key name is lowercase letters, digits, and underscores, starting with a letter, at most 64 characters.
 
@@ -95,7 +95,7 @@ An unauthenticated request is refused according to [visibility](#visibility). `G
 
 ## Client: reaching other agents
 
-Residuum can also delegate to other agents over A2A — including a user's own other instances, once relay-brokered sibling discovery exists — through the same native tools it uses to talk to its own sessions: `list_agents`, `message_agent`, and `stop_agent`. A remote agent's address is `a2a:<name>`.
+Residuum can also delegate to other agents over A2A through the same native tools it uses to talk to its own sessions: `list_agents`, `message_agent`, and `stop_agent`. A remote agent's address is `a2a:<name>`.
 
 ### Configuring remote agents
 
@@ -149,6 +149,15 @@ A short text artifact (≤4 KB) is inlined in the same message; a longer one, or
 
 `src/a2a/client/`: `config.rs` (`config/a2a.json` loading and validation), `hub.rs` (`A2aClientHub`: the registered agents, their resolved cards, and building A2A protocol clients from the `a2a-client-lf` SDK), `tracker.rs` (`RemoteTaskTracker`: persistence and the watch/poll loop). The tools themselves live in `src/tools/message_agent.rs` and `src/tools/background.rs`.
 
-## Code (server)
+## Web UI
 
-`src/a2a/`: `keys.rs` and `keys_runtime.rs` (the caller-key store and its shared runtime handle), `card.rs` (the workspace agent-card file, validation, and the live `CardState`), `auth.rs` (the middleware, `Caller`, and the `TunnelNonceSource` trait that supplies the tunnel nonce sibling attestation checks against — currently always `NoTunnel`, so no sibling request authenticates), `listener.rs` (the axum listener and the `StubHandler` placeholder). `src/commands/a2a.rs` is the CLI; `src/gateway/web/a2a.rs` is the web API (caller keys and, for the client, the remote-agents endpoints).
+Settings → A2A is the web UI's view onto everything above, plus a preview of the Agent Card:
+
+- **Status** — whether A2A is on, its visibility, the address other agents use to reach it (the configured `public_url`, or a note on how to get one), and any current problem with the listener or the workspace agent card. Backed by `GET /api/a2a/status`, which returns `{ enabled, port, visibility, public_url, listener_running, card_error }`. `listener_running` is a live probe of the A2A port's `/_a2a/auth-check` path rather than in-process state, so it reflects what an outside caller would actually see. `public_url` is `null` unless `[a2a] public_url` is set. The `enabled`/`visibility`/`port`/`public_url` fields themselves are edited the same way as the rest of `config.toml` — this page's toggle, select, and text fields are the `[a2a]` section's Simple/Advanced form controls, present in `config.toml`'s raw and Advanced editors too.
+- **Caller keys** — the same list/create/revoke as the CLI, with a create form that shows the minted token once, and a revoke confirmation.
+- **Remote agents** — the agents `config/a2a.json` lists each with a reachability status and a summary of its card's skills; also a raw editor for `config/a2a.json` itself. Served by `GET /api/a2a/agents` and `GET`/`PUT /api/a2a/agents/raw` (see [Client](#client-reaching-other-agents)).
+- **Agent card** — a preview of the served card's name, description, and skills (via `GET /api/a2a/card`, which mirrors what the listener serves, or a `503` with a plain-language reason if the workspace file is invalid), with a link to open the workspace panel to edit `config/agent-card.json` directly.
+
+## Code
+
+`src/a2a/`: `keys.rs` and `keys_runtime.rs` (the caller-key store and its shared runtime handle), `card.rs` (the workspace agent-card file, validation, and the live `CardState`), `auth.rs` (the middleware, `Caller`, and the `TunnelNonceSource` trait that supplies the tunnel nonce sibling attestation checks against), `listener.rs` (the axum listener). `src/commands/a2a.rs` is the CLI; `src/gateway/web/a2a.rs` is the web API (caller keys, the remote-agents endpoints, and the settings page's status and card endpoints).
