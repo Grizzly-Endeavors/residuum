@@ -6,9 +6,16 @@ use residuum::util::FatalError;
 use super::ServeArgs;
 use super::startup_config::{ConfigProblem, classify_load_error};
 
+/// How the foreground gateway finished.
+enum ForegroundExit {
+    /// Shut down; the process should exit.
+    Done,
+    /// A restart was requested (the binary was updated); relaunch it.
+    Restart,
+}
+
 /// Run the gateway in foreground mode (called as `residuum serve --foreground`).
 ///
-/// This is the current behavior — runs the gateway event loop directly.
 /// Used by the daemon spawner as the child process, or for debugging.
 ///
 /// # Errors
@@ -21,22 +28,31 @@ pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalEr
     // Acquire exclusive lock on the PID file. This both:
     // 1. Prevents two instances from running simultaneously
     // 2. Makes stale PID files detectable (lock released on process death)
-    let _pid_lock = residuum::daemon::acquire_pid_lock(&pid_path)?;
+    let pid_lock = residuum::daemon::acquire_pid_lock(&pid_path)?;
 
+    // Restart is handled here, above the gateway, so PID-file cleanup and the
+    // relaunch happen in one place and in the right order. `relaunch` owns the
+    // PID file from here: after a restart it may belong to the new process.
     let result = run_serve_foreground_inner(args).await;
-
-    // Clean up PID file on normal exit. On crash/SIGKILL the lock is
-    // released by the OS, and the next startup detects the stale file.
-    if let Err(e) = residuum::daemon::remove_pid_file(&pid_path) {
-        tracing::warn!(error = %e, "failed to remove pid file on exit");
+    if let Ok(ForegroundExit::Restart) = result {
+        return relaunch(pid_lock, &pid_path);
     }
 
-    result
+    // Clean up PID file on exit. On crash/SIGKILL the lock is released by the
+    // OS, and the next startup detects the stale file.
+    remove_pid_file(&pid_path);
+    result.map(|_| ())
+}
+
+fn remove_pid_file(pid_path: &std::path::Path) {
+    if let Err(e) = residuum::daemon::remove_pid_file(pid_path) {
+        tracing::warn!(error = %e, "failed to remove pid file on exit");
+    }
 }
 
 /// Run the onboarding wizard in an isolated temp directory, then boot gateway.
 #[tracing::instrument(skip_all)]
-async fn run_setup_mode() -> Result<(), FatalError> {
+async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
     let tmp_dir = std::env::temp_dir().join("residuum-setup");
     if tmp_dir.exists() {
         std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
@@ -55,7 +71,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
         residuum::gateway::setup::SetupExit::ConfigSaved => {
             tracing::debug!("setup complete, loading config from temp directory");
         }
-        residuum::gateway::setup::SetupExit::Shutdown => return Ok(()),
+        residuum::gateway::setup::SetupExit::Shutdown => return Ok(ForegroundExit::Done),
     }
 
     // Load the config written by the wizard and run the gateway
@@ -70,13 +86,21 @@ async fn run_setup_mode() -> Result<(), FatalError> {
         workspace = %cfg.workspace_dir.display(),
         "setup-mode: configuration loaded, starting gateway"
     );
-    let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
-    Ok(())
+    match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+        residuum::gateway::GatewayExit::Shutdown => {}
+        residuum::gateway::GatewayExit::Restart => {
+            // Relaunching would repeat `--setup`, which wipes the temp config.
+            tracing::warn!(
+                "restart requested in setup mode; exiting instead. Start residuum normally to run the updated binary"
+            );
+        }
+    }
+    Ok(ForegroundExit::Done)
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
 #[tracing::instrument(skip_all)]
-async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> {
+async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, FatalError> {
     // Clean up leftover .exe.old from a previous Windows self-update (no-op on Unix)
     residuum::update::cleanup_old_binary();
 
@@ -101,7 +125,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
                 // or fatal error. Backup is created inside run_gateway().
                 // Box::pin reduces stack frame size — this future is large
                 match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                    residuum::gateway::GatewayExit::Restart => return re_exec_serve_foreground(),
+                    residuum::gateway::GatewayExit::Restart => return Ok(ForegroundExit::Restart),
                     residuum::gateway::GatewayExit::Shutdown => {}
                 }
                 break;
@@ -121,18 +145,11 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
             },
         }
     }
-    Ok(())
+    Ok(ForegroundExit::Done)
 }
 
-/// Re-exec the current binary with `serve --foreground` args.
+/// The path of the running binary, as it now exists on disk.
 ///
-/// Uses `exec()` to replace the process image with the (potentially updated)
-/// binary on disk. The PID stays the same, so the daemon parent doesn't notice.
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if the current executable path cannot be
-/// determined. On Unix, `exec()` does not return on success.
 /// On Linux, atomically replacing the binary (via `mv`) unlinks the old inode
 /// while the process is still running. The kernel then appends " (deleted)" to
 /// `/proc/self/exe`. Strip the suffix to get the live path on disk.
@@ -151,62 +168,78 @@ fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
     raw.to_path_buf()
 }
 
-/// Re-exec the serve foreground process with the (potentially updated) binary.
-///
-/// On Unix, uses `exec()` to replace the process image (PID stays the same).
-/// On Windows, spawns a new process and exits the current one.
-#[cfg(unix)]
-fn re_exec_serve_foreground() -> Result<(), FatalError> {
-    use std::os::unix::process::CommandExt;
-
+/// The command that relaunches this process with the binary now on disk and
+/// the same arguments, so `serve --foreground` is preserved.
+fn relaunch_command() -> Result<std::process::Command, FatalError> {
     let raw_exe = std::env::current_exe().map_err(|e| {
         FatalError::Gateway(format!(
-            "failed to determine current executable for re-exec: {e}"
+            "failed to determine current executable for restart: {e}"
         ))
     })?;
-
     let exe = resolve_exe_path(&raw_exe);
+    tracing::info!(exe = %exe.display(), "restarting with updated binary");
 
-    tracing::info!(exe = %exe.display(), "re-execing with updated binary");
-
-    // Forward the original args so --foreground is preserved across re-exec
-    let original_args: Vec<String> = std::env::args().skip(1).collect();
-    let err = std::process::Command::new(&exe).args(&original_args).exec();
-
-    // exec() only returns on error
-    Err(FatalError::Gateway(format!("re-exec failed: {err}")))
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(std::env::args().skip(1));
+    Ok(cmd)
 }
 
-/// Re-exec the serve foreground process with the (potentially updated) binary.
+/// Relaunch with the (potentially updated) binary.
 ///
-/// On Unix, uses `exec()` to replace the process image (PID stays the same).
-/// On Windows, spawns a new process and exits the current one.
+/// On Unix, `exec()` replaces the process image in place. The PID stays the
+/// same, so the PID file stays correct and the lock is held right up to the
+/// exec; the new image takes it again on startup.
+///
+/// # Errors
+///
+/// Returns `FatalError::Gateway` if the executable path can't be determined
+/// or `exec()` fails. It does not return on success.
+#[cfg(unix)]
+fn relaunch(
+    pid_lock: residuum::daemon::PidFileLock,
+    pid_path: &std::path::Path,
+) -> Result<(), FatalError> {
+    use std::os::unix::process::CommandExt;
+
+    let err = match relaunch_command() {
+        Ok(mut cmd) => FatalError::Gateway(format!("restart failed: {}", cmd.exec())),
+        Err(e) => e,
+    };
+    // Still this process: exec never happened, so clean up as on any exit.
+    remove_pid_file(pid_path);
+    drop(pid_lock);
+    Err(err)
+}
+
+/// Relaunch with the (potentially updated) binary.
+///
+/// Windows can't replace a running process image, so this starts a new
+/// process and returns, letting this one exit normally. The PID file is
+/// removed and the lock released first: the new process has a different PID
+/// and needs the lock free when it starts.
+///
+/// # Errors
+///
+/// Returns `FatalError::Gateway` if the executable path can't be determined
+/// or the new process can't be started.
 #[cfg(windows)]
-fn re_exec_serve_foreground() -> Result<(), FatalError> {
-    let raw_exe = std::env::current_exe().map_err(|e| {
-        FatalError::Gateway(format!(
-            "failed to determine current executable for re-exec: {e}"
-        ))
-    })?;
-
-    let exe = resolve_exe_path(&raw_exe);
-
-    tracing::info!(exe = %exe.display(), "spawning updated binary and exiting");
-
-    let original_args: Vec<String> = std::env::args().skip(1).collect();
-    std::process::Command::new(&exe)
-        .args(&original_args)
-        .spawn()
-        .map_err(|e| FatalError::Gateway(format!("failed to spawn updated binary: {e}")))?;
-
-    // New process will acquire its own PID lock; exit this one.
-    std::process::exit(0);
+fn relaunch(
+    pid_lock: residuum::daemon::PidFileLock,
+    pid_path: &std::path::Path,
+) -> Result<(), FatalError> {
+    remove_pid_file(pid_path);
+    drop(pid_lock);
+    let mut cmd = relaunch_command()?;
+    cmd.spawn()
+        .map_err(|e| FatalError::Gateway(format!("failed to start updated binary: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn resolve_exe_path_strips_deleted_suffix() {
         let raw = std::path::Path::new("/usr/bin/residuum (deleted)");

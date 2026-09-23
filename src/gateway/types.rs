@@ -55,25 +55,22 @@ pub struct TermSignal {
 }
 
 impl TermSignal {
-    /// Register the platform termination signal.
+    /// Register the SIGTERM listener.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error if the signal handler cannot be registered (Unix only).
+    /// Returns an I/O error if the signal handler cannot be registered.
     #[cfg(unix)]
     pub fn new() -> std::io::Result<Self> {
         let inner = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         Ok(Self { inner })
     }
 
-    /// Register the platform termination signal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error if the signal handler cannot be registered (Unix only).
+    /// Create the termination signal. Nothing to register on this platform.
     #[cfg(not(unix))]
-    pub fn new() -> std::io::Result<Self> {
-        Ok(Self {})
+    #[must_use]
+    pub fn new() -> Self {
+        Self {}
     }
 
     /// Wait for the termination signal. On non-Unix platforms this never resolves.

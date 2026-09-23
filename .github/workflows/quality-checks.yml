@@ -67,6 +67,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Install the version pinned in rust-toolchain.toml as its own toolchain;
+      # the runner image's baked-in toolchain can't be updated in place.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
       # build.rs refuses to compile without web/dist, which gets embedded in the binary
       - name: Build web assets
         run: cd web && npm ci && npm run build

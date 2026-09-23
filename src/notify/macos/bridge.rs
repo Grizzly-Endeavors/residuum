@@ -138,7 +138,7 @@ impl MacosBridge {
         let thread = thread_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            post_notification_sync(&id, text, &cat_id, interruption_level, sound, &thread);
+            post_notification_sync(&id, &text, &cat_id, interruption_level, sound, &thread);
         })
         .await
         .map_err(|e| anyhow::anyhow!("notification post task failed: {e}"))?;
@@ -180,21 +180,18 @@ impl MacosBridge {
     }
 
     pub fn handle_action(&self, action_id: &str, notification_id: &str) {
-        match action_id {
-            "open" => {
-                if let Some(ref web_url) = self.config.web_url {
-                    let url = format!("{web_url}/notification/{notification_id}");
-                    open_url(&url);
-                } else {
-                    tracing::debug!(
-                        action_id,
-                        notification_id,
-                        "open action received but no web_url configured, skipping"
-                    );
-                }
+        // "dismiss" is the default macOS action and needs no handling
+        if action_id == "open" {
+            if let Some(ref web_url) = self.config.web_url {
+                let url = format!("{web_url}/notification/{notification_id}");
+                open_url(&url);
+            } else {
+                tracing::debug!(
+                    action_id,
+                    notification_id,
+                    "open action received but no web_url configured, skipping"
+                );
             }
-            // "dismiss" is the default macOS action — no-op
-            _ => {}
         }
     }
 
@@ -266,7 +263,7 @@ impl NotificationBridge for MacosBridge {
 /// on missing selectors or nil center — we log rather than crash the process.
 fn post_notification_sync(
     identifier: &str,
-    text: NotificationText,
+    text: &NotificationText,
     category_id: &str,
     level: MacosInterruptionLevel,
     sound: bool,

@@ -21,10 +21,10 @@ pub fn cleanup_old_binary() {
     {
         if let Ok(exe) = std::env::current_exe() {
             let old = exe.with_extension("exe.old");
-            if old.exists() {
-                if let Err(e) = std::fs::remove_file(&old) {
-                    tracing::debug!(path = %old.display(), error = %e, "could not remove old binary (may still be in use)");
-                }
+            if old.exists()
+                && let Err(e) = std::fs::remove_file(&old)
+            {
+                tracing::debug!(path = %old.display(), error = %e, "could not remove old binary (may still be in use)");
             }
         }
     }
@@ -270,7 +270,11 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
     {
         let old_path = exe_path.with_extension("exe.old");
         // Remove any leftover .old from a previous update
-        let _ = std::fs::remove_file(&old_path);
+        if let Err(e) = std::fs::remove_file(&old_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %old_path.display(), error = %e, "failed to remove leftover .exe.old before update");
+        }
         std::fs::rename(&exe_path, &old_path)
             .inspect_err(|_| cleanup())
             .with_context(|| {
@@ -409,8 +413,9 @@ mod tests {
             ("windows", "x86_64"),
         ] {
             let asset = release_asset_name(os, arch).unwrap();
+            let expected = format!("artifact: {asset}");
             assert!(
-                release_workflow.contains(&format!("artifact: {asset}\n")),
+                release_workflow.lines().any(|line| line.trim() == expected),
                 "{os}/{arch} maps to {asset}, which release.yml does not build"
             );
         }

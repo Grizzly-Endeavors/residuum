@@ -492,8 +492,9 @@ mod tests {
             output.contains("<description>Extracts text from PDFs</description>"),
             "should contain description"
         );
+        let location = PathBuf::from("/tmp/skills/pdf-processing").join("SKILL.md");
         assert!(
-            output.contains("/tmp/skills/pdf-processing/SKILL.md"),
+            output.contains(&format!("<location>{}</location>", location.display())),
             "should contain full location path"
         );
     }

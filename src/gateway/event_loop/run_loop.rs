@@ -176,8 +176,11 @@ async fn spawn_server_and_adapters(
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) =
         spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx), workbench_serving.port());
+    #[cfg(unix)]
     let sigterm = crate::gateway::types::TermSignal::new()
         .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
+    #[cfg(not(unix))]
+    let sigterm = crate::gateway::types::TermSignal::new();
     let watcher_handle = Some(watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),

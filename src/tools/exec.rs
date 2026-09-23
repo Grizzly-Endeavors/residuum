@@ -309,10 +309,14 @@ fn shell_command(command: &str) -> Command {
         c.arg("-c").arg(command);
         c
     }
+    // Passed raw because cmd.exe doesn't parse the backslash-escaped quotes
+    // that normal argument quoting produces. `/S` strips only the outer pair
+    // of quotes, so the command runs exactly as written, including one that
+    // starts with a quoted path.
     #[cfg(windows)]
     {
         let mut c = Command::new("cmd");
-        c.args(["/C", command]);
+        c.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
         c
     }
 }
@@ -550,13 +554,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exec_passes_quotes_through_to_the_shell() {
+        let tool = ExecTool::new(None, None);
+        let result = tool
+            .execute(serde_json::json!({ "command": "echo \"hello  world\"" }))
+            .await
+            .unwrap();
+        assert!(
+            !result.is_error,
+            "command should succeed: {}",
+            result.output
+        );
+        // cmd's echo prints the quotes; sh's removes them. Either way the
+        // double space inside the quotes must survive.
+        assert!(
+            result.output.contains("hello  world"),
+            "got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
     async fn exec_output_truncated() {
         let tool = ExecTool::new(None, None);
         // Generate more than 100KB of output
+        let command = if cfg!(windows) {
+            "powershell -NoProfile -Command \"'x' * 204800\""
+        } else {
+            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
+        };
         let result = tool
-            .execute(serde_json::json!({
-                "command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
-            }))
+            .execute(serde_json::json!({ "command": command }))
             .await
             .unwrap();
 

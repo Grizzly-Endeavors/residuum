@@ -1,4 +1,4 @@
-name: Cross-Platform Compile Checks
+name: Cross-Platform Checks
 
 # Opt-in: runs on a PR carrying the `cross-compile` label, on a PR that changes
 # dependencies or the toolchain, or by hand with
@@ -57,7 +57,7 @@ jobs:
           echo "Cross-compile: $run ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
 
   cross-check:
-    name: Compile check (${{ matrix.target }})
+    name: Clippy (${{ matrix.target }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: lab-runners
@@ -78,14 +78,21 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
+      # Install the version pinned in rust-toolchain.toml as its own toolchain;
+      # the runner image's baked-in toolchain can't be updated in place.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
       - name: Add target
         run: rustup target add ${{ matrix.target }}
 
-      - name: Compile check
-        run: cargo check --all-targets --all-features --target ${{ matrix.target }}
+      # Clippy rather than check, so code behind a cfg for another platform is
+      # held to the same lints as the host build
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --target ${{ matrix.target }} -- -D warnings
 
   macos-check:
-    name: Compile check (aarch64-apple-darwin)
+    name: Clippy (aarch64-apple-darwin)
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: macos-15
@@ -93,8 +100,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
+      - name: Install rustup
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -117,5 +127,50 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
-      - name: Compile check
-        run: cargo check --all-targets --all-features --target aarch64-apple-darwin
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --target aarch64-apple-darwin -- -D warnings
+
+  # Runs the test suite on real Windows, where cfg(windows) code actually
+  # executes: file permissions, PID locking, process spawning, and re-exec.
+  windows-tests:
+    name: Tests (Windows)
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install rustup
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache cargo registry and target dir
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x86_64-msvc-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            windows-x86_64-msvc-cargo-
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
+
+      - name: Test
+        run: cargo test --quiet --all-features
