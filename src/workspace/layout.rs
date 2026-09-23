@@ -2,6 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// The workbench directory's name inside the workspace, which is also its
+/// workspace-relative path.
+pub const WORKBENCH_DIR: &str = "workbench";
+
 /// Workspace directory layout with path helpers for identity files and storage.
 #[derive(Debug, Clone)]
 pub struct WorkspaceLayout {
@@ -118,11 +122,11 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
-    /// Path to the workbench directory: single-file HTML artifacts the agent builds
-    /// for the user, served in the web UI at `/workbench/{name}`.
+    /// Path to the workbench directory: the artifacts the agent builds for the
+    /// user (single pages or folders), served in the web UI at `/workbench/{name}`.
     #[must_use]
     pub fn workbench_dir(&self) -> PathBuf {
-        self.root.join("workbench")
+        self.root.join(WORKBENCH_DIR)
     }
 
     /// Path to BOOTSTRAP.md -- first-run guidance, deleted after first conversation.

@@ -81,6 +81,8 @@ struct SpawnedHandles {
     webhooks: crate::interfaces::webhook::WebhookTable,
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    change_feed_handle: Option<tokio::task::JoinHandle<()>>,
+    workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     workbench_serving: crate::workbench::server::WorkbenchServing,
     workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
@@ -180,6 +182,8 @@ async fn spawn_server_and_adapters(
     let file_registry = crate::gateway::file_server::FileRegistry::new();
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
+    let (workspace_watch_health_tx, workspace_watch_health) =
+        tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
     let state = GatewayState {
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
@@ -195,6 +199,7 @@ async fn spawn_server_and_adapters(
         session_store: Arc::clone(&parts.session_store),
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
+        workspace_watch_health: workspace_watch_health.clone(),
     };
     let tracing_service = Arc::clone(&parts.tracing_service);
     let (workbench_serving, workbench_listener_shutdown_tx) =
@@ -236,10 +241,8 @@ async fn spawn_server_and_adapters(
         parts.layout.agent_card_json(),
         core.reload_tx.clone(),
     ));
-    let workbench_watcher_handle = Some(crate::workbench::watcher::spawn_workbench_watcher(
-        parts.layout.workbench_dir(),
-        core.publisher.clone(),
-    ));
+    let (workbench_watcher_handle, change_feed_handle) =
+        spawn_change_feed_tasks(core, &parts.layout, workspace_watch_health_tx).await;
 
     Ok(SpawnedHandles {
         server_handle,
@@ -254,9 +257,42 @@ async fn spawn_server_and_adapters(
         webhooks,
         watcher_handle,
         workbench_watcher_handle,
+        change_feed_handle,
+        workspace_watch_health,
         workbench_serving,
         workbench_listener_shutdown_tx,
     })
+}
+
+/// Start the workspace change feed and the artifact reload watcher that
+/// follows it. Returns their handles (reload watcher first).
+async fn spawn_change_feed_tasks(
+    core: &GatewayCore,
+    layout: &crate::workspace::layout::WorkspaceLayout,
+    health_tx: tokio::sync::watch::Sender<crate::workspace::watch::WatchHealth>,
+) -> (
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let workbench_watcher = match crate::workbench::watcher::spawn_workbench_watcher(
+        layout.workbench_dir(),
+        &core.bus_handle,
+        core.publisher.clone(),
+    )
+    .await
+    {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to subscribe the artifact reload watcher to the workspace change feed; open artifacts won't reload on their own");
+            None
+        }
+    };
+    let change_feed = crate::workspace::watch::spawn_change_feed(
+        layout.root().to_path_buf(),
+        core.publisher.clone(),
+        health_tx,
+    );
+    (workbench_watcher, Some(change_feed))
 }
 
 /// Update, lifecycle, and model-call channels bundled to reduce argument
@@ -412,6 +448,8 @@ async fn build_runtime(
         a2a_card_state: spawned.adapters.a2a_card_state,
         watcher_handle: spawned.watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
+        change_feed_handle: spawned.change_feed_handle,
+        workspace_watch_health: spawned.workspace_watch_health,
         workbench_listener_shutdown_tx: spawned.workbench_listener_shutdown_tx,
         workbench_serving: spawned.workbench_serving,
         reload_tx: core.reload_tx,
@@ -624,6 +662,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(h) = rt.workbench_watcher_handle.take() {
         h.abort();
     }
+    if let Some(h) = rt.change_feed_handle.take() {
+        h.abort();
+    }
     if let Some(tx) = rt.workbench_listener_shutdown_tx.take() {
         tx.send(true).ok();
     }
@@ -650,8 +691,12 @@ async fn run_observation(rt: &mut GatewayRuntime) {
     execute_observation(&mem, &mut rt.agent).await;
 }
 
-/// Respawn the cloud tunnel after an unexpected exit.
-fn respawn_tunnel(rt: &mut GatewayRuntime) {
+/// Log the cloud tunnel task's unexpected exit and respawn it.
+fn respawn_tunnel(rt: &mut GatewayRuntime, exit: &Result<(), tokio::task::JoinError>) {
+    match exit {
+        Ok(()) => tracing::error!("tunnel task exited unexpectedly, attempting respawn"),
+        Err(e) => tracing::error!(error = %e, "tunnel task failed, attempting respawn"),
+    }
     if let Some(ref cloud_cfg) = rt.cloud_config {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -684,7 +729,7 @@ async fn poll_handle(
     }
 }
 
-/// Resolves when the first of the chat adapters or the workspace watcher
+/// Resolves when the first of the chat adapters or the workspace watchers
 /// exits, naming which one; pends forever while none are running.
 async fn next_log_only_task_exit(
     discord: &mut Option<tokio::task::JoinHandle<()>>,
@@ -692,13 +737,15 @@ async fn next_log_only_task_exit(
     teams: &mut Option<tokio::task::JoinHandle<()>>,
     watcher: &mut Option<tokio::task::JoinHandle<()>>,
     workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
+    change_feed: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
     tokio::select! {
         result = poll_handle(discord) => ("discord adapter", result),
         result = poll_handle(telegram) => ("telegram adapter", result),
         result = poll_handle(teams) => ("teams adapter", result),
-        result = poll_handle(watcher) => ("workspace watcher", result),
-        result = poll_handle(workbench_watcher) => ("workbench watcher", result),
+        result = poll_handle(watcher) => ("workspace config watcher", result),
+        result = poll_handle(workbench_watcher) => ("artifact reload watcher", result),
+        result = poll_handle(change_feed) => ("workspace change feed", result),
     }
 }
 
@@ -885,11 +932,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             result = poll_handle(&mut rt.tunnel_handle) => {
-                match &result {
-                    Ok(()) => tracing::error!("tunnel task exited unexpectedly, attempting respawn"),
-                    Err(e) => tracing::error!(error = %e, "tunnel task failed, attempting respawn"),
-                }
-                respawn_tunnel(&mut rt);
+                respawn_tunnel(&mut rt, &result);
             }
 
             (task_name, result) = next_log_only_task_exit(
@@ -898,6 +941,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 &mut rt.teams_handle,
                 &mut rt.watcher_handle,
                 &mut rt.workbench_watcher_handle,
+                &mut rt.change_feed_handle,
             ) => {
                 log_adapter_task_exit(task_name, &result);
             }

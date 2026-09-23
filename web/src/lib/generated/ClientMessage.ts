@@ -59,4 +59,8 @@ id: string,
 /**
  * Address of the session to stop.
  */
-address: string, };
+address: string, } | { "type": "watch_workspace", 
+/**
+ * Workspace-relative paths, matched by whole segments.
+ */
+prefixes: Array<string>, };

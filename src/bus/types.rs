@@ -77,6 +77,8 @@ pub enum TopicId {
     Inbox,
     /// Workbench artifact file changes.
     Workbench,
+    /// Debounced workspace file changes (the change feed).
+    Workspace,
 }
 
 impl fmt::Display for TopicId {
@@ -89,6 +91,7 @@ impl fmt::Display for TopicId {
             Self::Notification(name) => write!(f, "notification:{name}"),
             Self::Inbox => f.write_str("inbox"),
             Self::Workbench => f.write_str("workbench"),
+            Self::Workspace => f.write_str("workspace"),
         }
     }
 }

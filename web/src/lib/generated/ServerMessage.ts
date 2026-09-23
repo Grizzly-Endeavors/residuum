@@ -4,6 +4,8 @@ import type { SessionDeliveryOutcome } from "./SessionDeliveryOutcome";
 import type { SessionRunStatus } from "./SessionRunStatus";
 import type { SessionState } from "./SessionState";
 import type { SessionSummary } from "./SessionSummary";
+import type { WorkspaceChange } from "./WorkspaceChange";
+import type { WorkspaceResyncReason } from "./WorkspaceResyncReason";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
@@ -297,4 +299,16 @@ name: string, } | { "type": "artifact_removed",
 /**
  * Artifact name, as used in `/workbench/{name}`.
  */
-name: string, };
+name: string, } | { "type": "workspace_changed", 
+/**
+ * The matching changes of one debounced batch, sorted by path.
+ */
+changes: Array<WorkspaceChange>, } | { "type": "workspace_resync", 
+/**
+ * Why changes may have been missed.
+ */
+reason: WorkspaceResyncReason, } | { "type": "workspace_watch_unavailable", 
+/**
+ * Plain-language explanation for the user.
+ */
+message: string, };

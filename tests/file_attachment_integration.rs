@@ -83,7 +83,9 @@ mod tests {
         let publisher = bus.publisher();
         let ep = EndpointName::from("ws");
         let file_registry = FileRegistry::new();
-        let mut subs = WsSubscribers::new(&bus, ep.clone(), file_registry)
+        let (_watch_tx, watch_set) =
+            tokio::sync::watch::channel(residuum::workspace::watch::WatchSet::default());
+        let mut subs = WsSubscribers::new(&bus, ep.clone(), file_registry, watch_set)
             .await
             .unwrap();
 

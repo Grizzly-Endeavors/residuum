@@ -6,6 +6,7 @@ use ts_rs::TS;
 
 use crate::background::registry::{SessionCategory, SessionState};
 use crate::inference::ImageData;
+use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -72,6 +73,13 @@ pub enum ClientMessage {
         id: String,
         /// Address of the session to stop.
         address: String,
+    },
+    /// Replace this connection's watched workspace prefixes. `[]` stops
+    /// watching; `""` watches the whole workspace. An invalid prefix is
+    /// answered with an `Error` frame and leaves the set unchanged.
+    WatchWorkspace {
+        /// Workspace-relative paths, matched by whole segments.
+        prefixes: Vec<String>,
     },
 }
 
@@ -456,6 +464,23 @@ pub enum ServerMessage {
     ArtifactRemoved {
         /// Artifact name, as used in `/workbench/{name}`.
         name: String,
+    },
+    /// Workspace files under this connection's watched prefixes changed.
+    WorkspaceChanged {
+        /// The matching changes of one debounced batch, sorted by path.
+        changes: Vec<WorkspaceChange>,
+    },
+    /// This connection's view of its watched prefixes may be stale; reload
+    /// what they show. Sent instead of `WorkspaceChanged`.
+    WorkspaceResync {
+        /// Why changes may have been missed.
+        reason: WorkspaceResyncReason,
+    },
+    /// The workspace watcher isn't running, so no workspace frames will
+    /// arrive. Sent to watching connections.
+    WorkspaceWatchUnavailable {
+        /// Plain-language explanation for the user.
+        message: String,
     },
 }
 
@@ -866,6 +891,36 @@ mod tests {
                 "run_id": "run-1",
                 "state": "idle",
             })
+        );
+    }
+
+    #[test]
+    fn workspace_watch_frames_round_trip_the_documented_shapes() {
+        let watch: ClientMessage =
+            serde_json::from_str(r#"{"type":"watch_workspace","prefixes":["wiki",""]}"#).unwrap();
+        assert!(
+            matches!(&watch, ClientMessage::WatchWorkspace { prefixes } if prefixes == &["wiki", ""])
+        );
+
+        let changed = ServerMessage::WorkspaceChanged {
+            changes: vec![WorkspaceChange {
+                path: "wiki/a.md".into(),
+                kind: crate::workspace::watch::WorkspaceChangeKind::Created,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&changed).unwrap(),
+            serde_json::json!({
+                "type": "workspace_changed",
+                "changes": [{ "path": "wiki/a.md", "kind": "created" }],
+            })
+        );
+        let resync = ServerMessage::WorkspaceResync {
+            reason: WorkspaceResyncReason::WatcherRestarted,
+        };
+        assert_eq!(
+            serde_json::to_value(&resync).unwrap(),
+            serde_json::json!({ "type": "workspace_resync", "reason": "watcher_restarted" })
         );
     }
 }

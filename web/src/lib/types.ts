@@ -18,6 +18,9 @@ export type {
   WorkbenchInfo,
   WorkbenchRelayOrigins,
   ArtifactSummary,
+  WorkspaceChange,
+  WorkspaceChangeKind,
+  WorkspaceResyncReason,
 } from "./generated/protocol";
 
 // Local aliases for use within this file

@@ -7,7 +7,7 @@
 use super::events::{
     AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent,
     NotificationEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
-    ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent,
+    ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -122,6 +122,18 @@ impl Topic for Workbench {
 }
 
 impl Carries<WorkbenchEvent> for Workbench {}
+
+/// The workspace change feed: debounced batches of file changes anywhere in
+/// the workspace, for WebSocket watchers and artifact reloads.
+pub struct Workspace;
+
+impl Topic for Workspace {
+    fn topic_id(&self) -> TopicId {
+        TopicId::Workspace
+    }
+}
+
+impl Carries<WorkspaceEvent> for Workspace {}
 
 // ---------------------------------------------------------------------------
 // Tests

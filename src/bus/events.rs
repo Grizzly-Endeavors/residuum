@@ -660,23 +660,39 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-/// A workbench artifact file (`workbench/<name>.html`) appeared, changed, or
-/// was deleted.
+/// A workbench artifact appeared, changed, or was deleted: its page, or any
+/// file in its folder.
 ///
 /// Carried on [`super::topics::Workbench`] so open workbench views can reload
-/// the artifact live while the agent edits it.
+/// the artifact live while the agent edits it. Derived from the workspace
+/// change feed ([`WorkspaceEvent`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchEvent {
-    /// The artifact's page was created or modified.
+    /// The artifact was created or modified.
     Updated {
-        /// Artifact name (the file stem).
+        /// Artifact name.
         name: String,
     },
-    /// The artifact's page was deleted.
+    /// The artifact was deleted.
     Removed {
-        /// Artifact name (the file stem).
+        /// Artifact name.
         name: String,
     },
+}
+
+/// One debounced batch from the workspace change feed.
+///
+/// Carried on [`super::topics::Workspace`]. Each WebSocket connection filters
+/// batches by the prefixes it watches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceEvent {
+    /// The changes of one batch, sorted by path. Shared so every subscriber
+    /// gets the batch without copying it.
+    Changed(std::sync::Arc<[crate::workspace::watch::WorkspaceChange]>),
+    /// Changes may have been missed; watchers must reload what they show.
+    Resync(crate::workspace::watch::WorkspaceResyncReason),
+    /// The watcher stopped: live updates are off.
+    Unavailable,
 }
 
 #[cfg(test)]
