@@ -652,23 +652,33 @@ On error:
 **Source:** `background.rs` · `StopAgentTool`
 
 **Description sent to LLM:**
-> Stop a live session by address. Cancels any in-flight turn and moves the session to completing; its transcript is kept, not discarded. The main agent cannot be stopped this way. Use list_agents to find live addresses.
+> Stop a live session by address, or cancel your open task with a remote agent (address "a2a:<name>"). Stopping a session cancels any in-flight turn and moves it to completing; its transcript is kept, not discarded. The main agent cannot be stopped this way. Use list_agents to find live addresses and remote agents.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                  |
 |-----------|--------|----------|----------------------------------------------|
-| `address` | string | yes      | The address of the session to stop           |
+| `address` | string | yes      | The address of the session to stop, or `"a2a:<name>"` to cancel the caller's open task with that remote agent |
 
 ### Output
 
-On success: `"Stopping session {address}."`
+On success (session): `"Stopping session {address}."`
+
+On success (remote agent): `"Canceling task {task_id} with remote agent a2a:{name}."`
 
 On error (`address` is `"main"`): `InvalidArguments` — the main agent cannot be stopped this way.
 
 On error (address not live): `"No live session with address {address}."` (returned as `is_error = true`)
 
-**Side effect:** Cancels the session's stop token. A running turn ends at its next checkpoint (model-call boundary or tool-loop iteration); an idle session skips straight to completing. Either way the run's transcript so far is kept and merged like any other completed run.
+On error (unknown remote agent, `is_error = true`): `"no remote agent named 'a2a:{name}'. Check config/a2a.json or list_agents."`
+
+On error (no open task with that remote agent, `is_error = true`): `"no open task with remote agent a2a:{name}."`
+
+On error (the remote agent can't be reached to cancel, `is_error = true`): the hub's plain-language reachability error.
+
+**Side effect (session):** Cancels the session's stop token. A running turn ends at its next checkpoint (model-call boundary or tool-loop iteration); an idle session skips straight to completing. Either way the run's transcript so far is kept and merged like any other completed run.
+
+**Side effect (remote agent):** Calls `CancelTask` on the caller's open task with that agent via the `A2aClientHub`/`RemoteTaskTracker` (`crate::a2a::client`). The task's outcome (typically `canceled`) is delivered back to the caller the same way any other outbound-task update is — see `message_agent` below and `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -677,7 +687,7 @@ On error (address not live): `"No live session with address {address}."` (return
 **Source:** `background.rs` · `ListAgentsTool`
 
 **Description sent to LLM:**
-> List the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, and purpose. Completed sessions are not listed, but their addresses remain valid.
+> List the main agent, every live (running or idle) session, and every remote agent reachable over A2A (address "a2a:<name>"): for sessions, address, category, source, state, depth, spawner, elapsed time, and purpose; for remote agents, online status, description, skills, and your own open tasks with them. Completed sessions are not listed, but their addresses remain valid.
 
 ### Input
 
@@ -689,9 +699,13 @@ No parameters required (empty object accepted).
 main — always live
 {N} live session(s):
   [{address}] {source_label} — category: {scheduled|external|spawned} — state: {forking|running|idle|completing} — depth: {N} — spawner: {address|-} — running {elapsed}s — purpose: {prompt/task preview, up to 120 chars}
+
+{N} remote agent(s):
+  [a2a:{name}] {resolving its agent card|online — {description}|error — {reachability message}} — skills: {name} ({id}), ...
+    task {task_id} — {state} — {last_status_text|(no status yet)}
 ```
 
-`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one.
+`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` via the `A2aClientHub`; the skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -744,14 +758,15 @@ The session runs in the background via the session runtime. Every turn's outcome
 **Source:** `message_agent.rs` · `MessageAgentTool`
 
 **Description sent to LLM:**
-> Send a text message to another agent by address — main, or any session (running, idle, or previously completed). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses.
+> Send a text message to another agent by address — main, any session (running, idle, or previously completed), or a remote agent reachable over A2A (address "a2a:<name>"). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. A remote agent's reply does not arrive immediately — it comes back later as an agent message from "a2a:<name>", once its task reaches a state that needs your attention. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses and remote agents.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                                  |
 |-----------|--------|----------|----------------------------------------------------------------|
-| `to`      | string | yes      | Address to message: `"main"`, or a session address from `list_agents`. |
+| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, or `"a2a:<name>"` for a remote agent. |
 | `message` | string | yes      | The message body.                                             |
+| `skill`   | string | no       | Only meaningful when `to` is a remote agent: the id of one of its advertised skills, sent as `message.metadata.skill`. |
 
 ### Output
 
@@ -759,7 +774,11 @@ The session runs in the background via the session runtime. Every turn's outcome
 - Delivered to a live session: `"Message delivered to {address}."`
 - The target session is completing: `"Session {address} is completing; your message will be delivered once it finishes, resuming it as a new run."` (`is_error = false`) — the call returns immediately; delivery itself happens on a detached task once the run clears (see Side effects).
 - Delivered to a completed session: `"Session {address} had completed; message delivered by resuming it as a new run."` (`is_error = false` — the resume itself is not a failure)
+- Sent to a remote agent: `"Sent to remote agent a2a:{name} (task {task_id}). Its reply will arrive as an agent message."` (`is_error = false`) — the call returns as soon as the remote agent accepts the task; it does not wait for the task to progress.
 - Unknown address (`is_error = true`): `"no such agent '{to}'. Use list_agents to see live sessions; a completed session's address only works again once it has run at least once."`
+- Unknown remote agent (`is_error = true`): `"no remote agent named 'a2a:{name}'. Check config/a2a.json or list_agents for known remote agents."`
+- Remote agent not currently reachable (`is_error = true`): the hub's plain-language reachability error (e.g. its card hasn't resolved, or the last attempt failed).
+- Remote agent rejected the request (`is_error = true`): `"remote agent a2a:{name} couldn't complete the request: {error}"`
 - Messaging yourself (`is_error = true`): `"cannot message yourself"`
 - An `artifact` session messaging `main` (`is_error = true`): `"artifact sessions can't reach the main conversation: your responses are shown to the artifact that started you. To bring something to the user's attention, file an inbox item with user_inbox_add instead."` Nothing is delivered. Every other target works as usual for an artifact session.
 - Target's interrupt channel is saturated (`is_error = true`, vanishingly unlikely): `"agent {address} is busy, try again shortly"` — never falls back to a resume, which would double-register the address.
@@ -769,6 +788,10 @@ The session runs in the background via the session runtime. Every turn's outcome
 ### Errors
 
 - Missing or empty `to`/`message` → `InvalidArguments`
+
+### Remote agents (`to: "a2a:<name>"`)
+
+Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card and builds a protocol client) and `RemoteTaskTracker` (persists the outbound task and starts watching it). If the caller has an open task with that agent waiting on a reply (`INPUT_REQUIRED`/`AUTH_REQUIRED`), the message is sent as a follow-up on that task; otherwise a new task starts in the persisted (caller, agent) conversation context, if one exists. The send uses `configuration.return_immediately = true`, so the tool returns as soon as the remote agent accepts the task. The task's later outcome — it asks a question, needs auth, completes, fails, or is canceled — is delivered back to the caller via `AgentMessenger::send`, from address `a2a:{name}`, category `"remote"`. See `docs/systems-usage/a2a.md` for the delivery format and artifact handling.
 
 **Hop counts:** every delivered message carries a hop count — one more than the highest hop count among the inputs driving the sender's current turn (its kickoff input, plus any agent messages drained mid-turn). A message that arrives mid-turn but isn't consumed before the turn ends carries its hop count forward into whichever turn picks it up next rather than losing it, so a loop can't reset the count to zero just by arriving at the wrong moment. At or above `hop_soft_limit` (`[background]`, default 8) the delivered content carries an added note asking the receiver to reply only if a reply is actually needed. At or above `hop_hard_limit` (default 32) delivery is refused outright (see Output above).
 

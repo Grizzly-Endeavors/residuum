@@ -305,6 +305,11 @@ pub(crate) struct GatewayRuntime {
     /// The live agent card, so a workspace-file reload can update it without
     /// restarting the listener. `None` when A2A is disabled.
     pub a2a_card_state: Option<crate::a2a::SharedCardState>,
+    /// Remote A2A agents this instance's client can reach, loaded from
+    /// `config/a2a.json` and reloaded on every workspace config change.
+    pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents.
+    pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// The workspace change feed (one recursive watcher over the workspace).
     pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,

@@ -67,6 +67,11 @@ pub(crate) struct GatewayComponents {
     pub tracing_service: Arc<crate::tracing_service::TracingService>,
     /// Snapshot of the runtime client context for bug-report submissions.
     pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
+    /// Remote A2A agents this instance's client can reach, loaded from
+    /// `config/a2a.json`.
+    pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents.
+    pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 /// Bootstrap the workspace directory and return the layout and timezone.
@@ -237,6 +242,8 @@ struct StartupSpawnContextInputs<'a> {
     tools_path: &'a SharedToolsPath,
     path_policy: &'a crate::tools::SharedPathPolicy,
     agent_keys: &'a crate::agent_keys::SharedAgentKeys,
+    a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
+    a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
@@ -275,6 +282,8 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         tools_path: Arc::clone(inputs.tools_path),
         path_policy: Arc::clone(inputs.path_policy),
         agent_keys: Arc::clone(inputs.agent_keys),
+        a2a_hub: Arc::clone(inputs.a2a_hub),
+        a2a_tracker: Arc::clone(inputs.a2a_tracker),
     })
 }
 
@@ -445,6 +454,34 @@ pub(crate) async fn connect_web_search_mcp(
         tracing::warn!(server = %name, error = %err, "failed to start web search MCP server");
     }
     report
+}
+
+/// Build the A2A client hub and outbound task tracker: load `config/a2a.json`,
+/// resolve its agents' cards, resume watching any outbound tasks left open
+/// from a prior run, and start the hub's background card-refresh loop.
+async fn init_a2a_client(
+    layout: &WorkspaceLayout,
+    agent_keys: &crate::agent_keys::SharedAgentKeys,
+    messenger: Arc<AgentMessenger>,
+) -> (
+    Arc<crate::a2a::A2aClientHub>,
+    Arc<crate::a2a::RemoteTaskTracker>,
+) {
+    let hub = crate::a2a::A2aClientHub::new_shared();
+    hub.reload_from_file(&layout.a2a_agents_json(), agent_keys)
+        .await;
+    hub.spawn_background_refresh();
+
+    let tracker = crate::a2a::RemoteTaskTracker::load(
+        layout.a2a_outbound_json(),
+        Arc::clone(&hub),
+        messenger,
+        layout.agent_inbox_dir(),
+    )
+    .await;
+    tracker.spawn_resume_watchers().await;
+
+    (hub, tracker)
 }
 
 /// Load channel configs and build the endpoint registry.
@@ -659,6 +696,8 @@ struct MainAgentInputs<'a> {
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
     agent_messenger: &'a Arc<AgentMessenger>,
+    a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
+    a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 /// Create main's hop counter and build the agent from it, wrapping
@@ -695,6 +734,8 @@ async fn build_main_agent(
             tracing_client_context: inputs.tracing_client_context,
             agent_messenger: inputs.agent_messenger,
             hop_counter: &hop_counter,
+            a2a_hub: inputs.a2a_hub,
+            a2a_tracker: inputs.a2a_tracker,
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -703,6 +744,98 @@ async fn build_main_agent(
         hop_counter: hop_counter.clone(),
     })
     .await
+}
+
+/// Inputs to [`build_spawn_context_and_agent`], gathered because it wraps
+/// both [`build_startup_spawn_context`] and [`build_main_agent`], which
+/// between them need this many independent pieces. Split out of
+/// [`initialize`] purely to keep that function's line count down.
+struct AgentInitInputs<'a> {
+    cfg: &'a Config,
+    layout: &'a WorkspaceLayout,
+    tz: chrono_tz::Tz,
+    http_client: SharedHttpClient,
+    mem: &'a memory::MemoryComponents,
+    net: &'a NetworkingComponents,
+    session_runtime: &'a Arc<SessionRuntime>,
+    session_registry: &'a Arc<SessionRegistry>,
+    session_observer: &'a Arc<Observer>,
+    merge_writer: &'a Arc<MemoryMergeWriter>,
+    action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
+    action_notify: &'a Arc<tokio::sync::Notify>,
+    skill_state: &'a SharedSkillState,
+    publisher: &'a crate::bus::Publisher,
+    agent_messenger: &'a Arc<AgentMessenger>,
+    tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    path_policy: &'a crate::tools::SharedPathPolicy,
+    a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
+    a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    identity: IdentityFiles,
+    provider: Box<dyn crate::inference::InferenceProvider>,
+    options: crate::inference::CompletionOptions,
+}
+
+/// Build the `SpawnContext` every session forks from, and the main agent
+/// itself, from one bundle of inputs shared between the two.
+async fn build_spawn_context_and_agent(
+    inputs: AgentInitInputs<'_>,
+) -> (
+    Arc<SpawnContext>,
+    Agent,
+    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
+) {
+    let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
+        cfg: inputs.cfg,
+        layout: inputs.layout,
+        tz: inputs.tz,
+        http_client: inputs.http_client,
+        session_runtime: inputs.session_runtime,
+        session_registry: inputs.session_registry,
+        endpoint_registry: &inputs.net.endpoint_registry,
+        publisher: inputs.publisher,
+        action_store: inputs.action_store,
+        action_notify: inputs.action_notify,
+        hybrid_searcher: &inputs.mem.hybrid_searcher,
+        skill_state: inputs.skill_state,
+        mcp_registry: &inputs.net.mcp_registry,
+        session_observer: inputs.session_observer,
+        merge_writer: inputs.merge_writer,
+        messenger: inputs.agent_messenger,
+        tracing_service: inputs.tracing_service,
+        tracing_client_context: inputs.tracing_client_context,
+        web_search_backend: inputs.cfg.web_search.standalone_backend.clone(),
+        tools_path: &inputs.net.tools_path,
+        path_policy: inputs.path_policy,
+        agent_keys: &inputs.net.agent_keys,
+        a2a_hub: inputs.a2a_hub,
+        a2a_tracker: inputs.a2a_tracker,
+    });
+
+    let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
+        cfg: inputs.cfg,
+        layout: inputs.layout,
+        mem: inputs.mem,
+        tz: inputs.tz,
+        identity: inputs.identity,
+        provider: inputs.provider,
+        options: inputs.options,
+        net: inputs.net,
+        path_policy: inputs.path_policy,
+        action_store: inputs.action_store,
+        action_notify: inputs.action_notify,
+        skill_state: inputs.skill_state,
+        session_registry: inputs.session_registry,
+        publisher: inputs.publisher,
+        tracing_service: inputs.tracing_service,
+        tracing_client_context: inputs.tracing_client_context,
+        agent_messenger: inputs.agent_messenger,
+        a2a_hub: inputs.a2a_hub,
+        a2a_tracker: inputs.a2a_tracker,
+    })
+    .await;
+
+    (spawn_context, agent, output_topic_override_tx)
 }
 
 /// Initialize all gateway subsystems from config.
@@ -743,52 +876,36 @@ pub(crate) async fn initialize(
     let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(
         crate::tools::path_policy::blocked_write_paths(cfg, &layout),
     );
+    let (a2a_hub, a2a_tracker) =
+        init_a2a_client(&layout, &net.agent_keys, Arc::clone(&agent_messenger)).await;
 
-    let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
-        cfg,
-        layout: &layout,
-        tz,
-        http_client: http.clone(),
-        session_runtime: &session_runtime,
-        session_registry: &session_registry,
-        endpoint_registry: &net.endpoint_registry,
-        publisher,
-        action_store: &action_store,
-        action_notify: &action_notify,
-        hybrid_searcher: &mem.hybrid_searcher,
-        skill_state: &skill_state,
-        mcp_registry: &net.mcp_registry,
-        session_observer: &session_observer,
-        merge_writer: &merge_writer,
-        messenger: &agent_messenger,
-        tracing_service: &tracing_service,
-        tracing_client_context: &tracing_client_context,
-        web_search_backend: cfg.web_search.standalone_backend.clone(),
-        tools_path: &net.tools_path,
-        path_policy: &path_policy,
-        agent_keys: &net.agent_keys,
-    });
-
-    let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
-        cfg,
-        layout: &layout,
-        mem: &mem,
-        tz,
-        identity,
-        provider: providers.provider,
-        options: providers.options,
-        net: &net,
-        path_policy: &path_policy,
-        action_store: &action_store,
-        action_notify: &action_notify,
-        skill_state: &skill_state,
-        session_registry: &session_registry,
-        publisher,
-        tracing_service: &tracing_service,
-        tracing_client_context: &tracing_client_context,
-        agent_messenger: &agent_messenger,
-    })
-    .await;
+    let (spawn_context, agent, output_topic_override_tx) =
+        build_spawn_context_and_agent(AgentInitInputs {
+            cfg,
+            layout: &layout,
+            tz,
+            http_client: http.clone(),
+            mem: &mem,
+            net: &net,
+            session_runtime: &session_runtime,
+            session_registry: &session_registry,
+            session_observer: &session_observer,
+            merge_writer: &merge_writer,
+            action_store: &action_store,
+            action_notify: &action_notify,
+            skill_state: &skill_state,
+            publisher,
+            agent_messenger: &agent_messenger,
+            tracing_service: &tracing_service,
+            tracing_client_context: &tracing_client_context,
+            path_policy: &path_policy,
+            a2a_hub: &a2a_hub,
+            a2a_tracker: &a2a_tracker,
+            identity,
+            provider: providers.provider,
+            options: providers.options,
+        })
+        .await;
 
     Ok(GatewayComponents {
         layout,
@@ -818,5 +935,7 @@ pub(crate) async fn initialize(
         output_topic_override_tx,
         tracing_service,
         tracing_client_context,
+        a2a_hub,
+        a2a_tracker,
     })
 }

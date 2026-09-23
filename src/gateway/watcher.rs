@@ -44,19 +44,21 @@ impl WatchedFile {
 
 /// Spawn a polling watcher for workspace config files.
 ///
-/// Polls `mcp_path`, `channels_path`, and `agent_card_path` every 2 seconds.
-/// When any file's mtime changes, debounces 500ms then sends
+/// Polls `mcp_path`, `channels_path`, `agent_card_path`, and `a2a_agents_path`
+/// every 2 seconds. When any file's mtime changes, debounces 500ms then sends
 /// `ReloadSignal::Workspace`.
 pub(super) fn spawn_workspace_watcher(
     mcp_path: PathBuf,
     channels_path: PathBuf,
     agent_card_path: PathBuf,
+    a2a_agents_path: PathBuf,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut mcp_file = WatchedFile::new(mcp_path);
         let mut channels_file = WatchedFile::new(channels_path);
         let mut agent_card_file = WatchedFile::new(agent_card_path);
+        let mut a2a_agents_file = WatchedFile::new(a2a_agents_path);
         let mut interval = tokio::time::interval(Duration::from_secs(2));
 
         // Skip the first immediate tick (files were just loaded at startup)
@@ -68,12 +70,14 @@ pub(super) fn spawn_workspace_watcher(
             let mcp_changed = mcp_file.check();
             let channels_changed = channels_file.check();
             let agent_card_changed = agent_card_file.check();
+            let a2a_agents_changed = a2a_agents_file.check();
 
-            if mcp_changed || channels_changed || agent_card_changed {
+            if mcp_changed || channels_changed || agent_card_changed || a2a_agents_changed {
                 tracing::debug!(
                     mcp_changed,
                     channels_changed,
                     agent_card_changed,
+                    a2a_agents_changed,
                     "workspace config file change detected, debouncing"
                 );
 
@@ -84,6 +88,7 @@ pub(super) fn spawn_workspace_watcher(
                 mcp_file.sync_mtime();
                 channels_file.sync_mtime();
                 agent_card_file.sync_mtime();
+                a2a_agents_file.sync_mtime();
 
                 tracing::info!("sending workspace reload signal");
                 if reload_tx.send(ReloadSignal::Workspace).is_err() {

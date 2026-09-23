@@ -156,6 +156,44 @@ pub struct SubAgentResources {
     pub(crate) hop_counter: HopCounter,
 }
 
+/// Build an isolated `SkillState` for a new sub-agent, cloned from
+/// `main_skill_state`'s index and dirs, with `skill` (if any) activated up
+/// front so its body renders as the sub-agent's role instructions through
+/// the normal active-skill path. Also returns the formatted skill index for
+/// the system prompt. Split out of [`build_subagent_resources`] to keep that
+/// function's line count down.
+///
+/// # Errors
+/// Returns an error if `skill` names a skill that cannot be resolved or
+/// read — a session without the instructions that define its job is not
+/// worth running, so the spawn fails instead.
+async fn prepare_session_skill_state(
+    main_skill_state: &SharedSkillState,
+    skill: Option<&str>,
+) -> anyhow::Result<(SharedSkillState, Option<String>)> {
+    let (cloned_skill_index, skill_dirs) = {
+        let guard = main_skill_state.lock().await;
+        (guard.index().clone(), guard.dirs().to_vec())
+    };
+    let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
+
+    if let Some(name) = skill {
+        let mut guard = skill_state.lock().await;
+        guard
+            .activate(name)
+            .await
+            .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
+    }
+
+    let skills_index = {
+        let guard = skill_state.lock().await;
+        let idx = guard.format_index_for_prompt();
+        if idx.is_empty() { None } else { Some(idx) }
+    };
+
+    Ok((skill_state, skills_index))
+}
+
 /// Build isolated session resources from the main agent's shared state.
 ///
 /// Clones the skill index so the session starts with the same view of
@@ -209,36 +247,15 @@ pub async fn build_subagent_resources(
         tools_path,
         path_policy,
         agent_keys,
+        a2a_hub,
+        a2a_tracker,
     } = config;
 
-    // Clone skill index and dirs for an isolated SkillState (no active skills)
-    let (cloned_skill_index, skill_dirs) = {
-        let guard = main_skill_state.lock().await;
-        (guard.index().clone(), guard.dirs().to_vec())
-    };
-    let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
-
-    // Activate the requested skill up front so its body renders as this
-    // sub-agent's role instructions through the normal active-skill path.
-    // A name that doesn't resolve fails the spawn rather than silently
-    // running a sub-agent without the instructions that define its job.
-    if let Some(name) = &skill {
-        let mut guard = skill_state.lock().await;
-        guard
-            .activate(name)
-            .await
-            .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
-    }
+    let (skill_state, skills_index) =
+        prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
     // Fresh file tracker (tracks reads within this sub-agent turn only)
     let tracker = FileTracker::new_shared();
-
-    // Build the formatted index for the system prompt
-    let skills_index = {
-        let guard = skill_state.lock().await;
-        let idx = guard.format_index_for_prompt();
-        if idx.is_empty() { None } else { Some(idx) }
-    };
 
     let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
         tracker,
@@ -270,6 +287,8 @@ pub async fn build_subagent_resources(
         tracing_service,
         tracing_client_context,
         web_search_backend,
+        a2a_hub,
+        a2a_tracker,
     });
 
     Ok(SubAgentResources {

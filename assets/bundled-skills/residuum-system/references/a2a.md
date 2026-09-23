@@ -14,4 +14,13 @@ Keep `name` and `description` non-empty and every skill `id` unique — an inval
 - **Visibility** (`public` vs `private` in `[a2a]`) and the listener's port are config, set by the user.
 - **Handling an inbound task.** The listener currently refuses every A2A request with an "unsupported operation" error — there is no session executor wired up to it yet. If asked whether you can receive tasks over A2A right now, say no rather than guessing; don't claim capability the system doesn't have yet.
 
+## Reaching other agents
+
+You can also delegate to other agents over A2A with your ordinary tools — `list_agents`, `message_agent`, `stop_agent` — using the address `a2a:<name>`. `config/a2a.json` lists them (you can edit it directly), each with a `url` and optional `headers` (which can reference an agent key with `${agent-key:<name>}`).
+
+- `list_agents` shows every configured remote agent's live status (online with its description and skills, still resolving, or unreachable) and any open tasks you have with it.
+- `message_agent` to `a2a:<name>` sends a follow-up on your open task with that agent if one is waiting on you (`INPUT_REQUIRED`/`AUTH_REQUIRED`), otherwise starts a new one. It returns immediately — the reply is not synchronous. An optional `skill` parameter names one of the remote agent's advertised skills.
+- The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
+- `stop_agent` on `a2a:<name>` cancels your open task with that agent.
+
 See the authoritative reference: `docs/systems-usage/a2a.md`.

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
+use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
 use crate::agent_keys::{Redactor, SharedAgentKeys};
@@ -108,6 +109,11 @@ pub struct SubagentToolDeps {
     /// Standalone web search backend config, if one is configured — mirrors
     /// `cfg.web_search.standalone_backend`.
     pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
+    /// Remote A2A agents this instance's client can reach, shared with main.
+    pub a2a_hub: Arc<A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents, shared with
+    /// main.
+    pub a2a_tracker: Arc<RemoteTaskTracker>,
 }
 
 impl ToolRegistry {
@@ -305,12 +311,28 @@ impl ToolRegistry {
         )));
     }
 
-    /// Register session management tools (`stop_agent`, `list_agents`).
-    pub fn register_background_tools(&mut self, registry: Arc<SessionRegistry>) {
-        self.register(Box::new(background::StopAgentTool::new(Arc::clone(
-            &registry,
-        ))));
-        self.register(Box::new(background::ListAgentsTool::new(registry)));
+    /// Register session management tools (`stop_agent`, `list_agents`),
+    /// identifying this registry's owner as `self_address` for the remote
+    /// A2A task lookups both tools do (a caller's own open tasks).
+    pub fn register_background_tools(
+        &mut self,
+        registry: Arc<SessionRegistry>,
+        self_address: SessionAddress,
+        a2a_hub: Arc<A2aClientHub>,
+        a2a_tracker: Arc<RemoteTaskTracker>,
+    ) {
+        self.register(Box::new(background::StopAgentTool::new(
+            Arc::clone(&registry),
+            self_address.clone(),
+            Arc::clone(&a2a_hub),
+            Arc::clone(&a2a_tracker),
+        )));
+        self.register(Box::new(background::ListAgentsTool::new(
+            registry,
+            self_address,
+            a2a_hub,
+            a2a_tracker,
+        )));
     }
 
     /// Register the `message_agent` tool, identifying this registry's owner
@@ -321,12 +343,16 @@ impl ToolRegistry {
         self_category: String,
         messenger: Arc<AgentMessenger>,
         hop_counter: HopCounter,
+        a2a_hub: Arc<A2aClientHub>,
+        a2a_tracker: Arc<RemoteTaskTracker>,
     ) {
         self.register(Box::new(message_agent::MessageAgentTool::new(
             self_address,
             self_category,
             messenger,
             hop_counter,
+            a2a_hub,
+            a2a_tracker,
         )));
     }
 
@@ -400,6 +426,8 @@ impl ToolRegistry {
             tracing_service,
             tracing_client_context,
             web_search_backend,
+            a2a_hub,
+            a2a_tracker,
         } = deps;
 
         let mut registry = Self::new();
@@ -434,7 +462,12 @@ impl ToolRegistry {
         );
 
         // Session management (stop_agent, list_agents, subagent_spawn)
-        registry.register_background_tools(session_registry);
+        registry.register_background_tools(
+            session_registry,
+            own_address.clone(),
+            Arc::clone(&a2a_hub),
+            Arc::clone(&a2a_tracker),
+        );
         registry.register_spawn_tool(
             publisher.clone(),
             skill_state,
@@ -447,7 +480,14 @@ impl ToolRegistry {
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
         registry.register_list_endpoints_tool(endpoint_registry);
-        registry.register_message_agent_tool(own_address, session_category, messenger, hop_counter);
+        registry.register_message_agent_tool(
+            own_address,
+            session_category,
+            messenger,
+            hop_counter,
+            a2a_hub,
+            a2a_tracker,
+        );
 
         // Web fetch
         registry.register_web_fetch_tool();

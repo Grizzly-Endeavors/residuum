@@ -118,10 +118,11 @@ Depth is capped by `subagent_depth_cap` in `[background]` (default 2). Spawning 
 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
-| `to` | string | yes | `"main"`, or a session address from `list_agents`. |
+| `to` | string | yes | `"main"`, a session address from `list_agents`, or `"a2a:<name>"` for a remote agent listed in `config/a2a.json`. |
 | `message` | string | yes | The message body. Must not be empty. |
+| `skill` | string | no | Only meaningful when `to` is `"a2a:<name>"`: the id of one of that agent's advertised skills, sent as `message.metadata.skill`. |
 
-Sends `message` to `to`, delivered per the rules in [Messaging](#messaging). Messaging yourself is rejected, and so is an `artifact` session messaging `main`.
+Sends `message` to `to`, delivered per the rules in [Messaging](#messaging). Messaging yourself is rejected, and so is an `artifact` session messaging `main`. See [a2a.md](a2a.md#client-reaching-other-agents) for `to: "a2a:<name>"`: delivery isn't synchronous — the call returns once the remote agent has accepted the task, and its reply arrives later as an agent message from `a2a:<name>`.
 
 ### `subagent_spawn`
 
@@ -135,13 +136,13 @@ Available to the main agent and to every session, subject to the depth cap above
 
 ### `list_agents`
 
-No parameters. Lists the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, and purpose.
+No parameters. Lists the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, and purpose. Also lists every remote agent configured in `config/a2a.json`: its address (`a2a:<name>`), online/pending/error status, description and skills once its card resolves, and the caller's own open tasks with it.
 
 ### `stop_agent`
 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
-| `address` | string | yes | Stops the session at this address. |
+| `address` | string | yes | Stops the session at this address, or `"a2a:<name>"` to cancel the caller's open task with that remote agent. |
 
 The owner can also stop a session, or message it, from the web UI (see [Web UI](#web-ui)). The main agent cannot be stopped this way. To stop the main-agent turn itself — the conversation the user is having — see [Turn Control](turn-control.md) instead; that's a user-facing interface control, not a tool.
 

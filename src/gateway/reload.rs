@@ -533,6 +533,8 @@ fn build_spawn_context(
         tools_path: Arc::clone(&rt.tools_path),
         path_policy: Arc::clone(&rt.path_policy),
         agent_keys: Arc::clone(&rt.agent_keys),
+        a2a_hub: Arc::clone(&rt.a2a_hub),
+        a2a_tracker: Arc::clone(&rt.a2a_tracker),
     })
 }
 
@@ -710,14 +712,20 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let model_api_state = crate::gateway::web::model::ModelApiState {
                 resources: rt.model_call_resources_tx.subscribe(),
             };
+            let a2a_agents_state = crate::gateway::web::a2a::A2aAgentsStatusState {
+                hub: std::sync::Arc::clone(&rt.a2a_hub),
+            };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 config_api_state,
                 update_api_state,
                 tracing_api_state,
                 rt.workbench_serving.clone(),
-                memory_api_state,
-                model_api_state,
+                crate::gateway::event_loop::ExtraApiStates {
+                    memory: memory_api_state,
+                    model: model_api_state,
+                    a2a_agents: a2a_agents_state,
+                },
             );
 
             let new_handle = crate::gateway::event_loop::spawn_server_with_listener(

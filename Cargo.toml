@@ -50,9 +50,12 @@ serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
 fd-lock = "4"
 
-# A2A protocol (server-side foundation: types, JSON-RPC/REST routers, task store)
+# A2A protocol (server-side foundation: types, JSON-RPC/REST routers, task store;
+# client: agent card resolution, protocol client factory, auth interceptors)
 a2a = { package = "a2a-lf", version = "0.3.1", default-features = false }
 a2a-server = { package = "a2a-server-lf", version = "0.4.4", default-features = false }
+a2a-client = { package = "a2a-client-lf", version = "0.2.5", default-features = false }
+
 # Workspace change feed (OS file notifications)
 notify = "8.2"
 
@@ -115,7 +118,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tower = "0.5"
 wiremock = "0.6"
-a2a-client = { package = "a2a-client-lf", version = "0.2.5", default-features = false }
 
 # Lint configuration
 #

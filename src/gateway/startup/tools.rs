@@ -37,6 +37,10 @@ pub(super) struct ToolRegistryDeps<'a> {
     /// Main's current-turn hop counter, shared with the `Agent` these tools
     /// end up registered against (see `CreateAgentArgs::hop_counter`).
     pub hop_counter: &'a crate::agent::HopCounter,
+    /// Remote A2A agents this instance's client can reach.
+    pub a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents.
+    pub a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -84,7 +88,12 @@ pub(super) fn init_tool_registry(
         layout.user_inbox_attachments_dir(),
         tz,
     );
-    tools.register_background_tools(Arc::clone(deps.session_registry));
+    tools.register_background_tools(
+        Arc::clone(deps.session_registry),
+        SessionAddress::from(MAIN_ADDRESS),
+        Arc::clone(deps.a2a_hub),
+        Arc::clone(deps.a2a_tracker),
+    );
     tools.register_spawn_tool(
         deps.publisher.clone(),
         Arc::clone(deps.skill_state),
@@ -105,6 +114,8 @@ pub(super) fn init_tool_registry(
         MAIN_ADDRESS.to_string(),
         Arc::clone(deps.agent_messenger),
         deps.hop_counter.clone(),
+        Arc::clone(deps.a2a_hub),
+        Arc::clone(deps.a2a_tracker),
     );
 
     let override_tx = tokio::sync::watch::Sender::new(None);
@@ -291,9 +302,11 @@ mod tests {
         tracing_client_context: Arc<crate::tracing_service::ClientContext>,
         agent_messenger: Arc<AgentMessenger>,
         hop_counter: HopCounter,
+        a2a_hub: Arc<crate::a2a::A2aClientHub>,
+        a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     }
 
-    fn build_harness(dir: &std::path::Path) -> Harness {
+    async fn build_harness(dir: &std::path::Path) -> Harness {
         let cfg = test_config(dir);
         let layout = WorkspaceLayout::new(dir);
 
@@ -335,6 +348,14 @@ mod tests {
             HopLimits::from(&cfg.background),
         ));
         let hop_counter = HopCounter::new(0);
+        let a2a_hub = crate::a2a::A2aClientHub::new_shared();
+        let a2a_tracker = crate::a2a::RemoteTaskTracker::load(
+            layout.a2a_outbound_json(),
+            Arc::clone(&a2a_hub),
+            Arc::clone(&agent_messenger),
+            layout.agent_inbox_dir(),
+        )
+        .await;
 
         Harness {
             cfg,
@@ -353,6 +374,8 @@ mod tests {
             tracing_client_context,
             agent_messenger,
             hop_counter,
+            a2a_hub,
+            a2a_tracker,
         }
     }
 
@@ -393,6 +416,8 @@ mod tests {
             tracing_service: Arc::clone(&h.tracing_service),
             tracing_client_context: Arc::clone(&h.tracing_client_context),
             web_search_backend: h.cfg.web_search.standalone_backend.clone(),
+            a2a_hub: Arc::clone(&h.a2a_hub),
+            a2a_tracker: Arc::clone(&h.a2a_tracker),
         })
     }
 
@@ -403,10 +428,10 @@ mod tests {
     /// to one registry but not the other fails this test instead of drifting
     /// silently — see the "Past gap" history this replaced in
     /// `src/tools/CLAUDE.md`.
-    #[test]
-    fn session_registry_matches_main_minus_documented_allowlist() {
+    #[tokio::test]
+    async fn session_registry_matches_main_minus_documented_allowlist() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let h = build_harness(dir.path());
+        let h = build_harness(dir.path()).await;
 
         let deps = ToolRegistryDeps {
             action_store: &h.action_store,
@@ -422,6 +447,8 @@ mod tests {
             tracing_client_context: &h.tracing_client_context,
             agent_messenger: &h.agent_messenger,
             hop_counter: &h.hop_counter,
+            a2a_hub: &h.a2a_hub,
+            a2a_tracker: &h.a2a_tracker,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
@@ -452,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn artifact_session_keeps_every_session_tool_but_cannot_message_main() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let h = build_harness(dir.path());
+        let h = build_harness(dir.path()).await;
 
         let mut spawned_names =
             session_registry_for(&h, "spawned-test-0001", "spawned").tool_names();

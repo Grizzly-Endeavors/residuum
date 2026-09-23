@@ -1,11 +1,13 @@
 //! Session management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
+use crate::a2a::{A2aClientHub, AgentStatus, RemoteTaskTracker};
 use crate::agent::HopCounter;
 use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
@@ -17,16 +19,50 @@ use super::{Tool, ToolError, ToolResult};
 
 // ─── StopAgentTool ───────────────────────────────────────────────────────────
 
-/// Tool for stopping a live session by address.
+/// Tool for stopping a live session by address, or an open remote A2A task
+/// (`a2a:<name>`).
 pub struct StopAgentTool {
     registry: Arc<SessionRegistry>,
+    /// This agent's own address, used to look up its own open remote task
+    /// with `a2a:<name>`.
+    self_address: SessionAddress,
+    a2a_hub: Arc<A2aClientHub>,
+    a2a_tracker: Arc<RemoteTaskTracker>,
 }
 
 impl StopAgentTool {
     /// Create a new `StopAgentTool`.
     #[must_use]
-    pub fn new(registry: Arc<SessionRegistry>) -> Self {
-        Self { registry }
+    pub fn new(
+        registry: Arc<SessionRegistry>,
+        self_address: SessionAddress,
+        a2a_hub: Arc<A2aClientHub>,
+        a2a_tracker: Arc<RemoteTaskTracker>,
+    ) -> Self {
+        Self {
+            registry,
+            self_address,
+            a2a_hub,
+            a2a_tracker,
+        }
+    }
+
+    async fn stop_remote_agent(&self, agent_name: &str) -> Result<ToolResult, ToolError> {
+        if !self.a2a_hub.agent_exists(agent_name).await {
+            return Ok(ToolResult::error(format!(
+                "no remote agent named 'a2a:{agent_name}'. Check config/a2a.json or list_agents."
+            )));
+        }
+        let sender = self.self_address.as_ref();
+        match self.a2a_tracker.cancel_open_task(sender, agent_name).await {
+            Ok(Some(task_id)) => Ok(ToolResult::success(format!(
+                "Canceling task {task_id} with remote agent a2a:{agent_name}."
+            ))),
+            Ok(None) => Ok(ToolResult::error(format!(
+                "no open task with remote agent a2a:{agent_name}."
+            ))),
+            Err(e) => Ok(ToolResult::error(e.to_string())),
+        }
     }
 }
 
@@ -39,17 +75,18 @@ impl Tool for StopAgentTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Stop a live session by address. Cancels any in-flight turn and moves \
-                          the session to completing; its transcript is kept, not discarded. The \
-                          main agent cannot be stopped this way. Use list_agents to find live \
-                          addresses."
+            description: "Stop a live session by address, or cancel your open task with a \
+                          remote agent (address \"a2a:<name>\"). Stopping a session cancels any \
+                          in-flight turn and moves it to completing; its transcript is kept, not \
+                          discarded. The main agent cannot be stopped this way. Use list_agents \
+                          to find live addresses and remote agents."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "address": {
                         "type": "string",
-                        "description": "The address of the session to stop"
+                        "description": "The address of the session to stop, or \"a2a:<name>\" to cancel your open task with that remote agent"
                     }
                 },
                 "required": ["address"]
@@ -66,6 +103,10 @@ impl Tool for StopAgentTool {
             ));
         }
 
+        if let Some(agent_name) = address.strip_prefix("a2a:") {
+            return self.stop_remote_agent(agent_name).await;
+        }
+
         if self.registry.stop(&SessionAddress::from(address)) {
             Ok(ToolResult::success(format!("Stopping session {address}.")))
         } else {
@@ -78,16 +119,30 @@ impl Tool for StopAgentTool {
 
 // ─── ListAgentsTool ──────────────────────────────────────────────────────────
 
-/// Tool for listing the main agent plus every live session.
+/// Tool for listing the main agent, every live session, and every remote A2A
+/// agent.
 pub struct ListAgentsTool {
     registry: Arc<SessionRegistry>,
+    self_address: SessionAddress,
+    a2a_hub: Arc<A2aClientHub>,
+    a2a_tracker: Arc<RemoteTaskTracker>,
 }
 
 impl ListAgentsTool {
     /// Create a new `ListAgentsTool`.
     #[must_use]
-    pub fn new(registry: Arc<SessionRegistry>) -> Self {
-        Self { registry }
+    pub fn new(
+        registry: Arc<SessionRegistry>,
+        self_address: SessionAddress,
+        a2a_hub: Arc<A2aClientHub>,
+        a2a_tracker: Arc<RemoteTaskTracker>,
+    ) -> Self {
+        Self {
+            registry,
+            self_address,
+            a2a_hub,
+            a2a_tracker,
+        }
     }
 }
 
@@ -100,10 +155,12 @@ impl Tool for ListAgentsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List the main agent plus every live (running or idle) session: \
+            description: "List the main agent, every live (running or idle) session, and every \
+                          remote agent reachable over A2A (address \"a2a:<name>\"): for sessions, \
                           address, category, source, state, depth, spawner, elapsed time, and \
-                          purpose. Completed sessions are not listed, but their addresses remain \
-                          valid."
+                          purpose; for remote agents, online status, description, skills, and \
+                          your own open tasks with them. Completed sessions are not listed, but \
+                          their addresses remain valid."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -138,6 +195,43 @@ impl Tool for ListAgentsTool {
                 elapsed = elapsed_secs,
                 purpose = info.purpose,
             ));
+        }
+
+        let agents = self.a2a_hub.snapshot().await;
+        let open_tasks = self
+            .a2a_tracker
+            .open_tasks_for(self.self_address.as_ref())
+            .await;
+        lines.push(String::new());
+        lines.push(format!("{} remote agent(s):", agents.len()));
+        for agent in &agents {
+            let status = match &agent.status {
+                AgentStatus::Pending => "resolving its agent card".to_string(),
+                AgentStatus::Ok(card) => format!("online — {}", card.description),
+                AgentStatus::Error(e) => format!("error — {e}"),
+            };
+            let mut line = format!("  [a2a:{}] {status}", agent.name);
+            if let Some(card) = agent.card()
+                && !card.skills.is_empty()
+            {
+                let skills: Vec<String> = card
+                    .skills
+                    .iter()
+                    .map(|s| format!("{} ({})", s.name, s.id))
+                    .collect();
+                write!(line, " — skills: {}", skills.join(", ")).ok();
+            }
+            lines.push(line);
+            for task in open_tasks.iter().filter(|t| t.agent == agent.name) {
+                lines.push(format!(
+                    "    task {} — {} — {}",
+                    task.task_id,
+                    task.state,
+                    task.last_status_text
+                        .as_deref()
+                        .unwrap_or("(no status yet)")
+                ));
+            }
         }
 
         Ok(ToolResult::success(lines.join("\n")))
@@ -558,10 +652,38 @@ mod tests {
         );
     }
 
+    /// A tracker with no persisted state and an unopened outbound file — safe
+    /// to build fresh per test since nothing here touches the real filesystem
+    /// beyond a throwaway temp dir the caller keeps alive.
+    async fn bare_a2a(dir: &std::path::Path) -> (Arc<A2aClientHub>, Arc<RemoteTaskTracker>) {
+        let bus_handle = crate::bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let store = Arc::new(crate::background::store::SessionStore::new(
+            dir.join("sessions"),
+        ));
+        let messenger = Arc::new(crate::background::messaging::AgentMessenger::new(
+            registry,
+            bus_handle.publisher(),
+            store,
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let hub = A2aClientHub::new_shared();
+        let tracker = RemoteTaskTracker::load(
+            dir.join("outbound.json"),
+            Arc::clone(&hub),
+            messenger,
+            dir.join("inbox"),
+        )
+        .await;
+        (hub, tracker)
+    }
+
     #[tokio::test]
     async fn stop_agent_rejects_main_address() {
+        let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(SessionRegistry::new());
-        let tool = StopAgentTool::new(registry);
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        let tool = StopAgentTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
 
         let result = tool.execute(serde_json::json!({ "address": "main" })).await;
         assert!(result.is_err(), "stopping main should be rejected");
@@ -569,8 +691,10 @@ mod tests {
 
     #[tokio::test]
     async fn stop_agent_reports_unknown_address() {
+        let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(SessionRegistry::new());
-        let tool = StopAgentTool::new(registry);
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        let tool = StopAgentTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
 
         let result = tool
             .execute(serde_json::json!({ "address": "spawned-ghost-0000" }))
@@ -580,12 +704,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_agents_always_includes_main() {
+    async fn stop_agent_reports_plain_language_error_for_unknown_remote_agent() {
+        let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(SessionRegistry::new());
-        let tool = ListAgentsTool::new(registry);
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        let tool = StopAgentTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+
+        let result = tool
+            .execute(serde_json::json!({ "address": "a2a:nope" }))
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(result.output.contains("a2a:nope"), "got: {}", result.output);
+    }
+
+    #[tokio::test]
+    async fn list_agents_always_includes_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
         assert!(result.output.contains("main"));
+        assert!(result.output.contains("remote agent(s)"));
+    }
+
+    #[tokio::test]
+    async fn list_agents_shows_remote_agent_status_and_open_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        hub.register_external(
+            "laptop".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            std::collections::HashMap::new(),
+            crate::a2a::AgentSource::Config,
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from(MAIN_ADDRESS),
+                "laptop",
+                "task-1".to_string(),
+                "ctx-1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(!result.is_error);
+        assert!(
+            result.output.contains("[a2a:laptop]"),
+            "got: {}",
+            result.output
+        );
+        assert!(result.output.contains("task-1"), "got: {}", result.output);
     }
 }
