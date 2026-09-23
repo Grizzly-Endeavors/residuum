@@ -5,6 +5,10 @@
 //! substring, so every caller agrees on what is hidden: internal index
 //! directories, database files and their sidecars, and the temporary files
 //! atomic writes create and rename away.
+//!
+//! The index and databases are Residuum's own data, open while it runs, so
+//! bulk operations (recursive delete, directory moves) that would carry them
+//! along are refused too: [`dir_holds_internal_data`] finds them.
 
 use std::path::Path;
 
@@ -35,9 +39,15 @@ pub fn is_blocked_path(relative: &str) -> bool {
 }
 
 /// Returns true if `name` (a bare file name, no directory components) is a
-/// blocked database file or one of its sidecar files.
+/// blocked database file, one of its sidecar files, or an atomic-write temp.
 fn is_blocked_file_name(name: &str) -> bool {
-    if crate::util::fs::is_atomic_write_temp(name) {
+    crate::util::fs::is_atomic_write_temp(name) || is_internal_data_name(name)
+}
+
+/// Returns true if `name` (a bare entry name) is Residuum's own data: the
+/// search index directory, or a database file or its sidecar.
+fn is_internal_data_name(name: &str) -> bool {
+    if name == ".index" {
         return true;
     }
 
@@ -50,6 +60,30 @@ fn is_blocked_file_name(name: &str) -> bool {
     Path::new(base)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("db") || ext.eq_ignore_ascii_case("sqlite"))
+}
+
+/// Whether the directory at `dir` holds Residuum's internal data (the search
+/// index or a database file) at any depth. Symlinks are not followed.
+///
+/// Blocking: call it from a blocking context.
+///
+/// # Errors
+/// Returns an error if a directory under `dir` cannot be read.
+pub fn dir_holds_internal_data(dir: &Path) -> std::io::Result<bool> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(is_internal_data_name)
+        {
+            return Ok(true);
+        }
+        if entry.file_type()?.is_dir() && dir_holds_internal_data(&entry.path())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -76,6 +110,27 @@ mod tests {
         assert!(is_blocked_path("store.sqlite-wal"));
         assert!(is_blocked_path("store.sqlite-shm"));
         assert!(is_blocked_path("store.sqlite-journal"));
+    }
+
+    #[test]
+    fn finds_internal_data_at_any_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("memory/.index")).unwrap();
+        std::fs::create_dir_all(dir.path().join("notes/deep")).unwrap();
+        std::fs::write(dir.path().join("notes/deep/page.md"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/store.sqlite-wal"), "x").unwrap();
+
+        assert!(dir_holds_internal_data(&dir.path().join("memory")).unwrap());
+        assert!(dir_holds_internal_data(&dir.path().join("data")).unwrap());
+        assert!(!dir_holds_internal_data(&dir.path().join("notes")).unwrap());
+    }
+
+    #[test]
+    fn in_flight_writes_are_not_internal_data() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".page.md.0badf00d.residuum-tmp"), "x").unwrap();
+        assert!(!dir_holds_internal_data(dir.path()).unwrap());
     }
 
     #[test]

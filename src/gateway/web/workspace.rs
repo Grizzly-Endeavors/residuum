@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::ReloadSignal;
 use crate::pulse::types::HeartbeatConfig;
-use crate::workspace::access::is_blocked_path;
+use crate::workspace::access::{dir_holds_internal_data, is_blocked_path};
 use crate::workspace::version::{modified_unix_ms, version_token};
 
 use super::ConfigApiState;
@@ -771,6 +771,39 @@ pub(super) async fn api_workspace_raw_write(
 /// `409`. The workspace root cannot be deleted (`400`). `If-Match` applies
 /// to files, not directories, since a directory has no single version
 /// token. Deleting an identity file sends the reload signal.
+/// Refuse a bulk operation on the directory at `dir` when it holds
+/// Residuum's own data (the search index or a database), which Residuum
+/// keeps open while it runs.
+async fn refuse_if_dir_holds_internal_data(
+    dir: &Path,
+    relative: &str,
+) -> Result<(), (StatusCode, String)> {
+    let owned = dir.to_path_buf();
+    let holds = tokio::task::spawn_blocking(move || dir_holds_internal_data(&owned))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to check {relative} for internal data: {e}"),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to check {relative} for internal data: {e}"),
+            )
+        })?;
+    if holds {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "{relative} holds Residuum's own memory index or database files, which can't be deleted, moved, or replaced through the file API"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn api_workspace_delete(
     Query(query): Query<DeleteFileQuery>,
     State(state): State<ConfigApiState>,
@@ -808,6 +841,7 @@ pub(super) async fn api_workspace_delete(
                 format!("{relative} is a directory; pass recursive=true to delete it"),
             ));
         }
+        refuse_if_dir_holds_internal_data(&path, relative).await?;
         tokio::fs::remove_dir_all(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -936,6 +970,7 @@ async fn ready_move_destination(
         return Ok(());
     }
     if existing.is_dir() {
+        refuse_if_dir_holds_internal_data(to_path, to_relative).await?;
         tokio::fs::remove_dir_all(to_path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1014,6 +1049,10 @@ pub(super) async fn api_workspace_move(
             version,
         })
         .into_response());
+    }
+
+    if from_metadata.is_dir() {
+        refuse_if_dir_holds_internal_data(&from_path, from_relative).await?;
     }
 
     if from_metadata.is_dir() && to_path.starts_with(&from_path) {
@@ -2204,6 +2243,113 @@ mod tests {
             "a-content"
         );
         assert!(!ws_dir.join("a.md").exists());
+    }
+
+    /// A workspace whose `memory/` holds a search index next to ordinary notes.
+    async fn workspace_with_memory_index(dir: &Path) -> PathBuf {
+        let ws_dir = dir.join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("memory/.index"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory/.index/segment.bin"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory/notes.md"), "n")
+            .await
+            .unwrap();
+        ws_dir
+    }
+
+    #[tokio::test]
+    async fn recursive_delete_of_a_dir_holding_internal_data_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "memory".to_string(),
+                recursive: true,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(ws_dir.join("memory/.index/segment.bin").exists());
+        assert!(ws_dir.join("memory/notes.md").exists());
+    }
+
+    #[tokio::test]
+    async fn moving_a_dir_holding_internal_data_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "memory".to_string(),
+                to: "old-memory".to_string(),
+                overwrite: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(ws_dir.join("memory/.index/segment.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn overwriting_a_dir_holding_internal_data_answers_403() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        tokio::fs::create_dir_all(ws_dir.join("scratch"))
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let err = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "scratch".to_string(),
+                to: "memory".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(ws_dir.join("memory/.index/segment.bin").exists());
+    }
+
+    #[tokio::test]
+    async fn recursive_delete_of_an_ordinary_dir_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = workspace_with_memory_index(dir.path()).await;
+        tokio::fs::create_dir_all(ws_dir.join("notes/deep"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("notes/deep/a.md"), "a")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "notes".to_string(),
+                recursive: true,
+            }),
+            State(state),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!ws_dir.join("notes").exists());
     }
 
     #[tokio::test]
