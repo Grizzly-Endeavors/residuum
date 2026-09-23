@@ -876,7 +876,8 @@ export function serializeProvidersToml(
   const lines: string[] = [];
 
   for (const p of providers) {
-    lines.push(`[providers.${p.name}]`);
+    if (!p.name.trim()) continue;
+    lines.push(`[providers.${p.name.trim()}]`);
     lines.push(`type = "${escapeTomlString(p.type)}"`);
     if (p.apiKey) lines.push(`api_key = "${escapeTomlString(p.apiKey)}"`);
     if (p.url) lines.push(`url = "${escapeTomlString(p.url)}"`);
@@ -930,12 +931,13 @@ export function serializeMcpJson(servers: McpServerEntry[]): string {
   const obj: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> =
     {};
   for (const srv of servers) {
+    if (!srv.name.trim()) continue;
     const entry: { command: string; args?: string[]; env?: Record<string, string> } = {
       command: srv.command,
     };
     if (srv.args.length > 0) entry.args = srv.args;
     if (Object.keys(srv.env).length > 0) entry.env = srv.env;
-    obj[srv.name] = entry;
+    obj[srv.name.trim()] = entry;
   }
   return JSON.stringify({ mcpServers: obj }, null, 2) + "\n";
 }
