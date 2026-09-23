@@ -82,7 +82,13 @@ pub(crate) async fn api_update_apply(
     }
 
     // Signal the event loop to restart
-    state.restart_tx.send(()).await.ok();
+    state.restart_tx.send(()).await.map_err(|_closed| {
+        tracing::error!(version = %version, "update installed but the restart signal could not be sent");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "The update was installed, but residuum couldn't restart itself. Restart it to finish updating.".to_string(),
+        )
+    })?;
 
     Ok(read_update_status(&state.update_status).await)
 }
