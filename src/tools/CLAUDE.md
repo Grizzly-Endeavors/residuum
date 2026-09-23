@@ -36,8 +36,16 @@ The file lives at `src/tools/TOOLS.md`.
   in `src/gateway/startup/tools.rs`'s tests, with a comment explaining why —
   don't just leave it off silently.
 
+  The reverse also happens: a tool that only makes sense for a session, never
+  for main (e.g. one registered only for sessions started from a particular
+  endpoint), goes in `SESSION_ONLY_TOOLS` next to `MAIN_ONLY_TOOLS` in the
+  same test file, with the same kind of comment explaining why main doesn't
+  get it. `SESSION_ONLY_TOOLS` is empty until the first such tool exists.
+
   `gateway::startup::tools::tests::session_registry_matches_main_minus_documented_allowlist`
-  enforces this: it builds both registries from equivalent config (every
-  optional tool gate turned on) and asserts the session registry's tool names
-  equal main's minus that allowlist. Forgetting to wire a new tool into one of
-  the two surfaces fails this test instead of drifting silently.
+  enforces both directions: it builds both registries from equivalent config
+  (every optional tool gate turned on) and asserts the session registry's
+  tool names equal main's, minus `MAIN_ONLY_TOOLS` and plus
+  `SESSION_ONLY_TOOLS`. Forgetting to wire a new tool into one of the two
+  surfaces, or into the matching allowlist, fails this test instead of
+  drifting silently.
