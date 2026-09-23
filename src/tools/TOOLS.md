@@ -926,3 +926,30 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 **Side effects:** Submits the message + version-only client context to `agent-residuum.com/api/v1/feedback`. No trace dump is attached.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService`.
+
+---
+
+## `a2a_task_update`
+
+**Source:** `a2a_task_update.rs` · `A2aTaskUpdateTool`
+
+**Description sent to LLM:**
+> Report this A2A task's outcome to the caller that delegated it. Call this when the delegated task is done, when you need more input from the caller before you can continue, or when the task cannot be completed. Your final answer for the caller goes in `message` — the caller only ever sees what you put there, not the rest of your turn output.
+
+### Input
+
+| Parameter   | Type          | Required | Description                                                                                                   |
+|-------------|---------------|----------|-----------------------------------------------------------------------------------------------------------------|
+| `state`     | string (enum) | yes      | `"completed"` when the work is done, `"input_required"` when you need more information before continuing, `"failed"` when the task cannot be completed. |
+| `message`   | string        | yes      | The message the caller sees: your final answer for `"completed"`, the question for `"input_required"`, or an explanation for `"failed"`. |
+| `artifacts` | array<string> | no       | Workspace-relative paths of files to attach as artifacts.                                                       |
+
+### Output
+
+On success: `"Task marked {completed|marked as needing more input|marked failed}; the caller has been notified."`
+
+On error: an unknown `state`, an empty `message`, or an artifact path that's empty, escapes the workspace, doesn't exist, or exceeds 20 MB — reported as `is_error = true` naming the specific artifact and reason.
+
+**Side effect:** Publishes an `A2aTaskSignalEvent` on the bus, which the session's A2A task executor is waiting on to end the task's execution stream with the matching status. Each requested artifact is read into an A2A part first (UTF-8 text becomes a text part; anything else becomes a raw part with a detected media type) — a read failure fails the whole call before anything is published, so a caller never sees a partial update.
+
+**Available to sessions:** registered only in a session whose `SubagentToolDeps.conversation_target` names the `a2a` endpoint — never in the main agent's registry, and never in a session started any other way. See `docs/systems-usage/a2a.md`.

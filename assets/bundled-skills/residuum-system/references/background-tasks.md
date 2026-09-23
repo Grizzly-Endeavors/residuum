@@ -70,6 +70,8 @@ Delivery follows the same rules as Messaging below — interrupt if running, new
 
 A conversation session's turn output — final response and any intermediate pre-tool-call text, the same as main posts mid-turn — goes straight back to its own conversation and **never falls back to the owner's DM** — unlike main's own proactive output. If the interface can't deliver it, the output is dropped, an error is logged naming the session and conversation, and main gets a notice to decide whether the owner needs telling.
 
+**A2A callers route the same way.** Each caller of the A2A listener (see the `a2a` skill reference) gets its own conversation session, addressed by `{caller}/{context_id}`, with no admission gate beyond the A2A auth layer's own caller-key/sibling check — every authenticated caller reaches its own session. A session started from the `a2a` endpoint is the only kind that gets `a2a_task_update`, which reports that caller's A2A task outcome back through the listener instead of through this page's own output-delivery path.
+
 ## Tools
 
 | Tool | Key Parameters | Description |
@@ -111,6 +113,7 @@ Each session's resume point (previous run id, episode pointer, trigger, source l
 
 - A session's fork always carries the main agent's full identity now — there is no minimal-context mode and no `include_identity` flag to opt in or out of.
 - The only tool excluded from sessions is `switch_endpoint` — it only makes sense for the main agent's own output routing. `subagent_spawn`, the action-scheduling tools, and `message_agent` are all available to sessions.
+- `a2a_task_update` is the reverse case: a tool no session gets by default, present only in a session started from the `a2a` endpoint.
 - A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface (named explicitly, or reached through the no-conversation default) — only `main` talks to the owner. See [notifications.md](notifications.md).
 - The `memory/sessions/` directory is not created at bootstrap — it appears only after the first session run.
 - A completed session is no longer listed by `list_agents`, but its address and transcript remain in the session store — and the web UI's session listing includes finished runs.
