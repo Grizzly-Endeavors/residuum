@@ -15,7 +15,7 @@ import { WebSocketServer, WebSocket } from "ws";
 /** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
 const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
 
-/** Stand-in for the real feature list, empty until a later phase ships a capability. */
+/** The detectable capabilities the mock implements. */
 const MOCK_FEATURES: readonly string[] = ["model-complete"];
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
