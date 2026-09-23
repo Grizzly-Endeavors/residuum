@@ -78,10 +78,10 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci && npm run build
 
-      # rust-toolchain.toml tracks stable; self-hosted runners keep whatever
-      # stable they last installed, so bring it current before building.
-      - name: Update Rust toolchain
-        run: rustup update stable --no-self-update
+      # Install the version pinned in rust-toolchain.toml as its own toolchain;
+      # the runner image's baked-in toolchain can't be updated in place.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
@@ -100,10 +100,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
+      - name: Install rustup
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -144,8 +145,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
+      - name: Install rustup
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       - name: Setup Node.js
         uses: actions/setup-node@v7

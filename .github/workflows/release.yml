@@ -73,15 +73,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust toolchain (macOS)
+      - name: Install rustup (macOS)
         if: runner.os == 'macOS'
         uses: dtolnay/rust-toolchain@stable
 
-      # rust-toolchain.toml tracks stable; self-hosted runners keep whatever
-      # stable they last installed, so bring it current before building.
-      - name: Update Rust toolchain
-        if: runner.os != 'macOS'
-        run: rustup update stable --no-self-update
+      # Install the version pinned in rust-toolchain.toml as its own toolchain;
+      # the runner image's baked-in toolchain can't be updated in place.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
 
       - name: Setup Node.js (macOS)
         if: runner.os == 'macOS'

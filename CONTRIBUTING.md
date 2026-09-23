@@ -30,6 +30,10 @@ All changes go through pull requests.
 4. The quality gate is the pre-commit hook, not CI: formatting, clippy, tests, dependency audit, and the web checks all run locally on every commit. A maintainer re-runs them locally before merging a contributor's PR.
 5. Cross-platform checks (clippy for aarch64 Linux, Windows, and macOS, plus tests on Windows) are opt-in; see below
 
+### Rust Toolchain
+
+The Rust version is pinned in `rust-toolchain.toml`, and rustup installs exactly that version for every build: your machine, CI, and releases. Everyone lints with the same clippy, so code that passes the pre-commit hook passes CI. Bumping the version is its own PR: change the pin, fix whatever new lints the release brings, and commit.
+
 ### Cross-Platform Checks
 
 The pre-commit hook only builds for your own platform. `.github/workflows/cross-compile.yml` runs `cargo clippy -- -D warnings` for the other release targets, so code behind another platform's `cfg` is held to the same lints as your own build, and runs the full test suite on a Windows runner, where `cfg(windows)` code actually executes. It runs when:
