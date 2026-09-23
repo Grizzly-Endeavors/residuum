@@ -23,29 +23,46 @@
       "This artifact is not open inside Residuum. Open it from the Workbench page to use the Residuum API.",
     );
 
-  function post(message) {
-    window.parent.postMessage({ tag: TAG, ...message }, "*");
+  function post(message, transfer) {
+    window.parent.postMessage({ tag: TAG, ...message }, "*", transfer);
   }
 
-  function request(kind, payload) {
+  function request(kind, payload, transfer) {
     if (!embedded) return Promise.reject(notEmbedded());
     const id = `req-${++nextId}`;
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      post({ kind, id, ...payload });
+      post({ kind, id, ...payload }, transfer);
     });
   }
 
+  // Returns `{ body, transfer }`. `body` is what's sent to the bridge: a
+  // string, an ArrayBuffer, or a Blob — never JSON-encoded when it's already
+  // binary. `transfer` lists the ArrayBuffers to hand off (rather than copy)
+  // across postMessage's structured clone.
   function encodeBody(body, headers) {
-    if (body === undefined || body === null) return null;
-    if (typeof body === "string") return body;
+    if (body === undefined || body === null) return { body: null, transfer: [] };
+    if (typeof body === "string") return { body, transfer: [] };
+    if (body instanceof ArrayBuffer) return { body, transfer: [body] };
+    if (ArrayBuffer.isView(body)) {
+      // A typed array or DataView may be a view into a larger, still-in-use
+      // buffer, so its exact byte range is copied into a fresh buffer before
+      // transferring — transferring the underlying buffer directly could
+      // hand over bytes outside the view, or detach a buffer the caller
+      // still holds other views into.
+      const copy = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+      return { body: copy, transfer: [copy] };
+    }
+    if (typeof Blob !== "undefined" && body instanceof Blob) return { body, transfer: [] };
     if (Object.getPrototypeOf(body) === Object.prototype || Array.isArray(body)) {
       if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
         headers["Content-Type"] = "application/json";
       }
-      return JSON.stringify(body);
+      return { body: JSON.stringify(body), transfer: [] };
     }
-    throw new TypeError("residuum.fetch body must be a string, a plain object, or an array");
+    throw new TypeError(
+      "residuum.fetch body must be a string, a plain object/array, an ArrayBuffer, a typed array, or a Blob",
+    );
   }
 
   function fetchVia(path, init = {}) {
@@ -53,18 +70,22 @@
       return Promise.reject(new TypeError("residuum.fetch path must be a string like '/api/status'"));
     }
     const headers = { ...(init.headers || {}) };
-    let body;
+    let encoded;
     try {
-      body = encodeBody(init.body, headers);
+      encoded = encodeBody(init.body, headers);
     } catch (err) {
       return Promise.reject(err);
     }
-    return request("fetch", {
-      path,
-      method: (init.method || "GET").toUpperCase(),
-      headers,
-      body,
-    }).then(
+    return request(
+      "fetch",
+      {
+        path,
+        method: (init.method || "GET").toUpperCase(),
+        headers,
+        body: encoded.body,
+      },
+      encoded.transfer,
+    ).then(
       (r) => new Response(r.status === 204 || r.status === 304 ? null : r.body, {
         status: r.status,
         statusText: r.statusText,
