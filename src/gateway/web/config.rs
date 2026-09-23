@@ -28,7 +28,7 @@ pub(super) struct StatusResponse {
 }
 
 /// Response from validation or save endpoints.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(super) struct ValidateResponse {
     pub(super) valid: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

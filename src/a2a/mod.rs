@@ -23,7 +23,8 @@ pub use card::{
     build_agent_card,
 };
 pub use client::{
-    A2aClientHub, AgentSnapshot, AgentSource, AgentStatus, HubError, RemoteTaskTracker, TrackedTask,
+    A2aClientHub, AgentSnapshot, AgentSource, AgentStatus, HubError, RemoteTaskTracker,
+    TrackedTask, validate_a2a_agents_json,
 };
 pub use keys::{A2aKeyError, A2aKeyInfo, A2aKeyStore};
 pub use keys_runtime::{A2aKeys, SharedA2aKeys};

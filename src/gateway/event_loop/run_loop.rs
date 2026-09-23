@@ -223,8 +223,13 @@ async fn spawn_server_and_adapters(
         api_states.update,
         api_states.tracing,
         workbench_serving.clone(),
-        api_states.memory,
-        api_states.model,
+        super::http::ExtraApiStates {
+            memory: api_states.memory,
+            model: api_states.model,
+            a2a_agents: web::a2a::A2aAgentsStatusState {
+                hub: Arc::clone(&parts.a2a_hub),
+            },
+        },
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);

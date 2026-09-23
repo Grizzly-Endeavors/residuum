@@ -51,6 +51,33 @@ struct A2aAgentRaw {
     headers: HashMap<String, String>,
 }
 
+/// Validate `content` as a well-formed `config/a2a.json`: valid JSON matching
+/// the `{"agents": {"<name>": {"url": ..., "headers"?: ...}}}` shape, with
+/// every agent name well-formed and every url non-empty. Does not expand
+/// `${agent-key:...}`/`${ENV}` references or check reachability — those are
+/// handled (skip-with-warning, or a background retry) once the file actually
+/// loads, not at this validation step. Used by the web settings API before
+/// writing a raw edit.
+///
+/// # Errors
+/// Returns a plain-language message describing the first problem found.
+pub fn validate_a2a_agents_json(content: &str) -> Result<(), String> {
+    let file: A2aAgentsFile =
+        serde_json::from_str(content).map_err(|e| format!("invalid JSON: {e}"))?;
+    for (name, raw) in &file.agents {
+        if !is_valid_agent_name(name) {
+            return Err(format!(
+                "agent name '{name}' must start with a lowercase letter and contain only \
+                 lowercase letters, digits, and underscores (at most {MAX_NAME_LEN} characters)"
+            ));
+        }
+        if raw.url.trim().is_empty() {
+            return Err(format!("agent '{name}' must have a non-empty url"));
+        }
+    }
+    Ok(())
+}
+
 /// Load `config/a2a.json` as a name → entry map, expanding
 /// `${agent-key:<name>}` (via `crate::agent_keys::expand_references`) and
 /// `${ENV}` (via `crate::mcp::client::expand_env_vars`, the same helper MCP
@@ -254,5 +281,35 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
         let err = load_a2a_agents_map(&path, &AgentKeyStore::default()).unwrap_err();
         assert!(err.to_string().contains("failed to parse a2a.json"));
+    }
+
+    #[test]
+    fn validate_accepts_empty_and_well_formed_agents() {
+        validate_a2a_agents_json(r#"{"agents": {}}"#).unwrap();
+        validate_a2a_agents_json(
+            r#"{"agents": {"laptop": {"url": "https://x.example.com", "headers": {"a": "b"}}}}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_invalid_json() {
+        let err = validate_a2a_agents_json("not json").unwrap_err();
+        assert!(err.contains("invalid JSON"));
+    }
+
+    #[test]
+    fn validate_rejects_bad_name() {
+        let err = validate_a2a_agents_json(
+            r#"{"agents": {"Bad Name": {"url": "https://x.example.com"}}}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("Bad Name"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_url() {
+        let err = validate_a2a_agents_json(r#"{"agents": {"laptop": {"url": ""}}}"#).unwrap_err();
+        assert!(err.contains("non-empty url"));
     }
 }

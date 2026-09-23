@@ -8,6 +8,7 @@ mod subconscious_hook;
 mod turns;
 
 pub(crate) use http::AdapterSenders;
+pub(crate) use http::ExtraApiStates;
 pub(crate) use http::build_a2a_listener;
 pub(crate) use http::build_gateway_app;
 pub(crate) use http::spawn_server_with_listener;
