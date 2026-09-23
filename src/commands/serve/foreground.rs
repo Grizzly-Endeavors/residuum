@@ -200,6 +200,11 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
         .map_err(|e| FatalError::Gateway(format!("failed to spawn updated binary: {e}")))?;
 
     // New process will acquire its own PID lock; exit this one.
+    #[expect(
+        clippy::exit,
+        reason = "returning would unwind into PID file cleanup and could delete the file the \
+                  spawned process just wrote; exiting here is Windows' stand-in for exec()"
+    )]
     std::process::exit(0);
 }
 
