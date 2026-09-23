@@ -3,6 +3,10 @@
 // Artifacts run on their own origin, so they cannot call the gateway directly.
 // Every call is relayed over postMessage to the Residuum web UI hosting the
 // frame, which enforces what artifacts may reach.
+//
+// The artifacts listener prepends `__RESIDUUM_ARTIFACT__`, `__RESIDUUM_VERSION__`,
+// and `__RESIDUUM_FEATURES__` const declarations to this script before serving it,
+// so this closure reads them from its enclosing scope.
 (() => {
   "use strict";
   if (window.residuum) return;
@@ -121,5 +125,13 @@
     if (embedded && event.key === "Escape" && !event.defaultPrevented) post({ kind: "escape" });
   });
 
-  window.residuum = Object.freeze({ embedded, fetch: fetchVia, send, on });
+  window.residuum = Object.freeze({
+    embedded,
+    artifact: __RESIDUUM_ARTIFACT__,
+    version: __RESIDUUM_VERSION__,
+    features: Object.freeze(__RESIDUUM_FEATURES__.slice()),
+    fetch: fetchVia,
+    send,
+    on,
+  });
 })();

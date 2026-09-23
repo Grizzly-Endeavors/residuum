@@ -5,6 +5,7 @@ pub mod background;
 pub mod bus;
 pub mod config;
 pub mod daemon;
+pub(crate) mod features;
 pub mod gateway;
 pub mod inbox;
 pub mod inference;
