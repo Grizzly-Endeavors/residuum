@@ -532,6 +532,30 @@ impl RemoteTaskTracker {
         }
     }
 
+    /// A single `get_task` check, applying whatever it reports. Returns
+    /// whether the caller should stop watching (delivered, or the record
+    /// vanished) — the same contract as [`Self::apply_remote_task`]. Used as
+    /// a fallback when `subscribe_to_task` can't be used: the reference SDK
+    /// server drops a task's live subscription once its executor's own
+    /// stream ends, even at a non-terminal state (e.g. `INPUT_REQUIRED`) —
+    /// a late subscribe then sees `task_not_found` even though the task
+    /// itself is very much still there, just idle. A direct poll sidesteps
+    /// that gap.
+    async fn poll_once(&self, client: &super::hub::NegotiatedClient, task_id: &str) -> bool {
+        let req = a2a::GetTaskRequest {
+            id: task_id.to_string(),
+            history_length: None,
+            tenant: None,
+        };
+        match client.get_task(&req).await {
+            Ok(remote_task) => self.apply_remote_task(remote_task).await,
+            Err(e) => {
+                self.note_unreachable(task_id, &e.to_string()).await;
+                false
+            }
+        }
+    }
+
     async fn watch_via_stream(self: &Arc<Self>, task_id: &str) {
         loop {
             let Some(task) = self.get(task_id).await else {
@@ -552,13 +576,12 @@ impl RemoteTaskTracker {
                 id: task_id.to_string(),
                 tenant: None,
             };
-            let mut stream = match client.subscribe_to_task(&req).await {
-                Ok(s) => s,
-                Err(e) => {
-                    self.note_unreachable(task_id, &e.to_string()).await;
-                    tokio::time::sleep(MAX_BACKOFF).await;
-                    continue;
+            let Ok(mut stream) = client.subscribe_to_task(&req).await else {
+                if self.poll_once(&client, task_id).await {
+                    return;
                 }
+                tokio::time::sleep(MIN_BACKOFF).await;
+                continue;
             };
 
             let mut pending_artifacts: Vec<a2a::Artifact> = Vec::new();
@@ -619,6 +642,13 @@ impl RemoteTaskTracker {
                 }
             }
             if delivered {
+                return;
+            }
+            // The stream ended (cleanly or via a mid-stream error) without a
+            // final event — most likely the same "execution already ended"
+            // gap `subscribe_to_task` itself can hit. Check once via
+            // `get_task` before reconnecting.
+            if self.poll_once(&client, task_id).await {
                 return;
             }
             tokio::time::sleep(MIN_BACKOFF).await;

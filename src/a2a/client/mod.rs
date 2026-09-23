@@ -10,6 +10,8 @@
 //!   [`crate::background::messaging::AgentMessenger`].
 
 pub mod config;
+#[cfg(test)]
+mod e2e_tests;
 pub mod hub;
 pub mod tracker;
 
