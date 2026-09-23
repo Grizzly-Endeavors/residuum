@@ -293,6 +293,8 @@ export interface WorkspaceEntry {
   name: string;
   entry_type: "file" | "directory";
   size: number | null;
+  modified: number;
+  version: string;
 }
 
 // ── Feed items (UI rendering) ────────────────────────────────────────

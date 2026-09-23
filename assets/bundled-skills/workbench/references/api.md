@@ -6,9 +6,9 @@ What a workbench artifact can reach through `residuum.fetch` and `residuum.on`. 
 
 | Method and path | Returns / does |
 |-----------------|----------------|
-| `GET /api/workspace/files?path=<dir>` | Directory listing: `[{ name, entry_type: "file" \| "directory", size }]`. Omit `path` for the workspace root. |
-| `GET /api/workspace/file?path=<file>` | The file's text (not JSON). 404 if missing, 413 over 1 MiB. |
-| `PUT /api/workspace/file` | Body `{ path, content }` writes a text file. The parent directory must already exist. |
+| `GET /api/workspace/files?path=<dir>` | Directory listing: `[{ name, entry_type: "file" \| "directory", size, modified, version }]`. `modified` is Unix milliseconds; `version` is an opaque token for conditional writes. Omit `path` for the workspace root. Paths under `.index` or a `.db`/`.sqlite` file (and its `-wal`/`-shm`/`-journal` sidecars) are never listed. |
+| `GET /api/workspace/file?path=<file>` | The file's text (not JSON), with an `ETag` header carrying its version. 404 if missing, 413 over 8 MiB, 415 if the file isn't valid UTF-8 (read it from `/api/workspace/raw` instead). |
+| `PUT /api/workspace/file` | Body `{ path, content }` writes a text file, up to 8 MiB. Creates missing parent directories. `If-Match: <version>` answers `412` on a stale write; `If-None-Match: *` answers `412` if the file already exists. Returns `{ saved: true, version }`. |
 | `GET /api/inbox` | The user's inbox: `[{ id, title, body, source, timestamp, read, attachments }]`. |
 | `PUT /api/inbox/<id>/read` | Marks an inbox item read. |
 | `POST /api/inbox/<id>/archive` | Archives an inbox item. |
