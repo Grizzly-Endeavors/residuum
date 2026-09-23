@@ -60,6 +60,23 @@ pub struct SearchFilters {
     pub episode_ids: Option<Vec<String>>,
 }
 
+/// Validate a `YYYY-MM-DD` date filter string.
+///
+/// `SearchFilters`' date fields are plain strings, compared lexicographically
+/// against each document's own `YYYY-MM-DD` date — an unparsable value
+/// wouldn't error there, it would just silently match nothing. The
+/// `/api/memory/search` HTTP endpoint, the one boundary that takes a date
+/// filter from outside the process, validates up front with this instead so
+/// a typo answers `400` rather than an empty result set.
+///
+/// # Errors
+/// Returns a plain-language message if `value` isn't `YYYY-MM-DD`.
+pub fn validate_date_filter(value: &str) -> Result<(), String> {
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map(|_| ())
+        .map_err(|e| format!("invalid date '{value}': expected YYYY-MM-DD ({e})"))
+}
+
 /// Statistics from a rebuild operation.
 #[derive(Debug)]
 pub struct RebuildResult {
@@ -1795,6 +1812,19 @@ mod tests {
     fn extract_date_from_path_invalid() {
         let path = std::path::PathBuf::from("/some/random/path.json");
         assert!(extract_date_from_path(&path).is_empty());
+    }
+
+    #[test]
+    fn validate_date_filter_accepts_iso_date() {
+        assert!(validate_date_filter("2026-02-19").is_ok());
+    }
+
+    #[test]
+    fn validate_date_filter_rejects_malformed_date() {
+        assert!(validate_date_filter("2026/02/19").is_err());
+        assert!(validate_date_filter("not-a-date").is_err());
+        assert!(validate_date_filter("2026-13-40").is_err());
+        assert!(validate_date_filter("").is_err());
     }
 
     // ── Normalize scores ─────────────────────────────────────────────────

@@ -7,4 +7,10 @@
 
 /// Feature ids this build supports. A later phase ships more capabilities
 /// and adds their ids.
-pub(crate) const FEATURES: &[&str] = &["workspace-tree", "workspace-read-batch"];
+pub(crate) const FEATURES: &[&str] = &[
+    "workspace-tree",
+    "workspace-read-batch",
+    "inbox-add",
+    "memory-search",
+    "artifact-state",
+];

@@ -98,19 +98,17 @@ impl Tool for MemorySearchTool {
             None => 5,
         };
 
-        // Map the tool-facing source names onto the internal DocSource vocabulary.
-        // Omitted → None (search every source); an unrecognized value is rejected
-        // rather than silently falling back to searching everything.
+        // Map the tool-facing source names onto the internal DocSource vocabulary,
+        // shared with the `/api/memory/search` HTTP endpoint. Omitted → None
+        // (search every source); an unrecognized value is rejected rather than
+        // silently falling back to searching everything.
         let source_filter = match arguments.get("source").and_then(Value::as_str) {
-            Some("observations") => Some(DocSource::Observation),
-            Some("episodes") => Some(DocSource::Chunk),
-            Some("wiki") => Some(DocSource::Wiki),
+            Some(s) => Some(DocSource::from_query_str(s).ok_or_else(|| {
+                ToolError::InvalidArguments(format!(
+                    "unknown source '{s}': expected 'observations', 'episodes', or 'wiki'"
+                ))
+            })?),
             None => None,
-            Some(other) => {
-                return Err(ToolError::InvalidArguments(format!(
-                    "unknown source '{other}': expected 'observations', 'episodes', or 'wiki'"
-                )));
-            }
         };
 
         let filters = SearchFilters {

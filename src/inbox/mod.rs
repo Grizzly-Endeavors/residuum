@@ -67,6 +67,20 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
+/// Default an inbox item's title from its body: the first line, cut to 60
+/// characters. Shared by every caller that lets a title be omitted — the WS
+/// `/inbox` command and the `POST /api/agent-inbox` endpoint — so the rule
+/// stays in one place.
+#[must_use]
+pub fn derive_title(body: &str) -> String {
+    body.lines()
+        .next()
+        .unwrap_or("Inbox message")
+        .chars()
+        .take(60)
+        .collect()
+}
+
 /// Add an inbox item in one call: generates a filename, builds the item, and saves.
 ///
 /// Returns the filename for confirmation messages.
@@ -520,6 +534,22 @@ mod tests {
             read,
             attachments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn derive_title_takes_first_line() {
+        assert_eq!(derive_title("Hello world\nmore body text"), "Hello world");
+    }
+
+    #[test]
+    fn derive_title_truncates_to_60_chars() {
+        let long_line = "a".repeat(100);
+        assert_eq!(derive_title(&long_line), "a".repeat(60));
+    }
+
+    #[test]
+    fn derive_title_falls_back_on_empty_body() {
+        assert_eq!(derive_title(""), "Inbox message");
     }
 
     #[test]

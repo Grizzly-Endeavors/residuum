@@ -673,12 +673,16 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 ),
                 session_registry: std::sync::Arc::clone(&rt.session_registry),
             };
+            let memory_api_state = crate::gateway::web::memory::MemoryApiState {
+                hybrid_searcher: std::sync::Arc::clone(&rt.hybrid_searcher),
+            };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 config_api_state,
                 update_api_state,
                 tracing_api_state,
                 rt.workbench_serving.clone(),
+                memory_api_state,
             );
 
             let new_handle = crate::gateway::event_loop::spawn_server_with_listener(

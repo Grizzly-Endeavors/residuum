@@ -18,6 +18,7 @@ mod agent_keys;
 pub mod cloud;
 pub mod config;
 pub mod inbox;
+pub(crate) mod memory;
 pub mod providers;
 pub mod secrets;
 pub(crate) mod sessions;

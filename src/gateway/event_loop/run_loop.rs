@@ -165,12 +165,16 @@ async fn spawn_server_and_adapters(
     };
     let (workbench_serving, workbench_listener_shutdown_tx) =
         start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
+    let memory_api_state = web::memory::MemoryApiState {
+        hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
+    };
     let app = build_gateway_app(
         state,
         config_api_state,
         update_api_state,
         tracing_api_state,
         workbench_serving.clone(),
+        memory_api_state,
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
