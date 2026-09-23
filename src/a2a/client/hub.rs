@@ -145,10 +145,11 @@ impl A2aClientHub {
     }
 
     /// (Re)load agents from `config/a2a.json`. Config-sourced agents no
-    /// longer in the file are removed; sibling-sourced agents are left
-    /// untouched — this is config's own namespace. A new or changed entry is
-    /// queued for an immediate card fetch. A parse/read failure keeps the
-    /// current agents and logs a warning, matching
+    /// longer in the file are removed. A name also registered as a sibling
+    /// (relay-sibling discovery) is overridden by the config entry — config
+    /// always wins a name collision, logged once at debug. A new or changed
+    /// entry is queued for an immediate card fetch. A parse/read failure
+    /// keeps the current agents and logs a warning, matching
     /// `crate::workspace::config::load_mcp_servers_map`'s reload behavior.
     pub async fn reload_from_file(&self, path: &std::path::Path, agent_keys: &SharedAgentKeys) {
         let snapshot = match agent_keys.snapshot().await {
@@ -180,21 +181,23 @@ impl A2aClientHub {
                 rec.source != AgentSource::Config || desired.contains_key(name)
             });
             for (name, entry) in desired {
-                let sibling_exists = matches!(
+                let shadows_sibling = matches!(
                     agents.get(&name),
                     Some(rec) if rec.source == AgentSource::Sibling
                 );
-                if sibling_exists {
-                    // A sibling registration for this name wins; config
-                    // can't shadow it.
-                    continue;
+                if shadows_sibling {
+                    tracing::debug!(
+                        agent = %name,
+                        "config/a2a.json entry overrides a relay sibling of the same name"
+                    );
                 }
-                let changed = match agents.get(&name) {
-                    Some(existing) => {
-                        existing.url != entry.url || existing.headers != entry.headers
-                    }
-                    None => true,
-                };
+                let changed = shadows_sibling
+                    || match agents.get(&name) {
+                        Some(existing) => {
+                            existing.url != entry.url || existing.headers != entry.headers
+                        }
+                        None => true,
+                    };
                 if changed {
                     agents.insert(name.clone(), fresh_record(entry, AgentSource::Config));
                     to_refresh.push(name);
@@ -235,14 +238,34 @@ impl A2aClientHub {
 
     /// Replace every `Sibling`-sourced agent with exactly this set —
     /// entries missing from `siblings` are removed, present ones are
-    /// registered (or refreshed if changed).
+    /// registered (or refreshed if changed). A name already claimed by a
+    /// `config/a2a.json` entry is skipped: config always wins a name
+    /// collision, logged once here per call.
     pub async fn set_siblings(&self, siblings: Vec<(String, String, HashMap<String, String>)>) {
-        let names: HashSet<String> = siblings.iter().map(|(name, _, _)| name.clone()).collect();
+        let accepted: Vec<(String, String, HashMap<String, String>)> = {
+            let agents = self.agents.read().await;
+            siblings
+                .into_iter()
+                .filter(|(name, _, _)| {
+                    let shadowed_by_config =
+                        matches!(agents.get(name), Some(rec) if rec.source == AgentSource::Config);
+                    if shadowed_by_config {
+                        tracing::debug!(
+                            agent = %name,
+                            "relay sibling shadowed by a config/a2a.json entry of the same name"
+                        );
+                    }
+                    !shadowed_by_config
+                })
+                .collect()
+        };
+
+        let names: HashSet<String> = accepted.iter().map(|(name, _, _)| name.clone()).collect();
         {
             let mut agents = self.agents.write().await;
             agents.retain(|name, rec| rec.source != AgentSource::Sibling || names.contains(name));
         }
-        for (name, url, headers) in siblings {
+        for (name, url, headers) in accepted {
             self.register_external(name, url, headers, AgentSource::Sibling)
                 .await;
         }
@@ -594,6 +617,71 @@ mod tests {
             panic!("expected exactly one agent, got {snap:?}");
         };
         assert_eq!(only.name, "beta");
+    }
+
+    #[tokio::test]
+    async fn set_siblings_does_not_shadow_a_config_entry_of_the_same_name() {
+        let hub = A2aClientHub::new();
+        let config_url = spawn_card_server("laptop-config").await;
+        hub.register_external(
+            "laptop".to_string(),
+            config_url.clone(),
+            HashMap::new(),
+            AgentSource::Config,
+        )
+        .await;
+
+        let sibling_url = spawn_card_server("laptop-sibling").await;
+        hub.set_siblings(vec![("laptop".to_string(), sibling_url, HashMap::new())])
+            .await;
+
+        let snap = hub.snapshot().await;
+        let [only] = snap.as_slice() else {
+            panic!("expected exactly one agent, got {snap:?}");
+        };
+        assert_eq!(only.name, "laptop");
+        assert_eq!(
+            only.source,
+            AgentSource::Config,
+            "a config entry must win a name collision with a sibling"
+        );
+        assert_eq!(only.url, config_url, "the config entry's url must be kept");
+    }
+
+    #[tokio::test]
+    async fn reload_from_file_overrides_a_sibling_of_the_same_name() {
+        let hub = A2aClientHub::new();
+        let (_keys_dir, keys) = agent_keys();
+        let sibling_url = spawn_card_server("laptop-sibling").await;
+        hub.register_external(
+            "laptop".to_string(),
+            sibling_url,
+            HashMap::new(),
+            AgentSource::Sibling,
+        )
+        .await;
+
+        let config_url = spawn_card_server("laptop-config").await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a2a.json");
+        std::fs::write(
+            &path,
+            format!(r#"{{"agents":{{"laptop":{{"url":"{config_url}"}}}}}}"#),
+        )
+        .unwrap();
+        hub.reload_from_file(&path, &keys).await;
+
+        let snap = hub.snapshot().await;
+        let [only] = snap.as_slice() else {
+            panic!("expected exactly one agent, got {snap:?}");
+        };
+        assert_eq!(only.name, "laptop");
+        assert_eq!(
+            only.source,
+            AgentSource::Config,
+            "a config entry must override a sibling of the same name"
+        );
+        assert_eq!(only.url, config_url);
     }
 
     #[test]

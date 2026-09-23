@@ -272,6 +272,24 @@ async fn run_execution(executor: SessionExecutor, ctx: ExecutorContext, tx: Exec
     stream_until_terminal(&executor, &address, &task_id, &context_id, &mut subs, &tx).await;
 }
 
+/// A caller's bare name for display (`laptop` for `sibling:laptop`,
+/// `research` for `key:research`), and a note distinguishing the user's own
+/// other instance from an external caller-key holder. `caller` itself keeps
+/// its fully namespaced form (`key:<name>`/`sibling:<slug>`) everywhere it's
+/// used for the session address or task ownership — this is display-only.
+fn caller_display(caller: &str) -> (String, Option<&'static str>) {
+    if let Some(slug) = caller.strip_prefix("sibling:") {
+        (slug.to_string(), Some("your own other Residuum instance"))
+    } else if let Some(name) = caller.strip_prefix("key:") {
+        (
+            name.to_string(),
+            Some("an external agent with a caller key"),
+        )
+    } else {
+        (caller.to_string(), None)
+    }
+}
+
 /// Build the session's inbound content from the A2A message and deliver it
 /// into the conversation session, per the skill-mapping and part-handling
 /// rules in `docs/systems-usage/a2a.md`.
@@ -289,16 +307,17 @@ async fn deliver_inbound(
         content = format!("{note}\n{content}");
     }
 
+    let (display_name, location) = caller_display(caller);
     let inbound = InboundMessage {
         id: message.message_id.clone(),
         content,
         origin: MessageOrigin {
             endpoint: A2A_ENDPOINT.to_string(),
             sender: Some(MessageSender {
-                name: caller.to_string(),
+                name: display_name.clone(),
                 id: caller.to_string(),
                 interface: A2A_ENDPOINT.to_string(),
-                location: None,
+                location: location.map(str::to_string),
             }),
             conversation: Some(ConversationContext {
                 id: format!("{caller}/{context_id}"),
@@ -312,7 +331,7 @@ async fn deliver_inbound(
         context: None,
     };
     let spawn = ConversationSpawn {
-        source_label: format!("a2a:{caller}"),
+        source_label: format!("a2a:{display_name}"),
         model_tier: BackgroundModelTier::Medium,
         skill,
     };
@@ -658,4 +677,30 @@ fn append_failed_attachment(content: &mut String, info: &AttachmentInfo, reason:
 fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sibling_caller_displays_as_the_bare_slug() {
+        let (name, location) = caller_display("sibling:laptop");
+        assert_eq!(name, "laptop");
+        assert_eq!(location, Some("your own other Residuum instance"));
+    }
+
+    #[test]
+    fn key_caller_displays_as_the_bare_key_name() {
+        let (name, location) = caller_display("key:research_buddy");
+        assert_eq!(name, "research_buddy");
+        assert_eq!(location, Some("an external agent with a caller key"));
+    }
+
+    #[test]
+    fn unrecognized_caller_shape_passes_through_unchanged() {
+        let (name, location) = caller_display("unexpected");
+        assert_eq!(name, "unexpected");
+        assert_eq!(location, None);
+    }
 }
