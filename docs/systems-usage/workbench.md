@@ -30,7 +30,8 @@ Artifacts are served by their own listener, never by the gateway's main listener
 |------|------|
 | `residuum.fetch(path, init)` | Calls Residuum's API (`/api/...`) and returns a `Response`. A plain-object body is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent unchanged, not JSON-encoded. |
 | `residuum.ask(promptOrRequest)` | One-shot call to the background small model: `POST /api/model/complete`. A string is shorthand for `{ prompt }`. Resolves to the response body; rejects with an `Error` on any non-2xx. |
-| `residuum.on(type, handler)` | Streams the same live frames the web UI receives (`"*"` for all), except keepalives. |
+| `residuum.on(type, handler)` | Streams the same live frames the web UI receives (`"*"` for all), except keepalives and the change feed's own frames, plus the bridge's `{ "type": "connection", "state": "connected" \| "disconnected" }` when the web UI's socket drops or returns. |
+| `residuum.watch(prefix, handler)` | Follows workspace changes under `prefix` (see [Change feed](#change-feed)). The handler receives `workspace_changed` frames holding only the changes under its prefix, and every `workspace_resync`. Returns a function that stops watching. Throws a `TypeError` for an absolute path or one with `..`. |
 | `residuum.sessions.start({ prompt, context?, skill?, model? })` | Starts an agent session for this artifact (see [Agent sessions](#agent-sessions)) and resolves to a handle `{ address, on(type, handler), send(text), stop() }`. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI; `fetch`, `ask`, and `sessions.start` then reject. |
 | `residuum.artifact` | This artifact's own name, embedded when the artifacts listener serves the page. |
@@ -65,9 +66,35 @@ The web UI has no login of its own (the relay authenticates remote access), so a
 - **Bridge.** `residuum.fetch` and `residuum.ask` are relayed by the web UI (`web/src/lib/workbench-bridge.ts`), which accepts messages only from the artifact's frame on the artifacts origin and refuses with `403` and a reason: writing secrets or agent keys; anything under `/api/config/raw` and `/api/providers/raw`; `/api/config/complete-setup`; `/api/shutdown`, `/api/update/check|apply|restart`, `/api/cloud/disconnect`; and writes under `/api/tracing/`. Paths outside `/api/` are refused. Every relayed request carries `X-Residuum-Artifact: <name>`, which the bridge sets itself, overwriting any value the artifact's own request supplied. The bridge relays at most 8 ordinary requests at a time per bridge (the web UI shows one artifact at a time, so one bridge), queueing the rest in the order they arrived; a `503` whose body is exactly the relay's `agent overloaded` text is retried up to 3 times with exponential backoff and jitter starting near 500 ms, since the relay refuses these before forwarding them, so a retry never duplicates a write. Any other `503` is returned to the artifact as-is. Model calls (`POST /api/model/complete`) get their own lane of at most 4 at a time, identified by route, so a burst of slow calls never holds up the artifact's ordinary requests; each gets its own abort signal, tracked per bridge, aborted when the bridge is torn down (the frame closes or navigates away).
 - **Artifacts share one origin.** Every artifact runs on the same artifacts origin, so artifacts can read each other's browser storage. Anything that must stay private to an artifact belongs in the workspace, not the browser.
 
+## Change feed
+
+One watcher covers the whole workspace recursively, using the operating system's file notifications (inotify, FSEvents, ReadDirectoryChangesW through the `notify` crate). If native notifications can't start (the Linux inotify watch limit, an unusual filesystem), Residuum logs a `warn` naming the cause and polls the workspace every 2 seconds instead; hitting the watch limit later, as new folders appear, switches to polling the same way. If neither can start, Residuum logs an `error` and any view that starts watching is told live updates are off, which the web UI shows as an error notice. Symlinks are not followed.
+
+Notifications are debounced into batches: a batch closes once 300 ms pass with no new notification, or 2 s after its first one while writes continue. Each changed path appears once per batch as `created`, `modified`, or `removed`, decided from what the batch saw and what is at the path when the batch closes:
+
+- A rename is `removed` for the old path and `created` for the new one. Residuum's own atomic writes (a temporary file renamed over the target) show up as `created` or `modified` for the target, never as the temporary file.
+- A path missing when the batch closes is `removed`, even one created and deleted inside the batch.
+- A folder's `created` or `removed` stands for everything inside it; a rename or removal of a whole folder is reported for the folder alone. A folder whose only change is its own timestamp is left out, since its files report the real changes.
+- Paths the workspace access policy hides (any `.index` segment, database files and their sidecars, atomic-write temporaries) never appear.
+- Reads never produce changes, so an artifact that rereads a file on each change can't feed its own loop.
+
+When the OS reports lost notifications (queue overflow, rescan), notifications back up past Residuum's buffer, or one batch touches more than 10,000 paths, the batch becomes a resync instead of a change list. Restarting the watcher (after the watch limit, or when the workspace folder itself disappears) sends a resync too.
+
+Each WebSocket connection has its own watch set of workspace-relative prefixes, empty by default, so the main chat never receives change frames:
+
+- The client frame `{ "type": "watch_workspace", "prefixes": ["wiki", "inbox/user"] }` replaces the set. `[]` stops watching; `""` watches the whole workspace. A prefix that is absolute or contains `..` is refused with an `error` frame and the set is left unchanged. A connection may watch up to 256 prefixes of up to 1 KiB each.
+- Prefixes match by path segment: `wiki` matches `wiki` and anything under `wiki/`, never `wikipedia/`. A prefix naming a file matches only that file, and a prefix that doesn't exist yet matches once it appears. A change to a folder that contains a prefix (for example `projects` for the prefix `projects/alpha`) matches too, since renaming or removing that folder carries the prefix with it.
+- `{ "type": "workspace_changed", "changes": [{ "path": "wiki/a.md", "kind": "created" }] }` carries a batch's changes under the connection's prefixes, sorted by path. A connection with no matching changes gets nothing.
+- `{ "type": "workspace_resync", "reason": "overflow" | "watcher_restarted" }` means the connection's view may be stale. It replaces `workspace_changed` when more than 500 of a batch's changes match the connection, and goes to every watching connection when the watcher loses notifications (`overflow`) or restarts (`watcher_restarted`).
+- `{ "type": "workspace_watch_unavailable", "message": "..." }` tells a watching connection no watcher is running.
+
+The web UI shows one artifact at a time, so its connection's watch set is the open artifact's watched prefixes, empty when no artifact is open, and it sends the set again after every reconnect. The bridge delivers `workspace_changed` and `workspace_resync` frames to the artifact only for the prefixes it watches, and after a reconnect sends a watching artifact `workspace_resync` with `reason: "reconnected"`, since changes during the gap are lost. An artifact that loads a folder once and then follows `residuum.watch` stays current, including with changes made by background sessions.
+
 ## Live reload
 
-The gateway polls `workbench/` every second. An artifact counts as changed when its page, or any file in its folder, changes; the change is published on the bus and web UI clients receive `artifact_updated` and `artifact_removed` frames. An open artifact reloads in place, keeping full view. Saved data files sit beside artifacts and are not watched, so an artifact saving its own state never reloads itself.
+Artifact reloads come from the same change feed. When a batch touches `workbench/`, or the feed asks for a resync, the gateway rescans the workbench; an artifact counts as changed when its page, or any file in its folder, changed. Web UI clients receive `artifact_updated` and `artifact_removed` frames, whatever they watch. An open artifact reloads in place, keeping full view. Saved data files sit beside artifacts and are not part of them, so an artifact saving its own state never reloads itself.
+
+When a page loads in the artifact's frame, the bridge forgets what the previous page subscribed to and watched: a page with the SDK announces itself before its own scripts run, so what it sets up while loading is kept, and a page without the SDK starts with nothing.
 
 ## Through the relay
 
