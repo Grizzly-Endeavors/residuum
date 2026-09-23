@@ -9,7 +9,8 @@ use a2a::{
     GetExtendedAgentCardRequest, GetTaskPushNotificationConfigRequest, GetTaskRequest,
     ListTaskPushNotificationConfigsRequest, ListTaskPushNotificationConfigsResponse,
     ListTasksRequest, ListTasksResponse, SendMessageRequest, SendMessageResponse, StreamResponse,
-    SubscribeToTaskRequest, Task, TaskPushNotificationConfig, new_task_id,
+    SubscribeToTaskRequest, Task, TaskPushNotificationConfig, TaskStatus, new_context_id,
+    new_task_id,
 };
 use a2a_server::{DefaultRequestHandler, RequestHandler, ServiceParams, TaskStore as _};
 use async_trait::async_trait;
@@ -65,16 +66,25 @@ impl ResiduumA2aHandler {
 
     /// Prepare a `send_message`/`send_streaming_message` request: reject a
     /// brand-new task in a context that already has an open one, ensure the
-    /// message carries a known `task_id`, append it to an existing task's
-    /// history (the SDK doesn't), and check ownership when the task already
-    /// exists. Returns the resolved caller, the task id now set on `req`,
-    /// and whether the task is brand new (for [`Self::record_ownership`]
-    /// after the inner handler creates it).
+    /// message carries a known `task_id`/`context_id`, append it to an
+    /// existing task's history (the SDK doesn't), and check ownership when
+    /// the task already exists.
+    ///
+    /// For a brand-new task, this creates the task record itself — with
+    /// `residuum.caller`/`residuum.address` metadata already set — *before*
+    /// delegating to the inner handler, rather than delegating first and
+    /// patching metadata on afterward. The inner handler's own execution
+    /// starts concurrently the moment it's called and immediately begins
+    /// overwriting the task's `status` (working, then terminal) from its own
+    /// in-memory copy of the very first snapshot it saw; a metadata patch
+    /// applied after that point would only win the race until the next
+    /// status update clobbers it. Creating the task with metadata already in
+    /// place means every update downstream carries it forward.
     async fn prepare_send(
         &self,
         params: &ServiceParams,
         req: &mut SendMessageRequest,
-    ) -> Result<(String, String, bool), A2AError> {
+    ) -> Result<(), A2AError> {
         let caller = Self::caller_of(params)?;
 
         if req.message.task_id.is_none()
@@ -88,37 +98,62 @@ impl ResiduumA2aHandler {
             )));
         }
 
-        let task_id = req.message.task_id.clone().unwrap_or_else(new_task_id);
-        req.message.task_id = Some(task_id.clone());
+        let Some(task_id) = req.message.task_id.clone() else {
+            let task_id = new_task_id();
+            let context_id = req
+                .message
+                .context_id
+                .clone()
+                .unwrap_or_else(new_context_id);
+            req.message.task_id = Some(task_id.clone());
+            req.message.context_id = Some(context_id.clone());
+            self.create_owned_task(&task_id, &context_id, &caller, req.message.clone())
+                .await?;
+            return Ok(());
+        };
 
-        match self.task_store.get(&task_id).await? {
-            Some(mut existing) => {
-                match FileTaskStore::caller_of(&existing) {
-                    Some(owner) if owner == caller => {}
-                    _ => return Err(A2AError::task_not_found(&task_id)),
-                }
-                existing
-                    .history
-                    .get_or_insert_with(Vec::new)
-                    .push(req.message.clone());
-                self.task_store.update(existing).await?;
-                Ok((caller, task_id, false))
+        if let Some(mut existing) = self.task_store.get(&task_id).await? {
+            match FileTaskStore::caller_of(&existing) {
+                Some(owner) if owner == caller => {}
+                _ => return Err(A2AError::task_not_found(&task_id)),
             }
-            None => Ok((caller, task_id, true)),
+            req.message.context_id = Some(existing.context_id.clone());
+            existing
+                .history
+                .get_or_insert_with(Vec::new)
+                .push(req.message.clone());
+            self.task_store.update(existing).await?;
+            Ok(())
+        } else {
+            // The caller named a task id nothing has created yet: treat it
+            // like a brand-new task at that id (the SDK itself would do the
+            // same for an unrecognized `task_id`), still gated on the
+            // one-open-task check above.
+            let context_id = req
+                .message
+                .context_id
+                .clone()
+                .unwrap_or_else(new_context_id);
+            req.message.context_id = Some(context_id.clone());
+            self.create_owned_task(&task_id, &context_id, &caller, req.message.clone())
+                .await
         }
     }
 
-    /// Record `residuum.caller`/`residuum.address` metadata on a task the
-    /// inner handler just created. Best-effort: if the task has somehow
-    /// already vanished, there's nothing to attribute ownership to.
-    async fn record_ownership(&self, task_id: &str, caller: &str) -> Result<(), A2AError> {
-        let Some(mut task) = self.task_store.get(task_id).await? else {
-            return Ok(());
-        };
-        let address = SessionExecutor::address_for(caller, &task.context_id);
-        let metadata = task
-            .metadata
-            .get_or_insert_with(std::collections::HashMap::new);
+    /// Create a task record with `residuum.caller`/`residuum.address`
+    /// metadata already set, its history seeded with `message`, and status
+    /// `Submitted` — exactly the shape the SDK's own `prepare_task_for_execution`
+    /// would build for a task it doesn't find, so the inner handler simply
+    /// reuses it instead of creating a second, metadata-less copy.
+    async fn create_owned_task(
+        &self,
+        task_id: &str,
+        context_id: &str,
+        caller: &str,
+        message: a2a::Message,
+    ) -> Result<(), A2AError> {
+        let address = SessionExecutor::address_for(caller, context_id);
+        let mut metadata = std::collections::HashMap::new();
         metadata.insert(
             CALLER_METADATA_KEY.to_string(),
             serde_json::Value::String(caller.to_string()),
@@ -127,7 +162,19 @@ impl ResiduumA2aHandler {
             ADDRESS_METADATA_KEY.to_string(),
             serde_json::Value::String(address.to_string()),
         );
-        self.task_store.update(task).await?;
+        let task = Task {
+            id: task_id.to_string(),
+            context_id: context_id.to_string(),
+            status: TaskStatus {
+                state: a2a::TaskState::Submitted,
+                message: None,
+                timestamp: Some(chrono::Utc::now()),
+            },
+            artifacts: None,
+            history: Some(vec![message]),
+            metadata: Some(metadata),
+        };
+        self.task_store.create(task).await?;
         Ok(())
     }
 }
@@ -139,12 +186,8 @@ impl RequestHandler for ResiduumA2aHandler {
         params: &ServiceParams,
         mut req: SendMessageRequest,
     ) -> Result<SendMessageResponse, A2AError> {
-        let (caller, task_id, is_new) = self.prepare_send(params, &mut req).await?;
-        let response = self.inner.send_message(params, req).await?;
-        if is_new {
-            self.record_ownership(&task_id, &caller).await?;
-        }
-        Ok(response)
+        self.prepare_send(params, &mut req).await?;
+        self.inner.send_message(params, req).await
     }
 
     async fn send_streaming_message(
@@ -152,12 +195,8 @@ impl RequestHandler for ResiduumA2aHandler {
         params: &ServiceParams,
         mut req: SendMessageRequest,
     ) -> Result<BoxStream<'static, Result<StreamResponse, A2AError>>, A2AError> {
-        let (caller, task_id, is_new) = self.prepare_send(params, &mut req).await?;
-        let stream = self.inner.send_streaming_message(params, req).await?;
-        if is_new {
-            self.record_ownership(&task_id, &caller).await?;
-        }
-        Ok(stream)
+        self.prepare_send(params, &mut req).await?;
+        self.inner.send_streaming_message(params, req).await
     }
 
     async fn get_task(

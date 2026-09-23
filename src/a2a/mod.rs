@@ -16,6 +16,8 @@ pub mod keys;
 pub mod keys_runtime;
 pub mod listener;
 pub mod public_url;
+#[cfg(test)]
+mod server_e2e_tests;
 pub mod task_store;
 
 pub use auth::{
