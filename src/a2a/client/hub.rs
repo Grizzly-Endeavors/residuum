@@ -88,6 +88,9 @@ pub enum HubError {
     /// The card resolved, but a client transport couldn't be built from it.
     #[error("couldn't set up a connection to remote agent a2a:{0}: {1}")]
     ClientBuild(String, String),
+    /// A connected call to the agent (e.g. `CancelTask`) failed.
+    #[error("remote agent a2a:{0} couldn't complete the request: {1}")]
+    RequestFailed(String, String),
 }
 
 /// The negotiated A2A client type [`A2AClientFactory::create_from_card`]

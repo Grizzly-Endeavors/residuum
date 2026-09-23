@@ -324,7 +324,7 @@ impl RemoteTaskTracker {
             }
             Err(e) => {
                 tracing::warn!(task_id = %task.task_id, agent, error = %e, "failed to cancel a2a remote task");
-                return Err(HubError::ClientBuild(agent.to_string(), e.to_string()));
+                return Err(HubError::RequestFailed(agent.to_string(), e.to_string()));
             }
         }
         Ok(Some(task.task_id))
