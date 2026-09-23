@@ -77,6 +77,8 @@ pub fn build_gateway_app(
 ) -> axum::Router {
     use axum::routing::{get, post};
 
+    let a2a_tunnel_status_rx = state.tunnel_status_rx.clone();
+
     // Always mounted: the table is swapped on reload, so webhooks added later
     // work without rebinding the server. Unknown names get a 404.
     let webhook_router = axum::Router::new()
@@ -160,6 +162,10 @@ pub fn build_gateway_app(
         .merge(memory_router)
         .merge(model_router)
         .merge(a2a_agents_router)
+        .merge(web::a2a::a2a_status_router(web::a2a::A2aStatusApiState {
+            config: config_api_state.clone(),
+            tunnel_status_rx: a2a_tunnel_status_rx,
+        }))
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
         .layer(axum::middleware::from_fn(

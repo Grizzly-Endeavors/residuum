@@ -7,17 +7,16 @@ use std::sync::Arc;
 use crate::config::A2aConfig;
 use crate::tunnel::TunnelStatus;
 
-/// `[a2a] public_url` when set (explicit wins); else, while the relay tunnel
-/// is connected with both `instance` and `origin`, `{origin}/a2a/{instance}`;
-/// else a local fallback pointing at this instance's own A2A port.
+/// The address other agents can use to reach this agent, when one is known:
+/// the configured `[a2a] public_url`, else the relay URL while the tunnel is
+/// connected. `None` when neither applies.
 #[must_use]
-pub(crate) fn resolve_a2a_public_url(
+pub(crate) fn known_a2a_public_url(
     a2a: &A2aConfig,
-    gateway_bind: &str,
     tunnel_status: &TunnelStatus,
-) -> String {
+) -> Option<String> {
     if let Some(url) = &a2a.public_url {
-        return url.clone();
+        return Some(url.clone());
     }
     if let TunnelStatus::Connected {
         origin: Some(origin),
@@ -25,18 +24,23 @@ pub(crate) fn resolve_a2a_public_url(
         ..
     } = tunnel_status
     {
-        return format!("{}/a2a/{instance}", origin.trim_end_matches('/'));
+        return Some(format!("{}/a2a/{instance}", origin.trim_end_matches('/')));
     }
-    format!("http://{gateway_bind}:{}", a2a.port)
+    None
 }
 
-/// Live handle to this instance's current A2A public URL, so a caller (the
-/// web settings API, for one) can read it without duplicating the
-/// precedence rules in [`resolve_a2a_public_url`].
-///
-/// `a2a`/`gateway_bind` are fixed for the listener's lifetime — any change
-/// to `[a2a]` or the gateway bind restarts the listener, which rebuilds this
-/// handle from the new config.
+/// The URL the Agent Card advertises: [`known_a2a_public_url`], falling back
+/// to the local listener address.
+#[must_use]
+pub(crate) fn resolve_a2a_public_url(
+    a2a: &A2aConfig,
+    gateway_bind: &str,
+    tunnel_status: &TunnelStatus,
+) -> String {
+    known_a2a_public_url(a2a, tunnel_status)
+        .unwrap_or_else(|| format!("http://{gateway_bind}:{}", a2a.port))
+}
+
 pub(crate) struct A2aPublicUrl {
     a2a: A2aConfig,
     gateway_bind: String,

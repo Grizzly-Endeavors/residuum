@@ -120,8 +120,6 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/a2a/keys/{name}", delete(a2a::api_a2a_keys_revoke))
         .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
         .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
-        .route("/api/a2a/status", get(a2a::api_a2a_status))
-        .route("/api/a2a/card", get(a2a::api_a2a_card))
         .route("/api/secrets", post(secrets::api_secrets_set))
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
