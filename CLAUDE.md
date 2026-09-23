@@ -34,6 +34,8 @@ CI does not cross-compile by default; when it does, it runs clippy with `-D warn
 
 The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
 
+To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
+
 ### Lint Rules
 
 Clippy pedantic is enabled with strict error handling:

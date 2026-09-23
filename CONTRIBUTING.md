@@ -46,6 +46,8 @@ Opt in when a change touches anything platform-sensitive: `unsafe` or FFI code, 
 
 From Linux, the Windows and aarch64 Linux targets can also be linted locally once installed (`rustup target add x86_64-pc-windows-gnu`): `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings`.
 
+To run Windows-specific code yourself, the local VM harness in `scripts/windows-vm/` runs the test suite and desktop checks (such as toast notifications) on Windows 11; see [docs/runbooks/windows-harness.md](docs/runbooks/windows-harness.md).
+
 ### Branch Naming
 
 Use prefixed branch names:
