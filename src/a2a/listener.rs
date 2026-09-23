@@ -22,10 +22,11 @@ use super::auth::{AuthState, TunnelNonceSource, auth_middleware};
 use super::card::SharedCardState;
 use super::keys_runtime::SharedA2aKeys;
 
-/// Placeholder [`a2a_server::RequestHandler`] that refuses every operation
-/// with `A2AError::unsupported_operation`. Swapped for a handler wrapping
-/// the session executor and persistent task store once those exist —
-/// nothing else in this module needs to change to make that swap.
+/// A [`a2a_server::RequestHandler`] that refuses every operation with
+/// `A2AError::unsupported_operation`. Production wiring uses
+/// [`super::ResiduumA2aHandler`] instead; this is a lightweight stand-in for
+/// this module's own tests, which only need to exercise the auth layer and
+/// routing, not real task execution.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StubHandler;
 

@@ -124,6 +124,20 @@ impl EndpointRegistry {
             });
         }
 
+        // No `INTERACTIVE` capability: A2A callers never reach a session
+        // through `send_message`/`list_endpoints` — they are answered only
+        // inside a task, by the A2A executor delivering straight into the
+        // session (see `crate::a2a::executor`). No `ConversationSource`
+        // either, for the same reason.
+        if config.a2a.enabled {
+            entries.push(EndpointEntry {
+                id: EndpointId::from("a2a"),
+                topic: TopicId::Endpoint(EndpointName::from("a2a")),
+                capabilities: EndpointCapabilities::empty(),
+                display_name: "Agent2Agent (A2A)".to_string(),
+            });
+        }
+
         for ch in channels {
             let kind_label = match &ch.kind {
                 ExternalChannelKind::Ntfy { .. } => "Ntfy",

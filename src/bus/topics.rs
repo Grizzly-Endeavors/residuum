@@ -5,9 +5,10 @@
 //! topic, providing compile-time safety at publish/subscribe boundaries.
 
 use super::events::{
-    AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent,
-    NotificationEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
-    ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent, WorkspaceEvent,
+    A2aTaskSignalEvent, AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent,
+    MessageEvent, NoticeEvent, NotificationEvent, ResponseEvent, SessionEvent,
+    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent,
+    WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -112,6 +113,18 @@ impl Topic for Inbox {
 
 impl Carries<NotificationEvent> for Inbox {}
 
+/// Explicit task-outcome signals from a session's `a2a_task_update` tool
+/// call, consumed by the A2A executor waiting on that session's address.
+pub struct A2aTaskSignal;
+
+impl Topic for A2aTaskSignal {
+    fn topic_id(&self) -> TopicId {
+        TopicId::A2aTaskSignal
+    }
+}
+
+impl Carries<A2aTaskSignalEvent> for A2aTaskSignal {}
+
 /// Workbench artifact file changes, for web UI views showing an artifact live.
 pub struct Workbench;
 
@@ -176,5 +189,10 @@ mod tests {
     #[test]
     fn inbox_topic_id() {
         assert_eq!(Inbox.topic_id(), TopicId::Inbox);
+    }
+
+    #[test]
+    fn a2a_task_signal_topic_id() {
+        assert_eq!(A2aTaskSignal.topic_id(), TopicId::A2aTaskSignal);
     }
 }

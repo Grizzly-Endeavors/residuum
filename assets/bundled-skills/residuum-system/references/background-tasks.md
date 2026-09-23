@@ -70,6 +70,8 @@ Delivery follows the same rules as Messaging below — interrupt if running, new
 
 A conversation session's turn output — final response and any intermediate pre-tool-call text, the same as main posts mid-turn — goes straight back to its own conversation and **never falls back to the owner's DM** — unlike main's own proactive output. If the interface can't deliver it, the output is dropped, an error is logged naming the session and conversation, and main gets a notice to decide whether the owner needs telling.
 
+**A2A callers route the same way.** Each caller of the A2A listener (see the `a2a` skill reference) gets its own conversation session, addressed by `{caller}/{context_id}`, with no admission gate beyond the A2A auth layer's own caller-key/sibling check — every authenticated caller reaches its own session. A session started from the `a2a` endpoint is the only kind that gets `a2a_task_update`, which reports that caller's A2A task outcome back through the listener instead of through this page's own output-delivery path.
+
 ## Tools
 
 | Tool | Key Parameters | Description |
@@ -105,12 +107,13 @@ The session runtime enforces a configurable concurrency limit via a semaphore (`
 
 Every run's metadata is recorded under `memory/sessions/YYYY-MM/DD/<run-id>.json`, created on demand. While the run is live, its transcript is durably appended to a sibling `<run-id>.transcript.jsonl` file after every model response and tool result — a crash mid-turn loses at most the message in flight. On completion the full transcript is folded into the metadata file too, so a finished run's record is one self-contained file. A stopped run keeps its transcript up to the point it was stopped, and merges into memory like any other run. At startup, any run left incomplete by a prior process exit goes through the full completion pipeline (skip check, final observation, merge) from its persisted transcript before normal operation resumes, then is marked completed.
 
-Each session's resume point (previous run id, episode pointer, trigger, source label, skill, model tier, spawner, depth) is persisted write-through to `memory/sessions/resume_points.json` as it's recorded, and reloaded when the session registry starts — so messaging a completed session's address still resumes it with its episode pointer intact after a restart, not just within one process's lifetime. Entries older than 90 days are pruned on load; a load or parse failure logs a warning and starts empty rather than blocking startup.
+Each session's resume point (previous run id, episode pointer, trigger, source label, skill, model tier, spawner, depth) is recorded when a run starts and again when it completes, persisted write-through to `memory/sessions/resume_points.json`, and reloaded when the session registry starts — so even a run cut short by a crash leaves the next message a pointer back to it, and messaging a completed session's address still resumes it with its episode pointer intact after a restart, not just within one process's lifetime. Entries older than 90 days are pruned on load; a load or parse failure logs a warning and starts empty rather than blocking startup.
 
 ## Gotchas
 
 - A session's fork always carries the main agent's full identity now — there is no minimal-context mode and no `include_identity` flag to opt in or out of.
 - The only tool excluded from sessions is `switch_endpoint` — it only makes sense for the main agent's own output routing. `subagent_spawn`, the action-scheduling tools, and `message_agent` are all available to sessions.
+- `a2a_task_update` is the reverse case: a tool no session gets by default, present only in a session started from the `a2a` endpoint.
 - A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface (named explicitly, or reached through the no-conversation default) — only `main` talks to the owner. See [notifications.md](notifications.md).
 - The `memory/sessions/` directory is not created at bootstrap — it appears only after the first session run.
 - A completed session is no longer listed by `list_agents`, but its address and transcript remain in the session store — and the web UI's session listing includes finished runs.

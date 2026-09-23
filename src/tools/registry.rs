@@ -16,10 +16,10 @@ use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult, actions,
-    agent_keys, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
-    message_agent, ollama_web_search, read, send_message, skills, submit_feedback, web_fetch,
-    write,
+    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
+    a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
+    memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
+    submit_feedback, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -58,8 +58,10 @@ impl Default for ToolRegistry {
 /// `gateway::startup::tools::init_tool_registry`. `trigger` and
 /// `conversation_target` describe what started this session (and, for a
 /// conversation-triggered one, which endpoint/conversation it replies to);
-/// no tool reads them yet, but they're carried through for a future
-/// session-only tool that needs to know.
+/// `conversation_target` gates `a2a_task_update`, registered only when its
+/// endpoint is `"a2a"` (see `SESSION_ONLY_TOOLS` in
+/// `gateway::startup::tools`) — `trigger` itself isn't read by any tool yet,
+/// but is carried through for one that needs it later.
 pub struct SubagentToolDeps {
     pub tracker: SharedFileTracker,
     /// The main agent's write policy, shared so a session is blocked from
@@ -73,6 +75,10 @@ pub struct SubagentToolDeps {
     pub skill_state: SharedSkillState,
     pub tz: chrono_tz::Tz,
     pub hybrid_searcher: Arc<HybridSearcher>,
+    /// The workspace root, for tools that need to validate a caller-supplied
+    /// relative path against it (currently just `a2a_task_update`'s
+    /// artifacts).
+    pub workspace_dir: PathBuf,
     pub episodes_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub agent_inbox_dir: PathBuf,
@@ -402,6 +408,7 @@ impl ToolRegistry {
             skill_state,
             tz,
             hybrid_searcher,
+            workspace_dir,
             episodes_dir,
             sessions_dir,
             agent_inbox_dir,
@@ -417,10 +424,10 @@ impl ToolRegistry {
             own_depth,
             depth_cap,
             session_category,
-            // Not read by any tool yet — reserved for a future session-only
-            // tool (see `SubagentToolDeps::trigger`/`conversation_target`).
+            // Not read by any tool yet — reserved for one that needs it later
+            // (see `SubagentToolDeps::trigger`).
             trigger: _trigger,
-            conversation_target: _conversation_target,
+            conversation_target,
             messenger,
             hop_counter,
             tracing_service,
@@ -477,6 +484,13 @@ impl ToolRegistry {
             hop_counter.clone(),
         );
 
+        registry.register_a2a_task_update_tool(
+            conversation_target.as_ref(),
+            own_address.clone(),
+            publisher.clone(),
+            workspace_dir,
+        );
+
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
         registry.register_list_endpoints_tool(endpoint_registry);
@@ -495,20 +509,47 @@ impl ToolRegistry {
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
 
-        // Ollama Cloud web search tool, gated the same way as main's
-        // (see `gateway::startup::tools::init_tool_registry`).
-        if let Some(backend) = &web_search_backend
-            && backend.name == "ollama"
-        {
-            let base_url = backend
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.ollama.com".to_string());
-            registry.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
-            tracing::info!("registered ollama_web_search tool for session");
-        }
+        registry.register_ollama_web_search_tool_if_configured(web_search_backend.as_ref());
 
         registry
+    }
+
+    /// Register `a2a_task_update` when `conversation_target` names the
+    /// `a2a` endpoint — session-only (see `SESSION_ONLY_TOOLS` in
+    /// `gateway::startup::tools`).
+    fn register_a2a_task_update_tool(
+        &mut self,
+        conversation_target: Option<&ConversationTarget>,
+        own_address: SessionAddress,
+        publisher: crate::bus::Publisher,
+        workspace_dir: PathBuf,
+    ) {
+        if conversation_target.is_some_and(|target| target.endpoint == "a2a") {
+            self.register(Box::new(a2a_task_update::A2aTaskUpdateTool::new(
+                own_address,
+                publisher,
+                workspace_dir,
+            )));
+        }
+    }
+
+    /// Register `ollama_web_search`, gated the same way as main's (see
+    /// `gateway::startup::tools::init_tool_registry`): only when
+    /// `backend` names the `"ollama"` standalone web search backend.
+    fn register_ollama_web_search_tool_if_configured(
+        &mut self,
+        backend: Option<&crate::config::StandaloneBackendConfig>,
+    ) {
+        let Some(backend) = backend else { return };
+        if backend.name != "ollama" {
+            return;
+        }
+        let base_url = backend
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.ollama.com".to_string());
+        self.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+        tracing::info!("registered ollama_web_search tool for session");
     }
 
     /// Register the `web_fetch` tool for fetching web page content.

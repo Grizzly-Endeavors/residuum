@@ -90,6 +90,25 @@ pub(crate) struct TunnelA2a {
     pub visibility: A2aVisibility,
 }
 
+/// The `(a2a_port, a2a)` pair [`start_tunnel`] takes, derived from `[a2a]`
+/// config: `None`/`None` when A2A is disabled, otherwise the configured port
+/// and visibility.
+#[must_use]
+pub(crate) fn a2a_tunnel_params(
+    a2a: &crate::config::A2aConfig,
+) -> (Option<u16>, Option<TunnelA2a>) {
+    if a2a.enabled {
+        (
+            Some(a2a.port),
+            Some(TunnelA2a {
+                visibility: a2a.visibility,
+            }),
+        )
+    } else {
+        (None, None)
+    }
+}
+
 /// Build the `x-residuum-capabilities` header value: always
 /// `workbench-surface,http-streaming`, plus `a2a` when A2A is enabled and
 /// `a2a-private` when its visibility is private.
