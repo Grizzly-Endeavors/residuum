@@ -24,7 +24,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
 | Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
-| A2A | *(none yet — no session executor)* | `config/agent-card.json`, `[a2a]` in config.toml | [a2a](references/a2a.md) |
+| A2A | `list_agents`, `message_agent`, `stop_agent` (address `a2a:<name>`) | `config/agent-card.json`, `config/a2a.json`, `[a2a]` in config.toml | [a2a](references/a2a.md) |
 
 ## Workspace Directory Layout
 
