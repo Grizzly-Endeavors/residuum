@@ -79,6 +79,8 @@ pub enum TopicId {
     Workbench,
     /// Debounced workspace file changes (the change feed).
     Workspace,
+    /// Explicit A2A task-outcome signals from `a2a_task_update`.
+    A2aTaskSignal,
 }
 
 impl fmt::Display for TopicId {
@@ -92,6 +94,7 @@ impl fmt::Display for TopicId {
             Self::Inbox => f.write_str("inbox"),
             Self::Workbench => f.write_str("workbench"),
             Self::Workspace => f.write_str("workspace"),
+            Self::A2aTaskSignal => f.write_str("a2a:task-signal"),
         }
     }
 }

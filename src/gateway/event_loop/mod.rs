@@ -7,6 +7,7 @@ mod run_loop;
 mod subconscious_hook;
 mod turns;
 
+pub(crate) use http::A2aListenerDeps;
 pub(crate) use http::AdapterSenders;
 pub(crate) use http::ExtraApiStates;
 pub(crate) use http::build_a2a_listener;

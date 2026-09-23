@@ -443,6 +443,34 @@ impl AgentMessageEvent {
     }
 }
 
+/// Outcome a session declared through its `a2a_task_update` tool call,
+/// carried to the A2A [`crate::a2a::executor::SessionExecutor`] waiting on
+/// the session's address so it can end the task's execution stream with the
+/// right terminal (or input-required) status.
+#[derive(Debug, Clone)]
+pub struct A2aTaskSignalEvent {
+    /// Address of the session that signaled its task's outcome.
+    pub address: SessionAddress,
+    /// The outcome the session declared.
+    pub state: A2aTaskSignalState,
+    /// The session's final message for this outcome.
+    pub message: String,
+    /// Files the session attached as artifacts, already read into `a2a`
+    /// parts by the `a2a_task_update` tool.
+    pub artifacts: Vec<a2a::Artifact>,
+}
+
+/// The outcome states a session can declare through `a2a_task_update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum A2aTaskSignalState {
+    /// The delegated task is done.
+    Completed,
+    /// The task needs more input from the caller before it can continue.
+    InputRequired,
+    /// The task could not be completed.
+    Failed,
+}
+
 /// Request to spawn an agent session from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {

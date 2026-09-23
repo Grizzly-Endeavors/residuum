@@ -244,6 +244,13 @@ impl WorkspaceLayout {
         self.a2a_dir().join("outbound.json")
     }
 
+    /// Path to the directory holding persisted A2A task records, one JSON
+    /// file per task id.
+    #[must_use]
+    pub fn a2a_tasks_dir(&self) -> PathBuf {
+        self.a2a_dir().join("tasks")
+    }
+
     /// Path to the session store directory: per-run metadata and transcripts,
     /// organized by date.
     ///

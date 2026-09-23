@@ -13,7 +13,9 @@ use crate::pulse::scheduler::PulseScheduler;
 use crate::util::FatalError;
 
 use super::commands::handle_server_command;
-use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server};
+use super::http::{
+    A2aListenerDeps, AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server,
+};
 use super::pulse::handle_pulse_tick;
 use super::turns::handle_inbound_message;
 
@@ -232,7 +234,14 @@ async fn spawn_server_and_adapters(
         },
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
-    let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz);
+    let a2a_deps = A2aListenerDeps {
+        session_registry: Arc::clone(&parts.session_registry),
+        agent_messenger: Arc::clone(&parts.agent_messenger),
+        skill_state: Arc::clone(&parts.skill_state),
+        bus_handle: core.bus_handle.clone(),
+        tunnel_status_rx: tunnel_status_rx.clone(),
+    };
+    let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, a2a_deps).await;
     let (tunnel_handle, tunnel_shutdown_tx) =
         spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx), workbench_serving.port());
     #[cfg(unix)]
@@ -455,6 +464,7 @@ async fn build_runtime(
         a2a_card_state: spawned.adapters.a2a_card_state,
         a2a_hub: parts.a2a_hub,
         a2a_tracker: parts.a2a_tracker,
+        a2a_public_url: spawned.adapters.a2a_public_url,
         watcher_handle: spawned.watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         change_feed_handle: spawned.change_feed_handle,
@@ -487,10 +497,18 @@ fn spawn_tunnel(
 ) {
     if let Some(ref cloud_cfg) = cfg.cloud {
         let cloud = cloud_cfg.clone();
+        let (a2a_port, a2a) = crate::tunnel::a2a_tunnel_params(&cfg.a2a);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let handle = crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, workbench_port, None, None, shutdown_rx, status_tx)
-                .await;
+            crate::tunnel::start_tunnel(
+                cloud,
+                workbench_port,
+                a2a_port,
+                a2a,
+                shutdown_rx,
+                status_tx,
+            )
+            .await;
         });
         (Some(handle), Some(shutdown_tx))
     } else {
@@ -555,7 +573,12 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
     // Reload the agent card, if A2A is enabled. On failure the listener
     // keeps serving the last good card; the operator still needs to know.
     if let Some(card_state) = &rt.a2a_card_state {
-        let card_runtime = crate::a2a::CardRuntime::from_config(&rt.cfg.a2a, &rt.cfg.gateway.bind);
+        let tunnel_status = rt.tunnel_status_rx.borrow().clone();
+        let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
+            &rt.cfg.a2a,
+            &rt.cfg.gateway.bind,
+            &tunnel_status,
+        );
         if let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) {
             tracing::warn!(error = %e, "failed to reload agent-card.json, keeping the last good card");
             if let Err(publish_err) = rt
@@ -715,6 +738,7 @@ fn respawn_tunnel(rt: &mut GatewayRuntime, exit: &Result<(), tokio::task::JoinEr
     }
     if let Some(ref cloud_cfg) = rt.cloud_config {
         let cloud = cloud_cfg.clone();
+        let (a2a_port, a2a) = crate::tunnel::a2a_tunnel_params(&rt.cfg.a2a);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let status_tx = Arc::clone(&rt.tunnel_status_tx);
         let workbench_port = rt.workbench_serving.port();
@@ -722,8 +746,15 @@ fn respawn_tunnel(rt: &mut GatewayRuntime, exit: &Result<(), tokio::task::JoinEr
             .send(crate::tunnel::TunnelStatus::Disconnected)
             .ok();
         rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, workbench_port, None, None, shutdown_rx, status_tx)
-                .await;
+            crate::tunnel::start_tunnel(
+                cloud,
+                workbench_port,
+                a2a_port,
+                a2a,
+                shutdown_rx,
+                status_tx,
+            )
+            .await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         tracing::info!("tunnel respawned after unexpected exit");

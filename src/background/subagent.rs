@@ -265,6 +265,7 @@ pub async fn build_subagent_resources(
         skill_state: Arc::clone(&skill_state),
         tz,
         hybrid_searcher,
+        workspace_dir: workspace_layout.root().to_path_buf(),
         episodes_dir: workspace_layout.episodes_dir(),
         sessions_dir: workspace_layout.sessions_dir(),
         agent_inbox_dir: workspace_layout.agent_inbox_dir(),

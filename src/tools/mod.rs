@@ -1,5 +1,6 @@
 //! Tool system for agent-invoked operations.
 
+pub(crate) mod a2a_task_update;
 pub mod actions;
 mod agent_keys;
 pub mod background;

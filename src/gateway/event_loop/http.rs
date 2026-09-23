@@ -4,8 +4,13 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::background::messaging::AgentMessenger;
+use crate::background::registry::SessionRegistry;
+use crate::bus::BusHandle;
 use crate::config::Config;
 use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand, StopRequest};
+use crate::skills::SharedSkillState;
+use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
 
 use crate::gateway::web;
@@ -36,6 +41,20 @@ pub struct AdapterHandles {
     /// The live agent card, so a workspace-file reload can update it without
     /// restarting the listener. `None` when A2A is disabled.
     pub a2a_card_state: Option<crate::a2a::SharedCardState>,
+    /// This instance's current A2A public URL, for the web settings API to
+    /// read later. `None` when A2A is disabled.
+    pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
+}
+
+/// What [`build_a2a_listener`] needs beyond `Config`: live runtime state
+/// (sessions, messaging, skills, the bus, and the tunnel's status) rather
+/// than anything derivable from config alone.
+pub(crate) struct A2aListenerDeps {
+    pub session_registry: Arc<SessionRegistry>,
+    pub agent_messenger: Arc<AgentMessenger>,
+    pub skill_state: SharedSkillState,
+    pub bus_handle: BusHandle,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
 }
 
 /// State bundle for the smaller, cross-cutting API routers, grouped so
@@ -239,8 +258,13 @@ pub async fn spawn_http_server(
     Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
 }
 
-/// Spawn the Discord, Telegram, and Teams adapters that are configured.
-pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz) -> AdapterHandles {
+/// Spawn the Discord, Telegram, Teams, and A2A adapters that are configured.
+pub async fn spawn_adapters(
+    cfg: &Config,
+    senders: &AdapterSenders,
+    tz: chrono_tz::Tz,
+    a2a_deps: A2aListenerDeps,
+) -> AdapterHandles {
     let (mut discord_handle, mut discord_shutdown_tx) = (None, None);
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -298,14 +322,26 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
         teams_shutdown_tx = Some(tx);
     }
 
-    let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state) = (None, None, None);
+    let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state, mut a2a_public_url) =
+        (None, None, None, None);
     if cfg.a2a.enabled {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let (handle, card_state) = build_a2a_listener(cfg, rx);
-        a2a_handle = Some(handle);
-        a2a_shutdown_tx = Some(tx);
-        a2a_card_state = Some(card_state);
-        tracing::info!(visibility = %cfg.a2a.visibility, "a2a interface started");
+        match build_a2a_listener(cfg, a2a_deps, rx).await {
+            Ok((handle, card_state, public_url)) => {
+                tracing::info!(
+                    visibility = %cfg.a2a.visibility,
+                    public_url = %public_url.current(),
+                    "a2a interface started"
+                );
+                a2a_handle = Some(handle);
+                a2a_shutdown_tx = Some(tx);
+                a2a_card_state = Some(card_state);
+                a2a_public_url = Some(public_url);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to start the a2a interface; it will not run this session");
+            }
+        }
     }
 
     AdapterHandles {
@@ -318,35 +354,138 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
         a2a_handle,
         a2a_shutdown_tx,
         a2a_card_state,
+        a2a_public_url,
     }
 }
 
-/// Build the live agent card and spawn the A2A listener task. Shared between
-/// initial startup and reload: both rebuild the listener from scratch when
-/// `[a2a]` changes, since a visibility flip and a new base URL both need a
-/// fresh card as well as a fresh listener.
-pub(crate) fn build_a2a_listener(
+/// Build the live agent card, task store, session executor, and spawn the
+/// A2A listener task. Shared between initial startup and reload: both
+/// rebuild the listener from scratch when `[a2a]` changes, since a
+/// visibility flip and a new base URL both need a fresh card as well as a
+/// fresh listener.
+///
+/// Also spawns a background task that reloads the card whenever the tunnel's
+/// status changes (so the card's public URL reflects it as soon as it
+/// connects), and starts the restart-continuation sweep for tasks left
+/// `Submitted`/`Working` from a previous run of this process.
+///
+/// # Errors
+/// Returns an error if the persistent task store's directory can't be
+/// created or read.
+pub(crate) async fn build_a2a_listener(
     cfg: &Config,
+    deps: A2aListenerDeps,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> (tokio::task::JoinHandle<()>, crate::a2a::SharedCardState) {
+) -> anyhow::Result<(
+    tokio::task::JoinHandle<()>,
+    crate::a2a::SharedCardState,
+    crate::a2a::SharedA2aPublicUrl,
+)> {
     let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
-    let card_runtime = crate::a2a::CardRuntime::from_config(&cfg.a2a, &cfg.gateway.bind);
+    let tunnel_status = deps.tunnel_status_rx.borrow().clone();
+    let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
+        &cfg.a2a,
+        &cfg.gateway.bind,
+        &tunnel_status,
+    );
     let card_state =
         crate::a2a::CardState::load_or_default(&layout.agent_card_json(), &card_runtime);
     let keys = crate::a2a::A2aKeys::new_shared(&cfg.config_dir);
+    let public_url = crate::a2a::A2aPublicUrl::new(
+        cfg.a2a.clone(),
+        cfg.gateway.bind.clone(),
+        deps.tunnel_status_rx.clone(),
+    );
+
+    let task_store = crate::a2a::FileTaskStore::load(&layout.a2a_tasks_dir()).await?;
+
+    let executor = crate::a2a::SessionExecutor::new(
+        deps.agent_messenger,
+        deps.session_registry,
+        deps.bus_handle,
+        deps.skill_state,
+        Arc::clone(&card_state),
+        layout.agent_inbox_dir(),
+        cfg.timezone,
+    );
+    let inner = a2a_server::DefaultRequestHandler::new(
+        executor,
+        crate::a2a::DelegatingTaskStore(Arc::clone(&task_store)),
+    )
+    .with_capabilities(a2a::AgentCapabilities {
+        streaming: Some(true),
+        push_notifications: Some(false),
+        extensions: None,
+        extended_agent_card: None,
+    });
+    let handler = Arc::new(crate::a2a::ResiduumA2aHandler::new(
+        inner,
+        Arc::clone(&task_store),
+    ));
+
+    tokio::spawn(crate::a2a::resume_in_progress_tasks(
+        Arc::clone(&handler),
+        Arc::clone(&task_store),
+    ));
+
     let listener = crate::a2a::A2aListener::new(
         cfg.a2a.clone(),
         cfg.gateway.bind.clone(),
-        Arc::new(crate::a2a::StubHandler),
+        handler,
         Arc::clone(&card_state),
         keys,
         Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
-        shutdown_rx,
+        shutdown_rx.clone(),
     );
     let handle = crate::util::spawn_monitored("a2a", async move {
         if let Err(e) = listener.start().await {
             tracing::error!(error = %e, "a2a interface failed");
         }
     });
-    (handle, card_state)
+
+    spawn_a2a_card_tunnel_watcher(
+        Arc::clone(&card_state),
+        layout.agent_card_json(),
+        cfg.a2a.clone(),
+        cfg.gateway.bind.clone(),
+        deps.tunnel_status_rx,
+        shutdown_rx,
+    );
+
+    Ok((handle, card_state, public_url))
+}
+
+/// Reload the agent card whenever the tunnel's status changes, so its public
+/// URL picks up a newly connected (or disconnected) tunnel without waiting
+/// for a workspace or config reload. Stops when `shutdown_rx` fires, the
+/// same signal that stops the listener this watcher was spawned alongside.
+fn spawn_a2a_card_tunnel_watcher(
+    card_state: crate::a2a::SharedCardState,
+    card_path: std::path::PathBuf,
+    a2a_cfg: crate::config::A2aConfig,
+    gateway_bind: String,
+    mut tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    crate::util::spawn_monitored("a2a-card-tunnel-watch", async move {
+        loop {
+            tokio::select! {
+                changed = tunnel_status_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let status = tunnel_status_rx.borrow().clone();
+                    let runtime = crate::a2a::CardRuntime::from_config_and_tunnel(&a2a_cfg, &gateway_bind, &status);
+                    if let Err(e) = card_state.reload(&card_path, &runtime) {
+                        tracing::warn!(error = %e, "failed to refresh the a2a agent card after a tunnel status change");
+                    }
+                }
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
 }

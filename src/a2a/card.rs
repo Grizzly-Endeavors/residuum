@@ -149,6 +149,25 @@ impl CardRuntime {
             visibility: a2a.visibility,
         }
     }
+
+    /// [`Self::from_config`], but preferring the relay tunnel's origin over
+    /// the local fallback when it's connected and `public_url` isn't set —
+    /// see [`super::public_url::resolve_a2a_public_url`].
+    #[must_use]
+    pub(crate) fn from_config_and_tunnel(
+        a2a: &crate::config::A2aConfig,
+        gateway_bind: &str,
+        tunnel_status: &crate::tunnel::TunnelStatus,
+    ) -> Self {
+        Self {
+            interfaces_base_url: super::public_url::resolve_a2a_public_url(
+                a2a,
+                gateway_bind,
+                tunnel_status,
+            ),
+            visibility: a2a.visibility,
+        }
+    }
 }
 
 /// Build the wire [`a2a::AgentCard`] from the workspace file and runtime facts.

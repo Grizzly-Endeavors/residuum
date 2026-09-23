@@ -223,13 +223,11 @@ mod tests {
     const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
 
     /// Tools registered only for a session, never for main — the reverse of
-    /// [`MAIN_ONLY_TOOLS`]. Empty today: every session-only tool proposed so
-    /// far (e.g. an A2A task-update tool registered only for sessions started
-    /// from that endpoint) is still to be added. When one lands, add it here
-    /// and to `ToolRegistry::build_subagent_registry`'s doc comment, with a
-    /// comment explaining why it's session-only — don't just leave main
-    /// without it silently.
-    const SESSION_ONLY_TOOLS: &[&str] = &[];
+    /// [`MAIN_ONLY_TOOLS`]. `a2a_task_update` is session-only because it
+    /// reports a delegated A2A task's outcome, which only makes sense for a
+    /// session started from the `a2a` endpoint — main never handles A2A
+    /// callers directly (see `docs/systems-usage/a2a.md`).
+    const SESSION_ONLY_TOOLS: &[&str] = &["a2a_task_update"];
 
     /// A minimal but fully populated `Config`, with every optional
     /// tool-gating switch turned on (here: an Ollama standalone web search
@@ -380,11 +378,14 @@ mod tests {
     }
 
     /// Build a session's tool registry from the harness, as the fork path
-    /// does for a session at `address` in `category`.
+    /// does for a session at `address` in `category`. `conversation_target`
+    /// mirrors what a conversation-triggered session carries (`None` for
+    /// every other trigger) — gates `a2a_task_update`.
     fn session_registry_for(
         h: &Harness,
         address: &str,
         category: &str,
+        conversation_target: Option<crate::bus::ConversationTarget>,
     ) -> crate::tools::ToolRegistry {
         crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
             tracker: FileTracker::new_shared(),
@@ -394,6 +395,7 @@ mod tests {
             skill_state: Arc::clone(&h.skill_state),
             tz: chrono_tz::UTC,
             hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
+            workspace_dir: h.layout.root().to_path_buf(),
             episodes_dir: h.layout.episodes_dir(),
             sessions_dir: h.layout.sessions_dir(),
             agent_inbox_dir: h.layout.agent_inbox_dir(),
@@ -410,7 +412,7 @@ mod tests {
             depth_cap: h.cfg.background.subagent_depth_cap,
             session_category: category.to_string(),
             trigger: crate::bus::EventTrigger::Agent,
-            conversation_target: None,
+            conversation_target,
             messenger: Arc::clone(&h.agent_messenger),
             hop_counter: h.hop_counter.clone(),
             tracing_service: Arc::clone(&h.tracing_service),
@@ -419,6 +421,15 @@ mod tests {
             a2a_hub: Arc::clone(&h.a2a_hub),
             a2a_tracker: Arc::clone(&h.a2a_tracker),
         })
+    }
+
+    /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
+    /// conversation session's `SubagentToolDeps` carries.
+    fn a2a_conversation_target() -> crate::bus::ConversationTarget {
+        crate::bus::ConversationTarget {
+            endpoint: "a2a".to_string(),
+            conversation_id: "key:tester/ctx-1".to_string(),
+        }
     }
 
     /// Enforces "every tool registered for main is also registered for
@@ -454,7 +465,12 @@ mod tests {
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 
-        let session_tools = session_registry_for(&h, "spawned-test-0001", "spawned");
+        let session_tools = session_registry_for(
+            &h,
+            "spawned-test-0001",
+            "spawned",
+            Some(a2a_conversation_target()),
+        );
         let mut session_names = session_tools.tool_names();
         session_names.sort();
 
@@ -482,9 +498,9 @@ mod tests {
         let h = build_harness(dir.path()).await;
 
         let mut spawned_names =
-            session_registry_for(&h, "spawned-test-0001", "spawned").tool_names();
+            session_registry_for(&h, "spawned-test-0001", "spawned", None).tool_names();
         spawned_names.sort();
-        let artifact_tools = session_registry_for(&h, "artifact-wiki-0001", "artifact");
+        let artifact_tools = session_registry_for(&h, "artifact-wiki-0001", "artifact", None);
         let mut artifact_names = artifact_tools.tool_names();
         artifact_names.sort();
         assert_eq!(artifact_names, spawned_names);
@@ -519,5 +535,52 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .count();
         assert_eq!(filed, 1, "the item lands in the user's inbox");
+    }
+
+    /// Only a session started from the `a2a` endpoint gets `a2a_task_update`
+    /// — an ordinary session (any other `conversation_target`, including
+    /// none at all) never does.
+    #[test]
+    fn only_an_a2a_conversation_session_gets_the_a2a_task_update_tool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = build_harness(dir.path());
+
+        let a2a_tools = session_registry_for(
+            &h,
+            "external-a2a-0001",
+            "external",
+            Some(a2a_conversation_target()),
+        );
+        assert!(
+            a2a_tools
+                .tool_names()
+                .contains(&"a2a_task_update".to_string()),
+            "an a2a conversation session must get a2a_task_update"
+        );
+
+        let plain_session = session_registry_for(&h, "spawned-test-0002", "spawned", None);
+        assert!(
+            !plain_session
+                .tool_names()
+                .contains(&"a2a_task_update".to_string()),
+            "a non-a2a session must not get a2a_task_update"
+        );
+
+        let discord_target = crate::bus::ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "chan-1".to_string(),
+        };
+        let discord_session = session_registry_for(
+            &h,
+            "external-discord-0001",
+            "external",
+            Some(discord_target),
+        );
+        assert!(
+            !discord_session
+                .tool_names()
+                .contains(&"a2a_task_update".to_string()),
+            "a conversation session for another endpoint must not get a2a_task_update"
+        );
     }
 }
