@@ -442,7 +442,8 @@ fn spawn_tunnel(
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let handle = crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(cloud, workbench_port, None, None, shutdown_rx, status_tx)
+                .await;
         });
         (Some(handle), Some(shutdown_tx))
     } else {
@@ -661,7 +662,8 @@ fn respawn_tunnel(rt: &mut GatewayRuntime) {
             .send(crate::tunnel::TunnelStatus::Disconnected)
             .ok();
         rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(cloud, workbench_port, None, None, shutdown_rx, status_tx)
+                .await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         tracing::info!("tunnel respawned after unexpected exit");
