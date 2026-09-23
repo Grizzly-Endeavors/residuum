@@ -44,6 +44,7 @@ sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 http = "1"
 regex = "1"
+globset = "0.4.20"
 rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
