@@ -52,7 +52,7 @@ pub async fn build_external_channels(
                 }
             }
             ExternalChannelKind::Windows { .. } => {
-                if let Some(ch) = build_windows_channel(&cfg.name, &cfg.kind).await {
+                if let Some(ch) = build_windows_channel(&cfg.name, &cfg.kind) {
                     channels.insert(cfg.name.clone(), ch);
                 }
             }
@@ -140,14 +140,7 @@ async fn build_macos_channel(
 ///
 /// On non-Windows platforms, logs a warning and returns `None`.
 #[cfg(target_os = "windows")]
-#[cfg_attr(
-    target_os = "windows",
-    expect(
-        clippy::unused_async,
-        reason = "signature must match the async macOS variant, which the call site always awaits"
-    )
-)]
-async fn build_windows_channel(
+fn build_windows_channel(
     name: &str,
     kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
@@ -191,11 +184,7 @@ async fn build_windows_channel(
 }
 
 #[cfg(not(target_os = "windows"))]
-#[expect(
-    clippy::unused_async,
-    reason = "signature must match the async Windows variant"
-)]
-async fn build_windows_channel(
+fn build_windows_channel(
     name: &str,
     _kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
