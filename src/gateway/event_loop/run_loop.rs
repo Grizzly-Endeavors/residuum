@@ -191,6 +191,25 @@ fn build_gateway_state(
     }
 }
 
+/// The A2A listener's runtime dependencies, plus the sender that marks the
+/// session spawner ready (raised by [`build_runtime`] once it is subscribed).
+fn a2a_listener_deps(
+    core: &GatewayCore,
+    parts: &crate::gateway::startup::GatewayComponents,
+    tunnel_status_rx: &tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+) -> (A2aListenerDeps, tokio::sync::watch::Sender<bool>) {
+    let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
+    let deps = A2aListenerDeps {
+        session_registry: Arc::clone(&parts.session_registry),
+        agent_messenger: Arc::clone(&parts.agent_messenger),
+        skill_state: Arc::clone(&parts.skill_state),
+        bus_handle: core.bus_handle.clone(),
+        tunnel_status_rx: tunnel_status_rx.clone(),
+        sessions_ready: sessions_ready_rx,
+    };
+    (deps, sessions_ready_tx)
+}
+
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
 async fn spawn_server_and_adapters(
     core: &GatewayCore,
@@ -261,15 +280,7 @@ async fn spawn_server_and_adapters(
         },
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
-    let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
-    let a2a_deps = A2aListenerDeps {
-        session_registry: Arc::clone(&parts.session_registry),
-        agent_messenger: Arc::clone(&parts.agent_messenger),
-        skill_state: Arc::clone(&parts.skill_state),
-        bus_handle: core.bus_handle.clone(),
-        tunnel_status_rx: tunnel_status_rx.clone(),
-        sessions_ready: sessions_ready_rx,
-    };
+    let (a2a_deps, sessions_ready_tx) = a2a_listener_deps(core, parts, &tunnel_status_rx);
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, a2a_deps).await;
     let (tunnel_handle, tunnel_shutdown_tx) =
         spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx), workbench_serving.port());
