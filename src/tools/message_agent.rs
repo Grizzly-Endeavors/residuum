@@ -115,6 +115,14 @@ impl MessageAgentTool {
         };
 
         match client.send_message(&req).await {
+            Ok(a2a::SendMessageResponse::Message(reply)) => {
+                // A2A lets an agent answer directly without opening a task;
+                // there is nothing to track, so the reply is the result.
+                Ok(ToolResult::success(format!(
+                    "Remote agent a2a:{agent_name} replied directly:\n{}",
+                    message_text(&reply)
+                )))
+            }
             Ok(resp) => {
                 let Some(task_id) = response_task_id(&resp) else {
                     return Ok(ToolResult::error(format!(
@@ -145,6 +153,27 @@ impl MessageAgentTool {
             ))),
         }
     }
+}
+
+/// The text parts of a direct reply, joined; non-text parts are named so the
+/// agent knows something was left out.
+fn message_text(reply: &a2a::Message) -> String {
+    let parts: Vec<String> = reply
+        .parts
+        .iter()
+        .map(|part| match &part.content {
+            a2a::PartContent::Text(text) => text.clone(),
+            a2a::PartContent::Data(value) => value.to_string(),
+            a2a::PartContent::Raw(_) | a2a::PartContent::Url(_) => format!(
+                "[non-text part{} not shown]",
+                part.filename
+                    .as_deref()
+                    .map(|name| format!(" '{name}'"))
+                    .unwrap_or_default()
+            ),
+        })
+        .collect();
+    parts.join("\n")
 }
 
 fn response_task_id(resp: &a2a::SendMessageResponse) -> Option<String> {

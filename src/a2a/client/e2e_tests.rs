@@ -1,7 +1,6 @@
 //! End-to-end tests driving the A2A client tools (`message_agent`,
-//! `stop_agent`) against a real `a2a-server-lf` server — the same SDK
-//! server setup as the plan's spike
-//! (`scratchpad/a2a_spike.rs`). Lives as a `#[cfg(test)]` unit-test module
+//! `stop_agent`) against a real `a2a-server-lf` server. Lives as a
+//! `#[cfg(test)]` unit-test module
 //! rather than `tests/*.rs` because it needs `AgentMessenger::new`, which is
 //! `pub(crate)`; delivery is asserted through a registered session's
 //! interrupt channel, the same fixture pattern `background::messaging`'s own
@@ -35,7 +34,7 @@ use crate::tools::message_agent::MessageAgentTool;
 /// Longest a test waits for an expected delivery before failing.
 const RECV_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Executor mirroring the plan's spike: a fresh task goes `WORKING` then
+/// Test executor: a fresh task goes `WORKING` then
 /// `INPUT_REQUIRED`; a follow-up (the task already exists) completes with an
 /// artifact. A message containing "hold" stays `WORKING` indefinitely, for
 /// the cancel test.
@@ -77,6 +76,12 @@ impl AgentExecutor for TestExecutor {
             .to_string();
         let (task_id, ctx_id) = (ctx.task_id.clone(), ctx.context_id.clone());
         tokio::spawn(async move {
+            if text.contains("direct") {
+                // Answer with a bare message: no task is ever opened.
+                let reply = Message::new(Role::Agent, vec![Part::text("direct answer")]);
+                tx.send(Ok(StreamResponse::Message(reply))).await.ok();
+                return;
+            }
             tx.send(Ok(status_event(
                 &task_id,
                 &ctx_id,
@@ -513,6 +518,44 @@ async fn stop_agent_reports_no_open_task_when_none_exists() {
     assert!(result.is_error);
     assert!(
         result.output.contains("no open task"),
+        "got: {}",
+        result.output
+    );
+}
+
+#[tokio::test]
+async fn a_direct_message_reply_is_returned_as_the_tool_result() {
+    let f = fixture().await.unwrap();
+    let url = spawn_agent_server(true).await.unwrap();
+    f.hub
+        .register_external(
+            "agent1".to_string(),
+            url,
+            HashMap::new(),
+            AgentSource::Config,
+        )
+        .await;
+
+    let sender = "spawned-fixture-0001";
+    let tool = MessageAgentTool::new(
+        SessionAddress::from(sender),
+        "spawned".to_string(),
+        Arc::clone(&f.messenger),
+        HopCounter::new(0),
+        Arc::clone(&f.hub),
+        Arc::clone(&f.tracker),
+    );
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        tool.execute(serde_json::json!({ "to": "a2a:agent1", "message": "direct please" })),
+    )
+    .await
+    .expect("a direct reply must not hang the tool")
+    .unwrap();
+    assert!(!result.is_error, "got: {}", result.output);
+    assert!(
+        result.output.contains("replied directly") && result.output.contains("direct answer"),
         "got: {}",
         result.output
     );
