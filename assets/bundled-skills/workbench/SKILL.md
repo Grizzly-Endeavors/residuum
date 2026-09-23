@@ -39,13 +39,15 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
    }
    ```
 
+   Binary data (an uploaded image, a rendered chart export) goes through `/api/workspace/raw` instead: `PUT` with an `ArrayBuffer`, typed array, or `Blob` body writes it unchanged, and `GET` reads it back with a guessed `Content-Type`. Delete, create a directory, or move/rename a file with `DELETE /api/workspace/file`, `POST /api/workspace/dir`, and `POST /api/workspace/move` — see `references/api.md` for their exact contracts.
+
 5. **Tell the user where it is:** name the artifact's title and say it's in the web UI under Workbench (`/workbench/<name>`). If you know the address they use for the web UI, give the full link. The full view button (or `F`) lets the artifact fill the window. An open artifact reloads by itself when you save the file, so after an edit, say what changed rather than asking them to refresh.
 
 ## The `residuum` Object
 
 | Call | Does |
 |------|------|
-| `await residuum.fetch(path, { method, headers, body })` | Calls Residuum's API and returns a standard `Response`. `path` starts with `/api/`. A plain object `body` is sent as JSON. |
+| `await residuum.fetch(path, { method, headers, body })` | Calls Residuum's API and returns a standard `Response`. `path` starts with `/api/`. A plain object `body` is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent as-is. |
 | `await residuum.send(text)` | Sends `text` to you as a chat message, labelled with the artifact's name. Works only inside a click or key-press handler; otherwise it rejects. |
 | `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all). Returns an unsubscribe function. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch` and `send` reject. |

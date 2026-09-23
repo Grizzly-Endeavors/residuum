@@ -28,7 +28,7 @@ Artifacts are served by their own listener, never by the gateway's main listener
 
 | Call | Does |
 |------|------|
-| `residuum.fetch(path, init)` | Calls Residuum's API (`/api/...`) and returns a `Response`. A plain-object body is sent as JSON. |
+| `residuum.fetch(path, init)` | Calls Residuum's API (`/api/...`) and returns a `Response`. A plain-object body is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent unchanged, not JSON-encoded. |
 | `residuum.send(text)` | Sends the agent a chat message labelled `[From workbench artifact "<name>"]`. Only works during a click or key press in the artifact. The user sees a notice that the artifact sent a message; the reply is in chat. |
 | `residuum.on(type, handler)` | Streams the same live frames the web UI receives (`"*"` for all), except keepalives. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI; `fetch` and `send` then reject. |
