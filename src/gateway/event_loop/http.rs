@@ -330,7 +330,7 @@ pub(crate) fn build_a2a_listener(
         Arc::new(crate::a2a::StubHandler),
         Arc::clone(&card_state),
         keys,
-        Arc::new(crate::a2a::NoTunnel),
+        Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
         shutdown_rx,
     );
     let handle = crate::util::spawn_monitored("a2a", async move {

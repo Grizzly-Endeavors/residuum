@@ -81,17 +81,7 @@ const A2A_CAPABILITY: &str = "a2a";
 /// valid key, or an attested sibling, can see or reach it.
 const A2A_PRIVATE_CAPABILITY: &str = "a2a-private";
 
-/// Whether an A2A-enabled instance is publicly listed and reachable, or
-/// hidden behind a caller key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum A2aVisibility {
-    /// Listed in the directory and reachable by anyone. Residuum's agent
-    /// tools default to open, so this is the default visibility too.
-    #[default]
-    Public,
-    /// Hidden from anyone without a valid key or sibling attestation.
-    Private,
-}
+pub(crate) use crate::config::A2aVisibility;
 
 /// A2A capability advertised on the tunnel upgrade. `None` means A2A is
 /// disabled and the `a2a`/`a2a-private` capabilities are omitted entirely.
