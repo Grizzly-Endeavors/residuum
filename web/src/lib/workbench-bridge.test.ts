@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BRIDGE_TAG,
-  checkToolRequest,
-  parseToolRequest,
+  checkArtifactRequest,
+  parseArtifactRequest,
   WorkbenchBridge,
   type BridgeDeps,
   type FrameTarget,
@@ -11,20 +11,20 @@ import {
 import type { ServerMessage } from "./types";
 
 const ORIGIN = "https://bear.agent-residuum.com";
-const TOOLS = "https://bear.workbench.agent-residuum.com";
+const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
 
-describe("checkToolRequest", () => {
+describe("checkArtifactRequest", () => {
   it.each([
     ["GET", "/api/status"],
     ["GET", "/api/workspace/file?path=workbench/chart.state.json"],
     ["PUT", "/api/workspace/file"],
     ["GET", "/api/secrets"],
     ["GET", "/api/agent-keys"],
-    ["GET", "/api/workbench/tools"],
+    ["GET", "/api/workbench/artifacts"],
     ["GET", "/api/tracing/status"],
     ["POST", "/api/inbox/abc/archive"],
   ])("allows %s %s", (method, path) => {
-    expect(checkToolRequest(method, path, ORIGIN)).toEqual({ allowed: true, url: path });
+    expect(checkArtifactRequest(method, path, ORIGIN)).toEqual({ allowed: true, url: path });
   });
 
   it.each([
@@ -43,9 +43,9 @@ describe("checkToolRequest", () => {
     ["POST", "/api/cloud/disconnect"],
     ["POST", "/api/tracing/sanitize"],
     ["POST", "/api/tracing/otel/endpoints"],
-    ["DELETE", "/api/workbench/tools/chart"],
+    ["DELETE", "/api/workbench/artifacts/chart"],
   ])("blocks %s %s", (method, path) => {
-    const check = checkToolRequest(method, path, ORIGIN);
+    const check = checkArtifactRequest(method, path, ORIGIN);
     expect(check.allowed).toBe(false);
     if (!check.allowed) expect(check.status).toBe(403);
   });
@@ -56,7 +56,7 @@ describe("checkToolRequest", () => {
     "/api/workspace/%2E%2E/secrets",
     "/api/secrets%2Fopenai",
   ])("blocks secret writes reached through path tricks: %s", (path) => {
-    expect(checkToolRequest("POST", path, ORIGIN).allowed).toBe(false);
+    expect(checkArtifactRequest("POST", path, ORIGIN).allowed).toBe(false);
   });
 
   it.each([
@@ -67,18 +67,18 @@ describe("checkToolRequest", () => {
     "/",
     "status",
   ])("refuses anything outside the gateway API: %s", (path) => {
-    expect(checkToolRequest("GET", path, ORIGIN).allowed).toBe(false);
+    expect(checkArtifactRequest("GET", path, ORIGIN).allowed).toBe(false);
   });
 
   it("refuses unusual methods", () => {
-    expect(checkToolRequest("TRACE", "/api/status", ORIGIN).allowed).toBe(false);
+    expect(checkArtifactRequest("TRACE", "/api/status", ORIGIN).allowed).toBe(false);
   });
 });
 
-describe("parseToolRequest", () => {
+describe("parseArtifactRequest", () => {
   it("accepts a well-formed fetch", () => {
     expect(
-      parseToolRequest({
+      parseArtifactRequest({
         tag: BRIDGE_TAG,
         kind: "fetch",
         id: "req-1",
@@ -107,7 +107,7 @@ describe("parseToolRequest", () => {
     { tag: BRIDGE_TAG, kind: "send", id: 3, content: "hi" },
     { tag: BRIDGE_TAG, kind: "eval" },
   ])("rejects %j", (data) => {
-    expect(parseToolRequest(data)).toBeNull();
+    expect(parseArtifactRequest(data)).toBeNull();
   });
 });
 
@@ -146,7 +146,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     },
     ...overrides,
   };
-  const bridge = new WorkbenchBridge("chart", TOOLS, () => frame, deps);
+  const bridge = new WorkbenchBridge("chart", ARTIFACTS, () => frame, deps);
   bridge.start();
   return { bridge, frame, deps, emit: (msg) => listener?.(msg), sent, escapes: () => escapes };
 }
@@ -162,9 +162,9 @@ const fetchMsg = (path: string, method = "GET"): Record<string, unknown> => ({
 });
 
 describe("WorkbenchBridge", () => {
-  it("ignores messages from anything but the tool's frame on the tools origin", async () => {
+  it("ignores messages from anything but the artifact's frame on the artifacts origin", async () => {
     const h = harness();
-    await h.bridge.handleMessage({}, TOOLS, fetchMsg("/api/status"));
+    await h.bridge.handleMessage({}, ARTIFACTS, fetchMsg("/api/status"));
     await h.bridge.handleMessage(h.frame, "https://evil.example", fetchMsg("/api/status"));
     expect(h.deps.fetch).not.toHaveBeenCalled();
     expect(h.frame.posted).toEqual([]);
@@ -172,7 +172,7 @@ describe("WorkbenchBridge", () => {
 
   it("relays an allowed request and its response", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, TOOLS, fetchMsg("/api/status"));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
     expect(h.deps.fetch).toHaveBeenCalledWith(
       "/api/status",
       expect.objectContaining({ method: "GET" }),
@@ -186,7 +186,7 @@ describe("WorkbenchBridge", () => {
 
   it("answers a blocked request with a 403 without calling the gateway", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, TOOLS, fetchMsg("/api/shutdown", "POST"));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/shutdown", "POST"));
     expect(h.deps.fetch).not.toHaveBeenCalled();
     const result = h.frame.posted[0]?.result as RelayedResponse;
     expect(result.status).toBe(403);
@@ -195,25 +195,25 @@ describe("WorkbenchBridge", () => {
 
   it("reports a network failure as an error", async () => {
     const h = harness({ fetch: vi.fn(() => Promise.reject(new TypeError("offline"))) });
-    await h.bridge.handleMessage(h.frame, TOOLS, fetchMsg("/api/status"));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
     expect(h.frame.posted[0]).toHaveProperty("error");
   });
 
-  it("sends to the agent after a user gesture, labelled with the tool", async () => {
+  it("sends to the agent after a user gesture, labelled with the artifact", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, TOOLS, {
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
       tag: BRIDGE_TAG,
       kind: "send",
       id: "s1",
       content: " pick B ",
     });
-    expect(h.sent).toEqual(['[From workbench tool "chart"]\npick B']);
+    expect(h.sent).toEqual(['[From workbench artifact "chart"]\npick B']);
     expect(h.frame.posted[0]).toMatchObject({ id: "s1", result: null });
   });
 
   it("refuses to message the agent without a user gesture", async () => {
     const h = harness({ hasUserActivation: () => false });
-    await h.bridge.handleMessage(h.frame, TOOLS, {
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
       tag: BRIDGE_TAG,
       kind: "send",
       id: "s1",
@@ -225,7 +225,7 @@ describe("WorkbenchBridge", () => {
 
   it("refuses to message the agent while disconnected", async () => {
     const h = harness({ isConnected: () => false });
-    await h.bridge.handleMessage(h.frame, TOOLS, {
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
       tag: BRIDGE_TAG,
       kind: "send",
       id: "s1",
@@ -235,13 +235,13 @@ describe("WorkbenchBridge", () => {
     expect(h.frame.posted[0]).toHaveProperty("error");
   });
 
-  it("forwards server frames only after the tool subscribes, until its document changes", async () => {
+  it("forwards server frames only after the artifact subscribes, until its document changes", async () => {
     const h = harness();
-    const frame: ServerMessage = { type: "workbench_tool_updated", name: "chart" };
+    const frame: ServerMessage = { type: "artifact_updated", name: "chart" };
     h.emit(frame);
     expect(h.frame.posted).toEqual([]);
 
-    await h.bridge.handleMessage(h.frame, TOOLS, { tag: BRIDGE_TAG, kind: "subscribe" });
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "subscribe" });
     h.emit(frame);
     expect(h.frame.posted).toEqual([{ tag: BRIDGE_TAG, kind: "event", frame }]);
 
@@ -253,11 +253,11 @@ describe("WorkbenchBridge", () => {
     expect(h.frame.posted).toHaveLength(1);
   });
 
-  it("passes an unhandled Esc from the tool to the page", async () => {
+  it("passes an unhandled Esc from the artifact to the page", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, TOOLS, { tag: BRIDGE_TAG, kind: "escape" });
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "escape" });
     expect(h.escapes()).toBe(1);
-    await h.bridge.handleMessage({}, TOOLS, { tag: BRIDGE_TAG, kind: "escape" });
+    await h.bridge.handleMessage({}, ARTIFACTS, { tag: BRIDGE_TAG, kind: "escape" });
     expect(h.escapes()).toBe(1);
   });
 });

@@ -3,24 +3,24 @@
   import { SvelteSet } from "svelte/reactivity";
   import { ws } from "../lib/ws.svelte";
   import { router } from "../lib/router.svelte";
-  import { deleteWorkbenchTool, fetchWorkbenchInfo, fetchWorkbenchTools } from "../lib/api";
-  import { resolveToolsOrigin, type ToolsOrigin } from "../lib/workbench";
+  import { deleteWorkbenchArtifact, fetchWorkbenchInfo, fetchWorkbenchArtifacts } from "../lib/api";
+  import { resolveArtifactsOrigin, type ArtifactsOrigin } from "../lib/workbench";
   import { userErrorMessage } from "../lib/errors";
   import { notifications } from "../lib/notifications.svelte";
   import { relativeTime } from "../lib/time";
   import { Icon } from "../lib/icons";
-  import type { WorkbenchToolSummary } from "../lib/types";
+  import type { ArtifactSummary } from "../lib/types";
   import ConfirmButton from "./ConfirmButton.svelte";
-  import WorkbenchTool from "./WorkbenchTool.svelte";
+  import WorkbenchArtifact from "./WorkbenchArtifact.svelte";
 
-  let { tool, full, onClose }: { tool: string | null; full: boolean; onClose: () => void } =
+  let { artifact, full, onClose }: { artifact: string | null; full: boolean; onClose: () => void } =
     $props();
 
-  // How long a tool's seam glows after the agent changes it.
+  // How long an artifact's seam glows after the agent changes it.
   const CHANGE_GLOW_MS = 2400;
 
-  let tools = $state<WorkbenchToolSummary[]>([]);
-  let toolsOrigin = $state<ToolsOrigin | null>(null);
+  let artifacts = $state<ArtifactSummary[]>([]);
+  let artifactsOrigin = $state<ArtifactsOrigin | null>(null);
   let loadState = $state<"loading" | "ready" | "failed">("loading");
   let loadError = $state("");
   let now = $state(Date.now());
@@ -28,13 +28,13 @@
   const deleting = new SvelteSet<string>();
   let listHeading: HTMLHeadingElement | undefined = $state();
 
-  let currentTitle = $derived(tools.find((t) => t.name === tool)?.title ?? tool ?? "");
+  let currentTitle = $derived(artifacts.find((a) => a.name === artifact)?.title ?? artifact ?? "");
 
   async function load(): Promise<void> {
     try {
-      const [list, info] = await Promise.all([fetchWorkbenchTools(), fetchWorkbenchInfo()]);
-      tools = list;
-      toolsOrigin = resolveToolsOrigin(info, window.location);
+      const [list, info] = await Promise.all([fetchWorkbenchArtifacts(), fetchWorkbenchInfo()]);
+      artifacts = list;
+      artifactsOrigin = resolveArtifactsOrigin(info, window.location);
       loadState = "ready";
     } catch (err) {
       loadError = userErrorMessage(err, { action: "Couldn't load the workbench." });
@@ -50,11 +50,11 @@
   onMount(() => {
     void load();
     const stop = ws.onFrame((frame) => {
-      if (frame.type === "workbench_tool_updated") {
+      if (frame.type === "artifact_updated") {
         markChanged(frame.name);
         void load();
-      } else if (frame.type === "workbench_tool_removed") {
-        tools = tools.filter((t) => t.name !== frame.name);
+      } else if (frame.type === "artifact_removed") {
+        artifacts = artifacts.filter((a) => a.name !== frame.name);
       }
     });
     const clock = window.setInterval(() => {
@@ -77,21 +77,21 @@
 
   // Returning to the list lands keyboard and screen reader users on its heading.
   $effect(() => {
-    if (tool === null && loadState !== "loading") listHeading?.focus();
+    if (artifact === null && loadState !== "loading") listHeading?.focus();
   });
 
   function open(event: MouseEvent, name: string) {
-    // Let modified clicks open the tool in a new tab.
+    // Let modified clicks open the artifact in a new tab.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     router.openWorkbench(name);
   }
 
-  async function remove(item: WorkbenchToolSummary) {
+  async function remove(item: ArtifactSummary) {
     deleting.add(item.name);
     try {
-      await deleteWorkbenchTool(item.name);
-      tools = tools.filter((t) => t.name !== item.name);
+      await deleteWorkbenchArtifact(item.name);
+      artifacts = artifacts.filter((a) => a.name !== item.name);
       notifications.surface("notice", `Deleted "${item.title}".`);
     } catch (err) {
       notifications.surface(
@@ -109,12 +109,12 @@
 </script>
 
 <div class="workbench-view emerges">
-  {#if tool !== null}
-    {#key tool}
-      <WorkbenchTool
-        name={tool}
+  {#if artifact !== null}
+    {#key artifact}
+      <WorkbenchArtifact
+        name={artifact}
         title={currentTitle}
-        origin={toolsOrigin}
+        origin={artifactsOrigin}
         {full}
         onBack={() => router.openWorkbench(null)}
         onSetFull={(next) => router.setWorkbenchFull(next)}
@@ -138,30 +138,30 @@
     <div class="workbench-body">
       <div class="workbench-column">
         {#if loadState === "loading"}
-          <p class="workbench-note">Loading tools…</p>
+          <p class="workbench-note">Loading artifacts…</p>
         {:else if loadState === "failed"}
           <div class="workbench-empty" role="alert">
             <p>{loadError}</p>
             <button class="btn btn-secondary btn-sm" onclick={() => void load()}>Try again</button>
           </div>
-        {:else if tools.length === 0}
+        {:else if artifacts.length === 0}
           <div class="workbench-empty">
             <h2 class="workbench-empty-title">Nothing on the bench yet</h2>
             <p>
               Ask Residuum to build you something you can open here: a chart of this month's
               spending, a calculator for a decision you keep revisiting, a dashboard over your
-              inbox. Tools appear as soon as the agent writes them, and update while it works.
+              inbox. Artifacts appear as soon as the agent writes them, and update while it works.
             </p>
           </div>
         {:else}
           <p class="workbench-note">
-            Tools Residuum built for you. Each one updates live while the agent edits it.
+            Artifacts Residuum built for you. Each one updates live while the agent edits it.
           </p>
-          {#if toolsOrigin !== null && !toolsOrigin.ok}
-            <p class="workbench-unavailable" role="alert">{toolsOrigin.reason}</p>
+          {#if artifactsOrigin !== null && !artifactsOrigin.ok}
+            <p class="workbench-unavailable" role="alert">{artifactsOrigin.reason}</p>
           {/if}
           <ul class="workbench-list">
-            {#each tools as item (item.name)}
+            {#each artifacts as item (item.name)}
               <li class="workbench-slab" class:just-changed={justChanged.has(item.name)}>
                 <a
                   class="workbench-slab-link"
@@ -181,8 +181,8 @@
                 <div class="workbench-slab-actions">
                   <ConfirmButton
                     label="Delete"
-                    armedLabel="Delete tool?"
-                    title="Delete this tool and its saved data"
+                    armedLabel="Delete artifact?"
+                    title="Delete this artifact and its saved data"
                     class="btn btn-sm btn-danger workbench-delete"
                     disabled={deleting.has(item.name)}
                     onConfirm={() => void remove(item)}

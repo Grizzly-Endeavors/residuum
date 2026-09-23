@@ -78,19 +78,19 @@ class Router {
     this.go({ chat: this.chat, settings: null, workbench: null }, "push");
   }
 
-  /** Open the workbench: a tool, or the tool list when `tool` is null. */
-  openWorkbench(tool: string | null = null): void {
-    this.go({ chat: this.chat, settings: null, workbench: { tool, full: false } }, "push");
+  /** Open the workbench: an artifact, or the artifact list when `artifact` is null. */
+  openWorkbench(artifact: string | null = null): void {
+    this.go({ chat: this.chat, settings: null, workbench: { artifact, full: false } }, "push");
   }
 
   /**
-   * Show the open tool filling the window, or return it to the Residuum UI.
+   * Show the open artifact filling the window, or return it to the Residuum UI.
    * A view mode of the same place, so it replaces history rather than adding.
    */
   setWorkbenchFull(full: boolean): void {
-    const tool = this.workbench?.tool ?? null;
-    if (tool === null) return;
-    this.go({ chat: this.chat, settings: null, workbench: { tool, full } }, "replace");
+    const artifact = this.workbench?.artifact ?? null;
+    if (artifact === null) return;
+    this.go({ chat: this.chat, settings: null, workbench: { artifact, full } }, "replace");
   }
 
   /** Leave the workbench for the chat side as it was before it opened. */

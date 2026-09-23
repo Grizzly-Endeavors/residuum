@@ -21,7 +21,7 @@ import type {
   SessionListResponse,
   SessionTranscriptResponse,
   WorkbenchInfo,
-  WorkbenchToolSummary,
+  ArtifactSummary,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -352,19 +352,19 @@ export async function fetchSessionTranscript(runId: string): Promise<SessionTran
 
 // ── Workbench API wrappers ──────────────────────────────────────────
 
-/** Every workbench tool, most recently modified first. Not cached: tools change live. */
-export async function fetchWorkbenchTools(): Promise<WorkbenchToolSummary[]> {
-  return apiFetch<WorkbenchToolSummary[]>("/api/workbench/tools");
+/** Every workbench artifact, most recently modified first. Not cached: artifacts change live. */
+export async function fetchWorkbenchArtifacts(): Promise<ArtifactSummary[]> {
+  return apiFetch<ArtifactSummary[]>("/api/workbench/artifacts");
 }
 
-/** Where tools are served, locally and through the relay. Not cached: the relay connection changes. */
+/** Where artifacts are served, locally and through the relay. Not cached: the relay connection changes. */
 export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
-/** Delete a tool and its data files. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkbenchTool(name: string): Promise<void> {
-  await apiFetch<unknown>(`/api/workbench/tools/${encodeURIComponent(name)}`, {
+/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
+export async function deleteWorkbenchArtifact(name: string): Promise<void> {
+  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }

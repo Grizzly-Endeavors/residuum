@@ -17,7 +17,7 @@ export type {
   SessionSummary,
   WorkbenchInfo,
   WorkbenchRelayOrigins,
-  WorkbenchToolSummary,
+  ArtifactSummary,
 } from "./generated/protocol";
 
 // Local aliases for use within this file

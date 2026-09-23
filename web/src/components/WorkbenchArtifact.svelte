@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { toolUrl, type ToolsOrigin } from "../lib/workbench";
+  import { artifactUrl, type ArtifactsOrigin } from "../lib/workbench";
   import { notifications } from "../lib/notifications.svelte";
   import { WorkbenchBridge } from "../lib/workbench-bridge";
   import { Icon } from "../lib/icons";
@@ -16,16 +16,17 @@
   }: {
     name: string;
     title: string;
-    /** Where tools are served, or null while that is still loading. */
-    origin: ToolsOrigin | null;
-    /** The tool fills the window with the Residuum UI hidden. */
+    /** Where artifacts are served, or null while that is still loading. */
+    origin: ArtifactsOrigin | null;
+    /** The artifact fills the window with the Residuum UI hidden. */
     full: boolean;
     onBack: () => void;
     onSetFull: (full: boolean) => void;
   } = $props();
 
-  // The tool runs on its own origin (the tools listener), so allow-same-origin
-  // gives it that origin (browser storage, relative files), never the UI's.
+  // The artifact runs on its own origin (the artifacts listener), so
+  // allow-same-origin gives it that origin (browser storage, relative
+  // files), never the UI's.
   const SANDBOX =
     "allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads";
 
@@ -36,16 +37,16 @@
   let removed = $state(false);
   let bridge: WorkbenchBridge | null = null;
 
-  let src = $derived(origin?.ok ? `${toolUrl(origin.origin, name)}?v=${version}` : null);
+  let src = $derived(origin?.ok ? `${artifactUrl(origin.origin, name)}?v=${version}` : null);
 
-  // Reloads keep the frame visible, so an agent editing the tool reads as the
-  // page changing in place rather than flashing out and back.
+  // Reloads keep the frame visible, so an agent editing the artifact reads as
+  // the page changing in place rather than flashing out and back.
   function reload() {
     removed = false;
     version += 1;
   }
 
-  // The bridge only talks to the tools origin, so it starts once that's known.
+  // The bridge only talks to the artifacts origin, so it starts once that's known.
   $effect(() => {
     const frameOrigin = origin?.ok ? origin.origin : null;
     if (frameOrigin === null) return;
@@ -82,8 +83,8 @@
 
   onMount(() =>
     ws.onFrame((msg) => {
-      if (msg.type === "workbench_tool_updated" && msg.name === name) reload();
-      else if (msg.type === "workbench_tool_removed" && msg.name === name) removed = true;
+      if (msg.type === "artifact_updated" && msg.name === name) reload();
+      else if (msg.type === "artifact_removed" && msg.name === name) removed = true;
     }),
   );
 
@@ -92,7 +93,7 @@
     loaded = true;
   }
 
-  // Keys typed inside the tool never reach this page; the SDK forwards Esc.
+  // Keys typed inside the artifact never reach this page; the SDK forwards Esc.
   function handleKeydown(event: KeyboardEvent) {
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName;
@@ -112,7 +113,7 @@
     }
   }
 
-  // Land keyboard and screen reader users at the top of the tool that just opened.
+  // Land keyboard and screen reader users at the top of the artifact that just opened.
   $effect(() => {
     void name;
     void tick().then(() => headingEl?.focus());
@@ -121,7 +122,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="workbench-tool" class:full>
+<div class="workbench-artifact" class:full>
   {#if full}
     <button
       type="button"
@@ -134,19 +135,19 @@
     </button>
   {/if}
   {#if !full}
-    <div class="workbench-tool-bar">
+    <div class="workbench-artifact-bar">
       <button type="button" class="session-back" onclick={onBack}>
         <Icon name="back" size={14} />
         Workbench
       </button>
-      <div class="workbench-tool-heading">
-        <h1 class="workbench-tool-title" tabindex="-1" bind:this={headingEl}>{title}</h1>
+      <div class="workbench-artifact-heading">
+        <h1 class="workbench-artifact-title" tabindex="-1" bind:this={headingEl}>{title}</h1>
         <span class="workbench-slab-path">/workbench/{name}</span>
       </div>
       <button
         type="button"
         class="icon-btn"
-        title="Fill the window with this tool (F)"
+        title="Fill the window with this artifact (F)"
         aria-label="Full view"
         onclick={() => onSetFull(true)}
       >
@@ -155,8 +156,8 @@
       <button
         type="button"
         class="icon-btn"
-        title="Reload tool"
-        aria-label="Reload tool"
+        title="Reload artifact"
+        aria-label="Reload artifact"
         onclick={reload}
       >
         <Icon name="reload" size={16} />
@@ -167,7 +168,7 @@
   <div class="workbench-stage">
     {#if removed}
       <div class="workbench-empty workbench-removed" role="status">
-        <h2 class="workbench-empty-title">This tool was deleted</h2>
+        <h2 class="workbench-empty-title">This artifact was deleted</h2>
         <p>
           It's gone from the workbench folder. If the agent is rebuilding it, it reappears here when
           it's written again.
@@ -179,7 +180,7 @@
     {/if}
     {#if origin !== null && !origin.ok}
       <div class="workbench-empty workbench-removed" role="alert">
-        <h2 class="workbench-empty-title">Tools can't open right now</h2>
+        <h2 class="workbench-empty-title">Artifacts can't open right now</h2>
         <p>{origin.reason}</p>
       </div>
     {:else if src !== null}

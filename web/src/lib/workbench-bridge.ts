@@ -1,20 +1,21 @@
 // ── Workbench bridge ─────────────────────────────────────────────────
 //
-// Workbench tools run on their own origin (the tools listener), so they can't
-// call the gateway's API themselves: another origin can't read its responses,
-// and the gateway rejects its writes. The SDK injected into each tool page
-// (assets/workbench/sdk.js) posts requests here instead, and this bridge
-// makes them on the tool's behalf. This is the one place that decides what a
-// tool may reach: most of the API is open, but routes that change secrets,
-// credentials, raw config, or Residuum's own lifecycle are refused, and
-// messages to the agent need a real click or key press in the tool.
+// Workbench artifacts run on their own origin (the artifacts listener), so
+// they can't call the gateway's API themselves: another origin can't read
+// its responses, and the gateway rejects its writes. The SDK injected into
+// each artifact page (assets/workbench/sdk.js) posts requests here instead,
+// and this bridge makes them on the artifact's behalf. This is the one place
+// that decides what an artifact may reach: most of the API is open, but
+// routes that change secrets, credentials, raw config, or Residuum's own
+// lifecycle are refused, and messages to the agent need a real click or key
+// press in the artifact.
 
 import type { ServerMessage } from "./types";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
 export const BRIDGE_TAG = "residuum-workbench";
 
-/** Longest message a tool may send to the agent. */
+/** Longest message an artifact may send to the agent. */
 export const MAX_AGENT_MESSAGE_CHARS = 20_000;
 
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
@@ -31,43 +32,43 @@ const BLOCKED_ROUTES: BlockRule[] = [
   {
     path: /^\/api\/secrets(\/|$)/,
     methods: "writes",
-    reason: "Workbench tools can't change secrets. Manage them in Settings.",
+    reason: "Workbench artifacts can't change secrets. Manage them in Settings.",
   },
   {
     path: /^\/api\/agent-keys(\/|$)/,
     methods: "writes",
-    reason: "Workbench tools can't change agent keys. Manage them in Settings.",
+    reason: "Workbench artifacts can't change agent keys. Manage them in Settings.",
   },
   {
     path: /^\/api\/(config|providers|mcp)\/raw(\/|$)/,
     methods: "all",
     reason:
-      "Workbench tools can't read or change raw configuration files, since they can hold credentials.",
+      "Workbench artifacts can't read or change raw configuration files, since they can hold credentials.",
   },
   {
     path: /^\/api\/config\/complete-setup(\/|$)/,
     methods: "all",
-    reason: "Workbench tools can't run setup.",
+    reason: "Workbench artifacts can't run setup.",
   },
   {
     path: /^\/api\/(shutdown|update\/(check|apply|restart))(\/|$)/,
     methods: "all",
-    reason: "Workbench tools can't shut down, update, or restart Residuum.",
+    reason: "Workbench artifacts can't shut down, update, or restart Residuum.",
   },
   {
     path: /^\/api\/cloud\/disconnect(\/|$)/,
     methods: "all",
-    reason: "Workbench tools can't disconnect remote access.",
+    reason: "Workbench artifacts can't disconnect remote access.",
   },
   {
     path: /^\/api\/tracing\//,
     methods: "writes",
-    reason: "Workbench tools can't change tracing or send diagnostics.",
+    reason: "Workbench artifacts can't change tracing or send diagnostics.",
   },
   {
-    path: /^\/api\/workbench\/tools\//,
+    path: /^\/api\/workbench\/artifacts\//,
     methods: "writes",
-    reason: "Workbench tools can't delete workbench tools.",
+    reason: "Workbench artifacts can't delete workbench artifacts.",
   },
 ];
 
@@ -76,12 +77,16 @@ export type RequestCheck =
   | { allowed: false; status: number; reason: string };
 
 /**
- * Decide whether a tool may make this request. `path` must be a path on the
- * gateway under `/api/`; anything that resolves elsewhere is refused.
+ * Decide whether an artifact may make this request. `path` must be a path on
+ * the gateway under `/api/`; anything that resolves elsewhere is refused.
  */
-export function checkToolRequest(method: string, path: string, origin: string): RequestCheck {
+export function checkArtifactRequest(method: string, path: string, origin: string): RequestCheck {
   if (!ALLOWED_METHODS.has(method)) {
-    return { allowed: false, status: 405, reason: `Workbench tools can't use ${method} requests.` };
+    return {
+      allowed: false,
+      status: 405,
+      reason: `Workbench artifacts can't use ${method} requests.`,
+    };
   }
   let url: URL;
   try {
@@ -134,12 +139,12 @@ interface SubscribeRequest {
   kind: "subscribe";
 }
 
-/** The user pressed Esc in the tool and the tool didn't handle it. */
+/** The user pressed Esc in the artifact and the artifact didn't handle it. */
 interface EscapeRequest {
   kind: "escape";
 }
 
-type ToolRequest = FetchRequest | SendRequest | SubscribeRequest | EscapeRequest;
+type ArtifactRequest = FetchRequest | SendRequest | SubscribeRequest | EscapeRequest;
 
 /** A relayed response, rebuilt into a `Response` by the SDK. */
 export interface RelayedResponse {
@@ -158,7 +163,7 @@ function isStringMap(value: unknown): value is Record<string, string> {
 }
 
 /** Validate an SDK message. `null` when it isn't a well-formed bridge request. */
-export function parseToolRequest(data: unknown): ToolRequest | null {
+export function parseArtifactRequest(data: unknown): ArtifactRequest | null {
   if (!isRecord(data) || data.tag !== BRIDGE_TAG) return null;
   switch (data.kind) {
     case "fetch":
@@ -212,7 +217,7 @@ export interface BridgeDeps {
   sendToAgent: (content: string) => void;
   /** Observe server frames; returns a function that stops observing. */
   onFrame: (listener: (msg: ServerMessage) => void) => () => void;
-  /** The user pressed Esc inside the tool and the tool left it unhandled. */
+  /** The user pressed Esc inside the artifact and the artifact left it unhandled. */
   onEscape: () => void;
 }
 
@@ -221,17 +226,17 @@ export class WorkbenchBridge {
   private stopObserving: (() => void) | null = null;
 
   constructor(
-    private readonly tool: string,
-    /** The tools origin; the only origin the bridge listens to or posts to. */
+    private readonly artifact: string,
+    /** The artifacts origin; the only origin the bridge listens to or posts to. */
     private readonly frameOrigin: string,
     private readonly target: () => FrameTarget | null,
     private readonly deps: BridgeDeps,
   ) {}
 
-  /** Start forwarding server frames to subscribed tools. */
+  /** Start forwarding server frames to subscribed artifacts. */
   start(): void {
     this.stopObserving ??= this.deps.onFrame((frame) => {
-      // Keepalive pongs are transport noise, not events a tool can act on.
+      // Keepalive pongs are transport noise, not events an artifact can act on.
       if (this.subscribed && frame.type !== "pong") this.post({ kind: "event", frame });
     });
   }
@@ -243,7 +248,7 @@ export class WorkbenchBridge {
   }
 
   /**
-   * The frame loaded a new document (a reload, or the tool navigated its
+   * The frame loaded a new document (a reload, or the artifact navigated its
    * frame). It must subscribe again before it receives frames.
    */
   documentChanged(): void {
@@ -251,13 +256,13 @@ export class WorkbenchBridge {
   }
 
   /**
-   * Handle a `message` event. Ignores anything not from the tool's frame, or
-   * from a page the frame navigated to on another origin.
+   * Handle a `message` event. Ignores anything not from the artifact's
+   * frame, or from a page the frame navigated to on another origin.
    */
   async handleMessage(source: unknown, origin: string, data: unknown): Promise<void> {
     const frame = this.target();
     if (frame === null || source !== frame || origin !== this.frameOrigin) return;
-    const request = parseToolRequest(data);
+    const request = parseArtifactRequest(data);
     if (request === null) return;
 
     switch (request.kind) {
@@ -291,7 +296,7 @@ export class WorkbenchBridge {
     if (!this.deps.hasUserActivation()) {
       this.reply(request.id, {
         error:
-          "Tools can only message the agent right after a click or key press in the tool. Call residuum.send from an event handler.",
+          "Artifacts can only message the agent right after a click or key press in the artifact. Call residuum.send from an event handler.",
       });
       return;
     }
@@ -301,12 +306,12 @@ export class WorkbenchBridge {
       });
       return;
     }
-    this.deps.sendToAgent(`[From workbench tool "${this.tool}"]\n${content}`);
+    this.deps.sendToAgent(`[From workbench artifact "${this.artifact}"]\n${content}`);
     this.reply(request.id, { result: null });
   }
 
   private async handleFetch(request: FetchRequest): Promise<void> {
-    const check = checkToolRequest(request.method, request.path, this.deps.origin);
+    const check = checkArtifactRequest(request.method, request.path, this.deps.origin);
     if (!check.allowed) {
       const body = new TextEncoder().encode(JSON.stringify({ error: check.reason }));
       this.reply(request.id, {
