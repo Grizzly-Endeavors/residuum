@@ -1,19 +1,30 @@
-//! Hash-line file editing tool for the agent.
+//! Find-and-replace file editing tool for the agent.
 //!
-//! Provides surgical edits anchored by line number + content hash pairs
-//! from `read_file` output. Re-validates hashes before applying changes
-//! to detect stale edits.
+//! Each edit names the exact text to change (`old_string`) and what replaces it
+//! (`new_string`). Edits in one call apply in order to an in-memory copy and the
+//! file is written once, so a batch lands completely or not at all.
+
+use std::ops::Range;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::file_tracker::SharedFileTracker;
-use super::line_hash::line_hash;
 use super::path_policy::SharedPathPolicy;
+use super::read::format_numbered_line;
 use super::{Tool, ToolError, ToolResult};
 use crate::inference::ToolDefinition;
 
-/// Tool that performs hash-validated line edits on files.
+/// Lines of unchanged context shown around each changed region in the result preview.
+const PREVIEW_CONTEXT_LINES: usize = 2;
+
+/// Maximum preview lines returned after an edit; the model can `read_file` for more.
+const MAX_PREVIEW_LINES: usize = 60;
+
+/// Maximum match locations listed when `old_string` is ambiguous.
+const MAX_LISTED_MATCHES: usize = 10;
+
+/// Tool that applies find-and-replace edits to a file.
 pub struct EditTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
@@ -27,127 +38,33 @@ impl EditTool {
     }
 }
 
-/// Parsed line anchor: (1-indexed line number, 4-char hex hash).
-struct LineAnchor {
-    line_num: usize,
-    hash: String,
+/// One requested replacement within an `edit_file` call.
+struct EditRequest {
+    old_string: String,
+    new_string: String,
+    replace_all: bool,
 }
 
-/// Parse a `"line:hash"` string (e.g. `"5:a3b2"`) into its components.
-fn parse_anchor(value: &str) -> Result<LineAnchor, ToolError> {
-    let Some((num_str, hash_str)) = value.split_once(':') else {
-        return Err(ToolError::InvalidArguments(format!(
-            "invalid line:hash format '{value}', expected 'N:xxxx' (e.g. '5:a3b2')"
-        )));
-    };
-
-    let line_num: usize = num_str.parse().map_err(|_not_int| {
-        ToolError::InvalidArguments(format!("invalid line number '{num_str}' in '{value}'"))
-    })?;
-
-    if hash_str.len() != 4 || !hash_str.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ToolError::InvalidArguments(format!(
-            "invalid hash '{hash_str}' in '{value}', expected 4 hex characters"
-        )));
-    }
-
-    Ok(LineAnchor {
-        line_num,
-        hash: hash_str.to_string(),
-    })
+/// How an edit's `old_string` was located in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchKind {
+    Exact,
+    /// Matched whole lines after trimming leading and trailing whitespace on each.
+    IgnoringWhitespace,
 }
 
-/// Validate that a line anchor is in bounds and its hash matches the current file content.
-///
-/// Returns `None` if the anchor is valid, or `Some(error_message)` if the line is
-/// out of bounds or its hash doesn't match the current file content.
-fn validate_anchor(anchor: &LineAnchor, lines: &[String]) -> Option<String> {
-    if anchor.line_num == 0 || anchor.line_num > lines.len() {
-        return Some(format!(
-            "line {} is out of bounds (file has {} lines)",
-            anchor.line_num,
-            lines.len()
-        ));
-    }
-
-    let idx = anchor.line_num - 1;
-    let actual_line = lines.get(idx).map_or("", String::as_str);
-    let actual_hash = line_hash(actual_line);
-
-    if actual_hash != anchor.hash {
-        return Some(format!(
-            "hash mismatch at line {}: expected {}, got {actual_hash} \
-             (file may have changed since last read; re-read the file)",
-            anchor.line_num, anchor.hash
-        ));
-    }
-
-    None
+/// Result of applying every edit in a call to the file text.
+struct BatchOutcome {
+    text: String,
+    /// Byte ranges in `text` holding content written by the edits.
+    changed_spans: Vec<Range<usize>>,
+    replacements: usize,
+    /// 1-based indexes of edits that only matched after ignoring whitespace.
+    whitespace_matched: Vec<usize>,
 }
 
-/// Replace a range of lines with new content.
-fn apply_replace(
-    mut lines: Vec<String>,
-    range_start: usize,
-    range_end: usize,
-    content: &str,
-) -> (Vec<String>, String) {
-    let line_count = content.lines().count();
-    let range_desc = if range_start == range_end {
-        format!("{}", range_start + 1)
-    } else {
-        format!("{}-{}", range_start + 1, range_end + 1)
-    };
-
-    let mut new_lines =
-        Vec::with_capacity(lines.len() - (range_end - range_start + 1) + line_count);
-    new_lines.extend(lines.drain(..range_start));
-    new_lines.extend(content.lines().map(str::to_string));
-    let skip_count = range_end - range_start + 1;
-    new_lines.extend(lines.into_iter().skip(skip_count));
-
-    (new_lines, format!("replaced line(s) {range_desc}"))
-}
-
-/// Insert content after a line, or at file start when `at_start` is true.
-fn apply_insert(
-    mut lines: Vec<String>,
-    range_start: usize,
-    content: &str,
-    at_start: bool,
-) -> (Vec<String>, String) {
-    let line_count = content.lines().count();
-
-    if at_start {
-        let mut new_lines = Vec::with_capacity(lines.len() + line_count);
-        new_lines.extend(content.lines().map(str::to_string));
-        new_lines.extend(lines);
-        (new_lines, "inserted at file start".to_string())
-    } else {
-        let insert_idx = range_start + 1;
-        let mut new_lines = Vec::with_capacity(lines.len() + line_count);
-        new_lines.extend(lines.drain(..insert_idx));
-        new_lines.extend(content.lines().map(str::to_string));
-        new_lines.extend(lines);
-        (
-            new_lines,
-            format!("inserted after line {}", range_start + 1),
-        )
-    }
-}
-
-/// Parsed and validated edit arguments.
-struct EditArgs<'a> {
-    path: &'a str,
-    operation: &'a str,
-    new_content: Option<&'a str>,
-    start_anchor: Option<LineAnchor>,
-    end_anchor: Option<LineAnchor>,
-    insert_at_start: bool,
-}
-
-/// Parse and validate edit arguments from the JSON input.
-fn parse_edit_args(arguments: &Value) -> Result<EditArgs<'_>, ToolError> {
+/// Parse the `path` and `edits` arguments.
+fn parse_edit_args(arguments: &Value) -> Result<(&str, Vec<EditRequest>), ToolError> {
     let path = arguments
         .get("path")
         .and_then(Value::as_str)
@@ -155,96 +72,342 @@ fn parse_edit_args(arguments: &Value) -> Result<EditArgs<'_>, ToolError> {
             ToolError::InvalidArguments("missing required 'path' argument".to_string())
         })?;
 
-    let operation = arguments
-        .get("operation")
-        .and_then(Value::as_str)
+    let raw_edits = arguments
+        .get("edits")
+        .and_then(Value::as_array)
         .ok_or_else(|| {
-            ToolError::InvalidArguments("missing required 'operation' argument".to_string())
+            ToolError::InvalidArguments(
+                "missing required 'edits' argument (a list of {old_string, new_string} objects)"
+                    .to_string(),
+            )
         })?;
 
-    let start_line_str = arguments
-        .get("start_line")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            ToolError::InvalidArguments("missing required 'start_line' argument".to_string())
-        })?;
-
-    let end_line_str = arguments.get("end_line").and_then(Value::as_str);
-    let new_content = arguments.get("content").and_then(Value::as_str);
-
-    if !matches!(operation, "replace" | "insert_after" | "delete") {
-        return Err(ToolError::InvalidArguments(format!(
-            "invalid operation '{operation}', must be 'replace', 'insert_after', or 'delete'"
-        )));
-    }
-
-    if matches!(operation, "replace" | "insert_after") && new_content.is_none() {
-        return Err(ToolError::InvalidArguments(format!(
-            "'{operation}' requires 'content' argument"
-        )));
-    }
-
-    // end_line required for replace — forces the model to be explicit about the full range
-    // being overwritten, preventing silent under-deletion when content spans multiple lines.
-    if operation == "replace" && end_line_str.is_none() {
+    if raw_edits.is_empty() {
         return Err(ToolError::InvalidArguments(
-            "replace requires 'end_line' (use the same anchor as start_line to replace a single line)"
-                .to_string(),
+            "'edits' is empty; include at least one {old_string, new_string} object".to_string(),
         ));
     }
 
-    // Parse start_line — special case: "0" for insert_after at file start
-    let insert_at_start = operation == "insert_after" && start_line_str == "0";
-    let start_anchor = if insert_at_start {
-        None
-    } else {
-        Some(parse_anchor(start_line_str)?)
+    let edits = raw_edits
+        .iter()
+        .enumerate()
+        .map(|(i, raw)| parse_edit_request(raw, i + 1))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((path, edits))
+}
+
+/// Parse and validate one entry of the `edits` list; `number` is its 1-based position.
+fn parse_edit_request(raw: &Value, number: usize) -> Result<EditRequest, ToolError> {
+    let field = |name: &str| {
+        raw.get(name).and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidArguments(format!("edit {number} is missing string '{name}'"))
+        })
     };
+    let old_string = field("old_string")?;
+    let new_string = field("new_string")?;
+    let replace_all = raw
+        .get("replace_all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
-    let end_anchor = end_line_str.map(parse_anchor).transpose()?;
-
-    if let (Some(start), Some(end)) = (&start_anchor, &end_anchor)
-        && end.line_num < start.line_num
-    {
+    if old_string.is_empty() {
         return Err(ToolError::InvalidArguments(format!(
-            "end_line {} is before start_line {}",
-            end.line_num, start.line_num
+            "edit {number} has an empty old_string; to create or overwrite a whole file use write_file"
+        )));
+    }
+    if old_string == new_string {
+        return Err(ToolError::InvalidArguments(format!(
+            "edit {number} has identical old_string and new_string, so there is nothing to change"
         )));
     }
 
-    Ok(EditArgs {
-        path,
-        operation,
-        new_content,
-        start_anchor,
-        end_anchor,
-        insert_at_start,
+    Ok(EditRequest {
+        old_string: old_string.to_string(),
+        new_string: new_string.to_string(),
+        replace_all,
     })
 }
 
-/// Delete a range of lines. Returns `Err` if deleting all lines.
-fn apply_delete(
-    mut lines: Vec<String>,
-    range_start: usize,
-    range_end: usize,
-    path: &str,
-) -> Result<(Vec<String>, String), String> {
-    let delete_count = range_end - range_start + 1;
-    if delete_count >= lines.len() {
-        return Err(format!("cannot delete all lines from {path}"));
+/// The line break most of `text`'s lines use, so a stray CRLF doesn't convert an LF file.
+fn dominant_line_ending(text: &str) -> &'static str {
+    let crlf = text.matches("\r\n").count();
+    let lf_only = text.matches('\n').count() - crlf;
+    if crlf > lf_only { "\r\n" } else { "\n" }
+}
+
+/// Rewrite every line break in `text` to `eol`, whatever style the model sent.
+fn normalize_line_endings(text: &str, eol: &str) -> String {
+    let lf = text.replace("\r\n", "\n");
+    if eol == "\n" {
+        lf
+    } else {
+        lf.replace('\n', eol)
+    }
+}
+
+/// 1-based line number containing byte `offset` of `text`.
+fn line_number_at(text: &str, offset: usize) -> usize {
+    text.bytes().take(offset).filter(|&b| b == b'\n').count() + 1
+}
+
+/// Comma-separated start lines of `ranges`, capped at `MAX_LISTED_MATCHES`.
+fn describe_match_lines(text: &str, ranges: &[Range<usize>]) -> String {
+    let mut listed: Vec<String> = ranges
+        .iter()
+        .take(MAX_LISTED_MATCHES)
+        .map(|r| line_number_at(text, r.start).to_string())
+        .collect();
+    if ranges.len() > MAX_LISTED_MATCHES {
+        listed.push(format!("and {} more", ranges.len() - MAX_LISTED_MATCHES));
+    }
+    listed.join(", ")
+}
+
+/// Whether any line of `text` starts with a `read_file` line-number prefix like `  12\t`.
+fn has_read_prefix(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0
+            && trimmed
+                .get(digits..)
+                .is_some_and(|rest| rest.starts_with('\t'))
+    })
+}
+
+/// One line of a file with its byte offsets.
+struct FileLine<'a> {
+    start: usize,
+    /// Line text without its line break.
+    content: &'a str,
+    /// End of the line including its line break.
+    end: usize,
+}
+
+/// Split `text` into lines, keeping each line's byte offsets.
+fn file_lines(text: &str) -> Vec<FileLine<'_>> {
+    let mut offset = 0;
+    text.split_inclusive('\n')
+        .map(|raw| {
+            let content = raw
+                .strip_suffix('\n')
+                .map_or(raw, |s| s.strip_suffix('\r').unwrap_or(s));
+            let line = FileLine {
+                start: offset,
+                content,
+                end: offset + raw.len(),
+            };
+            offset += raw.len();
+            line
+        })
+        .collect()
+}
+
+/// Find runs of whole lines in `text` that equal `old` line-for-line once each line is trimmed.
+///
+/// The returned ranges cover the matched lines' text, plus the final line break when `old`
+/// ends with one, so replacing a range behaves like replacing an exact match of `old`.
+fn whitespace_insensitive_matches(text: &str, old: &str) -> Vec<Range<usize>> {
+    let includes_final_break = old.ends_with('\n');
+    let wanted: Vec<&str> = old
+        .trim_end_matches(['\r', '\n'])
+        .split('\n')
+        .map(str::trim)
+        .collect();
+    if wanted.iter().all(|line| line.is_empty()) {
+        return Vec::new();
     }
 
-    let range_desc = if range_start == range_end {
-        format!("{}", range_start + 1)
-    } else {
-        format!("{}-{}", range_start + 1, range_end + 1)
-    };
+    let lines = file_lines(text);
+    lines
+        .windows(wanted.len())
+        .filter(|window| {
+            window
+                .iter()
+                .zip(&wanted)
+                .all(|(line, want)| line.content.trim() == *want)
+        })
+        .filter_map(|window| {
+            let first = window.first()?;
+            let last = window.last()?;
+            let end = if includes_final_break {
+                last.end
+            } else {
+                last.start + last.content.len()
+            };
+            Some(first.start..end)
+        })
+        .collect()
+}
 
-    let mut new_lines = Vec::with_capacity(lines.len() - delete_count);
-    new_lines.extend(lines.drain(..range_start));
-    new_lines.extend(lines.into_iter().skip(delete_count));
+/// Locate where `old` should be replaced in `text`.
+///
+/// Tries an exact match first. Only when there is no exact match does it retry ignoring
+/// whitespace, and that retry is used only if it finds exactly one place.
+fn find_matches(
+    text: &str,
+    old: &str,
+    replace_all: bool,
+) -> Result<(Vec<Range<usize>>, MatchKind), String> {
+    let exact: Vec<Range<usize>> = text
+        .match_indices(old)
+        .map(|(start, matched)| start..start + matched.len())
+        .collect();
 
-    Ok((new_lines, format!("deleted line(s) {range_desc}")))
+    if exact.len() == 1 || (exact.len() > 1 && replace_all) {
+        return Ok((exact, MatchKind::Exact));
+    }
+    if exact.len() > 1 {
+        return Err(format!(
+            "old_string matches {} places (lines {}); include more surrounding lines so it \
+             matches exactly one, or set replace_all to change every occurrence",
+            exact.len(),
+            describe_match_lines(text, &exact)
+        ));
+    }
+
+    let loose = whitespace_insensitive_matches(text, old);
+    match loose.len() {
+        1 => Ok((loose, MatchKind::IgnoringWhitespace)),
+        0 if has_read_prefix(old) => Err(
+            "old_string was not found; it includes read_file's line-number prefix \
+             (like `  12\\t`), which is not part of the file. Copy the text without it"
+                .to_string(),
+        ),
+        0 => Err(
+            "old_string was not found in the file; re-read the file and copy the text \
+             exactly as it appears"
+                .to_string(),
+        ),
+        n => Err(format!(
+            "old_string was not found exactly, and ignoring whitespace it matches {n} places \
+             (lines {}); copy the text exactly, including indentation",
+            describe_match_lines(text, &loose)
+        )),
+    }
+}
+
+/// Record that `replaced` was overwritten with `new_len` bytes, keeping earlier spans accurate.
+fn record_replacement(spans: &mut Vec<Range<usize>>, replaced: &Range<usize>, new_len: usize) {
+    let removed_len = replaced.end - replaced.start;
+    let new_end = replaced.start + new_len;
+    for span in spans.iter_mut() {
+        if span.start >= replaced.end {
+            *span = (span.start - removed_len + new_len)..(span.end - removed_len + new_len);
+        } else if span.end > replaced.start {
+            let end = if span.end > replaced.end {
+                span.end - removed_len + new_len
+            } else {
+                new_end
+            };
+            *span = span.start.min(replaced.start)..end.max(new_end);
+        }
+    }
+    spans.push(replaced.start..new_end);
+}
+
+/// Apply every edit in order to `original`. On failure returns which edit failed and why.
+fn apply_edits(original: &str, edits: &[EditRequest]) -> Result<BatchOutcome, String> {
+    let eol = dominant_line_ending(original);
+    let mut text = original.to_string();
+    let mut changed_spans = Vec::new();
+    let mut replacements = 0;
+    let mut whitespace_matched = Vec::new();
+
+    for (i, edit) in edits.iter().enumerate() {
+        let number = i + 1;
+        let old = normalize_line_endings(&edit.old_string, eol);
+        let new = normalize_line_endings(&edit.new_string, eol);
+        let (ranges, kind) = find_matches(&text, &old, edit.replace_all)
+            .map_err(|reason| format!("edit {number} of {}: {reason}", edits.len()))?;
+
+        if kind == MatchKind::IgnoringWhitespace {
+            whitespace_matched.push(number);
+        }
+        // Back to front, so earlier ranges stay valid while later ones are rewritten.
+        for range in ranges.iter().rev() {
+            text.replace_range(range.clone(), &new);
+            record_replacement(&mut changed_spans, range, new.len());
+        }
+        replacements += ranges.len();
+    }
+
+    Ok(BatchOutcome {
+        text,
+        changed_spans,
+        replacements,
+        whitespace_matched,
+    })
+}
+
+/// Numbered lines around each changed span, merged where they overlap.
+fn render_preview(text: &str, spans: &[Range<usize>]) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return "(the file is now empty)".to_string();
+    }
+
+    let mut windows: Vec<(usize, usize)> = spans
+        .iter()
+        .map(|span| {
+            let first = line_number_at(text, span.start);
+            let last = if span.end > span.start {
+                line_number_at(text, span.end - 1)
+            } else {
+                first
+            };
+            (
+                first.saturating_sub(PREVIEW_CONTEXT_LINES).max(1),
+                (last + PREVIEW_CONTEXT_LINES).min(lines.len()),
+            )
+        })
+        .collect();
+    windows.sort_unstable();
+
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (first, last) in windows {
+        match merged.last_mut() {
+            Some(prev) if first <= prev.1 + 1 => prev.1 = prev.1.max(last),
+            _ => merged.push((first, last)),
+        }
+    }
+
+    let mut rendered: Vec<String> = Vec::new();
+    for (first, last) in merged {
+        if !rendered.is_empty() {
+            rendered.push("   …".to_string());
+        }
+        for line_num in first..=last {
+            let line = lines.get(line_num - 1).copied().unwrap_or_default();
+            rendered.push(format_numbered_line(line_num, line).0);
+        }
+    }
+    if rendered.len() > MAX_PREVIEW_LINES {
+        rendered.truncate(MAX_PREVIEW_LINES);
+        rendered.push("   … (preview truncated; use read_file to see the rest)".to_string());
+    }
+    rendered.join("\n")
+}
+
+/// Success message: summary line, any whitespace-match notes, then the preview.
+fn format_success(path: &str, outcome: &BatchOutcome) -> String {
+    let plural = if outcome.replacements == 1 { "" } else { "s" };
+    let mut header = vec![format!(
+        "edited {path} ({} replacement{plural})",
+        outcome.replacements
+    )];
+    header.extend(outcome.whitespace_matched.iter().map(|number| {
+        format!(
+            "note: edit {number} matched only after ignoring whitespace differences; its \
+             new_string was written exactly as given, so check the indentation below"
+        )
+    }));
+    format!(
+        "{}\n\n{}",
+        header.join("\n"),
+        render_preview(&outcome.text, &outcome.changed_spans)
+    )
 }
 
 #[async_trait]
@@ -256,13 +419,15 @@ impl Tool for EditTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Edit a file using line:hash anchors from read_file output. \
-                          Validates content hashes before applying changes to detect stale edits. \
-                          Operations: 'replace' (replace exact range; end_line required — use the \
-                          same anchor as start_line for a single-line replacement), 'insert_after' \
-                          (insert after a line; use start_line '0' to insert at file start), \
-                          'delete' (remove line or range; end_line optional for ranges). \
-                          Use this over write_file when updating existing content."
+            description: "Edit an existing file by replacing exact text. Each entry in 'edits' \
+                          replaces old_string with new_string; old_string must match the file \
+                          exactly once (include surrounding lines to make it unique) unless \
+                          replace_all is true. Edits apply in order, each seeing the result of \
+                          the ones before it, and the file is only written if every edit \
+                          succeeds. Copy old_string from read_file output without the \
+                          line-number prefix. To delete text, use an empty new_string. The file \
+                          must have been read with read_file first. Use this over write_file \
+                          when changing part of an existing file."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -271,40 +436,37 @@ impl Tool for EditTool {
                         "type": "string",
                         "description": "Path to the file to edit"
                     },
-                    "operation": {
-                        "type": "string",
-                        "enum": ["replace", "insert_after", "delete"],
-                        "description": "The edit operation to perform"
-                    },
-                    "start_line": {
-                        "type": "string",
-                        "description": "Line anchor as 'N:hash' (e.g. '5:a3b2'). Use '0' for insert_after at file start."
-                    },
-                    "end_line": {
-                        "type": "string",
-                        "description": "End line anchor as 'N:hash'. Required for replace (use same anchor as start_line for single-line replacement). Optional for delete (omit to remove only start_line). Not used by insert_after."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "New content (required for replace and insert_after, omitted for delete)"
+                    "edits": {
+                        "type": "array",
+                        "description": "Replacements to apply, in order. Use one entry for a single change.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {
+                                    "type": "string",
+                                    "description": "Exact text to replace, copied from the file"
+                                },
+                                "new_string": {
+                                    "type": "string",
+                                    "description": "Text to put in its place (empty to delete)"
+                                },
+                                "replace_all": {
+                                    "type": "boolean",
+                                    "description": "Replace every occurrence of old_string instead of requiring exactly one (default: false)"
+                                }
+                            },
+                            "required": ["old_string", "new_string"]
+                        }
                     }
                 },
-                "required": ["path", "operation", "start_line"]
+                "required": ["path", "edits"]
             }),
         }
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let EditArgs {
-            path,
-            operation,
-            new_content,
-            start_anchor,
-            end_anchor,
-            insert_at_start,
-        } = parse_edit_args(&arguments)?;
+        let (path, edits) = parse_edit_args(&arguments)?;
 
-        // Enforce write-scoping policy
         if let Err(reason) = self
             .policy
             .read()
@@ -314,84 +476,45 @@ impl Tool for EditTool {
             return Ok(ToolResult::error(reason));
         }
 
-        // Check file exists
         if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-            return Ok(ToolResult::error(format!("file {path} does not exist")));
+            return Ok(ToolResult::error(format!(
+                "file {path} does not exist; use write_file to create it"
+            )));
         }
 
-        // Check tracker — must have been read
         if !self.tracker.lock().await.has_been_read(path) {
             return Ok(ToolResult::error(format!(
                 "file {path} has not been read; use read_file before editing"
             )));
         }
 
-        // Read current file
-        let file_text = match tokio::fs::read_to_string(path).await {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(ToolResult::error(format!("failed to read {path}: {e}")));
+        let original = match tokio::fs::read_to_string(path).await {
+            Ok(text) => text,
+            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+        };
+
+        let outcome = match apply_edits(&original, &edits) {
+            Ok(outcome) => outcome,
+            Err(reason) => {
+                return Ok(ToolResult::error(format!(
+                    "{reason}. No changes were written to {path}"
+                )));
             }
         };
 
-        let lines: Vec<String> = file_text.lines().map(String::from).collect();
-        let ends_with_newline = file_text.ends_with('\n');
-
-        // Validate anchors against current file content
-        if let Some(anchor) = &start_anchor
-            && let Some(err_msg) = validate_anchor(anchor, &lines)
-        {
-            return Ok(ToolResult::error(err_msg));
-        }
-        if let Some(anchor) = &end_anchor
-            && let Some(err_msg) = validate_anchor(anchor, &lines)
-        {
-            return Ok(ToolResult::error(err_msg));
+        if !outcome.whitespace_matched.is_empty() {
+            tracing::debug!(
+                path = %path,
+                edits = ?outcome.whitespace_matched,
+                "edit matched only after ignoring whitespace"
+            );
         }
 
-        // Compute effective range (0-indexed)
-        let (range_start, range_end) = if let Some(start) = &start_anchor {
-            let s = start.line_num - 1;
-            let e = end_anchor.as_ref().map_or(s, |end| end.line_num - 1);
-            (s, e)
-        } else {
-            (0, 0)
-        };
-
-        // Apply operation
-        let (lines, description) = match operation {
-            "replace" => apply_replace(
-                lines,
-                range_start,
-                range_end,
-                new_content.unwrap_or_default(),
-            ),
-            "insert_after" => apply_insert(
-                lines,
-                range_start,
-                new_content.unwrap_or_default(),
-                insert_at_start,
-            ),
-            "delete" => match apply_delete(lines, range_start, range_end, path) {
-                Ok(result) => result,
-                Err(msg) => return Ok(ToolResult::error(msg)),
-            },
-            _ => unreachable!(
-                "parse_edit_args validates operation is one of replace/insert_after/delete"
-            ),
-        };
-
-        // Reconstruct file content
-        let mut output = lines.join("\n");
-        if ends_with_newline {
-            output.push('\n');
-        }
-
-        if let Err(e) = tokio::fs::write(path, &output).await {
+        if let Err(e) = tokio::fs::write(path, &outcome.text).await {
             return Ok(ToolResult::error(format!("failed to write {path}: {e}")));
         }
 
-        Ok(ToolResult::success(format!("edited {path}: {description}")))
+        Ok(ToolResult::success(format_success(path, &outcome)))
     }
 }
 
@@ -399,27 +522,21 @@ impl Tool for EditTool {
 mod tests {
     use super::*;
     use crate::tools::file_tracker::FileTracker;
-    use crate::tools::line_hash::line_hash as compute_hash;
     use crate::tools::path_policy::PathPolicy;
-
-    /// Create a permissive policy rooted at `/tmp` (allows all test writes).
-    fn permissive_policy() -> SharedPathPolicy {
-        PathPolicy::new_shared()
-    }
 
     /// Create an `EditTool` with a pre-registered path in the tracker.
     async fn make_tool_with_file(path: &str) -> EditTool {
         let tracker = FileTracker::new_shared();
         tracker.lock().await.record_read(path);
-        EditTool::new(tracker, permissive_policy())
+        EditTool::new(tracker, PathPolicy::new_shared())
     }
 
     /// Create an `EditTool` with an empty tracker (nothing read).
     fn make_tool_no_reads() -> EditTool {
-        EditTool::new(FileTracker::new_shared(), permissive_policy())
+        EditTool::new(FileTracker::new_shared(), PathPolicy::new_shared())
     }
 
-    /// Helper: write a test file and return the tool with path registered.
+    /// Write a test file and return the tool with the path already read.
     async fn setup_file(dir: &tempfile::TempDir, name: &str, content: &str) -> (EditTool, String) {
         let file_path = dir.path().join(name);
         tokio::fs::write(&file_path, content).await.unwrap();
@@ -428,201 +545,307 @@ mod tests {
         (tool, path_str)
     }
 
-    fn anchor(line: usize, content: &str) -> String {
-        format!("{line}:{}", compute_hash(content))
+    fn edit(old: &str, new: &str) -> Value {
+        serde_json::json!({ "old_string": old, "new_string": new })
+    }
+
+    async fn run(tool: &EditTool, path: &str, edits: Vec<Value>) -> ToolResult {
+        tool.execute(serde_json::json!({ "path": path, "edits": edits }))
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
-    async fn single_line_replace() {
+    async fn single_replacement() {
         let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "replace.txt", "aaa\nbbb\nccc\n").await;
+        let (tool, path) = setup_file(&dir, "a.txt", "aaa\nbbb\nccc\n").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "replace",
-                "start_line": anchor(2, "bbb"),
-                "end_line": anchor(2, "bbb"),
-                "content": "BBB"
-            }))
-            .await
-            .unwrap();
+        let result = run(&tool, &path, vec![edit("bbb", "BBB")]).await;
 
+        assert!(!result.is_error, "edit should succeed: {}", result.output);
+        let updated = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(updated, "aaa\nBBB\nccc\n", "only bbb should change");
         assert!(
-            !result.is_error,
-            "replace should succeed: {}",
+            result
+                .output
+                .starts_with(&format!("edited {path} (1 replacement)")),
+            "summary should count one replacement: {}",
             result.output
         );
+    }
+
+    #[tokio::test]
+    async fn edits_apply_in_order_and_can_build_on_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "chain.txt", "fn old() {}\nold();\n").await;
+
+        let result = run(
+            &tool,
+            &path,
+            vec![
+                edit("fn old() {}", "fn renamed() {}"),
+                edit("fn renamed() {}", "fn renamed() { work() }"),
+                edit("old();", "renamed();"),
+            ],
+        )
+        .await;
+
+        assert!(!result.is_error, "batch should succeed: {}", result.output);
         let updated = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(updated, "aaa\nBBB\nccc\n", "line 2 should be replaced");
-    }
-
-    #[tokio::test]
-    async fn replace_requires_end_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "no_end.txt", "aaa\nbbb\nccc\n").await;
-
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "replace",
-                "start_line": anchor(2, "bbb"),
-                "content": "BBB"
-            }))
-            .await;
-
-        assert!(
-            result.is_err(),
-            "replace without end_line should return ToolError"
-        );
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("end_line"),
-            "error should mention end_line: {err_msg}"
+        assert_eq!(
+            updated, "fn renamed() { work() }\nrenamed();\n",
+            "each edit should see the result of the previous one"
         );
     }
 
     #[tokio::test]
-    async fn range_replace() {
+    async fn failed_edit_leaves_file_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "range.txt", "a\nb\nc\nd\ne\n").await;
+        let (tool, path) = setup_file(&dir, "atomic.txt", "one\ntwo\n").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "replace",
-                "start_line": anchor(2, "b"),
-                "end_line": anchor(4, "d"),
-                "content": "X\nY"
-            }))
-            .await
-            .unwrap();
+        let result = run(
+            &tool,
+            &path,
+            vec![edit("one", "ONE"), edit("missing", "x"), edit("two", "TWO")],
+        )
+        .await;
 
+        assert!(result.is_error, "a failing edit should fail the batch");
         assert!(
-            !result.is_error,
-            "range replace should succeed: {}",
+            result.output.starts_with("edit 2 of 3:"),
+            "error should name the failing edit: {}",
             result.output
         );
-        let updated = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(
-            updated, "a\nX\nY\ne\n",
-            "lines 2-4 should be replaced with X, Y"
+        assert!(
+            result.output.contains("No changes were written"),
+            "error should say nothing was written: {}",
+            result.output
+        );
+        let unchanged = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(unchanged, "one\ntwo\n", "file must not change");
+    }
+
+    #[tokio::test]
+    async fn ambiguous_match_lists_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "dup.txt", "x = 1\ny = 2\nx = 1\n").await;
+
+        let result = run(&tool, &path, vec![edit("x = 1", "x = 3")]).await;
+
+        assert!(result.is_error, "ambiguous old_string should fail");
+        assert!(
+            result.output.contains("matches 2 places (lines 1, 3)"),
+            "error should list matching lines: {}",
+            result.output
         );
     }
 
     #[tokio::test]
-    async fn insert_after_line() {
+    async fn replace_all_changes_every_occurrence() {
         let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "insert.txt", "first\nsecond\n").await;
+        let (tool, path) = setup_file(&dir, "all.txt", "foo bar\nfoo\nbaz foo\n").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "insert_after",
-                "start_line": anchor(1, "first"),
-                "content": "inserted"
-            }))
-            .await
-            .unwrap();
-
-        assert!(!result.is_error, "insert should succeed: {}", result.output);
-        let updated = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(
-            updated, "first\ninserted\nsecond\n",
-            "line should be inserted after line 1"
-        );
-    }
-
-    #[tokio::test]
-    async fn insert_at_file_start() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "start.txt", "existing\n").await;
-
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "insert_after",
-                "start_line": "0",
-                "content": "header"
-            }))
-            .await
-            .unwrap();
+        let result = run(
+            &tool,
+            &path,
+            vec![serde_json::json!({
+                "old_string": "foo", "new_string": "qux", "replace_all": true
+            })],
+        )
+        .await;
 
         assert!(
             !result.is_error,
-            "insert at start should succeed: {}",
+            "replace_all should succeed: {}",
             result.output
         );
         let updated = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(
-            updated, "header\nexisting\n",
-            "content should be inserted at file start"
+            updated, "qux bar\nqux\nbaz qux\n",
+            "every foo should change"
+        );
+        assert!(
+            result.output.contains("(3 replacements)"),
+            "summary should count three replacements: {}",
+            result.output
         );
     }
 
     #[tokio::test]
-    async fn delete_single_line() {
+    async fn not_found_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "nf.txt", "hello\n").await;
+
+        let result = run(&tool, &path, vec![edit("goodbye", "x")]).await;
+
+        assert!(result.is_error, "missing old_string should fail");
+        assert!(
+            result.output.contains("was not found"),
+            "error should say not found: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn read_prefix_in_old_string_gets_a_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "prefix.txt", "hello\nworld\n").await;
+
+        let result = run(&tool, &path, vec![edit("   2\tworld", "earth")]).await;
+
+        assert!(result.is_error, "prefixed old_string should fail");
+        assert!(
+            result.output.contains("line-number prefix"),
+            "error should point at the read_file prefix: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_difference_matches_when_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(
+            &dir,
+            "ws.rs",
+            "fn main() {\n\tlet x = 1;  \n\tprintln!(\"{x}\");\n}\n",
+        )
+        .await;
+
+        let result = run(
+            &tool,
+            &path,
+            vec![edit(
+                "    let x = 1;\n    println!(\"{x}\");\n",
+                "\tlet x = 2;\n\tprintln!(\"{x}\");\n",
+            )],
+        )
+        .await;
+
+        assert!(
+            !result.is_error,
+            "loose match should apply: {}",
+            result.output
+        );
+        let updated = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            updated, "fn main() {\n\tlet x = 2;\n\tprintln!(\"{x}\");\n}\n",
+            "matched lines should be replaced with new_string verbatim"
+        );
+        assert!(
+            result
+                .output
+                .contains("edit 1 matched only after ignoring whitespace"),
+            "output should flag the whitespace match: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn whitespace_match_must_be_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "wsdup.txt", "  a\n  b\n\ta\n\tb\n").await;
+
+        let result = run(&tool, &path, vec![edit("a\nb", "c")]).await;
+
+        assert!(result.is_error, "ambiguous loose match should fail");
+        assert!(
+            result
+                .output
+                .contains("ignoring whitespace it matches 2 places (lines 1, 3)"),
+            "error should list loose matches: {}",
+            result.output
+        );
+        let unchanged = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(unchanged, "  a\n  b\n\ta\n\tb\n", "file must not change");
+    }
+
+    #[tokio::test]
+    async fn empty_new_string_deletes() {
         let dir = tempfile::tempdir().unwrap();
         let (tool, path) = setup_file(&dir, "del.txt", "keep\nremove\nkeep2\n").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "delete",
-                "start_line": anchor(2, "remove"),
-            }))
-            .await
-            .unwrap();
+        let result = run(&tool, &path, vec![edit("remove\n", "")]).await;
 
         assert!(!result.is_error, "delete should succeed: {}", result.output);
         let updated = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(updated, "keep\nkeep2\n", "line 2 should be deleted");
+        assert_eq!(updated, "keep\nkeep2\n", "the line should be removed");
     }
 
     #[tokio::test]
-    async fn delete_range() {
+    async fn crlf_file_keeps_crlf_line_endings() {
         let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "delrange.txt", "a\nb\nc\nd\n").await;
+        let (tool, path) = setup_file(&dir, "win.txt", "one\r\ntwo\r\nthree\r\n").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "delete",
-                "start_line": anchor(2, "b"),
-                "end_line": anchor(3, "c"),
-            }))
-            .await
-            .unwrap();
+        let result = run(&tool, &path, vec![edit("one\ntwo", "uno\ndos\nextra")]).await;
 
         assert!(
             !result.is_error,
-            "range delete should succeed: {}",
+            "LF old_string should match CRLF file: {}",
             result.output
         );
         let updated = tokio::fs::read_to_string(&path).await.unwrap();
-        assert_eq!(updated, "a\nd\n", "lines 2-3 should be deleted");
+        assert_eq!(
+            updated, "uno\r\ndos\r\nextra\r\nthree\r\n",
+            "new lines should use the file's CRLF endings"
+        );
     }
 
     #[tokio::test]
-    async fn hash_mismatch_rejected() {
+    async fn stray_crlf_does_not_convert_lf_file() {
         let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "mismatch.txt", "hello\nworld\n").await;
+        let (tool, path) = setup_file(&dir, "mixed.txt", "a\r\nb\nc\nd\n").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "replace",
-                "start_line": "1:ffff",
-                "end_line": "1:ffff",
-                "content": "replaced"
-            }))
-            .await
-            .unwrap();
+        let result = run(&tool, &path, vec![edit("c\n", "c\nnew1\nnew2\n")]).await;
 
-        assert!(result.is_error, "hash mismatch should fail");
+        assert!(!result.is_error, "edit should succeed: {}", result.output);
+        let updated = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            updated, "a\r\nb\nc\nnew1\nnew2\nd\n",
+            "new lines should follow the file's majority LF style"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_trailing_newline_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "nonl.txt", "a\nb").await;
+
+        let result = run(&tool, &path, vec![edit("a", "A")]).await;
+
+        assert!(!result.is_error, "edit should succeed: {}", result.output);
+        let updated = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(updated, "A\nb", "no trailing newline should be added");
+    }
+
+    #[tokio::test]
+    async fn preview_line_numbers_account_for_later_edits_above() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = (1..=12)
+            .map(|n| format!("line{n}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let (tool, path) = setup_file(&dir, "preview.txt", &body).await;
+
+        // The second edit inserts two lines above the first edit's change.
+        let result = run(
+            &tool,
+            &path,
+            vec![
+                edit("line10\n", "line10\nADDED\n"),
+                edit("line2\n", "line2\nX\nY\n"),
+            ],
+        )
+        .await;
+
+        assert!(!result.is_error, "edits should succeed: {}", result.output);
         assert!(
-            result.output.contains("hash mismatch"),
-            "error should mention hash mismatch: {}",
+            result.output.contains("  13\tADDED"),
+            "the first edit's line should be renumbered after the second: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("   3\tX\n   4\tY"),
+            "the second edit's lines should appear numbered: {}",
             result.output
         );
     }
@@ -631,21 +854,13 @@ mod tests {
     async fn file_not_found() {
         let tool = make_tool_with_file("/nonexistent/edit_target.txt").await;
 
-        let result = tool
-            .execute(serde_json::json!({
-                "path": "/nonexistent/edit_target.txt",
-                "operation": "replace",
-                "start_line": "1:aaaa",
-                "end_line": "1:aaaa",
-                "content": "x"
-            }))
-            .await
-            .unwrap();
+        let result = run(&tool, "/nonexistent/edit_target.txt", vec![edit("a", "b")]).await;
 
         assert!(result.is_error, "nonexistent file should fail");
         assert!(
             result.output.contains("does not exist"),
-            "error should mention file not found"
+            "error should mention file not found: {}",
+            result.output
         );
     }
 
@@ -655,123 +870,52 @@ mod tests {
         let file_path = dir.path().join("unread.txt");
         tokio::fs::write(&file_path, "content\n").await.unwrap();
 
-        let tool = make_tool_no_reads();
-        let result = tool
-            .execute(serde_json::json!({
-                "path": file_path.to_str().unwrap(),
-                "operation": "replace",
-                "start_line": "1:aaaa",
-                "end_line": "1:aaaa",
-                "content": "x"
-            }))
-            .await
-            .unwrap();
+        let result = run(
+            &make_tool_no_reads(),
+            file_path.to_str().unwrap(),
+            vec![edit("content", "x")],
+        )
+        .await;
 
         assert!(result.is_error, "unread file should fail");
         assert!(
             result.output.contains("has not been read"),
-            "error should mention read requirement"
+            "error should mention read requirement: {}",
+            result.output
         );
     }
 
     #[tokio::test]
-    async fn invalid_operation() {
-        let result = make_tool_no_reads()
-            .execute(serde_json::json!({
-                "path": "/tmp/x.txt",
-                "operation": "bogus",
-                "start_line": "1:aa"
-            }))
-            .await;
-
-        assert!(result.is_err(), "invalid operation should return ToolError");
-    }
-
-    #[tokio::test]
-    async fn missing_required_params() {
+    async fn invalid_arguments_are_rejected() {
         let tool = make_tool_no_reads();
+        let cases = [
+            (serde_json::json!({ "edits": [edit("a", "b")] }), "'path'"),
+            (serde_json::json!({ "path": "/tmp/x" }), "'edits'"),
+            (
+                serde_json::json!({ "path": "/tmp/x", "edits": [] }),
+                "empty",
+            ),
+            (
+                serde_json::json!({ "path": "/tmp/x", "edits": [{ "old_string": "a" }] }),
+                "'new_string'",
+            ),
+            (
+                serde_json::json!({ "path": "/tmp/x", "edits": [edit("", "b")] }),
+                "empty old_string",
+            ),
+            (
+                serde_json::json!({ "path": "/tmp/x", "edits": [edit("same", "same")] }),
+                "identical",
+            ),
+        ];
 
-        // Missing path
-        let no_path = tool
-            .execute(serde_json::json!({"operation": "replace", "start_line": "1:aa"}))
-            .await;
-        assert!(no_path.is_err(), "missing path should error");
-
-        // Missing operation
-        let no_op = tool
-            .execute(serde_json::json!({"path": "/tmp/x", "start_line": "1:aa"}))
-            .await;
-        assert!(no_op.is_err(), "missing operation should error");
-
-        // Missing start_line
-        let no_start = tool
-            .execute(serde_json::json!({"path": "/tmp/x", "operation": "replace"}))
-            .await;
-        assert!(no_start.is_err(), "missing start_line should error");
-    }
-
-    #[tokio::test]
-    async fn malformed_line_hash_string() {
-        let tool = make_tool_no_reads();
-
-        // No colon
-        let no_colon = tool
-            .execute(serde_json::json!({
-                "path": "/tmp/x", "operation": "replace",
-                "start_line": "5aa", "content": "x"
-            }))
-            .await;
-        assert!(no_colon.is_err(), "missing colon should error");
-
-        // Non-numeric line
-        let bad_num = tool
-            .execute(serde_json::json!({
-                "path": "/tmp/x", "operation": "replace",
-                "start_line": "abc:aa", "content": "x"
-            }))
-            .await;
-        assert!(bad_num.is_err(), "non-numeric line should error");
-
-        // Hash too long
-        let long_hash = tool
-            .execute(serde_json::json!({
-                "path": "/tmp/x", "operation": "replace",
-                "start_line": "1:aabbcc", "content": "x"
-            }))
-            .await;
-        assert!(long_hash.is_err(), "hash too long should error");
-
-        // Non-hex characters in hash (4-char but not valid hex)
-        let non_hex = tool
-            .execute(serde_json::json!({
-                "path": "/tmp/x", "operation": "replace",
-                "start_line": "1:zzzz", "content": "x"
-            }))
-            .await;
-        assert!(non_hex.is_err(), "non-hex 4-char hash should error");
-    }
-
-    #[tokio::test]
-    async fn end_line_before_start_line() {
-        let tool = make_tool_no_reads();
-        let result = tool
-            .execute(serde_json::json!({
-                "path": "/tmp/x",
-                "operation": "replace",
-                "start_line": "5:aaaa",
-                "end_line": "2:bbbb",
-                "content": "x"
-            }))
-            .await;
-        assert!(
-            result.is_err(),
-            "end_line before start_line should return ToolError"
-        );
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("before"),
-            "error should mention end before start: {err_msg}"
-        );
+        for (arguments, expected) in cases {
+            let err = tool.execute(arguments.clone()).await.unwrap_err();
+            assert!(
+                err.to_string().contains(expected),
+                "{arguments} should fail mentioning {expected}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -780,26 +924,10 @@ mod tests {
         assert_eq!(tool.name(), "edit_file", "tool name should match");
         let def = tool.definition();
         assert_eq!(def.name, "edit_file", "definition name should match");
-    }
-
-    #[tokio::test]
-    async fn cannot_delete_all_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tool, path) = setup_file(&dir, "single.txt", "only line\n").await;
-
-        let result = tool
-            .execute(serde_json::json!({
-                "path": path,
-                "operation": "delete",
-                "start_line": anchor(1, "only line"),
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.is_error, "deleting all lines should fail");
-        assert!(
-            result.output.contains("cannot delete all lines"),
-            "error should mention cannot delete all"
+        assert_eq!(
+            def.parameters.get("required"),
+            Some(&serde_json::json!(["path", "edits"])),
+            "path and edits should be required"
         );
     }
 }
