@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { defaultModels, serializeMcpJson, serializeProvidersToml } from "./settings-toml";
+import {
+  defaultModels,
+  parseConfigToml,
+  serializeConfigToml,
+  serializeMcpJson,
+  serializeProvidersToml,
+} from "./settings-toml";
 import type { McpServerEntry, SettingsProviderEntry } from "./types";
 
 function provider(overrides: Partial<SettingsProviderEntry> = {}): SettingsProviderEntry {
@@ -47,5 +53,15 @@ describe("serializeMcpJson", () => {
       mcpServers: Record<string, unknown>;
     };
     expect(Object.keys(json.mcpServers)).toEqual(["fetch"]);
+  });
+});
+
+describe("background idle timeouts", () => {
+  it("round-trips the artifact session idle timeout through config.toml", () => {
+    const fields = parseConfigToml("[background]\nidle_timeout_artifact_minutes = 25\n");
+    expect(fields.bg_idle_timeout_artifact_minutes).toBe("25");
+    const out = serializeConfigToml(fields);
+    expect(out).toContain("[background]");
+    expect(out).toContain("idle_timeout_artifact_minutes = 25");
   });
 });

@@ -312,10 +312,11 @@ async fn handle_session_command(
             address,
             content,
         } => {
-            match crate::gateway::sessions::send_owner_message(
+            match crate::gateway::sessions::send_session_message(
                 &state.agent_messenger,
                 &address,
                 content,
+                &crate::gateway::sessions::SessionMessageAuthor::Owner,
             )
             .await
             {

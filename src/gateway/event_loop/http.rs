@@ -95,6 +95,9 @@ pub fn build_gateway_app(
         registry: Arc::clone(&state.session_registry),
         store: Arc::clone(&state.session_store),
         tz: state.tz,
+        messenger: Arc::clone(&state.agent_messenger),
+        publisher: state.publisher.clone(),
+        skill_state: Arc::clone(&state.skill_state),
     });
 
     let workbench_router =

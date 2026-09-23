@@ -159,6 +159,18 @@
         <div class="field-hint">Idle timeout for non-webhook external sessions.</div>
       </div>
       <div class="settings-field">
+        <label for="rt-bg-idle-artifact">Artifact Session Idle Timeout (minutes)</label>
+        <input
+          id="rt-bg-idle-artifact"
+          type="number"
+          bind:value={fields.bg_idle_timeout_artifact_minutes}
+          placeholder="Default: 10"
+        />
+        <div class="field-hint">
+          How long a session started by a workbench artifact lingers idle before completing.
+        </div>
+      </div>
+      <div class="settings-field">
         <label for="rt-bg-episode-skip-floor">Episode Skip Token Floor</label>
         <input
           id="rt-bg-episode-skip-floor"

@@ -7,10 +7,18 @@ use serde_json::Value;
 
 use crate::agent::HopCounter;
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
+use crate::background::registry::{MAIN_ADDRESS, SessionCategory};
 use crate::bus::SessionAddress;
 use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
+
+/// Why an `artifact` session's message to `main` is refused: its work
+/// belongs to the artifact that started it, and anything the user needs to
+/// see goes to their inbox instead.
+const ARTIFACT_TO_MAIN_REFUSAL: &str = "artifact sessions can't reach the main conversation: \
+     your responses are shown to the artifact that started you. To bring something to the \
+     user's attention, file an inbox item with user_inbox_add instead.";
 
 /// Tool for sending a message to another agent by address — main or any
 /// session, live or completed.
@@ -90,6 +98,9 @@ impl Tool for MessageAgentTool {
         }
         if to == self.self_address.as_ref() {
             return Ok(ToolResult::error("cannot message yourself"));
+        }
+        if to == MAIN_ADDRESS && self.self_category == SessionCategory::Artifact.as_str() {
+            return Ok(ToolResult::error(ARTIFACT_TO_MAIN_REFUSAL));
         }
 
         let outcome = self
@@ -208,5 +219,41 @@ mod tests {
             .unwrap();
         assert!(!result.is_error, "got: {}", result.output);
         assert!(result.output.contains("main"));
+    }
+
+    #[tokio::test]
+    async fn artifact_session_cannot_message_main() {
+        let tool = make_tool("artifact-wiki-0001", "artifact");
+        let result = tool
+            .execute(serde_json::json!({
+                "to": "main",
+                "message": "look at this"
+            }))
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(
+            result.output.contains("can't reach the main conversation"),
+            "got: {}",
+            result.output
+        );
+        assert!(result.output.contains("user_inbox_add"));
+    }
+
+    #[tokio::test]
+    async fn artifact_session_can_still_message_other_sessions() {
+        let tool = make_tool("artifact-wiki-0001", "artifact");
+        let result = tool
+            .execute(serde_json::json!({
+                "to": "spawned-ghost-0000",
+                "message": "hello?"
+            }))
+            .await
+            .unwrap();
+        assert!(
+            !result.output.contains("main conversation"),
+            "only `main` is refused, got: {}",
+            result.output
+        );
     }
 }

@@ -7,6 +7,8 @@
     categoryDescription,
     isStoppableState,
     runDuration,
+    sessionArtifact,
+    sessionSourceText,
     stateLabel,
   } from "../lib/session-format";
   import CategoryBadge from "./CategoryBadge.svelte";
@@ -94,7 +96,7 @@
     {#if summary}
       <div class="session-view-tags">
         <CategoryBadge category={summary.category} />
-        <span class="session-view-source">{summary.source_label}</span>
+        <span class="session-view-source">{sessionSourceText(summary)}</span>
         <span
           class="session-view-state state-{summary.state}"
           class:failed={outcome?.status === "failed"}
@@ -111,6 +113,12 @@
           <dt>Kind</dt>
           <dd>{categoryDescription(summary.category)}</dd>
         </div>
+        {#if sessionArtifact(summary)}
+          <div>
+            <dt>Started by</dt>
+            <dd>the workbench artifact {sessionArtifact(summary)}</dd>
+          </div>
+        {/if}
         {#if summary.spawner}
           <div>
             <dt>Started by</dt>

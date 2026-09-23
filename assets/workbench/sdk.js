@@ -139,18 +139,152 @@
     return request("send", { content }).then(() => undefined);
   }
 
-  function on(type, handler) {
-    if (typeof handler !== "function") throw new TypeError("residuum.on handler must be a function");
-    if (!handlers.has(type)) handlers.set(type, new Set());
-    handlers.get(type).add(handler);
+  function subscribe() {
     if (embedded && !subscribed) {
       subscribed = true;
       post({ kind: "subscribe" });
     }
+  }
+
+  function on(type, handler) {
+    if (typeof handler !== "function") throw new TypeError("residuum.on handler must be a function");
+    if (!handlers.has(type)) handlers.set(type, new Set());
+    handlers.get(type).add(handler);
+    subscribe();
     return () => handlers.get(type)?.delete(handler);
   }
 
+  // ── Sessions ──────────────────────────────────────────────────────────
+
+  // Replies to another client's session commands, not activity in the session.
+  const COMMAND_REPLY_FRAMES = new Set([
+    "session_message_delivered",
+    "session_stop_requested",
+    "session_command_failed",
+  ]);
+
+  // Every session frame names its session's address; `session_started`
+  // carries it inside the session summary.
+  function sessionFrameAddress(frame) {
+    if (typeof frame.type !== "string" || !frame.type.startsWith("session_")) return null;
+    if (COMMAND_REPLY_FRAMES.has(frame.type)) return null;
+    if (typeof frame.address === "string") return frame.address;
+    return frame.session && typeof frame.session.address === "string" ? frame.session.address : null;
+  }
+
+  // A session's first frames can arrive before the start request's reply
+  // says which address is ours. While any start is in flight, session frames
+  // are kept here and handed to the handle that turns out to own them.
+  let startsInFlight = 0;
+  let earlyFrames = [];
+  const sessionRouters = new Map();
+
+  function routeSessionFrame(frame) {
+    const address = sessionFrameAddress(frame);
+    if (address === null) return;
+    const route = sessionRouters.get(address);
+    if (route) route(frame);
+    else if (startsInFlight > 0) earlyFrames.push(frame);
+  }
+
+  async function errorFrom(resp, fallback) {
+    let body = null;
+    try {
+      body = await resp.json();
+    } catch {
+      // Not JSON; fall back to the plain message.
+    }
+    const err = new Error(body && typeof body.error === "string" ? body.error : fallback);
+    if (body && typeof body.code === "string") err.code = body.code;
+    err.status = resp.status;
+    return err;
+  }
+
+  // `buffered` holds the frames that arrived before the handle existed. Each
+  // handler registered for their type gets them first, so `session_started`
+  // (which carries the run id) and early output aren't lost.
+  function sessionHandle(address, buffered) {
+    const own = new Map();
+    sessionRouters.set(address, (frame) => {
+      for (const key of [frame.type, "*"]) {
+        for (const handler of own.get(key) || []) {
+          try {
+            handler(frame);
+          } catch (err) {
+            console.error("session handler failed", err);
+          }
+        }
+      }
+    });
+    const path = `/api/sessions/${encodeURIComponent(address)}`;
+    return Object.freeze({
+      address,
+      on(type, handler) {
+        if (typeof handler !== "function") {
+          throw new TypeError("session.on handler must be a function");
+        }
+        if (!own.has(type)) own.set(type, new Set());
+        own.get(type).add(handler);
+        const missed = buffered.filter((frame) => type === "*" || frame.type === type);
+        if (missed.length > 0) {
+          queueMicrotask(() => {
+            for (const frame of missed) {
+              if (!own.get(type)?.has(handler)) return;
+              try {
+                handler(frame);
+              } catch (err) {
+                console.error("session handler failed", err);
+              }
+            }
+          });
+        }
+        return () => own.get(type)?.delete(handler);
+      },
+      async send(text) {
+        if (typeof text !== "string" || text.trim() === "") {
+          throw new TypeError("session.send needs a non-empty string");
+        }
+        const resp = await fetchVia(`${path}/messages`, { method: "POST", body: { content: text } });
+        if (!resp.ok) throw await errorFrom(resp, `Couldn't message session ${address}.`);
+        return (await resp.json()).outcome;
+      },
+      async stop() {
+        const resp = await fetchVia(`${path}/stop`, { method: "POST" });
+        if (!resp.ok) throw await errorFrom(resp, `Couldn't stop session ${address}.`);
+      },
+    });
+  }
+
+  async function startSession(options) {
+    if (!options || typeof options.prompt !== "string" || options.prompt.trim() === "") {
+      throw new TypeError("residuum.sessions.start needs { prompt } with a non-empty prompt");
+    }
+    const body = { prompt: options.prompt };
+    for (const key of ["context", "skill", "model"]) {
+      if (options[key] !== undefined) body[key] = options[key];
+    }
+    subscribe();
+    startsInFlight += 1;
+    let address = null;
+    let buffered = [];
+    try {
+      const resp = await fetchVia("/api/sessions", { method: "POST", body });
+      if (!resp.ok) throw await errorFrom(resp, "Couldn't start the session.");
+      address = (await resp.json()).address;
+    } finally {
+      // Still counted as in flight until here, so no frame for this session
+      // slips past both the buffer and its handle.
+      startsInFlight -= 1;
+      if (address !== null) {
+        buffered = earlyFrames.filter((frame) => sessionFrameAddress(frame) === address);
+      }
+      if (startsInFlight === 0) earlyFrames = [];
+    }
+    return sessionHandle(address, buffered);
+  }
+
   function dispatch(frame) {
+    routeSessionFrame(frame);
     for (const key of [frame.type, "*"]) {
       for (const handler of handlers.get(key) || []) {
         try {
@@ -193,5 +327,6 @@
     send,
     on,
     state: Object.freeze({ get: stateGet, set: stateSet }),
+    sessions: Object.freeze({ start: startSession }),
   });
 })();

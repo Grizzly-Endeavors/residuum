@@ -9,6 +9,9 @@
 //!   `AgentMessenger` from the session runtime (see
 //!   `crate::background::runtime::relay_result_to_spawner`), not through this
 //!   router
+//! - artifact-started (`artifact` sessions) → discard; their output reaches
+//!   the artifact that started them through the session stream, and is never
+//!   filed to the inbox or pushed to notification channels on its own
 //! - `Normal` → inbox
 //! - `Urgent` → inbox and every configured notification channel
 
@@ -84,6 +87,15 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     // fanout) are for `scheduled` results only.
     if matches!(event.source, EventTrigger::Agent) {
         tracing::trace!("spawned session result: already relayed per-turn, nothing to do here");
+        return;
+    }
+
+    // An `artifact` session's output belongs to the artifact that started
+    // it, which follows the session's own stream. Filing it to the inbox or
+    // notifying on it would surface work the user started from a page as if
+    // the agent had produced it unprompted.
+    if matches!(event.source, EventTrigger::Artifact(_)) {
+        tracing::trace!("artifact session result: stays with its artifact, nothing to route");
         return;
     }
 
@@ -340,6 +352,40 @@ mod tests {
                 .await
                 .is_err(),
             "an agent-spawned result must not leak into the inbox either"
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut ntfy_sub: Subscriber<NotificationEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Urgent);
+        event.source = EventTrigger::Artifact("wiki".into());
+        event.source_label = "artifact:wiki".to_string();
+        route_agent_result(&event, &router).await;
+
+        let wait = std::time::Duration::from_millis(100);
+        assert!(
+            tokio::time::timeout(wait, inbox_sub.recv()).await.is_err(),
+            "an artifact session's result must not be filed to the inbox"
+        );
+        assert!(
+            tokio::time::timeout(wait, ntfy_sub.recv()).await.is_err(),
+            "an artifact session's result must not push to notification channels"
+        );
+        assert!(
+            tokio::time::timeout(wait, user_sub.recv()).await.is_err(),
+            "an artifact session's result must not reach the main conversation"
         );
     }
 }

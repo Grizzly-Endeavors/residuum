@@ -38,6 +38,24 @@ pub const MAIN_DEPTH: u32 = 0;
 /// the owner is not an agent, so a message to this address does not resolve.
 pub const OWNER_ADDRESS: &str = "owner";
 
+/// Prefix of the sender address a workbench artifact's message to a session
+/// carries (`artifact:<name>`), and of an artifact session's source label.
+/// Never present in the registry: an artifact is not an agent, so a message
+/// to this address does not resolve. Session addresses never contain `:`,
+/// so no session can be mistaken for an artifact.
+pub const ARTIFACT_SENDER_PREFIX: &str = "artifact:";
+
+/// Category label an artifact's message to a session carries as its
+/// sender's category.
+pub const ARTIFACT_SENDER_CATEGORY: &str = "artifact";
+
+/// The sender address (and source label) naming the workbench artifact
+/// `name`.
+#[must_use]
+pub fn artifact_sender_address(name: &str) -> SessionAddress {
+    SessionAddress::from(format!("{ARTIFACT_SENDER_PREFIX}{name}"))
+}
+
 /// How a session was started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +67,10 @@ pub enum SessionCategory {
     External,
     /// Started by an agent: `subagent_spawn` or the subconscious learner.
     Spawned,
+    /// Started by a workbench artifact through the sessions HTTP API. Its
+    /// output stays with the artifact: never relayed to main, never routed
+    /// to the inbox or notification channels.
+    Artifact,
 }
 
 impl SessionCategory {
@@ -59,6 +81,7 @@ impl SessionCategory {
             EventTrigger::Pulse | EventTrigger::Action => Self::Scheduled,
             EventTrigger::Agent => Self::Spawned,
             EventTrigger::Webhook(_) | EventTrigger::Conversation => Self::External,
+            EventTrigger::Artifact(_) => Self::Artifact,
         }
     }
 
@@ -69,6 +92,7 @@ impl SessionCategory {
             Self::Scheduled => "scheduled",
             Self::External => "external",
             Self::Spawned => "spawned",
+            Self::Artifact => "artifact",
         }
     }
 
@@ -80,6 +104,7 @@ impl SessionCategory {
             "scheduled" => Some(Self::Scheduled),
             "external" => Some(Self::External),
             "spawned" => Some(Self::Spawned),
+            "artifact" => Some(Self::Artifact),
             _ => None,
         }
     }
@@ -661,6 +686,39 @@ mod tests {
         assert_eq!(
             SessionCategory::from_trigger(&EventTrigger::Conversation),
             SessionCategory::External
+        );
+        assert_eq!(
+            SessionCategory::from_trigger(&EventTrigger::Artifact("wiki".into())),
+            SessionCategory::Artifact
+        );
+    }
+
+    #[test]
+    fn every_category_label_round_trips() {
+        for category in [
+            SessionCategory::Scheduled,
+            SessionCategory::External,
+            SessionCategory::Spawned,
+            SessionCategory::Artifact,
+        ] {
+            assert_eq!(
+                SessionCategory::from_label(category.as_str()),
+                Some(category)
+            );
+        }
+        assert_eq!(SessionCategory::from_label("mystery"), None);
+    }
+
+    #[test]
+    fn artifact_session_address_is_prefixed_with_its_category() {
+        let address = generate_address(&EventTrigger::Artifact("wiki".into()), "wiki graph");
+        assert!(
+            address.as_ref().starts_with("artifact-wiki-graph-"),
+            "got {address}"
+        );
+        assert!(
+            !address.as_ref().contains(':'),
+            "session addresses never contain ':', so they can't collide with an artifact sender"
         );
     }
 

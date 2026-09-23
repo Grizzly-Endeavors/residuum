@@ -1,6 +1,12 @@
 <script lang="ts">
   import { ws } from "../lib/ws.svelte";
-  import { formatStarted, runDuration, stateLabel } from "../lib/session-format";
+  import {
+    formatStarted,
+    runDuration,
+    sessionArtifact,
+    sessionSourceText,
+    stateLabel,
+  } from "../lib/session-format";
   import type { SessionSummary } from "../lib/types";
   import CategoryBadge from "./CategoryBadge.svelte";
   import { Icon } from "../lib/icons";
@@ -12,6 +18,7 @@
   }: { session: SessionSummary; selected: boolean; onSelect: (runId: string) => void } = $props();
 
   let finished = $derived(session.state === "completed");
+  let artifact = $derived(sessionArtifact(session));
   let duration = $derived(runDuration(session, ws.sessions.now));
   let outcome = $derived(ws.sessions.outcomes.get(session.run_id));
   let error = $derived(ws.sessions.errors.get(session.run_id));
@@ -37,7 +44,11 @@
     <span class="session-row-seam" aria-hidden="true"></span>
     <span class="session-row-top">
       <CategoryBadge category={session.category} />
-      <span class="session-row-source">{session.source_label}</span>
+      <span
+        class="session-row-source"
+        title={artifact ? `Started by the artifact ${artifact}` : undefined}
+        >{sessionSourceText(session)}</span
+      >
       <span class="session-row-time" title={finished ? "How long it ran" : "Running for"}>
         {duration}
       </span>

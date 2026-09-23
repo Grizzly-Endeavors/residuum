@@ -99,6 +99,10 @@ pub(super) const DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES: u64 = 10;
 /// complete, in minutes.
 pub(super) const DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES: u64 = 30;
 
+/// Default idle timeout for `artifact` sessions (started by a workbench
+/// artifact) before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES: u64 = 10;
+
 /// Default token floor below which a completed run with nothing staged
 /// produces no episode.
 pub(super) const DEFAULT_EPISODE_SKIP_TOKEN_FLOOR: usize = 2_000;

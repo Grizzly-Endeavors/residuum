@@ -15,6 +15,7 @@ use tokio::sync::watch;
 use super::ReloadSignal;
 
 mod agent_keys;
+pub(crate) mod artifact_identity;
 pub mod cloud;
 pub mod config;
 pub mod inbox;

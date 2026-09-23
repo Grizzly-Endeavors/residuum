@@ -48,6 +48,7 @@ pub(crate) struct IdleTimeouts {
     scheduled: Duration,
     spawned: Duration,
     external: Duration,
+    artifact: Duration,
 }
 
 impl IdleTimeouts {
@@ -59,6 +60,7 @@ impl IdleTimeouts {
         match SessionCategory::from_trigger(trigger) {
             SessionCategory::Scheduled => self.scheduled,
             SessionCategory::Spawned => self.spawned,
+            SessionCategory::Artifact => self.artifact,
             SessionCategory::External => {
                 if matches!(trigger, EventTrigger::Webhook(_)) {
                     self.scheduled
@@ -76,6 +78,7 @@ impl From<&BackgroundConfig> for IdleTimeouts {
             scheduled: cfg.idle_timeout_scheduled,
             spawned: cfg.idle_timeout_spawned,
             external: cfg.idle_timeout_external,
+            artifact: cfg.idle_timeout_artifact,
         }
     }
 }
@@ -1277,6 +1280,7 @@ mod tests {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
             external: Duration::from_millis(20),
+            artifact: Duration::from_millis(20),
         };
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
@@ -1651,6 +1655,7 @@ mod tests {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
             external: Duration::from_millis(20),
+            artifact: Duration::from_millis(20),
         };
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
@@ -1698,6 +1703,77 @@ mod tests {
             "the relay must say clearly that the turn failed, got: {}",
             relayed.content
         );
+    }
+
+    /// An `artifact` session's output reaches the artifact through its own
+    /// session stream only: nothing is relayed to main, and its completion
+    /// is never filed to the inbox, even when its summary asks for urgency.
+    #[tokio::test]
+    async fn an_artifact_session_streams_its_output_but_never_reaches_main_or_the_inbox() {
+        let (runtime, mut sub, bus_handle) = test_runtime_with_bus(3).await;
+        let mut main_sub: crate::bus::Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut inbox_sub: crate::bus::Subscriber<crate::bus::NotificationEvent> =
+            bus_handle.subscribe(topics::Inbox).await.unwrap();
+        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let router = crate::notify::router::spawn_notification_router(
+            &bus_handle,
+            crate::bus::EndpointRegistry::from_entries(std::iter::empty()),
+            bus_handle.publisher(),
+        )
+        .await
+        .unwrap();
+
+        let address = SessionAddress::from("artifact-wiki-0001");
+        let mut request = sample_request(address.as_ref());
+        request.trigger = EventTrigger::Artifact("wiki".to_string());
+        request.source_label = "artifact:wiki".to_string();
+        request.spawner = None;
+        runtime.spawn(
+            request,
+            Some(make_resources(&format!(
+                "wrote the page {HEARTBEAT_URGENT}"
+            ))),
+        );
+        let info = runtime.registry.get(&address).unwrap();
+        assert_eq!(info.category, SessionCategory::Artifact);
+        assert_eq!(info.spawner, None);
+
+        let event = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.source, EventTrigger::Artifact(ref name) if name == "wiki"));
+        assert!(matches!(event.status, AgentResultStatus::Completed));
+
+        let mut streamed = None;
+        while let Ok(Ok(Some(e))) =
+            tokio::time::timeout(Duration::from_millis(200), session_sub.recv()).await
+        {
+            if let SessionEventKind::Response { content, .. } = e.kind {
+                streamed = Some(content);
+            }
+        }
+        assert!(
+            streamed.is_some_and(|c| c.contains("wrote the page")),
+            "the turn's output is published on the session stream"
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), main_sub.recv())
+                .await
+                .is_err(),
+            "an artifact session's output must never be relayed to main"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .is_err(),
+            "an artifact session's completion must not be routed to the inbox"
+        );
+        router.abort();
     }
 
     #[tokio::test]
@@ -1909,6 +1985,7 @@ mod tests {
                 scheduled: Duration::from_mins(1),
                 spawned: Duration::from_mins(1),
                 external: Duration::from_mins(1),
+                artifact: Duration::from_mins(1),
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
@@ -2319,6 +2396,7 @@ mod tests {
                 scheduled: idle_window,
                 spawned: idle_window,
                 external: idle_window,
+                artifact: idle_window,
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
@@ -2383,6 +2461,7 @@ mod tests {
             scheduled: Duration::from_mins(2),
             spawned: Duration::from_mins(10),
             external: Duration::from_mins(30),
+            artifact: Duration::from_mins(30),
         };
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Webhook("gh".into())),
@@ -2396,6 +2475,24 @@ mod tests {
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Agent),
             Duration::from_mins(10)
+        );
+    }
+
+    #[test]
+    fn idle_timeouts_give_artifact_sessions_their_own_setting() {
+        let timeouts = IdleTimeouts::from(&BackgroundConfig {
+            idle_timeout_artifact: Duration::from_mins(7),
+            ..BackgroundConfig::default()
+        });
+        assert_eq!(
+            timeouts.for_trigger(&EventTrigger::Artifact("wiki".into())),
+            Duration::from_mins(7)
+        );
+        assert_eq!(
+            IdleTimeouts::from(&BackgroundConfig::default())
+                .for_trigger(&EventTrigger::Artifact("wiki".into())),
+            Duration::from_mins(10),
+            "artifact sessions default to a 10 minute idle timeout"
         );
     }
 
@@ -2593,6 +2690,7 @@ mod tests {
                 scheduled: idle_window,
                 spawned: idle_window,
                 external: idle_window,
+                artifact: idle_window,
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
@@ -2795,6 +2893,7 @@ mod tests {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
                 external: Duration::from_millis(50),
+                artifact: Duration::from_millis(50),
             },
             bus_handle.publisher(),
             chrono_tz::UTC,
@@ -2842,6 +2941,7 @@ mod tests {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
                 external: Duration::from_millis(50),
+                artifact: Duration::from_millis(50),
             },
             bus_handle.publisher(),
             chrono_tz::UTC,

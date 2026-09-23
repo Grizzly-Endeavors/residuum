@@ -14,7 +14,7 @@ import { nextFeedId } from "./feed-id";
 import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
 import { notifications } from "./notifications.svelte";
 import { router } from "./router.svelte";
-import { deliveryOutcomeText, runOutcomeText } from "./session-format";
+import { SESSION_CATEGORIES, deliveryOutcomeText, runOutcomeText } from "./session-format";
 import type {
   ClientMessage,
   FeedItem,
@@ -37,9 +37,6 @@ export function isSessionFrame(msg: ServerMessage): msg is SessionFrame {
 
 /** Completed runs fetched per page, per category. */
 const PAGE_SIZE = 25;
-
-/** Every session category, in the order the sidebar groups them. */
-export const SESSION_CATEGORIES: readonly SessionCategory[] = ["external", "scheduled", "spawned"];
 
 /** Coalesces bursts of frames for unknown runs into one listing refresh. */
 const REFRESH_DEBOUNCE_MS = 250;
@@ -287,6 +284,7 @@ export class SessionsStore {
     external: new CompletedRuns("external"),
     scheduled: new CompletedRuns("scheduled"),
     spawned: new CompletedRuns("spawned"),
+    artifact: new CompletedRuns("artifact"),
   };
   /** The listing has loaded at least once. */
   loaded = $state(false);

@@ -2,8 +2,13 @@
   import { tick } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { Icon } from "../lib/icons";
-  import { SESSION_CATEGORIES } from "../lib/sessions.svelte";
-  import { categoryDescription, categoryHeading, categoryIdleText } from "../lib/session-format";
+  import {
+    SESSION_CATEGORIES,
+    categoryDescription,
+    categoryHeading,
+    categoryIdleText,
+    groupByCategory,
+  } from "../lib/session-format";
   import type { SessionCategory } from "../lib/types";
   import SessionRow from "./SessionRow.svelte";
 
@@ -23,26 +28,21 @@
     external: false,
     scheduled: false,
     spawned: false,
+    artifact: false,
   });
   /** Groups whose finished runs are shown; every group starts closed. */
   let finishedOpen = $state<Record<SessionCategory, boolean>>({
     external: false,
     scheduled: false,
     spawned: false,
+    artifact: false,
   });
   let headingEl: HTMLHeadingElement | undefined = $state();
 
   const sessions = ws.sessions;
   let selectedRunId = $derived(sessions.view?.runId ?? null);
 
-  let liveByCategory = $derived(
-    Object.fromEntries(
-      SESSION_CATEGORIES.map((category) => [
-        category,
-        sessions.live.filter((s) => s.category === category),
-      ]),
-    ) as Record<SessionCategory, typeof sessions.live>,
-  );
+  let liveByCategory = $derived(groupByCategory(sessions.live));
 
   let sidebarEl: HTMLElement | undefined = $state();
 

@@ -67,7 +67,7 @@ const TRANSCRIPT_DELAY_MS = 700;
 interface MockSession {
   address: string;
   run_id: string;
-  category: "scheduled" | "external" | "spawned";
+  category: "scheduled" | "external" | "spawned" | "artifact";
   source_label: string;
   state: "forking" | "running" | "idle" | "completing" | "completed";
   spawner: string | null;
@@ -102,6 +102,20 @@ function createSessions(): MockSessions {
       depth: 1,
       purpose: "Compare fallback strategies for notification delivery",
       started_at: minutesAgo(4),
+      completed_at: null,
+      episode_id: null,
+      interrupted: false,
+    },
+    {
+      address: "artifact-wiki-graph-7c20",
+      run_id: "run-live-wiki-graph",
+      category: "artifact",
+      source_label: "artifact:wiki-graph",
+      state: "running",
+      spawner: null,
+      depth: 1,
+      purpose: "Write a wiki page summarizing this week's notes on otters",
+      started_at: minutesAgo(2),
       completed_at: null,
       episode_id: null,
       interrupted: false,
@@ -143,6 +157,7 @@ function createSessions(): MockSessions {
     ["scheduled", "action:weekly_digest", "Write the weekly digest"],
     ["external", "webhook:github", "Triage a new GitHub issue"],
     ["spawned", "learner", "Review recent corrections for lasting lessons"],
+    ["artifact", "artifact:wiki-graph", "Link orphaned wiki pages into the graph"],
   ];
   for (let i = 0; i < 32; i++) {
     const [category, source, purpose] = labels[i % labels.length];
@@ -940,10 +955,13 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       if (path === "/api/sessions" && method === "GET") {
         const address = query.get("address");
         const category = query.get("category");
+        const artifact = query.get("artifact");
         const limit = Number(query.get("limit") ?? "50");
         const before = query.get("before");
         const match = (s: MockSession) =>
-          (!address || s.address === address) && (!category || s.category === category);
+          (!address || s.address === address) &&
+          (!category || s.category === category) &&
+          (!artifact || (s.category === "artifact" && s.source_label === `artifact:${artifact}`));
         const done = state.sessions.completed.filter(match);
         const startIdx = before ? done.findIndex((s) => s.run_id === before) + 1 : 0;
         const page = done.slice(startIdx, startIdx + limit);

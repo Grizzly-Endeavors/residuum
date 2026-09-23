@@ -67,7 +67,7 @@ export interface RecentMessage {
 export interface AgentSender {
   /** Sender's address (`main` or a session address). */
   address: string;
-  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`). */
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`). */
   category: string;
 }
 

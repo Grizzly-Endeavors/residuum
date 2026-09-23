@@ -31,6 +31,7 @@ Artifacts are served by their own listener, never by the gateway's main listener
 | `residuum.fetch(path, init)` | Calls Residuum's API (`/api/...`) and returns a `Response`. A plain-object body is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent unchanged, not JSON-encoded. |
 | `residuum.send(text)` | Sends the agent a chat message labelled `[From workbench artifact "<name>"]`. Only works during a click or key press in the artifact. The user sees a notice that the artifact sent a message; the reply is in chat. |
 | `residuum.on(type, handler)` | Streams the same live frames the web UI receives (`"*"` for all), except keepalives. |
+| `residuum.sessions.start({ prompt, context?, skill?, model? })` | Starts an agent session for this artifact (see [Agent sessions](#agent-sessions)) and resolves to a handle `{ address, on(type, handler), send(text), stop() }`. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI; `fetch` and `send` then reject. |
 | `residuum.artifact` | This artifact's own name, embedded when the artifacts listener serves the page. |
 | `residuum.version` | Residuum's version, embedded the same way. Matches `GET /api/status`'s `version`. |
@@ -38,6 +39,18 @@ Artifacts are served by their own listener, never by the gateway's main listener
 | `residuum.state.get()` / `residuum.state.set(value)` | Sugar over the workspace file API for the artifact's own `workbench/<name>.state.json`: `get()` resolves to the parsed value or `null` before the first `set()` and rejects on invalid JSON; `set(value)` writes `JSON.stringify(value)` unconditionally. |
 
 The endpoint and event catalogue the agent works from is the skill's `references/api.md`.
+
+## Agent sessions
+
+An artifact that needs the agent to do work (write files, research, use tools) starts a session with `residuum.sessions.start`, which calls `POST /api/sessions` through the bridge. The bridge's `X-Residuum-Artifact` header is what makes it an artifact session: the endpoint refuses a start without it. The session is a full fork of the main agent in the `artifact` category, labelled `artifact:<name>`, and it runs, idles, and completes like any other session (see [background-tasks.md](background-tasks.md#artifact-sessions)). Its output stays with the artifact: it never reaches the main chat, the inbox, or notification channels on its own, and it cannot message the main agent (it can still file a user-inbox item when its task calls for one). It appears in the sessions sidebar under Artifacts, showing the artifact's name.
+
+The handle follows the session through the live frames the artifact already receives:
+
+- `on(type, handler)` gets only this session's `session_*` frames (`session_started`, `session_state_changed`, `session_broadcast_response`, `session_response`, `session_error`, `session_completed`, and the rest; `"*"` for all of them). Frames that arrived before the start request answered, such as `session_started` with the run id, are handed to each handler registered for their type when it is registered. It returns a function that removes the handler.
+- `send(text)` messages the session through `POST /api/sessions/{address}/messages`; the session sees it as a message from this artifact, and its reply arrives as a `session_response`. It resolves to the delivery outcome (`live`, `queued`, or `resumed`: a message to a finished session starts a new run at the same address).
+- `stop()` stops the session through `POST /api/sessions/{address}/stop`.
+
+Failures reject with an `Error` carrying the gateway's plain-language message, plus `code` and `status` where the gateway gave them. `GET /api/sessions?artifact=<name>` lists the sessions an artifact started, live and finished. Closing the artifact does not stop its sessions.
 
 ## Security model
 

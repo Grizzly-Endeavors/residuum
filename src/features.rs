@@ -15,4 +15,5 @@ pub(crate) const FEATURES: &[&str] = &[
     "workspace-raw",
     "workspace-conditional-write",
     "workspace-file-ops",
+    "artifact-sessions",
 ];
