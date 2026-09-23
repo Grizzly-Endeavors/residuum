@@ -11,7 +11,8 @@ use crate::inference::retry::RetryConfig;
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
     DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_HOP_HARD_LIMIT,
-    DEFAULT_HOP_SOFT_LIMIT, DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES, DEFAULT_IDLE_TIMEOUT_MINUTES,
+    DEFAULT_HOP_SOFT_LIMIT, DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES,
+    DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES, DEFAULT_IDLE_TIMEOUT_MINUTES,
     DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES, DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES,
     DEFAULT_LEARNING_COOLDOWN_MINUTES, DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
     DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
@@ -439,6 +440,9 @@ pub struct BackgroundConfig {
     /// How long a non-webhook `external` session lingers idle before
     /// completing.
     pub idle_timeout_external: Duration,
+    /// How long an `artifact` session (started by a workbench artifact)
+    /// lingers idle before completing.
+    pub idle_timeout_artifact: Duration,
     /// Token floor below which a completed run with nothing staged produces
     /// no episode (its transcript is still kept in the session store).
     pub episode_skip_token_floor: usize,
@@ -465,6 +469,7 @@ impl Default for BackgroundConfig {
             ),
             idle_timeout_spawned: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES * 60),
             idle_timeout_external: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES * 60),
+            idle_timeout_artifact: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES * 60),
             episode_skip_token_floor: DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
             subagent_depth_cap: DEFAULT_SUBAGENT_DEPTH_CAP,
             hop_soft_limit: DEFAULT_HOP_SOFT_LIMIT,

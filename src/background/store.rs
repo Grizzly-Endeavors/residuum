@@ -34,7 +34,7 @@ pub struct RunRecord {
     pub address: String,
     /// Unique run identifier.
     pub run_id: String,
-    /// `"scheduled"`, `"external"`, or `"spawned"`.
+    /// `"scheduled"`, `"external"`, `"spawned"`, or `"artifact"`.
     pub category: String,
     /// Human-readable source label (e.g. `"pulse:email_check"`).
     pub source_label: String,
@@ -102,6 +102,9 @@ pub struct RunFilter<'a> {
     pub category: Option<&'a str>,
     /// Only runs at this session address.
     pub address: Option<&'a str>,
+    /// Only runs with exactly this source label (an artifact session's
+    /// `artifact:<name>`, for example).
+    pub source_label: Option<&'a str>,
 }
 
 /// A run record as the listing reads it: every [`RunRecord`] field except
@@ -554,6 +557,12 @@ impl SessionStore {
                 continue;
             }
             if filter.address.is_some_and(|a| header.address != a) {
+                continue;
+            }
+            if filter
+                .source_label
+                .is_some_and(|l| header.source_label != l)
+            {
                 continue;
             }
             if before.is_some_and(|c| (header.started_at, header.run_id.as_str()) >= c.sort_key()) {

@@ -190,8 +190,10 @@ pub(crate) struct GatewayState {
     pub session_registry: Arc<SessionRegistry>,
     /// Durable record of every session run, for the listing and transcripts.
     pub session_store: Arc<SessionStore>,
-    /// Delivers the sidebar's messages to sessions.
+    /// Delivers the sidebar's and artifacts' messages to sessions.
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
+    /// The skill index, for checking the skill an artifact's session names.
+    pub skill_state: SharedSkillState,
 }
 
 /// All state needed by the main event loop.

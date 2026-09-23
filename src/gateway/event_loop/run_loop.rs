@@ -143,6 +143,7 @@ async fn spawn_server_and_adapters(
         session_registry: Arc::clone(&parts.session_registry),
         session_store: Arc::clone(&parts.session_store),
         agent_messenger: Arc::clone(&parts.agent_messenger),
+        skill_state: Arc::clone(&parts.skill_state),
     };
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),

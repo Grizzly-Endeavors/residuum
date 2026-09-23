@@ -346,6 +346,44 @@ mod tests {
         }
     }
 
+    /// Build a session's tool registry from the harness, as the fork path
+    /// does for a session at `address` in `category`.
+    fn session_registry_for(
+        h: &Harness,
+        address: &str,
+        category: &str,
+    ) -> crate::tools::ToolRegistry {
+        crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
+            tracker: FileTracker::new_shared(),
+            path_policy: Arc::clone(&h.path_policy),
+            tools_path: Arc::clone(&h.tools_path),
+            agent_keys: Arc::clone(&h.agent_keys),
+            skill_state: Arc::clone(&h.skill_state),
+            tz: chrono_tz::UTC,
+            hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
+            episodes_dir: h.layout.episodes_dir(),
+            sessions_dir: h.layout.sessions_dir(),
+            agent_inbox_dir: h.layout.agent_inbox_dir(),
+            agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
+            user_inbox_dir: h.layout.user_inbox_dir(),
+            user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
+            session_registry: Arc::clone(&h.session_registry),
+            endpoint_registry: h.endpoint_registry.clone(),
+            publisher: h.publisher.clone(),
+            action_store: Arc::clone(&h.action_store),
+            action_notify: Arc::clone(&h.action_notify),
+            own_address: SessionAddress::from(address),
+            own_depth: 1,
+            depth_cap: h.cfg.background.subagent_depth_cap,
+            session_category: category.to_string(),
+            messenger: Arc::clone(&h.agent_messenger),
+            hop_counter: h.hop_counter.clone(),
+            tracing_service: Arc::clone(&h.tracing_service),
+            tracing_client_context: Arc::clone(&h.tracing_client_context),
+            web_search_backend: h.cfg.web_search.standalone_backend.clone(),
+        })
+    }
+
     /// Enforces "every tool registered for main is also registered for
     /// sessions, except the documented main-only allowlist" by building both
     /// registration surfaces from equivalent config (every optional tool
@@ -377,36 +415,7 @@ mod tests {
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 
-        let session_tools =
-            crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
-                tracker: FileTracker::new_shared(),
-                path_policy: Arc::clone(&h.path_policy),
-                tools_path: Arc::clone(&h.tools_path),
-                agent_keys: Arc::clone(&h.agent_keys),
-                skill_state: Arc::clone(&h.skill_state),
-                tz: chrono_tz::UTC,
-                hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
-                episodes_dir: h.layout.episodes_dir(),
-                sessions_dir: h.layout.sessions_dir(),
-                agent_inbox_dir: h.layout.agent_inbox_dir(),
-                agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
-                user_inbox_dir: h.layout.user_inbox_dir(),
-                user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
-                session_registry: Arc::clone(&h.session_registry),
-                endpoint_registry: h.endpoint_registry.clone(),
-                publisher: h.publisher.clone(),
-                action_store: Arc::clone(&h.action_store),
-                action_notify: Arc::clone(&h.action_notify),
-                own_address: SessionAddress::from("spawned-test-0001"),
-                own_depth: 1,
-                depth_cap: h.cfg.background.subagent_depth_cap,
-                session_category: "spawned".to_string(),
-                messenger: Arc::clone(&h.agent_messenger),
-                hop_counter: h.hop_counter.clone(),
-                tracing_service: Arc::clone(&h.tracing_service),
-                tracing_client_context: Arc::clone(&h.tracing_client_context),
-                web_search_backend: h.cfg.web_search.standalone_backend.clone(),
-            });
+        let session_tools = session_registry_for(&h, "spawned-test-0001", "spawned");
         let mut session_names = session_tools.tool_names();
         session_names.sort();
 
@@ -422,5 +431,53 @@ mod tests {
             "session registry must carry every main tool except the documented \
              main-only allowlist ({MAIN_ONLY_TOOLS:?})"
         );
+    }
+
+    /// An `artifact` session gets the same tools as a spawned one; only its
+    /// `message_agent` to `main` is refused, while its user-inbox tool still
+    /// files items.
+    #[tokio::test]
+    async fn artifact_session_keeps_every_session_tool_but_cannot_message_main() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = build_harness(dir.path());
+
+        let mut spawned_names =
+            session_registry_for(&h, "spawned-test-0001", "spawned").tool_names();
+        spawned_names.sort();
+        let artifact_tools = session_registry_for(&h, "artifact-wiki-0001", "artifact");
+        let mut artifact_names = artifact_tools.tool_names();
+        artifact_names.sort();
+        assert_eq!(artifact_names, spawned_names);
+
+        let to_main = artifact_tools
+            .execute(
+                "message_agent",
+                serde_json::json!({ "to": "main", "message": "done" }),
+            )
+            .await
+            .expect("message_agent returns a tool error, not a failure");
+        assert!(to_main.is_error);
+        assert!(
+            to_main.output.contains("can't reach the main conversation"),
+            "got: {}",
+            to_main.output
+        );
+
+        // Workspace bootstrap creates the inbox folders in a real install.
+        std::fs::create_dir_all(h.layout.user_inbox_dir()).unwrap();
+        let inbox = artifact_tools
+            .execute(
+                "user_inbox_add",
+                serde_json::json!({ "title": "Wiki refreshed", "body": "3 pages updated" }),
+            )
+            .await
+            .expect("user_inbox_add runs");
+        assert!(!inbox.is_error, "got: {}", inbox.output);
+        let filed = std::fs::read_dir(h.layout.user_inbox_dir())
+            .expect("user inbox dir exists after an add")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .count();
+        assert_eq!(filed, 1, "the item lands in the user's inbox");
     }
 }

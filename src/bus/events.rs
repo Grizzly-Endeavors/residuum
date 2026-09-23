@@ -30,6 +30,9 @@ pub enum EventTrigger {
     /// belong to the main agent's own conversation (a group chat, a channel,
     /// or a non-owner DM) — routed to that conversation's `external` session.
     Conversation,
+    /// A workbench artifact with the given name started the session through
+    /// the sessions HTTP API.
+    Artifact(String),
 }
 
 impl EventTrigger {
@@ -42,6 +45,7 @@ impl EventTrigger {
             Self::Agent => "agent",
             Self::Webhook(_) => "webhook",
             Self::Conversation => "conversation",
+            Self::Artifact(_) => "artifact",
         }
     }
 }
@@ -50,6 +54,7 @@ impl fmt::Display for EventTrigger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Webhook(name) => write!(f, "webhook:{name}"),
+            Self::Artifact(name) => write!(f, "artifact:{name}"),
             other @ (Self::Pulse | Self::Action | Self::Agent | Self::Conversation) => {
                 f.write_str(other.as_str())
             }
@@ -344,9 +349,12 @@ impl AgentResultEvent {
 /// the same interrupt-if-running/new-turn-if-idle behavior.
 #[derive(Debug, Clone)]
 pub struct AgentMessageEvent {
-    /// Address of the sending agent (`"main"` or a session address).
+    /// Address of the sender: `"main"` or a session address for an agent,
+    /// [`crate::background::registry::OWNER_ADDRESS`] for the owner, or
+    /// `artifact:<name>` for a workbench artifact.
     pub from: SessionAddress,
-    /// The sender's category label (`"main"`, `"scheduled"`, `"external"`, or `"spawned"`).
+    /// The sender's category label (`"main"`, `"scheduled"`, `"external"`,
+    /// `"spawned"`, `"artifact"`, or `"owner"`).
     pub from_category: String,
     /// The message body.
     pub content: String,
@@ -364,7 +372,9 @@ impl AgentMessageEvent {
     /// A message the owner typed into the web sessions sidebar (sender
     /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
-    /// to message back, but sees this session's responses directly.
+    /// to message back, but sees this session's responses directly. A message
+    /// a workbench artifact sent (sender `artifact:<name>`) is labelled as
+    /// coming from that artifact, for the same reason.
     ///
     /// History entries carry the sender as a structured field (see
     /// [`Self::to_history_message`]), which is what the web UI trusts. It
@@ -380,22 +390,41 @@ impl AgentMessageEvent {
                 self.content
             );
         }
+        if let Some(artifact) = self.artifact_sender() {
+            return format!(
+                "[Message from the workbench artifact \"{artifact}\" — your response in this \
+                 turn is shown to it directly]\n{}",
+                self.content
+            );
+        }
         format!(
             "[Agent Message from {} ({})]\n{}",
             self.from, self.from_category, self.content
         )
     }
 
+    /// The name of the workbench artifact that sent this message, or `None`
+    /// when an agent or the owner sent it.
+    #[must_use]
+    pub fn artifact_sender(&self) -> Option<&str> {
+        if self.from_category != crate::background::registry::ARTIFACT_SENDER_CATEGORY {
+            return None;
+        }
+        self.from
+            .as_ref()
+            .strip_prefix(crate::background::registry::ARTIFACT_SENDER_PREFIX)
+    }
+
     /// The structured sender for this message's history entry: the sending
     /// agent, or `None` for a message the owner typed into the web sessions
-    /// sidebar (the owner is not an agent).
+    /// sidebar or a workbench artifact sent (neither is an agent).
     #[must_use]
     pub fn agent_sender(&self) -> Option<crate::inference::AgentSender> {
-        (self.from.as_ref() != crate::background::registry::OWNER_ADDRESS).then(|| {
-            crate::inference::AgentSender {
-                address: self.from.to_string(),
-                category: self.from_category.clone(),
-            }
+        let from_an_agent = self.from.as_ref() != crate::background::registry::OWNER_ADDRESS
+            && self.artifact_sender().is_none();
+        from_an_agent.then(|| crate::inference::AgentSender {
+            address: self.from.to_string(),
+            category: self.from_category.clone(),
         })
     }
 
@@ -705,6 +734,7 @@ mod tests {
         assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
         // Webhook name does not affect the label.
         assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
+        assert_eq!(EventTrigger::Artifact("wiki".into()).as_str(), "artifact");
     }
 
     #[test]
@@ -716,6 +746,10 @@ mod tests {
         assert_eq!(EventTrigger::Pulse.to_string(), "pulse");
         assert_eq!(EventTrigger::Action.to_string(), "action");
         assert_eq!(EventTrigger::Agent.to_string(), "agent");
+        assert_eq!(
+            EventTrigger::Artifact("wiki".into()).to_string(),
+            "artifact:wiki"
+        );
     }
 
     #[test]
@@ -816,6 +850,36 @@ mod tests {
             hop_count: 0,
         };
         assert_eq!(msg.to_history_message().agent_sender, None);
+    }
+
+    #[test]
+    fn artifact_message_is_labelled_as_the_artifact_not_the_owner_or_an_agent() {
+        let msg = AgentMessageEvent {
+            from: crate::background::registry::artifact_sender_address("wiki-graph"),
+            from_category: crate::background::registry::ARTIFACT_SENDER_CATEGORY.to_string(),
+            content: "refresh the index".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.artifact_sender(), Some("wiki-graph"));
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with("[Message from the workbench artifact \"wiki-graph\""),
+            "got {text}"
+        );
+        assert!(!text.contains("owner"), "got {text}");
+        assert!(text.ends_with("\nrefresh the index"));
+        assert_eq!(msg.to_history_message().agent_sender, None);
+    }
+
+    #[test]
+    fn artifact_prefix_without_the_artifact_category_is_not_an_artifact_sender() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("artifact:wiki"),
+            from_category: "spawned".to_string(),
+            content: "hi".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.artifact_sender(), None);
     }
 
     #[test]

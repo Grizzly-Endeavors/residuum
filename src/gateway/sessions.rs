@@ -1,10 +1,12 @@
 //! Web-facing view of agent sessions: turning registry entries, store
 //! records, and bus events into protocol types, and carrying out the
-//! sessions sidebar's send-message and stop commands.
+//! send-message and stop commands the sessions sidebar (over the WebSocket)
+//! and workbench artifacts (over HTTP) share.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use crate::background::registry::{
-    MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo, SessionRegistry, SessionState,
+    ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo,
+    SessionRegistry, SessionState, artifact_sender_address,
 };
 use crate::background::store::RunRecord;
 use crate::bus::{AgentResultStatus, SessionAddress, SessionEvent, SessionEventKind};
@@ -171,22 +173,50 @@ impl SessionCommandError {
     }
 }
 
-/// Deliver the owner's sidebar message to the session at `address`.
+/// Who a message sent to a session from outside the agent system comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionMessageAuthor {
+    /// The owner, typing into the web UI (the sessions sidebar, or an HTTP
+    /// request without an artifact identity).
+    Owner,
+    /// The workbench artifact with this name, through the bridge.
+    Artifact(String),
+}
+
+impl SessionMessageAuthor {
+    /// The sender address and category label the message carries.
+    fn sender(&self) -> (SessionAddress, String) {
+        match self {
+            Self::Owner => (
+                SessionAddress::from(OWNER_ADDRESS),
+                OWNER_CATEGORY.to_string(),
+            ),
+            Self::Artifact(name) => (
+                artifact_sender_address(name),
+                ARTIFACT_SENDER_CATEGORY.to_string(),
+            ),
+        }
+    }
+}
+
+/// Deliver a message from the owner or a workbench artifact to the session
+/// at `address`.
 ///
 /// Goes through the same messenger every agent message does, as hop count 0
-/// (the owner's input originates outside the agent system), so the normal
-/// delivery rules apply: an interrupt while running, a new turn while idle,
-/// a new run once completed.
+/// (the input originates outside the agent system), so the normal delivery
+/// rules apply: an interrupt while running, a new turn while idle, a new run
+/// once completed. The session sees the message attributed to `author`.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when the request is unusable (empty
 /// content, or `main`, which is messaged through the normal chat), when no
 /// session has ever run at `address`, when the session is too busy to take
 /// another message, or when delivery fails.
-pub(crate) async fn send_owner_message(
+pub(crate) async fn send_session_message(
     messenger: &AgentMessenger,
     address: &str,
     content: String,
+    author: &SessionMessageAuthor,
 ) -> Result<SessionDeliveryOutcome, SessionCommandError> {
     if content.trim().is_empty() {
         return Err(SessionCommandError::new(
@@ -197,18 +227,13 @@ pub(crate) async fn send_owner_message(
     if address == MAIN_ADDRESS {
         return Err(SessionCommandError::new(
             SessionCommandErrorCode::InvalidRequest,
-            "The main agent is messaged from the main chat, not the sessions sidebar.",
+            "The main agent is messaged from the main chat, not as a session.",
         ));
     }
 
+    let (from, from_category) = author.sender();
     let outcome = messenger
-        .send(
-            address,
-            SessionAddress::from(OWNER_ADDRESS),
-            OWNER_CATEGORY.to_string(),
-            content,
-            0,
-        )
+        .send(address, from, from_category, content, 0)
         .await;
 
     match outcome {
@@ -222,7 +247,7 @@ pub(crate) async fn send_owner_message(
         Ok(DeliveryOutcome::Main) => {
             // Unreachable: `main` is rejected above. Reported rather than
             // assumed, so a routing change can't silently misdeliver.
-            tracing::error!(address, "sidebar message to a session was routed to main");
+            tracing::error!(address, "message to a session was routed to main");
             Err(SessionCommandError::new(
                 SessionCommandErrorCode::DeliveryFailed,
                 "The message went to the main agent instead of the session.",
@@ -233,7 +258,7 @@ pub(crate) async fn send_owner_message(
             format!("{address} is busy and can't take another message yet. Try again shortly."),
         )),
         Err(e @ (SendError::PublishFailed(_) | SendError::HopLimitExceeded { .. })) => {
-            tracing::warn!(error = %e, address, "failed to deliver sidebar message to session");
+            tracing::warn!(error = %e, address, author = ?author, "failed to deliver message to session");
             Err(SessionCommandError::new(
                 SessionCommandErrorCode::DeliveryFailed,
                 format!("Couldn't deliver the message to {address}. Try again."),
@@ -242,7 +267,8 @@ pub(crate) async fn send_owner_message(
     }
 }
 
-/// Stop the live session at `address`, as the sidebar's stop button does.
+/// Stop the live session at `address`, as the sidebar's stop button and the
+/// `POST /api/sessions/{address}/stop` endpoint do.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when `address` is `main` or doesn't name
@@ -254,11 +280,11 @@ pub(crate) fn stop_session(
     if address == MAIN_ADDRESS {
         return Err(SessionCommandError::new(
             SessionCommandErrorCode::InvalidRequest,
-            "The main agent can't be stopped from the sessions sidebar.",
+            "The main agent can't be stopped as a session.",
         ));
     }
     if registry.stop(&SessionAddress::from(address)) {
-        tracing::info!(address, "session stop requested from the web UI");
+        tracing::info!(address, "session stop requested");
         Ok(())
     } else {
         Err(SessionCommandError::new(
@@ -324,9 +350,14 @@ mod tests {
             .unwrap();
         let (messenger, _bus, _dir) = messenger(&registry);
 
-        let outcome = send_owner_message(&messenger, "spawned-a-0001", "status?".to_string())
-            .await
-            .unwrap();
+        let outcome = send_session_message(
+            &messenger,
+            "spawned-a-0001",
+            "status?".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, SessionDeliveryOutcome::Live);
 
         let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
@@ -338,6 +369,41 @@ mod tests {
             msg.format_for_agent()
                 .starts_with("[Message from the owner via the web UI"),
             "the session should see the message as the owner's"
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_message_reaches_the_session_attributed_to_the_artifact() {
+        let registry = Arc::new(SessionRegistry::new());
+        let mut rx = registry
+            .register(
+                live_info("artifact-wiki-0001", SessionState::Idle),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let (messenger, _bus, _dir) = messenger(&registry);
+
+        let outcome = send_session_message(
+            &messenger,
+            "artifact-wiki-0001",
+            "refresh".to_string(),
+            &SessionMessageAuthor::Artifact("wiki".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, SessionDeliveryOutcome::Live);
+
+        let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
+            panic!("the session should have received a message");
+        };
+        assert_eq!(msg.hop_count, 0, "artifact input is hop count 0");
+        assert_eq!(msg.from.as_ref(), "artifact:wiki");
+        assert_eq!(msg.from_category, "artifact");
+        assert_eq!(msg.artifact_sender(), Some("wiki"));
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with("[Message from the workbench artifact \"wiki\""),
+            "the session should see the message as the artifact's, got {text}"
         );
     }
 
@@ -362,9 +428,14 @@ mod tests {
         let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> =
             bus.subscribe(crate::bus::topics::Background).await.unwrap();
 
-        let outcome = send_owner_message(&messenger, "spawned-b-0001", "one more".to_string())
-            .await
-            .unwrap();
+        let outcome = send_session_message(
+            &messenger,
+            "spawned-b-0001",
+            "one more".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, SessionDeliveryOutcome::Resumed);
         let spawn = spawns.recv().await.unwrap().unwrap();
         assert_eq!(spawn.address.as_ref(), "spawned-b-0001");
@@ -376,19 +447,34 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let (messenger, _bus, _dir) = messenger(&registry);
 
-        let unknown = send_owner_message(&messenger, "spawned-nope-0000", "hi".to_string())
-            .await
-            .unwrap_err();
+        let unknown = send_session_message(
+            &messenger,
+            "spawned-nope-0000",
+            "hi".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(unknown.code, SessionCommandErrorCode::UnknownAddress);
 
-        let empty = send_owner_message(&messenger, "spawned-nope-0000", "   ".to_string())
-            .await
-            .unwrap_err();
+        let empty = send_session_message(
+            &messenger,
+            "spawned-nope-0000",
+            "   ".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(empty.code, SessionCommandErrorCode::InvalidRequest);
 
-        let main = send_owner_message(&messenger, MAIN_ADDRESS, "hi".to_string())
-            .await
-            .unwrap_err();
+        let main = send_session_message(
+            &messenger,
+            MAIN_ADDRESS,
+            "hi".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(main.code, SessionCommandErrorCode::InvalidRequest);
     }
 
@@ -403,14 +489,24 @@ mod tests {
             .unwrap();
         let (messenger, _bus, _dir) = messenger(&registry);
         for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
-            send_owner_message(&messenger, "spawned-full-0001", "fill".to_string())
-                .await
-                .unwrap();
+            send_session_message(
+                &messenger,
+                "spawned-full-0001",
+                "fill".to_string(),
+                &SessionMessageAuthor::Owner,
+            )
+            .await
+            .unwrap();
         }
 
-        let busy = send_owner_message(&messenger, "spawned-full-0001", "one too many".to_string())
-            .await
-            .unwrap_err();
+        let busy = send_session_message(
+            &messenger,
+            "spawned-full-0001",
+            "one too many".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(busy.code, SessionCommandErrorCode::Busy);
     }
 

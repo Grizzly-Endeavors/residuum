@@ -949,6 +949,9 @@ fn resolve_background_config(
         if let Some(v) = section.idle_timeout_external_minutes {
             cfg.idle_timeout_external = std::time::Duration::from_secs(v.saturating_mul(60));
         }
+        if let Some(v) = section.idle_timeout_artifact_minutes {
+            cfg.idle_timeout_artifact = std::time::Duration::from_secs(v.saturating_mul(60));
+        }
         if let Some(v) = section.episode_skip_token_floor {
             cfg.episode_skip_token_floor = v;
         }
@@ -1157,6 +1160,41 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(
             cfg.subconscious_settings.mid_turn,
             "mid_turn defaults to true (gated by enabled)"
+        );
+    }
+
+    #[test]
+    fn artifact_idle_timeout_defaults_to_ten_minutes_and_parses_from_background() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let default_file = parse_config("timezone = \"UTC\"\n");
+        let defaults =
+            from_file_and_env(Some(&default_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            defaults.background.idle_timeout_artifact,
+            std::time::Duration::from_mins(10)
+        );
+
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[background]
+idle_timeout_artifact_minutes = 25
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.background.idle_timeout_artifact,
+            std::time::Duration::from_mins(25)
+        );
+        assert_eq!(
+            cfg.background.idle_timeout_spawned, defaults.background.idle_timeout_spawned,
+            "the artifact setting must not bleed into another category's timeout"
         );
     }
 

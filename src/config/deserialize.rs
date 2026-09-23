@@ -393,6 +393,8 @@ pub(super) struct BackgroundConfigFile {
     /// Idle timeout in minutes for non-webhook `external` sessions before
     /// they complete.
     pub(super) idle_timeout_external_minutes: Option<u64>,
+    /// Idle timeout in minutes for `artifact` sessions before they complete.
+    pub(super) idle_timeout_artifact_minutes: Option<u64>,
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub(super) episode_skip_token_floor: Option<usize>,
