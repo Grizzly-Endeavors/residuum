@@ -5,7 +5,7 @@ description: Build interactive artifacts the user opens in the Residuum web UI �
 
 # Workbench
 
-The workbench holds artifacts you build for the user: each artifact is one HTML page or a folder of files, shown in the web UI at `/workbench/<name>`. An artifact can read Residuum's API, save its own data, stream live events, and send you messages when the user clicks something. This skill does not cover files meant for download or chat attachments; send those as normal files.
+The workbench holds artifacts you build for the user: each artifact is one HTML page or a folder of files, shown in the web UI at `/workbench/<name>`. An artifact can read Residuum's API, save its own data, stream live events, run agent sessions whose results come back to the page, and send you messages when the user clicks something. This skill does not cover files meant for download or chat attachments; send those as normal files.
 
 ## When to Use
 
@@ -50,7 +50,8 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 | `await residuum.fetch(path, { method, headers, body })` | Calls Residuum's API and returns a standard `Response`. `path` starts with `/api/`. A plain object `body` is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent as-is. |
 | `await residuum.send(text)` | Sends `text` to you as a chat message, labelled with the artifact's name. Works only inside a click or key-press handler; otherwise it rejects. |
 | `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all). Returns an unsubscribe function. |
-| `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch` and `send` reject. |
+| `await residuum.sessions.start({ prompt, context, skill, model })` | Starts an agent session for the artifact and returns a handle: `address`, `on(type, handler)` for that session's frames only, `send(text)`, `stop()`. |
+| `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch`, `send`, and `sessions.start` reject. |
 | `residuum.artifact` | This artifact's own name. |
 | `residuum.version` | Residuum's version. |
 | `residuum.features` | Frozen array of feature ids this build supports. |
@@ -58,6 +59,26 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 | `await residuum.state.set(value)` | Saves `value` as the artifact's state, overwriting whatever was there. |
 
 Read `references/api.md` for the endpoints worth calling, the event types, and which routes are blocked.
+
+## Running Agent Work from an Artifact
+
+When the page needs an agent to do something (research a topic, write or reorganize files, summarize a folder, fill in data) and show the result in the page, start a session with `residuum.sessions.start`. It is a full fork of you, with your tools, and its output comes back only to the page: nothing posts in the main chat or the inbox. Use `residuum.send` instead when the user should see the request and your reply in the main chat.
+
+Check `residuum.features.includes("artifact-sessions")` before relying on it.
+
+```js
+const session = await residuum.sessions.start({
+  prompt: `Write a wiki page about ${topic} in wiki/${slug}.md, then reply with one sentence saying what you wrote.`,
+});
+session.on("session_state_changed", (f) => showStatus(f.state)); // "running", "idle", …
+session.on("session_response", (f) => showResult(f.content));
+session.on("session_error", (f) => showError(f.message));
+// Later, to follow up or cancel:
+await session.send("Add a section on sources.");
+await session.stop();
+```
+
+Write the prompt as a complete task brief: the session can't see the page or the main chat. Ask for the result in the shape the page will show (a sentence, a list, JSON). Show the session's progress and errors in the page, and give the user a way to stop it; the session keeps running if the page closes, and it idles for 10 minutes after its last turn so follow-up `send` calls land in the same run. The user can also watch or stop it from the web UI's sessions sidebar, under Artifacts.
 
 ## Asking the User to Choose
 
@@ -75,6 +96,7 @@ After writing an artifact, `read_file` it back and confirm:
 
 - The page has a `<title>` and a `body` background.
 - Every `residuum.fetch` path starts with `/api/` and appears in `references/api.md` as allowed.
+- Every `residuum.sessions.start` result shows its `session_response` and `session_error` frames in the page, and the page can stop the session.
 - Each `residuum.send` call is inside an `addEventListener("click" | "keydown", …)` callback, not at the top level or in load, timer, or `residuum.on` code.
 - Every data file the artifact writes is `workbench/<name>.<anything>`, beside the artifact, never a path under `workbench/<name>/`.
 - Every relative URL names a file that exists in the artifact's folder (a page artifact has no other files), and no path starts with `/`, which would leave the artifact.

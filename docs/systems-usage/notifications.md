@@ -14,6 +14,8 @@ Routing is a match on the disposition the producing agent declared. There is no 
 
 Results from agent-spawned (`spawned`) sessions never reach this router: every turn's outcome — completed, failed, cancelled, or panicked — is relayed directly to the session's **direct spawner** (main, or whichever session spawned it) through the agent-messaging system, tagged with the session's address and carrying the normal hop-count rules — see [background-tasks.md](background-tasks.md#hop-counts). The agent that asked for the work gets the answer, not necessarily main, and is never left simply not knowing what happened to a turn it's waiting on.
 
+Results from `artifact` sessions (started by a workbench artifact) are discarded by this router whatever their disposition, `HEARTBEAT_URGENT` included, and are never relayed to main either. Their output belongs to the artifact that started them, which reads it from the session's own stream — see [background-tasks.md](background-tasks.md#artifact-sessions). A session like that files an inbox item itself (`user_inbox_add`) when its task calls for one.
+
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
 ### Steering it
@@ -28,7 +30,7 @@ No routing target injects into the agent's message feed. Two mechanisms do that 
 
 - **Agent-spawned sessions** (`subagent_spawn`, the `learner`) have every turn's outcome relayed automatically to their direct spawner — main, or the session that spawned them.
 
-Everything else reaches the agent through the inbox, which it reads with `inbox_list`.
+Everything else, except an `artifact` session's results, reaches the agent through the inbox, which it reads with `inbox_list`.
 
 ## Endpoints
 

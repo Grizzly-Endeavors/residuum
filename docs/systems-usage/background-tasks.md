@@ -9,7 +9,7 @@ A session is a fork of the main agent with its own identity, memory snapshot, an
 **What's included in a session's fork:**
 - The main agent's full identity and system prompt content — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki root index, the skills index — assembled once in the system message, exactly as it is for the main agent.
 - A snapshot of the global observation log and the recent-context narrative, taken at fork time. A session never sees observations merged after it forked.
-- Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), the webhook payload (webhook), or the inbound message plus any buffered chatter since the conversation's last mention (conversation — see [Conversation Routing](#conversation-routing)). A session resumed by a message to a completed address (see [Messaging](#messaging)) gets that message instead, plus a pointer back to its previous run's episode.
+- Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), the webhook payload (webhook), the inbound message plus any buffered chatter since the conversation's last mention (conversation — see [Conversation Routing](#conversation-routing)), or the artifact's prompt, preceded by a line naming the workbench artifact that started the session and saying its responses go to that artifact, plus any context the artifact sent (artifact — see [Artifact Sessions](#artifact-sessions)). A session resumed by a message to a completed address (see [Messaging](#messaging)) gets that message instead, plus a pointer back to its previous run's episode.
 - The requested skill activated, when one was given. A resumed session keeps the skill its previous run used.
 - The requested model tier.
 
@@ -33,6 +33,7 @@ Every session has a category, derived from what started it:
 | `scheduled` | Pulses and scheduled actions | `scheduled-` |
 | `external` | Webhooks, and non-owner-DM conversations on Discord/Telegram/Teams (see [Conversation Routing](#conversation-routing)) | `external-` |
 | `spawned` | `subagent_spawn`, the subconscious `learner` | `spawned-` |
+| `artifact` | A workbench artifact, through `residuum.sessions.start` (see [Artifact Sessions](#artifact-sessions)) | `artifact-` |
 
 ## Lifecycle
 
@@ -55,10 +56,13 @@ Configurable in the `[background]` config section:
 | `scheduled` (also used by `external` webhook sessions — a webhook call is one-shot) | `idle_timeout_scheduled_minutes` | 2 minutes |
 | `spawned` | `idle_timeout_spawned_minutes` | 10 minutes |
 | `external` (non-webhook) | `idle_timeout_external_minutes` | 30 minutes |
+| `artifact` | `idle_timeout_artifact_minutes` | 10 minutes |
+
+Each timeout is also editable in the web UI under Settings → Runtime → Pulse & Background.
 
 ## Addresses
 
-Every `scheduled`, `spawned`, or webhook `external` session has a stable, human-readable address, e.g. `spawned-researcher-3f9a`: the category, a slugified qualifier (skill, pulse, action, or webhook name), and a short random suffix. `subagent_spawn` generates the address synchronously and returns it immediately, before the session has actually started running.
+Every `scheduled`, `spawned`, `artifact`, or webhook `external` session has a stable, human-readable address, e.g. `spawned-researcher-3f9a`: the category, a slugified qualifier (skill, pulse, action, webhook, or artifact name), and a short random suffix. Addresses never contain `:`. `subagent_spawn` generates the address synchronously and returns it immediately, before the session has actually started running.
 
 A conversation's `external` session instead gets a **deterministic** address, derived from its interface endpoint and its stable conversation id (e.g. `external-discord-3f9a2c1b0d4e5f6a`), so every message in that conversation resolves to the same session whether or not a run is currently live there. The conversation id is hashed rather than embedded — some interfaces' ids (Teams, in particular) carry characters that aren't safe in a URL path segment or a filename.
 
@@ -75,11 +79,13 @@ Agents message each other by address with the `message_agent` tool, available to
 - **completed session** — the session is resumed as a new run at the same address, forked the same way any other session is, carrying the previous run's model tier, spawner, and depth. The new run's context carries a pointer back to the previous run's episode id, or its run id if that run produced no episode, retrievable with `memory_get`. The sender's tool result says the session had completed and was resumed.
 - **unknown address** — an address that has never run reports an error naming `list_agents` as the way to find live sessions.
 
+An `artifact` session cannot message `main`: its `message_agent` call to `main` fails with a tool error saying artifact sessions can't reach the main conversation and to file an inbox item (`user_inbox_add`) instead. It can message any other address as usual.
+
 Every delivered message names the sender's address and category, so the recipient knows who to reply to. If delivery requires publishing an event (a resume, or handoff to main) and that publish fails, the tool returns an error rather than reporting success — the sender should not assume the message arrived.
 
 ### Hop Counts
 
-Every agent message carries a hop count, used to bound message loops. Input that originates outside the agent system — a user message, a pulse or action firing, a webhook, a web sidebar message — is hop `0`. A message an agent sends during a turn carries one more than the highest hop count among the inputs that drove that turn: the turn's kickoff input, plus any agent messages drained as interrupts during it. A `subagent_spawn` task brief carries the same rule — one more than the spawning turn's highest input hop count — so the new session's first turn starts at that hop count; a resumed session's new run instead starts at the hop count of the message that triggered the resume (that message *is* its first turn's input). Result relays (see [Result Routing](#result-routing)) count as agent messages for this purpose. The main agent tracks its own current-turn hop count the same way a session does, including across a turn boundary: if a message arrives mid-turn but isn't consumed before the turn ends, its hop count carries forward into whichever turn picks it up next rather than being reset — otherwise a looping message that happened to arrive at the wrong moment could reset the loop guard to zero.
+Every agent message carries a hop count, used to bound message loops. Input that originates outside the agent system — a user message, a pulse or action firing, a webhook, a web sidebar message, a workbench artifact's start or message — is hop `0`. A message an agent sends during a turn carries one more than the highest hop count among the inputs that drove that turn: the turn's kickoff input, plus any agent messages drained as interrupts during it. A `subagent_spawn` task brief carries the same rule — one more than the spawning turn's highest input hop count — so the new session's first turn starts at that hop count; a resumed session's new run instead starts at the hop count of the message that triggered the resume (that message *is* its first turn's input). Result relays (see [Result Routing](#result-routing)) count as agent messages for this purpose. The main agent tracks its own current-turn hop count the same way a session does, including across a turn boundary: if a message arrives mid-turn but isn't consumed before the turn ends, its hop count carries forward into whichever turn picks it up next rather than being reset — otherwise a looping message that happened to arrive at the wrong moment could reset the loop guard to zero.
 
 Two limits, both configurable in `[background]`:
 
@@ -102,7 +108,7 @@ The session sees the inbound message with the same sender attribution the main a
 
 ## Nesting
 
-Sessions can spawn sessions with their own `subagent_spawn` tool. Depth counts from the main agent: main is depth 0, every `scheduled`/`external` session is depth 1, and a `spawned` session is its spawner's depth plus 1 — whatever the spawner's own category. The spawned session's spawner is recorded as the calling agent's address (`main`, or the calling session's own address). A session resumed via `message_agent` keeps its original spawner and depth rather than resetting to a fresh depth-1 session.
+Sessions can spawn sessions with their own `subagent_spawn` tool. Depth counts from the main agent: main is depth 0, every `scheduled`/`external`/`artifact` session is depth 1, and a `spawned` session is its spawner's depth plus 1 — whatever the spawner's own category. The spawned session's spawner is recorded as the calling agent's address (`main`, or the calling session's own address). A session resumed via `message_agent` keeps its original spawner and depth rather than resetting to a fresh depth-1 session.
 
 Depth is capped by `subagent_depth_cap` in `[background]` (default 2). Spawning a session that would exceed the cap is refused with an error explaining the limit; the calling agent should either handle the task directly or ask a shallower agent to spawn it.
 
@@ -115,7 +121,7 @@ Depth is capped by `subagent_depth_cap` in `[background]` (default 2). Spawning 
 | `to` | string | yes | `"main"`, or a session address from `list_agents`. |
 | `message` | string | yes | The message body. Must not be empty. |
 
-Sends `message` to `to`, delivered per the rules in [Messaging](#messaging). Messaging yourself is rejected.
+Sends `message` to `to`, delivered per the rules in [Messaging](#messaging). Messaging yourself is rejected, and so is an `artifact` session messaging `main`.
 
 ### `subagent_spawn`
 
@@ -186,13 +192,13 @@ A spawn naming a skill that does not resolve fails loudly rather than running a 
 
 ## Concurrency
 
-The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` config section. The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
+The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` config section, shared by every category, `artifact` sessions included. The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
 
 ## Result Routing
 
 A `spawned` session's turn result is relayed to its **direct spawner** — main, or whichever session spawned it — through the same agent-messaging path as `message_agent`, hop counts included. This happens after every turn in the run, not just once at completion, and a nested session relays to its own spawner rather than to main. Every outcome is relayed, not just a completed turn with output: a completed turn with no text response, a failed turn, a cancelled/stopped turn, and a turn whose task panicked (reported as failed) all relay a clear status line naming the session and what happened, so the spawner is never left simply not knowing. A relay failure (the spawner is busy, or unreachable — e.g. it restarted and lost its resume point) is never silent: it's logged, recorded as a note in the session's own transcript, and shown as an error on the session in the web UI (see [Web UI](#web-ui)).
 
-`scheduled` and `external` results still flow through the pub/sub bus to the notification router, which delivers them per the disposition the producing agent declared (inbox, or inbox plus urgent fanout). `spawned` results no longer pass through that router at all — the per-turn relay above replaces it.
+`scheduled` and `external` results flow through the pub/sub bus to the notification router, which delivers them per the disposition the producing agent declared (inbox, or inbox plus urgent fanout). `spawned` results do not pass through that router at all — the per-turn relay above replaces it. `artifact` results go nowhere on their own: they are never relayed to main, and the router discards them whatever their disposition, so they reach neither the inbox nor notification channels. The artifact that started the session reads its output from the session frames and the transcript endpoint (see [Artifact Sessions](#artifact-sessions)).
 
 See [notifications.md](notifications.md) for the full routing model.
 
@@ -208,13 +214,24 @@ At startup, any run left incomplete by a prior process exit goes through the ful
 
 The record carries the session's address, run id, category, source label, spawner, depth, purpose, lifecycle timestamps, the episode id once merged, and the full message transcript once the run completes.
 
+## Artifact Sessions
+
+A workbench artifact (see [workbench.md](workbench.md)) runs agent work as a session of its own, through `residuum.sessions.start`, which calls `POST /api/sessions`. The session is an ordinary fork, with the same fork contents and tool registry a `spawned` session gets, but:
+
+- **Category and origin.** Its trigger is the artifact, its category `artifact`, its source label `artifact:<name>`, and its address `artifact-<name>-<suffix>`. It has no spawner and runs at depth 1. A message to its address after it completes resumes it as an `artifact` session again.
+- **Results stay with the artifact.** Its turn output is never relayed to the main agent, and its completion is not routed to the inbox or notification channels. The artifact follows it through the `session_*` frames for its address and the transcript endpoint. It is listed in the sessions sidebar like any other session.
+- **No line to main.** Its `message_agent` to `main` fails with a tool error telling it to file an inbox item instead. Its `user_inbox_add` works, for when its task calls for putting something in front of the user. Sessions it spawns relay their results to it, as spawned sessions always relay to their spawner, never to main.
+- **Idle timeout** `idle_timeout_artifact_minutes` (default 10), and it shares the `max_concurrent` limit with every other session.
+
+**`POST /api/sessions`** takes `{ prompt, context?, skill?, model? }`, where `model` is `small`, `medium` (default), or `large`. It requires the `X-Residuum-Artifact` header, which the workbench bridge stamps on every request it relays; without it (or with a value that isn't an artifact name) it answers `400`. A blank prompt, an unknown field, an unknown model tier, or a skill that doesn't exist is also a `400` with `{ error }`. It answers `202` with `{ address }` once the start is published; the run itself starts asynchronously, and its run id arrives in the `session_started` frame for that address. A start that can't be published (Residuum is shutting down) is a `503`. Every start is logged at `info` with the artifact, address, skill, and model tier.
+
 ## Web UI
 
 The web UI follows sessions live over its existing WebSocket and reads their history over HTTP. Protocol types are generated for the web client into `web/src/lib/generated/` (`cargo test --test ts_export` regenerates them); `SessionSummary`, `SessionListResponse`, and the enums below are exported alongside `ServerMessage`/`ClientMessage`.
 
 ### Session summary
 
-Both the listing and the `session_started` frame describe a run as a `SessionSummary`: `address`, `run_id`, `category` (`scheduled` | `external` | `spawned`), `source_label`, `state` (`forking` | `running` | `idle` | `completing` | `completed`), `spawner` (address or `null`), `depth`, `purpose`, `started_at` and `completed_at` (RFC 3339 UTC; `completed_at` is `null` until the run completes), `episode_id` (`null` unless the run was merged into an episode), and `interrupted` (`true` when startup recovery completed the run after a process exit).
+Both the listing and the `session_started` frame describe a run as a `SessionSummary`: `address`, `run_id`, `category` (`scheduled` | `external` | `spawned` | `artifact`), `source_label`, `state` (`forking` | `running` | `idle` | `completing` | `completed`), `spawner` (address or `null`), `depth`, `purpose`, `started_at` and `completed_at` (RFC 3339 UTC; `completed_at` is `null` until the run completes), `episode_id` (`null` unless the run was merged into an episode), and `interrupted` (`true` when startup recovery completed the run after a process exit).
 
 ### Live events (server → client)
 
@@ -254,7 +271,13 @@ A sidebar message is delivered like any agent message, at hop count 0: an interr
 - `completed` — one page of completed runs from the session store, newest first (by start time, then run id).
 - `next_cursor` — an opaque string to pass back as `before` for the next page, or `null` on the last page.
 
-Query parameters: `category` (`scheduled` | `external` | `spawned`; filters both lists), `address` (only runs of the session at that address; filters both lists), `limit` (completed runs per page, 1–200, default 50), `before` (a `next_cursor` from a previous response). An unknown category, an out-of-range limit, or a malformed cursor is a `400`; pass back only a `next_cursor` the server returned. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
+Query parameters: `category` (`scheduled` | `external` | `spawned` | `artifact`; filters both lists), `address` (only runs of the session at that address; filters both lists), `artifact` (only sessions that workbench artifact started — not sessions those spawned in turn; filters both lists; an invalid artifact name is a `400`), `limit` (completed runs per page, 1–200, default 50), `before` (a `next_cursor` from a previous response). An unknown category, an out-of-range limit, or a malformed cursor is a `400`; pass back only a `next_cursor` the server returned. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
+
+**`POST /api/sessions`** starts an `artifact` session; see [Artifact Sessions](#artifact-sessions).
+
+**`POST /api/sessions/{address}/stop`** stops any live session, with the `session_stop` command's rules: `202` with `{ address }` when stopping, `404` with code `not_live` when there is nothing to stop, `400` with code `invalid_request` for `main`.
+
+**`POST /api/sessions/{address}/messages`** with `{ content }` sends any session a message, with the `session_send_message` command's delivery rules. It answers `200` with `{ outcome: "live" | "queued" | "resumed" }`. A failure answers `{ error, code }` with the command's code and a status per code: `invalid_request` `400` (a malformed body, blank content, `main`, or a malformed artifact identity header), `unknown_address` `404`, `busy` `409`, `delivery_failed` `502`. With the `X-Residuum-Artifact` header, the session sees the message as that artifact's (`[Message from the workbench artifact "<name>" …]`, sender `artifact:<name>`); without it, as the owner's.
 
 **`GET /api/sessions/runs/{run_id}/transcript`** returns `{ session: SessionSummary, messages: RecentMessage[] }`. `messages` has the same shape `GET /api/chat/history` returns, so the chat's message components render it. A live run's transcript is read from its incremental transcript file, current to the last message produced, and `session` reflects its live state; a completed run's comes from its final record. Runs don't record per-message times, so every message carries the run's start time (in the configured timezone, like chat history). A run id containing anything but ASCII letters, digits, `-`, and `_` is a `400`; an unknown run is a `404`.
 
@@ -262,12 +285,12 @@ Query parameters: `category` (`scheduled` | `external` | `spawned`; filters both
 
 The web UI shows sessions in a sidebar to the left of the chat, opened and closed from the sessions button in the header (which also shows how many sessions are live, in its badge and its accessible name). On wide screens the sidebar is a column whose open or closed state is remembered in the browser; below 900px wide it is a modal drawer over the page: keyboard focus stays inside it, the page behind is inert, and it closes on Escape, on the backdrop, or when a session is picked, returning focus to the sessions button.
 
-- **Category groups.** The sidebar is split into three collapsible groups, External, Scheduled, and Spawned, always in that order. Each group starts expanded, its heading shows how many of its sessions are live, and hovering over it shows what the category means. A group with nothing running says so and names what shows up there.
-- **Live sessions** are listed newest first within their group, each with its category badge (`scheduled`, `external`, `spawned`), source label, purpose, state (`starting`, `working`, `idle`, `finishing`), and how long it has been running. A conversation session (an `external` session handling a chat conversation) shows its interface and conversation as the source label, e.g. `discord:#builds`. A light down the row's left edge shows a session that is working. A session that reported an error shows the start of that error in the row until it finishes.
+- **Category groups.** The sidebar is split into four collapsible groups, External, Scheduled, Spawned, and Artifacts, always in that order. Each group starts expanded, its heading shows how many of its sessions are live, and hovering over it shows what the category means. A group with nothing running says so and names what shows up there.
+- **Live sessions** are listed newest first within their group, each with its category badge (`scheduled`, `external`, `spawned`, `artifact`), source label, purpose, state (`starting`, `working`, `idle`, `finishing`), and how long it has been running. A conversation session (an `external` session handling a chat conversation) shows its interface and conversation as the source label, e.g. `discord:#builds`. An `artifact` session shows the name of the artifact that started it in place of its source label. A light down the row's left edge shows a session that is working. A session that reported an error shows the start of that error in the row until it finishes.
 - **Finished** is a collapsed section inside each group listing that category's completed runs newest first, 25 at a time, with a "Show older" button that follows that category's `next_cursor`. Each group pages on its own: the listing is one `GET /api/sessions?category=…` request per category, and together their `live` lists cover every live session. A reload keeps runs already paged in beyond each group's first page, matched by run id in the server's order. A run that finished while the page was open shows whether it was stopped or failed; the listing itself doesn't carry that, so older runs show "finished" (or "interrupted" when startup recovery closed them).
 - The listing loads when the WebSocket connects and reloads after every reconnect. `session_*` frames keep it current: `session_started` adds a run, `session_state_changed` updates it, and `session_completed` moves it to its group's Finished list. A frame for a run the page doesn't know about (one that started while disconnected) triggers a reload of the listing.
 
-Selecting a session replaces the main chat with the **session view**; "Main chat" returns to the chat, which stays loaded underneath. The view shows the session's address, category (with a line saying what that category means), source label, state, duration, purpose, who started it (a spawner session's address links to it), nesting depth when deeper than 1, the episode it was merged into, and its run id. Below that is the run's transcript from the transcript endpoint, rendered with the chat's message components, with live frames appended as they arrive: intermediate text, responses, errors, and tool calls when verbose mode is on. The view follows new output while scrolled to the bottom; scrolled up, it stays put and offers "Jump to latest". Messages from other agents appear as compact items naming the sender; the owner's own messages appear as the owner's chat bubbles, and people in a conversation session appear under their names. A message that merely starts with an agent header is shown as whoever typed it.
+Selecting a session replaces the main chat with the **session view**; "Main chat" returns to the chat, which stays loaded underneath. The view shows the session's address, category (with a line saying what that category means), source label, state, duration, purpose, who started it (a spawner session's address links to it; an `artifact` session names its artifact), nesting depth when deeper than 1, the episode it was merged into, and its run id. Below that is the run's transcript from the transcript endpoint, rendered with the chat's message components, with live frames appended as they arrive: intermediate text, responses, errors, and tool calls when verbose mode is on. The view follows new output while scrolled to the bottom; scrolled up, it stays put and offers "Jump to latest". Messages from other agents appear as compact items naming the sender; the owner's own messages appear as the owner's chat bubbles, an artifact's messages appear as chat bubbles under the artifact's name, and people in a conversation session appear under their names. A message that merely starts with an agent header is shown as whoever typed it.
 
 A live session has a **Stop session** button (`session_stop`), and every session has a message box (`session_send_message`). The reply shows in the view as a one-line note: "Delivered." for a live session; for a finished one, a note that the message started a new run, after which the view continues into that new run under a "new run" divider (or, if the old transcript hadn't finished loading, loads the new run's transcript instead). A queued delivery says the new run starts once the finishing run clears. A `session_command_failed` reply shows its plain-language message.
 

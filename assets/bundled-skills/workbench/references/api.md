@@ -1,6 +1,6 @@
 # Workbench API Reference
 
-What a workbench artifact can reach through `residuum.fetch` and `residuum.on`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
+What a workbench artifact can reach through `residuum.fetch`, `residuum.on`, and `residuum.sessions`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
 
 ## Context
 
@@ -29,7 +29,10 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 | `POST /api/inbox/<id>/archive` | Archives an inbox item. |
 | `POST /api/agent-inbox` | Body `{ title?, body }` adds an item to the agent's own inbox (what the `/inbox` command and `inbox_list`/`inbox_read` work from) — there's no equivalent for the user's inbox. `title` defaults to the body's first line, cut to 60 characters. Blank `body` answers `400`. Returns `{ id }`. |
 | `GET /api/memory/search?q=<query>&limit=<1..50, default 10>&source=observations\|episodes\|wiki&date_from=&date_to=` | The same hybrid search the `memory_search` tool runs. Returns `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, where `semantic` says whether vector search contributed. Blank `q`, an unrecognized `source`, or a malformed date answers `400`. |
-| `GET /api/sessions` | Agent sessions: `{ live, completed, next_cursor }`. Filters: `?category=scheduled\|external\|spawned`, `?address=<address>`, `?before=<next_cursor>`, `?limit=1..200` (default 50). |
+| `GET /api/sessions` | Agent sessions: `{ live, completed, next_cursor }`. Filters: `?category=scheduled\|external\|spawned\|artifact`, `?address=<address>`, `?artifact=<name>` (sessions that artifact started; use `residuum.artifact` for your own), `?before=<next_cursor>`, `?limit=1..200` (default 50). |
+| `POST /api/sessions` | Starts an agent session for this artifact; use `residuum.sessions.start` (see Agent Sessions). |
+| `POST /api/sessions/<address>/messages` | Body `{ content }` messages a session. `200` with `{ outcome: "live" \| "queued" \| "resumed" }`; failures are `{ error, code }` (see Agent Sessions). |
+| `POST /api/sessions/<address>/stop` | Stops a live session: `202`, `404` when it isn't running. |
 | `GET /api/sessions/runs/<run_id>/transcript` | One session run's transcript. |
 | `GET /api/chat/history` | Recent main-chat messages. |
 | `GET /api/workbench/artifacts` | Every artifact: `[{ name, title, modified_at, size }]`. |
@@ -62,10 +65,37 @@ Paths outside `/api/` (including `/ws` and webhooks) are refused with `400`.
 | `response` | `reply_to`, `content` | You reply in the main chat. |
 | `broadcast_response` | `content` | You emit text alongside tool calls. |
 | `notice` | `message` | A system notice appears. |
-| `session_started`, `session_state_changed`, `session_completed` | `session` or `address`, `run_id`, … | A background session starts, changes state, or finishes. |
+| `session_started`, `session_state_changed`, `session_completed` | `session` or `address`, `run_id`, … | A background session starts, changes state, or finishes. For a session this artifact started, use its handle's `on` instead (see Agent Sessions). |
 | `artifact_updated` / `artifact_removed` | `name` | A workbench artifact page is written or deleted. |
 
 `tool_call` and `tool_result` arrive only while the user has verbose mode on.
+
+## Agent Sessions
+
+`await residuum.sessions.start({ prompt, context, skill, model })` starts a session: a full fork of the agent, with its tools and memory, working on `prompt`. `context` is extra text it reads first, `skill` a skill to run as, `model` one of `"small"`, `"medium"` (default), `"large"`. The session knows which artifact started it. Its output comes back to the page only: it never posts in the main chat, never files an inbox item on its own, and can't message the main agent. It shows in the web UI's sessions sidebar under Artifacts, where the user can watch or stop it, and it keeps running if the page closes.
+
+It resolves to a handle:
+
+| Member | Does |
+|--------|------|
+| `address` | The session's address. |
+| `on(type, handler)` | Like `residuum.on`, but only this session's frames (`"*"` for all of them). Returns an unsubscribe function. Frames that arrived before `start` resolved (such as `session_started`) are delivered when you register. |
+| `await send(text)` | Messages the session; it sees the message as coming from this artifact and answers with a `session_response`. Resolves to `"live"`, `"queued"`, or `"resumed"` (a finished session starts a new run at the same address). |
+| `await stop()` | Stops the session. |
+
+The session's frames, all carrying `address` and `run_id`:
+
+| `type` | Fields | Fires when |
+|--------|--------|------------|
+| `session_started` | `session` (with `run_id`, `state`, `purpose`, …) | The run starts. |
+| `session_state_changed` | `state`: `running`, `idle`, `completing` | It starts or finishes a turn, or starts wrapping up. `idle` means it's waiting for a message. |
+| `session_broadcast_response` | `content` | It emits text alongside tool calls. |
+| `session_response` | `turn_id`, `content` | A turn's final answer. |
+| `session_error` | `message` | A turn failed. |
+| `session_completed` | `status`: `completed`, `cancelled`, `failed`; `error` | The run is over (after its idle timeout, default 10 minutes, or a stop). |
+| `session_tool_call` / `session_tool_result` | `name`, `arguments` / `output`, `is_error` | Only while the user has verbose mode on. |
+
+`start`, `send`, and `stop` reject with an `Error` whose `message` is plain language; `send` and `stop` failures also carry `code`: `invalid_request`, `unknown_address`, `not_live` (nothing to stop), `busy` (try again shortly), `delivery_failed`. A blank prompt or message rejects with a `TypeError` before anything is sent. `start` also rejects for an unknown `skill` or `model`, and outside the web UI.
 
 ## Sending Messages
 
