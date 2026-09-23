@@ -133,6 +133,26 @@ port = 7700
 # context_messages = 20       # earlier group chat messages shared on @mention
 # port = 7701
 
+# ── Agent2Agent (A2A) protocol (optional) ────────────────────────────────────
+# Lets other agents (including your own other instances) delegate work to this
+# one over the A2A protocol. Enabled by default: every request still goes
+# through the caller-key/sibling auth layer, so turning it on costs nothing
+# until a key or sibling instance exists to use it.
+# Manage caller keys with `residuum a2a keys create|list|revoke`.
+#
+# A2A listens on its own port (bound on [gateway] bind), separate from the
+# gateway port for the same reason Teams does — a public tunnel pointed at it
+# exposes only the A2A endpoints, never the unauthenticated config API.
+#
+# [a2a]
+# enabled = true
+# port = 7702
+# public_url = ""             # this instance's own tunnel/reverse proxy origin;
+#                              # leave empty to let the relay supply one instead
+# visibility = "public"       # "public" or "private" — a private agent (and its
+#                              # card) answers a plain 404 to anyone without a
+#                              # valid caller key
+
 # ── Cloud tunnel (optional) ──────────────────────────────────────────────────
 # Connects to the relay server to make this instance accessible from the
 # public internet via agent-residuum.com/user/{id}/.
