@@ -60,6 +60,51 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The validation result a raw-file PUT reports through a 400. Those
+ * endpoints answer invalid input with `400 {valid: false, error}`, and
+ * `apiFetch` throws on any non-2xx, so callers would otherwise only ever see
+ * a generic failure instead of the validation message.
+ */
+export function validationFromApiError(err: unknown): ValidateResponse | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  try {
+    const parsed: unknown = JSON.parse(err.body);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
+    ) {
+      return { valid: false, error: parsed.error };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function putValidated(
+  path: string,
+  contentType: string,
+  body: string,
+  cacheKey: string,
+): Promise<ValidateResponse> {
+  try {
+    return await apiFetch<ValidateResponse>(path, {
+      method: "PUT",
+      headers: { "Content-Type": contentType },
+      body,
+    });
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(cacheKey);
+  }
+}
+
 async function checkOk(resp: Response): Promise<Response> {
   if (!resp.ok) {
     const body = await resp.text();
@@ -227,13 +272,7 @@ export async function fetchConfigRaw(): Promise<string> {
 }
 
 export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/config/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
-  });
-  invalidate(CACHE_KEY_CONFIG_RAW);
-  return result;
+  return putValidated("/api/config/raw", "text/plain", toml, CACHE_KEY_CONFIG_RAW);
 }
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
@@ -249,13 +288,7 @@ export async function fetchProvidersRaw(): Promise<string> {
 }
 
 export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/providers/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
-  });
-  invalidate(CACHE_KEY_PROVIDERS_RAW);
-  return result;
+  return putValidated("/api/providers/raw", "text/plain", toml, CACHE_KEY_PROVIDERS_RAW);
 }
 
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
@@ -271,13 +304,7 @@ export async function fetchMcpRaw(): Promise<string> {
 }
 
 export async function putMcpRaw(json: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/mcp/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: json,
-  });
-  invalidate(CACHE_KEY_MCP_RAW);
-  return result;
+  return putValidated("/api/mcp/raw", "application/json", json, CACHE_KEY_MCP_RAW);
 }
 
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */
@@ -382,23 +409,21 @@ export async function fetchA2aAgentsRaw(): Promise<string> {
  * than thrown, so the editor can show the reason inline. Any other failure
  * (network, `5xx`) still throws `ApiError` for the caller to surface.
  */
-export async function putA2aAgentsRaw(
-  content: string,
-): Promise<{ valid: boolean; error?: string }> {
-  const resp = await fetch("/api/a2a/agents/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
-  if (resp.ok) {
-    invalidate(CACHE_KEY_A2A_AGENTS_RAW);
+export async function putA2aAgentsRaw(content: string): Promise<ValidateResponse> {
+  try {
+    await apiFetchText("/api/a2a/agents/raw", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
     return { valid: true };
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(CACHE_KEY_A2A_AGENTS_RAW);
   }
-  if (resp.status === 400) {
-    const data = (await resp.json()) as { error: string };
-    return { valid: false, error: data.error };
-  }
-  throw new ApiError(resp.status, resp.statusText, await resp.text());
 }
 
 // ── Agent sessions API wrappers ─────────────────────────────────────
