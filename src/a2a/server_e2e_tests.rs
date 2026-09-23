@@ -1347,3 +1347,72 @@ async fn raw_image_part_reaches_the_model_as_an_inline_image() {
 
     harness.shutdown_tx.send(true).ok();
 }
+
+#[tokio::test]
+async fn closing_text_of_the_signaling_turn_never_reaches_the_next_execution() {
+    let harness = spawn_harness(HarnessOptions {
+        response_delay: Duration::from_millis(400),
+        ..Default::default()
+    })
+    .await;
+    let token = harness.keys.create("dana", None).await.unwrap();
+    {
+        let mut queue = harness.queue.lock().await;
+        queue.push_back(InferenceResponse::new(
+            String::new(),
+            vec![task_update_call(
+                "call-1",
+                "input_required",
+                "which season?",
+            )],
+        ));
+        // The signaling turn's own wrap-up, still being produced when the
+        // caller's follow-up arrives.
+        queue.push_back(InferenceResponse::new(
+            "stale narration about asking them".to_string(),
+            vec![],
+        ));
+        queue.push_back(InferenceResponse::new(
+            String::new(),
+            vec![task_update_call("call-2", "completed", "autumn haiku")],
+        ));
+        queue.push_back(InferenceResponse::new("wrap-up".to_string(), vec![]));
+    }
+
+    let client = client_for(&harness, &token).await;
+    let first = tokio::time::timeout(
+        TEST_TIMEOUT,
+        client.send_streaming_message(&send_request("write a haiku", None, None)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let first_events = drain_until_terminal(first).await;
+    let task_id = task_id_of(&first_events);
+
+    // Follow up at once, while the first turn's closing text is still pending.
+    let second = tokio::time::timeout(
+        TEST_TIMEOUT,
+        client.send_streaming_message(&send_request("autumn", Some(&task_id), None)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let second_events = drain_until_terminal(second).await;
+
+    let leaked = second_events.iter().any(|e| {
+        matches!(e, a2a::StreamResponse::StatusUpdate(u)
+            if u.status.message.as_ref().and_then(a2a::Message::text).is_some_and(|t| t.contains("stale narration")))
+    });
+    assert!(
+        !leaked,
+        "the previous turn's closing text must not be relayed to the follow-up: {second_events:?}"
+    );
+    let completed = second_events.iter().any(|e| {
+        matches!(e, a2a::StreamResponse::StatusUpdate(u) if u.status.state == TaskState::Completed)
+    });
+    assert!(
+        completed,
+        "the follow-up must still complete: {second_events:?}"
+    );
+}

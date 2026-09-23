@@ -2,6 +2,7 @@
 //! an `a2a` conversation session and maps that session's lifecycle back onto
 //! A2A task states. See `docs/systems-usage/a2a.md`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,8 +16,8 @@ use futures_util::stream::BoxStream;
 use crate::background::messaging::{AgentMessenger, ConversationSpawn};
 use crate::background::registry::{SessionRegistry, SessionState, conversation_session_address};
 use crate::bus::{
-    A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, EndpointName,
-    SessionEvent, SessionEventKind, SessionResponseEvent, topics,
+    A2aTaskSignalEvent, A2aTaskSignalState, AgentResultStatus, BusHandle, SessionEvent,
+    SessionEventKind, topics,
 };
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, MessageSender};
@@ -211,7 +212,6 @@ fn artifact_update(task_id: &str, context_id: &str, artifact: Artifact) -> Strea
 /// before delivery so nothing the session does in response is missed.
 struct ExecutionSubscriptions {
     sessions: crate::bus::Subscriber<SessionEvent>,
-    responses: crate::bus::Subscriber<SessionResponseEvent>,
     signals: crate::bus::Subscriber<A2aTaskSignalEvent>,
 }
 
@@ -223,23 +223,12 @@ async fn subscribe_before_delivery(
         .subscribe(topics::Sessions)
         .await
         .map_err(|e| A2AError::internal(format!("failed to subscribe to session events: {e}")))?;
-    let responses = executor
-        .bus_handle
-        .subscribe(topics::Endpoint(EndpointName::from(A2A_ENDPOINT)))
-        .await
-        .map_err(|e| {
-            A2AError::internal(format!("failed to subscribe to session responses: {e}"))
-        })?;
     let signals = executor
         .bus_handle
         .subscribe(topics::A2aTaskSignal)
         .await
         .map_err(|e| A2AError::internal(format!("failed to subscribe to task signals: {e}")))?;
-    Ok(ExecutionSubscriptions {
-        sessions,
-        responses,
-        signals,
-    })
+    Ok(ExecutionSubscriptions { sessions, signals })
 }
 
 /// The whole lifecycle of one `execute()` call: subscribe, deliver, then
@@ -368,6 +357,11 @@ async fn stream_until_terminal(
     };
     let mut last_final_text = String::new();
     let mut sent_working = false;
+    // Turns that started while this execution was following the session.
+    // A turn already running when the execution began may be the one that
+    // signaled the previous task's outcome; its closing text belongs to that
+    // task, so only responses from turns started here are relayed.
+    let mut own_turns: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
@@ -379,25 +373,12 @@ async fn stream_until_terminal(
                 emit_signal_outcome(&stream, signal).await;
                 return;
             }
-            response = subs.responses.recv() => {
-                let Ok(Some(response)) = response else { return };
-                if response.session_address != *stream.address || !response.is_final {
-                    continue;
-                }
-                last_final_text.clone_from(&response.content);
-                sent_working = true;
-                let update = status_update(stream.task_id, stream.context_id, TaskState::Working, Some(&response.content));
-                if stream.tx.send(Ok(update)).await.is_err() {
-                    return;
-                }
-            }
             event = subs.sessions.recv() => {
                 let Ok(Some(event)) = event else { return };
                 if event.address != *stream.address {
                     continue;
                 }
-                let done = handle_session_event(&stream, event.kind, &last_final_text, &mut sent_working).await;
-                if done {
+                if handle_session_event(&stream, event.kind, &mut last_final_text, &mut sent_working, &mut own_turns).await {
                     return;
                 }
             }
@@ -411,10 +392,29 @@ async fn stream_until_terminal(
 async fn handle_session_event(
     stream: &StreamCtx<'_>,
     kind: SessionEventKind,
-    last_final_text: &str,
+    last_final_text: &mut String,
     sent_working: &mut bool,
+    own_turns: &mut HashSet<String>,
 ) -> bool {
     match kind {
+        SessionEventKind::TurnStarted { turn_id } => {
+            own_turns.insert(turn_id);
+            false
+        }
+        SessionEventKind::Response { turn_id, content } => {
+            if !own_turns.contains(&turn_id) || content.is_empty() {
+                return false;
+            }
+            last_final_text.clone_from(&content);
+            *sent_working = true;
+            let update = status_update(
+                stream.task_id,
+                stream.context_id,
+                TaskState::Working,
+                Some(&content),
+            );
+            stream.tx.send(Ok(update)).await.is_err()
+        }
         SessionEventKind::StateChanged(SessionState::Running) if !*sent_working => {
             *sent_working = true;
             let update = status_update(stream.task_id, stream.context_id, TaskState::Working, None);
@@ -425,12 +425,10 @@ async fn handle_session_event(
         }
         SessionEventKind::StateChanged(_)
         | SessionEventKind::Started(_)
-        | SessionEventKind::TurnStarted { .. }
         | SessionEventKind::TurnEnded { .. }
         | SessionEventKind::ToolCall(_)
         | SessionEventKind::ToolResult(_)
         | SessionEventKind::Intermediate { .. }
-        | SessionEventKind::Response { .. }
         | SessionEventKind::Error { .. }
         | SessionEventKind::MessageToMain { .. } => false,
     }
