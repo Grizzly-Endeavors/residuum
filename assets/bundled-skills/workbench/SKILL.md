@@ -28,19 +28,14 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
    - Keep each file under 8 MiB; larger files are refused.
    - Use the global `residuum` object for anything that talks to Residuum. It is injected into every page; do not add a script for it.
 
-4. **Keep data the user or you need in the workspace**, through `residuum.fetch`: store it in `workbench/<name>.<anything>.json`, beside the artifact (not inside its folder, where each save would reload the artifact). Files with the artifact's name as prefix are deleted along with the artifact. `localStorage` works for view preferences, but it lives in one browser (the user won't see it on another device, and you can't read it) and every artifact shares it: prefix keys with the artifact's name, and keep anything private to the artifact in the workspace instead.
+4. **Keep the artifact's own state** with `residuum.state.get()`/`residuum.state.set(value)` rather than hand-writing the state file path: it reads and writes `workbench/<name>.state.json` for you, beside the artifact (not inside its folder, where each save would reload the artifact). `get()` resolves to `null` before the first `set()`. Files with the artifact's name as prefix are deleted along with the artifact. For anything that doesn't fit that one file — other data files, conditional writes — use `residuum.fetch` against the workspace file API directly. `localStorage` works for view preferences, but it lives in one browser (the user won't see it on another device, and you can't read it) and every artifact shares it: prefix keys with the artifact's name, and keep anything private to the artifact in the workspace instead.
 
    ```js
-   const STATE = "workbench/pricing-explorer.state.json";
    async function load() {
-     const r = await residuum.fetch(`/api/workspace/file?path=${encodeURIComponent(STATE)}`);
-     return r.ok ? JSON.parse(await r.text()) : {};
+     return (await residuum.state.get()) ?? {};
    }
    async function save(state) {
-     await residuum.fetch("/api/workspace/file", {
-       method: "PUT",
-       body: { path: STATE, content: JSON.stringify(state) },
-     });
+     await residuum.state.set(state);
    }
    ```
 
@@ -57,6 +52,8 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 | `residuum.artifact` | This artifact's own name. |
 | `residuum.version` | Residuum's version. |
 | `residuum.features` | Frozen array of feature ids this build supports. |
+| `await residuum.state.get()` | The artifact's own saved state (`workbench/<name>.state.json`), parsed, or `null` before the first `set()`. Rejects if the saved content isn't valid JSON. |
+| `await residuum.state.set(value)` | Saves `value` as the artifact's state, overwriting whatever was there. |
 
 Read `references/api.md` for the endpoints worth calling, the event types, and which routes are blocked.
 

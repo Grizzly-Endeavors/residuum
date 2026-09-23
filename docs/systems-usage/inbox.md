@@ -6,7 +6,7 @@ The inbox is a capture system for items the agent or background tasks want to sa
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
-| Populated by | Notification router (`inbox` channel target), background tasks | `user_inbox_add` tool |
+| Populated by | Notification router (`inbox` channel target), background tasks, the WS `/inbox` command, `POST /api/agent-inbox` | `user_inbox_add` tool |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none for the agent)* |
 | Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
 | Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/inbox/{id}/attachments/{index}` |
@@ -15,7 +15,7 @@ The agent inbox is a queue for the agent itself to triage — it's where the `in
 
 ## How Items Arrive
 
-- **Agent inbox**: the notification router files every substantive background result here.
+- **Agent inbox**: the notification router files every substantive background result here. A workbench artifact can also add an item directly with `POST /api/agent-inbox` (body `{ title?, body }`) — the same place the WS `/inbox` command writes to. `title` defaults to the body's first line cut to 60 characters; a blank `body` is refused with `400`. The item's `source` is `artifact:<name>` when the request carries the workbench bridge's artifact-identity header, `web` otherwise. There is no equivalent HTTP endpoint for the user inbox.
 - **User inbox**: the agent calls `user_inbox_add`; nothing else writes here.
 
 ## Item Format

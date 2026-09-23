@@ -6,7 +6,7 @@ There are **two** inboxes, stored as individual JSON files under the workspace r
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
-| Write tool | *(external — background tasks, notification router)* | `user_inbox_add` |
+| Write tool | *(external — background tasks, notification router, WS `/inbox`, `POST /api/agent-inbox`)* | `user_inbox_add` |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none — consumed via the web UI)* |
 | Consumer | The agent itself | The user, via the web UI |
 
@@ -53,6 +53,10 @@ Pass `attachments` — an array of paths to files you've already written to disk
 ## Integration with Notifications
 
 When a task's `channels` configuration includes `inbox`, the notification router creates an item in the **agent inbox** (`inbox/agent/`) with the task result as the body and the task name as the source. See [notifications](notifications.md). This is a separate path from `user_inbox_add`.
+
+## Workbench Artifacts
+
+A workbench artifact can file an agent-inbox item directly with `POST /api/agent-inbox` (`{ title?, body }`), the same queue `inbox_list`/`inbox_read`/`inbox_archive` work from. Its title defaults to the body's first line cut to 60 characters, and a blank body is refused. The item's source records which artifact sent it (`artifact:<name>`) or `web` for a direct web UI call. There is no equivalent for the user inbox — an artifact still has no way to write there.
 
 ## Gotchas
 

@@ -35,6 +35,7 @@ Artifacts are served by their own listener, never by the gateway's main listener
 | `residuum.artifact` | This artifact's own name, embedded when the artifacts listener serves the page. |
 | `residuum.version` | Residuum's version, embedded the same way. Matches `GET /api/status`'s `version`. |
 | `residuum.features` | A frozen array of feature ids this build supports, embedded the same way. Matches `GET /api/status`'s `features`. |
+| `residuum.state.get()` / `residuum.state.set(value)` | Sugar over the workspace file API for the artifact's own `workbench/<name>.state.json`: `get()` resolves to the parsed value or `null` before the first `set()` and rejects on invalid JSON; `set(value)` writes `JSON.stringify(value)` unconditionally. |
 
 The endpoint and event catalogue the agent works from is the skill's `references/api.md`.
 
