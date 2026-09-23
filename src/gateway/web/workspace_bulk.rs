@@ -387,9 +387,20 @@ fn attach_tree_content(
         let mut entry = if raw.entry_type == "file" {
             let disk_path = raw.disk_path.clone();
             let size = raw.size.unwrap_or(0);
-            let (content, skipped) = disk_path
-                .as_deref()
-                .map_or((None, None), |p| read_file_content(p, &raw.path, size));
+            // A file's raw size is a lower bound on its escaped JSON size, so
+            // one that can't fit is skipped without reading it from disk.
+            let cannot_fit = size <= PER_FILE_CONTENT_LIMIT_BYTES
+                && usize::try_from(size).map_or(true, |len| {
+                    used_bytes.saturating_add(len) > RESPONSE_BUDGET_BYTES
+                });
+            let (content, skipped) = if cannot_fit {
+                content_truncated = true;
+                (None, Some("budget"))
+            } else {
+                disk_path
+                    .as_deref()
+                    .map_or((None, None), |p| read_file_content(p, &raw.path, size))
+            };
             TreeEntry {
                 path: raw.path,
                 entry_type: raw.entry_type,
