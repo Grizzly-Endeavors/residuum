@@ -111,6 +111,18 @@ export function sessionSourceText(session: SessionSummary): string {
   return sessionArtifact(session) ?? session.source_label;
 }
 
+/**
+ * The sessions an artifact started, in the order they appear in `sessions`,
+ * for its activity panel. Kept current by whatever keeps `sessions` current
+ * (session frames), so the panel needs no fetch of its own.
+ */
+export function sessionsStartedByArtifact(
+  sessions: readonly SessionSummary[],
+  artifact: string,
+): SessionSummary[] {
+  return sessions.filter((s) => sessionArtifact(s) === artifact);
+}
+
 /** How a run ended, for a status line. */
 export function runOutcomeText(status: SessionRunStatus, error: string | null): string {
   switch (status) {

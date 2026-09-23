@@ -7,7 +7,7 @@
 // `FeedStore` — the one crossover is a session's message to the main agent,
 // which is handed back to the coordinator to show in the main chat.
 
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fetchSessionTranscript, fetchSessions } from "./api";
 import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
@@ -293,6 +293,12 @@ export class SessionsStore {
   outcomes = new SvelteMap<string, { status: SessionRunStatus; error: string | null }>();
   /** Latest error per live run, flagged in the sidebar. */
   errors = new SvelteMap<string, string>();
+  /**
+   * Addresses with a stop requested but not yet resolved, for a row's own
+   * stop button (in the sidebar or an artifact's activity panel) to disable
+   * itself and show "Stopping…" without needing a `SessionView`.
+   */
+  stopping = new SvelteSet<string>();
   /** The run shown in the main pane, if any. */
   view = $state<SessionView | null>(null);
   /** Clock for elapsed times; ticked by the app while sessions are live. */
@@ -437,6 +443,7 @@ export class SessionsStore {
   stop(address: string): void {
     const id = this.commandId();
     this.pending.set(id, { kind: "stop", address });
+    this.stopping.add(address);
     this.deps.send({ type: "session_stop", id, address });
     const view = this.viewFor(address);
     if (view) view.stopRequested = true;
@@ -523,6 +530,7 @@ export class SessionsStore {
     this.outcomes.set(frame.run_id, { status: frame.status, error: frame.error });
     this.errors.delete(frame.run_id);
     if (!live) return;
+    this.stopping.delete(live.address);
     this.live = this.live.filter((s) => s.run_id !== frame.run_id);
     const finished: SessionSummary = {
       ...$state.snapshot(live),
@@ -562,6 +570,7 @@ export class SessionsStore {
         break;
       case "session_command_failed": {
         const action = command?.kind === "stop" ? "Couldn't stop it" : "Couldn't send it";
+        if (command?.kind === "stop") this.stopping.delete(frame.address);
         if (view) {
           if (command?.kind === "stop") view.stopRequested = false;
           view.pushStatus("error", `${action}. ${frame.message}`);
