@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use serde::{Deserialize, Serialize};
 
+use super::artifact_identity::artifact_identity;
 use crate::background::spawn_context::SpawnContext;
 use crate::config::{BackgroundModelTier, BackgroundModelsConfig, ProviderSpec, RoleOverrides};
 use crate::inference::retry::RetryConfig;
@@ -19,10 +20,6 @@ use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, Message, ResponseFormat, Role,
     SharedHttpClient, ThinkingConfig, Usage, build_provider_chain,
 };
-
-/// Header the bridge stamps on every relayed request; identifies the
-/// artifact a model call is on behalf of.
-const ARTIFACT_HEADER: &str = "X-Residuum-Artifact";
 
 /// Identity label logged and reported when a call carries no artifact
 /// header (a direct `web-ui` caller, not relayed through an artifact frame).
@@ -160,18 +157,6 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
         }),
     )
         .into_response()
-}
-
-/// The artifact identity from the bridge-stamped header, or `None` for a
-/// caller that didn't carry one (only the web UI's own bridge sets it;
-/// nothing else can reach this route through the cross-site guard).
-fn artifact_identity(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(ARTIFACT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 /// Defaults applied when the request doesn't override them: the small
@@ -356,7 +341,11 @@ pub(super) async fn api_model_complete(
     headers: HeaderMap,
     Json(req): Json<ModelCompleteRequest>,
 ) -> Response {
-    let identity_label = artifact_identity(&headers).unwrap_or_else(|| WEB_UI_IDENTITY.to_string());
+    let identity_label = match artifact_identity(&headers) {
+        Ok(Some(name)) => name,
+        Ok(None) => WEB_UI_IDENTITY.to_string(),
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
     let resources = Arc::clone(&state.resources.borrow());
 
     let defaults = RequestDefaults::from_resources(&resources);
@@ -420,24 +409,6 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::inference::{HttpClientConfig, InferenceResponse, ToolDefinition};
-
-    // ── artifact_identity ────────────────────────────────────────────
-
-    #[test]
-    fn artifact_identity_reads_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert(ARTIFACT_HEADER, "chart".parse().unwrap());
-        assert_eq!(artifact_identity(&headers).as_deref(), Some("chart"));
-    }
-
-    #[test]
-    fn artifact_identity_none_when_absent_or_blank() {
-        assert_eq!(artifact_identity(&HeaderMap::new()), None);
-
-        let mut headers = HeaderMap::new();
-        headers.insert(ARTIFACT_HEADER, "   ".parse().unwrap());
-        assert_eq!(artifact_identity(&headers), None);
-    }
 
     // ── build_request ────────────────────────────────────────────────
 

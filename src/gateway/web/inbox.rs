@@ -281,11 +281,12 @@ pub(super) struct AgentInboxAddResponse {
 /// `POST /api/agent-inbox` — add an item to the agent's inbox, the same
 /// place the WS `/inbox` command and the notification router's `inbox`
 /// target write to. The source is `artifact:<name>` when the request carries
-/// [`crate::workbench::ARTIFACT_HEADER`] (set by the workbench bridge),
-/// `"web"` otherwise.
+/// the artifact identity header (set by the workbench bridge), `"web"`
+/// otherwise.
 ///
 /// # Errors
-/// `400` for a blank body, `500` if the item can't be saved.
+/// `400` for a blank body or an invalid identity header, `500` if the item
+/// can't be saved.
 pub(super) async fn api_agent_inbox_add(
     State(state): State<GatewayState>,
     headers: HeaderMap,
@@ -302,7 +303,11 @@ pub(super) async fn api_agent_inbox_add(
         .title
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| crate::inbox::derive_title(&req.body));
-    let source = crate::workbench::artifact_source(&headers);
+    let source = match super::artifact_identity::artifact_identity(&headers) {
+        Ok(Some(name)) => format!("artifact:{name}"),
+        Ok(None) => "web".to_string(),
+        Err(message) => return Err((StatusCode::BAD_REQUEST, message)),
+    };
 
     let filename = crate::inbox::quick_add(
         &state.agent_inbox_dir,
@@ -440,7 +445,7 @@ mod tests {
         let state = make_gateway_state(dir.path());
         let mut headers = HeaderMap::new();
         headers.insert(
-            crate::workbench::ARTIFACT_HEADER,
+            super::super::artifact_identity::ARTIFACT_HEADER,
             "pricing-explorer".parse().unwrap(),
         );
 
