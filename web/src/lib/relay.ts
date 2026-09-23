@@ -13,16 +13,18 @@ import type { RecentMessage } from "./types";
 export interface ParsedAgentMessage {
   /** Sender's address (`main` or a session address). */
   from: string;
-  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`). */
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`). */
   category: string;
   /** The message body without the header. */
   body: string;
 }
 
 const AGENT_MESSAGE_HEADER =
-  /^\[Agent Message from ([^\s()[\]]+) \((main|scheduled|external|spawned)\)\]\n/;
+  /^\[Agent Message from ([^\s()[\]]+) \((main|scheduled|external|spawned|artifact)\)\]\n/;
 
 const OWNER_MESSAGE_HEADER = /^\[Message from the owner via the web UI[^\]\n]*\]\n/;
+
+const ARTIFACT_MESSAGE_HEADER = /^\[Message from the workbench artifact "([a-z0-9-]+)"[^\]\n]*\]\n/;
 
 /**
  * Recognize a message one agent sent another in chat history.
@@ -71,4 +73,25 @@ export function parseAgentMessage(content: string): ParsedAgentMessage | null {
 export function parseOwnerMessage(content: string): string | null {
   const match = OWNER_MESSAGE_HEADER.exec(content);
   return match ? content.slice(match[0].length) : null;
+}
+
+/** A message a workbench artifact sent a session, as recognized from its header. */
+export interface ParsedArtifactMessage {
+  /** The artifact's name. */
+  artifact: string;
+  /** The message body without the header. */
+  body: string;
+}
+
+/**
+ * Recognize a message a workbench artifact sent a session, or `null` if it
+ * isn't one. Like the owner's header, only the backend writes this one: an
+ * owner's message always starts with the owner header instead.
+ */
+export function parseArtifactMessage(content: string): ParsedArtifactMessage | null {
+  const match = ARTIFACT_MESSAGE_HEADER.exec(content);
+  if (!match) return null;
+  const [header, artifact] = match;
+  if (artifact === undefined) return null;
+  return { artifact, body: content.slice(header.length) };
 }

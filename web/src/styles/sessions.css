@@ -45,7 +45,9 @@
 /* ── Category badge ──────────────────────────────────────────────────── */
 /* Text always names the category; the tint only helps scanning. Spawned
    work carries the vein (the agent's own energy), scheduled work the moss
-   (what grows on its own over time), outside work plain stone. */
+   (what grows on its own over time), outside work plain stone. Artifact work
+   is polished stone with a vein edge: started by something the agent built,
+   not by the agent itself. */
 
 .session-badge {
   display: inline-flex;
@@ -73,6 +75,12 @@
   color: var(--moss-hover);
   border-color: rgba(107, 122, 74, 0.45);
   background: rgba(107, 122, 74, 0.1);
+}
+
+.session-badge.badge-artifact {
+  color: var(--text);
+  border-color: var(--vein-dim);
+  background: var(--bg-raised);
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────── */

@@ -1,7 +1,7 @@
 // ── Feed item building shared by the main chat and session views ─────
 
 import { nextFeedId } from "./feed-id";
-import { historyAgentMessage, parseOwnerMessage } from "./relay";
+import { historyAgentMessage, parseArtifactMessage, parseOwnerMessage } from "./relay";
 import type { DividerFeedItem, FeedItem, RecentMessage, ToolCallState } from "./types";
 
 /**
@@ -114,6 +114,20 @@ export function convertHistory(
             category: agentMessage.category,
             content: agentMessage.body,
             runId: null,
+          });
+          break;
+        }
+        const artifactMessage = opts.mode === "session" ? parseArtifactMessage(content) : null;
+        if (artifactMessage) {
+          out.push({
+            id: nextFeedId(),
+            kind: "user",
+            content: artifactMessage.body,
+            sender: {
+              name: artifactMessage.artifact,
+              id: `artifact:${artifactMessage.artifact}`,
+              interface: "workbench artifact",
+            },
           });
           break;
         }

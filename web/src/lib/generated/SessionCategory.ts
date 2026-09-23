@@ -3,4 +3,4 @@
 /**
  * How a session was started.
  */
-export type SessionCategory = "scheduled" | "external" | "spawned";
+export type SessionCategory = "scheduled" | "external" | "spawned" | "artifact";

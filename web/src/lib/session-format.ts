@@ -8,6 +8,25 @@ import type {
   SessionSummary,
 } from "./types";
 
+/** Every session category, in the order the sidebar groups them. */
+export const SESSION_CATEGORIES: readonly SessionCategory[] = [
+  "external",
+  "scheduled",
+  "spawned",
+  "artifact",
+];
+
+/** Sessions split into their categories' sidebar groups, each keeping the list's order. */
+export function groupByCategory(
+  sessions: readonly SessionSummary[],
+): Record<SessionCategory, SessionSummary[]> {
+  const groups = Object.fromEntries(
+    SESSION_CATEGORIES.map((category) => [category, [] as SessionSummary[]]),
+  ) as Record<SessionCategory, SessionSummary[]>;
+  for (const session of sessions) groups[session.category].push(session);
+  return groups;
+}
+
 /** States in which a run is still live (listed from the registry). */
 export function isLiveState(state: SessionState): boolean {
   return state !== "completed";
@@ -41,6 +60,8 @@ export function categoryDescription(category: SessionCategory): string {
       return "Started by someone else or another system (a chat conversation or webhook)";
     case "spawned":
       return "Started by an agent";
+    case "artifact":
+      return "Started by a workbench artifact";
   }
 }
 
@@ -53,6 +74,8 @@ export function categoryHeading(category: SessionCategory): string {
       return "External";
     case "spawned":
       return "Spawned";
+    case "artifact":
+      return "Artifacts";
   }
 }
 
@@ -65,7 +88,27 @@ export function categoryIdleText(category: SessionCategory): string {
       return "Nothing running. Conversations with other people and webhook calls show up here while they run.";
     case "spawned":
       return "Nothing running. Work your agent hands off shows up here while it runs.";
+    case "artifact":
+      return "Nothing running. Work a workbench artifact starts shows up here while it runs.";
   }
+}
+
+/** Prefix of an artifact session's source label (`artifact:<name>`). */
+const ARTIFACT_SOURCE_PREFIX = "artifact:";
+
+/**
+ * The workbench artifact that started a session, from its source label, or
+ * `null` for a session no artifact started.
+ */
+export function sessionArtifact(session: SessionSummary): string | null {
+  if (session.category !== "artifact") return null;
+  if (!session.source_label.startsWith(ARTIFACT_SOURCE_PREFIX)) return null;
+  return session.source_label.slice(ARTIFACT_SOURCE_PREFIX.length) || null;
+}
+
+/** What started a session, for a row or header: the artifact's name, or the source label. */
+export function sessionSourceText(session: SessionSummary): string {
+  return sessionArtifact(session) ?? session.source_label;
 }
 
 /** How a run ended, for a status line. */
