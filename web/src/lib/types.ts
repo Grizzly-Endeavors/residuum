@@ -101,6 +101,10 @@ export type ChatHistorySegment = RecentHistorySegment | EpisodeHistorySegment;
 
 export interface StatusResponse {
   mode: "setup" | "running";
+  /** This build's version, the same string the workbench SDK exposes as `residuum.version`. */
+  version: string;
+  /** Feature ids this build supports, the same list the workbench SDK exposes as `residuum.features`. */
+  features: string[];
 }
 
 // ── Setup wizard types ──────────────────────────────────────────────

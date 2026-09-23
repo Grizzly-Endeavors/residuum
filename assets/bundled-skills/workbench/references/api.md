@@ -2,6 +2,10 @@
 
 What a workbench artifact can reach through `residuum.fetch` and `residuum.on`. Read endpoints return JSON unless noted. Every `path` is relative to the web UI: `/api/...`.
 
+## Context
+
+Three values are embedded into the page when it loads, not fetched: `residuum.artifact` is the artifact's own name, `residuum.version` is Residuum's version, and `residuum.features` is a frozen array of feature ids this build supports. Check a feature id before relying on the capability it names, since an older Residuum build won't have it.
+
 ## Endpoints Worth Calling
 
 | Method and path | Returns / does |
@@ -16,7 +20,7 @@ What a workbench artifact can reach through `residuum.fetch` and `residuum.on`. 
 | `GET /api/sessions/runs/<run_id>/transcript` | One session run's transcript. |
 | `GET /api/chat/history` | Recent main-chat messages. |
 | `GET /api/workbench/artifacts` | Every artifact: `[{ name, title, modified_at, size }]`. |
-| `GET /api/status` | `{ mode }`: `"running"` normally. |
+| `GET /api/status` | `{ mode, version, features }`: `mode` is `"running"` normally, `version` and `features` match `residuum.version` and `residuum.features`. |
 | `GET /api/system/timezone` | The user's configured timezone. |
 
 Paths under `workspace/` are relative to the workspace root, so an artifact's data file is `workbench/<name>.state.json`.
@@ -26,10 +30,10 @@ Paths under `workspace/` are relative to the workspace root, so an artifact's da
 These answer `403` with `{ "error": "<reason>" }` and never reach Residuum:
 
 - Writing secrets or agent keys (`/api/secrets`, `/api/agent-keys`; reading their names is allowed).
-- Anything under `/api/config/raw`, `/api/providers/raw`, `/api/mcp/raw`, and `/api/config/complete-setup`.
+- Anything under `/api/config/raw` and `/api/providers/raw`.
+- `/api/config/complete-setup`.
 - `/api/shutdown`, `/api/update/check|apply|restart`, `/api/cloud/disconnect`.
 - Writes under `/api/tracing/`.
-- Deleting workbench artifacts.
 
 Paths outside `/api/` (including `/ws` and webhooks) are refused with `400`.
 

@@ -12,6 +12,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 
+/** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
+const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
+
+/** Stand-in for the real feature list, empty until a later phase ships a capability. */
+const MOCK_FEATURES: readonly string[] = [];
+
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
 interface MockState {
@@ -287,10 +293,18 @@ const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
   </script>
 </body></html>`;
 
-/** Serve an artifact page the way the artifacts listener does: SDK injected. */
-function workbenchPage(html: string): string {
+/**
+ * Serve an artifact page the way the artifacts listener does: SDK injected,
+ * with the artifact's name, the mock version, and the mock feature list
+ * embedded for `residuum.artifact`, `residuum.version`, and `residuum.features`.
+ */
+function workbenchPage(html: string, artifactName: string): string {
   const sdk = readFileSync(resolve(__dirname, "..", "assets", "workbench", "sdk.js"), "utf-8");
-  return html.replace("<head>", `<head><script>${sdk}</script>`);
+  const context =
+    `const __RESIDUUM_ARTIFACT__=${JSON.stringify(artifactName)};` +
+    `const __RESIDUUM_VERSION__=${JSON.stringify(MOCK_RESIDUUM_VERSION)};` +
+    `const __RESIDUUM_FEATURES__=${JSON.stringify(MOCK_FEATURES)};`;
+  return html.replace("<head>", `<head><script>${context}${sdk}</script>`);
 }
 
 /**
@@ -301,14 +315,15 @@ function workbenchPage(html: string): string {
 function startMockArtifactsListener(state: MockState) {
   const server = createServer((req, res) => {
     const match = /^\/([a-z0-9-]+)\/(\?.*)?$/.exec(req.url ?? "");
-    const artifact = match ? state.workbenchArtifacts.get(match[1] ?? "") : undefined;
+    const name = match?.[1] ?? "";
+    const artifact = match ? state.workbenchArtifacts.get(name) : undefined;
     if (!artifact) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("There's no workbench artifact here.");
       return;
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(workbenchPage(artifact.html));
+    res.end(workbenchPage(artifact.html, name));
   });
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
@@ -874,7 +889,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
     try {
       // ── Status & system ────────────────────────────────────────────────
       if (path === "/api/status" && method === "GET") {
-        json(res, 200, { mode: state.mode });
+        json(res, 200, { mode: state.mode, version: MOCK_RESIDUUM_VERSION, features: MOCK_FEATURES });
         return;
       }
 

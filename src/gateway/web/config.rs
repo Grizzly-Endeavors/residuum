@@ -8,17 +8,23 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::features;
 use crate::inference::Message;
 use crate::memory::episode_store::{latest_episode_id, previous_episode_id, read_episode_jsonl};
 use crate::memory::recent_messages::{RecentMessage, load_recent_messages};
 use crate::memory::types::Visibility;
+use crate::update;
 
 use super::ConfigApiState;
 
-/// Status response indicating which mode the server is running in.
+/// Status response: which mode the server is running in, its version, and the
+/// feature ids it supports. Workbench artifacts read the same information
+/// from the injected SDK's `residuum.version` and `residuum.features`.
 #[derive(Serialize)]
 pub(super) struct StatusResponse {
     mode: &'static str,
+    version: &'static str,
+    features: &'static [&'static str],
 }
 
 /// Response from validation or save endpoints.
@@ -47,14 +53,50 @@ pub(super) struct CompleteSetupRequest {
     mcp_json: Option<String>,
 }
 
-/// `GET /api/status` — returns `{"mode":"setup"}` or `{"mode":"running"}`.
+/// `GET /api/status` — returns `{ mode, version, features }`.
 pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
     let mode = if state.setup_done.is_some() {
         "setup"
     } else {
         "running"
     };
-    Json(StatusResponse { mode })
+    Json(StatusResponse {
+        mode,
+        version: update::CURRENT_VERSION,
+        features: features::FEATURES,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn state(
+        setup_done: Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>>,
+    ) -> ConfigApiState {
+        ConfigApiState {
+            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    #[tokio::test]
+    async fn status_reports_mode_version_and_features() {
+        let Json(running) = api_status(State(state(None))).await;
+        assert_eq!(running.mode, "running");
+        assert_eq!(running.version, update::CURRENT_VERSION);
+        assert_eq!(running.features, features::FEATURES);
+
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        let Json(setup) = api_status(State(state(Some(std::sync::Arc::new(tx))))).await;
+        assert_eq!(setup.mode, "setup");
+    }
 }
 
 /// `GET /api/config/raw` — return raw `config.toml` contents as text.

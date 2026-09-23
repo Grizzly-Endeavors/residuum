@@ -23,6 +23,8 @@ describe("checkArtifactRequest", () => {
     ["GET", "/api/workbench/artifacts"],
     ["GET", "/api/tracing/status"],
     ["POST", "/api/inbox/abc/archive"],
+    ["PUT", "/api/mcp/raw"],
+    ["DELETE", "/api/workbench/artifacts/chart"],
   ])("allows %s %s", (method, path) => {
     expect(checkArtifactRequest(method, path, ORIGIN)).toEqual({ allowed: true, url: path });
   });
@@ -34,7 +36,6 @@ describe("checkArtifactRequest", () => {
     ["GET", "/api/config/raw"],
     ["PUT", "/api/config/raw"],
     ["GET", "/api/providers/raw"],
-    ["PUT", "/api/mcp/raw"],
     ["POST", "/api/config/complete-setup"],
     ["POST", "/api/shutdown"],
     ["POST", "/api/shutdown/"],
@@ -43,7 +44,6 @@ describe("checkArtifactRequest", () => {
     ["POST", "/api/cloud/disconnect"],
     ["POST", "/api/tracing/sanitize"],
     ["POST", "/api/tracing/otel/endpoints"],
-    ["DELETE", "/api/workbench/artifacts/chart"],
   ])("blocks %s %s", (method, path) => {
     const check = checkArtifactRequest(method, path, ORIGIN);
     expect(check.allowed).toBe(false);
@@ -151,6 +151,12 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
   return { bridge, frame, deps, emit: (msg) => listener?.(msg), sent, escapes: () => escapes };
 }
 
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 const fetchMsg = (path: string, method = "GET"): Record<string, unknown> => ({
   tag: BRIDGE_TAG,
   kind: "fetch",
@@ -175,13 +181,103 @@ describe("WorkbenchBridge", () => {
     await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
     expect(h.deps.fetch).toHaveBeenCalledWith(
       "/api/status",
-      expect.objectContaining({ method: "GET" }),
+      expect.objectContaining({ method: "GET", headers: { "X-Residuum-Artifact": "chart" } }),
     );
     const reply = h.frame.posted[0];
     expect(reply).toMatchObject({ tag: BRIDGE_TAG, kind: "result", id: "req-1" });
     const result = reply?.result as RelayedResponse;
     expect(result.status).toBe(200);
     expect(new TextDecoder().decode(result.body)).toBe('{"ok":true}');
+  });
+
+  it("stamps the artifact identity header, overwriting any spoofed value regardless of casing", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, {
+      ...fetchMsg("/api/status"),
+      headers: { "x-residuum-ARTIFACT": "someone-else", "X-Keep-Me": "yes" },
+    });
+    expect(h.deps.fetch).toHaveBeenCalledWith(
+      "/api/status",
+      expect.objectContaining({
+        headers: { "X-Keep-Me": "yes", "X-Residuum-Artifact": "chart" },
+      }),
+    );
+  });
+
+  it("relays at most 8 requests at a time and serves the rest in FIFO order", async () => {
+    const startOrder: number[] = [];
+    const release: (() => void)[] = [];
+    const fetchImpl = vi.fn((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      const n = Number(new URL(url, "http://artifact.invalid").searchParams.get("n"));
+      startOrder.push(n);
+      return new Promise<Response>((resolve) => {
+        release.push(() => {
+          resolve(new Response("{}", { status: 200 }));
+        });
+      });
+    });
+    const h = harness({ fetch: fetchImpl });
+    const total = 10;
+    const handled = Promise.all(
+      Array.from({ length: total }, (_, n) =>
+        h.bridge.handleMessage(h.frame, ARTIFACTS, {
+          ...fetchMsg(`/api/status?n=${n}`),
+          id: `req-${n}`,
+        }),
+      ),
+    );
+
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(8);
+    });
+    expect(startOrder).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+
+    release.shift()?.();
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(9);
+    });
+    expect(startOrder.at(-1)).toBe(8);
+
+    release.shift()?.();
+    await vi.waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledTimes(10);
+    });
+    expect(startOrder.at(-1)).toBe(9);
+
+    while (release.length > 0) release.shift()?.();
+    await handled;
+  });
+
+  it("retries a relay 'agent overloaded' 503 up to 3 times, then gives up", async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(new Response("agent overloaded", { status: 503 })),
+    );
+    const h = harness({
+      fetch: fetchImpl,
+      sleep: (ms) => {
+        sleeps.push(ms);
+        return Promise.resolve();
+      },
+    });
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(sleeps).toHaveLength(3);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(500);
+    expect(sleeps[1]).toBeGreaterThan(sleeps[0] ?? 0);
+    expect(sleeps[2]).toBeGreaterThan(sleeps[1] ?? 0);
+    const result = h.frame.posted[0]?.result as RelayedResponse;
+    expect(result.status).toBe(503);
+  });
+
+  it("does not retry a 503 whose body isn't the relay's overload text", async () => {
+    const fetchImpl = vi.fn(() => Promise.resolve(new Response("internal error", { status: 503 })));
+    const h = harness({ fetch: fetchImpl, sleep: () => Promise.resolve() });
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const result = h.frame.posted[0]?.result as RelayedResponse;
+    expect(result.status).toBe(503);
   });
 
   it("answers a blocked request with a 403 without calling the gateway", async () => {

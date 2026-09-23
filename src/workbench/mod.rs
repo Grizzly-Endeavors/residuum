@@ -18,7 +18,9 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 
+use crate::features;
 use crate::gateway::protocol::ArtifactSummary;
+use crate::update;
 
 /// Files larger than this are refused rather than served.
 pub(crate) const MAX_ARTIFACT_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -258,11 +260,20 @@ fn decode_entities(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
+/// Serializes `value` as JSON for embedding inside a `<script>` block, escaping
+/// any `</` sequence so embedded content can never close the tag early.
+fn embed_as_script_json<T: serde::Serialize + ?Sized>(value: &T) -> String {
+    let json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+    json.replace("</", "<\\/")
+}
+
 /// Insert the SDK `<script>` so it runs before any of the page's own scripts:
 /// right after the `<head>` open tag, else after `<html>`, else after the
-/// doctype, else at the very start.
+/// doctype, else at the very start. The script embeds the artifact's own
+/// name, this build's version, and its feature list, which the SDK exposes as
+/// `residuum.artifact`, `residuum.version`, and `residuum.features`.
 #[must_use]
-pub(crate) fn inject_sdk(html: &str) -> String {
+pub(crate) fn inject_sdk(html: &str, artifact: &str, version: &str, features: &[&str]) -> String {
     let lower = html.to_ascii_lowercase();
     let insert_at = ["head", "html", "!doctype"]
         .iter()
@@ -272,7 +283,15 @@ pub(crate) fn inject_sdk(html: &str) -> String {
         })
         .unwrap_or(0);
 
-    let script = format!("<script>{SDK_JS}</script>");
+    let context = format!(
+        "const __RESIDUUM_ARTIFACT__={};const __RESIDUUM_VERSION__={};const __RESIDUUM_FEATURES__={};",
+        embed_as_script_json(artifact),
+        embed_as_script_json(version),
+        embed_as_script_json(features),
+    );
+    // The block scopes the context constants to the SDK, keeping them out of
+    // the page's global scope where an artifact's own names could collide.
+    let script = format!("<script>{{{context}{SDK_JS}}}</script>");
     let mut out = String::with_capacity(html.len() + script.len());
     out.push_str(html.get(..insert_at).unwrap_or_default());
     out.push_str(&script);
@@ -364,7 +383,13 @@ pub(crate) async fn read_artifact_file(
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     if mime.essence_str() == "text/html" {
         Ok(ArtifactFile {
-            bytes: inject_sdk(&String::from_utf8_lossy(&bytes)).into_bytes(),
+            bytes: inject_sdk(
+                &String::from_utf8_lossy(&bytes),
+                name,
+                update::CURRENT_VERSION,
+                features::FEATURES,
+            )
+            .into_bytes(),
             content_type: "text/html; charset=utf-8".to_string(),
         })
     } else {
@@ -519,7 +544,12 @@ mod tests {
 
     #[test]
     fn inject_sdk_goes_after_head_open_tag() {
-        let out = inject_sdk("<!doctype html><html><head lang=x><title>t</title></head></html>");
+        let out = inject_sdk(
+            "<!doctype html><html><head lang=x><title>t</title></head></html>",
+            "chart",
+            "2026.09.23",
+            &[],
+        );
         let script_at = out.find("<script>").unwrap();
         assert_eq!(
             out.get(..script_at).unwrap(),
@@ -531,7 +561,12 @@ mod tests {
 
     #[test]
     fn inject_sdk_skips_header_element_and_falls_back_to_html() {
-        let out = inject_sdk("<html><body><header>h</header></body></html>");
+        let out = inject_sdk(
+            "<html><body><header>h</header></body></html>",
+            "chart",
+            "2026.09.23",
+            &[],
+        );
         assert!(
             out.starts_with("<html><script>"),
             "got {}",
@@ -541,9 +576,35 @@ mod tests {
 
     #[test]
     fn inject_sdk_prepends_to_fragments() {
-        let out = inject_sdk("<div>fragment</div>");
+        let out = inject_sdk("<div>fragment</div>", "chart", "2026.09.23", &[]);
         assert!(out.starts_with("<script>"));
         assert!(out.ends_with("<div>fragment</div>"));
+    }
+
+    #[test]
+    fn inject_sdk_embeds_artifact_name_version_and_features() {
+        let out = inject_sdk(
+            "<html></html>",
+            "pricing-explorer",
+            "2026.09.23",
+            &["workspace-tree", "model-complete"],
+        );
+        assert!(out.contains(r#"<script>{const __RESIDUUM_ARTIFACT__="pricing-explorer";"#));
+        assert!(
+            out.contains("})();\n}</script>"),
+            "context constants stay block-scoped to the SDK"
+        );
+        assert!(out.contains(r#"const __RESIDUUM_VERSION__="2026.09.23";"#));
+        assert!(
+            out.contains(r#"const __RESIDUUM_FEATURES__=["workspace-tree","model-complete"];"#)
+        );
+    }
+
+    #[test]
+    fn inject_sdk_escapes_embedded_values_against_closing_the_script_tag() {
+        let out = inject_sdk("<html></html>", "</script><script>evil</script>", "1", &[]);
+        assert!(!out.to_ascii_lowercase().contains("</script><script>evil"));
+        assert!(out.contains(r"<\/script>"));
     }
 
     #[test]
