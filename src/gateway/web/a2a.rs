@@ -132,16 +132,16 @@ pub(crate) struct A2aAgentCardView {
     skills: Vec<A2aAgentSkillView>,
 }
 
-/// One entry in `GET /api/a2a/agents`.
+/// One entry in `GET /api/a2a/agents`. `error` and `card` are always present
+/// (as `null` when absent) rather than omitted, matching the web UI's
+/// `string | null` / `Card | null` contract.
 #[derive(Serialize)]
 pub(crate) struct A2aAgentView {
     name: String,
     url: String,
     source: AgentSource,
     status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     card: Option<A2aAgentCardView>,
 }
 
