@@ -25,6 +25,7 @@ pub mod tracing_api;
 pub mod update;
 pub(crate) mod workbench;
 pub mod workspace;
+pub(crate) mod workspace_bulk;
 
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
@@ -109,6 +110,14 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
         .route("/api/workspace/files", get(workspace::api_workspace_files))
         .merge(workspace_file_router)
+        .route(
+            "/api/workspace/tree",
+            get(workspace_bulk::api_workspace_tree),
+        )
+        .route(
+            "/api/workspace/read",
+            post(workspace_bulk::api_workspace_read),
+        )
         .route("/api/inbox", get(inbox::api_inbox_list))
         .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
         .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))

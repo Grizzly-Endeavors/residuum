@@ -66,7 +66,7 @@ struct ConditionalWriteError {
 }
 
 /// Canonicalize the workspace root directory.
-async fn canonicalize_workspace_root(
+pub(super) async fn canonicalize_workspace_root(
     workspace_dir: &Path,
 ) -> Result<PathBuf, (StatusCode, String)> {
     tokio::fs::canonicalize(workspace_dir).await.map_err(|e| {
@@ -83,7 +83,7 @@ async fn canonicalize_workspace_root(
 /// Canonicalizes both the workspace root and the joined path, then verifies
 /// the result is still inside the workspace. Returns 403 if the path
 /// escapes the workspace boundary, 404 if it doesn't exist.
-async fn validate_workspace_path(
+pub(super) async fn validate_workspace_path(
     workspace_dir: &Path,
     relative: &str,
 ) -> Result<PathBuf, (StatusCode, String)> {
