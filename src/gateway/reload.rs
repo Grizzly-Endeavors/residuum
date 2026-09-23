@@ -68,6 +68,8 @@ pub(super) struct ConfigDiff {
     pub telegram_changed: bool,
     /// Teams config (or the gateway bind it listens on) changed — restarts its listener.
     pub teams_changed: bool,
+    /// A2A config (or the gateway bind it listens on) changed — restarts its listener.
+    pub a2a_changed: bool,
     /// Cloud tunnel config changed — restarting the tunnel is disruptive.
     pub cloud_changed: bool,
     /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
@@ -94,77 +96,12 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     let telegram_changed = old.telegram != new.telegram;
     let teams_changed =
         old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind);
+    let a2a_changed =
+        old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind);
     let cloud_changed = old.cloud != new.cloud;
     let idle_changed = old.idle != new.idle;
 
-    let mut parts = Vec::new();
-    if old.main != new.main
-        || old.observer != new.observer
-        || old.reflector != new.reflector
-        || old.pulse != new.pulse
-        || old.embedding != new.embedding
-        || old.retry != new.retry
-        || old.max_tokens != new.max_tokens
-        || old.temperature != new.temperature
-        || old.thinking != new.thinking
-        || old.role_overrides != new.role_overrides
-    {
-        parts.push("providers");
-    }
-    if old.memory != new.memory {
-        parts.push("memory thresholds");
-    }
-    if gateway_changed {
-        parts.push("gateway bind/port");
-    }
-    if discord_changed {
-        parts.push("discord");
-    }
-    if telegram_changed {
-        parts.push("telegram");
-    }
-    if teams_changed {
-        parts.push("teams");
-    }
-    if old.pulse_enabled != new.pulse_enabled {
-        parts.push("pulse");
-    }
-    if old.subconscious != new.subconscious
-        || old.subconscious_settings != new.subconscious_settings
-    {
-        parts.push("subconscious");
-    }
-    if old.background != new.background {
-        parts.push("background");
-    }
-    if old.agent != new.agent {
-        parts.push("agent abilities");
-    }
-    if old.skills != new.skills {
-        parts.push("skills");
-    }
-    if old.tools != new.tools {
-        parts.push("tool path");
-    }
-    if idle_changed {
-        parts.push("idle");
-    }
-    if cloud_changed {
-        parts.push("cloud");
-    }
-    if old.tracing != new.tracing {
-        parts.push("tracing");
-    }
-    if old.timeout_secs != new.timeout_secs {
-        parts.push("http timeout");
-    }
-    if old.webhooks != new.webhooks {
-        parts.push("webhooks");
-    }
-    if old.web_search != new.web_search {
-        parts.push("web search");
-    }
-
+    let parts = summary_parts(old, new);
     let changed = !parts.is_empty();
     let mut summary = if changed {
         parts.join(", ")
@@ -186,10 +123,90 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         discord_changed,
         telegram_changed,
         teams_changed,
+        a2a_changed,
         cloud_changed,
         idle_changed,
         summary,
     }
+}
+
+/// Human-readable labels for every subsystem that differs between `old` and
+/// `new`, in the order shown in the reload log line. Split out of
+/// `diff_config` purely to keep that function's line count bounded; each
+/// check here is independent and re-derives its own condition rather than
+/// taking `ConfigDiff`'s flags as parameters.
+fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
+    let mut parts = Vec::new();
+    if old.main != new.main
+        || old.observer != new.observer
+        || old.reflector != new.reflector
+        || old.pulse != new.pulse
+        || old.embedding != new.embedding
+        || old.retry != new.retry
+        || old.max_tokens != new.max_tokens
+        || old.temperature != new.temperature
+        || old.thinking != new.thinking
+        || old.role_overrides != new.role_overrides
+    {
+        parts.push("providers");
+    }
+    if old.memory != new.memory {
+        parts.push("memory thresholds");
+    }
+    if old.gateway != new.gateway {
+        parts.push("gateway bind/port");
+    }
+    if old.discord != new.discord {
+        parts.push("discord");
+    }
+    if old.telegram != new.telegram {
+        parts.push("telegram");
+    }
+    if old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind) {
+        parts.push("teams");
+    }
+    if old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind) {
+        parts.push("a2a");
+    }
+    if old.pulse_enabled != new.pulse_enabled {
+        parts.push("pulse");
+    }
+    if old.subconscious != new.subconscious
+        || old.subconscious_settings != new.subconscious_settings
+    {
+        parts.push("subconscious");
+    }
+    if old.background != new.background {
+        parts.push("background");
+    }
+    if old.agent != new.agent {
+        parts.push("agent abilities");
+    }
+    if old.skills != new.skills {
+        parts.push("skills");
+    }
+    if old.tools != new.tools {
+        parts.push("tool path");
+    }
+    if old.idle != new.idle {
+        parts.push("idle");
+    }
+    if old.cloud != new.cloud {
+        parts.push("cloud");
+    }
+    if old.tracing != new.tracing {
+        parts.push("tracing");
+    }
+    if old.timeout_secs != new.timeout_secs {
+        parts.push("http timeout");
+    }
+    if old.webhooks != new.webhooks {
+        parts.push("webhooks");
+    }
+    if old.web_search != new.web_search {
+        parts.push("web search");
+    }
+    parts
 }
 
 /// Provider names (each tagged with its role) whose resolved credential
@@ -361,6 +378,9 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
     if diff.teams_changed {
         reload_teams_adapter(rt, &new_cfg).await;
+    }
+    if diff.a2a_changed {
+        reload_a2a_adapter(rt, &new_cfg).await;
     }
     if diff.cloud_changed {
         reload_tunnel(rt, &new_cfg).await;
@@ -931,6 +951,26 @@ async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     .await;
 }
 
+/// Stop the existing A2A listener (if running) and start a new one if
+/// enabled. Unlike the other adapters, a config change also needs a fresh
+/// agent card (the base URL or visibility may have changed), so this
+/// doesn't go through the generic `reload_adapter` helper.
+async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    shutdown_adapter(&mut rt.a2a_shutdown_tx, &mut rt.a2a_handle, "a2a").await;
+    rt.a2a_card_state = None;
+
+    if new_cfg.a2a.enabled {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let (handle, card_state) = crate::gateway::event_loop::build_a2a_listener(new_cfg, rx);
+        rt.a2a_handle = Some(handle);
+        rt.a2a_shutdown_tx = Some(tx);
+        rt.a2a_card_state = Some(card_state);
+        tracing::info!(visibility = %new_cfg.a2a.visibility, "a2a interface restarted with new config");
+    } else {
+        tracing::info!("a2a interface removed from config");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,6 +1003,7 @@ mod tests {
             discord: None,
             telegram: None,
             teams: None,
+            a2a: crate::config::A2aConfig::default(),
             webhooks: std::collections::HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },
@@ -1151,6 +1192,32 @@ mod tests {
         old.teams = None;
         new.teams = None;
         assert!(!diff_config(&old, &new).teams_changed);
+    }
+
+    #[test]
+    fn diff_config_restarts_a2a_on_its_own_changes() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.a2a.visibility = crate::config::A2aVisibility::Private;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.a2a_changed);
+        assert!(diff.summary().contains("a2a"));
+        assert!(!diff.teams_changed);
+    }
+
+    #[test]
+    fn diff_config_restarts_a2a_when_the_bind_it_shares_changes() {
+        let mut old = test_config();
+        old.a2a.enabled = true;
+        let mut new = old.clone();
+        new.gateway.bind = "0.0.0.0".to_string();
+        assert!(diff_config(&old, &new).a2a_changed);
+
+        // Disabled, a bind change is only a gateway change.
+        old.a2a.enabled = false;
+        new.a2a.enabled = false;
+        assert!(!diff_config(&old, &new).a2a_changed);
     }
 
     #[test]

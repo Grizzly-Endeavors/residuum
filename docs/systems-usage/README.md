@@ -23,6 +23,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `teams_state.json` | Managed by the Teams interface | Teams owner and conversation references for proactive messages. Edit only to reset the owner (see [Microsoft Teams](teams.md)). |
 | `discord_state.json` | Managed by the Discord interface | Discord owner and the conversations the bot has seen. Edit only to reset the owner (see [Discord](discord.md)). |
 | `telegram_state.json` | Managed by the Telegram interface | Telegram owner and the chats the bot has seen. Edit only to reset the owner (see [Telegram](telegram.md)). |
+| `config/agent-card.json` | Low | What this agent advertises to other agents over A2A: name, description, and skills. Bootstrapped with a generic placeholder and an empty skill list. See [A2A](a2a.md). |
 
 ### User-owned files
 
@@ -30,6 +31,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 |------|-------|
 | `config.toml` | Lives outside the workspace directory. Agent writes are blocked by `PathPolicy` — the gateway enforces this at the tool level, not by prompt instruction. |
 | `agent-keys.toml.enc` | Encrypted agent key store, outside the workspace directory. Managed with `residuum agent-keys` or Settings → Agent keys; the agent adds only keys it mints. Write-blocked by `PathPolicy`, like `secrets.toml.enc`. See [Agent keys](agent-keys.md). |
+| `a2a-keys.toml` | A2A caller-key store (hashes only), outside the workspace directory. Managed with `residuum a2a keys` or Settings → A2A. Write-blocked by `PathPolicy`. See [A2A](a2a.md). |
 
 ### Key principle
 
@@ -71,6 +73,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
 | [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
 | [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
+| [A2A](a2a.md) | Lets other agents (including a user's own other instances) reach this agent over the Agent2Agent protocol | *(interface — no tools)* | `[a2a]` in `config.toml`, `residuum a2a keys`, `config/agent-card.json` |
 
 ## What This Is Not
 
