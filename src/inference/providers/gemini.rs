@@ -16,7 +16,8 @@ use crate::inference::http::{
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    ResponseFormat, Role, StopReason, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition,
+    Usage,
 };
 
 /// Client for the Google Gemini `generateContent` API.
@@ -73,6 +74,7 @@ impl GeminiClient {
 
         let mut content_text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let finish_reason = candidate.finish_reason;
 
         for (idx, part) in candidate.content.parts.into_iter().enumerate() {
             match part {
@@ -111,6 +113,7 @@ impl GeminiClient {
 
         let mut model_response = InferenceResponse::new(content_text, tool_calls);
         model_response.usage = usage;
+        model_response.stop_reason = finish_reason.as_deref().map(map_stop_reason);
         Ok(model_response)
     }
 
@@ -524,6 +527,20 @@ struct GeminiResponse {
 #[derive(Deserialize)]
 struct GeminiCandidate {
     content: GeminiResponseContent,
+    #[serde(rename = "finishReason")]
+    finish_reason: Option<String>,
+}
+
+/// Map Gemini's `finishReason` to the provider-agnostic [`StopReason`].
+fn map_stop_reason(raw: &str) -> StopReason {
+    match raw {
+        "STOP" => StopReason::EndTurn,
+        "MAX_TOKENS" => StopReason::MaxTokens,
+        "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" => {
+            StopReason::ContentFilter
+        }
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -944,6 +961,85 @@ mod tests {
         assert_eq!(usage.input_tokens, 10, "input tokens should match");
         assert_eq!(usage.output_tokens, 5, "output tokens should match");
         assert!(response.is_complete(), "text-only response is complete");
+        assert_eq!(
+            response.stop_reason,
+            Some(StopReason::EndTurn),
+            "STOP should map to StopReason::EndTurn"
+        );
+        assert!(!response.was_truncated());
+    }
+
+    #[tokio::test]
+    async fn stop_reason_max_tokens_maps_to_truncation() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "cut off mid-sen"}]
+                    },
+                    "finishReason": "MAX_TOKENS"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 1024,
+                    "totalTokenCount": 1034
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.stop_reason, Some(StopReason::MaxTokens));
+        assert!(
+            response.was_truncated(),
+            "MAX_TOKENS must be reported as a truncation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_missing_from_response_is_none() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "hi"}]
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.stop_reason, None,
+            "a response with no finishReason field must parse, not error"
+        );
     }
 
     #[tokio::test]

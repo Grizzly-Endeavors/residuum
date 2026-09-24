@@ -11,7 +11,8 @@ use crate::inference::http::{
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    ResponseFormat, Role, StopReason, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition,
+    Usage,
 };
 
 /// Anthropic Messages API version header value.
@@ -366,6 +367,7 @@ impl AnthropicClient {
         let mut resp = InferenceResponse::new(content, tool_calls);
         resp.usage = usage;
         resp.thinking = thinking_text;
+        resp.stop_reason = response.stop_reason.as_deref().map(map_stop_reason);
         resp
     }
 }
@@ -686,6 +688,18 @@ struct AnthropicOutputFormat {
 struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
     usage: Option<AnthropicUsage>,
+    stop_reason: Option<String>,
+}
+
+/// Map Anthropic's `stop_reason` to the provider-agnostic [`StopReason`].
+fn map_stop_reason(raw: &str) -> StopReason {
+    match raw {
+        "end_turn" => StopReason::EndTurn,
+        "tool_use" => StopReason::ToolUse,
+        "max_tokens" => StopReason::MaxTokens,
+        "stop_sequence" => StopReason::StopSequence,
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -786,6 +800,89 @@ mod tests {
         let usage = resp.usage.unwrap();
         assert_eq!(usage.input_tokens, 10, "input tokens should match");
         assert_eq!(usage.output_tokens, 15, "output tokens should match");
+        assert_eq!(
+            resp.stop_reason,
+            Some(StopReason::EndTurn),
+            "end_turn should map to StopReason::EndTurn"
+        );
+        assert!(!resp.was_truncated(), "end_turn is not a truncation");
+    }
+
+    #[tokio::test]
+    async fn stop_reason_max_tokens_maps_to_truncation() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type": "text", "text": "cut off mid-sen"}],
+                "stop_reason": "max_tokens",
+                "usage": {"input_tokens": 10, "output_tokens": 1024}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let resp = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.stop_reason,
+            Some(StopReason::MaxTokens),
+            "max_tokens should map to StopReason::MaxTokens"
+        );
+        assert!(
+            resp.was_truncated(),
+            "max_tokens must be reported as a truncation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_tool_use_maps_correctly() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type": "tool_use", "id": "call_1", "name": "exec", "input": {}}],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 10, "output_tokens": 5}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let resp = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
+        assert!(!resp.was_truncated());
+    }
+
+    #[tokio::test]
+    async fn stop_reason_missing_from_response_is_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let resp = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.stop_reason, None,
+            "a response with no stop_reason field must parse, not error"
+        );
     }
 
     #[tokio::test]
