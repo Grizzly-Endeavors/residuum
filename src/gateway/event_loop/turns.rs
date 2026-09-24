@@ -1076,6 +1076,9 @@ mod tests {
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(4);
+        let mut sigterm = dummy_sigterm();
+        let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
+        let (_restart_tx, mut restart_rx) = mpsc::channel::<()>(1);
 
         // A stop request that arrived while the *previous* turn's
         // synchronous post-processing ran, before this turn's own select
@@ -1097,7 +1100,7 @@ mod tests {
             },
         };
 
-        let (turn_result, _leftovers, _scratch) = run_agent_turn_with_interrupts(
+        let (turn_result, _leftovers, _scratch, _shutdown) = run_agent_turn_with_interrupts(
             &mut agent,
             &messenger,
             &conversation_router,
@@ -1112,6 +1115,9 @@ mod tests {
             &mut agent_subscriber,
             &mut reload_rx,
             &mut stop_rx,
+            &mut sigterm,
+            &mut gateway_shutdown_rx,
+            &mut restart_rx,
             None,
         )
         .await;

@@ -16,10 +16,29 @@ If nothing is running in the target — main, or the conversation's session — 
 
 ## What Happens on Stop
 
-1. **The in-flight model call is cancelled immediately.** Since a turn spends most of its time waiting on the model, this is where a stop is felt — well under a second, not at the next tool boundary.
-2. **A tool call already executing runs to completion.** A stop never severs a tool mid-flight — no half-written files, no orphaned processes. The tool loop only checks for a stop between iterations, after any in-flight tool has returned.
-3. **The turn ends gracefully**, following the same path a normal turn does: partial assistant output and tool results already produced this turn are persisted, `TurnEnded` is published, and memory/observation hooks run as usual.
+A stop cancels work in progress immediately — it never waits for a tool boundary, a batch of tool calls, or the model to finish.
+
+1. **The in-flight model call is cancelled immediately.** well under a second, not at the next tool boundary.
+2. **A tool call already executing is interrupted, not run to completion.** The tool's own dispatch races against the stop: a built-in tool's `execute()` future is dropped the moment the stop lands, and `exec` additionally kills the command's whole process tree (see [Killing exec's Process Tree](#killing-execs-process-tree) below) so nothing is left running orphaned. Every other tool call still in that response's batch is skipped rather than started. Either way, the tool call still gets a result recorded in the transcript — worded as a cancellation, not a failure, so the model doesn't read it as something having gone wrong — so the transcript stays valid for the next provider call.
+3. **The turn ends gracefully**, following the same path a normal turn does: partial assistant output and tool results already produced this turn — including the cancellation results from step 2 — are persisted, `TurnEnded` is published, and memory/observation hooks run as usual.
 4. **A system note is added to history** recording that the user stopped the turn, so the next turn knows the work above was cut short and doesn't blindly re-run or re-report it.
+
+The user sees which tool was interrupted and how many calls were skipped through the same tool-activity stream every tool call already publishes (call and result events) — a skipped call publishes both events too, with the result naming the cancellation, so a streaming client's live activity feed shows exactly what a stop cut short without needing a dedicated event of its own.
+
+## Killing exec's Process Tree
+
+`exec` runs its command via a shell (`sh -c` on Unix, `cmd /S /C` on Windows), so killing only that shell on a stop or a timeout would leave anything it spawned running orphaned. To kill the whole tree instead:
+
+- **Unix**: the shell is spawned in its own process group (`pid == pgid`), and the group is sent `SIGKILL` via `killpg` — reaching the shell and everything it forked, never residuum's own process group.
+- **Windows**: `taskkill /T /F /PID <pid>` is run against the shell's pid — `/T` walks the OS's own parent/child bookkeeping to kill the whole tree, since Windows has no direct equivalent of a process group here.
+
+Either way, whatever stdout/stderr the command had already produced is kept and returned with the timeout or cancellation notice, instead of being discarded — the output pipes are drained on their own tasks the whole time the command runs, so a kill only stops new output, not what's already captured. See [`exec`](../../src/tools/TOOLS.md) for the exact message shapes.
+
+This applies per tool call, not per command in general: a planned feature (tracked as a `gh` issue) will let `exec` start a command that outlives the tool call and hands it off elsewhere (e.g. a background session). That command is not killed by a turn stop, because the kill is tied to the tool call's own lifetime, not to the process it started.
+
+## Daemon Shutdown and Restart
+
+Stopping the gateway — `residuum stop`, a SIGTERM, the HTTP `/api/shutdown` request, or a restart triggered by an update — cancels whatever turn is currently running the same way a user stop does, persisting its partial state identically, before the gateway actually shuts down or re-execs. A turn blocks the event loop's own event processing for its whole duration, so this is watched for from inside the turn's own loop rather than the event loop's — otherwise the shutdown trigger would sit unobserved until the turn finished on its own, which is what made `residuum stop` give up with "did not stop" on a long-running turn. `residuum stop` now succeeds promptly regardless of whether a turn is running.
 
 ## Correlation and Staleness
 
