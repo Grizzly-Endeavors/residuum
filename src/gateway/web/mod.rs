@@ -17,6 +17,7 @@ use super::ReloadSignal;
 pub(crate) mod a2a;
 mod agent_keys;
 pub(crate) mod artifact_identity;
+pub mod checkpoints;
 pub mod cloud;
 pub mod config;
 pub mod inbox;

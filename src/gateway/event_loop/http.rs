@@ -151,6 +151,11 @@ pub fn build_gateway_app(
             checkpoints: Arc::clone(&config_api_state.checkpoints),
         });
 
+    let checkpoints_router =
+        web::checkpoints::checkpoints_api_router(web::checkpoints::CheckpointApiState {
+            checkpoints: Arc::clone(&config_api_state.checkpoints),
+        });
+
     let agent_inbox_router = web::inbox::agent_inbox_api_router(state.clone());
     let memory_router = web::memory::memory_api_router(extra.memory);
     let model_router = web::model::model_api_router(extra.model);
@@ -166,6 +171,7 @@ pub fn build_gateway_app(
         .merge(update_router)
         .merge(tracing_router)
         .merge(workbench_router)
+        .merge(checkpoints_router)
         .merge(agent_inbox_router)
         .merge(memory_router)
         .merge(model_router)

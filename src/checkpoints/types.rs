@@ -1,9 +1,13 @@
 //! Public data types for the checkpoints system.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Which checkpoint repository an operation targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum RepoKind {
     /// `~/.residuum/checkpoints/workspace.git`, work tree = the workspace root.
     Workspace,
@@ -25,7 +29,9 @@ impl RepoKind {
 
 /// Why a checkpoint was taken. Recorded as a commit trailer and shown back
 /// in every listing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum CheckpointTrigger {
     /// Start of an agent turn: captures edits made outside Residuum since
     /// the previous checkpoint.
@@ -110,11 +116,13 @@ impl CheckpointContext {
 }
 
 /// One checkpoint as listed or looked up.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct CheckpointSummary {
     /// Full commit hex id.
     pub id: String,
-    /// When the checkpoint was taken.
+    /// When the checkpoint was taken (RFC 3339, UTC).
+    #[ts(type = "string")]
     pub timestamp: DateTime<Utc>,
     /// The session/address that caused it.
     pub address: String,
@@ -131,7 +139,9 @@ pub struct CheckpointSummary {
 }
 
 /// How a path changed in a checkpoint, relative to the checkpoint before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum ChangeKind {
     /// Added
     Added,
@@ -142,7 +152,8 @@ pub enum ChangeKind {
 }
 
 /// One changed path in a checkpoint's diff.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ChangedPath {
     /// Path relative to the repository's work tree.
     pub path: String,
@@ -151,7 +162,8 @@ pub struct ChangedPath {
 }
 
 /// A checkpoint plus the paths it changed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct CheckpointDetail {
     /// The checkpoint itself.
     pub summary: CheckpointSummary,
@@ -161,18 +173,23 @@ pub struct CheckpointDetail {
 
 /// On-disk size and history depth of a checkpoint repository, shown in
 /// `/api/status` and the CLI so growth is visible before the UI lands.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct RepoStats {
     /// Total size on disk of the repository's git directory, in bytes.
+    #[ts(type = "number")]
     pub on_disk_bytes: u64,
     /// Total number of checkpoints recorded.
+    #[ts(type = "number")]
     pub checkpoint_count: u64,
-    /// When the oldest checkpoint was taken, if any exist.
+    /// When the oldest checkpoint was taken (RFC 3339, UTC), if any exist.
+    #[ts(type = "string | null")]
     pub oldest: Option<DateTime<Utc>>,
 }
 
 /// The result of restoring a path to a checkpoint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct RestoreOutcome {
     /// The new checkpoint created to record the restore.
     pub checkpoint_id: String,
@@ -181,7 +198,8 @@ pub struct RestoreOutcome {
 }
 
 /// The result of undoing a checkpoint's changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct UndoOutcome {
     /// The new checkpoint created to record the undo.
     pub checkpoint_id: String,
@@ -194,7 +212,8 @@ pub struct UndoOutcome {
 }
 
 /// A page of checkpoint listings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct CheckpointPage {
     /// The checkpoints on this page, newest first.
     pub items: Vec<CheckpointSummary>,
