@@ -106,6 +106,8 @@ The failure this section exists to prevent is a guard built around a failure nob
 
 - The urge to add a guard usually means a higher tier is missing. Ask what the user would need to see the problem and to stop it, and build that.
 - A comment justifying a guard records what an agent believed when it wrote it; it is not an authority. If it names no observed failure, it is a ghost: replace it with visibility and intervention rather than preserving it.
+- A gap is missing visibility or intervention, not behavior you would have designed differently. If a behavior is visible and the user can stop or undo it, how it behaves is a product decision: leave it, and raise it only when it carries genuine risk or cost.
+- Document product behavior in `docs/systems-usage/` as a plain description of how the system works. Only the user decides what is intentional; agents describe what is. Skip "by design", "intentional", and "do not change": the doc records current behavior, not a case for keeping it.
 - This governs product behavior, not code correctness. Lints, pre-commit hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
 
 ## Error Handling & Observability
