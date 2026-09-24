@@ -195,6 +195,10 @@ pub(super) async fn create_agent(
         }
     }
 
+    let usage_totals =
+        crate::agent::usage::load_session_usage_totals(&layout.usage_totals_json()).await;
+    agent.restore_usage_totals(usage_totals).await;
+
     agent
 }
 

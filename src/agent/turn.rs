@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
     EndpointName, Publisher, SessionAddress, SessionEventKind, SessionResponseEvent,
-    ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
+    ToolActivityEvent, ToolCallEvent, ToolResultEvent, TurnUsageEvent, topics,
 };
 use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
@@ -22,6 +22,7 @@ use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_p
 use super::hop::HopCounter;
 use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
+use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
 
 /// Context for publishing streaming events during a turn.
 pub(crate) struct EventContext<'a> {
@@ -177,6 +178,54 @@ impl EventContext<'_> {
             tracing::debug!(error = %e, "failed to publish intermediate text to conversation");
         }
     }
+
+    /// Publish this turn's live usage progress after a model call: this
+    /// turn's own output tokens so far (for the running-turn indicator)
+    /// and, when the caller tracks cumulative session totals, the updated
+    /// totals (for the chat footer). Never reaches the agent itself — see
+    /// `docs/systems-usage/turn-control.md`.
+    async fn publish_usage(&self, turn: TurnUsage, session_totals: Option<SessionUsageTotals>) {
+        match self.target {
+            EventTarget::Endpoint {
+                output_endpoint: Some(ep),
+                correlation_id,
+                ..
+            } => {
+                if let Err(e) = self
+                    .publisher
+                    .publish(
+                        topics::Endpoint(ep.clone()),
+                        TurnUsageEvent {
+                            correlation_id: correlation_id.to_owned(),
+                            output_tokens: turn.output_tokens,
+                            has_usage: turn.has_usage,
+                            session_totals,
+                        },
+                    )
+                    .await
+                {
+                    tracing::debug!(error = %e, "failed to publish turn usage event");
+                }
+            }
+            EventTarget::Endpoint {
+                output_endpoint: None,
+                ..
+            } => {}
+            EventTarget::Session { address, run_id } => {
+                crate::background::events::publish_session_event(
+                    self.publisher,
+                    address,
+                    run_id,
+                    SessionEventKind::TurnUsage {
+                        output_tokens: turn.output_tokens,
+                        has_usage: turn.has_usage,
+                        session_totals,
+                    },
+                )
+                .await;
+            }
+        }
+    }
 }
 
 /// Maximum retries for empty responses (transient API glitches).
@@ -217,6 +266,12 @@ pub(crate) struct TurnResources<'a> {
     /// Incremental transcript persistence, or `None` when the caller
     /// persists the transcript some other way (the main agent).
     pub transcript_sink: Option<&'a dyn TranscriptSink>,
+    /// Durable session-level usage totals to accumulate this turn's model
+    /// calls into, for the web UI's chat footer. `None` for a turn that
+    /// doesn't track them (tests, and any turn kind that never surfaces to
+    /// a web client). The per-turn running-turn indicator publishes
+    /// regardless of whether this is set.
+    pub usage_sink: Option<&'a dyn UsageSink>,
     /// This turn's current hop count: set by the caller to the kickoff
     /// input's hop count before the turn starts, and raised here whenever an
     /// `Interrupt::AgentMessage` is drained mid-turn — that message becomes
@@ -290,24 +345,13 @@ pub(crate) async fn execute_turn(
     let mut empty_retries: u32 = 0;
     // Includes the triggering user message pushed just before this call.
     let turn_start = recent_messages.len().saturating_sub(1);
+    // This turn's own running totals for the web UI's turn-in-progress
+    // indicator. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
+    let mut turn_usage = TurnUsage::default();
 
     let mut iteration: usize = 0;
     loop {
-        if let Some(limit) = resources.max_tool_iterations
-            && iteration >= limit
-        {
-            tracing::warn!(
-                tool_calls = limit,
-                "turn stopped: reached the configured max_tool_iterations limit"
-            );
-            let notice = format!(
-                "I stopped after {limit} tool calls — the limit set by `max_tool_iterations` \
-                 in your Residuum config. Raise or remove that setting (under `[agent]` in \
-                 config.toml, or in Settings) to allow longer turns."
-            );
-            let final_message = Message::assistant(notice.clone(), None);
-            push_and_record(recent_messages, resources.transcript_sink, final_message).await;
-            texts.push(notice);
+        if check_tool_iteration_limit(resources, recent_messages, iteration, &mut texts).await {
             return Ok(texts);
         }
 
@@ -358,6 +402,8 @@ pub(crate) async fn execute_turn(
 
         if response.tool_calls.is_empty() {
             log_usage(&response);
+            update_and_publish_usage(&response, &mut turn_usage, resources.usage_sink, events)
+                .await;
             if response.content.is_empty() {
                 if empty_retries < MAX_EMPTY_RESPONSE_RETRIES {
                     empty_retries += 1;
@@ -403,8 +449,41 @@ pub(crate) async fn execute_turn(
         run_tool_call_batch(&response.tool_calls, resources, recent_messages, events).await;
 
         log_usage(&response);
+        update_and_publish_usage(&response, &mut turn_usage, resources.usage_sink, events).await;
         iteration += 1;
     }
+}
+
+/// Check whether this iteration has reached the configured
+/// `max_tool_iterations` limit and, if so, end the turn gracefully with an
+/// explanatory final message. Returns `true` when the turn should stop
+/// (its result is already pushed onto `texts`). Split out of
+/// [`execute_turn`] purely to keep that function's line count down.
+async fn check_tool_iteration_limit(
+    resources: &TurnResources<'_>,
+    recent_messages: &mut RecentMessages,
+    iteration: usize,
+    texts: &mut Vec<String>,
+) -> bool {
+    let Some(limit) = resources.max_tool_iterations else {
+        return false;
+    };
+    if iteration < limit {
+        return false;
+    }
+    tracing::warn!(
+        tool_calls = limit,
+        "turn stopped: reached the configured max_tool_iterations limit"
+    );
+    let notice = format!(
+        "I stopped after {limit} tool calls — the limit set by `max_tool_iterations` \
+         in your Residuum config. Raise or remove that setting (under `[agent]` in \
+         config.toml, or in Settings) to allow longer turns."
+    );
+    let final_message = Message::assistant(notice.clone(), None);
+    push_and_record(recent_messages, resources.transcript_sink, final_message).await;
+    texts.push(notice);
+    true
 }
 
 /// Drain interrupts at a tool-loop checkpoint and report whether the turn
@@ -721,6 +800,24 @@ fn log_usage(response: &InferenceResponse) {
     }
 }
 
+/// Fold a model call's usage into this turn's running totals, into the
+/// durable session totals when the turn tracks them, and publish the
+/// result for the web UI's running-turn indicator and chat footer. Never
+/// delivered to the agent itself — see `docs/systems-usage/turn-control.md`.
+async fn update_and_publish_usage(
+    response: &InferenceResponse,
+    turn_usage: &mut TurnUsage,
+    usage_sink: Option<&dyn UsageSink>,
+    events: &EventContext<'_>,
+) {
+    turn_usage.accumulate(response.usage);
+    let session_totals = match usage_sink {
+        Some(sink) => Some(sink.accumulate(response.usage).await),
+        None => None,
+    };
+    events.publish_usage(*turn_usage, session_totals).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,6 +1111,7 @@ mod tests {
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
+            usage_sink: None,
         };
 
         let bus_handle = crate::bus::spawn_broker();
@@ -1094,6 +1192,7 @@ mod tests {
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
+            usage_sink: None,
         };
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
@@ -1179,6 +1278,7 @@ mod tests {
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
+            usage_sink: None,
         };
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
@@ -1247,6 +1347,7 @@ mod tests {
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
+            usage_sink: None,
         };
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
@@ -1335,6 +1436,7 @@ mod tests {
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
+            usage_sink: None,
         };
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
@@ -1414,5 +1516,292 @@ mod tests {
                 .any(|m| m.role == Role::System && m.content == STOP_NOTE),
             "the stop must be recorded in history for the next turn"
         );
+    }
+
+    /// A [`UsageSink`] test double that records every call it's asked to
+    /// accumulate and returns pre-set cumulative totals in sequence.
+    #[derive(Default)]
+    struct MockUsageSink {
+        calls: StdMutex<Vec<Option<crate::inference::Usage>>>,
+        totals_to_return: StdMutex<Vec<SessionUsageTotals>>,
+    }
+
+    impl MockUsageSink {
+        fn new(totals_to_return: Vec<SessionUsageTotals>) -> Self {
+            Self {
+                calls: StdMutex::new(Vec::new()),
+                totals_to_return: StdMutex::new(totals_to_return),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl UsageSink for MockUsageSink {
+        async fn accumulate(&self, usage: Option<crate::inference::Usage>) -> SessionUsageTotals {
+            self.calls.lock().unwrap().push(usage);
+            let mut totals = self.totals_to_return.lock().unwrap();
+            if totals.len() > 1 {
+                totals.remove(0)
+            } else {
+                totals.first().copied().unwrap_or_default()
+            }
+        }
+    }
+
+    fn usage(input: u32, output: u32) -> crate::inference::Usage {
+        crate::inference::Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_usage_for_endpoint_target_maps_to_turn_usage_event() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut totals = SessionUsageTotals::default();
+        totals.accumulate(Some(usage(100, 20)));
+        events
+            .publish_usage(
+                TurnUsage {
+                    output_tokens: 20,
+                    has_usage: true,
+                },
+                Some(totals),
+            )
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.correlation_id, "corr-1");
+        assert_eq!(event.output_tokens, 20);
+        assert!(event.has_usage);
+        assert_eq!(event.session_totals, Some(totals));
+    }
+
+    #[tokio::test]
+    async fn publish_usage_with_no_output_endpoint_is_a_noop() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> =
+            bus_handle.subscribe(topics::Endpoint(ep)).await.unwrap();
+
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        events.publish_usage(TurnUsage::default(), None).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())
+                .await
+                .is_err(),
+            "with no output endpoint there is nowhere to publish turn usage"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_usage_for_a_session_target_uses_session_event_kind_turn_usage() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut sub: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+
+        let address = SessionAddress::from("spawned-x-0001");
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Session {
+                address: &address,
+                run_id: "run-1",
+            },
+            session_conversation: None,
+        };
+
+        events
+            .publish_usage(
+                TurnUsage {
+                    output_tokens: 7,
+                    has_usage: true,
+                },
+                None,
+            )
+            .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a SessionEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.address, address);
+        assert_eq!(event.run_id, "run-1");
+        assert!(matches!(
+            event.kind,
+            crate::bus::SessionEventKind::TurnUsage {
+                output_tokens: 7,
+                has_usage: true,
+                session_totals: None,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_and_publish_usage_feeds_the_sink_and_accumulates_the_turn_total() {
+        let sink = MockUsageSink::new(vec![{
+            let mut t = SessionUsageTotals::default();
+            t.accumulate(Some(usage(100, 20)));
+            t
+        }]);
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut turn_usage = TurnUsage::default();
+        let response = InferenceResponse {
+            content: "hi".to_string(),
+            tool_calls: vec![],
+            usage: Some(usage(100, 20)),
+            thinking: None,
+        };
+        update_and_publish_usage(&response, &mut turn_usage, Some(&sink), &events).await;
+
+        assert_eq!(
+            turn_usage.output_tokens, 20,
+            "the turn's own running total should accumulate"
+        );
+        assert_eq!(
+            sink.calls.lock().unwrap().as_slice(),
+            &[Some(usage(100, 20))],
+            "the sink should receive exactly the response's usage"
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.output_tokens, 20);
+        assert_eq!(event.session_totals.map(|t| t.input_tokens), Some(100));
+    }
+
+    #[tokio::test]
+    async fn update_and_publish_usage_with_no_sink_still_publishes_the_turn_progress() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut turn_usage = TurnUsage::default();
+        let response = InferenceResponse {
+            content: "hi".to_string(),
+            tool_calls: vec![],
+            usage: Some(usage(50, 5)),
+            thinking: None,
+        };
+        update_and_publish_usage(&response, &mut turn_usage, None, &events).await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.output_tokens, 5);
+        assert_eq!(
+            event.session_totals, None,
+            "with no usage sink there are no session totals to report"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_and_publish_usage_a_provider_with_no_usage_leaves_totals_blank() {
+        let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut turn_usage = TurnUsage::default();
+        let response = InferenceResponse {
+            content: "hi".to_string(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        };
+        update_and_publish_usage(&response, &mut turn_usage, Some(&sink), &events).await;
+
+        assert!(
+            !turn_usage.has_usage,
+            "a provider reporting no usage must not flip has_usage"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should still be published so the indicator keeps ticking")
+            .unwrap()
+            .unwrap();
+        assert!(!event.has_usage);
+        assert_eq!(event.output_tokens, 0);
     }
 }

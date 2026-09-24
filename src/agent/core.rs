@@ -14,6 +14,7 @@ use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use super::usage::{MainUsageSink, SessionUsageTotals};
 
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
@@ -58,6 +59,16 @@ pub struct Agent {
     /// so they can compute the hop count an outgoing message or spawn
     /// carries without a separate side channel.
     hop_counter: HopCounter,
+    /// Cumulative token usage totals for the main chat, shared with every
+    /// turn's [`MainUsageSink`] so they all accumulate onto the same
+    /// running total. Restored from disk at startup (see
+    /// [`Self::restore_usage_totals`]); never read by the agent itself —
+    /// see `docs/systems-usage/turn-control.md`.
+    usage_totals: std::sync::Arc<tokio::sync::Mutex<SessionUsageTotals>>,
+    /// Where `usage_totals` is persisted after every model call. `None`
+    /// for an agent with no workspace layout (test constructors) — totals
+    /// then live only in memory for the process's lifetime.
+    usage_totals_path: Option<std::path::PathBuf>,
 }
 
 impl Agent {
@@ -71,6 +82,10 @@ impl Agent {
         config: AgentConfig,
         hop_counter: HopCounter,
     ) -> Self {
+        let usage_totals_path = config
+            .layout
+            .as_ref()
+            .map(crate::workspace::layout::WorkspaceLayout::usage_totals_json);
         Self {
             provider,
             tools,
@@ -85,7 +100,24 @@ impl Agent {
             layout: config.layout,
             last_user_message_at: None,
             hop_counter,
+            usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
+                SessionUsageTotals::default(),
+            )),
+            usage_totals_path,
         }
+    }
+
+    /// Restore persisted usage totals at startup, so the chat footer shows
+    /// correct totals across a restart instead of resetting to zero.
+    pub async fn restore_usage_totals(&mut self, totals: SessionUsageTotals) {
+        *self.usage_totals.lock().await = totals;
+    }
+
+    /// Current cumulative usage totals.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) async fn usage_totals_snapshot(&self) -> SessionUsageTotals {
+        *self.usage_totals.lock().await
     }
 
     /// Load a fresh identity snapshot from disk. On read failure, logs an
@@ -311,6 +343,10 @@ impl Agent {
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
+        let usage_sink = MainUsageSink::new(
+            std::sync::Arc::clone(&self.usage_totals),
+            self.usage_totals_path.clone(),
+        );
         let resources = TurnResources {
             provider: &*self.provider,
             tools: &self.tools,
@@ -322,6 +358,7 @@ impl Agent {
             // The main agent persists its transcript separately
             // (`recent_messages.json`, written after the whole turn).
             transcript_sink: None,
+            usage_sink: Some(&usage_sink),
             hop_counter: &self.hop_counter,
         };
         let events = EventContext {
@@ -497,6 +534,108 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
+    }
+
+    #[tokio::test]
+    async fn process_message_accumulates_usage_totals_across_turns() {
+        let provider = MockProvider::new(vec![
+            InferenceResponse {
+                content: "first".to_string(),
+                tool_calls: vec![],
+                usage: Some(crate::inference::Usage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    cache_creation_tokens: None,
+                    cache_read_tokens: None,
+                }),
+                thinking: None,
+            },
+            InferenceResponse {
+                content: "second".to_string(),
+                tool_calls: vec![],
+                usage: Some(crate::inference::Usage {
+                    input_tokens: 150,
+                    output_tokens: 30,
+                    cache_creation_tokens: None,
+                    cache_read_tokens: None,
+                }),
+                thinking: None,
+            },
+        ]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        );
+
+        let (publisher, ep) = test_bus();
+
+        for msg in ["hi", "again"] {
+            let mut irx = interrupt::dead_interrupt_rx();
+            agent
+                .process_message(
+                    msg,
+                    &publisher,
+                    Some(&ep),
+                    None,
+                    "",
+                    None,
+                    &PromptContext::default(),
+                    &mut irx,
+                    &[],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let totals = agent.usage_totals_snapshot().await;
+        assert_eq!(
+            totals.input_tokens, 250,
+            "totals should accumulate across separate turns"
+        );
+        assert_eq!(totals.output_tokens, 50);
+        assert_eq!(
+            totals.context_tokens,
+            Some(150),
+            "context size should reflect only the latest call"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_usage_totals_seeds_the_shared_running_total() {
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        );
+
+        let mut restored = SessionUsageTotals::default();
+        restored.accumulate(Some(crate::inference::Usage {
+            input_tokens: 500,
+            output_tokens: 90,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+        agent.restore_usage_totals(restored).await;
+
+        assert_eq!(agent.usage_totals_snapshot().await, restored);
     }
 
     #[tokio::test]

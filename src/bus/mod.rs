@@ -22,7 +22,7 @@ pub use events::{
     InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent,
     ResponseEvent, ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent,
     SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
-    WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
+    TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

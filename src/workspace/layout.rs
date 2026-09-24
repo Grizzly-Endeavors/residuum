@@ -98,6 +98,14 @@ impl WorkspaceLayout {
         self.root.join("memory/recent_context.json")
     }
 
+    /// Path to the main agent's persisted cumulative token usage totals, so
+    /// the web UI's chat footer shows correct totals across a restart
+    /// instead of resetting to zero.
+    #[must_use]
+    pub fn usage_totals_json(&self) -> PathBuf {
+        self.root.join("memory/usage_totals.json")
+    }
+
     /// Path to the tantivy search index directory.
     #[must_use]
     pub fn search_index_dir(&self) -> PathBuf {
@@ -494,6 +502,16 @@ mod tests {
             layout.resume_points_json(),
             PathBuf::from("/tmp/ws/memory/sessions/resume_points.json"),
             "resume_points_json path"
+        );
+    }
+
+    #[test]
+    fn layout_usage_totals_path() {
+        let layout = WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            layout.usage_totals_json(),
+            PathBuf::from("/tmp/ws/memory/usage_totals.json"),
+            "usage_totals_json path"
         );
     }
 
