@@ -72,6 +72,8 @@ pub(crate) struct GatewayComponents {
     pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
     /// Outbound A2A tasks this instance started on other agents.
     pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Bootstrap the workspace directory and return the layout and timezone.
@@ -94,6 +96,33 @@ pub(super) async fn init_workspace(
     tracing::info!(workspace = %cfg.workspace_dir.display(), "changed to workspace directory");
 
     Ok((layout, tz))
+}
+
+/// Open (or create) the workspace and config checkpoint repositories under
+/// `~/.residuum/checkpoints/`.
+///
+/// # Errors
+/// Returns `FatalError` if either checkpoint repository can't be opened or
+/// initialized.
+fn init_checkpoints(
+    layout: &WorkspaceLayout,
+    cfg: &Config,
+    publisher: &crate::bus::Publisher,
+) -> Result<Arc<crate::checkpoints::CheckpointEngine>, FatalError> {
+    let checkpoints_dir = cfg.config_dir.join("checkpoints");
+    crate::checkpoints::CheckpointEngine::new(
+        layout.root().to_path_buf(),
+        cfg.config_dir.clone(),
+        &checkpoints_dir,
+        Some(publisher.clone()),
+    )
+    .map(Arc::new)
+    .map_err(|e| {
+        FatalError::Config(format!(
+            "failed to open checkpoint repositories at {}: {e}",
+            checkpoints_dir.display()
+        ))
+    })
 }
 
 /// Load identity files and build the shared HTTP client.
@@ -244,6 +273,7 @@ struct StartupSpawnContextInputs<'a> {
     agent_keys: &'a crate::agent_keys::SharedAgentKeys,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
@@ -285,6 +315,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         agent_keys: Arc::clone(inputs.agent_keys),
         a2a_hub: Arc::clone(inputs.a2a_hub),
         a2a_tracker: Arc::clone(inputs.a2a_tracker),
+        checkpoints: Arc::clone(inputs.checkpoints),
     })
 }
 
@@ -309,6 +340,7 @@ async fn init_session_runtime(
     publisher: &crate::bus::Publisher,
     session_observer: &Observer,
     merge_writer: &MemoryMergeWriter,
+    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
 ) -> (
     Arc<SessionRegistry>,
     Arc<SessionStore>,
@@ -346,9 +378,12 @@ async fn init_session_runtime(
         Arc::clone(&store),
         cfg.background.max_concurrent,
         &cfg.background,
-        publisher.clone(),
-        cfg.timezone,
-        Arc::clone(&messenger),
+        crate::background::runtime::SessionRuntimeHandles {
+            publisher: publisher.clone(),
+            tz: cfg.timezone,
+            messenger: Arc::clone(&messenger),
+            checkpoints: Arc::clone(checkpoints),
+        },
     ));
     let conversation_router = Arc::new(ConversationRouter::new(Arc::clone(&messenger)));
     (registry, store, messenger, runtime, conversation_router)
@@ -700,6 +735,7 @@ struct MainAgentInputs<'a> {
     agent_messenger: &'a Arc<AgentMessenger>,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Create main's hop counter and build the agent from it, wrapping
@@ -738,6 +774,7 @@ async fn build_main_agent(
             hop_counter: &hop_counter,
             a2a_hub: inputs.a2a_hub,
             a2a_tracker: inputs.a2a_tracker,
+            checkpoints: inputs.checkpoints,
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -773,6 +810,7 @@ struct AgentInitInputs<'a> {
     path_policy: &'a crate::tools::SharedPathPolicy,
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
     identity: IdentityFiles,
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,
@@ -812,6 +850,7 @@ async fn build_spawn_context_and_agent(
         agent_keys: &inputs.net.agent_keys,
         a2a_hub: inputs.a2a_hub,
         a2a_tracker: inputs.a2a_tracker,
+        checkpoints: inputs.checkpoints,
     });
 
     let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
@@ -834,6 +873,7 @@ async fn build_spawn_context_and_agent(
         agent_messenger: inputs.agent_messenger,
         a2a_hub: inputs.a2a_hub,
         a2a_tracker: inputs.a2a_tracker,
+        checkpoints: inputs.checkpoints,
     })
     .await;
 
@@ -853,6 +893,7 @@ pub(crate) async fn initialize(
     publisher: &crate::bus::Publisher,
 ) -> Result<GatewayComponents, FatalError> {
     let (layout, tz) = init_workspace(cfg).await?;
+    let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
 
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone())?;
@@ -872,7 +913,15 @@ pub(crate) async fn initialize(
         providers.embedding_provider.clone(),
     )?;
     let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
-        init_session_runtime(cfg, &layout, publisher, &session_observer, &merge_writer).await;
+        init_session_runtime(
+            cfg,
+            &layout,
+            publisher,
+            &session_observer,
+            &merge_writer,
+            &checkpoints,
+        )
+        .await;
     let net = init_networking(cfg, &layout).await;
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
     let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(
@@ -903,6 +952,7 @@ pub(crate) async fn initialize(
             path_policy: &path_policy,
             a2a_hub: &a2a_hub,
             a2a_tracker: &a2a_tracker,
+            checkpoints: &checkpoints,
             identity,
             provider: providers.provider,
             options: providers.options,
@@ -939,5 +989,6 @@ pub(crate) async fn initialize(
         tracing_client_context,
         a2a_hub,
         a2a_tracker,
+        checkpoints,
     })
 }

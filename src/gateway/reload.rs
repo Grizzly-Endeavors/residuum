@@ -540,6 +540,7 @@ fn build_spawn_context(
         agent_keys: Arc::clone(&rt.agent_keys),
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
+        checkpoints: Arc::clone(&rt.checkpoints),
     })
 }
 

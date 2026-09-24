@@ -152,6 +152,9 @@ pub struct SubAgentBuildConfig {
     /// Outbound A2A tasks this instance started on other agents, shared with
     /// main.
     pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs `workspace_history`/`workspace_restore`.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 #[cfg(test)]

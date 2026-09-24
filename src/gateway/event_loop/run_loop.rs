@@ -507,6 +507,7 @@ async fn build_runtime(
         a2a_card_state: spawned.adapters.a2a_card_state,
         a2a_hub: parts.a2a_hub,
         a2a_tracker: parts.a2a_tracker,
+        checkpoints: parts.checkpoints,
         a2a_public_url: spawned.adapters.a2a_public_url,
         watcher_handle: spawned.watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,

@@ -20,7 +20,7 @@ use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
     a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
     memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
-    submit_feedback, web_fetch, write,
+    submit_feedback, web_fetch, workspace_checkpoints, write,
 };
 
 /// Registry of available tools.
@@ -121,6 +121,9 @@ pub struct SubagentToolDeps {
     /// Outbound A2A tasks this instance started on other agents, shared with
     /// main.
     pub a2a_tracker: Arc<RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs `workspace_history`/`workspace_restore`.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 impl ToolRegistry {
@@ -463,6 +466,7 @@ impl ToolRegistry {
             web_search_backend,
             a2a_hub,
             a2a_tracker,
+            checkpoints,
         } = deps;
 
         let mut registry = Self::new();
@@ -534,6 +538,9 @@ impl ToolRegistry {
         // Web fetch
         registry.register_web_fetch_tool();
 
+        // Workspace checkpoint history (workspace repository only)
+        registry.register_workspace_checkpoint_tools(checkpoints);
+
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
 
@@ -583,6 +590,20 @@ impl ToolRegistry {
     /// Register the `web_fetch` tool for fetching web page content.
     pub fn register_web_fetch_tool(&mut self) {
         self.register(Box::new(web_fetch::WebFetchTool::new()));
+    }
+
+    /// Register the `workspace_history` and `workspace_restore` tools,
+    /// scoped to the workspace checkpoint repository only.
+    pub fn register_workspace_checkpoint_tools(
+        &mut self,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
+        self.register(Box::new(workspace_checkpoints::WorkspaceHistoryTool::new(
+            Arc::clone(&checkpoints),
+        )));
+        self.register(Box::new(workspace_checkpoints::WorkspaceRestoreTool::new(
+            checkpoints,
+        )));
     }
 
     /// Register the `file_bug_report` and `submit_feedback` tools.

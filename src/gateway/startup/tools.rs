@@ -41,6 +41,8 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     /// Outbound A2A tasks this instance started on other agents.
     pub a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -136,6 +138,9 @@ pub(super) fn init_tool_registry(
         Arc::clone(deps.tracing_client_context),
         Arc::clone(deps.session_registry),
     );
+
+    // Workspace checkpoint history (workspace repository only)
+    tools.register_workspace_checkpoint_tools(Arc::clone(deps.checkpoints));
 
     // Register Ollama Cloud web search tool if configured
     if let Some(backend) = &cfg.web_search.standalone_backend
@@ -310,6 +315,7 @@ mod tests {
         hop_counter: HopCounter,
         a2a_hub: Arc<crate::a2a::A2aClientHub>,
         a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     }
 
     async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -362,6 +368,15 @@ mod tests {
             layout.agent_inbox_dir(),
         )
         .await;
+        let checkpoints = Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                layout.root().to_path_buf(),
+                dir.to_path_buf(),
+                &dir.join("checkpoints"),
+                None,
+            )
+            .expect("checkpoint repos should open in a fresh tempdir"),
+        );
 
         Harness {
             cfg,
@@ -382,6 +397,7 @@ mod tests {
             hop_counter,
             a2a_hub,
             a2a_tracker,
+            checkpoints,
         }
     }
 
@@ -428,6 +444,7 @@ mod tests {
             web_search_backend: h.cfg.web_search.standalone_backend.clone(),
             a2a_hub: Arc::clone(&h.a2a_hub),
             a2a_tracker: Arc::clone(&h.a2a_tracker),
+            checkpoints: Arc::clone(&h.checkpoints),
         })
     }
 
@@ -468,6 +485,7 @@ mod tests {
             hop_counter: &h.hop_counter,
             a2a_hub: &h.a2a_hub,
             a2a_tracker: &h.a2a_tracker,
+            checkpoints: &h.checkpoints,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
