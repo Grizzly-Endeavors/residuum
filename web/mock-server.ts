@@ -11,6 +11,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
 /** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
 const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
@@ -1069,6 +1070,40 @@ function text(res: ServerResponse, status: number, body: string) {
   res.end(body);
 }
 
+/**
+ * Merge a JSON diff (the shape the Settings form's diff builders in
+ * `lib/settings-toml.ts` send) into a plain object in place — the mock's
+ * stand-in for the real backend's `toml_edit`/JSON-merge patching
+ * (`src/config/patch.rs`, `src/workspace/mcp_patch.rs`). Comment
+ * preservation doesn't apply here (mock state is never a real file with
+ * comments), but the merge semantics match: `null` removes a key, a nested
+ * object recurses, and `{"$inline": {...}}` sets the key to that inner
+ * object directly.
+ */
+function applyJsonPatch(target: Record<string, unknown>, diff: Record<string, unknown>): void {
+  for (const [key, val] of Object.entries(diff)) {
+    if (val === null) {
+      delete target[key];
+    } else if (typeof val === "object" && !Array.isArray(val)) {
+      const obj = val as Record<string, unknown>;
+      if ("$inline" in obj) {
+        target[key] = obj.$inline;
+        continue;
+      }
+      const existing = target[key];
+      const sub =
+        typeof existing === "object" && existing !== null && !Array.isArray(existing)
+          ? (existing as Record<string, unknown>)
+          : {};
+      target[key] = sub;
+      applyJsonPatch(sub, obj);
+      if (Object.keys(sub).length === 0) delete target[key];
+    } else {
+      target[key] = val;
+    }
+  }
+}
+
 /** The name-shaped `X-Residuum-Artifact` header, or `null` when it's absent or malformed. */
 function artifactIdentity(req: IncomingMessage): string | null {
   const raw = req.headers["x-residuum-artifact"];
@@ -1318,6 +1353,17 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      if (path === "/api/config/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.configToml.trim()
+          ? (parseToml(state.configToml) as Record<string, unknown>)
+          : {};
+        applyJsonPatch(doc, diff);
+        state.configToml = stringifyToml(doc);
+        json(res, 200, { valid: true });
+        return;
+      }
+
       if (path === "/api/config/validate" && method === "POST") {
         json(res, 200, { valid: true });
         return;
@@ -1343,6 +1389,17 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/providers/raw" && method === "PUT") {
         state.providersToml = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/providers/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.providersToml.trim()
+          ? (parseToml(state.providersToml) as Record<string, unknown>)
+          : {};
+        applyJsonPatch(doc, diff);
+        state.providersToml = stringifyToml(doc);
         json(res, 200, { valid: true });
         return;
       }
@@ -1380,6 +1437,18 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/mcp/raw" && method === "PUT") {
         state.mcpJson = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/mcp/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.mcpJson.trim()
+          ? (JSON.parse(state.mcpJson) as Record<string, unknown>)
+          : { mcpServers: {} };
+        applyJsonPatch(doc, diff);
+        doc.mcpServers ??= {};
+        state.mcpJson = JSON.stringify(doc, null, 2);
         json(res, 200, { valid: true });
         return;
       }
