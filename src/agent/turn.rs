@@ -12,7 +12,9 @@ use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
 };
 use crate::mcp::SharedMcpRegistry;
-use crate::tools::{ToolError, ToolRegistry};
+use crate::tools::{
+    CANCELLED_BEFORE_START, CANCELLED_WHILE_RUNNING, ToolError, ToolRegistry, ToolResult,
+};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
 
@@ -398,9 +400,7 @@ pub(crate) async fn execute_turn(
             );
         }
 
-        for tool_call in &response.tool_calls {
-            execute_tool(tool_call, resources, recent_messages, events).await;
-        }
+        run_tool_call_batch(&response.tool_calls, resources, recent_messages, events).await;
 
         log_usage(&response);
         iteration += 1;
@@ -416,17 +416,32 @@ async fn check_interrupts_and_stop(
     resources: &TurnResources<'_>,
     iteration: usize,
 ) -> bool {
-    let stopped = drain_interrupts(
+    let mut stopped = drain_interrupts(
         interrupt_rx,
         recent_messages,
         resources.transcript_sink,
         resources.hop_counter,
     )
     .await;
+
+    // A stop that has no matching `Interrupt::Stopped` marker still needs to
+    // end the turn here — e.g. daemon shutdown cancels the turn's own
+    // `stop_token` directly (see `run_agent_turn_with_interrupts`) without
+    // routing anything through this interrupt channel.
+    if !stopped && resources.stop_token.is_cancelled() {
+        push_and_record(
+            recent_messages,
+            resources.transcript_sink,
+            Message::system(STOP_NOTE),
+        )
+        .await;
+        stopped = true;
+    }
+
     if stopped {
         tracing::info!(
             iterations = iteration,
-            "turn stopped by user before next model call"
+            "turn stopped before next model call"
         );
     }
     stopped
@@ -475,6 +490,37 @@ async fn drain_interrupts(
     stopped
 }
 
+/// Run every tool call a model response carries, in order.
+///
+/// Once the turn is stopped — whether that happens during one of these
+/// calls or was already true going in — every remaining call in the batch
+/// is skipped rather than run, but still gets a recorded result (see
+/// `skip_tool_call`) so the transcript stays valid for the next provider
+/// call.
+async fn run_tool_call_batch(
+    tool_calls: &[ToolCall],
+    resources: &TurnResources<'_>,
+    recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
+) {
+    let mut skipped = 0_usize;
+    for tool_call in tool_calls {
+        if resources.stop_token.is_cancelled() {
+            skip_tool_call(tool_call, resources, recent_messages, events).await;
+            skipped += 1;
+            continue;
+        }
+        execute_tool(tool_call, resources, recent_messages, events).await;
+    }
+    if skipped > 0 {
+        tracing::info!(
+            skipped,
+            total = tool_calls.len(),
+            "skipped remaining tool calls after the turn was stopped"
+        );
+    }
+}
+
 /// Execute a single tool call, falling back to MCP servers.
 #[tracing::instrument(skip_all, fields(tool.name = %tool_call.name, tool.id = %tool_call.id))]
 async fn execute_tool(
@@ -505,7 +551,11 @@ async fn execute_tool(
     let result = if crate::tools::is_plausible_tool_name(&tool_call.name) {
         match resources
             .tools
-            .execute(&tool_call.name, tool_call.arguments.clone())
+            .execute_cancellable(
+                &tool_call.name,
+                tool_call.arguments.clone(),
+                resources.stop_token,
+            )
             .await
         {
             // Try built-in tools first, fall back to MCP servers. This
@@ -517,12 +567,18 @@ async fn execute_tool(
             Err(ToolError::NotFound(_)) => {
                 tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
                 used_mcp = true;
-                resources
-                    .mcp_registry
-                    .read()
-                    .await
-                    .call_tool(&tool_call.name, tool_call.arguments.clone())
-                    .await
+                // The MCP registry has no cancellation awareness of its own
+                // (unlike `execute_cancellable`'s built-in path), so this
+                // races the call directly: on a stop, the call is dropped
+                // and a cancellation result reported instead of waiting for
+                // an MCP server that may never answer.
+                let mcp_guard = resources.mcp_registry.read().await;
+                let call = mcp_guard.call_tool(&tool_call.name, tool_call.arguments.clone());
+                tokio::select! {
+                    biased;
+                    () = resources.stop_token.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
+                    r = call => r,
+                }
             }
             other => other,
         }
@@ -550,6 +606,18 @@ async fn execute_tool(
             (e.to_string(), true, vec![])
         }
     };
+
+    // Reached only when the dispatch above actually raced against the stop
+    // (built-in default `execute_cancellable`, `ExecTool`'s own override, or
+    // the MCP race just above) and lost — i.e. this call was running when
+    // the turn was stopped, not merely one that happened to run after.
+    if resources.stop_token.is_cancelled() {
+        tracing::info!(
+            tool_name = %tool_call.name,
+            tool_call_id = %tool_call.id,
+            "tool call interrupted: the turn was stopped while it was running"
+        );
+    }
 
     // The one redaction point for tool output: everything downstream (the
     // web UI activity feed, recent_messages, transcripts, episodes, the
@@ -588,6 +656,56 @@ async fn execute_tool(
     push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
 }
 
+/// Record a tool call that never ran because the turn had already been
+/// stopped by the time its turn came up in this response's batch.
+///
+/// Every tool call a response carries still needs a matching tool result —
+/// providers reject a transcript with a call left unanswered — so this
+/// reports the same call/result event pair a real execution would, with a
+/// cancellation notice standing in for the result.
+async fn skip_tool_call(
+    tool_call: &ToolCall,
+    resources: &TurnResources<'_>,
+    recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
+) {
+    events
+        .publish_tool_activity(
+            ToolActivityEvent::Call(ToolCallEvent {
+                correlation_id: events.correlation_id().to_owned(),
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                arguments: tool_call.arguments.clone(),
+            }),
+            &tool_call.name,
+        )
+        .await;
+
+    tracing::info!(
+        tool_name = %tool_call.name,
+        tool_call_id = %tool_call.id,
+        "tool call skipped: the turn was stopped before it started"
+    );
+
+    let result = ToolResult::cancelled(CANCELLED_BEFORE_START);
+
+    events
+        .publish_tool_activity(
+            ToolActivityEvent::Result(ToolResultEvent {
+                correlation_id: events.correlation_id().to_owned(),
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                output: result.output.clone(),
+                is_error: result.is_error,
+            }),
+            &tool_call.name,
+        )
+        .await;
+
+    let tool_message = Message::tool(result.output, tool_call.id.clone());
+    push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
+}
+
 /// Log token usage from a model response at debug level.
 fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
@@ -608,6 +726,7 @@ mod tests {
     use super::*;
     use crate::inference::Role;
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Collects every message it's asked to record, so a test can assert the
     /// incremental transcript sink saw exactly what `recent_messages` did.
@@ -1005,6 +1124,295 @@ mod tests {
                 .contains("Authorization: Bearer [agent-key:api_key]"),
             "the value should be replaced by its marker: {}",
             msg.content
+        );
+    }
+
+    /// A tool whose `execute()` never resolves, so the default
+    /// `execute_cancellable()` can only return via its cancellation branch —
+    /// proving dispatch actually races against the stop token instead of
+    /// waiting for the tool to finish.
+    struct BlockingTool;
+
+    #[async_trait]
+    impl crate::tools::Tool for BlockingTool {
+        fn name(&self) -> &'static str {
+            "blocking_tool"
+        }
+
+        fn definition(&self) -> crate::inference::ToolDefinition {
+            crate::inference::ToolDefinition {
+                name: self.name().to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_tool_reports_cancellation_when_stopped_mid_execution() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(BlockingTool));
+
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "blocking_tool".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let cancel_after_a_moment = {
+            let stop_token = stop_token.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                stop_token.cancel();
+            }
+        };
+
+        let mut recent = RecentMessages::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(
+                execute_tool(&tool_call, &resources, &mut recent, &events),
+                cancel_after_a_moment,
+            )
+        })
+        .await
+        .expect("a stop should let execute_tool return well within 2s of a hung tool");
+
+        let msg = recent
+            .messages()
+            .first()
+            .expect("a tool-result message should have been recorded");
+        assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
+        assert_eq!(
+            msg.content,
+            crate::tools::CANCELLED_WHILE_RUNNING,
+            "the transcript should say the tool was cancelled, not that it failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_tool_call_records_a_cancelled_result_without_running_anything() {
+        let tools = ToolRegistry::new();
+        let tool_call = ToolCall {
+            id: "call-2".to_string(),
+            name: "whatever".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        skip_tool_call(&tool_call, &resources, &mut recent, &events).await;
+
+        let msg = recent
+            .messages()
+            .first()
+            .expect("a tool-result message should have been recorded");
+        assert_eq!(msg.role, Role::Tool, "should be a tool-result message");
+        assert_eq!(msg.content, crate::tools::CANCELLED_BEFORE_START);
+    }
+
+    /// Returns a two-tool-call response exactly once; a second call means
+    /// the turn looped back for another model call instead of stopping,
+    /// which this test must catch.
+    struct TwoToolCallsProvider {
+        served: AtomicBool,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for TwoToolCallsProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            assert!(
+                !self.served.swap(true, Ordering::SeqCst),
+                "the turn should have stopped after the first batch, not called complete() again"
+            );
+            Ok(InferenceResponse::new(
+                String::new(),
+                vec![
+                    ToolCall {
+                        id: "call-1".to_string(),
+                        name: "blocking_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                    },
+                    ToolCall {
+                        id: "call-2".to_string(),
+                        name: "blocking_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                    },
+                ],
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "two-tool-calls"
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_turn_skips_remaining_tool_calls_after_a_mid_batch_stop() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(BlockingTool));
+
+        let provider = TwoToolCallsProvider {
+            served: AtomicBool::new(false),
+        };
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            stop_token: &stop_token,
+            transcript_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::channel(4);
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("go"));
+
+        let cancel_after_a_moment = {
+            let stop_token = stop_token.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                stop_token.cancel();
+            }
+        };
+
+        let (turn_result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(
+                execute_turn(
+                    &resources,
+                    &memory_ctx,
+                    &prompt_ctx,
+                    &mut recent,
+                    &events,
+                    None,
+                    &mut interrupt_rx,
+                    None,
+                ),
+                cancel_after_a_moment,
+            )
+        })
+        .await
+        .expect("the turn should end well within 2s of the stop");
+
+        let texts = turn_result.expect("a stopped turn is not a turn error");
+        assert!(texts.is_empty(), "a stopped turn produces no final text");
+
+        let messages = recent.messages();
+        let tool_results: Vec<_> = messages.iter().filter(|m| m.role == Role::Tool).collect();
+        assert_eq!(
+            tool_results.len(),
+            2,
+            "every tool call in the batch must get a matching result"
+        );
+        assert_eq!(
+            tool_results
+                .first()
+                .expect("checked above: exactly 2 results")
+                .content,
+            crate::tools::CANCELLED_WHILE_RUNNING,
+            "the call that was running when the stop landed was interrupted"
+        );
+        assert_eq!(
+            tool_results
+                .get(1)
+                .expect("checked above: exactly 2 results")
+                .content,
+            crate::tools::CANCELLED_BEFORE_START,
+            "the second call in the batch must never have started"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == Role::System && m.content == STOP_NOTE),
+            "the stop must be recorded in history for the next turn"
         );
     }
 }
