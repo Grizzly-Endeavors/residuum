@@ -98,7 +98,7 @@ Residuum does long-running, autonomous work, so things will go wrong mid-run. De
 **Tiers 1 and 2 are part of the feature, and they are gated twice:**
 
 - **Before implementation**, state them explicitly, to the user or in the plan or design doc: what the user and the agent will see, how the feature degrades, and how it is stopped, rolled back, or undone.
-- **Before the feature ships**, review that both were built as stated. A feature missing either tier is not done.
+- **Before the feature ships**, review the completed implementation for gaps in both tiers that weren't anticipated by the plan. A feature missing either tier is not done.
 
 ### Chesterton's Ghosts
 
