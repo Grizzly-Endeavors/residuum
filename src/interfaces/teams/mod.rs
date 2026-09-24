@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointName, Publisher};
 use crate::config::TeamsConfig;
 use crate::gateway::event_loop::AdapterSenders;
@@ -59,6 +60,7 @@ pub(super) struct TeamsRuntime {
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+    session_registry: Arc<SessionRegistry>,
     inbox_dir: PathBuf,
     tz: chrono_tz::Tz,
 }
@@ -180,6 +182,7 @@ impl TeamsInterface {
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             stop_tx: self.senders.stop,
+            session_registry: self.senders.session_registry,
             inbox_dir: self.layout.agent_inbox_dir(),
             tz: self.tz,
             cfg: self.cfg,

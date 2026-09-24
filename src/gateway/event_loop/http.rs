@@ -24,6 +24,9 @@ pub struct AdapterSenders {
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
     pub stop: mpsc::Sender<StopRequest>,
+    /// Looked up when a `/stop` command targets a conversation session
+    /// rather than main — see [`crate::interfaces::dispatch_stop_request`].
+    pub session_registry: Arc<SessionRegistry>,
     /// Where the adapter registers the conversations it can reach.
     pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
 }

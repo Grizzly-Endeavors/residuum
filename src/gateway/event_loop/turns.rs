@@ -110,6 +110,24 @@ pub fn drain_interrupts(interrupt_rx: &mut mpsc::Receiver<Interrupt>) -> Vec<Int
     leftovers
 }
 
+/// Drain every stop request already queued on `stop_rx` and answer each one
+/// `false` ("nothing is running"), without waiting for more to arrive.
+///
+/// Called right before a turn's own select loop starts watching this same
+/// channel, so anything found here necessarily predates the turn about to
+/// run and cannot have been meant for it.
+fn drain_stale_stop_requests(stop_rx: &mut mpsc::Receiver<StopRequest>) {
+    while let Ok(req) = stop_rx.try_recv() {
+        tracing::debug!(
+            requested = ?req.reply_to,
+            "stale stop request drained before new turn started, nothing to stop"
+        );
+        if let Some(tx) = req.result_tx {
+            tx.send(false).ok();
+        }
+    }
+}
+
 /// Persist new messages and run observation if thresholds are exceeded.
 pub async fn persist_and_maybe_observe(
     rt: &mut GatewayRuntime,
@@ -182,6 +200,19 @@ async fn run_agent_turn_with_interrupts(
     Vec<Interrupt>,
     Option<Arc<std::sync::Mutex<crate::subconscious::TurnScratch>>>,
 ) {
+    // A request that arrived while the previous turn's synchronous
+    // post-processing ran (persist, observe, subconscious) sits unread in
+    // `stop_rx` until something drains it — nobody polls this channel
+    // between the end of that turn's own select loop below and this one
+    // starting. Left alone, the inner loop's `stop_req = stop_rx.recv()` arm
+    // would read it as its very first event and, since a chat command's
+    // stop carries `reply_to: None` ("stop whichever turn is running"),
+    // apply it to this brand new, unrelated turn. Draining and answering
+    // every such request here — before this turn's own loop ever starts
+    // watching the channel — makes that impossible by construction: nothing
+    // left over from before this turn can survive into it.
+    drain_stale_stop_requests(stop_rx);
+
     // Cloned before the mutable borrow below (`agent.hop_counter()` borrows
     // `agent`, and `process_message` needs it mutably) — a clone still
     // refers to the same shared cell, so mid-turn bumps below and reads from
@@ -880,6 +911,85 @@ mod tests {
             7,
             "the bump from the mid-turn message must survive to the end of the turn"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_stop_request_queued_before_turn_start_is_answered_and_does_not_cancel_it() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::background::store::SessionStore::new(
+            dir.path().to_path_buf(),
+        ));
+        let messenger = Arc::new(crate::background::messaging::AgentMessenger::new(
+            Arc::new(crate::background::registry::SessionRegistry::new()),
+            publisher.clone(),
+            store,
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let conversation_router = Arc::new(crate::background::ConversationRouter::new(Arc::clone(
+            &messenger,
+        )));
+
+        let gate = Arc::new(tokio::sync::Notify::new());
+        // Permit stored ahead of time (Tokio's `Notify` keeps one), so the
+        // model call returns immediately once awaited below.
+        gate.notify_one();
+        let mut agent = test_agent(GatedProvider {
+            gate,
+            response: "done".to_string(),
+        });
+
+        let mut agent_subscriber: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(4);
+
+        // A stop request that arrived while the *previous* turn's
+        // synchronous post-processing ran, before this turn's own select
+        // loop starts watching `stop_rx` — exactly the window nothing used
+        // to drain.
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        stop_tx
+            .send(StopRequest {
+                reply_to: None,
+                result_tx: Some(result_tx),
+            })
+            .await
+            .unwrap();
+
+        let prompt_ctx = PromptContext {
+            skills: crate::agent::context::SkillsContext {
+                index: None,
+                active_instructions: None,
+            },
+        };
+
+        let (turn_result, _leftovers, _scratch) = run_agent_turn_with_interrupts(
+            &mut agent,
+            &messenger,
+            &conversation_router,
+            "hello",
+            &publisher,
+            None,
+            None,
+            "corr-stale-stop",
+            None,
+            &prompt_ctx,
+            &[],
+            &mut agent_subscriber,
+            &mut reload_rx,
+            &mut stop_rx,
+            None,
+        )
+        .await;
+
+        assert!(
+            !result_rx.await.unwrap(),
+            "a stop request queued before this turn started must be answered false, not left pending"
+        );
+        turn_result
+            .expect("the new turn must complete normally, not be cancelled by the stale request");
     }
 
     /// A group-chat message on "chan-1", sent by the owner — the owner

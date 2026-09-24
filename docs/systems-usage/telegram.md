@@ -19,6 +19,8 @@ Every message the agent sees records who sent it and where, e.g. `[From: Bear Fl
 
 Only the owner's own private chat reaches the main agent. Every other admitted conversation — a group or supergroup, and a non-owner's private chat when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that chat, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group — a group is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that chat — see [Where replies go](#where-replies-go).
 
+`/stop` follows the same routing: typed in the owner's own private chat it stops main's current turn; typed in a group or supergroup it stops that chat's session instead, never main — see [Turn Control](turn-control.md).
+
 ## Private chats and groups
 
 In a private chat every message goes to the agent.

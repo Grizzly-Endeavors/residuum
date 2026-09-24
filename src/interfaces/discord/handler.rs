@@ -15,6 +15,7 @@ use serenity::model::id::ChannelId;
 use serenity::model::user::User;
 use serenity::prelude::*;
 
+use crate::background::registry::SessionRegistry;
 use crate::bus::Publisher;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
@@ -38,6 +39,7 @@ pub(super) struct DiscordHandler {
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+    pub(super) session_registry: Arc<SessionRegistry>,
     pub(super) tz: chrono_tz::Tz,
 }
 
@@ -173,10 +175,23 @@ impl EventHandler for DiscordHandler {
             .and_then(|opt| opt.value.as_str())
             .map(str::to_string);
 
+        // A slash command carries no @mention, so its conversation identity
+        // is derived the same way `addressed_to_agent` derives it for an
+        // ordinary message: no guild means a DM.
+        let conversation = ConversationContext {
+            id: cmd.channel_id.to_string(),
+            kind: if cmd.guild_id.is_some() {
+                ConversationKind::Channel
+            } else {
+                ConversationKind::Personal
+            },
+            is_owner: matches!(standing, Standing::Owner),
+        };
         let dispatch = crate::interfaces::CommandDispatch {
             reload_tx: &self.reload_tx,
             command_tx: &self.command_tx,
             stop_tx: &self.stop_tx,
+            session_registry: &self.session_registry,
             inbox_dir: &self.inbox_dir,
             tz: self.tz,
         };
@@ -186,6 +201,7 @@ impl EventHandler for DiscordHandler {
             &dispatch,
             super::ENDPOINT,
             &cmd.user.name,
+            Some(&conversation),
         )
         .await;
 
@@ -411,6 +427,7 @@ mod tests {
             reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
+            session_registry: Arc::new(SessionRegistry::new()),
             tz: chrono_tz::UTC,
         }
     }

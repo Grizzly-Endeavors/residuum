@@ -25,6 +25,8 @@ Every message the agent sees records who sent it and where, e.g. `[From: bear vi
 
 Only the owner's own direct messages reach the main agent. Every other admitted conversation — a server channel or thread, and a non-owner's DM when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that channel, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a server channel — a channel is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that channel — see [Where replies go](#where-replies-go).
 
+`/stop` follows the same routing: typed in the owner's own DM it stops main's current turn; typed in a server channel or thread it stops that channel's session instead, never main — see [Turn Control](turn-control.md).
+
 ## Direct messages and server channels
 
 In a direct message every message goes to the agent.

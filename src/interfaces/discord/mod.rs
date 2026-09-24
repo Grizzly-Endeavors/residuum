@@ -164,6 +164,7 @@ impl DiscordInterface {
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             stop_tx: self.senders.stop,
+            session_registry: self.senders.session_registry,
             tz: self.tz,
         };
 

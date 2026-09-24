@@ -14,6 +14,7 @@ use teloxide::types::{
     Voice,
 };
 
+use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
@@ -37,6 +38,7 @@ struct TelegramContext<'a> {
     reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
+    session_registry: &'a SessionRegistry,
     tz: chrono_tz::Tz,
 }
 
@@ -70,6 +72,7 @@ pub(super) async fn run_telegram_polling(
     let reload_tx = senders.reload;
     let command_tx = senders.command;
     let stop_tx = senders.stop;
+    let session_registry = senders.session_registry;
     // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
@@ -150,6 +153,7 @@ pub(super) async fn run_telegram_polling(
             reload_tx: &reload_tx,
             command_tx: &command_tx,
             stop_tx: &stop_tx,
+            session_registry: session_registry.as_ref(),
             tz,
         };
         for update in updates {
@@ -290,7 +294,12 @@ async fn dispatch_message(
         let cmd_name = cmd_name.split_once('@').map_or(cmd_name, |(name, _)| name);
 
         if matches!(standing, Standing::Owner) {
-            handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx).await;
+            let conversation = ConversationContext {
+                id: conversation_id.clone(),
+                kind,
+                is_owner: true,
+            };
+            handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx, &conversation).await;
         } else {
             tracing::info!(command = %cmd_name, sender = %build_sender_name(from), "refused telegram command from someone other than the owner");
             send_reply(bot, chat_id, "Only my owner can run commands.").await;
@@ -516,12 +525,14 @@ async fn handle_command(
     cmd_name: &str,
     cmd_args: Option<&str>,
     ctx: &TelegramContext<'_>,
+    conversation: &ConversationContext,
 ) {
     tracing::debug!(command = %cmd_name, "telegram command received");
     let dispatch = crate::interfaces::CommandDispatch {
         reload_tx: ctx.reload_tx,
         command_tx: ctx.command_tx,
         stop_tx: ctx.stop_tx,
+        session_registry: ctx.session_registry,
         inbox_dir: ctx.inbox_dir,
         tz: ctx.tz,
     };
@@ -531,6 +542,7 @@ async fn handle_command(
         &dispatch,
         ENDPOINT,
         &build_sender_name(from),
+        Some(conversation),
     )
     .await;
 
@@ -780,6 +792,7 @@ mod tests {
         reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
+        session_registry: Arc<SessionRegistry>,
         _dir: tempfile::TempDir,
     }
 
@@ -805,6 +818,7 @@ mod tests {
             reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
+            session_registry: Arc::new(SessionRegistry::new()),
             _dir: dir,
         }
     }
@@ -819,6 +833,7 @@ mod tests {
             reload_tx: &h.reload_tx,
             command_tx: &h.command_tx,
             stop_tx: &h.stop_tx,
+            session_registry: &h.session_registry,
             tz: chrono_tz::UTC,
         }
     }
