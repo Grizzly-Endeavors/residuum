@@ -45,6 +45,24 @@ pub enum GatewayExit {
     Restart,
 }
 
+/// Which shutdown trigger interrupted a running turn.
+///
+/// A turn blocks the event loop's own `select!` for its whole duration, so
+/// the trigger is observed and reacted to (stopping the turn) from inside
+/// the turn's own select loop instead — see `run_agent_turn_with_interrupts`
+/// in `gateway/event_loop/turns.rs`. That already consumes the underlying
+/// signal, so this is bubbled back up to the event loop instead of it
+/// re-observing the same signal a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShutdownReason {
+    /// SIGTERM (Unix) or the platform termination signal.
+    Sigterm,
+    /// Shutdown requested via the HTTP `/api/shutdown` endpoint.
+    GatewayShutdown,
+    /// Restart requested (binary updated, re-exec needed).
+    Restart,
+}
+
 /// Platform-aware termination signal.
 ///
 /// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`

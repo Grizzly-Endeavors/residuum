@@ -1,12 +1,15 @@
 //! Shell command execution tool for the agent.
 
-use std::process::Output;
+use std::io;
+use std::process::{ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use super::{SharedToolsPath, Tool, ToolError, ToolResult};
 use crate::agent_keys::{
@@ -183,6 +186,38 @@ impl ExecTool {
             }
         }
     }
+
+    /// Build the message for a command that timed out or was cancelled:
+    /// `reason` plus whatever stdout/stderr it had already produced.
+    ///
+    /// When `store_output_as` was requested, stdout is discarded rather than
+    /// shown — mirroring `store_output`'s failure path, stdout is never
+    /// revealed once `store_output_as` is on the call, success or not — and
+    /// the partial stdout is still folded into the redactor as a would-be
+    /// secret value so it can't leak through stderr either.
+    async fn captured_output_message(
+        &self,
+        reason: &str,
+        output: &Output,
+        store_target: Option<&StoreTarget>,
+    ) -> String {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(target) = store_target {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = self
+                .redactor()
+                .await
+                .with_entry(&target.name, &stdout)
+                .redact(&stderr)
+                .into_owned();
+            with_stderr(
+                format!("{reason}; nothing was stored and stdout was discarded"),
+                &stderr,
+            )
+        } else {
+            format_captured_output(reason, output)
+        }
+    }
 }
 
 #[async_trait]
@@ -239,6 +274,17 @@ impl Tool for ExecTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
+        // No caller-supplied cancellation: an inert token that is never
+        // cancelled behaves exactly like the old, non-racing `execute()`.
+        self.execute_cancellable(arguments, &CancellationToken::new())
+            .await
+    }
+
+    async fn execute_cancellable(
+        &self,
+        arguments: Value,
+        cancel: &CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
         let command = arguments
             .get("command")
             .and_then(Value::as_str)
@@ -286,18 +332,37 @@ impl Tool for ExecTool {
             cmd.env(var, value);
         }
 
-        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
+        let (outcome, output) =
+            match run_with_timeout_and_cancel(cmd, Duration::from_secs(timeout_secs), cancel).await
+            {
+                Ok(pair) => pair,
+                Err(e) => return Ok(ToolResult::error(format!("failed to execute command: {e}"))),
+            };
 
-        match result {
-            Err(_elapsed) => Ok(ToolResult::error(format!(
-                "command timed out after {timeout_secs} seconds"
-            ))),
-            Ok(Err(e)) => Ok(ToolResult::error(format!("failed to execute command: {e}"))),
-            Ok(Ok(output)) => match &store_target {
-                Some(target) => Ok(self.store_output(target, &output).await),
-                None => Ok(format_output(&output)),
+        Ok(match outcome {
+            RunOutcome::Finished => match &store_target {
+                Some(target) => self.store_output(target, &output).await,
+                None => format_output(&output),
             },
-        }
+            RunOutcome::TimedOut => {
+                let reason = format!(
+                    "command timed out after {timeout_secs} seconds; its process tree was killed"
+                );
+                ToolResult::error(
+                    self.captured_output_message(&reason, &output, store_target.as_ref())
+                        .await,
+                )
+            }
+            RunOutcome::Cancelled => {
+                let reason = "the turn was stopped while this command was running; its \
+                               process tree was killed"
+                    .to_string();
+                ToolResult::cancelled(
+                    self.captured_output_message(&reason, &output, store_target.as_ref())
+                        .await,
+                )
+            }
+        })
     }
 }
 
@@ -307,6 +372,11 @@ fn shell_command(command: &str) -> Command {
     {
         let mut c = Command::new("sh");
         c.arg("-c").arg(command);
+        // Puts the shell (pid == pgid) in its own process group instead of
+        // inheriting residuum's, so killing the group on a timeout or a
+        // stop (see `kill_process_tree`) only ever reaches this command's
+        // own tree, never residuum's process group.
+        c.process_group(0);
         c
     }
     // Passed raw because cmd.exe doesn't parse the backslash-escaped quotes
@@ -319,6 +389,166 @@ fn shell_command(command: &str) -> Command {
         c.args(["/S", "/C"]).raw_arg(format!("\"{command}\""));
         c
     }
+}
+
+/// Kill every process in the tree rooted at a spawned command's shell, not
+/// just the shell itself — the command runs via a shell, so a plain kill of
+/// that one process would orphan whatever it spawned.
+///
+/// A no-op if the process has already been reaped (`pid` is `None`).
+async fn kill_process_tree(pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+
+    #[cfg(unix)]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            tracing::warn!(
+                pid,
+                "exec pid doesn't fit a pid_t, skipping process-group kill"
+            );
+            return;
+        };
+        // The kill syscall itself is synchronous; run it on a blocking-pool
+        // thread rather than the async worker thread that's awaiting this.
+        let result = tokio::task::spawn_blocking(move || {
+            use nix::sys::signal::{Signal, killpg};
+            use nix::unistd::Pid;
+            // Safe: `shell_command` puts the shell in its own process
+            // group, so this reaches only the command's own tree.
+            killpg(Pid::from_raw(pid), Signal::SIGKILL)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, pid, "failed to kill exec command's process group");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, pid, "process-group kill task panicked");
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // `/T` kills the whole process tree, not just the immediate
+        // `cmd.exe` — `Child::kill` alone only signals that one process and
+        // would orphan anything it spawned.
+        if let Err(e) = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .kill_on_drop(true)
+            .output()
+            .await
+        {
+            tracing::warn!(error = %e, pid, "failed to kill exec command's process tree");
+        }
+    }
+}
+
+/// How a spawned command's run ended.
+enum RunOutcome {
+    /// The command exited on its own before the timeout or a stop.
+    Finished,
+    /// `timeout_secs` elapsed; the process tree was killed.
+    TimedOut,
+    /// The turn was stopped while the command was running; the process
+    /// tree was killed.
+    Cancelled,
+}
+
+/// How the race in [`run_with_timeout_and_cancel`] resolved, before the
+/// process tree has necessarily been killed or reaped yet.
+enum Wait {
+    Exited(ExitStatus),
+    TimedOut,
+    Cancelled,
+}
+
+/// Spawn `cmd`, race it against `timeout` and `cancel`, and return whatever
+/// output it produced along with how the run ended.
+///
+/// On a timeout or a stop, [`kill_process_tree`] kills the whole process
+/// tree rather than only the immediate shell, and whatever stdout/stderr the
+/// command had already produced is still returned — the pipes reach EOF
+/// once every process holding their write end has exited, which the kill
+/// guarantees, so draining them afterward always yields whatever was
+/// captured before the command ended, partial or not.
+async fn run_with_timeout_and_cancel(
+    mut cmd: Command,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> io::Result<(RunOutcome, Output)> {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("spawned command's stdout was not piped"))?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("spawned command's stderr was not piped"))?;
+
+    // Drained on their own tasks, running concurrently with the wait below
+    // for as long as it takes — a command that writes more than the OS
+    // pipe buffer holds would otherwise block on that write forever, since
+    // nothing would be reading until after `child.wait()` resolves.
+    let stdout_task = spawn_pipe_reader(stdout_pipe);
+    let stderr_task = spawn_pipe_reader(stderr_pipe);
+
+    let wait = tokio::select! {
+        biased;
+        () = cancel.cancelled() => Wait::Cancelled,
+        () = tokio::time::sleep(timeout) => Wait::TimedOut,
+        status = child.wait() => Wait::Exited(status?),
+    };
+
+    let (outcome, status) = match wait {
+        Wait::Exited(status) => (RunOutcome::Finished, status),
+        Wait::TimedOut => {
+            kill_process_tree(pid).await;
+            (RunOutcome::TimedOut, child.wait().await?)
+        }
+        Wait::Cancelled => {
+            kill_process_tree(pid).await;
+            (RunOutcome::Cancelled, child.wait().await?)
+        }
+    };
+
+    Ok((
+        outcome,
+        Output {
+            status,
+            stdout: join_pipe_reader(stdout_task).await?,
+            stderr: join_pipe_reader(stderr_task).await?,
+        },
+    ))
+}
+
+/// Spawn a task that reads a child's pipe to EOF into its own buffer.
+fn spawn_pipe_reader<R>(mut pipe: R) -> tokio::task::JoinHandle<io::Result<Vec<u8>>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        pipe.read_to_end(&mut buf).await?;
+        Ok(buf)
+    })
+}
+
+/// Await a [`spawn_pipe_reader`] task, surfacing a task panic as an I/O
+/// error the same way a read failure would be.
+async fn join_pipe_reader(
+    task: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
+) -> io::Result<Vec<u8>> {
+    task.await
+        .map_err(|e| io::Error::other(format!("pipe reader task failed: {e}")))?
 }
 
 fn parse_key_names(arguments: &Value) -> Result<Vec<String>, ToolError> {
@@ -362,6 +592,25 @@ fn exit_code_label(output: &Output) -> String {
         .status
         .code()
         .map_or_else(|| "unknown".to_string(), |c| c.to_string())
+}
+
+/// Build the message for a timed-out or cancelled command that has no
+/// `store_output_as`: `reason` plus whatever stdout/stderr it produced
+/// before it ended, labelled as partial rather than final.
+fn format_captured_output(reason: &str, output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut text = reason.to_string();
+    if !stdout.is_empty() {
+        text.push_str("\nSTDOUT so far:\n");
+        text.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        text.push_str("\nSTDERR so far:\n");
+        text.push_str(&stderr);
+    }
+    truncate_output(text)
 }
 
 /// Append a labelled stderr block to `message` when there is any.
@@ -528,6 +777,110 @@ mod tests {
             result.output.contains("timed out"),
             "error should mention timeout"
         );
+    }
+
+    /// Poll (rather than sleep a guessed duration) until `pid` no longer
+    /// exists, or fail after a bound — proving the process was actually
+    /// killed, not merely abandoned.
+    #[cfg(unix)]
+    async fn wait_for_pid_to_die(pid: i32) {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if kill(Pid::from_raw(pid), None).is_err() {
+                    return; // ESRCH: no such process.
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("process should have been killed within 5 seconds");
+    }
+
+    #[cfg(unix)]
+    async fn read_pid_file(path: &std::path::Path) -> i32 {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(contents) = tokio::fs::read_to_string(path).await
+                    && let Ok(pid) = contents.trim().parse()
+                {
+                    return pid;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("pid file should have been written within 5 seconds")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_timeout_kills_the_whole_process_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("pid");
+        let tool = ExecTool::new(None, None);
+
+        // The shell's own pid doubles as the process group id (see
+        // `shell_command`), so reading it back is enough to check the
+        // whole tree died, not just confirm *something* did.
+        let call = tool.execute(serde_json::json!({
+            "command": format!("echo $$ > {}; sleep 10", pid_path.display()),
+            "timeout_secs": 1
+        }));
+        let pid = read_pid_file(&pid_path);
+        let (result, pid) = tokio::join!(call, pid);
+        let result = result.unwrap();
+
+        assert!(result.is_error, "a timeout should be reported as an error");
+        assert!(
+            result.output.contains("timed out") && result.output.contains("process tree"),
+            "message should explain what happened: {}",
+            result.output
+        );
+        wait_for_pid_to_die(pid).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_cancellation_kills_the_process_and_returns_partial_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("pid");
+        let tool = ExecTool::new(None, None);
+        let cancel = CancellationToken::new();
+
+        let command = format!(
+            "echo already-ran; echo $$ > {}; sleep 10",
+            pid_path.display()
+        );
+        let call = tool.execute_cancellable(serde_json::json!({ "command": command }), &cancel);
+
+        let cancel_after_pid = async {
+            let pid = read_pid_file(&pid_path).await;
+            cancel.cancel();
+            pid
+        };
+
+        let (result, pid) = tokio::join!(call, cancel_after_pid);
+        let result = result.unwrap();
+
+        assert!(
+            !result.is_error,
+            "a user-requested stop is not a tool failure: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("already-ran"),
+            "output captured before the stop must be kept, not discarded: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("stopped") && result.output.contains("process tree"),
+            "message should explain what happened: {}",
+            result.output
+        );
+        wait_for_pid_to_die(pid).await;
     }
 
     #[tokio::test]

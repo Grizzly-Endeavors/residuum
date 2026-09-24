@@ -855,6 +855,10 @@ fn log_adapter_task_exit(task_name: &str, result: &Result<(), tokio::task::JoinE
 enum BusEventAction {
     Continue,
     Shutdown,
+    /// A restart trigger interrupted the turn this event ran (see
+    /// `ShutdownReason::Restart`) — the caller must return `GatewayExit::Restart`
+    /// instead of the plain shutdown path.
+    Restart,
 }
 
 /// Handle a single typed message event received on the agent subscriber.
@@ -875,7 +879,14 @@ async fn handle_bus_event(
                 context: msg_event.context,
             };
             if message.origin.belongs_to_main() {
-                handle_inbound_message(message, rt, observe_deadline, idle_deadline).await;
+                match handle_inbound_message(message, rt, observe_deadline, idle_deadline).await {
+                    None => BusEventAction::Continue,
+                    Some(crate::gateway::types::ShutdownReason::Restart) => BusEventAction::Restart,
+                    Some(
+                        crate::gateway::types::ShutdownReason::Sigterm
+                        | crate::gateway::types::ShutdownReason::GatewayShutdown,
+                    ) => BusEventAction::Shutdown,
+                }
             } else {
                 // A group chat, a channel, or a non-owner DM: routes to that
                 // conversation's session instead of the main agent's turn.
@@ -884,8 +895,8 @@ async fn handle_bus_event(
                 // event loop.
                 let router = Arc::clone(&rt.conversation_router);
                 tokio::spawn(async move { router.route(message).await });
+                BusEventAction::Continue
             }
-            BusEventAction::Continue
         }
         Ok(None) => {
             tracing::info!("bus subscriber closed, shutting down");
@@ -894,6 +905,30 @@ async fn handle_bus_event(
         Err(e) => {
             tracing::warn!(error = %e, "type mismatch on user:message topic");
             BusEventAction::Continue
+        }
+    }
+}
+
+/// Process one bus event and, when it means the gateway should stop
+/// running, shut down and report which exit the caller should return.
+///
+/// Kept separate from the `select!` arm in `run_event_loop` purely to keep
+/// that function's line count down.
+async fn apply_bus_event(
+    event: Result<Option<crate::bus::MessageEvent>, crate::bus::BusError>,
+    rt: &mut GatewayRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+) -> Option<GatewayExit> {
+    match handle_bus_event(event, rt, observe_deadline, idle_deadline).await {
+        BusEventAction::Continue => None,
+        BusEventAction::Shutdown => {
+            graceful_shutdown(rt).await;
+            Some(GatewayExit::Shutdown)
+        }
+        BusEventAction::Restart => {
+            graceful_shutdown(rt).await;
+            Some(GatewayExit::Restart)
         }
     }
 }
@@ -956,9 +991,8 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             event = rt.agent_subscriber.recv() => {
-                match handle_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
-                    BusEventAction::Continue => {}
-                    BusEventAction::Shutdown => { graceful_shutdown(&mut rt).await; break; }
+                if let Some(exit) = apply_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
+                    return exit;
                 }
             }
 

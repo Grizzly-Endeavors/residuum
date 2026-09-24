@@ -135,7 +135,9 @@ On success (exit code 0): stdout, followed by `STDERR:\n{stderr}` if stderr is n
 
 On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`.
 
-On timeout: `"command timed out after {N} seconds"`.
+On timeout: the command's whole process tree is killed (not just the immediate shell), and the result is an error carrying whatever stdout/stderr it had already produced: `"command timed out after {N} seconds; its process tree was killed"`, followed by `STDOUT so far:\n{stdout}` and/or `STDERR so far:\n{stderr}` for whichever are non-empty.
+
+On cancellation (the turn was stopped while the command was running): same process-tree kill and same partial-output shape, reported as a cancellation rather than a failure — `"the turn was stopped while this command was running; its process tree was killed"` plus whatever `STDOUT so far` / `STDERR so far` it had produced. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
 
 Output is capped at 100 KB; larger output is truncated with `\n... (output truncated)`.
 
@@ -147,6 +149,7 @@ With `store_output_as`:
 - Empty stdout: `"command produced no stdout; nothing was stored"`.
 - A name that is invalid or belongs to a user-created key is refused before the command runs (`"... Nothing was run."`).
 - A value that fails storage rules (shorter than 8 characters): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+- Timeout or cancellation: nothing is stored and stdout is discarded from the message too, the same as a non-zero exit — `"{reason}; nothing was stored and stdout was discarded"` plus stderr.
 
 stderr in a `store_output_as` result is redacted against the new value as well as every existing key.
 
@@ -158,6 +161,8 @@ Commands are resolved against the configured tool `PATH`: the directories in
 [Tool PATH](../../docs/systems-usage/tools.md).
 
 Named keys are set only in the spawned child's environment. `store_output_as` writes to the agent key store. Every agent-key value in the result — this tool's or any other — is replaced with `[agent-key:<name>]` by the turn loop before the result is recorded or sent anywhere. See [Agent keys](../../docs/systems-usage/agent-keys.md).
+
+The spawned command runs in its own process group (Unix) so a timeout or cancellation can kill the whole tree it started, not just the immediate shell — killed via `killpg` on Unix, `taskkill /T /F` on Windows. A stop or timeout races against the running command rather than waiting for the tool call to return; the call's own child process is what gets killed, not any process a future background-command feature hands off elsewhere. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
 
 ---
 
