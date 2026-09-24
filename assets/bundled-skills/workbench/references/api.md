@@ -36,6 +36,7 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 | `GET /api/sessions/runs/<run_id>/transcript` | One session run's transcript. |
 | `GET /api/chat/history` | Recent main-chat messages. |
 | `GET /api/workbench/artifacts` | Every artifact: `[{ name, title, modified_at, size }]`. |
+| `DELETE /api/workbench/artifacts/<name>` | Deletes an artifact's page (or folder) and its `<name>.*` data files. Returns `{ removed: [...] }` naming what was deleted. `404` if it no longer exists. |
 | `GET /api/status` | `{ mode, version, features }`: `mode` is `"running"` normally, `version` and `features` match `residuum.version` and `residuum.features`. |
 | `GET /api/system/timezone` | The user's configured timezone. |
 | `POST /api/model/complete` | One-shot small-model call — see "Model Calls" below. |

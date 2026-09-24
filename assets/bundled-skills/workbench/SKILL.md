@@ -1,6 +1,6 @@
 ---
 name: workbench
-description: Build interactive artifacts the user opens in the Residuum web UI — charts, dashboards, calculators, explorers, forms, or any page for choosing between options — as HTML pages or folders in workbench/. Activate before creating or editing anything in workbench/, or when the user asks for something visual or interactive to open in a browser.
+description: Build interactive artifacts (charts, dashboards, calculators, explorers) as HTML pages or folders in workbench/. Activate before creating or editing anything in workbench/, or when the user asks for something visual or interactive to open in a browser.
 ---
 
 # Workbench
