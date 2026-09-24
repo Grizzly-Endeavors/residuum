@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
+use tokio_util::sync::CancellationToken;
 
 use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::actions::store::ActionStore;
@@ -206,6 +207,33 @@ impl ToolRegistry {
 
         tracing::debug!("tool invocation");
         let result = tool.execute(arguments).await?;
+        tracing::debug!(is_error = result.is_error, "tool result");
+        Ok(result)
+    }
+
+    /// Execute a tool by name, racing it against turn-level cancellation.
+    ///
+    /// See [`Tool::execute_cancellable`] for what happens when `cancel`
+    /// fires while the tool is running.
+    ///
+    /// # Errors
+    /// Returns `ToolError::NotFound` if no tool with the given name exists,
+    /// or propagates execution errors from the tool.
+    #[tracing::instrument(skip_all, fields(tool.name = %name))]
+    pub async fn execute_cancellable(
+        &self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let tool = self
+            .tools
+            .iter()
+            .find(|t| t.name() == name)
+            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+        tracing::debug!("tool invocation");
+        let result = tool.execute_cancellable(arguments, cancel).await?;
         tracing::debug!(is_error = result.is_error, "tool result");
         Ok(result)
     }
