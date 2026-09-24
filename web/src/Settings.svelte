@@ -373,7 +373,7 @@
     if (provResult.valid) {
       baselineProviderEntries = currentProviders;
       baselineModelAssignments = currentModels;
-      saved.push("providers.toml");
+      if (Object.keys(providersDiff).length > 0) saved.push("providers.toml");
     } else {
       failed.push({ file: "providers.toml", error: provResult.error ?? "unknown error" });
     }
@@ -384,7 +384,7 @@
       const cfgResult = await patchConfig(configDiff);
       if (cfgResult.valid) {
         baselineConfigFields = currentConfig;
-        saved.push("config.toml");
+        if (Object.keys(configDiff).length > 0) saved.push("config.toml");
       } else {
         failed.push({ file: "config.toml", error: cfgResult.error ?? "unknown error" });
       }
@@ -393,7 +393,7 @@
     const mcpResult = await patchMcp(mcpDiff);
     if (mcpResult.valid) {
       baselineMcpServers = currentMcp;
-      saved.push("mcp.json");
+      if (Object.keys(mcpDiff).length > 0) saved.push("mcp.json");
     } else {
       failed.push({ file: "mcp.json", error: mcpResult.error ?? "unknown error" });
     }
