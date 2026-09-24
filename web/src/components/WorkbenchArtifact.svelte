@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { artifactUrl, type ArtifactsOrigin } from "../lib/workbench";
   import { WorkbenchBridge } from "../lib/workbench-bridge";
@@ -64,28 +64,23 @@
     version += 1;
   }
 
+  // The origin as a plain string: the Workbench page re-fetches where
+  // artifacts are served on every (re)connect and hands down a fresh object
+  // with the same values. Keying the bridge on the string keeps it alive
+  // across those refetches; a replaced bridge would drop everything the
+  // loaded page subscribed to and watched, and the page never re-sends it.
+  let frameOrigin = $derived(origin?.ok ? origin.origin : null);
+
   // The bridge only talks to the artifacts origin, so it starts once that's
   // known, and it's torn down (without being replaced) while the page is
   // stopped.
   $effect(() => {
-    const frameOrigin = origin?.ok ? origin.origin : null;
     if (frameOrigin === null || stopped) return;
-    const active = new WorkbenchBridge(name, frameOrigin, () => frame?.contentWindow ?? null, {
-      origin: window.location.origin,
-      fetch: (input, init) => window.fetch(input, init),
-      onFrame: (listener) => ws.onFrame(listener),
-      onConnectionChange: (listener) => ws.onConnectionChange(listener),
-      watchWorkspace: (prefixes) => {
-        ws.watchWorkspace(prefixes);
-      },
-      onEscape: () => {
-        if (full) onSetFull(false);
-      },
-      onModelCallsChanged: (count) => {
-        modelCallsInFlight = count;
-      },
-    });
-    active.start();
+    const artifactOrigin = frameOrigin;
+    const artifactName = name;
+    // Only the origin, the name, and `stopped` may replace the bridge;
+    // anything reactive the bridge reads while starting must not.
+    const active = untrack(() => startBridge(artifactName, artifactOrigin));
     bridge = active;
 
     const onMessage = (event: MessageEvent) =>
@@ -99,6 +94,31 @@
       modelCallsInFlight = 0;
     };
   });
+
+  function startBridge(artifactName: string, artifactOrigin: string): WorkbenchBridge {
+    const active = new WorkbenchBridge(
+      artifactName,
+      artifactOrigin,
+      () => frame?.contentWindow ?? null,
+      {
+        origin: window.location.origin,
+        fetch: (input, init) => window.fetch(input, init),
+        onFrame: (listener) => ws.onFrame(listener),
+        onConnectionChange: (listener) => ws.onConnectionChange(listener),
+        watchWorkspace: (prefixes) => {
+          ws.watchWorkspace(prefixes);
+        },
+        onEscape: () => {
+          if (full) onSetFull(false);
+        },
+        onModelCallsChanged: (count) => {
+          modelCallsInFlight = count;
+        },
+      },
+    );
+    active.start();
+    return active;
+  }
 
   onMount(() =>
     ws.onFrame((msg) => {
