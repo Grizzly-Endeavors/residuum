@@ -5,6 +5,7 @@
   import { notifications } from "./lib/notifications.svelte";
   import ChatFeed from "./components/ChatFeed.svelte";
   import ChatInput from "./components/ChatInput.svelte";
+  import ChatFooter from "./components/ChatFooter.svelte";
   import type { ImageAttachment } from "./lib/types";
 
   let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
@@ -36,7 +37,14 @@
 </script>
 
 <div class="chat-view">
-  <ChatFeed items={ws.store.feed} isProcessing={ws.store.isProcessing} verbose={ws.verbose} />
+  <ChatFeed
+    items={ws.store.feed}
+    isProcessing={ws.store.isProcessing}
+    verbose={ws.verbose}
+    turnStartedAt={ws.store.turnStartedAt}
+    turnOutputTokens={ws.store.turnOutputTokens}
+    turnHasUsage={ws.store.turnHasUsage}
+  />
   <ChatInput
     onSend={handleSend}
     onStop={() => ws.stop()}
@@ -44,4 +52,5 @@
     isProcessing={ws.store.isProcessing}
     disabled={ws.transport.status !== "connected"}
   />
+  <ChatFooter usage={ws.store.sessionUsage} />
 </div>

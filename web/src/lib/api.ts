@@ -27,6 +27,7 @@ import type {
   SessionCategory,
   SessionListResponse,
   SessionTranscriptResponse,
+  SessionUsageTotals,
   WorkbenchInfo,
   ArtifactSummary,
 } from "./types";
@@ -172,6 +173,18 @@ export async function fetchChatHistory(): Promise<RecentHistorySegment> {
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Recent for the base call`,
   );
+}
+
+/**
+ * Fetch the main agent's cumulative token usage totals, for the chat
+ * footer to render correctly on connect/reconnect before the next model
+ * call. Not cached — the WebSocket carries live updates from here on, this
+ * is only the connect-time seed. Callers should degrade quietly on
+ * failure (the footer simply starts blank) rather than surfacing an error
+ * for this quiet, non-critical feature.
+ */
+export async function fetchUsageTotals(): Promise<SessionUsageTotals> {
+  return apiFetch<SessionUsageTotals>("/api/usage");
 }
 
 /**

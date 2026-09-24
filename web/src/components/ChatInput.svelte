@@ -116,6 +116,17 @@
       e.preventDefault();
       submit();
     }
+
+    // Scoped to the composer having focus (rather than a global window
+    // listener) so it never races the app's several other Escape handlers
+    // — modals, drawers, the command menu above, the shortcuts overlay —
+    // each of which owns Escape only while its own overlay is open, with
+    // no shared priority order between them. A user about to stop a
+    // running turn is naturally focused here already, or one click away.
+    if (e.key === "Escape" && isProcessing) {
+      e.preventDefault();
+      onStop();
+    }
   }
 
   function handleCommandSelect(name: string) {

@@ -10,10 +10,16 @@
     items,
     isProcessing,
     verbose,
+    turnStartedAt = null,
+    turnOutputTokens = 0,
+    turnHasUsage = false,
   }: {
     items: FeedItem[];
     isProcessing: boolean;
     verbose: boolean;
+    turnStartedAt?: number | null;
+    turnOutputTokens?: number;
+    turnHasUsage?: boolean;
   } = $props();
 
   let feedEl: HTMLDivElement | undefined = $state();
@@ -303,7 +309,12 @@
       <div class="chat-feed-empty">Nothing here yet — send a message to begin.</div>
     {/each}
     {#if isProcessing}
-      <ThinkingIndicator />
+      <ThinkingIndicator
+        since={turnStartedAt}
+        outputTokens={turnOutputTokens}
+        hasUsage={turnHasUsage}
+        stopHint="Esc to stop"
+      />
     {/if}
   </div>
 </div>

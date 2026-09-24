@@ -14,6 +14,7 @@
   } from "../lib/session-format";
   import CategoryBadge from "./CategoryBadge.svelte";
   import SessionFeed from "./SessionFeed.svelte";
+  import ChatFooter from "./ChatFooter.svelte";
 
   let { view, onBack }: { view: SessionView; onBack: () => void } = $props();
 
@@ -173,10 +174,19 @@
     items={view.items}
     verbose={ws.verbose}
     {working}
+    turnStartedAt={view.turnStartedAt}
+    turnOutputTokens={view.turnOutputTokens}
+    turnHasUsage={view.turnHasUsage}
     loading={view.loading}
     loadError={view.loadError}
     onRetry={() => void view.load()}
   />
+  <!--
+    No model segment: a session run has a model tier (small/medium/large),
+    not a single resolved model string, so there's nothing honest to show
+    there. Tokens and context size still apply.
+  -->
+  <ChatFooter usage={summary?.usage ?? null} model={null} />
 
   {#if summary}
     <div class="chat-input-area session-input-area">

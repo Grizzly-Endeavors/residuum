@@ -13,6 +13,7 @@ import { WorkspaceWatchSync } from "./workspace-watch";
 import {
   fetchChatHistory,
   fetchChatSegment,
+  fetchUsageTotals,
   CACHE_KEY_STATUS,
   CACHE_KEY_TIMEZONE,
   CACHE_KEY_MCP_CATALOG,
@@ -104,6 +105,9 @@ class WsCoordinator {
       // session's relayed result, main's reply).
       if (this.hasConnected) void this.reconcileMainHistory();
       this.hasConnected = true;
+      // Seed the chat footer so it renders correctly before the next model
+      // call, rather than starting blank on every connect.
+      void this.loadUsageTotals();
       // A new connection watches nothing until told. The watch set goes out
       // before listeners hear of the reconnect, so an artifact that reloads
       // on it can't miss changes made in between.
@@ -184,6 +188,20 @@ class WsCoordinator {
     if (this.store.reconcileRecent(recent)) return;
     this.store.reloadHistory(recent);
     await this.loadOlderHistory();
+  }
+
+  /**
+   * Seed the chat footer's cumulative totals on connect/reconnect. Fails
+   * quietly — this is a quiet, non-critical status line, not something
+   * worth a toast over; the footer just stays blank until the next
+   * `turn_usage` frame arrives.
+   */
+  private async loadUsageTotals(): Promise<void> {
+    try {
+      this.store.setInitialUsage(await fetchUsageTotals());
+    } catch {
+      // quiet degradation, by design — see doc comment above
+    }
   }
 
   /**
