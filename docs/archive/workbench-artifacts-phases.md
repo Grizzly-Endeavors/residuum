@@ -1,6 +1,6 @@
 # Workbench Artifacts — Implementation Phases
 
-> **Status:** design, not built. Design: [`workbench-artifacts-design.md`](./workbench-artifacts-design.md). Terms (artifact, workbench, artifacts listener, SDK, bridge, artifact identity, version token, workspace access policy) are defined there.
+> **Status:** archived. All phases shipped. End-to-end verification ran locally and through a local dev-mode relay. Design: [`workbench-artifacts-design.md`](./workbench-artifacts-design.md). Terms (artifact, workbench, artifacts listener, SDK, bridge, artifact identity, version token, workspace access policy) are defined there.
 
 > Module level only. No file or line references — those get mapped in each phase's own session. Each phase is self-contained, depends only on phases before it, and is verifiable on its own. Each phase ships as its own branch and PR with passing pre-commit gates. Each phase updates the `docs/systems-usage/` pages whose behavior it changes, the bundled `workbench` skill (its `SKILL.md` and `references/api.md`), and the `residuum-system` skill's mirrors. A phase that ships a capability with a feature id (design §11) adds that id to the feature list; phases before Phase 2 have no list to add to.
 

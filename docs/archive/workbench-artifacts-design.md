@@ -1,6 +1,6 @@
 # Workbench Artifacts — Design
 
-> **Status:** design, not built. Phases: [`workbench-artifacts-phases.md`](./workbench-artifacts-phases.md).
+> **Status:** archived. All phases shipped (PRs #203–#226). Phases: [`workbench-artifacts-phases.md`](./workbench-artifacts-phases.md). The current behavior is described in [`docs/systems-usage/workbench.md`](../systems-usage/workbench.md); this document records the design as decided and does not describe the system today.
 
 > Systems level only. No file or line references. This document stands on its own: it is implemented in fresh sessions that have only this doc, the phases doc, and the codebase.
 
