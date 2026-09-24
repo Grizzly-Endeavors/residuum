@@ -846,6 +846,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
         stop: rt.stop_tx.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
     };
     reload_adapter(
@@ -914,6 +915,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
         stop: rt.stop_tx.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
     };
     reload_adapter(
@@ -949,6 +951,7 @@ async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
         stop: rt.stop_tx.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
     };
     reload_adapter(

@@ -226,6 +226,7 @@ async fn spawn_server_and_adapters(
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
         stop: core.stop_tx.clone(),
+        session_registry: Arc::clone(&parts.session_registry),
         conversations: parts.endpoint_registry.conversations().clone(),
     };
     let (tunnel_status_tx, tunnel_status_rx) =
