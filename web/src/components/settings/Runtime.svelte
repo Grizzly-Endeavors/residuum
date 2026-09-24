@@ -189,7 +189,7 @@
           id="rt-bg-subagent-depth-cap"
           type="number"
           bind:value={fields.bg_subagent_depth_cap}
-          placeholder="Default: 2"
+          placeholder="Default: 3"
         />
         <div class="field-hint">
           Maximum nesting depth for subagent_spawn (main is depth 0). A session at the cap is

@@ -277,6 +277,6 @@ port = 7700
 # idle_timeout_external_minutes = 30    # non-webhook external sessions
 # idle_timeout_artifact_minutes = 10    # sessions a workbench artifact starts
 # episode_skip_token_floor = 2000       # below this, a run with nothing staged produces no episode
-# subagent_depth_cap = 2                # max nesting depth for subagent_spawn (main = 0)
+# subagent_depth_cap = 3                # max nesting depth for subagent_spawn (main = 0)
 # hop_soft_limit = 8                    # at/above this hop count, delivered messages carry a "reply only if needed" note
 # hop_hard_limit = 32                   # at/above this hop count, message delivery is refused (bounds message loops)

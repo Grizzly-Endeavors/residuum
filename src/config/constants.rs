@@ -109,7 +109,7 @@ pub(super) const DEFAULT_EPISODE_SKIP_TOKEN_FLOOR: usize = 2_000;
 
 /// Default maximum depth a `subagent_spawn`-created session may have (main is
 /// depth 0; a `scheduled`/`external` session is depth 1).
-pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 2;
+pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 3;
 
 /// Default hop count at or above which a delivered agent message carries a
 /// note asking the receiver to reply only if a reply is actually needed.
