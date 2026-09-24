@@ -9,6 +9,7 @@ mod bootstrap;
 mod constants;
 pub(crate) mod deserialize;
 mod load;
+pub(crate) mod patch;
 mod provider;
 pub(crate) mod resolve;
 pub(crate) mod secrets;

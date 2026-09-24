@@ -160,6 +160,83 @@ pub(super) async fn api_config_raw_put(
     }))
 }
 
+/// `PATCH /api/config/patch` — merge a JSON diff into the existing
+/// `config.toml`, validate, save, trigger reload if running.
+///
+/// The diff's shape mirrors `config.toml`'s section/key layout, carrying
+/// only the fields the Settings form actually changed — see
+/// `crate::config::patch` for the exact convention. Everything the diff
+/// doesn't mention (comments, unmodeled sections and keys) survives
+/// untouched.
+pub(super) async fn api_config_patch(
+    State(state): State<ConfigApiState>,
+    Json(diff): Json<serde_json::Value>,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    let bad_request = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(msg),
+            }),
+        )
+    };
+
+    let Some(diff_map) = diff.as_object() else {
+        return Err(bad_request(
+            "config patch must be a JSON object".to_string(),
+        ));
+    };
+
+    let config_path = state.config_dir.join("config.toml");
+    let existing = match tokio::fs::read_to_string(&config_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::error!(error = %e, path = %config_path.display(), "failed to read config.toml for patching");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to read config.toml: {e}")),
+                }),
+            ));
+        }
+    };
+
+    let patched = crate::config::patch::apply_patch(&existing, diff_map, "config.toml").map_err(|msg| {
+        tracing::warn!(error = %msg, path = %config_path.display(), "config.toml patch rejected");
+        bad_request(msg)
+    })?;
+
+    Config::validate_toml(&patched, &state.config_dir).map_err(|e| {
+        tracing::warn!(error = %e, path = %config_path.display(), "patched config.toml failed validation");
+        bad_request(e)
+    })?;
+
+    crate::util::fs::atomic_write(&config_path, &patched)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, path = %config_path.display(), "failed to write patched config.toml");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write config.toml: {e}")),
+                }),
+            )
+        })?;
+
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(super::super::ReloadSignal::Root).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
 /// `POST /api/config/validate` — validate TOML body without saving.
 pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
@@ -238,6 +315,77 @@ pub(super) async fn api_mcp_raw_put(
             }),
         )
     })?;
+
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(super::super::ReloadSignal::Workspace).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
+/// `PATCH /api/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
+///
+/// The diff's shape mirrors `mcp.json`: `{"mcpServers": {"<name>": {...}}}`.
+/// Only the fields the Settings form actually changed need to be present —
+/// see `crate::workspace::mcp_patch` for the exact convention. A server (or
+/// field) the diff doesn't mention survives untouched, including fields the
+/// form doesn't model (e.g. HTTP transport's `url`/`type`/`headers` when an
+/// unrelated server is edited).
+pub(super) async fn api_mcp_patch(
+    State(state): State<ConfigApiState>,
+    Json(diff): Json<serde_json::Value>,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    let bad_request = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(msg),
+            }),
+        )
+    };
+
+    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
+    let existing = match tokio::fs::read_to_string(&mcp_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::error!(error = %e, path = %mcp_path.display(), "failed to read mcp.json for patching");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to read mcp.json: {e}")),
+                }),
+            ));
+        }
+    };
+
+    let patched =
+        crate::workspace::mcp_patch::apply_mcp_patch(&existing, &diff).map_err(|msg| {
+            tracing::warn!(error = %msg, path = %mcp_path.display(), "mcp.json patch rejected");
+            bad_request(msg)
+        })?;
+
+    if let Some(parent) = mcp_path.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+
+    crate::util::fs::atomic_write(&mcp_path, &patched)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, path = %mcp_path.display(), "failed to write patched mcp.json");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write mcp.json: {e}")),
+                }),
+            )
+        })?;
 
     if let Some(reload_tx) = &state.reload_tx {
         reload_tx.send(super::super::ReloadSignal::Workspace).ok();

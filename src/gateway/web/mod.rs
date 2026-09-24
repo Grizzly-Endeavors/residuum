@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::http::Uri;
 use axum::response::Response;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
 use super::ReloadSignal;
@@ -89,6 +89,7 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/status", get(config::api_status))
         .route("/api/config/raw", get(config::api_config_raw_get))
         .route("/api/config/raw", put(config::api_config_raw_put))
+        .route("/api/config/patch", patch(config::api_config_patch))
         .route("/api/config/validate", post(config::api_config_validate))
         .route(
             "/api/config/complete-setup",
@@ -104,11 +105,16 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/providers/raw", get(providers::api_providers_raw_get))
         .route("/api/providers/raw", put(providers::api_providers_raw_put))
         .route(
+            "/api/providers/patch",
+            patch(providers::api_providers_patch),
+        )
+        .route(
             "/api/providers/validate",
             post(providers::api_providers_validate),
         )
         .route("/api/mcp/raw", get(config::api_mcp_raw_get))
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))
+        .route("/api/mcp/patch", patch(config::api_mcp_patch))
         .route("/api/agent-keys", get(agent_keys::api_agent_keys_list))
         .route("/api/agent-keys", post(agent_keys::api_agent_keys_set))
         .route(
