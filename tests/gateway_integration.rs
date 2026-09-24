@@ -228,6 +228,7 @@ mod gateway_integration {
                         .send(ServerMessage::Error {
                             reply_to: Some(reply_id),
                             message: e.to_string(),
+                            details: None,
                         })
                         .is_err()
                     {
@@ -285,6 +286,7 @@ mod gateway_integration {
                         .send(ServerMessage::Error {
                             reply_to: None,
                             message: format!("malformed message: {e}"),
+                            details: None,
                         })
                         .is_err()
                     {
@@ -553,7 +555,7 @@ mod gateway_integration {
         assert!(
             matches!(
                 &msg,
-                ServerMessage::Error { reply_to, message }
+                ServerMessage::Error { reply_to, message, .. }
                     if reply_to.is_none() && message.contains("malformed")
             ),
             "should receive Error with 'malformed' message, got: {msg:?}"

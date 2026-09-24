@@ -473,7 +473,7 @@ async fn handle_run_completed(
             stream.tx.send(Ok(update)).await.ok();
             true
         }
-        AgentResultStatus::Failed { error } => {
+        AgentResultStatus::Failed { error, .. } => {
             let update = status_update(
                 stream.task_id,
                 stream.context_id,

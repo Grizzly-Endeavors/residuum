@@ -23,6 +23,7 @@ pub(super) async fn publish_error(publisher: &Publisher, message: String) {
             ErrorEvent {
                 correlation_id: String::new(),
                 message,
+                details: None,
             },
         )
         .await

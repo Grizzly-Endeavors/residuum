@@ -412,6 +412,7 @@ async fn recover_from_panic(
         &info.run_id,
         SessionEventKind::Error {
             message: format!("session task panicked: {panic_msg}"),
+            details: None,
         },
     )
     .await;
@@ -445,6 +446,7 @@ async fn recover_from_panic(
 
     let status = AgentResultStatus::Failed {
         error: format!("session task panicked: {panic_msg}"),
+        details: None,
     };
 
     // A panicked turn is exactly the outcome the spawner must never be left
@@ -699,6 +701,7 @@ async fn run_session(
                         (
                             AgentResultStatus::Failed {
                                 error: "gateway is shutting down".to_string(),
+                                details: None,
                             },
                             String::new(),
                         )
@@ -1029,6 +1032,7 @@ async fn relay_result_to_spawner(
         &info.run_id,
         SessionEventKind::Error {
             message: note_text.clone(),
+            details: None,
         },
     )
     .await;
@@ -1156,9 +1160,10 @@ async fn run_turn(
             })
             .await;
         }
-        (AgentResultStatus::Failed { error }, _) => {
+        (AgentResultStatus::Failed { error, details }, _) => {
             publish(SessionEventKind::Error {
                 message: format!("turn failed: {error}"),
+                details: details.clone(),
             })
             .await;
         }
@@ -1232,10 +1237,12 @@ async fn execute_turn_outcome(
             (AgentResultStatus::Completed, summary)
         }
         Err(e) => {
-            tracing::warn!(error = %e, "session turn failed");
+            let described = crate::inference::describe_turn_failure(&e);
+            tracing::warn!(error = %described.details, "session turn failed");
             (
                 AgentResultStatus::Failed {
-                    error: e.to_string(),
+                    error: described.message,
+                    details: Some(described.details),
                 },
                 String::new(),
             )
@@ -1899,7 +1906,7 @@ mod tests {
         assert_eq!(event.address, info.address);
         assert_eq!(event.run_id, info.run_id);
         assert!(
-            matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Result Relay Failed")),
+            matches!(&event.kind, SessionEventKind::Error { message, .. } if message.contains("Result Relay Failed")),
             "the relay failure must appear as an error on the session's own stream, got {:?}",
             event.kind
         );
@@ -3401,8 +3408,10 @@ mod tests {
                 "turn_ended",
                 "state:idle",
                 "state:completing",
-                "completed:failed: session run requires SubAgentResources",
-            ]
+                "completed:failed: Something went wrong while the agent was working. Try \
+                 again; if it keeps happening, check Residuum's logs for details.",
+            ],
+            "an unclassified session failure gets a plain-language message, never the raw cause"
         );
     }
 }

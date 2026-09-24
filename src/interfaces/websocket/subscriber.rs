@@ -245,10 +245,11 @@ impl WsSubscribers {
                 }
                 event = self.error.recv() => {
                     match event {
-                        Ok(Some(ErrorEvent { correlation_id, message })) => {
+                        Ok(Some(ErrorEvent { correlation_id, message, details })) => {
                             Some(ServerMessage::Error {
                                 reply_to: Some(correlation_id),
                                 message,
+                                details,
                             })
                         }
                         _ => return None,
@@ -603,6 +604,7 @@ mod tests {
             ErrorEvent {
                 correlation_id: "c1".into(),
                 message: "something went wrong".into(),
+                details: None,
             },
         )
         .await
@@ -611,7 +613,7 @@ mod tests {
         let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            ServerMessage::Error { reply_to: Some(id), message }
+            ServerMessage::Error { reply_to: Some(id), message, .. }
                 if id == "c1" && message == "something went wrong"
         ));
     }

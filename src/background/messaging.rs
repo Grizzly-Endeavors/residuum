@@ -739,6 +739,7 @@ async fn record_note_if_live_session(sinks: NoteSinks<'_>, address: &SessionAddr
             &info.run_id,
             SessionEventKind::Error {
                 message: note.to_string(),
+                details: None,
             },
         )
         .await;
@@ -1947,7 +1948,7 @@ mod tests {
         for _ in 0..2 {
             let event = events.recv().await.unwrap().unwrap();
             assert!(
-                matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Message Loop Limit")),
+                matches!(&event.kind, SessionEventKind::Error { message, .. } if message.contains("Message Loop Limit")),
                 "a refusal must surface as an error event, got {:?}",
                 event.kind
             );
