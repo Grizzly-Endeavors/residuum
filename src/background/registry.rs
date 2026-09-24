@@ -248,6 +248,10 @@ pub struct SessionInfo {
     pub conversation_target: Option<ConversationTarget>,
     /// When this run started.
     pub started_at: DateTime<Utc>,
+    /// This run's cumulative token usage, updated after every model call —
+    /// see [`SessionRegistry::accumulate_usage`]. Mirrored into the run's
+    /// store record at completion so a finished run's totals survive too.
+    pub usage: crate::agent::usage::SessionUsageTotals,
 }
 
 /// A registered session's bookkeeping: its metadata, the token that cancels
@@ -522,6 +526,23 @@ impl SessionRegistry {
         }
     }
 
+    /// Fold one model call's usage into a session's running totals.
+    ///
+    /// Returns the updated totals, or `None` if the address is unknown —
+    /// the session may already have completed and left the registry,
+    /// which the caller (the turn's [`crate::agent::usage::UsageSink`])
+    /// treats the same as a provider reporting no usage.
+    pub fn accumulate_usage(
+        &self,
+        address: &SessionAddress,
+        usage: Option<crate::inference::Usage>,
+    ) -> Option<crate::agent::usage::SessionUsageTotals> {
+        let mut guard = self.lock();
+        let entry = guard.get_mut(address)?;
+        entry.info.usage.accumulate(usage);
+        Some(entry.info.usage)
+    }
+
     /// Stop a session: cancels its stop token so an in-flight turn or idle
     /// wait ends and the session moves to `completing`.
     ///
@@ -655,6 +676,29 @@ impl SessionRegistry {
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A session's own [`crate::agent::usage::UsageSink`]: accumulates onto its
+/// registry entry, which mirrors into the run's store record at
+/// completion (see [`crate::background::store::RunRecord::starting`]) so
+/// a finished run's totals aren't lost.
+pub struct SessionUsageSink<'a> {
+    /// The registry the session's entry lives in.
+    pub registry: &'a SessionRegistry,
+    /// The session's address.
+    pub address: SessionAddress,
+}
+
+#[async_trait::async_trait]
+impl crate::agent::usage::UsageSink for SessionUsageSink<'_> {
+    async fn accumulate(
+        &self,
+        usage: Option<crate::inference::Usage>,
+    ) -> crate::agent::usage::SessionUsageTotals {
+        self.registry
+            .accumulate_usage(&self.address, usage)
+            .unwrap_or_default()
     }
 }
 
@@ -812,6 +856,7 @@ mod tests {
             model_tier: BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         }
     }
 
@@ -991,6 +1036,87 @@ mod tests {
         let registry = SessionRegistry::new();
         registry.set_state(&SessionAddress::from("nope"), SessionState::Idle);
         assert!(registry.get(&SessionAddress::from("nope")).is_none());
+    }
+
+    fn usage(input: u32, output: u32) -> crate::inference::Usage {
+        crate::inference::Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }
+    }
+
+    #[test]
+    fn accumulate_usage_folds_into_the_running_session_entry() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0010");
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let first = registry
+            .accumulate_usage(&info.address, Some(usage(100, 20)))
+            .expect("a live session should accumulate");
+        assert_eq!(first.input_tokens, 100);
+        assert_eq!(first.output_tokens, 20);
+
+        let second = registry
+            .accumulate_usage(&info.address, Some(usage(50, 10)))
+            .expect("a live session should still accumulate");
+        assert_eq!(
+            second.input_tokens, 150,
+            "totals must accumulate across calls"
+        );
+        assert_eq!(second.output_tokens, 30);
+
+        assert_eq!(
+            registry.get(&info.address).unwrap().usage,
+            second,
+            "the registry entry's own usage field must reflect the latest totals"
+        );
+    }
+
+    #[test]
+    fn accumulate_usage_on_unknown_address_returns_none() {
+        let registry = SessionRegistry::new();
+        assert!(
+            registry
+                .accumulate_usage(&SessionAddress::from("ghost"), Some(usage(10, 5)))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_usage_sink_accumulates_through_the_registry() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0011");
+        let _rx = registry
+            .register(info.clone(), CancellationToken::new())
+            .unwrap();
+
+        let sink = SessionUsageSink {
+            registry: &registry,
+            address: info.address.clone(),
+        };
+        let totals = crate::agent::usage::UsageSink::accumulate(&sink, Some(usage(200, 40))).await;
+        assert_eq!(totals.input_tokens, 200);
+        assert_eq!(registry.get(&info.address).unwrap().usage.output_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn session_usage_sink_for_a_completed_session_returns_default() {
+        let registry = SessionRegistry::new();
+        let sink = SessionUsageSink {
+            registry: &registry,
+            address: SessionAddress::from("gone"),
+        };
+        let totals = crate::agent::usage::UsageSink::accumulate(&sink, Some(usage(10, 5))).await;
+        assert_eq!(
+            totals,
+            crate::agent::usage::SessionUsageTotals::default(),
+            "a session no longer in the registry has nowhere to accumulate; the sink degrades to a no-op"
+        );
     }
 
     #[test]

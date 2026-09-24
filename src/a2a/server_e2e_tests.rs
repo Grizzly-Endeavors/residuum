@@ -1202,6 +1202,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         model_tier: BackgroundModelTier::Medium,
         conversation_target: None,
         started_at: chrono::Utc::now(),
+        usage: crate::agent::usage::SessionUsageTotals::default(),
     };
     harness
         .session_registry

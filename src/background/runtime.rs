@@ -182,6 +182,7 @@ impl SessionRuntime {
             model_tier,
             conversation_target: req.conversation_target,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
 
         let stop_token = CancellationToken::new();
@@ -688,6 +689,7 @@ async fn run_session(
                             stop_token: &stop_token,
                             store: &env.store,
                             publisher: &env.publisher,
+                            registry: env.registry.as_ref(),
                         };
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
                         run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
@@ -1111,6 +1113,9 @@ struct TurnCtx<'a> {
     /// text additionally reaches its own conversation the same way its
     /// final output does.
     publisher: &'a Publisher,
+    /// Where this turn's model-call usage accumulates — see
+    /// [`super::registry::SessionUsageSink`].
+    registry: &'a SessionRegistry,
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -1179,6 +1184,10 @@ async fn execute_turn_outcome(
         run_id: &ctx.info.run_id,
         started_at: ctx.info.started_at,
     };
+    let usage_sink = super::registry::SessionUsageSink {
+        registry: ctx.registry,
+        address: ctx.info.address.clone(),
+    };
     let conversation_output =
         ctx.info
             .conversation_target
@@ -1204,6 +1213,7 @@ async fn execute_turn_outcome(
             super::subagent::TurnExecution {
                 stop_token: ctx.stop_token,
                 transcript_sink: Some(&sink),
+                usage_sink: Some(&usage_sink),
                 interrupt_rx,
             },
             conversation_output,
@@ -1455,6 +1465,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         let mut rx = registry
             .register(winner.clone(), CancellationToken::new())
@@ -1559,6 +1570,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         let mut winner_rx = runtime
             .registry
@@ -1858,6 +1870,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         store.begin_run(&info).await;
         let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> =
@@ -2307,6 +2320,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         store.begin_run(&info).await;
 
@@ -2581,6 +2595,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         let event = build_result_event(
             &info,
@@ -2626,6 +2641,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         let summary = "Found something worth flagging. The instruction to omit \
              HEARTBEAT_OK was honored, so this note does not end with it."
@@ -2660,6 +2676,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         let event = build_result_event(
             &info,
@@ -3219,6 +3236,7 @@ mod tests {
                 format!("tool_result:{}:{}", result.name, result.is_error)
             }
             SessionEventKind::Intermediate { content } => format!("intermediate:{content}"),
+            SessionEventKind::TurnUsage { .. } => "turn_usage".to_string(),
             SessionEventKind::Response { content, .. } => format!("response:{content}"),
             SessionEventKind::Error { .. } => "error".to_string(),
             SessionEventKind::MessageToMain { .. } => "message_to_main".to_string(),
@@ -3269,6 +3287,8 @@ mod tests {
                 "intermediate:checking",
                 "tool_call:no_such_tool",
                 "tool_result:no_such_tool:true",
+                "turn_usage",
+                "turn_usage",
                 "response:all done",
                 "turn_ended",
                 "state:idle",
@@ -3296,6 +3316,7 @@ mod tests {
                 | SessionEventKind::ToolCall(_)
                 | SessionEventKind::ToolResult(_)
                 | SessionEventKind::Intermediate { .. }
+                | SessionEventKind::TurnUsage { .. }
                 | SessionEventKind::Error { .. }
                 | SessionEventKind::MessageToMain { .. } => None,
             })

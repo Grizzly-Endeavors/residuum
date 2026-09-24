@@ -350,6 +350,9 @@ pub(crate) struct TurnExecution<'a> {
     /// `execute_turn`) so the run's transcript survives a crash mid-turn in
     /// the session store.
     pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
+    /// Where this turn's model-call usage accumulates, for the `SessionView`
+    /// footer. `None` for a turn that doesn't track session-level totals.
+    pub(crate) usage_sink: Option<&'a dyn crate::agent::usage::UsageSink>,
     /// The run's own long-lived interrupt channel: draining it is what
     /// delivers an agent message to a *running* turn at its next tool-call
     /// boundary. Between turns, the caller drains the same channel itself to
@@ -394,6 +397,7 @@ pub(crate) async fn execute_subagent(
     let TurnExecution {
         stop_token,
         transcript_sink,
+        usage_sink,
         interrupt_rx,
     } = turn;
     // Build skills context from this session's isolated skill state
@@ -434,6 +438,7 @@ pub(crate) async fn execute_subagent(
         max_tool_iterations: resources.max_tool_iterations,
         stop_token,
         transcript_sink,
+        usage_sink,
         hop_counter: &resources.hop_counter,
     };
 
@@ -583,6 +588,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -606,6 +612,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -644,6 +651,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -679,6 +687,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -722,6 +731,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -757,6 +767,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -800,6 +811,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -845,6 +857,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -891,6 +904,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut rx,
             },
             None,
@@ -948,6 +962,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut rx,
             },
             None,
@@ -1031,6 +1046,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -1168,6 +1184,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             Some(ConversationOutput {
@@ -1266,6 +1283,7 @@ mod tests {
             TurnExecution {
                 stop_token: &stop_token,
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -1348,6 +1366,7 @@ mod tests {
             TurnExecution {
                 stop_token: &stop_token,
                 transcript_sink: Some(&sink),
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,

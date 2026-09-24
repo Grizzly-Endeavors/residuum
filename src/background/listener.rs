@@ -355,6 +355,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         }
     }
 

@@ -249,6 +249,7 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         };
         registry
             .register(info, tokio_util::sync::CancellationToken::new())
