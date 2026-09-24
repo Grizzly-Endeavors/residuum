@@ -1,9 +1,10 @@
 //! Model providers and memory pipeline initialization.
 
+use crate::bus::Publisher;
 use crate::config::Config;
 use crate::inference::{
     CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
-    build_embedding_provider, build_provider_chain,
+    build_embedding_provider, build_provider_chain_with_notices,
 };
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -22,15 +23,27 @@ pub struct ProviderComponents {
 
 /// Build model providers, observer, reflector, and embedding provider.
 ///
+/// The main model's provider chain gets a user notice on a fallback or
+/// recovery transition (see `crate::inference::FailoverProvider`); the
+/// memory/embedding providers below stay log-only on failure, since they
+/// degrade the whole subsystem rather than serving individual requests.
+///
 /// # Errors
 /// Returns `FatalError` if the main model provider fails to build.
 pub fn init_providers(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
+    publisher: Publisher,
 ) -> Result<ProviderComponents, FatalError> {
-    let provider =
-        build_provider_chain(&cfg.main, cfg.max_tokens, http.clone(), cfg.retry.clone())?;
+    let provider = build_provider_chain_with_notices(
+        &cfg.main,
+        cfg.max_tokens,
+        http.clone(),
+        cfg.retry.clone(),
+        publisher,
+        "main model",
+    )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     let (observer, reflector) = match build_memory_components(cfg, tz, http.clone()) {

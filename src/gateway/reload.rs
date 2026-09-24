@@ -553,7 +553,7 @@ async fn reload_providers(
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) {
-    match startup::init_providers(new_cfg, rt.tz, http_client) {
+    match startup::init_providers(new_cfg, rt.tz, http_client, rt.publisher.clone()) {
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
