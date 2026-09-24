@@ -15,6 +15,7 @@ export type {
   SessionRunStatus,
   SessionState,
   SessionSummary,
+  SessionUsageTotals,
   WorkbenchInfo,
   WorkbenchRelayOrigins,
   ArtifactSummary,

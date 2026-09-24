@@ -7,6 +7,7 @@ use axum::response::{Json, Response};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::usage::{SessionUsageTotals, load_session_usage_totals};
 use crate::config::Config;
 use crate::features;
 use crate::inference::Message;
@@ -630,6 +631,23 @@ pub(super) async fn api_chat_history(
             }))
         }
     }
+}
+
+/// `GET /api/usage` — the main agent's cumulative session token usage, for
+/// the chat footer to render correctly on load or reconnect without
+/// waiting for the next model call.
+///
+/// Reads the same on-disk totals the running agent writes through to after
+/// every model call (see `crate::agent::usage::MainUsageSink`), the same
+/// way `GET /api/chat/history` reads `recent_messages.json` rather than
+/// reaching into the live agent — this HTTP layer never holds a reference
+/// to it. Returns the zero default in setup mode (no memory dir yet).
+pub(super) async fn api_usage(State(state): State<ConfigApiState>) -> Json<SessionUsageTotals> {
+    let Some(memory_dir) = &state.memory_dir else {
+        return Json(SessionUsageTotals::default());
+    };
+    let path = memory_dir.join("usage_totals.json");
+    Json(load_session_usage_totals(&path).await)
 }
 
 /// Synthesize a `RecentMessage` wrapper around a raw episode `Message`.

@@ -69,6 +69,13 @@ pub struct RunRecord {
     /// [`SessionStore::append_transcript`]).
     #[serde(default)]
     pub transcript: Vec<Message>,
+    /// This run's cumulative token usage, for the `SessionView` footer.
+    /// Copied from the registry entry's own running total (see
+    /// [`super::registry::SessionRegistry::accumulate_usage`]) each time
+    /// this record is written, so a completed run's footer keeps its
+    /// final totals.
+    #[serde(default)]
+    pub usage: crate::agent::usage::SessionUsageTotals,
 }
 
 impl RunRecord {
@@ -90,6 +97,7 @@ impl RunRecord {
             interrupted: false,
             episode_id: None,
             transcript: Vec::new(),
+            usage: info.usage,
         }
     }
 }
@@ -128,6 +136,8 @@ struct RunRecordHeader {
     interrupted: bool,
     #[serde(default)]
     episode_id: Option<String>,
+    #[serde(default)]
+    usage: crate::agent::usage::SessionUsageTotals,
 }
 
 impl From<RunRecordHeader> for RunRecord {
@@ -147,6 +157,7 @@ impl From<RunRecordHeader> for RunRecord {
             interrupted: header.interrupted,
             episode_id: header.episode_id,
             transcript: Vec::new(),
+            usage: header.usage,
         }
     }
 }
@@ -851,6 +862,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         }
     }
 
@@ -888,6 +900,59 @@ mod tests {
         assert_eq!(record.state, "completed");
         assert!(record.completed_at.is_some());
         assert_eq!(record.transcript.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn complete_run_carries_the_infos_final_usage_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut info = sample_info();
+        store.begin_run(&info).await;
+
+        // The registry accumulates usage onto `info.usage` as the run's
+        // turns complete; the caller refreshes its own copy from the
+        // registry before finalizing (see `background::runtime::finish_run`).
+        info.usage.accumulate(Some(crate::inference::Usage {
+            input_tokens: 200,
+            output_tokens: 40,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+
+        let path = store
+            .complete_run(&info, "completed", Vec::new(), None)
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.usage.input_tokens, 200);
+        assert_eq!(record.usage.output_tokens, 40);
+    }
+
+    #[test]
+    fn run_record_header_without_a_usage_field_deserializes_to_default() {
+        // A record written before this field existed has no `usage` key at
+        // all; loading it must not fail.
+        let json = r#"{
+            "address": "spawned-x-0001",
+            "run_id": "run-1",
+            "category": "spawned",
+            "source_label": "agent:researcher",
+            "spawner": null,
+            "depth": 1,
+            "purpose": "research",
+            "agent_skill": null,
+            "started_at": "2026-03-13T12:00:00Z",
+            "completed_at": null,
+            "state": "completed"
+        }"#;
+        let header: RunRecordHeader = serde_json::from_str(json).unwrap();
+        let record = RunRecord::from(header);
+        assert_eq!(
+            record.usage,
+            crate::agent::usage::SessionUsageTotals::default()
+        );
     }
 
     #[tokio::test]

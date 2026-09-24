@@ -516,14 +516,17 @@ mod gateway_integration {
         )
         .await;
 
-        // Both clients should receive TurnStarted and Response (order may vary)
+        // Both clients should receive TurnStarted and Response (order may vary),
+        // plus a TurnUsage frame for the turn's one model call — never surfaced
+        // to the agent, only to web clients (see `docs/systems-usage/turn-control.md`).
         for (label, rx) in [("A", &mut rx_a), ("B", &mut rx_b)] {
             let mut got_started = false;
             let mut got_response = false;
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let msg = recv_msg(rx).await;
                 match msg {
                     ServerMessage::TurnStarted { .. } => got_started = true,
+                    ServerMessage::TurnUsage { .. } => {}
                     ServerMessage::Response { ref content, .. } if content == "shared response" => {
                         got_response = true;
                     }
@@ -596,13 +599,17 @@ mod gateway_integration {
         )
         .await;
 
-        // With typed subscribers, TurnStarted and Response may arrive in either order
+        // With typed subscribers, TurnStarted and Response may arrive in either
+        // order, alongside a TurnUsage frame for the turn's one model call —
+        // never surfaced to the agent, only to web clients (see
+        // `docs/systems-usage/turn-control.md`).
         let mut got_turn_started = false;
         let mut got_response = false;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let msg = recv_msg(&mut rx_b).await;
             match msg {
                 ServerMessage::TurnStarted { .. } => got_turn_started = true,
+                ServerMessage::TurnUsage { .. } => {}
                 ServerMessage::Response { .. } => got_response = true,
                 other => panic!("unexpected message after disconnect: {other:?}"),
             }

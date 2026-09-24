@@ -268,6 +268,7 @@ fn sample_info(address: &str) -> SessionInfo {
         model_tier: BackgroundModelTier::Medium,
         conversation_target: None,
         started_at: chrono::Utc::now(),
+        usage: crate::agent::usage::SessionUsageTotals::default(),
     }
 }
 

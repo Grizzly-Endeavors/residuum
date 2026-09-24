@@ -2,8 +2,8 @@
 
 use crate::bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
-    ResponseEvent, SessionEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent,
-    WorkspaceEvent, topics,
+    ResponseEvent, SessionEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent,
+    WorkbenchEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
@@ -25,6 +25,28 @@ fn tool_activity_frame(activity: ToolActivityEvent) -> ServerMessage {
             output: tr.output,
             is_error: tr.is_error,
         },
+    }
+}
+
+/// The frame for a main-agent turn lifecycle transition.
+fn turn_lifecycle_frame(event: TurnLifecycleEvent) -> ServerMessage {
+    match event {
+        TurnLifecycleEvent::Started { correlation_id } => ServerMessage::TurnStarted {
+            reply_to: correlation_id,
+        },
+        TurnLifecycleEvent::Ended { correlation_id } => ServerMessage::TurnEnded {
+            reply_to: correlation_id,
+        },
+    }
+}
+
+/// The frame for the main agent's turn-usage progress.
+fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
+    ServerMessage::TurnUsage {
+        reply_to: usage.correlation_id,
+        output_tokens: usage.output_tokens,
+        has_usage: usage.has_usage,
+        session_totals: usage.session_totals,
     }
 }
 
@@ -90,6 +112,7 @@ pub struct WsSubscribers {
     pub response: Subscriber<ResponseEvent>,
     pub tool_activity: Subscriber<ToolActivityEvent>,
     pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    pub turn_usage: Subscriber<TurnUsageEvent>,
     pub intermediate: Subscriber<IntermediateEvent>,
     pub notice: Subscriber<NoticeEvent>,
     pub inline_output: Subscriber<InlineOutputEvent>,
@@ -124,6 +147,7 @@ impl WsSubscribers {
             response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             tool_activity: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_usage: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
             notice: bus_handle.subscribe(system_topic()).await?,
             inline_output: bus_handle.subscribe(system_topic()).await?,
@@ -158,12 +182,13 @@ impl WsSubscribers {
                 }
                 event = self.turn_lifecycle.recv() => {
                     match event {
-                        Ok(Some(TurnLifecycleEvent::Started { correlation_id })) => {
-                            Some(ServerMessage::TurnStarted { reply_to: correlation_id })
-                        }
-                        Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
-                            Some(ServerMessage::TurnEnded { reply_to: correlation_id })
-                        }
+                        Ok(Some(lifecycle)) => Some(turn_lifecycle_frame(lifecycle)),
+                        _ => return None,
+                    }
+                }
+                event = self.turn_usage.recv() => {
+                    match event {
+                        Ok(Some(usage)) => Some(turn_usage_frame(usage)),
                         _ => return None,
                     }
                 }
@@ -511,6 +536,51 @@ mod tests {
         assert!(
             matches!(msg, ServerMessage::TurnEnded { reply_to } if reply_to == "c1"),
             "TurnEnded should map to ServerMessage::TurnEnded"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_usage_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+            no_watch_set(),
+        )
+        .await
+        .unwrap();
+
+        let mut totals = crate::agent::usage::SessionUsageTotals::default();
+        totals.accumulate(Some(crate::inference::Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+
+        pub_.publish(
+            topics::Endpoint(ep),
+            crate::bus::TurnUsageEvent {
+                correlation_id: "c1".into(),
+                output_tokens: 20,
+                has_usage: true,
+                session_totals: Some(totals),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::TurnUsage { reply_to, output_tokens: 20, has_usage: true, session_totals: Some(t) }
+                    if reply_to == "c1" && *t == totals
+            ),
+            "TurnUsageEvent should map to ServerMessage::TurnUsage: {msg:?}"
         );
     }
 

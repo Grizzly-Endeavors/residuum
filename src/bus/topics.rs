@@ -7,8 +7,8 @@
 use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent,
     MessageEvent, NoticeEvent, NotificationEvent, ResponseEvent, SessionEvent,
-    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, WorkbenchEvent,
-    WorkspaceEvent,
+    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent,
+    WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -47,6 +47,7 @@ impl Topic for Endpoint {
 impl Carries<ResponseEvent> for Endpoint {}
 impl Carries<ToolActivityEvent> for Endpoint {}
 impl Carries<TurnLifecycleEvent> for Endpoint {}
+impl Carries<TurnUsageEvent> for Endpoint {}
 impl Carries<IntermediateEvent> for Endpoint {}
 impl Carries<SessionResponseEvent> for Endpoint {}
 

@@ -98,6 +98,7 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/system/timezone", get(config::api_system_timezone))
         .route("/api/mcp-catalog", get(config::api_mcp_catalog))
         .route("/api/chat/history", get(config::api_chat_history))
+        .route("/api/usage", get(config::api_usage))
         .route(
             "/api/providers/models",
             post(providers::api_provider_models),
@@ -328,6 +329,56 @@ mod tests {
                 panic!("expected Recent segment in setup mode");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn api_usage_returns_zero_default_when_no_memory_dir() {
+        use axum::Json;
+        use axum::extract::State;
+
+        let state = ConfigApiState {
+            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let Json(totals) = config::api_usage(State(state)).await;
+        assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
+    }
+
+    #[tokio::test]
+    async fn api_usage_reads_the_persisted_totals_file() {
+        use axum::Json;
+        use axum::extract::State;
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let mut totals = crate::agent::usage::SessionUsageTotals::default();
+        totals.accumulate(Some(crate::inference::Usage {
+            input_tokens: 300,
+            output_tokens: 60,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+        crate::agent::usage::save_session_usage_totals(
+            &memory_dir.join("usage_totals.json"),
+            &totals,
+        )
+        .await;
+
+        let state = ConfigApiState {
+            config_dir: dir.path().to_path_buf(),
+            workspace_dir: dir.path().to_path_buf(),
+            memory_dir: Some(memory_dir),
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let Json(loaded) = config::api_usage(State(state)).await;
+        assert_eq!(loaded, totals);
     }
 
     #[tokio::test]

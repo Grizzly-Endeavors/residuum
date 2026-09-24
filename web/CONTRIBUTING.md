@@ -70,6 +70,8 @@ web/
 │   ├── components/
 │   │   ├── ChatFeed.svelte         # Main chat message list (lazy-loads older episodes)
 │   │   ├── ChatInput.svelte        # Input box with slash commands
+│   │   ├── ChatFooter.svelte       # Quiet status line: model, session tokens, context size
+│   │   ├── ThinkingIndicator.svelte # Running-turn indicator: elapsed time, tokens, stop hint
 │   │   ├── FeedItemView.svelte     # Renders one feed item; shared by chat and session views
 │   │   ├── Message*.svelte         # Message components (user, assistant, agent message, status, …)
 │   │   ├── ToolGroup.svelte        # Groups related tool calls together
@@ -98,6 +100,7 @@ web/
 │       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
 │       ├── models.ts             # Model fetching and caching
 │       ├── markdown.ts           # Markdown rendering
+│       ├── format-usage.ts       # Elapsed time / token count formatting for the indicator and footer
 │       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
 ├── mock-server.ts            # Mock API + WebSocket (only used in dev:mock)

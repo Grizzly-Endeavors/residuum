@@ -257,7 +257,7 @@ pub struct ToolDefinition {
 }
 
 /// Token usage information from a model response.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
     /// Number of input/prompt tokens consumed.
     pub input_tokens: u32,
