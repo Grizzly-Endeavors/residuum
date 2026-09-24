@@ -199,28 +199,20 @@ async fn fetch_openai_models(
         .json()
         .await
         .map_err(|err| format!("invalid json: {err}"))?;
+    parse_openai_models(&json)
+}
+
+/// List every model the endpoint reports, fine-tunes included.
+fn parse_openai_models(json: &serde_json::Value) -> Result<Vec<ModelEntry>, String> {
     let data = json
         .get("data")
         .and_then(|v| v.as_array())
         .ok_or("missing data array")?;
 
-    let skip_prefixes = [
-        "ft:",
-        "dall-e",
-        "tts-",
-        "whisper",
-        "text-embedding",
-        "babbage",
-        "davinci",
-    ];
-
     Ok(data
         .iter()
         .filter_map(|m| {
             let id = m.get("id")?.as_str()?;
-            if skip_prefixes.iter().any(|prefix| id.starts_with(prefix)) {
-                return None;
-            }
             Some(ModelEntry {
                 id: id.to_string(),
                 name: id.to_string(),
@@ -510,5 +502,31 @@ mod tests {
     fn fireworks_listing_rejects_unexpected_shape() {
         let err = parse_fireworks_chat_models(&serde_json::json!({"models": []})).err();
         assert_eq!(err.as_deref(), Some("missing data array"));
+    }
+
+    #[test]
+    fn openai_listing_includes_fine_tunes() {
+        let json = serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "gpt-5", "object": "model"},
+                {"id": "ft:gpt-5-mini:acme::abc123", "object": "model"},
+                {"id": "text-embedding-3-small", "object": "model"}
+            ]
+        });
+        let ids: Vec<String> = parse_openai_models(&json)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "gpt-5".to_string(),
+                "ft:gpt-5-mini:acme::abc123".to_string(),
+                "text-embedding-3-small".to_string(),
+            ],
+            "every listed model is offered, fine-tunes included"
+        );
     }
 }
