@@ -11,6 +11,7 @@ export type { SessionListResponse } from "./SessionListResponse";
 export type { SessionRunStatus } from "./SessionRunStatus";
 export type { SessionState } from "./SessionState";
 export type { SessionSummary } from "./SessionSummary";
+export type { SessionUsageTotals } from "./SessionUsageTotals";
 export type { ArtifactSummary } from "./ArtifactSummary";
 export type { WorkbenchInfo } from "./WorkbenchInfo";
 export type { WorkbenchRelayOrigins } from "./WorkbenchRelayOrigins";
