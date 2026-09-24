@@ -14,6 +14,9 @@
     putConfigRaw,
     putProvidersRaw,
     putMcpRaw,
+    patchConfig,
+    patchProviders,
+    patchMcp,
     storeSecret,
   } from "./lib/api";
   import { isStoredReference } from "./lib/secrets";
@@ -21,9 +24,9 @@
     parseConfigToml,
     parseProvidersToml,
     parseMcpJson,
-    serializeConfigToml,
-    serializeProvidersToml,
-    serializeMcpJson,
+    diffConfigFields,
+    diffProviders,
+    diffMcpServers,
     defaultConfigFields,
     defaultModels,
     type ConfigFields,
@@ -77,6 +80,14 @@
   let providerEntries = $state<SettingsProviderEntry[]>([]);
   let modelAssignments = $state<SettingsModelAssignments>(defaultModels());
   let mcpServers = $state<McpServerEntry[]>([]);
+
+  // Last-saved form snapshots, diffed against current form state to build
+  // each save's patch. Updated on load, reload, and after every successful
+  // save (including a partial one — see `autoSave`).
+  let baselineConfigFields = defaultConfigFields();
+  let baselineProviderEntries: SettingsProviderEntry[] = [];
+  let baselineModelAssignments = defaultModels();
+  let baselineMcpServers: McpServerEntry[] = [];
 
   // Auto-save debounce timer
   let autoSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -134,6 +145,15 @@
     providerEntries = prov.providers;
     modelAssignments = prov.models;
     mcpServers = parseMcpJson(rawMcp);
+    captureBaseline();
+  }
+
+  /** Snapshot current form state as the baseline the next save diffs against. */
+  function captureBaseline() {
+    baselineConfigFields = $state.snapshot(configFields);
+    baselineProviderEntries = $state.snapshot(providerEntries);
+    baselineModelAssignments = $state.snapshot(modelAssignments);
+    baselineMcpServers = $state.snapshot(mcpServers);
   }
 
   // ── Mode switching ────────────────────────────────────────────────
@@ -264,52 +284,11 @@
     statusKind = "saving";
 
     try {
-      let cfgToml: string;
-      let provToml: string;
-      let mcpJson: string;
-
       if (settingsMode === "raw") {
-        cfgToml = editConfig;
-        provToml = editProviders;
-        mcpJson = editMcp;
+        await autoSaveRaw();
       } else {
-        await storeNewSecrets();
-        cfgToml = serializeConfigToml(configFields);
-        provToml = serializeProvidersToml(providerEntries, modelAssignments);
-        mcpJson = serializeMcpJson(mcpServers);
+        await autoSaveForm();
       }
-
-      const provResult = await putProvidersRaw(provToml);
-      if (!provResult.valid) {
-        statusMsg = "";
-        statusKind = "";
-        toast.error(`providers.toml: ${provResult.error ?? "unknown error"}`);
-        return;
-      }
-
-      const cfgResult = await putConfigRaw(cfgToml);
-      if (!cfgResult.valid) {
-        statusMsg = "";
-        statusKind = "";
-        toast.error(`config.toml: ${cfgResult.error ?? "unknown error"}`);
-        return;
-      }
-
-      const mcpResult = await putMcpRaw(mcpJson);
-      if (!mcpResult.valid) {
-        statusMsg = "";
-        statusKind = "";
-        toast.error(`mcp.json: ${mcpResult.error ?? "unknown error"}`);
-        return;
-      }
-
-      rawConfig = cfgToml;
-      rawProviders = provToml;
-      rawMcp = mcpJson;
-
-      // Record snapshot after save (includes any secret mutations)
-      lastSavedSnapshot = currentSnapshot();
-      showStatus("Saved", "success");
     } catch (err: unknown) {
       statusMsg = "";
       statusKind = "";
@@ -317,6 +296,123 @@
     } finally {
       saving = false;
     }
+  }
+
+  /** Raw mode: PUT the whole text the user typed, unchanged from before. */
+  async function autoSaveRaw(): Promise<void> {
+    const cfgToml = editConfig;
+    const provToml = editProviders;
+    const mcpJson = editMcp;
+
+    const provResult = await putProvidersRaw(provToml);
+    if (!provResult.valid) {
+      statusMsg = "";
+      statusKind = "";
+      toast.error(`providers.toml: ${provResult.error ?? "unknown error"}`);
+      return;
+    }
+
+    const cfgResult = await putConfigRaw(cfgToml);
+    if (!cfgResult.valid) {
+      statusMsg = "";
+      statusKind = "";
+      toast.error(`config.toml: ${cfgResult.error ?? "unknown error"}`);
+      return;
+    }
+
+    const mcpResult = await putMcpRaw(mcpJson);
+    if (!mcpResult.valid) {
+      statusMsg = "";
+      statusKind = "";
+      toast.error(`mcp.json: ${mcpResult.error ?? "unknown error"}`);
+      return;
+    }
+
+    rawConfig = cfgToml;
+    rawProviders = provToml;
+    rawMcp = mcpJson;
+
+    lastSavedSnapshot = currentSnapshot();
+    showStatus("Saved", "success");
+  }
+
+  /**
+   * Form mode: send only the diff against the last-saved baseline for each
+   * file, via the server's patch endpoints — the form never rebuilds a
+   * whole file from its own state (that's the bug this replaces: comments,
+   * unmodeled sections/keys, and fields the form doesn't model used to be
+   * silently destroyed on every save).
+   *
+   * Files are saved in the same order the old whole-file PUTs used
+   * (providers before config, since config validation reads providers.toml
+   * from disk). A failure partway through still leaves the files that
+   * already saved saved — this reports exactly which files saved and which
+   * didn't, and why, rather than only naming the failing one.
+   */
+  async function autoSaveForm(): Promise<void> {
+    await storeNewSecrets();
+
+    const currentConfig = $state.snapshot(configFields);
+    const currentProviders = $state.snapshot(providerEntries);
+    const currentModels = $state.snapshot(modelAssignments);
+    const currentMcp = $state.snapshot(mcpServers);
+
+    const providersDiff = diffProviders(
+      baselineProviderEntries,
+      currentProviders,
+      baselineModelAssignments,
+      currentModels,
+    );
+    const configDiff = diffConfigFields(baselineConfigFields, currentConfig);
+    const mcpDiff = diffMcpServers(baselineMcpServers, currentMcp);
+
+    const saved: string[] = [];
+    const failed: { file: string; error: string }[] = [];
+
+    const provResult = await patchProviders(providersDiff);
+    if (provResult.valid) {
+      baselineProviderEntries = currentProviders;
+      baselineModelAssignments = currentModels;
+      saved.push("providers.toml");
+    } else {
+      failed.push({ file: "providers.toml", error: provResult.error ?? "unknown error" });
+    }
+
+    // config.toml validation reads providers.toml from disk, so only
+    // attempt it once providers.toml is in the state config expects.
+    if (provResult.valid) {
+      const cfgResult = await patchConfig(configDiff);
+      if (cfgResult.valid) {
+        baselineConfigFields = currentConfig;
+        saved.push("config.toml");
+      } else {
+        failed.push({ file: "config.toml", error: cfgResult.error ?? "unknown error" });
+      }
+    }
+
+    const mcpResult = await patchMcp(mcpDiff);
+    if (mcpResult.valid) {
+      baselineMcpServers = currentMcp;
+      saved.push("mcp.json");
+    } else {
+      failed.push({ file: "mcp.json", error: mcpResult.error ?? "unknown error" });
+    }
+
+    statusMsg = "";
+    statusKind = "";
+
+    if (failed.length === 0) {
+      lastSavedSnapshot = currentSnapshot();
+      showStatus("Saved", "success");
+      return;
+    }
+
+    const failedDetail = failed.map((f) => `${f.file}: ${f.error}`).join("; ");
+    const message =
+      saved.length > 0
+        ? `Saved ${saved.join(", ")}. Failed to save ${failedDetail}.`
+        : `Failed to save ${failedDetail}.`;
+    toast.error(message);
   }
 
   // ── Secret management ──────────────────────────────────────────────

@@ -105,6 +105,35 @@ async function putValidated(
   }
 }
 
+/**
+ * `PATCH` a JSON diff (see `lib/settings-toml.ts`'s diff builders) and
+ * report the same `{valid, error}` shape a raw-file PUT would. Skips the
+ * request entirely when `diff` has no keys — an empty patch is a no-op, not
+ * a network call.
+ */
+async function patchValidated(
+  path: string,
+  diff: Record<string, unknown>,
+  cacheKey: string,
+): Promise<ValidateResponse> {
+  if (Object.keys(diff).length === 0) {
+    return { valid: true, error: undefined };
+  }
+  try {
+    return await apiFetch<ValidateResponse>(path, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(diff),
+    });
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(cacheKey);
+  }
+}
+
 async function checkOk(resp: Response): Promise<Response> {
   if (!resp.ok) {
     const body = await resp.text();
@@ -275,6 +304,11 @@ export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
   return putValidated("/api/config/raw", "text/plain", toml, CACHE_KEY_CONFIG_RAW);
 }
 
+/** Merge a diff (from `diffConfigFields`) into `config.toml` on the server. */
+export async function patchConfig(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/config/patch", diff, CACHE_KEY_CONFIG_RAW);
+}
+
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
   return apiFetch<ValidateResponse>("/api/config/validate", {
     method: "POST",
@@ -291,6 +325,11 @@ export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
   return putValidated("/api/providers/raw", "text/plain", toml, CACHE_KEY_PROVIDERS_RAW);
 }
 
+/** Merge a diff (from `diffProviders`/`modelRoleJson`) into `providers.toml` on the server. */
+export async function patchProviders(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/providers/patch", diff, CACHE_KEY_PROVIDERS_RAW);
+}
+
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
   return apiFetch<ValidateResponse>("/api/providers/validate", {
     method: "POST",
@@ -305,6 +344,11 @@ export async function fetchMcpRaw(): Promise<string> {
 
 export async function putMcpRaw(json: string): Promise<ValidateResponse> {
   return putValidated("/api/mcp/raw", "application/json", json, CACHE_KEY_MCP_RAW);
+}
+
+/** Merge a diff (from `diffMcpServers`) into `mcp.json` on the server. */
+export async function patchMcp(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/mcp/patch", diff, CACHE_KEY_MCP_RAW);
 }
 
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */

@@ -13,9 +13,22 @@
 
   // Manual add form
   let showAddForm = $state(false);
-  let newServer = $state<McpServerEntry>({ name: "", command: "", args: [], env: {} });
+  let newServer = $state<McpServerEntry>({
+    name: "",
+    transport: "stdio",
+    command: "",
+    args: [],
+    env: {},
+    url: "",
+    headers: {},
+  });
   let newArgsStr = $state("");
   let newEnvStr = $state("");
+  let newHeadersStr = $state("");
+
+  function transportOf(srv: McpServerEntry): "stdio" | "http" {
+    return srv.transport ?? "stdio";
+  }
 
   onMount(async () => {
     catalog = await fetchMcpCatalog();
@@ -91,27 +104,59 @@
 
   // ── Manual add ─────────────────────────────────────────────────────
 
-  function handleManualAdd() {
-    if (!newServer.name.trim() || !newServer.command.trim()) return;
-    const args = newArgsStr.trim() ? newArgsStr.trim().split(/\s+/) : [];
-    const env: Record<string, string> = {};
-    if (newEnvStr.trim()) {
-      for (const line of newEnvStr.trim().split("\n")) {
-        const eq = line.indexOf("=");
-        if (eq > 0) {
-          env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-        }
+  /** Parse `KEY=value` (env) or `Header-Name=value` (headers) lines, one per line. */
+  function parseKvLines(raw: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!raw.trim()) return out;
+    for (const line of raw.trim().split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq > 0) {
+        out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
       }
     }
-    servers.push({
-      name: newServer.name.trim(),
-      command: newServer.command.trim(),
-      args,
-      env,
-    });
-    newServer = { name: "", command: "", args: [], env: {} };
+    return out;
+  }
+
+  function handleManualAdd() {
+    const name = newServer.name.trim();
+    if (!name) return;
+
+    if (newServer.transport === "http") {
+      const url = (newServer.url ?? "").trim();
+      if (!url) return;
+      servers.push({
+        name,
+        transport: "http",
+        command: "",
+        args: [],
+        env: {},
+        url,
+        headers: parseKvLines(newHeadersStr),
+      });
+    } else {
+      const command = newServer.command.trim();
+      if (!command) return;
+      servers.push({
+        name,
+        transport: "stdio",
+        command,
+        args: newArgsStr.trim() ? newArgsStr.trim().split(/\s+/) : [],
+        env: parseKvLines(newEnvStr),
+      });
+    }
+
+    newServer = {
+      name: "",
+      transport: "stdio",
+      command: "",
+      args: [],
+      env: {},
+      url: "",
+      headers: {},
+    };
     newArgsStr = "";
     newEnvStr = "";
+    newHeadersStr = "";
     showAddForm = false;
   }
 </script>
@@ -128,7 +173,11 @@
       <div class="mcp-server-entry">
         <div class="mcp-server-info">
           <span class="mcp-server-name">{srv.name}</span>
-          <span class="mcp-server-cmd">{srv.command} {srv.args.join(" ")}</span>
+          {#if transportOf(srv) === "http"}
+            <span class="mcp-server-cmd">http · {srv.url}</span>
+          {:else}
+            <span class="mcp-server-cmd">{srv.command} {srv.args.join(" ")}</span>
+          {/if}
         </div>
         <ConfirmButton onConfirm={() => removeServer(i)} />
       </div>
@@ -146,33 +195,76 @@
           />
         </div>
         <div class="settings-field">
-          <label for="mcp-new-command">Command</label>
-          <input
-            id="mcp-new-command"
-            type="text"
-            bind:value={newServer.command}
-            placeholder="e.g. npx, uvx"
-          />
+          <span class="settings-group-label">Transport</span>
+          <div class="settings-mode-selector">
+            <button
+              type="button"
+              class="settings-mode-btn"
+              class:active={newServer.transport === "stdio"}
+              onclick={() => {
+                newServer.transport = "stdio";
+              }}>stdio</button
+            >
+            <button
+              type="button"
+              class="settings-mode-btn"
+              class:active={newServer.transport === "http"}
+              onclick={() => {
+                newServer.transport = "http";
+              }}>http</button
+            >
+          </div>
         </div>
-        <div class="settings-field">
-          <label for="mcp-new-args">Arguments (space-separated)</label>
-          <input
-            id="mcp-new-args"
-            type="text"
-            bind:value={newArgsStr}
-            placeholder="e.g. -y @org/server"
-          />
-        </div>
-        <div class="settings-field">
-          <label for="mcp-new-env">Environment (KEY=value, one per line)</label>
-          <textarea
-            id="mcp-new-env"
-            class="toml-editor"
-            style="min-height:60px;"
-            bind:value={newEnvStr}
-            placeholder="API_KEY=abc123"
-          ></textarea>
-        </div>
+        {#if newServer.transport === "http"}
+          <div class="settings-field">
+            <label for="mcp-new-url">URL</label>
+            <input
+              id="mcp-new-url"
+              type="text"
+              bind:value={newServer.url}
+              placeholder="https://mcp.example.com/v1"
+            />
+          </div>
+          <div class="settings-field">
+            <label for="mcp-new-headers">Headers (Header-Name=value, one per line)</label>
+            <textarea
+              id="mcp-new-headers"
+              class="toml-editor"
+              style="min-height:60px;"
+              bind:value={newHeadersStr}
+              placeholder="Authorization=Bearer token123"
+            ></textarea>
+          </div>
+        {:else}
+          <div class="settings-field">
+            <label for="mcp-new-command">Command</label>
+            <input
+              id="mcp-new-command"
+              type="text"
+              bind:value={newServer.command}
+              placeholder="e.g. npx, uvx"
+            />
+          </div>
+          <div class="settings-field">
+            <label for="mcp-new-args">Arguments (space-separated)</label>
+            <input
+              id="mcp-new-args"
+              type="text"
+              bind:value={newArgsStr}
+              placeholder="e.g. -y @org/server"
+            />
+          </div>
+          <div class="settings-field">
+            <label for="mcp-new-env">Environment (KEY=value, one per line)</label>
+            <textarea
+              id="mcp-new-env"
+              class="toml-editor"
+              style="min-height:60px;"
+              bind:value={newEnvStr}
+              placeholder="API_KEY=abc123"
+            ></textarea>
+          </div>
+        {/if}
         <div class="mcp-inline-actions">
           <button class="btn btn-primary btn-sm" onclick={handleManualAdd}>Add</button>
           <button
