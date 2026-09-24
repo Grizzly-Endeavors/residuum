@@ -445,6 +445,86 @@ pub(super) async fn api_providers_raw_put(
     }))
 }
 
+/// `PATCH /api/providers/patch` — merge a JSON diff into the existing
+/// `providers.toml`, validate, save, trigger reload if running.
+///
+/// The diff's shape mirrors `providers.toml`'s section/key layout, carrying
+/// only the fields the Settings form actually changed — see
+/// `crate::config::patch` for the exact convention. Model-role assignments
+/// that carry `temperature`/`thinking` overrides use the `{"$inline": {...}}`
+/// marker to become a TOML inline table; a plain string replaces the whole
+/// role assignment.
+pub(super) async fn api_providers_patch(
+    State(state): State<ConfigApiState>,
+    Json(diff): Json<serde_json::Value>,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    let bad_request = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(msg),
+            }),
+        )
+    };
+
+    let Some(diff_map) = diff.as_object() else {
+        return Err(bad_request(
+            "providers patch must be a JSON object".to_string(),
+        ));
+    };
+
+    let providers_path = state.config_dir.join("providers.toml");
+    let existing = match tokio::fs::read_to_string(&providers_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::error!(error = %e, path = %providers_path.display(), "failed to read providers.toml for patching");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to read providers.toml: {e}")),
+                }),
+            ));
+        }
+    };
+
+    let patched =
+        crate::config::patch::apply_patch(&existing, diff_map, "providers.toml").map_err(|msg| {
+            tracing::warn!(error = %msg, path = %providers_path.display(), "providers.toml patch rejected");
+            bad_request(msg)
+        })?;
+
+    Config::validate_providers_toml(&patched, &state.config_dir).map_err(|e| {
+        tracing::warn!(error = %e, path = %providers_path.display(), "patched providers.toml failed validation");
+        bad_request(e)
+    })?;
+
+    crate::util::fs::atomic_write(&providers_path, &patched)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, path = %providers_path.display(), "failed to write patched providers.toml");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write providers.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Trigger root reload — provider changes affect model resolution
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(super::super::ReloadSignal::Root).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
 /// `POST /api/providers/validate` — validate providers TOML body without saving.
 pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,

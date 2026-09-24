@@ -25,6 +25,8 @@ Server definitions live in `config/mcp.json` (workspace-level, via `WorkspaceLay
 
 The loader (`crate::workspace::config::load_mcp_servers_map`, in `src/workspace/config.rs`) accepts either the Residuum-native `transport` field (`"stdio"` | `"http"`) or the Claude Code/Desktop `type` field (`"stdio"` | `"streamable-http"` | `"http"` | `"sse"`); `type` takes priority when both are present. `"sse"` is recognized but skipped with a warning (deprecated by the MCP spec), as is any unrecognized transport value. For HTTP servers, `url` is preferred over `command` as the address; a server missing both is skipped with a warning. A stdio server missing `command` is likewise skipped. None of these are hard failures — a bad entry drops that one server, not the whole file.
 
+The web UI's Settings → MCP panel edits `mcp.json` through `PATCH /api/mcp/patch` (`src/gateway/web/config.rs`, applied by `crate::workspace::mcp_patch::apply_mcp_patch`), which merges only the fields the form changed into the file already on disk rather than rewriting it from form state. A server's transport is shown and edited truthfully — HTTP servers expose `url`/`headers`, stdio servers expose `command`/`args`/`env` — and any field the form doesn't model (on a touched server or an untouched one) survives the edit. Removing a server in the form removes just that entry. An `mcp.json` that fails to parse is left untouched and the patch is refused with an error naming the file.
+
 ## Transports
 
 `McpServerEntry::transport` (`src/mcp/types.rs`) selects the connection strategy in `McpClient::connect` (`src/mcp/client.rs`):

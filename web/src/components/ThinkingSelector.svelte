@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { fetchProvidersRaw, putProvidersRaw } from "../lib/api";
-  import { parseProvidersToml, serializeProvidersToml } from "../lib/settings-toml";
+  import { fetchProvidersRaw, patchProviders } from "../lib/api";
+  import { parseProvidersToml, modelRoleJson } from "../lib/settings-toml";
   import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
   import { userErrorMessage } from "../lib/errors";
@@ -41,10 +41,14 @@
       try {
         const raw = await fetchProvidersRaw();
         const parsed = parseProvidersToml(raw);
-        parsed.models.overrides.main ??= { temperature: "", thinking: "" };
-        parsed.models.overrides.main.thinking = newLevel;
-        const toml = serializeProvidersToml(parsed.providers, parsed.models);
-        await putProvidersRaw(toml);
+        const mainModel = parsed.models.main;
+        const overrides = {
+          temperature: parsed.models.overrides.main?.temperature ?? "",
+          thinking: newLevel,
+        };
+        const value = modelRoleJson(mainModel, overrides);
+        const result = await patchProviders({ models: { main: value } });
+        if (!result.valid) throw new Error(result.error ?? "unknown error");
         ws.send({ type: "reload" });
         currentLevel = newLevel;
       } catch (err: unknown) {

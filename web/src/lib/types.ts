@@ -138,9 +138,18 @@ export interface BackgroundModelConfig {
 
 export interface McpServerEntry {
   name: string;
+  /** Defaults to `"stdio"` when absent (e.g. entries from the setup wizard). */
+  transport?: "stdio" | "http";
+  /** stdio only: the executable to spawn. */
   command: string;
+  /** stdio only. */
   args: string[];
+  /** stdio only. */
   env: Record<string, string>;
+  /** http only: the server's URL. */
+  url?: string;
+  /** http only. */
+  headers?: Record<string, string>;
 }
 
 export interface McpRequiredInput {

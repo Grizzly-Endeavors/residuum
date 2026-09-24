@@ -7,5 +7,6 @@ pub mod channel_builder;
 pub mod config;
 pub mod identity;
 pub mod layout;
+pub mod mcp_patch;
 pub mod version;
 pub mod watch;

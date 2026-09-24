@@ -98,7 +98,7 @@ web/
 │       ├── commands.ts           # Slash command parser (/help, /reload, etc.)
 │       ├── models.ts             # Model fetching and caching
 │       ├── markdown.ts           # Markdown rendering
-│       ├── settings-toml.ts      # Config serialization
+│       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
 ├── mock-server.ts            # Mock API + WebSocket (only used in dev:mock)
 ├── vite.config.ts
