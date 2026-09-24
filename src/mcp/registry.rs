@@ -599,6 +599,7 @@ mod tests {
             env: std::collections::HashMap::new(),
             transport: crate::mcp::types::McpTransport::default(),
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }
     }
 

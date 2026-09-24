@@ -45,6 +45,10 @@ struct McpServerRaw {
     /// HTTP headers to send with requests (only used for http transport).
     #[serde(default)]
     headers: HashMap<String, String>,
+    /// Optional per-server tool-call timeout, in seconds. Unset means no
+    /// automatic cutoff — a call runs until it finishes or is stopped.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 /// Load MCP server definitions from a JSON file as a name → entry map.
@@ -126,6 +130,7 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpSe
                 env: raw.env,
                 transport,
                 headers: raw.headers,
+                timeout_secs: raw.timeout_secs,
             };
             Some((name, entry))
         })

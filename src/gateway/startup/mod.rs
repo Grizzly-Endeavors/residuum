@@ -433,6 +433,7 @@ fn web_search_mcp_entry(
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }),
         "tavily" => Some(crate::mcp::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
@@ -444,6 +445,7 @@ fn web_search_mcp_entry(
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }),
         _ => None,
     }
