@@ -4,6 +4,7 @@ pub mod agent;
 pub mod agent_keys;
 pub mod background;
 pub mod bus;
+pub mod checkpoints;
 pub mod config;
 pub mod daemon;
 pub(crate) mod features;
