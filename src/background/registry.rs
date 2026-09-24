@@ -542,6 +542,34 @@ impl SessionRegistry {
         true
     }
 
+    /// Stop `address`'s turn, but only if one is actually running right now.
+    ///
+    /// Unlike [`Self::stop`] (which also ends an idle or forking session
+    /// outright, moving it straight to `completing`), this leaves an idle
+    /// session alone: it's used where "stop" means "interrupt whatever this
+    /// conversation is doing right now", such as a chat interface's `/stop`
+    /// command, and an idle session isn't doing anything to interrupt. The
+    /// check and the cancel happen under the same lock, so the decision is
+    /// always made against the address's actual state at the instant this is
+    /// called — there is no window where a request can be queued and later
+    /// misapplied to a turn that starts afterward.
+    ///
+    /// Returns `true` if a running turn was found and signalled to stop,
+    /// `false` if the address has no live session or its session isn't
+    /// currently running a turn (idle, forking, completing, or completed) —
+    /// in which case nothing is touched.
+    pub fn stop_if_running(&self, address: &SessionAddress) -> bool {
+        let guard = self.lock();
+        let Some(entry) = guard.get(address) else {
+            return false;
+        };
+        if entry.info.state != SessionState::Running {
+            return false;
+        }
+        entry.stop_token.cancel();
+        true
+    }
+
     /// Stop every live session (running, idle, or forking) — used at gateway
     /// shutdown so runs complete and are recorded rather than being left for
     /// startup recovery on the next boot.
@@ -992,6 +1020,57 @@ mod tests {
             .unwrap();
 
         assert!(!registry.stop(&info.address));
+    }
+
+    #[test]
+    fn stop_if_running_cancels_token_for_a_running_session() {
+        let registry = SessionRegistry::new();
+        let info = sample_info("spawned-researcher-0006");
+        let token = CancellationToken::new();
+        let _rx = registry.register(info.clone(), token.clone()).unwrap();
+
+        assert!(registry.stop_if_running(&info.address));
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn stop_if_running_leaves_an_idle_session_untouched() {
+        let registry = SessionRegistry::new();
+        let mut info = sample_info("spawned-researcher-0007");
+        info.state = SessionState::Idle;
+        let token = CancellationToken::new();
+        let _rx = registry.register(info.clone(), token.clone()).unwrap();
+
+        assert!(
+            !registry.stop_if_running(&info.address),
+            "an idle session has nothing running to stop"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "an idle session must not be cancelled by stop_if_running"
+        );
+        assert_eq!(
+            registry.get(&info.address).unwrap().state,
+            SessionState::Idle
+        );
+    }
+
+    #[test]
+    fn stop_if_running_returns_false_for_unknown_address() {
+        let registry = SessionRegistry::new();
+        assert!(!registry.stop_if_running(&SessionAddress::from("ghost")));
+    }
+
+    #[test]
+    fn stop_if_running_returns_false_for_a_forking_session() {
+        let registry = SessionRegistry::new();
+        let mut info = sample_info("spawned-researcher-0008");
+        info.state = SessionState::Forking;
+        let token = CancellationToken::new();
+        let _rx = registry.register(info.clone(), token.clone()).unwrap();
+
+        assert!(!registry.stop_if_running(&info.address));
+        assert!(!token.is_cancelled());
     }
 
     #[test]
