@@ -34,6 +34,7 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         completed_at: None,
         episode_id: None,
         interrupted: false,
+        usage: info.usage,
     }
 }
 
@@ -71,6 +72,7 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         completed_at: record.completed_at,
         episode_id: record.episode_id.clone(),
         interrupted: record.interrupted,
+        usage: record.usage,
     })
 }
 
@@ -135,6 +137,17 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             address,
             run_id,
             content,
+        },
+        SessionEventKind::TurnUsage {
+            output_tokens,
+            has_usage,
+            session_totals,
+        } => ServerMessage::SessionTurnUsage {
+            address,
+            run_id,
+            output_tokens,
+            has_usage,
+            session_totals,
         },
         SessionEventKind::Response { turn_id, content } => ServerMessage::SessionResponse {
             address,
@@ -322,6 +335,7 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         }
     }
 
@@ -589,6 +603,11 @@ mod tests {
                     "completed_at": null,
                     "episode_id": null,
                     "interrupted": false,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "context_tokens": null,
+                    },
                 },
             })
         );

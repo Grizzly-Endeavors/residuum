@@ -604,6 +604,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap()
                 + Duration::minutes(minutes),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
         }
     }
 
