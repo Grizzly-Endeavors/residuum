@@ -47,6 +47,8 @@ A session run moves through: `forking` → `running` → `idle` → `completing`
 
 Stopping a session (`stop_agent`) cancels its stop token: a running turn ends at its next checkpoint (a model-call or tool-loop boundary) with its transcript up to that point intact, rather than being dropped; an idle session skips straight to completing. Either way the run is reported as cancelled; a run that simply idles out keeps its last turn's outcome.
 
+A session's turn loop is unlimited by default, same as the main agent's — see [Tool-Call Limit](turn-control.md#tool-call-limit) for the optional `max_tool_iterations` config and what happens when a turn hits it.
+
 ### Idle Timeouts
 
 Configurable in the `[background]` config section:

@@ -387,6 +387,21 @@
           Allow Channel Modifications
         </label>
       </div>
+      <div class="settings-field">
+        <label for="rt-agent-max-tool-iterations">Max Tool Calls Per Turn</label>
+        <input
+          id="rt-agent-max-tool-iterations"
+          type="number"
+          min="1"
+          bind:value={fields.agent_max_tool_iterations}
+          placeholder="Unlimited"
+        />
+        <div class="field-hint">
+          Stop a turn gracefully after this many tool calls. Leave blank for no limit — a runaway
+          turn can still be stopped at any time (Cancel in the web UI, /stop, or stop_agent for
+          background sessions).
+        </div>
+      </div>
     </div>
 
     <div class="settings-group">

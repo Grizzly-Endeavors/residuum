@@ -261,6 +261,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
             thinking: inputs.cfg.thinking.clone(),
             ..crate::inference::CompletionOptions::default()
         },
+        max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
         layout: inputs.layout.clone(),
         tz: inputs.tz,
         role_overrides: inputs.cfg.role_overrides.clone(),
@@ -663,6 +664,7 @@ async fn build_tools_and_agent(
         CreateAgentArgs {
             provider: inputs.provider,
             options: inputs.options,
+            max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
             tools,
             identity: inputs.identity,
             hop_counter: inputs.hop_counter,

@@ -65,6 +65,7 @@ export interface ConfigFields {
   // agent
   agent_modify_mcp: boolean;
   agent_modify_channels: boolean;
+  agent_max_tool_iterations: string;
   // idle
   idle_timeout_minutes: string;
   idle_channel: string;
@@ -156,6 +157,7 @@ export function defaultConfigFields(): ConfigFields {
     retry_backoff_multiplier: "",
     agent_modify_mcp: true,
     agent_modify_channels: true,
+    agent_max_tool_iterations: "",
     idle_timeout_minutes: "",
     idle_channel: "",
     observer_threshold_tokens: "",
@@ -292,6 +294,7 @@ export function parseConfigToml(raw: string): ConfigFields {
   if (agent) {
     fields.agent_modify_mcp = bool(agent.modify_mcp, true);
     fields.agent_modify_channels = bool(agent.modify_channels, true);
+    fields.agent_max_tool_iterations = str(agent.max_tool_iterations);
   }
 
   const idle = doc.idle as Record<string, unknown> | undefined;
@@ -801,11 +804,13 @@ export function serializeConfigToml(f: ConfigFields): string {
   }
 
   // agent
-  if (!f.agent_modify_mcp || !f.agent_modify_channels) {
+  if (!f.agent_modify_mcp || !f.agent_modify_channels || f.agent_max_tool_iterations) {
     lines.push("");
     lines.push("[agent]");
     if (!f.agent_modify_mcp) lines.push("modify_mcp = false");
     if (!f.agent_modify_channels) lines.push("modify_channels = false");
+    if (f.agent_max_tool_iterations)
+      lines.push(`max_tool_iterations = ${f.agent_max_tool_iterations}`);
   }
 
   // idle

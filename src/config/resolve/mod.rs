@@ -86,7 +86,7 @@ pub(crate) fn from_file_and_env(
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let tools = resolve_tools_config(file.and_then(|f| f.tools.as_ref()), config_dir);
 
-    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
+    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()))?;
 
     let idle = resolve_idle_config(file, telegram.as_ref(), discord.as_ref(), teams.as_ref())?;
 
@@ -961,8 +961,15 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     }
 }
 
-/// Resolve agent ability gates from TOML section.
-fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConfig {
+/// Resolve agent ability gates and turn limits from the TOML section.
+///
+/// # Errors
+/// Returns `FatalError::Config` if `max_tool_iterations` is set to `0` — a
+/// turn that stops before ever calling a tool isn't a usable limit, so this
+/// is rejected rather than silently accepted.
+fn resolve_agent_config(
+    section: Option<&AgentConfigFile>,
+) -> Result<AgentAbilitiesConfig, FatalError> {
     let mut cfg = AgentAbilitiesConfig::default();
     if let Some(s) = section {
         if let Some(v) = s.modify_mcp {
@@ -971,8 +978,17 @@ fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConf
         if let Some(v) = s.modify_channels {
             cfg.modify_channels = v;
         }
+        if let Some(limit) = s.max_tool_iterations {
+            if limit == 0 {
+                return Err(FatalError::Config(
+                    "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)"
+                        .to_string(),
+                ));
+            }
+            cfg.max_tool_iterations = Some(limit);
+        }
     }
-    cfg
+    Ok(cfg)
 }
 
 /// Resolve background task configuration.
@@ -1834,6 +1850,66 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(
             !cfg.agent.modify_channels,
             "modify_channels should be false"
+        );
+    }
+
+    #[test]
+    fn max_tool_iterations_defaults_to_unlimited() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.agent.max_tool_iterations, None,
+            "an unset limit should mean unlimited"
+        );
+    }
+
+    #[test]
+    fn max_tool_iterations_round_trips_a_configured_value() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+max_tool_iterations = 25
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.agent.max_tool_iterations, Some(25));
+    }
+
+    #[test]
+    fn max_tool_iterations_of_zero_is_rejected() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+max_tool_iterations = 0
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let err = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir())
+            .expect_err("a zero limit should be rejected at load");
+        assert!(
+            err.to_string().contains("max_tool_iterations"),
+            "error should name the offending setting: {err}"
         );
     }
 

@@ -47,6 +47,9 @@ pub(super) struct ToolRegistryDeps<'a> {
 pub(super) struct CreateAgentArgs {
     pub provider: Box<dyn crate::inference::InferenceProvider>,
     pub options: crate::inference::CompletionOptions,
+    /// Maximum tool-call iterations for the agent's turns, from
+    /// `cfg.agent.max_tool_iterations`. `None` means unlimited.
+    pub max_tool_iterations: Option<usize>,
     pub tools: ToolRegistry,
     pub identity: IdentityFiles,
     /// Main's current-turn hop counter — the same instance already handed to
@@ -168,6 +171,7 @@ pub(super) async fn create_agent(
         },
         args.hop_counter,
     );
+    agent.set_max_tool_iterations(args.max_tool_iterations);
     if let Err(err) = agent.reload_observations(layout).await {
         tracing::warn!(error = %err, "observation loading degraded");
     }

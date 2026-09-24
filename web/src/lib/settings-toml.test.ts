@@ -66,6 +66,22 @@ describe("background idle timeouts", () => {
   });
 });
 
+describe("agent max_tool_iterations", () => {
+  it("defaults to unset (unlimited) with no section emitted", () => {
+    const fields = parseConfigToml("");
+    expect(fields.agent_max_tool_iterations).toBe("");
+    expect(serializeConfigToml(fields)).not.toContain("[agent]");
+  });
+
+  it("round-trips a configured limit through config.toml", () => {
+    const fields = parseConfigToml("[agent]\nmax_tool_iterations = 25\n");
+    expect(fields.agent_max_tool_iterations).toBe("25");
+    const out = serializeConfigToml(fields);
+    expect(out).toContain("[agent]");
+    expect(out).toContain("max_tool_iterations = 25");
+  });
+});
+
 describe("a2a settings", () => {
   it("defaults to enabled with no section emitted", () => {
     const fields = parseConfigToml("");

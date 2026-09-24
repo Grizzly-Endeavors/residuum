@@ -385,6 +385,9 @@ pub(super) struct AgentConfigFile {
     pub(super) modify_mcp: Option<bool>,
     /// Whether the agent can modify notification channels.
     pub(super) modify_channels: Option<bool>,
+    /// Maximum tool-call iterations per turn before it stops itself
+    /// gracefully. Unset means unlimited. Must be at least 1 when set.
+    pub(super) max_tool_iterations: Option<usize>,
 }
 
 /// Raw TOML `[idle]` section.

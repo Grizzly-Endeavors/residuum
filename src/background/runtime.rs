@@ -1341,6 +1341,7 @@ mod tests {
     fn make_resources(response: &str) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(MockProvider {
                 response: response.to_string(),
             }),
@@ -1930,6 +1931,7 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -1974,6 +1976,7 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2059,6 +2062,7 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2145,6 +2149,7 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(PanickingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2204,6 +2209,7 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(PanickingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2384,6 +2390,7 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2709,6 +2716,7 @@ mod tests {
     fn make_sequenced_resources(responses: Vec<&str>) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(SequencedProvider::new(responses)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -3059,6 +3067,7 @@ mod tests {
             },
         ));
         let resources = SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(SequencedProvider::new(responses)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -3229,6 +3238,7 @@ mod tests {
         runtime.spawn(
             request,
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
@@ -3307,6 +3317,7 @@ mod tests {
         runtime.spawn(
             request,
             Some(SubAgentResources {
+                max_tool_iterations: None,
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),

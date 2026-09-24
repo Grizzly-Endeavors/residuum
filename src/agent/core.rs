@@ -37,6 +37,12 @@ pub struct Agent {
     identity: IdentityFiles,
     recent_messages: RecentMessages,
     options: CompletionOptions,
+    /// Maximum tool-call iterations before a turn stops itself gracefully.
+    /// `None` (the default) means unlimited — set from
+    /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`] at
+    /// startup and kept current on every config reload (see
+    /// [`Agent::set_max_tool_iterations`]).
+    max_tool_iterations: Option<usize>,
     observations: Option<String>,
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
@@ -72,6 +78,7 @@ impl Agent {
             identity,
             recent_messages: RecentMessages::new(),
             options: config.options,
+            max_tool_iterations: None,
             observations: None,
             recent_context: None,
             tz: config.tz,
@@ -126,6 +133,12 @@ impl Agent {
         );
         self.provider = provider;
         self.options = options;
+    }
+
+    /// Set the maximum tool-call iterations for future turns (e.g. at
+    /// startup, or after a config reload). `None` means unlimited.
+    pub fn set_max_tool_iterations(&mut self, limit: Option<usize>) {
+        self.max_tool_iterations = limit;
     }
 
     /// Reload the `ollama_web_search` tool in place from the current
@@ -249,33 +262,6 @@ impl Agent {
         }
     }
 
-    /// Build a [`TurnResources`] from borrowed component fields.
-    ///
-    /// Takes explicit field references rather than `&self` for the same
-    /// reason as [`Agent::memory_ctx`].
-    fn turn_resources<'a>(
-        provider: &'a dyn InferenceProvider,
-        tools: &'a ToolRegistry,
-        mcp_registry: &'a SharedMcpRegistry,
-        identity: &'a IdentityFiles,
-        options: &'a CompletionOptions,
-        stop_token: &'a CancellationToken,
-        hop_counter: &'a HopCounter,
-    ) -> TurnResources<'a> {
-        TurnResources {
-            provider,
-            tools,
-            mcp_registry,
-            identity,
-            options,
-            stop_token,
-            // The main agent persists its transcript separately
-            // (`recent_messages.json`, written after the whole turn).
-            transcript_sink: None,
-            hop_counter,
-        }
-    }
-
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
@@ -325,15 +311,19 @@ impl Agent {
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
-        let resources = Self::turn_resources(
-            &*self.provider,
-            &self.tools,
-            &self.mcp_registry,
-            &self.identity,
-            &self.options,
+        let resources = TurnResources {
+            provider: &*self.provider,
+            tools: &self.tools,
+            mcp_registry: &self.mcp_registry,
+            identity: &self.identity,
+            options: &self.options,
+            max_tool_iterations: self.max_tool_iterations,
             stop_token,
-            &self.hop_counter,
-        );
+            // The main agent persists its transcript separately
+            // (`recent_messages.json`, written after the whole turn).
+            transcript_sink: None,
+            hop_counter: &self.hop_counter,
+        };
         let events = EventContext {
             publisher,
             target: EventTarget::Endpoint {
@@ -409,7 +399,6 @@ impl Agent {
     reason = "test code uses indexing for clarity"
 )]
 mod tests {
-    use super::super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
     use crate::bus;
     use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
@@ -622,8 +611,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_iterations_guard() {
-        let responses: Vec<InferenceResponse> = (0..=MAX_TOOL_ITERATIONS)
+    async fn unlimited_by_default_allows_more_than_fifty_tool_iterations() {
+        // Deliberately well past the old hardcoded 50-iteration cap, proving
+        // an unconfigured agent no longer bails out at any fixed count.
+        let extra_iterations = 60;
+        let mut responses: Vec<InferenceResponse> = (0..extra_iterations)
+            .map(|i| {
+                InferenceResponse::new(
+                    String::new(),
+                    vec![ToolCall {
+                        id: format!("call_{i}"),
+                        name: "exec".to_string(),
+                        arguments: serde_json::json!({"command": "echo loop"}),
+                    }],
+                )
+            })
+            .collect();
+        responses.push(InferenceResponse::new("done".to_string(), vec![]));
+
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+
+        let provider = MockProvider::new(responses);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        );
+        // max_tool_iterations left unset: unlimited by default.
+
+        let (publisher, ep) = test_bus();
+        let mut irx = interrupt::dead_interrupt_rx();
+        let result = agent
+            .process_message(
+                "loop past the old cap",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut irx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec!["done"],
+            "should complete normally well past the old 50-iteration cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_tool_iteration_limit_stops_the_turn_gracefully() {
+        let limit = 3;
+        let responses: Vec<InferenceResponse> = (0..limit + 5)
             .map(|i| {
                 InferenceResponse::new(
                     String::new(),
@@ -652,6 +704,7 @@ mod tests {
             },
             crate::agent::HopCounter::new(0),
         );
+        agent.set_max_tool_iterations(Some(limit));
 
         let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
@@ -669,8 +722,18 @@ mod tests {
                 None,
                 &CancellationToken::new(),
             )
-            .await;
-        assert!(result.is_err(), "should error after max iterations");
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            1,
+            "should end gracefully with one notice, not an error"
+        );
+        assert!(
+            result[0].contains("stopped after 3 tool calls"),
+            "message should mention the configured limit: {}",
+            result[0]
+        );
     }
 
     #[test]

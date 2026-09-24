@@ -36,6 +36,10 @@ pub(crate) struct SpawnContext {
     pub(crate) max_tokens: u32,
     pub(crate) retry_config: RetryConfig,
     pub(crate) options: CompletionOptions,
+    /// Maximum tool-call iterations for a session turn before it stops
+    /// itself gracefully, mirroring `cfg.agent.max_tool_iterations`. `None`
+    /// means unlimited.
+    pub(crate) max_tool_iterations: Option<usize>,
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
     pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
@@ -213,6 +217,7 @@ pub(crate) async fn build_spawn_resources(
         workspace_layout: ctx.layout.clone(),
         identity,
         options,
+        max_tool_iterations: ctx.max_tool_iterations,
         tz: ctx.tz,
         skill: skill.map(str::to_string),
         observations,
