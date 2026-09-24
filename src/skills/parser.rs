@@ -61,6 +61,8 @@ pub(super) fn validate_skill_description(description: &str) -> anyhow::Result<()
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{parse_skill_md, validate_skill_description, validate_skill_name};
 
     // ── parse_skill_md ───────────────────────────────────────────────────────
@@ -247,6 +249,57 @@ mod tests {
         assert!(
             validate_skill_description(&description).is_err(),
             "description over 280 chars should be rejected"
+        );
+    }
+
+    // ── Bundled skills ───────────────────────────────────────────────────────
+
+    /// Every bundled `SKILL.md` under `assets/bundled-skills/` must parse with
+    /// the same `parse_skill_md` the workspace skill scanner uses.
+    ///
+    /// A bundled skill is embedded into the binary at compile time
+    /// (`include_str!` in `workspace::bootstrap`) and written into every new
+    /// workspace verbatim, so a frontmatter defect here — an over-long
+    /// `description`, invalid YAML, a bad name — ships broken to every user
+    /// and is silently dropped by `SkillIndex::scan`'s warn-and-skip handling,
+    /// with no build-time signal. This test is the build-time signal: it
+    /// fails naming the skill and the parser's exact complaint, instead of
+    /// only surfacing as a `skipping skill with invalid frontmatter` warning
+    /// discovered at runtime.
+    #[test]
+    fn all_bundled_skills_parse() {
+        let bundled_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/bundled-skills");
+
+        let mut skill_dirs: Vec<PathBuf> = std::fs::read_dir(&bundled_root)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", bundled_root.display()))
+            .map(|entry| entry.unwrap_or_else(|e| panic!("failed to read a dir entry: {e}")))
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        skill_dirs.sort();
+
+        assert!(
+            !skill_dirs.is_empty(),
+            "no bundled skill directories found under {}",
+            bundled_root.display()
+        );
+
+        let failures: Vec<String> = skill_dirs
+            .into_iter()
+            .filter_map(|dir| {
+                let skill_md = dir.join("SKILL.md");
+                let content = std::fs::read_to_string(&skill_md)
+                    .unwrap_or_else(|e| panic!("failed to read {}: {e}", skill_md.display()));
+                parse_skill_md(&content)
+                    .err()
+                    .map(|e| format!("{}: {e}", skill_md.display()))
+            })
+            .collect();
+
+        assert!(
+            failures.is_empty(),
+            "bundled skill(s) failed to parse with the real skill parser:\n{}",
+            failures.join("\n")
         );
     }
 }
