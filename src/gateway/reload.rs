@@ -508,6 +508,7 @@ fn build_spawn_context(
             thinking: new_cfg.thinking.clone(),
             ..CompletionOptions::default()
         },
+        max_tool_iterations: new_cfg.agent.max_tool_iterations,
         layout: rt.layout.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
@@ -778,7 +779,8 @@ async fn reload_tools_path(rt: &GatewayRuntime, new_cfg: &Config) {
     tracing::debug!("tool PATH updated from new config");
 }
 
-/// Update path policy with new agent ability gates.
+/// Update path policy and the main agent's tool-iteration limit from new
+/// agent ability gates.
 async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
     rt.path_policy
         .write()
@@ -786,9 +788,12 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .set_blocked_paths(crate::tools::path_policy::blocked_write_paths(
             new_cfg, &rt.layout,
         ));
+    rt.agent
+        .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
     tracing::debug!(
         modify_mcp = new_cfg.agent.modify_mcp,
         modify_channels = new_cfg.agent.modify_channels,
+        max_tool_iterations = ?new_cfg.agent.max_tool_iterations,
         "agent ability gates updated"
     );
 }

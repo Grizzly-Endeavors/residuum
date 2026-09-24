@@ -219,13 +219,17 @@ port = 7700
 # Urgency is decided by the sub-agent that ran the task, so it is steered by
 # how a pulse's prompt is worded rather than by configuration here.
 
-# ── Agent ability gates (optional) ───────────────────────────────────────────
-# Controls what the agent can modify at runtime.
-# Both default to true when omitted.
+# ── Agent ability gates and turn limits (optional) ───────────────────────────
+# Controls what the agent can modify at runtime, and how long a turn's tool
+# loop may run.
 #
 # [agent]
-# modify_mcp = true          # allow agent to add/remove MCP servers
-# modify_channels = true     # allow agent to add/remove notification channels
+# modify_mcp = true          # allow agent to add/remove MCP servers (default: true)
+# modify_channels = true     # allow agent to add/remove notification channels (default: true)
+# max_tool_iterations = 50   # stop a turn after this many tool calls (default: unlimited).
+#                             # A runaway turn is still stoppable at any time via the
+#                             # web UI's Cancel button, /stop, or stop_agent — this only
+#                             # sets an automatic cutoff. Must be at least 1 when set.
 
 # ── Web search (optional) ────────────────────────────────────────────────
 # Providers with native search (Anthropic, OpenAI, Gemini) enable it

@@ -133,6 +133,10 @@ pub struct SubAgentResources {
     pub(crate) skill_state: SharedSkillState,
     pub(crate) identity: IdentityFiles,
     pub(crate) options: CompletionOptions,
+    /// Maximum tool-call iterations for this session's turns before the turn
+    /// stops itself gracefully. `None` means unlimited — see
+    /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
+    pub(crate) max_tool_iterations: Option<usize>,
     /// Formatted skill index for the system prompt (built at fork time).
     pub(crate) skills_index: Option<String>,
     /// Snapshot of the global observation log, taken at fork time.
@@ -220,6 +224,7 @@ pub async fn build_subagent_resources(
         workspace_layout,
         identity,
         options,
+        max_tool_iterations,
         tz,
         skill,
         observations,
@@ -293,6 +298,7 @@ pub async fn build_subagent_resources(
     });
 
     Ok(SubAgentResources {
+        max_tool_iterations,
         provider,
         tools,
         mcp_registry,
@@ -425,6 +431,7 @@ pub(crate) async fn execute_subagent(
         mcp_registry: &resources.mcp_registry,
         identity: &resources.identity,
         options: &resources.options,
+        max_tool_iterations: resources.max_tool_iterations,
         stop_token,
         transcript_sink,
         hop_counter: &resources.hop_counter,
@@ -542,6 +549,7 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
             }),
@@ -988,6 +996,7 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(CapturingProvider {
                 response: "done".to_string(),
                 seen: Arc::clone(&seen),
@@ -1110,6 +1119,7 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(ToolCallThenTextProvider {
                 call_count: std::sync::atomic::AtomicUsize::new(0),
             }),
@@ -1227,6 +1237,7 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1299,6 +1310,7 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,

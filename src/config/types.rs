@@ -379,15 +379,20 @@ impl ToolsConfig {
     }
 }
 
-/// Validated agent ability gates.
+/// Validated agent ability gates and turn limits.
 ///
-/// Controls what the agent is allowed to modify at runtime.
+/// Controls what the agent is allowed to modify at runtime, and bounds how
+/// long a single turn's tool loop may run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentAbilitiesConfig {
     /// Whether the agent can add/remove MCP servers.
     pub modify_mcp: bool,
     /// Whether the agent can add/remove notification channels.
     pub modify_channels: bool,
+    /// Maximum tool-call iterations a turn may run before it stops itself
+    /// gracefully. `None` means unlimited — the user's own Cancel /
+    /// `stop_agent` is the intended safety valve for a runaway turn.
+    pub max_tool_iterations: Option<usize>,
 }
 
 impl Default for AgentAbilitiesConfig {
@@ -395,6 +400,7 @@ impl Default for AgentAbilitiesConfig {
         Self {
             modify_mcp: DEFAULT_AGENT_MODIFY_MCP,
             modify_channels: DEFAULT_AGENT_MODIFY_CHANNELS,
+            max_tool_iterations: None,
         }
     }
 }

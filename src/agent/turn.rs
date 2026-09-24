@@ -21,9 +21,6 @@ use super::hop::HopCounter;
 use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 
-/// Maximum number of tool-call iterations before the agent stops.
-pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
-
 /// Context for publishing streaming events during a turn.
 pub(crate) struct EventContext<'a> {
     pub publisher: &'a Publisher,
@@ -205,6 +202,11 @@ pub(crate) struct TurnResources<'a> {
     pub mcp_registry: &'a SharedMcpRegistry,
     pub identity: &'a IdentityFiles,
     pub options: &'a CompletionOptions,
+    /// Maximum tool-call iterations before the turn stops itself
+    /// gracefully. `None` (the default) means unlimited — the user's own
+    /// Cancel / `stop_agent` is the intended safety valve for a runaway
+    /// turn. See [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
+    pub max_tool_iterations: Option<usize>,
     /// Cancelled when the user asks to stop this turn. Raced directly
     /// against the in-flight model call so generation aborts immediately;
     /// turns that don't support being stopped (system/wake turns) pass a
@@ -287,7 +289,26 @@ pub(crate) async fn execute_turn(
     // Includes the triggering user message pushed just before this call.
     let turn_start = recent_messages.len().saturating_sub(1);
 
-    for iteration in 0..MAX_TOOL_ITERATIONS {
+    let mut iteration: usize = 0;
+    loop {
+        if let Some(limit) = resources.max_tool_iterations
+            && iteration >= limit
+        {
+            tracing::warn!(
+                tool_calls = limit,
+                "turn stopped: reached the configured max_tool_iterations limit"
+            );
+            let notice = format!(
+                "I stopped after {limit} tool calls — the limit set by `max_tool_iterations` \
+                 in your Residuum config. Raise or remove that setting (under `[agent]` in \
+                 config.toml, or in Settings) to allow longer turns."
+            );
+            let final_message = Message::assistant(notice.clone(), None);
+            push_and_record(recent_messages, resources.transcript_sink, final_message).await;
+            texts.push(notice);
+            return Ok(texts);
+        }
+
         if check_interrupts_and_stop(interrupt_rx, recent_messages, resources, iteration).await {
             return Ok(texts);
         }
@@ -382,9 +403,8 @@ pub(crate) async fn execute_turn(
         }
 
         log_usage(&response);
+        iteration += 1;
     }
-
-    anyhow::bail!("agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})")
 }
 
 /// Drain interrupts at a tool-loop checkpoint and report whether the turn
@@ -871,6 +891,7 @@ mod tests {
             mcp_registry: &mcp_registry,
             identity: &identity,
             options: &options,
+            max_tool_iterations: None,
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
@@ -950,6 +971,7 @@ mod tests {
             mcp_registry: &mcp_registry,
             identity: &identity,
             options: &options,
+            max_tool_iterations: None,
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,

@@ -69,6 +69,9 @@ pub struct SubAgentBuildConfig {
     pub identity: IdentityFiles,
     /// LLM completion options for the session turn.
     pub options: crate::inference::CompletionOptions,
+    /// Maximum tool-call iterations for this session's turns before a turn
+    /// stops itself gracefully. `None` means unlimited.
+    pub max_tool_iterations: Option<usize>,
     /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
     /// Skill to activate for this session, if any. Its body becomes the

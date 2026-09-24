@@ -43,8 +43,16 @@ mod skills_integration {
 
     // ── Scanning ─────────────────────────────────────────────────────────────
 
-    /// Number of bundled skills created by `ensure_workspace`.
-    const BUNDLED_SKILL_COUNT: usize = 7;
+    /// Number of bundled skills `ensure_workspace` installs: every skill
+    /// folder under `assets/bundled-skills/`, counted from disk so adding a
+    /// bundled skill never needs this test updated.
+    fn bundled_skill_count() -> usize {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/bundled-skills");
+        std::fs::read_dir(root)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().join("SKILL.md").is_file())
+            .count()
+    }
 
     #[tokio::test]
     async fn scan_empty_workspace() {
@@ -52,7 +60,7 @@ mod skills_integration {
         let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
         assert_eq!(
             index.entries().len(),
-            BUNDLED_SKILL_COUNT,
+            bundled_skill_count(),
             "bootstrapped workspace should have only the bundled skills"
         );
     }
@@ -70,7 +78,7 @@ mod skills_integration {
         .await;
 
         let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
-        assert_eq!(index.entries().len(), BUNDLED_SKILL_COUNT + 1);
+        assert_eq!(index.entries().len(), bundled_skill_count() + 1);
         assert!(
             index.find_by_name("code-review").is_some(),
             "should discover code-review skill"
@@ -115,7 +123,7 @@ mod skills_integration {
         let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
         assert_eq!(
             index.entries().len(),
-            BUNDLED_SKILL_COUNT + 1,
+            bundled_skill_count() + 1,
             "should find only the valid skill plus bundled skills"
         );
         assert!(
@@ -165,7 +173,7 @@ mod skills_integration {
         // Verify index (bundled skills + test-skill)
         {
             let s = state.lock().await;
-            assert_eq!(s.index().entries().len(), BUNDLED_SKILL_COUNT + 1);
+            assert_eq!(s.index().entries().len(), bundled_skill_count() + 1);
             assert!(s.active_skill_names().is_empty());
         }
 

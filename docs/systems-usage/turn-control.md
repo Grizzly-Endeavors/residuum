@@ -22,3 +22,9 @@ If nothing is running, a stop request gets a friendly "nothing is running right 
 ## Correlation and Staleness
 
 A stop request can name the specific turn to stop (its correlation id) or, for interfaces that don't track ids, simply ask to stop "whichever turn is running." Since only one main-agent turn runs at a time, a request naming a specific id is honored only if it matches the turn actually in progress — a stop for a turn that already finished is ignored rather than reaching forward and cutting off a newer, unrelated turn.
+
+## Tool-Call Limit
+
+There is no built-in cap on how many tool calls a turn may make. A user can bound this themselves with `max_tool_iterations` under `[agent]` in `config.toml` (also editable from the web UI's Settings page); left unset, a turn's tool loop runs unlimited, and the stop mechanisms above are the intended safety valve for a runaway turn. This applies to every turn loop: the main agent's own turns and every background/session/artifact turn.
+
+When a configured `max_tool_iterations` is reached, the turn ends the same graceful way a user-initiated stop does — partial assistant output and tool results already produced are kept — except the agent's own final reply explains what happened: that it stopped after that many tool calls because of the configured limit, and how to raise or remove it. This is a normal turn completion, not an error: it produces a response like any other turn and does not surface as a system error notification. A `warn`-level log records the tool-call count whenever this limit is hit.
