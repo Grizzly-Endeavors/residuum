@@ -12,6 +12,11 @@
 //! - artifact-started (`artifact` sessions) → discard; their output reaches
 //!   the artifact that started them through the session stream, and is never
 //!   filed to the inbox or pushed to notification channels on its own
+//! - conversation-started (`external` sessions with `EventTrigger::Conversation`,
+//!   i.e. A2A callers and non-owner Discord/Telegram/Teams chats) → discard;
+//!   the session's output already went back to the conversation it came from,
+//!   and its observations are merged into memory as an episode, so filing it
+//!   to the inbox or a notification channel would be pure noise
 //! - `Normal` → inbox
 //! - `Urgent` → inbox and every configured notification channel
 
@@ -96,6 +101,17 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     // the agent had produced it unprompted.
     if matches!(event.source, EventTrigger::Artifact(_)) {
         tracing::trace!("artifact session result: stays with its artifact, nothing to route");
+        return;
+    }
+
+    // A `conversation` session's output already went back to the conversation
+    // it came from, and its observations are merged into memory as an
+    // episode. Filing it to the inbox or notifying on it would surface the
+    // same content twice — once where it belongs, once as manufactured noise.
+    if matches!(event.source, EventTrigger::Conversation) {
+        tracing::trace!(
+            "conversation session result: already delivered to its conversation, nothing to route"
+        );
         return;
     }
 
@@ -353,6 +369,80 @@ mod tests {
                 .is_err(),
             "an agent-spawned result must not leak into the inbox either"
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let mut ntfy_sub: Subscriber<NotificationEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Urgent);
+        event.source = EventTrigger::Conversation;
+        event.source_label = "discord:#builds".to_string();
+        route_agent_result(&event, &router).await;
+
+        let wait = std::time::Duration::from_millis(100);
+        assert!(
+            tokio::time::timeout(wait, inbox_sub.recv()).await.is_err(),
+            "an urgent conversation session's result must not be filed to the inbox"
+        );
+        assert!(
+            tokio::time::timeout(wait, ntfy_sub.recv()).await.is_err(),
+            "an urgent conversation session's result must not push to notification channels"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_session_result_stays_out_of_the_inbox_when_normal() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Conversation;
+        event.source_label = "a2a:laptop".to_string();
+        route_agent_result(&event, &router).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
+                .await
+                .is_err(),
+            "a normal conversation session's result must not be filed to the inbox either"
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_triggered_result_still_reaches_the_inbox() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Webhook("gh".into());
+        event.source_label = "webhook:gh".to_string();
+        route_agent_result(&event, &router).await;
+
+        let inbox_item =
+            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert_eq!(inbox_item.title, "webhook:gh");
     }
 
     #[tokio::test]

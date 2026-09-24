@@ -16,6 +16,8 @@ Results from agent-spawned (`spawned`) sessions never reach this router: every t
 
 Results from `artifact` sessions (started by a workbench artifact) are discarded by this router whatever their disposition, `HEARTBEAT_URGENT` included, and are never relayed to main either. Their output belongs to the artifact that started them, which reads it from the session's own stream — see [background-tasks.md](background-tasks.md#artifact-sessions). A session like that files an inbox item itself (`user_inbox_add`) when its task calls for one.
 
+Results from conversation-triggered sessions (A2A callers, and non-owner Discord/Telegram/Teams chats) are likewise discarded by this router whatever their disposition, `HEARTBEAT_URGENT` included. The session's output already went back to the conversation it came from, and its observations are merged into memory as an episode, so filing it to the inbox or a channel would duplicate content the user already saw.
+
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
 ### Steering it
@@ -30,7 +32,7 @@ No routing target injects into the agent's message feed. Two mechanisms do that 
 
 - **Agent-spawned sessions** (`subagent_spawn`, the `learner`) have every turn's outcome relayed automatically to their direct spawner — main, or the session that spawned them.
 
-Everything else, except an `artifact` session's results, reaches the agent through the inbox, which it reads with `inbox_list`.
+Everything else, except an `artifact` session's or a conversation-triggered session's results, reaches the agent through the inbox, which it reads with `inbox_list`.
 
 ## Endpoints
 
