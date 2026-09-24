@@ -115,6 +115,9 @@ The URL is the source of truth for where the user is:
 | `/sessions/:runId` | A session's run in the main pane |
 | `?workspace` (on either of the above) | Workspace panel open beside the main pane |
 | `/settings/:section` | Settings, on one section |
+| `/workbench` | The workbench's artifact list |
+| `/workbench/:artifact` | One workbench artifact |
+| `/workbench/:artifact?full` | The artifact filling the window, Residuum chrome hidden |
 
 `App.svelte` derives its layout state from `router` instead of mounting a component per route, so the chat, session view, and workspace stay mounted and every transition is the same CSS transition whether it came from a click or the back button. Navigate through `router` (or `sessions.openRun`), never by setting layout state directly.
 

@@ -111,7 +111,7 @@ Each session's resume point (previous run id, episode pointer, trigger, source l
 
 ## Gotchas
 
-- A session's fork always carries the main agent's full identity now — there is no minimal-context mode and no `include_identity` flag to opt in or out of.
+- A session's fork always carries the main agent's full identity — there is no minimal-context mode and no `include_identity` flag to opt in or out of.
 - The only tool excluded from sessions is `switch_endpoint` — it only makes sense for the main agent's own output routing. `subagent_spawn`, the action-scheduling tools, and `message_agent` are all available to sessions.
 - `a2a_task_update` is the reverse case: a tool no session gets by default, present only in a session started from the `a2a` endpoint.
 - A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface (named explicitly, or reached through the no-conversation default) — only `main` talks to the owner. See [notifications.md](notifications.md).
