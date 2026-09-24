@@ -145,6 +145,7 @@ fn build_api_states(
             reload_tx: Some(core.reload_tx.clone()),
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: Arc::clone(&parts.checkpoints),
         },
         update,
         tracing: web::tracing_api::TracingApiState {

@@ -84,6 +84,7 @@ mod tests {
             reload_tx: None,
             setup_done,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 
@@ -140,6 +141,9 @@ pub(super) async fn api_config_raw_put(
 
     // Write the config
     let config_path = state.config_dir.join("config.toml");
+    state
+        .checkpoint_config_before_write("raw write config.toml")
+        .await;
     tokio::fs::write(&config_path, &body).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -215,6 +219,9 @@ pub(super) async fn api_config_patch(
         bad_request(e)
     })?;
 
+    state
+        .checkpoint_config_before_write("patch config.toml")
+        .await;
     crate::util::fs::atomic_write(&config_path, &patched)
         .await
         .map_err(|e| {
@@ -430,6 +437,9 @@ pub(super) async fn api_complete_setup(
 
     // Write providers.toml first (config validation reads it from disk)
     let providers_path = state.config_dir.join("providers.toml");
+    state
+        .checkpoint_config_before_write("complete setup: providers.toml + config.toml")
+        .await;
     tokio::fs::write(&providers_path, &body.providers)
         .await
         .map_err(|e| {

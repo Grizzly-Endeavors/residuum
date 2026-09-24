@@ -148,6 +148,7 @@ pub fn build_gateway_app(
                 .workbench_dir(),
             serving: workbench_serving,
             tunnel_status_rx: state.tunnel_status_rx.clone(),
+            checkpoints: Arc::clone(&config_api_state.checkpoints),
         });
 
     let agent_inbox_router = web::inbox::agent_inbox_api_router(state.clone());

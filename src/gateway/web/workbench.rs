@@ -26,6 +26,7 @@ pub(crate) struct WorkbenchApiState {
     pub dir: PathBuf,
     pub serving: WorkbenchServing,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    pub checkpoints: std::sync::Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Response from `DELETE /api/workbench/artifacts/{name}`.
@@ -96,6 +97,13 @@ async fn api_workbench_artifact_delete(
     State(state): State<WorkbenchApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteArtifactResponse>, (StatusCode, String)> {
+    state
+        .checkpoints
+        .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+            crate::checkpoints::CheckpointTrigger::PreAction,
+            format!("delete workbench artifact {name}"),
+        ))
+        .await;
     match workbench::delete_artifact(&state.dir, &name).await {
         Ok(removed) => {
             tracing::info!(artifact = %name, files = ?removed, "deleted workbench artifact");
@@ -133,6 +141,7 @@ mod tests {
             dir: dir.to_path_buf(),
             serving,
             tunnel_status_rx: rx,
+            checkpoints: crate::checkpoints::test_engine(),
         })
     }
 
