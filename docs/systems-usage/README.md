@@ -29,7 +29,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 
 | File | Notes |
 |------|-------|
-| `config.toml` | Lives outside the workspace directory. Agent writes are blocked by `PathPolicy` — the gateway enforces this at the tool level, not by prompt instruction. |
+| `config.toml`, `providers.toml` | Live outside the workspace directory. Agent writes are blocked by `PathPolicy` — the gateway enforces this at the tool level, not by prompt instruction. The web UI's Settings page edits both through `PATCH /api/config/patch` / `PATCH /api/providers/patch` (`src/config/patch.rs`), which merge only the fields the form changed into the file already on disk — comments, unmodeled sections, and unmodeled keys survive. The Settings page's Raw tab still PUTs whole-file text the user typed directly. |
 | `agent-keys.toml.enc` | Encrypted agent key store, outside the workspace directory. Managed with `residuum agent-keys` or Settings → Agent keys; the agent adds only keys it mints. Write-blocked by `PathPolicy`, like `secrets.toml.enc`. See [Agent keys](agent-keys.md). |
 | `a2a-keys.toml` | A2A caller-key store (hashes only), outside the workspace directory. Managed with `residuum a2a keys` or Settings → A2A. Write-blocked by `PathPolicy`. See [A2A](a2a.md). |
 
