@@ -687,13 +687,27 @@ mod tests {
         assert_eq!(status.port, DEFAULT_A2A_PORT);
         assert_eq!(status.visibility, "public");
         assert_eq!(status.public_url, None);
-        assert!(
-            !status.listener_running,
-            "nothing is listening on the default port in this test"
-        );
+        // `listener_running` is left unasserted: it probes the real default
+        // port, which any Residuum running on this machine may hold.
         assert!(
             status.card_error.is_some(),
             "a missing agent card file should surface as an error, not silently succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_reports_no_listener_when_nothing_answers_the_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = free_port().await;
+        write_config(dir.path(), &format!("[a2a]\nport = {port}\n"));
+        let state = test_state(dir.path());
+        write_card(&state, VALID_CARD);
+
+        let status = api_a2a_status(State(status_state(state))).await.0;
+        assert!(status.enabled);
+        assert!(
+            !status.listener_running,
+            "nothing listens on a freshly freed port"
         );
     }
 
