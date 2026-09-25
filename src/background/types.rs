@@ -65,6 +65,10 @@ pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
 pub struct SubAgentBuildConfig {
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
+    /// The app config directory (`~/.residuum/`), for the session's
+    /// `write_file`/`edit_file` tools to recognize and diagnose
+    /// `config.toml`/`providers.toml` the same way main's do.
+    pub config_dir: std::path::PathBuf,
     /// Identity files for the system prompt.
     pub identity: IdentityFiles,
     /// LLM completion options for the session turn.

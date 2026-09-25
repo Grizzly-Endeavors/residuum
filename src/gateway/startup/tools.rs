@@ -77,7 +77,15 @@ pub(super) fn init_tool_registry(
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
     tools.set_checkpoints(Arc::clone(deps.checkpoints));
     let file_tracker = crate::tools::FileTracker::new_shared();
-    tools.register_defaults(file_tracker, Arc::clone(deps.path_policy));
+    let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+        config_dir: cfg.config_dir.clone(),
+        workspace_dir: cfg.workspace_dir.clone(),
+    };
+    tools.register_defaults(
+        file_tracker,
+        Arc::clone(deps.path_policy),
+        diagnostics_paths,
+    );
     tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
@@ -421,6 +429,7 @@ mod tests {
             tz: chrono_tz::UTC,
             hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
             workspace_dir: h.layout.root().to_path_buf(),
+            config_dir: h.cfg.config_dir.clone(),
             episodes_dir: h.layout.episodes_dir(),
             sessions_dir: h.layout.sessions_dir(),
             agent_inbox_dir: h.layout.agent_inbox_dir(),

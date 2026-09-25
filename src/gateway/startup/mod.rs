@@ -314,6 +314,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         },
         max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
         layout: inputs.layout.clone(),
+        config_dir: inputs.cfg.config_dir.clone(),
         tz: inputs.tz,
         role_overrides: inputs.cfg.role_overrides.clone(),
         session_runtime: Arc::clone(inputs.session_runtime),

@@ -6,19 +6,31 @@ use serde_json::Value;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
+use crate::diagnostics::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 
 /// Tool that writes content to files, enforcing read-before-overwrite.
 pub struct WriteTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
+    diagnostics_paths: DiagnosticsPaths,
 }
 
 impl WriteTool {
-    /// Create a new `WriteTool` with shared file tracker and path policy.
+    /// Create a new `WriteTool` with shared file tracker, path policy, and
+    /// the directories needed to recognize a strictly-parsed file for
+    /// post-write diagnostics.
     #[must_use]
-    pub fn new(tracker: SharedFileTracker, policy: SharedPathPolicy) -> Self {
-        Self { tracker, policy }
+    pub fn new(
+        tracker: SharedFileTracker,
+        policy: SharedPathPolicy,
+        diagnostics_paths: DiagnosticsPaths,
+    ) -> Self {
+        Self {
+            tracker,
+            policy,
+            diagnostics_paths,
+        }
     }
 }
 
@@ -97,13 +109,45 @@ impl Tool for WriteTool {
             Ok(()) => {
                 // Record in tracker — the agent knows the content since it just wrote it
                 self.tracker.lock().await.record_read(path);
-                Ok(ToolResult::success(format!(
-                    "wrote {} bytes to {path}",
-                    file_content.len()
-                )))
+                let mut output = format!("wrote {} bytes to {path}", file_content.len());
+                append_diagnostics(
+                    &mut output,
+                    file_path,
+                    file_content,
+                    &self.diagnostics_paths,
+                );
+                Ok(ToolResult::success(output))
             }
             Err(e) => Ok(ToolResult::error(format!("failed to write {path}: {e}"))),
         }
+    }
+}
+
+/// Append diagnostics for the file just written to `output`, one per line,
+/// so the agent can fix a mistake in a strictly-parsed file on its next
+/// turn. The write itself already happened — a diagnostic never blocks it,
+/// only reports it. No-op if `file_path` isn't one of the files
+/// `crate::diagnostics` understands, or if it has none to report.
+pub(super) fn append_diagnostics(
+    output: &mut String,
+    file_path: &std::path::Path,
+    content: &str,
+    diagnostics_paths: &DiagnosticsPaths,
+) {
+    let Some(diagnostics) = crate::diagnostics::diagnose(file_path, content, diagnostics_paths)
+    else {
+        return;
+    };
+    if diagnostics.is_empty() {
+        return;
+    }
+    let file_label = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    for diagnostic in &diagnostics {
+        output.push('\n');
+        output.push_str(&diagnostic.display(file_label));
     }
 }
 
@@ -120,14 +164,27 @@ mod tests {
         PathPolicy::new_shared()
     }
 
+    /// Directories that don't correspond to any real strictly-parsed file,
+    /// so ordinary write tests get no diagnostics.
+    fn no_diagnostics_paths() -> DiagnosticsPaths {
+        DiagnosticsPaths {
+            config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
+            workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+        }
+    }
+
     fn make_tool() -> WriteTool {
-        WriteTool::new(FileTracker::new_shared(), permissive_policy())
+        WriteTool::new(
+            FileTracker::new_shared(),
+            permissive_policy(),
+            no_diagnostics_paths(),
+        )
     }
 
     fn make_tool_with_tracker() -> (WriteTool, SharedFileTracker) {
         let tracker = FileTracker::new_shared();
         let policy = permissive_policy();
-        let tool = WriteTool::new(Arc::clone(&tracker), policy);
+        let tool = WriteTool::new(Arc::clone(&tracker), policy, no_diagnostics_paths());
         (tool, tracker)
     }
 
@@ -279,5 +336,65 @@ mod tests {
     fn write_tool_definition() {
         let tool = make_tool();
         assert_eq!(tool.name(), "write_file", "tool name should match");
+    }
+
+    #[tokio::test]
+    async fn write_invalid_heartbeat_yml_still_writes_and_appends_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("HEARTBEAT.yml");
+        let policy = permissive_policy();
+        let diagnostics_paths = DiagnosticsPaths {
+            config_dir: dir.path().join("config-unused"),
+            workspace_dir: dir.path().to_path_buf(),
+        };
+        let tool = WriteTool::new(FileTracker::new_shared(), policy, diagnostics_paths);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "content": ": not valid yaml [["
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "write should still succeed");
+        assert!(
+            result.output.contains("HEARTBEAT.yml"),
+            "result should mention the file: {}",
+            result.output
+        );
+        let contents = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(
+            contents, ": not valid yaml [[",
+            "invalid content should still be written"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_valid_heartbeat_yml_has_unchanged_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("HEARTBEAT.yml");
+        let policy = permissive_policy();
+        let diagnostics_paths = DiagnosticsPaths {
+            config_dir: dir.path().join("config-unused"),
+            workspace_dir: dir.path().to_path_buf(),
+        };
+        let tool = WriteTool::new(FileTracker::new_shared(), policy, diagnostics_paths);
+        let content = "pulses:\n  - name: morning\n    schedule: \"30m\"\n    tasks: []\n";
+
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "content": content
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert_eq!(
+            result.output,
+            format!("wrote {} bytes to {}", content.len(), file_path.display()),
+            "clean file should leave the result unchanged"
+        );
     }
 }
