@@ -181,6 +181,8 @@ Residuum can also delegate to other agents over A2A through the same native tool
 
 A bad entry (an invalid name, an empty url, or a header referencing an unknown agent key) is skipped with a warning; the rest of the file still loads. The agent may edit this file directly — it isn't write-blocked. It is watched alongside `mcp.json`, `channels.toml`, and `agent-card.json`: a change is picked up within a few seconds. **Web UI:** `GET`/`PUT /api/a2a/agents/raw` edits the raw file (validated before writing); `GET /api/a2a/agents` returns each agent's live status.
 
+Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems the loader would skip — a JSON syntax error (with `serde_json`'s line/column), an invalid agent name, or an empty url — without blocking the write; a diagnostic names which agent won't load instead. `PUT /api/a2a/agents/raw` is unchanged: a malformed or invalid file is still rejected outright there.
+
 ### Card resolution and status
 
 Each configured agent's `.well-known/agent-card.json` is resolved on load and reload, and cached. A card fetch failure doesn't block startup or the rest of the file — that agent is simply marked unreachable, and a background loop retries with backoff (5s, doubling to a 60s ceiling) until it succeeds. `list_agents` reports each remote agent's current status: `online` with its description and skills, `pending` while the first fetch is still in flight, or the specific reachability error.

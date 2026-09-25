@@ -27,6 +27,8 @@ The loader (`crate::workspace::config::load_mcp_servers_map`, in `src/workspace/
 
 The web UI's Settings → MCP panel edits `mcp.json` through `PATCH /api/mcp/patch` (`src/gateway/web/config.rs`, applied by `crate::workspace::mcp_patch::apply_mcp_patch`), which merges only the fields the form changed into the file already on disk rather than rewriting it from form state. A server's transport is shown and edited truthfully — HTTP servers expose `url`/`headers`, stdio servers expose `command`/`args`/`env` — and any field the form doesn't model (on a touched server or an untouched one) survives the edit. Removing a server in the form removes just that entry. An `mcp.json` that fails to parse is left untouched and the patch is refused with an error naming the file.
 
+Editing `mcp.json` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` (with `path: "config/mcp.json"`) reports the same problems `load_mcp_servers_map` would skip: a JSON syntax error (with `serde_json`'s line/column), an unrecognized or deprecated (`sse`) transport, or a server missing the `url`/`command` its transport needs. The save always goes through on these two surfaces — a diagnostic names which server won't load instead of the write being rejected. The dedicated `PUT /api/mcp/raw` and `PATCH /api/mcp/patch` endpoints are unchanged: a malformed file is still rejected outright there.
+
 ## Transports
 
 `McpServerEntry::transport` (`src/mcp/types.rs`) selects the connection strategy in `McpClient::connect` (`src/mcp/client.rs`):

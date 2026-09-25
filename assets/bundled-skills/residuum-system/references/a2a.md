@@ -27,6 +27,8 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 - The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
 - `stop_agent` on `a2a:<name>` cancels your open task with that agent.
 
+Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
+
 ## Your other instances (siblings)
 
 If the user runs more than one Residuum instance, they find and trust each other automatically through the relay — no `config/a2a.json` entry or caller key needed. `list_agents` marks one with `(your instance)`; a message from it reads as coming from that instance by name (e.g. `laptop`), described as your own other instance rather than an external caller. Talk to it the same way as any other remote agent, with `a2a:<name>`.

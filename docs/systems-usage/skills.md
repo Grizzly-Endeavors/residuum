@@ -15,6 +15,8 @@ description: Structured code review workflow with security and performance check
 
 Required frontmatter: `name` and `description`. The description is shown in the skill index so the agent can decide when to activate a skill.
 
+Editing a `SKILL.md` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems the skill scanner would reject: invalid YAML frontmatter (with the parser's line/column, when the failure is in the YAML itself), an invalid `name` (must be 1-64 lowercase alphanumeric-and-hyphen characters, no leading/trailing/consecutive hyphens), or an empty or over-280-character `description`. The save always goes through — a diagnostic names the problem instead of the write being rejected, since a skill that fails to parse this way is silently dropped by the scanner (a `tracing::warn!` log, no owner-facing notice) rather than causing a load-time failure.
+
 ## Skill Sources
 
 Skills are discovered from multiple locations, scanned in priority order:

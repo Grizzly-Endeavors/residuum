@@ -120,3 +120,5 @@ method = "POST"                     # optional, default POST
 ```
 
 External channel delivery failures are logged at warn level. They do not retry or block other channels.
+
+Editing `config/channels.toml` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems the loader would skip or ignore: a TOML syntax error (with the parser's line/column), a channel missing a field its type needs (`ntfy` without `url`/`topic`, `webhook` without `url` or with an unsupported `method`), an unrecognized channel type, or a retired option (`default_category`, `default_scenario`) left in place — the retired-option case is a warning since the channel still loads; the others are errors since that channel won't. The save always goes through; a diagnostic names the problem instead of the write being rejected.

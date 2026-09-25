@@ -64,6 +64,8 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 
 On macOS an urgent result posts at the `time_sensitive` interruption level so it breaks through Focus modes. Windows Toasts do not vary by urgency.
 
+Editing `config/channels.toml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports a TOML syntax error, a channel missing a required field, an unrecognized channel type, or a retired option left in place as a diagnostic alongside the save — the write always goes through rather than being rejected.
+
 ### Inbox
 
 Input-only. The agent cannot write to inbox. Items arrive from:
