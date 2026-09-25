@@ -42,18 +42,28 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
 
 /// Diagnostics for `content` as a skill's `SKILL.md` frontmatter.
 ///
-/// Reuses [`parse_skill_md`], so a diagnostic can never disagree with what
-/// loading rejects — a skill with an invalid name, an over-long or empty
+/// Reuses [`parse_skill_md`], so an error diagnostic can never disagree with
+/// what loading rejects — a skill with an invalid name, an empty
 /// description, or invalid YAML fails to parse here exactly as it would when
 /// the skill scanner loads it. Extracts a line/column when the failure is a
 /// YAML error; a name/description validation failure has no source position
 /// once deserialization has already succeeded, so it's reported by message
 /// alone.
+///
+/// A description long enough to trigger [`oversized_description_notice`]
+/// doesn't fail parsing — the skill still loads — but is surfaced here as a
+/// warning, so the live editor shows the same per-turn token-cost notice the
+/// scanner would raise once the file is saved.
 pub(crate) fn diagnose_skill_md(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
     use crate::diagnostics::{Diagnostic, Location};
 
     match parse_skill_md(content) {
-        Ok(_) => Vec::new(),
+        Ok((frontmatter, _body)) => {
+            match oversized_description_notice(&frontmatter.name, &frontmatter.description) {
+                Some(notice) => vec![Diagnostic::warning(notice)],
+                None => Vec::new(),
+            }
+        }
         Err(e) => {
             let location = e
                 .chain()
@@ -340,18 +350,24 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_reports_description_too_long() {
+    fn diagnose_warns_on_oversized_description_without_failing() {
+        // No length cap: the skill still loads (see
+        // description_too_long_still_accepted below), so this is a warning
+        // naming the per-turn cost, not an error.
         let long_description = "a".repeat(281);
         let content = format!("---\nname: my-skill\ndescription: \"{long_description}\"\n---\n");
         let diagnostics = diagnose_skill_md(&content);
         assert_eq!(diagnostics.len(), 1);
-        assert!(
-            diagnostics
-                .first()
-                .unwrap()
-                .message
-                .contains("280 characters")
-        );
+        let diagnostic = diagnostics.first().unwrap();
+        assert_eq!(diagnostic.severity, crate::diagnostics::Severity::Warning);
+        assert!(diagnostic.message.contains("281"));
+        assert!(diagnostic.message.contains("my-skill"));
+    }
+
+    #[test]
+    fn diagnose_reports_nothing_for_a_normal_description() {
+        let content = "---\nname: my-skill\ndescription: \"Extracts text from PDFs\"\n---\n";
+        assert!(diagnose_skill_md(content).is_empty());
     }
 
     #[test]
