@@ -92,13 +92,23 @@ impl Default for ObserverConfig {
 pub struct Observer {
     provider: Box<dyn InferenceProvider>,
     config: ObserverConfig,
+    /// Backs off the automatic extract trigger (threshold crossings) after a
+    /// failure, instead of re-attempting — and re-spending, since this is an
+    /// LLM call — on every later threshold crossing while recent messages
+    /// keep accumulating unobserved. Manual observes (`observe --force`)
+    /// bypass this deliberately and always attempt.
+    automatic_failure: crate::util::BackoffTracker,
 }
 
 impl Observer {
     /// Create a new observer with the given provider and config.
     #[must_use]
     pub fn new(provider: Box<dyn InferenceProvider>, config: ObserverConfig) -> Self {
-        Self { provider, config }
+        Self {
+            provider,
+            config,
+            automatic_failure: crate::util::BackoffTracker::new(),
+        }
     }
 
     /// Create a disabled observer that never triggers.
@@ -116,6 +126,7 @@ impl Observer {
                 tz,
                 role_overrides: None,
             },
+            automatic_failure: crate::util::BackoffTracker::new(),
         }
     }
 
@@ -141,6 +152,15 @@ impl Observer {
     #[must_use]
     pub fn timezone(&self) -> Tz {
         self.config.tz
+    }
+
+    /// Tracks consecutive failures of the *automatic* extract trigger
+    /// (threshold crossings), for backing off retries and telling the user
+    /// once when a failure streak starts or clears. A manually forced
+    /// observe doesn't consult this — it always attempts.
+    #[must_use]
+    pub fn automatic_failure_tracker(&self) -> &crate::util::BackoffTracker {
+        &self.automatic_failure
     }
 
     /// Replace the observer's configuration (e.g. after a config reload).

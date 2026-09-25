@@ -22,6 +22,7 @@ pub async fn handle_server_command(
                 merge_writer: &rt.merge_writer,
                 layout: &rt.layout,
                 tz: rt.tz,
+                publisher: &rt.publisher,
             };
             run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
         }

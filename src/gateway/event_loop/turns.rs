@@ -146,6 +146,7 @@ pub async fn persist_and_maybe_observe(
             merge_writer: &rt.merge_writer,
             layout: &rt.layout,
             tz: rt.tz,
+            publisher: &rt.publisher,
         };
         execute_observation(&mem, &mut rt.agent).await;
     }

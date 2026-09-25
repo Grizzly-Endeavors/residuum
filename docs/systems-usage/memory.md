@@ -20,6 +20,8 @@ Fires automatically after enough conversation accumulates (token threshold). The
 
 Extraction (the LLM call that turns messages into observations and a narrative) and persistence (episode id allocation, writing the transcript and observation archives, indexing, embedding, and the reflector check) are separate steps. Persistence always goes through the memory merge writer, the single serialized writer for global memory — the main agent's own observation flow and every agent session's completion both call it, so episode numbering and observation-log appends never race between concurrent writers.
 
+An automatic extraction or merge failure (a model call error, a write failure) is never a silent retry loop: it backs off exponentially (1m, 2m, 4m, ... capped at 1h) before the next threshold crossing attempts again, so a broken provider doesn't re-spend an LLM call on every subsequent crossing while unobserved messages keep accumulating — those messages are never discarded on a failed attempt, so they're still there once it recovers. The user is told once when a failure streak starts, in plain language, and once when it clears; repeat failures within the same streak stay quiet. A manually forced observe (the `/observe` chat command) always attempts regardless of this backoff, and a working manual retry clears it for the automatic path too.
+
 ### Agent Sessions and Memory
 
 Every agent session — a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent — has its own working memory and merges into this same global memory when it completes. A session's run is checked against the same observer thresholds as the main agent's; crossing the force threshold mid-run extracts and stages observations locally, invisible to any other agent until the run finishes. On completion, a run produces no episode only if it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is below a configurable token floor (`episode_skip_token_floor` in `[background]`, default ~2000 tokens) — its transcript is still kept in the session store either way. Otherwise a final extraction runs over whatever wasn't staged, and the combined observations merge through the memory merge writer alongside the run's full transcript as one episode.
@@ -54,6 +56,8 @@ Fires when `memory/observations.json` exceeds a token threshold. Calls the LLM t
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki or `USER.md`. These are completely separate systems.
 
 Original observations are backed up before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
+
+An automatic reflection failure follows the same backoff and once-per-streak notice as the observer's own (see above) — the reflector's tracker is shared globally across the main agent and every session, since the observation log it compresses is itself global. The `/reflect` chat command bypasses the backoff and always attempts, and its outcome updates the same tracker.
 
 ### Prompt Customization
 

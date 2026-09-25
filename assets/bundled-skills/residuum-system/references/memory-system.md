@@ -31,6 +31,8 @@ Customize extraction guidance by editing `memory/OBSERVER.md`.
 
 Extraction (the LLM call) and persistence (episode id allocation, writing files, indexing, embedding, the reflector check) are separate steps. Persistence always goes through the memory merge writer — a single serialized writer shared by the main agent's own observation flow and every agent session's completion, so episode numbering and log appends never race.
 
+An automatic extraction or merge failure backs off exponentially (1m, 2m, 4m, ... capped at 1h) instead of re-attempting — and re-spending an LLM call — on every later threshold crossing while unobserved messages keep piling up; those messages are never discarded on a failed attempt, so they're picked up once it recovers. You're told once when a failure streak starts, in plain language, and once when it clears. The `/observe` chat command always attempts regardless of this backoff, and a working manual retry clears it for the automatic path too.
+
 ## Agent Sessions and Memory
 
 Every agent session (a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent) merges its own findings into this same global memory when it completes — background work is not a memory dead end. A session's transcript is checked against the same observer thresholds; crossing the force threshold mid-run stages observations locally until the run finishes. On completion a run skips producing an episode only if it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is under `episode_skip_token_floor` (`[background]` config, default ~2000 tokens) — its transcript is kept in the session store regardless. Otherwise the staged and final observations merge as one episode tagged with the session's address, run id, and category, so search results stay traceable to their source. A session's narrative lives on its own episode, never in the shared `recent_context.json`.
@@ -44,6 +46,8 @@ Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM 
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki. These are completely separate systems.
 
 The original observations are backed up to `observations.json.bak` before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
+
+An automatic reflection failure follows the same backoff and once-per-streak notice as the observer's own, above — the reflector's tracker is shared globally across the main agent and every session, since the observation log it compresses is itself global. The `/reflect` chat command bypasses the backoff and always attempts, and its outcome updates the same tracker.
 
 Customize compression guidance by editing `memory/REFLECTOR.md`.
 

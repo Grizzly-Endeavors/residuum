@@ -25,6 +25,7 @@ pub(super) async fn execute_idle_transition(
         merge_writer: &rt.merge_writer,
         layout: &rt.layout,
         tz: rt.tz,
+        publisher: &rt.publisher,
     };
     execute_observation(&mem, &mut rt.agent).await;
     *observe_deadline = None;

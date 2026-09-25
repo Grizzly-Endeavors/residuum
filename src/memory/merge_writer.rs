@@ -62,6 +62,11 @@ pub struct MergeOutcome {
     pub date: String,
     /// Whether the reflector ran as part of this merge.
     pub reflected: bool,
+    /// Set exactly when this merge's reflector check started or cleared an
+    /// automatic failure streak, for the caller to surface as a user
+    /// notice. `None` on every other merge, including one where the
+    /// reflector wasn't due or was backing off.
+    pub reflector_notice: Option<crate::util::NoticeAction>,
 }
 
 /// State that is mutated on a config/provider reload: the reflector and the
@@ -95,6 +100,15 @@ pub struct MemoryMergeWriter {
     layout: WorkspaceLayout,
     search_index: Arc<MemoryIndex>,
     vector_store: Option<Arc<VectorStore>>,
+    /// Backs off the reflector's automatic trigger (inside
+    /// [`Self::index_embed_and_reflect`]) after a failure, same reasoning as
+    /// the observer's own tracker: skip re-attempting on every later merge
+    /// while a prior failure's backoff hasn't elapsed. Shared across every
+    /// caller (main and every session), since the observation log — and so
+    /// the reflector's own state — is itself global. `force_reflect` bypasses
+    /// this and always attempts, but still updates it so a working manual
+    /// retry un-sticks a stuck automatic backoff.
+    reflector_failure: crate::util::BackoffTracker,
 }
 
 impl MemoryMergeWriter {
@@ -117,7 +131,17 @@ impl MemoryMergeWriter {
             layout,
             search_index,
             vector_store,
+            reflector_failure: crate::util::BackoffTracker::new(),
         }
+    }
+
+    /// Tracks consecutive failures of the reflector's *automatic* trigger,
+    /// for backing off retries and telling the caller once when a failure
+    /// streak starts or clears. `force_reflect` doesn't consult this for
+    /// whether to attempt, but does update it — see the field's own doc.
+    #[must_use]
+    pub fn reflector_failure_tracker(&self) -> &crate::util::BackoffTracker {
+        &self.reflector_failure
     }
 
     /// Update the reflector's configuration (e.g. after a config reload).
@@ -193,6 +217,7 @@ impl MemoryMergeWriter {
             chunks: Vec::new(),
             date: String::new(),
             reflected: false,
+            reflector_notice: None,
         }))
     }
 
@@ -268,7 +293,7 @@ impl MemoryMergeWriter {
         drop(merge_guard);
 
         let date_str = episode.date.to_string();
-        let reflected = {
+        let (reflected, reflector_notice) = {
             let state = self.state.lock().await;
             self.index_embed_and_reflect(&state, &episode.id, &date_str, &observations, &chunks)
                 .await
@@ -290,6 +315,11 @@ impl MemoryMergeWriter {
             chunks,
             date: date_str,
             reflected,
+            reflector_notice: match reflector_notice {
+                crate::util::NoticeAction::None => None,
+                started @ crate::util::NoticeAction::FailureStarted => Some(started),
+                recovered @ crate::util::NoticeAction::Recovered => Some(recovered),
+            },
         })
     }
 
@@ -387,9 +417,11 @@ impl MemoryMergeWriter {
 
     /// Index and embed the episode's observations and chunks, record the
     /// manifest entries, and check whether the reflector should run.
-    /// Returns whether the reflector fired. Never fails the merge — every
-    /// failure here is logged and degrades search/reflection, not the
-    /// durable record.
+    /// Returns whether the reflector fired, and a notice for the caller to
+    /// surface exactly when an automatic reflector failure streak starts or
+    /// clears (`crate::util::NoticeAction::None` otherwise, including when
+    /// backed off or not due). Never fails the merge — every failure here is
+    /// logged and degrades search/reflection, not the durable record.
     async fn index_embed_and_reflect(
         &self,
         state: &MergeState,
@@ -397,7 +429,7 @@ impl MemoryMergeWriter {
         date_str: &str,
         observations: &[Observation],
         chunks: &[IndexChunk],
-    ) -> bool {
+    ) -> (bool, crate::util::NoticeAction) {
         let obs_ids = self
             .search_index
             .index_observations(episode_id, date_str, observations)
@@ -433,7 +465,13 @@ impl MemoryMergeWriter {
             .await
             .unwrap_or_default();
         if !state.reflector.should_reflect(&log) {
-            return false;
+            return (false, crate::util::NoticeAction::None);
+        }
+        if self.reflector_failure.gate() == crate::util::RetryGate::Skip {
+            tracing::debug!(
+                "reflector is backing off after a recent failure, skipping this attempt"
+            );
+            return (false, crate::util::NoticeAction::None);
         }
         // Serialized against a concurrent merge's observation-log append via
         // `log_lock` — the reflector reads and rewrites the whole file, so it
@@ -445,11 +483,11 @@ impl MemoryMergeWriter {
                     episodes = compressed.observations.len(),
                     "reflector compressed observation log"
                 );
-                true
+                (true, self.reflector_failure.record_success())
             }
             Err(e) => {
                 tracing::warn!(error = %e, "reflector failed");
-                false
+                (false, self.reflector_failure.record_failure())
             }
         }
     }
@@ -644,6 +682,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(log.observations.len(), 1);
+    }
+
+    /// A reflector wired to always be due (threshold 0) but backed by the
+    /// `NullProvider`, which always errors — so every reflection attempt
+    /// through this writer fails deterministically.
+    fn writer_with_always_failing_reflector(dir: &Path) -> MemoryMergeWriter {
+        let layout = WorkspaceLayout::new(dir);
+        let search_index =
+            Arc::new(MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap());
+        let reflector = Reflector::new(
+            Box::new(crate::inference::providers::null::NullProvider),
+            ReflectorConfig {
+                threshold_tokens: 0,
+                ..ReflectorConfig::default()
+            },
+        );
+        MemoryMergeWriter::new(reflector, layout, search_index, None, None)
+    }
+
+    #[tokio::test]
+    async fn reflector_failure_notifies_once_then_backs_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mw = writer_with_always_failing_reflector(dir.path());
+
+        // First merge: the reflector is due, attempts, and fails — the
+        // caller should be told this is a new failure streak.
+        let first = mw
+            .merge(sample_extraction("one"), SourceTag::main(), chrono_tz::UTC)
+            .await
+            .unwrap();
+        assert!(!first.reflected);
+        assert_eq!(
+            first.reflector_notice,
+            Some(crate::util::NoticeAction::FailureStarted)
+        );
+
+        // Second merge: still due, but backing off — no repeat attempt, no
+        // repeat notice.
+        let second = mw
+            .merge(sample_extraction("two"), SourceTag::main(), chrono_tz::UTC)
+            .await
+            .unwrap();
+        assert!(!second.reflected);
+        assert_eq!(
+            second.reflector_notice, None,
+            "must not re-attempt (and re-spend) while backing off, nor renotify"
+        );
+
+        // force_reflect always attempts regardless of the automatic
+        // backoff, and still fails against the same null provider, but its
+        // outcome updates the same tracker used above (no separate streak).
+        assert!(mw.force_reflect().await.is_err());
+        assert_eq!(
+            mw.reflector_failure_tracker().gate(),
+            crate::util::RetryGate::Skip,
+            "the failed manual retry should extend, not clear, the automatic backoff"
+        );
     }
 
     #[tokio::test]
