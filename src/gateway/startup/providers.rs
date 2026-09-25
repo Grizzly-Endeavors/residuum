@@ -35,6 +35,7 @@ pub fn init_providers(
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
     publisher: Publisher,
+    degradations: &mut Vec<String>,
 ) -> Result<ProviderComponents, FatalError> {
     let provider = build_provider_chain_with_notices(
         &cfg.main,
@@ -50,6 +51,9 @@ pub fn init_providers(
         Ok(pair) => pair,
         Err(err) => {
             tracing::warn!(error = %err, "memory subsystem degraded: observer and reflector disabled");
+            degradations.push(format!(
+                "memory (observation and reflection) is disabled: {err}"
+            ));
             (Observer::disabled(tz), Reflector::disabled(tz))
         }
     };
@@ -68,6 +72,9 @@ pub fn init_providers(
         }
         Err(err) => {
             tracing::warn!(error = %err, "embedding provider degraded");
+            degradations.push(format!(
+                "the embedding provider is unavailable, so semantic search is disabled: {err}"
+            ));
             None
         }
     };
