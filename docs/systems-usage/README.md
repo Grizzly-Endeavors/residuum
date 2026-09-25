@@ -70,6 +70,8 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in `config.toml`, role skills in `skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
+| [Self-Update, Rollback, and Startup Health](self-update.md) | Self-update with automatic rollback, and the readiness signal `residuum serve`/the rollback watchdog wait on | `residuum update`, `residuum serve`, `residuum stop` | *(none)* |
+| [Residuum Cloud Tunnel and Remote Control Safety](cloud-tunnel.md) | Remote access via the cloud relay, and the guard that refuses a remote shutdown or cloud-disconnect | *(none — Settings → Residuum Cloud)* | `[cloud]` in `config.toml` |
 | [Microsoft Teams](teams.md) | Chat with the agent in Teams DMs, group chats, and channels | *(interface — no tools)* | `[teams]` in `config.toml`, `teams_state.json` |
 | [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
 | [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
