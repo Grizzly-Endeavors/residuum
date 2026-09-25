@@ -833,6 +833,12 @@ pub struct Config {
     pub role_overrides: HashMap<String, RoleOverrides>,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
+    /// User-facing notices describing what was skipped or degraded while
+    /// loading this config — an unknown key, a dropped fallback provider,
+    /// a disabled optional feature, and so on. Populated by
+    /// `resolve::from_file_and_env` and `Config::load_at`; empty for a
+    /// config that loaded with nothing to report.
+    pub load_notices: Vec<String>,
 }
 
 impl fmt::Debug for Config {
@@ -875,6 +881,7 @@ impl fmt::Debug for Config {
             .field("tracing", &self.tracing)
             .field("role_overrides", &self.role_overrides)
             .field("config_dir", &self.config_dir)
+            .field("load_notices", &self.load_notices)
             .finish()
     }
 }

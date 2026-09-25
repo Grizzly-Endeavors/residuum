@@ -86,13 +86,26 @@ mod tests {
     }
 
     #[test]
-    fn unknown_key_on_fresh_install_is_invalid_and_names_the_key() {
+    fn unknown_key_on_fresh_install_no_longer_fails_load() {
+        // An unknown key is now skipped with a notice rather than failing
+        // the config — see `config::tolerant`. `classify_load_error` is
+        // only reached when `Config::load_at` itself failed, so this case
+        // doesn't reach it at all any more.
         let dir = config_dir("timezone = \"UTC\"\ntranscript_retention_days = 30\n");
-        let message = invalid_message(classify(dir.path()));
+        let cfg = Config::load_at(dir.path()).expect("unknown key should not fail the load");
         assert!(
-            message.contains("transcript_retention_days"),
-            "message should name the bad key: {message}"
+            cfg.load_notices
+                .iter()
+                .any(|n| n.contains("transcript_retention_days")),
+            "a notice should name the skipped key: {:?}",
+            cfg.load_notices
         );
+    }
+
+    #[test]
+    fn type_error_on_a_known_field_is_invalid_and_names_the_field() {
+        let dir = config_dir("timezone = \"UTC\"\nmax_tokens = \"not-a-number\"\n");
+        let message = invalid_message(classify(dir.path()));
         assert!(message.contains("residuum setup"), "{message}");
         assert!(!message.contains(".bak"), "no backup exists yet: {message}");
     }
@@ -107,7 +120,7 @@ mod tests {
 
     #[test]
     fn classifying_never_touches_the_users_files() {
-        let broken = "timezone = \"UTC\"\nnot_a_real_key = true\n";
+        let broken = "timezone = \"UTC\"\nmax_tokens = \"not-a-number\"\n";
         let dir = config_dir(broken);
         std::fs::write(dir.path().join("config.toml.bak"), "timezone = \"UTC\"\n").unwrap();
         let _problem = classify(dir.path());

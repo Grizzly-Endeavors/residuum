@@ -145,6 +145,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         tracing: TracingConfig::default(),
         role_overrides: HashMap::new(),
         config_dir: dir.to_path_buf(),
+        load_notices: vec![],
     }
 }
 

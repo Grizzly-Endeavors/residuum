@@ -13,6 +13,7 @@ pub(crate) mod patch;
 mod provider;
 pub(crate) mod resolve;
 pub(crate) mod secrets;
+mod tolerant;
 mod types;
 pub mod wizard;
 
