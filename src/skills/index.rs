@@ -351,13 +351,11 @@ mod tests {
             1,
             "the skipped skill should produce a user notice, not just a log line"
         );
-        assert!(
-            index
-                .notices()
-                .first()
-                .unwrap()
-                .contains("bad-skill/SKILL.md")
-        );
+        let skipped_path = std::path::Path::new("bad-skill")
+            .join("SKILL.md")
+            .display()
+            .to_string();
+        assert!(index.notices().first().unwrap().contains(&skipped_path));
     }
 
     #[tokio::test]
