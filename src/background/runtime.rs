@@ -753,6 +753,12 @@ async fn run_session(
     let mut turn_number: u32 = 0;
 
     loop {
+        // Registered and ready for this turn but not necessarily able to
+        // start it yet — the permit below may or may not be immediately
+        // available. Shown as its own state (rather than leaving the run
+        // looking like it's still forking, or idle with nothing to do)
+        // whenever `max_concurrent` is exhausted by other live sessions.
+        transition_state(&env.registry, &env.publisher, &info, SessionState::Queued).await;
         (status, summary) = tokio::select! {
             biased;
             () = stop_token.cancelled() => {
@@ -1497,12 +1503,61 @@ mod tests {
         }
     }
 
+    /// Like [`MockProvider`], but holds its turn's concurrency permit for a
+    /// while before responding — used to prove a second session waiting on
+    /// the same `max_concurrent` permit shows as `Queued` in the meantime.
+    struct SlowMockProvider {
+        response: String,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for SlowMockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "mock-slow"
+        }
+    }
+
     fn make_resources(response: &str) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
             provider: Box::new(MockProvider {
                 response: response.to_string(),
+            }),
+            tools: crate::tools::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
+        }
+    }
+
+    fn make_slow_resources(response: &str, delay: Duration) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
+        SubAgentResources {
+            max_tool_iterations: None,
+            provider: Box::new(SlowMockProvider {
+                response: response.to_string(),
+                delay,
             }),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -3614,6 +3669,7 @@ mod tests {
             labels,
             vec![
                 "started:forking",
+                "state:queued",
                 "state:running",
                 "turn_started",
                 "intermediate:checking",
@@ -3727,6 +3783,7 @@ mod tests {
             labels,
             vec![
                 "started:forking",
+                "state:queued",
                 "state:running",
                 "turn_started",
                 "error",
@@ -3738,5 +3795,73 @@ mod tests {
             ],
             "an unclassified session failure gets a plain-language message, never the raw cause"
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_on_the_concurrency_permit_shows_as_queued() {
+        // max_concurrent = 1: the first session's slow turn holds the only
+        // permit, so the second session must show as `Queued` — not still
+        // `Forking` and not `Idle` — for as long as it's waiting for one.
+        let bus_handle = crate::bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            1,
+            IdleTimeouts {
+                scheduled: Duration::from_secs(5),
+                spawned: Duration::from_secs(5),
+                external: Duration::from_secs(5),
+                artifact: Duration::from_secs(5),
+            },
+            bus_handle.publisher(),
+            chrono_tz::UTC,
+            messenger,
+        );
+
+        let first = SessionAddress::from("spawned-slow-first-0001");
+        runtime.spawn(
+            sample_request(first.as_ref()),
+            Some(make_slow_resources(
+                "first done",
+                Duration::from_millis(400),
+            )),
+        );
+        wait_for(&runtime, &first, Duration::from_secs(1), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("first session should reach running and hold the only permit");
+
+        let second = SessionAddress::from("spawned-second-waiting-0002");
+        runtime.spawn(
+            sample_request(second.as_ref()),
+            Some(make_resources("second done")),
+        );
+
+        wait_for(&runtime, &second, Duration::from_millis(300), |info| {
+            info.state == SessionState::Queued
+        })
+        .await
+        .expect(
+            "second session should show as queued while the first session holds the \
+             only concurrency permit",
+        );
+
+        // Once the first session finishes and releases its permit, the
+        // second should proceed to running rather than staying queued.
+        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
+            info.state == SessionState::Running || info.state == SessionState::Idle
+        })
+        .await
+        .expect("second session should proceed once the permit is released");
     }
 }
