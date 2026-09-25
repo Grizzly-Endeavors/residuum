@@ -12,7 +12,8 @@ sub-agent turns are never watched, which bounds the feedback loop.
 
 - **Mid-turn watch**: every `every_n_iterations` tool-loop iterations, a
   detached classifier may inject a live course correction for an urgent
-  (`act`) finding.
+  (`act`) finding. There is no per-turn cap — every `act` finding is
+  delivered, each numbered with a running per-turn count.
 - **End-of-turn triage**: after the turn completes, evaluates the whole turn
   plus anything the mid-turn watch queued. The first `act` finding becomes a
   correction turn; `note` findings surface as passive `[Subconscious note]`
@@ -36,8 +37,8 @@ subconscious itself off.
 ## Config
 
 `[subconscious]` in `config.toml`: `enabled` (default `false`), `mid_turn`,
-`every_n_iterations`, `max_interventions_per_turn`, `max_transcript_tokens`,
-`learning`, `learning_cooldown_minutes`. Model assigned via the
-`subconscious` role in `providers.toml`.
+`every_n_iterations`, `max_transcript_tokens`, `learning`,
+`learning_cooldown_minutes`. Model assigned via the `subconscious` role in
+`providers.toml`.
 
 See the authoritative reference: `docs/systems-usage/subconscious.md`.

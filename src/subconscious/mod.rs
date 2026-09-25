@@ -19,8 +19,7 @@ use anyhow::Context;
 use serde::Deserialize;
 
 use crate::config::{
-    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
 use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
 use crate::workspace::layout::WorkspaceLayout;
@@ -134,11 +133,12 @@ pub struct EvalOutcome {
 /// re-classification of the same turn.
 #[derive(Debug, Default, Clone)]
 pub struct TurnScratch {
-    /// Corrections the mid-turn watch injected into the agent this turn.
+    /// Corrections the mid-turn watch injected into the agent this turn, in
+    /// delivery order — its length is this turn's delivered-correction count.
     pub applied_corrections: Vec<String>,
-    /// Findings the mid-turn watch observed but did not act on (extra `act`
-    /// findings beyond the cap, all `note` findings, and corrections that
-    /// could not be delivered because the turn had already ended).
+    /// Findings the mid-turn watch observed but did not act on (all `note`
+    /// findings, and `act` corrections that could not be delivered because
+    /// the turn had already ended).
     pub queued_notes: Vec<Finding>,
 }
 
@@ -159,8 +159,6 @@ pub struct SubconsciousConfig {
     pub mid_turn: bool,
     /// Evaluate every N tool-loop iterations.
     pub every_n_iterations: usize,
-    /// Maximum mid-turn corrections injected per turn.
-    pub max_interventions_per_turn: usize,
     /// Token cap for the transcript sent to the classifier.
     pub max_transcript_tokens: usize,
     /// Whether the activity-triggered learning loop is enabled (learn findings
@@ -176,7 +174,6 @@ impl Default for SubconsciousConfig {
             enabled: false,
             mid_turn: true,
             every_n_iterations: DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-            max_interventions_per_turn: DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
             max_transcript_tokens: DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
             learning: false,
             role_overrides: None,
@@ -227,7 +224,6 @@ impl Subconscious {
                 enabled: true,
                 mid_turn: settings.mid_turn,
                 every_n_iterations: settings.every_n_iterations,
-                max_interventions_per_turn: settings.max_interventions_per_turn,
                 max_transcript_tokens: settings.max_transcript_tokens,
                 learning: settings.learning,
                 role_overrides: cfg.role_overrides.get("subconscious").cloned(),
@@ -289,12 +285,6 @@ impl Subconscious {
     #[must_use]
     pub fn every_n_iterations(&self) -> usize {
         self.config.every_n_iterations.max(1)
-    }
-
-    /// Maximum mid-turn corrections injected per turn.
-    #[must_use]
-    pub fn max_interventions_per_turn(&self) -> usize {
-        self.config.max_interventions_per_turn
     }
 
     /// Classify a turn transcript against the agent's instructions.

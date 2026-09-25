@@ -22,8 +22,7 @@ use super::constants::{
     DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
     DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBAGENT_DEPTH_CAP,
-    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
 use super::provider::ProviderSpec;
 
@@ -435,8 +434,6 @@ pub struct SubconsciousSettings {
     pub mid_turn: bool,
     /// Evaluate every N tool-loop iterations.
     pub every_n_iterations: usize,
-    /// Maximum mid-turn corrections injected per turn.
-    pub max_interventions_per_turn: usize,
     /// Token cap for the transcript sent to the classifier.
     pub max_transcript_tokens: usize,
     /// Whether the activity-triggered learning loop is enabled (surfaces `learn`
@@ -453,7 +450,6 @@ impl Default for SubconsciousSettings {
             enabled: false,
             mid_turn: true,
             every_n_iterations: DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-            max_interventions_per_turn: DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
             max_transcript_tokens: DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
             learning: false,
             learning_cooldown_minutes: DEFAULT_LEARNING_COOLDOWN_MINUTES,

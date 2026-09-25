@@ -247,8 +247,6 @@ pub(super) struct SubconsciousConfigFile {
     pub(super) mid_turn: Option<bool>,
     /// Evaluate every N tool-loop iterations.
     pub(super) every_n_iterations: Option<usize>,
-    /// Maximum mid-turn corrections injected per turn.
-    pub(super) max_interventions_per_turn: Option<usize>,
     /// Token cap for the transcript sent to the classifier.
     pub(super) max_transcript_tokens: Option<usize>,
     /// Whether the activity-triggered learning loop is enabled (opt-in, default false).

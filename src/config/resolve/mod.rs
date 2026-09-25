@@ -614,9 +614,6 @@ fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> Su
         if let Some(v) = s.every_n_iterations {
             settings.every_n_iterations = v;
         }
-        if let Some(v) = s.max_interventions_per_turn {
-            settings.max_interventions_per_turn = v;
-        }
         if let Some(v) = s.max_transcript_tokens {
             settings.max_transcript_tokens = v;
         }
@@ -1279,7 +1276,6 @@ timezone = "UTC"
 enabled = true
 mid_turn = false
 every_n_iterations = 5
-max_interventions_per_turn = 2
 max_transcript_tokens = 8000
 learning = true
 learning_cooldown_minutes = 60
@@ -1295,7 +1291,6 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(cfg.subconscious_settings.enabled);
         assert!(!cfg.subconscious_settings.mid_turn);
         assert_eq!(cfg.subconscious_settings.every_n_iterations, 5);
-        assert_eq!(cfg.subconscious_settings.max_interventions_per_turn, 2);
         assert_eq!(cfg.subconscious_settings.max_transcript_tokens, 8000);
         assert!(cfg.subconscious_settings.learning, "learning parses");
         assert_eq!(cfg.subconscious_settings.learning_cooldown_minutes, 60);

@@ -46,9 +46,6 @@ pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
 /// Default subconscious mid-turn evaluation cadence (every N tool iterations).
 pub(crate) const DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS: usize = 3;
 
-/// Default maximum subconscious mid-turn interventions per turn.
-pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS: usize = 1;
-
 /// Default token cap for the transcript sent to the subconscious classifier.
 pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
 

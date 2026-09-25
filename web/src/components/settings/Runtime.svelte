@@ -263,15 +263,6 @@
           />
         </div>
         <div class="settings-field">
-          <label for="rt-sub-max-interventions">Max Interventions Per Turn</label>
-          <input
-            id="rt-sub-max-interventions"
-            type="number"
-            bind:value={fields.subconscious_max_interventions_per_turn}
-            placeholder="Default: 1"
-          />
-        </div>
-        <div class="settings-field">
           <label for="rt-sub-max-transcript">Max Transcript Tokens</label>
           <input
             id="rt-sub-max-transcript"

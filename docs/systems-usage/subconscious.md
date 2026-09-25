@@ -27,7 +27,7 @@ How a finding is delivered:
 
 | Phase | `act` | `note` |
 |-------|-------|--------|
-| Mid-turn | Injected as a live course correction (subject to `max_interventions_per_turn`); recorded for end-of-turn triage. | Not injected mid-turn; queued as triage input for the end-of-turn pass. |
+| Mid-turn | Injected as a live course correction — every `act` finding, with no per-turn cap; each carries a running count of how many corrections this turn has delivered so far. Recorded for end-of-turn triage. | Not injected mid-turn; queued as triage input for the end-of-turn pass. |
 | End-of-turn | The **first** `act` becomes an immediate correction turn (the agent wakes and takes the corrective action). Later `act` findings degrade to notes. | Injected as passive `[Subconscious note]` context the agent sees on its next turn. |
 
 If the end-of-turn evaluation fails, any notes the mid-turn watch queued are delivered raw (as `[Subconscious note]` context) rather than being silently dropped.
@@ -69,7 +69,7 @@ The agent's own instruction files — `SOUL.md`, `AGENTS.md`, `USER.md`, `wiki/i
 
 The subconscious is deliberately conservative:
 
-- Mid-turn evaluations run at most one at a time (a slow classifier can't pile up) and are capped at `max_interventions_per_turn` corrections per turn.
+- Mid-turn evaluations run at most one at a time, so a slow classifier can't pile up — but there is no cap on how many corrections a turn may receive; every `act` finding is delivered. Each correction's text carries a running per-turn count (e.g. "Course correction #3 this turn"), which is currently the only surface that shows mid-turn subconscious activity to the user.
 - End-of-turn spawns at most one correction turn per turn.
 - The prompt makes silence the expected result and forbids inventing findings.
 - The end-of-turn triage pass sees what was already steered, so it won't repeat a correction in the same turn.
@@ -89,7 +89,6 @@ The end-of-turn evaluation runs **synchronously on the gateway event loop** (lik
 | `enabled` | `false` | Master switch. Opt-in. |
 | `mid_turn` | `true` | Whether the mid-turn watch runs (only when `enabled`). |
 | `every_n_iterations` | `3` | Mid-turn: evaluate every N tool-loop iterations. |
-| `max_interventions_per_turn` | `1` | Mid-turn: cap on injected corrections per turn. |
 | `max_transcript_tokens` | `12000` | Transcript budget sent to the classifier (oldest messages dropped to fit). |
 | `learning` | `false` | Opt-in for `learn` signals (see [Learning trigger](#learning-trigger)). Independent of `enabled` — the subconscious can steer without learning enabled. |
 | `learning_cooldown_minutes` | `240` | Minimum time between `learner` spawns triggered by a `learn` signal. |

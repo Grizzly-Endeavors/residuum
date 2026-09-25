@@ -51,7 +51,6 @@ export interface ConfigFields {
   subconscious_enabled: boolean;
   subconscious_mid_turn: boolean;
   subconscious_every_n_iterations: string;
-  subconscious_max_interventions_per_turn: string;
   subconscious_max_transcript_tokens: string;
   subconscious_learning: boolean;
   subconscious_learning_cooldown_minutes: string;
@@ -147,7 +146,6 @@ export function defaultConfigFields(): ConfigFields {
     subconscious_enabled: false,
     subconscious_mid_turn: true,
     subconscious_every_n_iterations: "",
-    subconscious_max_interventions_per_turn: "",
     subconscious_max_transcript_tokens: "",
     subconscious_learning: false,
     subconscious_learning_cooldown_minutes: "",
@@ -268,7 +266,6 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.subconscious_enabled = bool(subconscious.enabled, false);
     fields.subconscious_mid_turn = bool(subconscious.mid_turn, true);
     fields.subconscious_every_n_iterations = str(subconscious.every_n_iterations);
-    fields.subconscious_max_interventions_per_turn = str(subconscious.max_interventions_per_turn);
     fields.subconscious_max_transcript_tokens = str(subconscious.max_transcript_tokens);
     fields.subconscious_learning = bool(subconscious.learning, false);
     fields.subconscious_learning_cooldown_minutes = str(subconscious.learning_cooldown_minutes);
@@ -687,11 +684,6 @@ const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   {
     key: "subconscious_every_n_iterations",
     path: ["subconscious", "every_n_iterations"],
-    kind: "number",
-  },
-  {
-    key: "subconscious_max_interventions_per_turn",
-    path: ["subconscious", "max_interventions_per_turn"],
     kind: "number",
   },
   {
