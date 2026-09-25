@@ -905,8 +905,10 @@ mod tests {
     async fn blocked_paths_and_symlinks_are_absent() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
-        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        tokio::fs::write(ws_dir.join("vectors.db"), "bin")
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "bin")
             .await
             .unwrap();
         tokio::fs::write(ws_dir.join("real.md"), "real")
@@ -920,7 +922,7 @@ mod tests {
 
         let response = tree(&state, "").await;
         let paths: Vec<&str> = response.entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(!paths.contains(&"vectors.db"));
+        assert!(!paths.contains(&"memory/vectors.db"));
         #[cfg(unix)]
         assert!(!paths.contains(&"link.md"));
         assert!(paths.contains(&"real.md"));
@@ -1070,7 +1072,7 @@ mod tests {
                     "a.md".to_string(),
                     "gone.md".to_string(),
                     "adir".to_string(),
-                    "vectors.db".to_string(),
+                    "memory/vectors.db".to_string(),
                     "../escape.md".to_string(),
                 ],
             }),
@@ -1091,7 +1093,7 @@ mod tests {
         assert_eq!(adir.path, "adir");
         assert_eq!(adir.error, Some("is_directory"));
         let db = files.next().unwrap();
-        assert_eq!(db.path, "vectors.db");
+        assert_eq!(db.path, "memory/vectors.db");
         assert_eq!(db.error, Some("blocked"));
         let escape = files.next().unwrap();
         assert_eq!(escape.path, "../escape.md");

@@ -826,20 +826,22 @@ async fn refuse_if_dir_holds_internal_data(
     relative: &str,
 ) -> Result<(), (StatusCode, String)> {
     let owned = dir.to_path_buf();
-    let holds = tokio::task::spawn_blocking(move || dir_holds_internal_data(&owned))
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to check {relative} for internal data: {e}"),
-            )
-        })?
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to check {relative} for internal data: {e}"),
-            )
-        })?;
+    let owned_relative = relative.to_string();
+    let holds =
+        tokio::task::spawn_blocking(move || dir_holds_internal_data(&owned, &owned_relative))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to check {relative} for internal data: {e}"),
+                )
+            })?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to check {relative} for internal data: {e}"),
+                )
+            })?;
     if holds {
         return Err((
             StatusCode::FORBIDDEN,
@@ -1244,8 +1246,10 @@ mod tests {
         tokio::fs::write(ws_dir.join("skills").join("research.md"), "skill content")
             .await
             .unwrap();
-        // Create a blocked file to verify filtering
-        tokio::fs::write(ws_dir.join("vectors.db"), "binary data")
+        // Create Residuum's own database file to verify filtering; a
+        // same-named file elsewhere would not be blocked.
+        tokio::fs::create_dir(ws_dir.join("memory")).await.unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "binary data")
             .await
             .unwrap();
 
@@ -1259,13 +1263,24 @@ mod tests {
         assert!(names.contains(&"SOUL.md"));
         assert!(names.contains(&"notes.md"));
         assert!(names.contains(&"skills"));
-        assert!(!names.contains(&"vectors.db"));
         for entry in &entries.0 {
             assert!(
                 !entry.version.is_empty(),
                 "every entry should carry a version"
             );
         }
+
+        // Residuum's own database file is filtered out of the directory it's in.
+        let memory_entries = api_workspace_files(
+            Query(FilesQuery {
+                path: Some("memory".to_string()),
+            }),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        let memory_names: Vec<&str> = memory_entries.0.iter().map(|e| e.name.as_str()).collect();
+        assert!(!memory_names.contains(&"vectors.db"));
 
         // Read a file
         let response = api_workspace_file_read(
@@ -1836,7 +1851,7 @@ mod tests {
 
         let err = api_workspace_raw_write(
             Query(FileQuery {
-                path: "vectors.db".to_string(),
+                path: "memory/vectors.db".to_string(),
             }),
             State(state),
             HeaderMap::new(),
@@ -2001,15 +2016,17 @@ mod tests {
     async fn delete_blocked_path_answers_403() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
-        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        tokio::fs::write(ws_dir.join("vectors.db"), "x")
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "x")
             .await
             .unwrap();
         let state = make_state(ws_dir);
 
         let err = api_workspace_delete(
             Query(DeleteFileQuery {
-                path: "vectors.db".to_string(),
+                path: "memory/vectors.db".to_string(),
                 recursive: false,
             }),
             State(state),
@@ -2550,8 +2567,10 @@ mod tests {
     async fn move_blocked_path_answers_403() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
-        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        tokio::fs::write(ws_dir.join("vectors.db"), "x")
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "x")
             .await
             .unwrap();
         let state = make_state(ws_dir);
@@ -2560,7 +2579,7 @@ mod tests {
             State(state),
             HeaderMap::new(),
             Json(MoveRequest {
-                from: "vectors.db".to_string(),
+                from: "memory/vectors.db".to_string(),
                 to: "dest.db".to_string(),
                 overwrite: false,
             }),
