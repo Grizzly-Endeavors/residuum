@@ -94,7 +94,7 @@ impl Tool for MemorySearchTool {
         }
 
         let limit = match arguments.get("limit").and_then(Value::as_u64) {
-            Some(l) => (l.min(20) as usize).max(1),
+            Some(l) => usize::try_from(l).unwrap_or(usize::MAX).max(1),
             None => 5,
         };
 
@@ -366,6 +366,41 @@ mod tests {
             result_outside.output.contains("no results"),
             "search outside date range should return no results: {}",
             result_outside.output
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_honours_limit_above_old_clamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join(".index");
+        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
+
+        let obs: Vec<Observation> = (0..30)
+            .map(|i| Observation {
+                timestamp: chrono::Utc::now().naive_utc(),
+                source_episodes: Some("ep-001".to_string()),
+                visibility: Visibility::User,
+                content: format!("rust memory safety topic number {i}"),
+                source: crate::memory::types::SourceTag::main(),
+            })
+            .collect();
+        index
+            .index_observations("ep-001", "2026-02-19", &obs)
+            .unwrap();
+
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default());
+        let tool = MemorySearchTool::new(Arc::new(searcher));
+
+        let result = tool
+            .execute(serde_json::json!({"query": "rust memory", "limit": 25}))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "search should succeed");
+        assert!(
+            result.output.contains("Found 25 result(s)"),
+            "a limit above the old 20-result clamp should be honoured, got: {}",
+            result.output
         );
     }
 }
