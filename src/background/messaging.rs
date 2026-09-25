@@ -31,7 +31,8 @@ use std::sync::{Arc, Mutex};
 use crate::agent::hop::HopLimits;
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName, topics,
+    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
+    SpawnRequestEvent, topics,
 };
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, Message};
@@ -650,12 +651,75 @@ async fn publish_conversation_resume(
 /// tool-loop checkpoint of a live turn), so this is about not busy-looping
 /// while it does, not about giving the run time to do anything in
 /// particular.
-const USER_MESSAGE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+pub(crate) const USER_MESSAGE_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
 
 /// Retry attempts against a saturated channel worth a `warn` log, so a
 /// channel that stays saturated for an unusually long time is visible in
 /// the logs rather than silently retrying forever.
-const USER_MESSAGE_WARN_AFTER_ATTEMPTS: u32 = 20;
+pub(crate) const USER_MESSAGE_WARN_AFTER_ATTEMPTS: u32 = 20;
+
+/// Retry delivering a chat user's message into `address` — the address a
+/// spawn/resume request lost the race for (see
+/// `crate::background::listener::race_guard_interrupt`) — until it
+/// succeeds, or republish `spawn_event` as a fresh spawn/resume request if
+/// the run that won the race finishes before delivery does.
+///
+/// Mirrors [`resume_or_start_conversation_after_clear`]'s guarantee for the
+/// ordinary conversation-delivery path: a chat user's message must never
+/// be dropped for capacity or for losing a race, unlike an agent-to-agent
+/// message in the same situation (which the callers below still log and
+/// give up on, unchanged — an unusual double-spawn race is a much rarer
+/// event than a session simply running busy or long, and there's a live
+/// agent on the other end to notice and retry itself).
+///
+/// Spawned as a detached task by both callers, so neither
+/// `SessionRuntime::spawn` (a sync fn) nor the listener's own sequential
+/// event dispatch ever blocks on it.
+pub(crate) async fn retry_race_guard_user_message(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    inbound: InboundMessage,
+    spawn_event: SpawnRequestEvent,
+) {
+    let mut attempts: u32 = 0;
+    loop {
+        match registry.deliver(&address, Interrupt::UserMessage(inbound.clone())) {
+            DeliverOutcome::Delivered => return,
+            DeliverOutcome::Full => {
+                attempts += 1;
+                if attempts == USER_MESSAGE_WARN_AFTER_ATTEMPTS {
+                    tracing::warn!(
+                        address = %address,
+                        attempts,
+                        "race-guard user message still waiting on a saturated interrupt channel"
+                    );
+                }
+                tokio::time::sleep(USER_MESSAGE_RETRY_DELAY).await;
+            }
+            DeliverOutcome::Completing => {
+                registry.wait_until_clear(&address).await;
+            }
+            DeliverOutcome::NotLive => {
+                // The run that won the original race has since finished.
+                // Give this content a fresh spawn/resume attempt through
+                // the normal listener pipeline (which can rebuild the
+                // session resources this layer doesn't have) rather than
+                // dropping it.
+                if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
+                    tracing::error!(
+                        error = %e,
+                        address = %address,
+                        "failed to republish a race-guard user message after its target \
+                         finished; input dropped"
+                    );
+                }
+                return;
+            }
+        }
+    }
+}
 
 /// Re-run the same live-vs-start-vs-resume decision
 /// [`AgentMessenger::deliver_conversation`] makes for a fresh call, until a

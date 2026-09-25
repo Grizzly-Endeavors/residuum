@@ -19,8 +19,8 @@ use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
 use crate::bus::{
-    AgentMessageEvent, BusHandle, EventTrigger, SessionAddress, SpawnRequestEvent, Subscriber,
-    topics,
+    AgentMessageEvent, BusHandle, EventTrigger, Publisher, SessionAddress, SpawnRequestEvent,
+    Subscriber, topics,
 };
 use crate::interfaces::types::InboundMessage;
 
@@ -142,7 +142,11 @@ fn handle_spawn_request<'a>(
                         "spawn target is already live; delivering this request's input into it \
                          instead of forking a second run"
                     );
-                    return deliver_race_guard_content(&ctx.session_registry, event);
+                    return deliver_race_guard_content(
+                        &ctx.session_registry,
+                        &ctx.publisher,
+                        event,
+                    );
                 }
                 SessionState::Completed => {}
             }
@@ -155,13 +159,23 @@ fn handle_spawn_request<'a>(
 /// the race for its address, using [`race_guard_interrupt`] to pick the
 /// right interrupt kind.
 ///
+/// A chat user's message (a `Conversation`-triggered request carrying its
+/// original inbound message, which [`race_guard_interrupt`] renders as
+/// [`Interrupt::UserMessage`]) is never dropped here: a saturated or
+/// torn-down channel hands off to a detached retry task (see
+/// [`super::messaging::retry_race_guard_user_message`]) instead of
+/// erroring. An agent-to-agent message in the same situation still errors
+/// as before — an unusual double-spawn race, with a live agent on the
+/// other end able to notice and retry itself.
+///
 /// # Errors
 ///
-/// Returns an error if delivery fails (the winning run's channel is
-/// saturated, its own teardown is underway, or it has already left the
-/// registry) — the content is dropped in that case.
+/// Returns an error if delivering an *agent* message fails (the winning
+/// run's channel is saturated, its own teardown is underway, or it has
+/// already left the registry) — that content is dropped in that case.
 fn deliver_race_guard_content(
-    registry: &SessionRegistry,
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
     let address = event.address.clone();
@@ -169,14 +183,42 @@ fn deliver_race_guard_content(
     let category = SessionCategory::from_trigger(&event.source);
     let interrupt = race_guard_interrupt(
         &event.source,
-        event.inbound,
-        event.spawner,
+        event.inbound.clone(),
+        event.spawner.clone(),
         category,
         content,
         event.hop_count,
     );
+    // `race_guard_interrupt` only ever renders `Interrupt::UserMessage` when
+    // `event.inbound` is `Some` — recovered here rather than moved above so
+    // it's still available both for the retry task's own redelivery
+    // attempts and as part of `event` if a fresh spawn/resume is needed.
+    let retryable_inbound = if matches!(interrupt, Interrupt::UserMessage(_)) {
+        event.inbound.clone()
+    } else {
+        None
+    };
     match registry.deliver(&address, interrupt) {
         DeliverOutcome::Delivered => Ok(()),
+        outcome @ (DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive)
+            if let Some(inbound) = retryable_inbound =>
+        {
+            tracing::warn!(
+                address = %address,
+                ?outcome,
+                "race-guard user message could not be delivered immediately; retrying on a \
+                 detached task rather than dropping it"
+            );
+            let registry = Arc::clone(registry);
+            let publisher = publisher.clone();
+            tokio::spawn(async move {
+                super::messaging::retry_race_guard_user_message(
+                    registry, publisher, address, inbound, event,
+                )
+                .await;
+            });
+            Ok(())
+        }
         other @ (DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive) => {
             anyhow::bail!(
                 "session address {address} is already live and delivering this request's input \
@@ -437,7 +479,8 @@ mod tests {
         // reach that run as `Interrupt::UserMessage` carrying the
         // participant's own sender attribution — never "[Agent Message from
         // main]".
-        let registry = SessionRegistry::new();
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
         let address = "external-discord-chan-1";
         let info = sample_live_conversation_info(address);
         let mut rx = registry
@@ -446,7 +489,7 @@ mod tests {
 
         let second_msg = sample_inbound("m2", "any updates?", "Jane");
         let second_event = conversation_spawn_event(second_msg, address);
-        deliver_race_guard_content(&registry, second_event)
+        deliver_race_guard_content(&registry, &publisher, second_event)
             .expect("delivering into the live run must succeed");
 
         let delivered = rx
@@ -472,6 +515,95 @@ mod tests {
             rx.try_recv().is_err(),
             "only one run should ever exist for the address — no second run's spawn ever \
              reaches the interrupt channel"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_saturated_race_guard_still_delivers_the_user_message_via_retry() {
+        // Regression: a race-guard user message used to be dropped outright
+        // ("input dropped") when the winning run's channel was saturated —
+        // the same silent-drop bug fixed for the primary conversation path.
+        // There's nobody on the other end of a chat message to hand a
+        // refusal to, so this must retry until the channel drains, exactly
+        // the way a live session's own tool loop drains it continuously.
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
+        let address = "external-discord-chan-2";
+        let info = sample_live_conversation_info(address);
+        let mut rx = registry
+            .register(info, CancellationToken::new())
+            .expect("the winner registers the one live run");
+
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+            assert!(matches!(
+                registry.deliver(
+                    &SessionAddress::from(address),
+                    Interrupt::UserMessage(sample_inbound("filler", "filler", "Jane")),
+                ),
+                DeliverOutcome::Delivered
+            ));
+        }
+
+        let new_msg = sample_inbound("the-new-message", "can anyone see this?", "Jane");
+        let new_event = conversation_spawn_event(new_msg, address);
+        deliver_race_guard_content(&registry, &publisher, new_event)
+            .expect("a saturated channel must hand off to a retry, not error");
+
+        let mut delivered = false;
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
+            let Ok(Some(interrupt)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+            else {
+                break;
+            };
+            if let Interrupt::UserMessage(m) = interrupt
+                && m.id == "the-new-message"
+            {
+                assert_eq!(m.content, "can anyone see this?");
+                delivered = true;
+                break;
+            }
+        }
+        assert!(
+            delivered,
+            "the race-guard user message must eventually be delivered, never dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_race_guard_user_message_republishes_a_spawn_request_once_its_target_finishes() {
+        // The `NotLive` case: the winning run finishes (and is removed from
+        // the registry) before this content can be delivered into it. The
+        // message must still not be dropped — it gets a fresh spawn/resume
+        // attempt through the ordinary listener pipeline instead.
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let registry = Arc::new(SessionRegistry::new());
+        let address = "external-discord-chan-3";
+        let info = sample_live_conversation_info(address);
+        registry
+            .register(info, CancellationToken::new())
+            .expect("the winner registers the one live run");
+        registry.remove(&SessionAddress::from(address), "run-winner");
+
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let new_msg = sample_inbound("the-new-message", "can anyone see this?", "Jane");
+        let new_event = conversation_spawn_event(new_msg, address);
+        deliver_race_guard_content(&registry, &publisher, new_event)
+            .expect("a target that just finished must hand off to a retry, not error");
+
+        let republished = tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
+            .await
+            .expect("a fresh spawn request should be republished promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(republished.address, SessionAddress::from(address));
+        assert_eq!(
+            republished.inbound.map(|m| m.content),
+            Some("can anyone see this?".to_string()),
+            "the republished request must still carry the original user message"
         );
     }
 }
