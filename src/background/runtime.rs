@@ -1556,6 +1556,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SlowMockProvider {
                 response: response.to_string(),
                 delay,

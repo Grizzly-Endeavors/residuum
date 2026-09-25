@@ -68,6 +68,10 @@ The `agent` field controls how the pulse executes:
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
+## Diagnostics
+
+Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
+
 ## Behavior
 
 - The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. The file is parsed generically first, then each pulse entry is deserialized on its own: one bad pulse (a rejected option, a bad field type) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a rejected pulse, a duplicate pulse name, an unparseable `schedule`/`active_hours` string, or a pulse that fails to deserialize — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged file. A removed-option rejection links `migrating-to-agent-sessions.md`; every other kind of problem links this doc instead. A whole-document YAML syntax error (as opposed to one bad pulse in an otherwise-valid file) keeps the last pulse set that loaded successfully running, rather than firing nothing until it's fixed, and notifies the owner with the parse error (deduped the same way).

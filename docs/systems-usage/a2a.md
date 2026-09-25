@@ -179,7 +179,9 @@ Residuum can also delegate to other agents over A2A through the same native tool
 - **`url`**: the agent's base URL (where its `.well-known/agent-card.json` lives).
 - **`headers`**: optional; sent on every request to that agent, including the card fetch itself — this is how a caller key for a private remote agent gets attached. Values expand `${agent-key:<name>}` (via the same agent-key store `exec` and MCP servers use) and `${ENV}`/`${ENV:-default}`.
 
-A bad entry (an invalid name, an empty url, or a header referencing an unknown agent key) is skipped with a warning; the rest of the file still loads. The agent may edit this file directly — it isn't write-blocked. It is watched alongside `mcp.json`, `channels.toml`, and `agent-card.json`: a change is picked up within a few seconds. **Web UI:** `GET`/`PUT /api/a2a/agents/raw` edits the raw file (validated before writing); `GET /api/a2a/agents` returns each agent's live status.
+A bad entry (an invalid name, an empty url, or a header referencing an unknown agent key) is skipped with a warning; the rest of the file still loads. The agent may edit this file directly — it isn't write-blocked. It is watched alongside `mcp.json`, `channels.toml`, and `agent-card.json`: a change is picked up within a few seconds. **Web UI:** `GET`/`PUT /api/a2a/agents/raw` reads and saves the raw file; `GET /api/a2a/agents` returns each agent's live status.
+
+Editing `config/a2a.json` through the agent's `write_file`/`edit_file` tools, the workspace editor, `POST /api/workspace/validate`, or the Settings page's `PUT /api/a2a/agents/raw` reports the same problems the loader would skip — a JSON syntax error (with `serde_json`'s line/column), an invalid agent name, or an empty url — without blocking the write; a diagnostic names which agent won't load instead.
 
 ### Card resolution and status
 

@@ -82,8 +82,14 @@ pub struct SubagentToolDeps {
     pub hybrid_searcher: Arc<HybridSearcher>,
     /// The workspace root, for tools that need to validate a caller-supplied
     /// relative path against it (currently just `a2a_task_update`'s
-    /// artifacts).
+    /// artifacts), and for `write_file`/`edit_file` to recognize
+    /// `config/channels.toml`, `config/mcp.json`, `config/a2a.json`,
+    /// `HEARTBEAT.yml`, and skill `SKILL.md` files for diagnostics.
     pub workspace_dir: PathBuf,
+    /// The app config directory (`~/.residuum/`), for `write_file`/
+    /// `edit_file` to recognize `config.toml`/`providers.toml` for
+    /// diagnostics.
+    pub config_dir: PathBuf,
     pub episodes_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub agent_inbox_dir: PathBuf,
@@ -255,13 +261,29 @@ impl ToolRegistry {
     }
 
     /// Register the default set of tools (read, write, edit, exec).
-    pub fn register_defaults(&mut self, tracker: SharedFileTracker, policy: SharedPathPolicy) {
+    ///
+    /// `diagnostics_paths` lets `write_file`/`edit_file` recognize the
+    /// strictly-parsed files this instance validates (`config.toml`,
+    /// `providers.toml`, `config/channels.toml`, `config/mcp.json`,
+    /// `config/a2a.json`, `HEARTBEAT.yml`, skill `SKILL.md`) and append
+    /// diagnostics to the tool result after a write.
+    pub fn register_defaults(
+        &mut self,
+        tracker: SharedFileTracker,
+        policy: SharedPathPolicy,
+        diagnostics_paths: crate::diagnostics::DiagnosticsPaths,
+    ) {
         self.register(Box::new(read::ReadTool::new(Arc::clone(&tracker))));
         self.register(Box::new(write::WriteTool::new(
             Arc::clone(&tracker),
             Arc::clone(&policy),
+            diagnostics_paths.clone(),
         )));
-        self.register(Box::new(edit::EditTool::new(tracker, policy)));
+        self.register(Box::new(edit::EditTool::new(
+            tracker,
+            policy,
+            diagnostics_paths,
+        )));
         self.register(Box::new(exec::ExecTool::new(
             self.tools_path.clone(),
             self.agent_keys.clone(),
@@ -465,6 +487,7 @@ impl ToolRegistry {
             tz,
             hybrid_searcher,
             workspace_dir,
+            config_dir,
             episodes_dir,
             sessions_dir,
             agent_inbox_dir,
@@ -500,7 +523,11 @@ impl ToolRegistry {
         registry.set_checkpoints(Arc::clone(&checkpoints));
 
         // Core I/O tools
-        registry.register_defaults(tracker, path_policy);
+        let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+            config_dir,
+            workspace_dir: workspace_dir.clone(),
+        };
+        registry.register_defaults(tracker, path_policy, diagnostics_paths);
         registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
 
         // Skill tools: activate, deactivate
@@ -708,7 +735,14 @@ mod tests {
     fn registry_with_defaults() {
         let mut registry = ToolRegistry::new();
         let policy = PathPolicy::new_shared();
-        registry.register_defaults(FileTracker::new_shared(), policy);
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            policy,
+            crate::diagnostics::DiagnosticsPaths {
+                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
+                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
+            },
+        );
         let defs = registry.definitions();
         assert!(
             defs.iter().any(|d| d.name == "read_file"),

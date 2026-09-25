@@ -6,6 +6,7 @@
     McpServerEntry,
     SettingsProviderEntry,
     SettingsModelAssignments,
+    Diagnostic,
   } from "./lib/types";
   import {
     fetchConfigRaw,
@@ -18,8 +19,12 @@
     patchProviders,
     patchMcp,
     storeSecret,
+    validateConfig,
+    validateProviders,
+    validateWorkspaceFile,
   } from "./lib/api";
   import { isStoredReference } from "./lib/secrets";
+  import { formatDiagnosticLocation } from "./lib/diagnostics";
   import {
     parseConfigToml,
     parseProvidersToml,
@@ -74,6 +79,13 @@
   let editProviders = $state("");
   let editMcp = $state("");
   let advancedTab = $state<"config" | "providers" | "mcp">("config");
+
+  // Live diagnostics for the raw editors, refreshed on a debounce while
+  // typing and replaced with each save's own diagnostics after saving.
+  let rawDiagnostics = $state<{ config: Diagnostic[]; providers: Diagnostic[]; mcp: Diagnostic[] }>(
+    { config: [], providers: [], mcp: [] },
+  );
+  let activeRawDiagnostics = $derived(rawDiagnostics[advancedTab]);
 
   // Form state
   let configFields = $state<ConfigFields>(defaultConfigFields());
@@ -274,6 +286,27 @@
     if (settingsMode === "raw") scheduleAutoSave();
   });
 
+  // Raw mode: debounced live diagnostics as the user types, independent of
+  // auto-save's own debounce so a problem shows up before the save fires.
+  $effect(() => {
+    if (settingsMode !== "raw") return;
+    const cfg = editConfig;
+    const prov = editProviders;
+    const mcp = editMcp;
+    const timer = setTimeout(() => {
+      void validateConfig(cfg).then((r) => {
+        rawDiagnostics = { ...rawDiagnostics, config: r.diagnostics ?? [] };
+      });
+      void validateProviders(prov).then((r) => {
+        rawDiagnostics = { ...rawDiagnostics, providers: r.diagnostics ?? [] };
+      });
+      void validateWorkspaceFile("config/mcp.json", mcp).then((diagnostics) => {
+        rawDiagnostics = { ...rawDiagnostics, mcp: diagnostics };
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  });
+
   async function autoSave(): Promise<void> {
     if (saving) return;
     const snap = currentSnapshot();
@@ -298,42 +331,40 @@
     }
   }
 
-  /** Raw mode: PUT the whole text the user typed, unchanged from before. */
+  /**
+   * Raw mode: PUT the whole text the user typed, unchanged from before.
+   *
+   * `config.toml`, `providers.toml`, and `mcp.json` all always save now,
+   * even when invalid — the reload that picks each one up keeps the
+   * gateway running on its current config/workspace state and reports a
+   * diagnostic instead of losing the edit.
+   */
   async function autoSaveRaw(): Promise<void> {
     const cfgToml = editConfig;
     const provToml = editProviders;
     const mcpJson = editMcp;
 
     const provResult = await putProvidersRaw(provToml);
-    if (!provResult.valid) {
-      statusMsg = "";
-      statusKind = "";
-      toast.error(`providers.toml: ${provResult.error ?? "unknown error"}`);
-      return;
-    }
+    rawProviders = provToml;
 
     const cfgResult = await putConfigRaw(cfgToml);
-    if (!cfgResult.valid) {
-      statusMsg = "";
-      statusKind = "";
-      toast.error(`config.toml: ${cfgResult.error ?? "unknown error"}`);
-      return;
-    }
+    rawConfig = cfgToml;
 
     const mcpResult = await putMcpRaw(mcpJson);
-    if (!mcpResult.valid) {
-      statusMsg = "";
-      statusKind = "";
-      toast.error(`mcp.json: ${mcpResult.error ?? "unknown error"}`);
-      return;
-    }
-
-    rawConfig = cfgToml;
-    rawProviders = provToml;
     rawMcp = mcpJson;
 
+    rawDiagnostics = {
+      config: cfgResult.diagnostics ?? [],
+      providers: provResult.diagnostics ?? [],
+      mcp: mcpResult.diagnostics ?? [],
+    };
+
     lastSavedSnapshot = currentSnapshot();
-    showStatus("Saved", "success");
+    const hadProblems =
+      (cfgResult.diagnostics?.length ?? 0) > 0 ||
+      (provResult.diagnostics?.length ?? 0) > 0 ||
+      (mcpResult.diagnostics?.length ?? 0) > 0;
+    showStatus(hadProblems ? "Saved — see the problems noted below" : "Saved", "success");
   }
 
   /**
@@ -601,6 +632,21 @@
           <textarea class="toml-editor" bind:value={editProviders}></textarea>
         {:else}
           <textarea class="toml-editor" bind:value={editMcp}></textarea>
+        {/if}
+        {#if activeRawDiagnostics.length > 0}
+          <ul class="raw-diagnostics">
+            {#each activeRawDiagnostics as diagnostic, i (i)}
+              <li class="raw-diagnostic raw-diagnostic-{diagnostic.severity}">
+                <span class="raw-diagnostic-severity">{diagnostic.severity}</span>
+                {#if diagnostic.location}
+                  <span class="raw-diagnostic-location"
+                    >{formatDiagnosticLocation(diagnostic.location)}</span
+                  >
+                {/if}
+                <span class="raw-diagnostic-message">{diagnostic.message}</span>
+              </li>
+            {/each}
+          </ul>
         {/if}
       {:else if activeSection === "runtime"}
         <Runtime bind:fields={configFields} {simple} />

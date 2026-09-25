@@ -429,6 +429,101 @@ pub(crate) fn load_heartbeat(
     Some(HeartbeatConfig { pulses })
 }
 
+/// Diagnostics for `content` as `HEARTBEAT.yml`.
+///
+/// Reuses the same per-pulse deserialization ([`deserialize_pulse_entry`])
+/// and checks (`dedupe_pulse_names`, `reject_invalid_pulses`) that
+/// [`load_heartbeat`] applies, so a diagnostic can never disagree with what
+/// loading rejects or drops: a whole-document YAML syntax error carries
+/// `serde_yaml_ng`'s own line/column; a non-list top-level `pulses` key is
+/// its own diagnostic; and each pulse entry that fails to deserialize,
+/// duplicates an earlier name, or uses a removed option is its own
+/// diagnostic naming that pulse — one bad entry doesn't hide problems in the
+/// others, matching how loading drops only the offending pulse. A pulse's
+/// diagnostics carry its name (or position, for one that failed to
+/// deserialize enough to have a name) as the location, since pulses aren't
+/// tracked by source line here — a deserialize failure's message still
+/// includes the line/column `serde_yaml_ng` found within that entry.
+/// `schedule`/`active_hours` strings aren't checked at load time today (see
+/// `parse_schedule_duration`/`parse_active_hours`, evaluated only when a
+/// pulse is due to fire), so this doesn't flag them either — doing so would
+/// report a problem loading doesn't actually catch.
+#[must_use]
+pub(crate) fn diagnose_heartbeat(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    let root: serde_yaml_ng::Value = match serde_yaml_ng::from_str(content) {
+        Ok(v) => v,
+        Err(e) => {
+            let location = e.location().map(|loc| Location::LineColumn {
+                line: u32::try_from(loc.line()).unwrap_or(u32::MAX),
+                column: u32::try_from(loc.column()).unwrap_or(u32::MAX),
+            });
+            return vec![match location {
+                Some(loc) => Diagnostic::error_at(e.to_string(), loc),
+                None => Diagnostic::error(e.to_string()),
+            }];
+        }
+    };
+
+    let pulses_value = root
+        .as_mapping()
+        .and_then(|m| m.get("pulses"))
+        .cloned()
+        .unwrap_or(serde_yaml_ng::Value::Sequence(Vec::new()));
+
+    let entries = match pulses_value {
+        serde_yaml_ng::Value::Sequence(seq) => seq,
+        serde_yaml_ng::Value::Null => Vec::new(),
+        other @ (serde_yaml_ng::Value::Bool(_)
+        | serde_yaml_ng::Value::Number(_)
+        | serde_yaml_ng::Value::String(_)
+        | serde_yaml_ng::Value::Mapping(_)
+        | serde_yaml_ng::Value::Tagged(_)) => {
+            return vec![Diagnostic::error_at(
+                format!(
+                    "HEARTBEAT.yml's top-level 'pulses' key must be a list, found {} instead",
+                    yaml_kind(&other)
+                ),
+                Location::Path {
+                    path: "pulses".to_string(),
+                },
+            )];
+        }
+    };
+
+    let mut pulses = Vec::with_capacity(entries.len());
+    let mut diagnostics = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        match deserialize_pulse_entry(index, entry) {
+            Ok(pulse) => pulses.push(pulse),
+            Err(problem) => diagnostics.push(pulse_problem_diagnostic(problem)),
+        }
+    }
+
+    diagnostics.extend(
+        dedupe_pulse_names(&mut pulses)
+            .into_iter()
+            .chain(reject_invalid_pulses(&mut pulses))
+            .map(pulse_problem_diagnostic),
+    );
+
+    diagnostics
+}
+
+/// Turn a [`HeartbeatProblem`] into a [`Diagnostic`] located at the pulse it
+/// names.
+fn pulse_problem_diagnostic(problem: HeartbeatProblem) -> crate::diagnostics::Diagnostic {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    Diagnostic::error_at(
+        problem.message,
+        Location::Path {
+            path: format!("pulses.{}", problem.name),
+        },
+    )
+}
+
 /// Drop pulses that use a removed option (`agent: "main"` or
 /// `include_identity`), returning what was dropped and why.
 ///
@@ -1199,6 +1294,103 @@ pulses:
         assert_eq!(problems.len(), 1, "the duplicate should be reported");
         assert_eq!(problems.first().unwrap().name, "dup");
         assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
+    }
+
+    // ── diagnose_heartbeat ───────────────────────────────────────────────
+
+    #[test]
+    fn diagnose_heartbeat_clean_file_has_no_diagnostics() {
+        let yaml = "pulses:\n  - name: morning\n    schedule: \"30m\"\n    tasks: []\n";
+        assert!(diagnose_heartbeat(yaml).is_empty());
+    }
+
+    #[test]
+    fn diagnose_heartbeat_reports_syntax_error_with_line_column() {
+        use crate::diagnostics::Location;
+
+        let diagnostics = diagnose_heartbeat(": not valid yaml [[");
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics.first().unwrap().location,
+            Some(Location::LineColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn diagnose_heartbeat_matches_loader_on_duplicate_pulse_fixture() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+pulses:
+  - name: dup
+    schedule: "1h"
+    tasks: []
+  - name: dup
+    schedule: "2h"
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+        let diagnostics = diagnose_heartbeat(yaml);
+
+        assert_eq!(problems.len(), diagnostics.len());
+        assert!(diagnostics.first().unwrap().message.contains("dup"));
+    }
+
+    #[test]
+    fn diagnose_heartbeat_reports_one_diagnostic_per_bad_pulse_entry_and_keeps_the_rest() {
+        let yaml = r#"
+pulses:
+  - name: good
+    schedule: "30m"
+    tasks: []
+  - name: missing-schedule
+    tasks: []
+"#;
+        let diagnostics = diagnose_heartbeat(yaml);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "only the entry missing 'schedule' should produce a diagnostic: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .first()
+                .unwrap()
+                .message
+                .contains("missing-schedule")
+        );
+    }
+
+    #[test]
+    fn diagnose_heartbeat_reports_non_list_pulses_key() {
+        let yaml = "pulses: not-a-list\n";
+        let diagnostics = diagnose_heartbeat(yaml);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics
+                .first()
+                .unwrap()
+                .message
+                .contains("must be a list")
+        );
+    }
+
+    #[test]
+    fn diagnose_heartbeat_reports_removed_option() {
+        let yaml =
+            "pulses:\n  - name: main-pulse\n    schedule: \"1h\"\n    agent: main\n    tasks: []\n";
+        let diagnostics = diagnose_heartbeat(yaml);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics
+                .first()
+                .unwrap()
+                .message
+                .contains("agent: \"main\"")
+        );
     }
 
     #[test]

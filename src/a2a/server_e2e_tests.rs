@@ -564,6 +564,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         tz: chrono_tz::UTC,
         hybrid_searcher: Arc::clone(&deps.hybrid_searcher),
         workspace_dir: deps.workspace_dir.clone(),
+        config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
         episodes_dir: deps.layout.episodes_dir(),
         sessions_dir: deps.layout.sessions_dir(),
         agent_inbox_dir: deps.layout.agent_inbox_dir(),

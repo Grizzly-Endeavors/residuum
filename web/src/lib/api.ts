@@ -20,8 +20,10 @@ import type {
   A2aKeysListResponse,
   CreateA2aKeyResponse,
   A2aRemoteAgent,
-  A2aAgentsRawResponse,
   WorkspaceEntry,
+  WorkspaceWriteResponse,
+  WorkspaceValidateResponse,
+  Diagnostic,
   CloudStatusResponse,
   UpdateStatusResponse,
   SessionCategory,
@@ -456,33 +458,17 @@ export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
 }
 
 export async function fetchA2aAgentsRaw(): Promise<string> {
-  return cachedFetch(CACHE_KEY_A2A_AGENTS_RAW, async () => {
-    const data = await apiFetch<A2aAgentsRawResponse>("/api/a2a/agents/raw");
-    return data.content;
-  });
+  return cachedFetch(CACHE_KEY_A2A_AGENTS_RAW, () => apiFetchText("/api/a2a/agents/raw"));
 }
 
 /**
- * Save `config/a2a.json`. Unlike the config/providers/mcp raw editors, a
- * validation failure (`400`) is reported as `{ valid: false, error }` rather
- * than thrown, so the editor can show the reason inline. Any other failure
- * (network, `5xx`) still throws `ApiError` for the caller to surface.
+ * Save `config/a2a.json`. Always saves, even when invalid — the loader
+ * skips an unusable agent entry with a warning and keeps every other agent
+ * running, so the response reports a diagnostic instead of the write being
+ * rejected. Same shape as `putConfigRaw`/`putProvidersRaw`/`putMcpRaw`.
  */
 export async function putA2aAgentsRaw(content: string): Promise<ValidateResponse> {
-  try {
-    await apiFetchText("/api/a2a/agents/raw", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
-    return { valid: true };
-  } catch (err: unknown) {
-    const validation = validationFromApiError(err);
-    if (validation) return validation;
-    throw err;
-  } finally {
-    invalidate(CACHE_KEY_A2A_AGENTS_RAW);
-  }
+  return putValidated("/api/a2a/agents/raw", "application/json", content, CACHE_KEY_A2A_AGENTS_RAW);
 }
 
 // ── Agent sessions API wrappers ─────────────────────────────────────
@@ -582,12 +568,32 @@ export async function fetchWorkspaceFile(path: string): Promise<string> {
   return apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`);
 }
 
-export async function putWorkspaceFile(path: string, content: string): Promise<void> {
-  await apiFetch<unknown>("/api/workspace/file", {
+export async function putWorkspaceFile(
+  path: string,
+  content: string,
+): Promise<WorkspaceWriteResponse> {
+  return apiFetch<WorkspaceWriteResponse>("/api/workspace/file", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, content }),
   });
+}
+
+/** Diagnostics for `content` as if it were saved to `path`, without writing
+ * anything. Empty means either the content is clean or `path` isn't one of
+ * the strictly-parsed files the server checks. Graceful fallback: a network
+ * or server error returns no diagnostics rather than interrupting typing. */
+export async function validateWorkspaceFile(path: string, content: string): Promise<Diagnostic[]> {
+  try {
+    const result = await apiFetch<WorkspaceValidateResponse>("/api/workspace/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    });
+    return result.diagnostics;
+  } catch {
+    return [];
+  }
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────

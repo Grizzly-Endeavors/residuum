@@ -503,6 +503,7 @@ fn build_spawn_context(
         max_tool_iterations: new_cfg.agent.max_tool_iterations,
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
+        config_dir: new_cfg.config_dir.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
         session_runtime: Arc::clone(&rt.session_runtime),

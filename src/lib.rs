@@ -7,6 +7,7 @@ pub mod bus;
 pub mod checkpoints;
 pub mod config;
 pub mod daemon;
+pub mod diagnostics;
 pub(crate) mod features;
 pub mod gateway;
 pub mod inbox;

@@ -211,9 +211,34 @@ export interface SecretResponse {
   reference: string;
 }
 
+/** How serious a diagnostic is: `error` means the affected file, entry, or
+ * pulse won't load or run until fixed; `warning` means it still works but is
+ * worth a second look (a deprecated field, say). */
+export type DiagnosticSeverity = "error" | "warning";
+
+/** Where in the file a diagnostic applies. A parser that reports a position
+ * gives `line` or `line_column`; a problem found only after parsing (no
+ * source position to point at) gives `path`, a key path like
+ * `mcpServers.filesystem` or `pulses.morning-check`. */
+export type DiagnosticLocation =
+  | { kind: "line"; line: number }
+  | { kind: "line_column"; line: number; column: number }
+  | { kind: "path"; path: string };
+
+/** One problem found in a strictly-parsed file (config.toml, providers.toml,
+ * config/channels.toml, config/mcp.json, config/a2a.json, HEARTBEAT.yml, a
+ * skill's SKILL.md frontmatter) — see `POST /api/workspace/validate` and the
+ * `diagnostics` field on write/move/save responses. */
+export interface Diagnostic {
+  severity: DiagnosticSeverity;
+  message: string;
+  location?: DiagnosticLocation;
+}
+
 export interface ValidateResponse {
   valid: boolean;
   error?: string;
+  diagnostics?: Diagnostic[];
 }
 
 // ── Settings types ───────────────────────────────────────────────────
@@ -378,10 +403,6 @@ export interface A2aRemoteAgent {
   card: A2aAgentCard | null;
 }
 
-export interface A2aAgentsRawResponse {
-  content: string;
-}
-
 // ── Workspace types ─────────────────────────────────────────────────
 
 export interface WorkspaceEntry {
@@ -390,6 +411,28 @@ export interface WorkspaceEntry {
   size: number | null;
   modified: number;
   version: string;
+}
+
+/** Response from `PUT /api/workspace/file` and `PUT /api/workspace/raw`.
+ * `saved` is always `true` — an invalid strictly-parsed file (HEARTBEAT.yml,
+ * say) is still written; `diagnostics` names what's wrong with it instead of
+ * the save being rejected. */
+export interface WorkspaceWriteResponse {
+  saved: boolean;
+  version: string;
+  diagnostics?: Diagnostic[];
+}
+
+/** Response from `POST /api/workspace/move`. */
+export interface WorkspaceMoveResponse {
+  moved: boolean;
+  version: string | null;
+  diagnostics?: Diagnostic[];
+}
+
+/** Response from `POST /api/workspace/validate`. */
+export interface WorkspaceValidateResponse {
+  diagnostics: Diagnostic[];
 }
 
 // ── Feed items (UI rendering) ────────────────────────────────────────

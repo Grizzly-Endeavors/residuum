@@ -462,6 +462,15 @@ mod tests {
         McpRegistry::new_shared()
     }
 
+    /// Directories that don't correspond to any real strictly-parsed file,
+    /// so `register_defaults` in these tests gets no diagnostics behavior.
+    fn test_diagnostics_paths() -> crate::diagnostics::DiagnosticsPaths {
+        crate::diagnostics::DiagnosticsPaths {
+            config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
+            workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+        }
+    }
+
     /// Create a test publisher and endpoint for bus-based tests.
     fn test_bus() -> (Publisher, bus::EndpointName) {
         let handle = bus::spawn_broker();
@@ -656,7 +665,11 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         let provider = MockProvider::new(vec![
             InferenceResponse::new(
@@ -711,7 +724,11 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -787,7 +804,11 @@ mod tests {
         responses.push(InferenceResponse::new("done".to_string(), vec![]));
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -846,7 +867,11 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -1156,7 +1181,11 @@ mod tests {
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1232,7 +1261,11 @@ mod tests {
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1438,7 +1471,11 @@ mod tests {
         // stop mid-tool-execution doesn't sever the tool, only stops the
         // loop at its next checkpoint.
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
@@ -2012,7 +2049,11 @@ mod tests {
     #[test]
     fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+        );
         let mut agent = test_agent(registry);
 
         let backend = crate::config::StandaloneBackendConfig {

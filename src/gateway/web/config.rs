@@ -40,11 +40,41 @@ pub(super) struct CheckpointsStatus {
 }
 
 /// Response from validation or save endpoints.
+///
+/// `diagnostics` carries the full detail (severity, plain-language message,
+/// and location) from `crate::diagnostics` for a raw save or a validate-only
+/// call; `valid`/`error` are a summary kept for callers that only check
+/// whether saving is safe (`valid` is `false` if any diagnostic is an
+/// error). A raw save always writes the file regardless of `valid` — see
+/// `api_config_raw_put`/`api_providers_raw_put`.
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
 pub(super) struct ValidateResponse {
     pub(super) valid: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) diagnostics: Vec<crate::diagnostics::Diagnostic>,
+}
+
+impl ValidateResponse {
+    /// Build a response from a set of diagnostics: `valid` is `false` if any
+    /// are errors, and `error` summarizes the first one for callers that
+    /// only look at the single-string field.
+    pub(super) fn from_diagnostics(
+        diagnostics: Vec<crate::diagnostics::Diagnostic>,
+        file_label: &str,
+    ) -> Self {
+        let valid = !diagnostics
+            .iter()
+            .any(|d| d.severity == crate::diagnostics::Severity::Error);
+        let error = diagnostics.first().map(|d| d.display(file_label));
+        Self {
+            valid,
+            error,
+            diagnostics,
+        }
+    }
 }
 
 /// Timezone detection response.
@@ -130,6 +160,121 @@ mod tests {
         let Json(setup) = api_status(State(state(Some(std::sync::Arc::new(tx))))).await;
         assert_eq!(setup.mode, "setup");
     }
+
+    /// A state backed by a real temp directory, for tests that read/write
+    /// `config.toml`/`providers.toml` on disk.
+    fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
+        ConfigApiState {
+            config_dir: dir.to_path_buf(),
+            workspace_dir: dir.join("workspace"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
+        }
+    }
+
+    #[tokio::test]
+    async fn config_raw_put_saves_invalid_toml_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("providers.toml"),
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_config_raw_put(State(state), "this is not valid toml".to_string())
+            .await
+            .unwrap();
+
+        assert!(!response.valid, "invalid TOML should be flagged invalid");
+        assert!(
+            !response.diagnostics.is_empty(),
+            "invalid TOML should produce a diagnostic"
+        );
+        let saved = tokio::fs::read_to_string(dir.path().join("config.toml"))
+            .await
+            .unwrap();
+        assert_eq!(
+            saved, "this is not valid toml",
+            "the save should have happened despite the invalid content"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_raw_put_saves_valid_toml_with_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("providers.toml"),
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_config_raw_put(State(state), "timezone = \"UTC\"\n".to_string())
+            .await
+            .unwrap();
+
+        assert!(response.valid);
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_saves_invalid_json_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(State(state), "not json".to_string())
+            .await
+            .unwrap();
+
+        assert!(!response.valid, "invalid JSON should be flagged invalid");
+        assert!(!response.diagnostics.is_empty());
+        let mcp_path =
+            crate::workspace::layout::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
+        let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
+        assert_eq!(
+            saved, "not json",
+            "the save should have happened despite the invalid content"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_saves_valid_json_with_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(
+            State(state),
+            r#"{"mcpServers":{"fs":{"command":"npx"}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.valid);
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_reports_a_bad_server_entry_without_blocking_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(
+            State(state),
+            r#"{"mcpServers":{"broken":{"type":"sse"}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !response.valid,
+            "a server with a deprecated transport should be flagged invalid"
+        );
+        assert_eq!(response.diagnostics.len(), 1);
+    }
 }
 
 /// `GET /api/config/raw` — return raw `config.toml` contents as text.
@@ -154,23 +299,22 @@ pub(super) async fn api_config_raw_get(
         })
 }
 
-/// `PUT /api/config/raw` — write TOML body, validate, save, trigger reload if running.
+/// `PUT /api/config/raw` — write TOML body, save unconditionally, trigger
+/// reload if running, and report diagnostics.
+///
+/// The save always succeeds, even when `body` fails validation: a config
+/// reload that can't load the new file keeps the gateway running on its
+/// current config and publishes a notice (see `handle_root_reload`), so an
+/// invalid save is safe to accept and report rather than reject outright —
+/// consistent with `write_file`/`edit_file` and the workspace file editor.
 pub(super) async fn api_config_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate first (use real config dir so secret:name references are checked)
-    if let Err(e) = Config::validate_toml(&body, &state.config_dir) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(e),
-            }),
-        ));
-    }
+    // Diagnose first (use real config dir so secret:name references are
+    // checked), but never block the write on what it finds.
+    let diagnostics = Config::diagnose_toml(&body, &state.config_dir);
 
-    // Write the config
     let config_path = state.config_dir.join("config.toml");
     state
         .checkpoint_config_before_write("raw write config.toml")
@@ -181,6 +325,7 @@ pub(super) async fn api_config_raw_put(
             Json(ValidateResponse {
                 valid: false,
                 error: Some(format!("failed to write config: {e}")),
+                diagnostics: Vec::new(),
             }),
         )
     })?;
@@ -190,10 +335,10 @@ pub(super) async fn api_config_raw_put(
         reload_tx.send(super::super::ReloadSignal::Root).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-    }))
+    Ok(Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "config.toml",
+    )))
 }
 
 /// `PATCH /api/config/patch` — merge a JSON diff into the existing
@@ -214,6 +359,7 @@ pub(super) async fn api_config_patch(
             Json(ValidateResponse {
                 valid: false,
                 error: Some(msg),
+                diagnostics: Vec::new(),
             }),
         )
     };
@@ -235,6 +381,7 @@ pub(super) async fn api_config_patch(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to read config.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             ));
         }
@@ -262,6 +409,7 @@ pub(super) async fn api_config_patch(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write config.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -273,6 +421,7 @@ pub(super) async fn api_config_patch(
     Ok(Json(ValidateResponse {
         valid: true,
         error: None,
+        diagnostics: Vec::new(),
     }))
 }
 
@@ -281,16 +430,11 @@ pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    match Config::validate_toml(&body, &state.config_dir) {
-        Ok(()) => Json(ValidateResponse {
-            valid: true,
-            error: None,
-        }),
-        Err(e) => Json(ValidateResponse {
-            valid: false,
-            error: Some(e),
-        }),
-    }
+    let diagnostics = Config::diagnose_toml(&body, &state.config_dir);
+    Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "config.toml",
+    ))
 }
 
 /// `GET /api/mcp/raw` — return raw `mcp.json` contents as JSON.
@@ -323,21 +467,20 @@ pub(super) async fn api_mcp_raw_get(
         })
 }
 
-/// `PUT /api/mcp/raw` — validate JSON and write `mcp.json`, trigger workspace reload.
+/// `PUT /api/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
+/// workspace reload, and report diagnostics.
+///
+/// The save always succeeds, even when `body` fails validation: the loader
+/// skips an unusable server entry with a warning and keeps every other
+/// server running (see `crate::workspace::config::load_mcp_servers_map`), so
+/// an invalid save is safe to accept and report rather than reject outright
+/// — consistent with `write_file`/`edit_file`, `config.toml`/`providers.toml`,
+/// and the workspace file editor.
 pub(super) async fn api_mcp_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate JSON parse
-    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("invalid JSON: {e}")),
-            }),
-        )
-    })?;
+    let diagnostics = crate::workspace::config::diagnose_mcp_json(&body);
 
     let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
 
@@ -345,12 +488,17 @@ pub(super) async fn api_mcp_raw_put(
         tokio::fs::create_dir_all(parent).await.ok();
     }
 
+    state
+        .checkpoint_workspace_before_write("raw write mcp.json")
+        .await;
+
     tokio::fs::write(&mcp_path, &body).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ValidateResponse {
                 valid: false,
                 error: Some(format!("failed to write mcp.json: {e}")),
+                diagnostics: Vec::new(),
             }),
         )
     })?;
@@ -359,10 +507,10 @@ pub(super) async fn api_mcp_raw_put(
         reload_tx.send(super::super::ReloadSignal::Workspace).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-    }))
+    Ok(Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "mcp.json",
+    )))
 }
 
 /// `PATCH /api/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
@@ -383,6 +531,7 @@ pub(super) async fn api_mcp_patch(
             Json(ValidateResponse {
                 valid: false,
                 error: Some(msg),
+                diagnostics: Vec::new(),
             }),
         )
     };
@@ -398,6 +547,7 @@ pub(super) async fn api_mcp_patch(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to read mcp.json: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             ));
         }
@@ -422,6 +572,7 @@ pub(super) async fn api_mcp_patch(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write mcp.json: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -433,6 +584,7 @@ pub(super) async fn api_mcp_patch(
     Ok(Json(ValidateResponse {
         valid: true,
         error: None,
+        diagnostics: Vec::new(),
     }))
 }
 
@@ -447,6 +599,7 @@ pub(super) async fn api_complete_setup(
             Json(ValidateResponse {
                 valid: false,
                 error: Some(msg),
+                diagnostics: Vec::new(),
             }),
         )
     };
@@ -479,6 +632,7 @@ pub(super) async fn api_complete_setup(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write providers.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -493,6 +647,7 @@ pub(super) async fn api_complete_setup(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write config.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -513,6 +668,7 @@ pub(super) async fn api_complete_setup(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write mcp.json: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -526,6 +682,7 @@ pub(super) async fn api_complete_setup(
     Ok(Json(ValidateResponse {
         valid: true,
         error: None,
+        diagnostics: Vec::new(),
     }))
 }
 

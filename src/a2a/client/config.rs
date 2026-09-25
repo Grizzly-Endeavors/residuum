@@ -51,6 +51,26 @@ struct A2aAgentRaw {
     headers: HashMap<String, String>,
 }
 
+/// Problems with one raw a2a agent entry: an invalid name, an empty url.
+///
+/// Shared by [`validate_a2a_agents_json`] (first-error-only, for the web
+/// settings API), [`load_a2a_agents_map`] (skip-with-warning, keeping the
+/// rest of the file), and [`diagnose_a2a_json`] (collect-all), so the three
+/// can never disagree about which entries are usable.
+fn entry_problems(name: &str, raw: &A2aAgentRaw) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !is_valid_agent_name(name) {
+        problems.push(format!(
+            "agent name '{name}' must start with a lowercase letter and contain only \
+             lowercase letters, digits, and underscores (at most {MAX_NAME_LEN} characters)"
+        ));
+    }
+    if raw.url.trim().is_empty() {
+        problems.push(format!("agent '{name}' must have a non-empty url"));
+    }
+    problems
+}
+
 /// Validate `content` as a well-formed `config/a2a.json`: valid JSON matching
 /// the `{"agents": {"<name>": {"url": ..., "headers"?: ...}}}` shape, with
 /// every agent name well-formed and every url non-empty. Does not expand
@@ -65,17 +85,51 @@ pub fn validate_a2a_agents_json(content: &str) -> Result<(), String> {
     let file: A2aAgentsFile =
         serde_json::from_str(content).map_err(|e| format!("invalid JSON: {e}"))?;
     for (name, raw) in &file.agents {
-        if !is_valid_agent_name(name) {
-            return Err(format!(
-                "agent name '{name}' must start with a lowercase letter and contain only \
-                 lowercase letters, digits, and underscores (at most {MAX_NAME_LEN} characters)"
-            ));
-        }
-        if raw.url.trim().is_empty() {
-            return Err(format!("agent '{name}' must have a non-empty url"));
+        if let Some(problem) = entry_problems(name, raw).into_iter().next() {
+            return Err(problem);
         }
     }
     Ok(())
+}
+
+/// Diagnostics for `content` as `config/a2a.json`.
+///
+/// Reuses [`entry_problems`], the same per-entry check
+/// [`load_a2a_agents_map`] applies, so a diagnostic can never disagree with
+/// what loading skips. A JSON syntax error carries `serde_json`'s own
+/// line/column. Doesn't check `${agent-key:...}`/`${ENV}` header references
+/// — those need the agent-key store, which isn't available from content
+/// alone, matching [`validate_a2a_agents_json`]'s scope.
+#[must_use]
+pub fn diagnose_a2a_json(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    let file: A2aAgentsFile = match serde_json::from_str(content) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![Diagnostic::error_at(
+                e.to_string(),
+                Location::LineColumn {
+                    line: u32::try_from(e.line()).unwrap_or(u32::MAX),
+                    column: u32::try_from(e.column()).unwrap_or(u32::MAX),
+                },
+            )];
+        }
+    };
+
+    file.agents
+        .iter()
+        .flat_map(|(name, raw)| {
+            entry_problems(name, raw).into_iter().map(move |message| {
+                Diagnostic::error_at(
+                    message,
+                    Location::Path {
+                        path: format!("agents.{name}"),
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// Load `config/a2a.json` as a name → entry map, expanding
@@ -311,5 +365,40 @@ mod tests {
     fn validate_rejects_empty_url() {
         let err = validate_a2a_agents_json(r#"{"agents": {"laptop": {"url": ""}}}"#).unwrap_err();
         assert!(err.contains("non-empty url"));
+    }
+
+    // ── diagnose_a2a_json ────────────────────────────────────────────────
+
+    #[test]
+    fn diagnose_clean_file_has_no_diagnostics() {
+        let content = r#"{"agents": {"laptop": {"url": "https://x.example.com"}}}"#;
+        assert!(diagnose_a2a_json(content).is_empty());
+    }
+
+    #[test]
+    fn diagnose_reports_syntax_error_with_line_column() {
+        use crate::diagnostics::Location;
+
+        let diagnostics = diagnose_a2a_json("not json");
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics.first().unwrap().location,
+            Some(Location::LineColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn diagnose_matches_loader_on_same_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a2a.json");
+        let content = r#"{"agents": {"Bad Name": {"url": "https://x.example.com"}, "good": {"url": "https://y.example.com"}}}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let map = load_a2a_agents_map(&path, &AgentKeyStore::default()).unwrap();
+        let diagnostics = diagnose_a2a_json(content);
+
+        assert_eq!(map.len(), 1, "one agent should load");
+        assert_eq!(diagnostics.len(), 1, "one diagnostic for the dropped agent");
+        assert!(diagnostics.first().unwrap().message.contains("Bad Name"));
     }
 }

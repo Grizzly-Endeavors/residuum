@@ -1596,20 +1596,13 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       }
 
       if (path === "/api/a2a/agents/raw" && method === "GET") {
-        json(res, 200, { content: state.a2aAgentsJson });
+        text(res, 200, state.a2aAgentsJson);
         return;
       }
 
       if (path === "/api/a2a/agents/raw" && method === "PUT") {
-        const body = JSON.parse(await readBody(req));
-        try {
-          JSON.parse(body.content);
-        } catch (e) {
-          json(res, 400, { error: `invalid JSON: ${e instanceof Error ? e.message : e}` });
-          return;
-        }
-        state.a2aAgentsJson = body.content;
-        json(res, 200, {});
+        state.a2aAgentsJson = await readBody(req);
+        json(res, 200, { valid: true });
         return;
       }
 

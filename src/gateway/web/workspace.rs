@@ -10,7 +10,6 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::ReloadSignal;
-use crate::pulse::types::HeartbeatConfig;
 use crate::workspace::access::{dir_holds_internal_data, is_blocked_path};
 use crate::workspace::version::{modified_unix_ms, version_token};
 
@@ -51,12 +50,34 @@ pub(super) struct WriteFileRequest {
     pub content: String,
 }
 
+/// Request body for `POST /api/workspace/validate`.
+#[derive(Deserialize)]
+pub(super) struct ValidateFileRequest {
+    pub path: String,
+    pub content: String,
+}
+
+/// Response from `POST /api/workspace/validate`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct ValidateFileResponse {
+    pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
+}
+
 /// Response from `PUT /api/workspace/file`.
+///
+/// `diagnostics` is always populated when `path` is one of the
+/// strictly-parsed files `crate::diagnostics` understands, whether or not
+/// `content` had a problem — empty means clean. The save always succeeds
+/// (`saved` is always `true` here; a validation problem is reported, not
+/// rejected), matching `write_file`/`edit_file`'s "write, then report" shape.
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct WriteResponse {
     pub saved: bool,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
 }
 
 /// Body for a `412 Precondition Failed` response from a conditional write.
@@ -112,6 +133,12 @@ pub(super) struct MoveResponse {
     /// The moved file's new version. `None` for a moved directory, since
     /// version tokens are file-specific.
     pub version: Option<String>,
+    /// Diagnostics for the moved file's content at its new name, if `to` is
+    /// one of the strictly-parsed files `crate::diagnostics` understands
+    /// (most relevantly, a move that lands on `HEARTBEAT.yml`). Empty for a
+    /// directory or an unrecognized file — the move always succeeds either way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
 }
 
 /// Canonicalize the workspace root directory.
@@ -275,17 +302,6 @@ fn is_identity_file(relative: &str) -> bool {
         .unwrap_or("");
 
     IDENTITY_FILES.contains(&file_name)
-}
-
-/// Returns true if the path refers to the pulse scheduler's `HEARTBEAT.yml`.
-///
-/// Checks the file name only (ignoring leading directory components), matching
-/// how `is_identity_file` recognises identity files.
-fn is_heartbeat_file(relative: &str) -> bool {
-    Path::new(relative)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|name| name == "HEARTBEAT.yml")
 }
 
 /// `GET /api/workspace/files` — list directory contents inside the workspace.
@@ -524,39 +540,57 @@ async fn check_conditional_write(
     Ok(None)
 }
 
-/// Validate `bytes` before they're written to workspace-relative `relative`,
-/// for the one path with content-dependent rules today: `HEARTBEAT.yml`. The
-/// pulse scheduler hot-reloads it on every tick, so invalid content must
-/// never be accepted, whether it arrives through a text write, a raw write,
-/// or a move that lands on this name.
-fn validate_write_content(relative: &str, bytes: &[u8]) -> Result<(), (StatusCode, String)> {
-    if !is_heartbeat_file(relative) {
-        return Ok(());
-    }
+/// Diagnostics for `bytes` about to be written to workspace-relative
+/// `relative`, if it's one of the strictly-parsed files `crate::diagnostics`
+/// understands. Never blocks the write — a strictly-parsed file with a
+/// problem (invalid `HEARTBEAT.yml`, say) is still saved, and the caller
+/// reports these diagnostics alongside the save so the problem is visible
+/// rather than accepted silently. Empty means either `relative` isn't one of
+/// these files, or its content has nothing to report.
+fn diagnose_write_content(
+    state: &ConfigApiState,
+    relative: &str,
+    bytes: &[u8],
+) -> Vec<crate::diagnostics::Diagnostic> {
+    let path = Path::new(relative);
+    let paths = crate::diagnostics::DiagnosticsPaths {
+        config_dir: state.config_dir.clone(),
+        workspace_dir: state.workspace_dir.clone(),
+    };
 
-    let text = std::str::from_utf8(bytes).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "invalid HEARTBEAT.yml: not valid utf-8 ({e}); fix the content before saving — \
-                 this file is hot-reloaded by the pulse scheduler, so invalid content would \
-                 silently stop all scheduled pulses from firing"
-            ),
-        )
-    })?;
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        // Every file this module understands is text (YAML/TOML/JSON/MD), so
+        // non-UTF-8 content on a recognized path is itself worth reporting,
+        // even though there's no parser to run on bytes that aren't text.
+        return if crate::diagnostics::is_recognized(path, &paths) {
+            vec![crate::diagnostics::Diagnostic::error(
+                "content is not valid UTF-8 text",
+            )]
+        } else {
+            Vec::new()
+        };
+    };
 
-    serde_yaml_ng::from_str::<HeartbeatConfig>(text).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "invalid HEARTBEAT.yml: {e}; fix the yaml before saving — this file is \
-                 hot-reloaded by the pulse scheduler, so invalid content would silently \
-                 stop all scheduled pulses from firing"
-            ),
-        )
-    })?;
+    crate::diagnostics::diagnose(path, text, &paths).unwrap_or_default()
+}
 
-    Ok(())
+/// `POST /api/workspace/validate` — diagnostics for `content` as if it were
+/// saved to `path`, without writing anything.
+///
+/// `path` is resolved the same way a write would resolve it: against the app
+/// config directory for `config.toml`/`providers.toml`, against the
+/// workspace root for `config/channels.toml`, `config/mcp.json`,
+/// `config/a2a.json`, and by filename alone for `HEARTBEAT.yml` and a skill
+/// `SKILL.md`. Empty diagnostics means either the content is clean or
+/// `path` isn't one of these files — this endpoint never errors on an
+/// unrecognized path, since the editor calls it on every debounced
+/// keystroke and most files have nothing to check.
+pub(super) async fn api_workspace_validate(
+    State(state): State<ConfigApiState>,
+    Json(req): Json<ValidateFileRequest>,
+) -> Json<ValidateFileResponse> {
+    let diagnostics = diagnose_write_content(&state, &req.path, req.content.as_bytes());
+    Json(ValidateFileResponse { diagnostics })
 }
 
 /// Send the workspace reload signal if `relative` names an identity file.
@@ -572,12 +606,14 @@ fn signal_identity_reload(relative: &str, state: &ConfigApiState) {
     }
 }
 
-/// Write `bytes` to workspace-relative `relative`: blocked-path check,
-/// content validation, the conditional-write precondition, an atomic write
-/// that creates missing parent directories, and the identity-file reload
-/// signal. Shared by the text and raw write endpoints; size limits are
-/// checked by the caller before this runs, since the two endpoints report
-/// the limit against a different unit (`content` characters vs. body bytes).
+/// Write `bytes` to workspace-relative `relative`: blocked-path check, the
+/// conditional-write precondition, an atomic write that creates missing
+/// parent directories, and the identity-file reload signal. Shared by the
+/// text and raw write endpoints; size limits are checked by the caller
+/// before this runs, since the two endpoints report the limit against a
+/// different unit (`content` characters vs. body bytes). Diagnostics for a
+/// strictly-parsed file are computed and reported alongside the save, never
+/// blocking it — see [`diagnose_write_content`].
 async fn write_workspace_bytes(
     state: &ConfigApiState,
     relative: &str,
@@ -591,7 +627,7 @@ async fn write_workspace_bytes(
         ));
     }
 
-    validate_write_content(relative, bytes)?;
+    let diagnostics = diagnose_write_content(state, relative, bytes);
 
     let target_path = resolve_workspace_path_for_write(&state.workspace_dir, relative).await?;
 
@@ -634,6 +670,7 @@ async fn write_workspace_bytes(
     Ok(Json(WriteResponse {
         saved: true,
         version,
+        diagnostics,
     })
     .into_response())
 }
@@ -650,11 +687,11 @@ async fn write_workspace_bytes(
 /// If the written file is a workspace identity file and a reload channel is
 /// available, sends a `Workspace` reload signal.
 ///
-/// Writes to `HEARTBEAT.yml` are validated as parseable `HeartbeatConfig`
-/// YAML before being accepted: the pulse scheduler hot-reloads this file on
-/// every tick, so an unvalidated write that saves broken YAML would
-/// silently stop every scheduled pulse from firing while reporting success
-/// to the caller.
+/// The write always succeeds, even for a strictly-parsed file like
+/// `HEARTBEAT.yml` with invalid content — the pulse scheduler simply won't
+/// pick up an unparseable `HEARTBEAT.yml` on its next hot-reload. Instead of
+/// rejecting the save, the response's `diagnostics` names the problem (see
+/// `crate::diagnostics`) so the editor can show it right away.
 pub(super) async fn api_workspace_file_write(
     State(state): State<ConfigApiState>,
     headers: HeaderMap,
@@ -742,10 +779,10 @@ pub(super) async fn api_workspace_raw_read(
 /// The request body is the file's exact bytes, up to 8 MiB (the route's
 /// body limit is raised to match). Otherwise identical to the text write
 /// endpoint: atomic, creates parents, honors `If-Match`/`If-None-Match`,
-/// sends the identity-file reload signal, and validates `HEARTBEAT.yml`
-/// content before accepting it (the bytes must be valid UTF-8 YAML — a
-/// non-UTF-8 raw write to that name is rejected the same as malformed YAML
-/// would be). Returns `{ saved: true, version }`.
+/// sends the identity-file reload signal, and always succeeds — a
+/// non-UTF-8 raw write to a recognized name like `HEARTBEAT.yml` is saved
+/// with a diagnostic reported alongside it, the same as malformed YAML
+/// would be. Returns `{ saved: true, version, diagnostics }`.
 pub(super) async fn api_workspace_raw_write(
     Query(query): Query<FileQuery>,
     State(state): State<ConfigApiState>,
@@ -771,11 +808,7 @@ pub(super) async fn api_workspace_raw_write(
 /// the action — see `crate::checkpoints`.
 async fn checkpoint_before_destructive_action(state: &ConfigApiState, summary: &str) {
     state
-        .checkpoints
-        .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
-            crate::checkpoints::CheckpointTrigger::PreAction,
-            summary,
-        ))
+        .checkpoint_workspace_before_write(summary.to_string())
         .await;
 }
 
@@ -1010,8 +1043,9 @@ async fn ready_move_destination(
 /// Creates `to`'s missing parent directories. Answers `409` if `to` already
 /// exists and `overwrite` isn't `true`. `If-Match` applies to `from` when it
 /// is a file. Moving onto or away from an identity file sends the reload
-/// signal; moving a file onto `HEARTBEAT.yml` validates its content before
-/// the move happens.
+/// signal. The move always succeeds; if `to` is one of the strictly-parsed
+/// files `crate::diagnostics` understands, the response's `diagnostics`
+/// names any problem with the moved file's content at its new name.
 pub(super) async fn api_workspace_move(
     State(state): State<ConfigApiState>,
     headers: HeaderMap,
@@ -1035,19 +1069,18 @@ pub(super) async fn api_workspace_move(
         )
     })?;
 
+    let mut diagnostics = Vec::new();
     if from_metadata.is_file() {
         if let Some(conflict) = check_conditional_write(&from_path, &headers).await? {
             return Ok(conflict);
         }
-        if is_heartbeat_file(to_relative) {
-            let bytes = tokio::fs::read(&from_path).await.map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to read source file: {e}"),
-                )
-            })?;
-            validate_write_content(to_relative, &bytes)?;
-        }
+        let bytes = tokio::fs::read(&from_path).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read source file: {e}"),
+            )
+        })?;
+        diagnostics = diagnose_write_content(&state, to_relative, &bytes);
     }
 
     let to_path = resolve_workspace_path_for_write(&state.workspace_dir, to_relative).await?;
@@ -1063,6 +1096,7 @@ pub(super) async fn api_workspace_move(
         return Ok(Json(MoveResponse {
             moved: true,
             version,
+            diagnostics: Vec::new(),
         })
         .into_response());
     }
@@ -1107,6 +1141,7 @@ pub(super) async fn api_workspace_move(
     Ok(Json(MoveResponse {
         moved: true,
         version,
+        diagnostics,
     })
     .into_response())
 }
@@ -1122,14 +1157,6 @@ mod tests {
         assert!(is_identity_file("subdir/SOUL.md"));
         assert!(!is_identity_file("skills/research.md"));
         assert!(!is_identity_file("random.txt"));
-    }
-
-    #[test]
-    fn heartbeat_file_recognised() {
-        assert!(is_heartbeat_file("HEARTBEAT.yml"));
-        assert!(is_heartbeat_file("subdir/HEARTBEAT.yml"));
-        assert!(!is_heartbeat_file("SOUL.md"));
-        assert!(!is_heartbeat_file("not_HEARTBEAT.yml.txt"));
     }
 
     #[tokio::test]
@@ -1192,6 +1219,14 @@ mod tests {
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
         }
+    }
+
+    /// Deserialize a handler's JSON response body.
+    async fn response_json<T: serde::de::DeserializeOwned>(response: Response) -> T {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 
     #[tokio::test]
@@ -1578,7 +1613,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_file_write_rejects_invalid_heartbeat_yaml() {
+    async fn workspace_file_write_saves_invalid_heartbeat_yaml_with_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
@@ -1588,10 +1623,11 @@ mod tests {
 
         let state = make_state(ws_dir.clone());
 
-        // Malformed YAML must be rejected, not silently accepted with `{"saved": true}` —
-        // the pulse scheduler hot-reloads this file every tick, so an unvalidated write
-        // that breaks the YAML would silently stop every scheduled pulse from firing.
-        let result = api_workspace_file_write(
+        // Malformed YAML is saved, not rejected — the pulse scheduler hot-reloads
+        // this file every tick and simply won't pick up broken YAML on its next
+        // tick, so the write still succeeds and reports the problem instead of
+        // silently discarding the edit.
+        let response = api_workspace_file_write(
             State(state.clone()),
             HeaderMap::new(),
             Json(WriteFileRequest {
@@ -1599,24 +1635,26 @@ mod tests {
                 content: "not: valid: yaml: [[[".to_string(),
             }),
         )
-        .await;
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: WriteResponse = response_json(response).await;
+        assert!(body.saved, "invalid HEARTBEAT.yml should still be saved");
         assert!(
-            result.is_err(),
-            "invalid HEARTBEAT.yml content should be rejected"
+            !body.diagnostics.is_empty(),
+            "invalid YAML should produce a diagnostic"
         );
-        let (status, _) = result.unwrap_err();
-        assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        // The on-disk file must be untouched by the rejected write.
-        let unchanged = tokio::fs::read_to_string(ws_dir.join("HEARTBEAT.yml"))
+        // The on-disk file reflects the write, invalid content and all.
+        let saved = tokio::fs::read_to_string(ws_dir.join("HEARTBEAT.yml"))
             .await
             .unwrap();
         assert_eq!(
-            unchanged, "pulses: []",
-            "rejected write should not modify the existing file"
+            saved, "not: valid: yaml: [[[",
+            "the write should have happened"
         );
 
-        // Valid YAML should still be accepted.
+        // Valid YAML has no diagnostics.
         let ok_response = api_workspace_file_write(
             State(state),
             HeaderMap::new(),
@@ -1629,6 +1667,78 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ok_response.status(), StatusCode::OK);
+        let ok_body: WriteResponse = response_json(ok_response).await;
+        assert!(
+            ok_body.diagnostics.is_empty(),
+            "valid HEARTBEAT.yml should have no diagnostics"
+        );
+    }
+
+    // ── Validate ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn validate_reports_diagnostics_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "not: valid: yaml: [[[".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(
+            !response.diagnostics.is_empty(),
+            "invalid YAML should produce a diagnostic"
+        );
+        assert!(
+            !ws_dir.join("HEARTBEAT.yml").exists(),
+            "validate must not write anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_clean_content_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "pulses:\n  - name: test\n    schedule: \"1h\"\n    tasks: []\n"
+                    .to_string(),
+            }),
+        )
+        .await;
+
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_unrecognized_path_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "notes.md".to_string(),
+                content: "whatever content".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(response.diagnostics.is_empty());
     }
 
     // ── Raw read/write ──────────────────────────────────────────────
@@ -1809,13 +1919,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_write_rejects_non_utf8_heartbeat_content() {
+    async fn raw_write_saves_non_utf8_heartbeat_content_with_diagnostic() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        let state = make_state(ws_dir);
+        let state = make_state(ws_dir.clone());
 
-        let err = api_workspace_raw_write(
+        let response = api_workspace_raw_write(
             Query(FileQuery {
                 path: "HEARTBEAT.yml".to_string(),
             }),
@@ -1824,8 +1934,21 @@ mod tests {
             Bytes::from_static(&[0xff, 0xfe, 0x00]),
         )
         .await
-        .unwrap_err();
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: WriteResponse = response_json(response).await;
+        assert!(body.saved, "non-UTF-8 content should still be saved");
+        assert!(
+            !body.diagnostics.is_empty(),
+            "non-UTF-8 content on a recognized path should produce a diagnostic"
+        );
+
+        let saved = tokio::fs::read(ws_dir.join("HEARTBEAT.yml")).await.unwrap();
+        assert_eq!(
+            saved,
+            vec![0xff, 0xfe, 0x00],
+            "the write should have happened"
+        );
     }
 
     // ── Delete ───────────────────────────────────────────────────────
@@ -2513,7 +2636,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn move_onto_heartbeat_rejects_invalid_content_without_moving() {
+    async fn move_onto_heartbeat_with_invalid_content_still_moves_with_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
@@ -2525,7 +2648,7 @@ mod tests {
             .unwrap();
         let state = make_state(ws_dir.clone());
 
-        let err = api_workspace_move(
+        let response = api_workspace_move(
             State(state),
             HeaderMap::new(),
             Json(MoveRequest {
@@ -2535,18 +2658,25 @@ mod tests {
             }),
         )
         .await
-        .unwrap_err();
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: MoveResponse = response_json(response).await;
+        assert!(body.moved, "the move should still happen");
         assert!(
-            ws_dir.join("draft.yml").exists(),
-            "rejected move must not touch the source"
+            !body.diagnostics.is_empty(),
+            "invalid content at the destination should produce a diagnostic"
+        );
+
+        assert!(
+            !ws_dir.join("draft.yml").exists(),
+            "the source should have moved away"
         );
         assert_eq!(
             tokio::fs::read_to_string(ws_dir.join("HEARTBEAT.yml"))
                 .await
                 .unwrap(),
-            "pulses: []",
-            "rejected move must not touch the destination"
+            "not: valid: yaml: [[[",
+            "the destination should hold the moved content"
         );
     }
 

@@ -189,20 +189,27 @@
     rawAgentsError = "";
   }
 
+  /**
+   * `a2a.json` always saves now, even when invalid — the loader skips an
+   * unusable agent entry with a warning and keeps every other agent
+   * running, so an invalid save is reported with a diagnostic rather than
+   * left unsaved. Raw mode stays open when there's a problem to fix;
+   * otherwise it closes like a normal successful save.
+   */
   async function saveRawAgents() {
     if (rawAgentsSaving) return;
     rawAgentsSaving = true;
     rawAgentsError = "";
     try {
       const result = await putA2aAgentsRaw(rawAgentsEdit);
+      rawAgents = rawAgentsEdit;
+      await loadAgents();
       if (!result.valid) {
-        rawAgentsError = result.error ?? "a2a.json couldn't be saved.";
+        rawAgentsError = result.error ?? "a2a.json saved, but has a problem.";
         return;
       }
-      rawAgents = rawAgentsEdit;
       rawMode = false;
       toast.success("Saved a2a.json.");
-      await loadAgents();
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: "Couldn't save a2a.json." }));
     } finally {

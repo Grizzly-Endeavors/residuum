@@ -53,7 +53,7 @@ On error (returned as `is_error = true`):
 
 ### Output
 
-On success: `"wrote {N} bytes to {path}"`
+On success: `"wrote {N} bytes to {path}"`, followed by one line per diagnostic if `path` is one of the strictly-parsed files `crate::diagnostics` checks (`config.toml`, `providers.toml`, `config/channels.toml`, `config/mcp.json`, `config/a2a.json`, `HEARTBEAT.yml`, a skill's `SKILL.md`): `"\n{file name} {location}: {message}"` (e.g. `"HEARTBEAT.yml line 14: schedule must be a duration like \"30m\""`). The write always happens even when content is invalid — diagnostics report the problem rather than blocking the write, so the agent can fix it on its next turn. A clean file, or a path this module doesn't understand, leaves the result unchanged.
 
 On error:
 - `PathPolicy` rejects the write path (targets a protected config or credential-store file)
@@ -98,7 +98,7 @@ Each `edits` entry:
 
 ### Output
 
-On success: `"edited {path} ({N} replacement(s))"`, then one `note:` line per edit that matched only after ignoring whitespace, a blank line, and a preview of the changed regions in the final file. The preview uses `read_file`'s `{line_num:>4}\t{content}` format with 2 lines of context, separates regions with `   …`, and is capped at 60 lines.
+On success: `"edited {path} ({N} replacement(s))"`, then one `note:` line per edit that matched only after ignoring whitespace, a blank line, and a preview of the changed regions in the final file. The preview uses `read_file`'s `{line_num:>4}\t{content}` format with 2 lines of context, separates regions with `   …`, and is capped at 60 lines. If `path` is one of the strictly-parsed files `crate::diagnostics` checks, one line per diagnostic follows — see `write_file`'s output for the exact shape. The edit always applies even when the result is invalid.
 
 On error (returned as `is_error = true`; nothing is written):
 - `PathPolicy` rejects the path (targets a protected config or credential-store file)

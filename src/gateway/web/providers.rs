@@ -406,20 +406,16 @@ pub(super) async fn api_providers_raw_get(
         })
 }
 
-/// `PUT /api/providers/raw` — validate and write `providers.toml`, trigger reload.
+/// `PUT /api/providers/raw` — write `providers.toml` unconditionally, save,
+/// trigger reload, and report diagnostics.
+///
+/// The save always succeeds, even when `body` fails validation — see
+/// `api_config_raw_put`'s doc comment for why that's safe.
 pub(super) async fn api_providers_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    if let Err(e) = Config::validate_providers_toml(&body, &state.config_dir) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(e),
-            }),
-        ));
-    }
+    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
 
     let providers_path = state.config_dir.join("providers.toml");
     state
@@ -433,6 +429,7 @@ pub(super) async fn api_providers_raw_put(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write providers.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -442,10 +439,10 @@ pub(super) async fn api_providers_raw_put(
         reload_tx.send(super::super::ReloadSignal::Root).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-    }))
+    Ok(Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "providers.toml",
+    )))
 }
 
 /// `PATCH /api/providers/patch` — merge a JSON diff into the existing
@@ -467,6 +464,7 @@ pub(super) async fn api_providers_patch(
             Json(ValidateResponse {
                 valid: false,
                 error: Some(msg),
+                diagnostics: Vec::new(),
             }),
         )
     };
@@ -488,6 +486,7 @@ pub(super) async fn api_providers_patch(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to read providers.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             ));
         }
@@ -516,6 +515,7 @@ pub(super) async fn api_providers_patch(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write providers.toml: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -528,6 +528,7 @@ pub(super) async fn api_providers_patch(
     Ok(Json(ValidateResponse {
         valid: true,
         error: None,
+        diagnostics: Vec::new(),
     }))
 }
 
@@ -536,21 +537,72 @@ pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    match Config::validate_providers_toml(&body, &state.config_dir) {
-        Ok(()) => Json(ValidateResponse {
-            valid: true,
-            error: None,
-        }),
-        Err(e) => Json(ValidateResponse {
-            valid: false,
-            error: Some(e),
-        }),
-    }
+    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
+    Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "providers.toml",
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state backed by a real temp directory, for tests that read/write
+    /// `config.toml`/`providers.toml` on disk.
+    fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
+        ConfigApiState {
+            config_dir: dir.to_path_buf(),
+            workspace_dir: dir.join("workspace"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
+        }
+    }
+
+    #[tokio::test]
+    async fn providers_raw_put_saves_invalid_toml_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) =
+            api_providers_raw_put(State(state), "this is not valid toml".to_string())
+                .await
+                .unwrap();
+
+        assert!(!response.valid, "invalid TOML should be flagged invalid");
+        assert!(
+            !response.diagnostics.is_empty(),
+            "invalid TOML should produce a diagnostic"
+        );
+        let saved = tokio::fs::read_to_string(dir.path().join("providers.toml"))
+            .await
+            .unwrap();
+        assert_eq!(
+            saved, "this is not valid toml",
+            "the save should have happened despite the invalid content"
+        );
+    }
+
+    #[tokio::test]
+    async fn providers_raw_put_saves_valid_toml_with_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_providers_raw_put(
+            State(state),
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.valid);
+        assert!(response.diagnostics.is_empty());
+    }
 
     #[test]
     fn fireworks_listing_drops_embedding_and_toolless_models() {

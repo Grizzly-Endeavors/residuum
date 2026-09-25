@@ -28,6 +28,14 @@ Same `mcpServers` map format used by Claude Code/Desktop. `${VAR}` /
 `env`. A bad entry (missing `command`/`url`, unrecognized transport) drops
 just that server — never a hard failure.
 
+Editing `mcp.json` via `write_file`/`edit_file`, the workspace editor,
+`POST /api/workspace/validate`, or the Settings page's raw editor reports
+invalid JSON, a missing `command`/`url`, or an unrecognized/deprecated
+transport as a diagnostic alongside the save — the write always goes
+through rather than being rejected. Only the patch endpoint that merges a
+diff into the file on disk still refuses outright, since a diff can't be
+applied to unparseable content.
+
 A tool call has no automatic cutoff by default: it runs until it finishes or
 the turn is stopped (Cancel / `stop_agent` interrupts an in-flight call
 immediately). Setting `timeout_secs` on a server opts that server's calls

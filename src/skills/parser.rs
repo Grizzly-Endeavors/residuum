@@ -32,6 +32,42 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
     Ok((frontmatter, body))
 }
 
+/// Diagnostics for `content` as a skill's `SKILL.md` frontmatter.
+///
+/// Reuses [`parse_skill_md`], so a diagnostic can never disagree with what
+/// loading rejects — a skill with an invalid name, an over-long or empty
+/// description, or invalid YAML fails to parse here exactly as it would when
+/// the skill scanner loads it. Extracts a line/column when the failure is a
+/// YAML error; a name/description validation failure has no source position
+/// once deserialization has already succeeded, so it's reported by message
+/// alone.
+pub(crate) fn diagnose_skill_md(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    match parse_skill_md(content) {
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            let location = e
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<serde_yaml_ng::Error>())
+                .and_then(serde_yaml_ng::Error::location)
+                .map(|loc| Location::LineColumn {
+                    // +1: `parse_frontmatter_md` parses the YAML block after
+                    // stripping the opening "---" line, so a position inside
+                    // it is one line short of the position in the full file.
+                    line: u32::try_from(loc.line())
+                        .unwrap_or(u32::MAX)
+                        .saturating_add(1),
+                    column: u32::try_from(loc.column()).unwrap_or(u32::MAX),
+                });
+            vec![match location {
+                Some(loc) => Diagnostic::error_at(e.to_string(), loc),
+                None => Diagnostic::error(e.to_string()),
+            }]
+        }
+    }
+}
+
 /// Validate a skill name: 1-64 chars, lowercase alphanumeric + hyphens,
 /// no leading/trailing/consecutive hyphens.
 pub(super) fn validate_skill_name(name: &str) -> anyhow::Result<()> {
@@ -63,7 +99,9 @@ pub(super) fn validate_skill_description(description: &str) -> anyhow::Result<()
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse_skill_md, validate_skill_description, validate_skill_name};
+    use super::{
+        diagnose_skill_md, parse_skill_md, validate_skill_description, validate_skill_name,
+    };
 
     // ── parse_skill_md ───────────────────────────────────────────────────────
 
@@ -249,6 +287,45 @@ mod tests {
         assert!(
             validate_skill_description(&description).is_err(),
             "description over 280 chars should be rejected"
+        );
+    }
+
+    // ── diagnose_skill_md ────────────────────────────────────────────────────
+
+    #[test]
+    fn diagnose_valid_skill_has_no_diagnostics() {
+        let content = "---\nname: pdf-processing\ndescription: \"Extracts text from PDFs\"\n---\n";
+        assert!(diagnose_skill_md(content).is_empty());
+    }
+
+    #[test]
+    fn diagnose_reports_description_too_long() {
+        let long_description = "a".repeat(281);
+        let content = format!("---\nname: my-skill\ndescription: \"{long_description}\"\n---\n");
+        let diagnostics = diagnose_skill_md(&content);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics
+                .first()
+                .unwrap()
+                .message
+                .contains("280 characters")
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_invalid_yaml_with_location() {
+        use crate::diagnostics::Location;
+
+        let content = "---\n: invalid yaml [[\n---\n";
+        let diagnostics = diagnose_skill_md(content);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            matches!(
+                diagnostics.first().unwrap().location,
+                Some(Location::LineColumn { .. })
+            ),
+            "invalid YAML should carry a line/column: {diagnostics:?}"
         );
     }
 

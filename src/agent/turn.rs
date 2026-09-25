@@ -1426,6 +1426,10 @@ mod tests {
         tools.register_defaults(
             crate::tools::FileTracker::new_shared(),
             crate::tools::PathPolicy::new_shared(),
+            crate::diagnostics::DiagnosticsPaths {
+                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
+                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            },
         );
 
         let tool_call = ToolCall {
