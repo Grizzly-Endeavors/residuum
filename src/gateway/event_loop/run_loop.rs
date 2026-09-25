@@ -55,6 +55,13 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     )
     .await?;
 
+    // The HTTP listener above is bound only after `startup::initialize`
+    // finished, so reaching this point means providers, workspace, and the
+    // gateway's own listener are all ready. This marker is what the CLI
+    // (`serve`'s startup report) and the update-rollback watchdog both wait
+    // on to know the gateway is actually healthy rather than merely running.
+    crate::daemon::write_ready_file(&cfg.config_dir);
+
     let channels = RuntimeChannels {
         status: update_status,
         restart_tx,
@@ -259,6 +266,7 @@ async fn spawn_server_and_adapters(
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
         gateway_shutdown_tx: gateway_shutdown_tx.clone(),
+        config_dir: cfg.config_dir.clone(),
     };
     let api_states = build_api_states(
         cfg,

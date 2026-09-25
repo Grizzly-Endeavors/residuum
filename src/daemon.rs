@@ -1,9 +1,12 @@
 //! Daemon utilities for backgrounding the gateway process.
 //!
 //! Provides PID file management, process detection, signal sending,
-//! and file locking.
+//! file locking, and the readiness/startup-error markers a startup attempt
+//! leaves for whoever is waiting on it (the CLI reporting `serve`'s outcome,
+//! or the update-rollback watchdog deciding whether to roll back).
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::util::FatalError;
 
@@ -329,6 +332,162 @@ pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     Ok(())
 }
 
+// ── Readiness and startup-error markers ──────────────────────────────
+
+/// How long a waiter (the CLI reporting `serve`'s outcome, or the
+/// update-rollback watchdog) gives a startup attempt to become healthy
+/// before giving up.
+pub const READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Path to the marker a gateway process writes once it has finished
+/// initializing (providers, workspace) and its HTTP listener is bound and
+/// accepting connections. Its absence means the process is still starting,
+/// never started, or has exited.
+#[must_use]
+pub fn ready_file_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("residuum.ready")
+}
+
+/// Write the readiness marker for the current process.
+///
+/// Best-effort: a failure here just means a waiter treats startup as
+/// never becoming ready, which times out visibly rather than reporting
+/// success silently — it never affects the running gateway.
+pub fn write_ready_file(config_dir: &Path) {
+    let path = ready_file_path(config_dir);
+    if let Err(e) = std::fs::write(&path, std::process::id().to_string()) {
+        tracing::warn!(path = %path.display(), error = %e, "failed to write gateway readiness marker");
+    }
+}
+
+/// Remove the readiness marker, e.g. before a fresh startup attempt or on
+/// shutdown, so a later waiter never reads a marker left by a previous run.
+///
+/// Best-effort, matching [`write_ready_file`]: a failure just means a stale
+/// marker might linger, which a fresh attempt clears again before it
+/// matters.
+pub fn remove_ready_file(config_dir: &Path) {
+    let path = ready_file_path(config_dir);
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), error = %e, "failed to remove gateway readiness marker");
+    }
+}
+
+/// Path to the plain-language message a failed startup attempt leaves
+/// behind, read by the CLI process that spawned it (or the update-rollback
+/// watchdog) to report why.
+#[must_use]
+pub fn startup_error_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("residuum.startup-error")
+}
+
+/// Record why a startup attempt failed, for whoever is waiting on it.
+///
+/// Best-effort, matching [`write_ready_file`]: on failure the waiter just
+/// falls back to its own generic message.
+pub fn write_startup_error(config_dir: &Path, message: &str) {
+    let path = startup_error_path(config_dir);
+    if let Err(e) = std::fs::write(&path, message) {
+        tracing::warn!(path = %path.display(), error = %e, "failed to write startup error marker");
+    }
+}
+
+/// Clear a startup error left by an earlier attempt, e.g. before a fresh one.
+pub fn clear_startup_error(config_dir: &Path) {
+    let path = startup_error_path(config_dir);
+    if let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(path = %path.display(), error = %e, "failed to remove startup error marker");
+    }
+}
+
+/// Read the plain-language message a failed startup attempt left behind,
+/// if any.
+#[must_use]
+pub fn read_startup_error(config_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(startup_error_path(config_dir)).ok()
+}
+
+/// How a wait for gateway readiness ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadinessOutcome {
+    /// The readiness marker appeared before the process exited or the
+    /// timeout elapsed.
+    Ready,
+    /// The watched process exited before becoming ready.
+    ProcessExited,
+    /// Neither readiness nor exit was observed within the timeout.
+    TimedOut,
+}
+
+/// Poll for the readiness marker at `ready_path`, checking `still_running`
+/// on every tick so a process that exits early is reported as such instead
+/// of running out the full timeout. Purely synchronous (blocking sleep) so
+/// it has no dependency on an async runtime being present.
+pub fn wait_for_ready(
+    ready_path: &Path,
+    timeout: Duration,
+    poll_interval: Duration,
+    mut still_running: impl FnMut() -> bool,
+) -> ReadinessOutcome {
+    let start = Instant::now();
+    loop {
+        if ready_path.exists() {
+            return ReadinessOutcome::Ready;
+        }
+        if !still_running() {
+            return ReadinessOutcome::ProcessExited;
+        }
+        if start.elapsed() > timeout {
+            return ReadinessOutcome::TimedOut;
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+/// Where a daemon- or watchdog-spawned gateway process's stderr is appended,
+/// so a panic or a pre-tracing startup error is never silently dropped.
+#[must_use]
+pub fn stderr_log_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("logs").join("serve.stderr.log")
+}
+
+/// Spawn `exe` with `args` as a detached background process: stdin closed,
+/// stdout discarded (nothing writes anything meaningful there), and stderr
+/// appended to [`stderr_log_path`] rather than discarded, so a crash or an
+/// error before tracing initializes still leaves a trace. Used to start the
+/// gateway itself (by the daemon spawner and by the update-rollback
+/// watchdog) and to hand a restart off to that watchdog (by
+/// `commands::serve::foreground::relaunch`) — anywhere this codebase starts
+/// a detached `residuum` process.
+///
+/// # Errors
+///
+/// Returns an I/O error if the log directory or file can't be created, or
+/// the process can't be spawned.
+pub fn spawn_gateway_process(
+    exe: &Path,
+    args: &[String],
+    config_dir: &Path,
+) -> std::io::Result<std::process::Child> {
+    let log_dir = config_dir.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(stderr_log_path(config_dir))?;
+
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr_file)
+        .spawn()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +656,98 @@ mod tests {
     #[test]
     fn pid_1_is_detected_as_running() {
         assert!(is_process_running(1));
+    }
+
+    #[test]
+    fn ready_file_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!ready_file_path(dir.path()).exists());
+        write_ready_file(dir.path());
+        assert!(ready_file_path(dir.path()).exists());
+        remove_ready_file(dir.path());
+        assert!(!ready_file_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn remove_ready_file_succeeds_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Should not panic or error even though nothing was ever written.
+        remove_ready_file(dir.path());
+    }
+
+    #[test]
+    fn startup_error_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_startup_error(dir.path()), None);
+        write_startup_error(
+            dir.path(),
+            "gateway error: failed to bind to 127.0.0.1:7700",
+        );
+        assert_eq!(
+            read_startup_error(dir.path()).as_deref(),
+            Some("gateway error: failed to bind to 127.0.0.1:7700")
+        );
+        clear_startup_error(dir.path());
+        assert_eq!(read_startup_error(dir.path()), None);
+    }
+
+    #[test]
+    fn wait_for_ready_reports_ready_once_marker_appears() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ready_file_path(dir.path());
+        std::fs::write(&path, "123").unwrap();
+        let outcome = wait_for_ready(
+            &path,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+            || true,
+        );
+        assert_eq!(outcome, ReadinessOutcome::Ready);
+    }
+
+    #[test]
+    fn wait_for_ready_reports_process_exited_when_still_running_goes_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ready_file_path(dir.path());
+        let outcome = wait_for_ready(
+            &path,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || false,
+        );
+        assert_eq!(outcome, ReadinessOutcome::ProcessExited);
+    }
+
+    #[test]
+    fn wait_for_ready_reports_timed_out_when_nothing_happens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ready_file_path(dir.path());
+        let outcome = wait_for_ready(
+            &path,
+            Duration::from_millis(30),
+            Duration::from_millis(10),
+            || true,
+        );
+        assert_eq!(outcome, ReadinessOutcome::TimedOut);
+    }
+
+    #[test]
+    fn spawn_gateway_process_redirects_stderr_to_the_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A native shell on each platform: MSYS `sh` on the Windows runner
+        // wrote nothing to the append-only handle the log file is opened
+        // with, which native processes (the gateway itself) write to fine.
+        #[cfg(windows)]
+        let (shell, args) = ("cmd", ["/C".to_string(), "echo boom 1>&2".to_string()]);
+        #[cfg(not(windows))]
+        let (shell, args) = ("sh", ["-c".to_string(), "echo boom 1>&2".to_string()]);
+        let mut child =
+            spawn_gateway_process(std::path::Path::new(shell), &args, dir.path()).unwrap();
+        child.wait().unwrap();
+        let logged = std::fs::read_to_string(stderr_log_path(dir.path())).unwrap();
+        assert!(
+            logged.contains("boom"),
+            "stderr should land in the log file, got: {logged}"
+        );
     }
 }

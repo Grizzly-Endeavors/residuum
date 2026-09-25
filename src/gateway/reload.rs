@@ -723,6 +723,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 update_status: std::sync::Arc::clone(&rt.update_status),
                 restart_tx: rt.restart_tx.clone(),
                 gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
+                config_dir: rt.config_dir.clone(),
             };
             let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
                 service: std::sync::Arc::clone(&rt.tracing_service),

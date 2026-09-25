@@ -1,5 +1,7 @@
 //! Update status and control API endpoints.
 
+use std::path::PathBuf;
+
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -14,6 +16,28 @@ pub(crate) struct UpdateApiState {
     pub update_status: SharedUpdateStatus,
     pub restart_tx: mpsc::Sender<()>,
     pub gateway_shutdown_tx: mpsc::Sender<()>,
+    /// Where to look for a rollback notice the update-rollback watchdog may
+    /// have left behind (see `crate::update::RollbackNotice`).
+    pub config_dir: PathBuf,
+}
+
+/// Why an update-rollback watchdog restored the previous version, for the
+/// web UI to show.
+#[derive(Serialize)]
+pub(crate) struct RollbackNoticeResponse {
+    attempted_version: String,
+    reason: String,
+    at: String,
+}
+
+impl From<crate::update::RollbackNotice> for RollbackNoticeResponse {
+    fn from(notice: crate::update::RollbackNotice) -> Self {
+        Self {
+            attempted_version: notice.attempted_version,
+            reason: notice.reason,
+            at: notice.at.to_rfc3339(),
+        }
+    }
 }
 
 /// Response from `GET /api/update/status` and `POST /api/update/check`.
@@ -24,24 +48,17 @@ pub(crate) struct UpdateStatusResponse {
     update_available: bool,
     last_checked: Option<String>,
     checking: bool,
-}
-
-async fn read_update_status(status: &SharedUpdateStatus) -> Json<UpdateStatusResponse> {
-    let s = status.read().await;
-    Json(UpdateStatusResponse {
-        current: s.current.clone(),
-        latest: s.latest.clone(),
-        update_available: s.update_available,
-        last_checked: s.last_checked.map(|dt| dt.to_rfc3339()),
-        checking: s.checking,
-    })
+    /// Present when the most recent restart rolled back to the previous
+    /// version instead of completing. Stays present until the next update
+    /// attempt clears it.
+    rollback_notice: Option<RollbackNoticeResponse>,
 }
 
 /// `GET /api/update/status` — return current update state.
 pub(crate) async fn api_update_status(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
-    read_update_status(&state.update_status).await
+    Json(current_status(&state).await)
 }
 
 /// `POST /api/update/check` — trigger an immediate check, return refreshed status.
@@ -49,7 +66,20 @@ pub(crate) async fn api_update_check(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
     crate::update::check_for_update(&state.update_status).await;
-    read_update_status(&state.update_status).await
+    Json(current_status(&state).await)
+}
+
+async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
+    let rollback_notice = crate::update::read_rollback_notice(&state.config_dir).map(Into::into);
+    let s = state.update_status.read().await;
+    UpdateStatusResponse {
+        current: s.current.clone(),
+        latest: s.latest.clone(),
+        update_available: s.update_available,
+        last_checked: s.last_checked.map(|dt| dt.to_rfc3339()),
+        checking: s.checking,
+        rollback_notice,
+    }
 }
 
 /// `POST /api/update/apply` — download, install, then restart.
@@ -90,7 +120,7 @@ pub(crate) async fn api_update_apply(
         )
     })?;
 
-    Ok(read_update_status(&state.update_status).await)
+    Ok(Json(current_status(&state).await))
 }
 
 /// `POST /api/update/restart` — send restart signal only (binary already replaced).
@@ -123,4 +153,49 @@ pub(crate) async fn api_shutdown(
         })?;
 
     Ok(Json(serde_json::json!({ "shutting_down": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state(config_dir: PathBuf) -> UpdateApiState {
+        let (restart_tx, _restart_rx) = mpsc::channel(1);
+        let (gateway_shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+        UpdateApiState {
+            update_status: crate::update::SharedUpdateStatus::default(),
+            restart_tx,
+            gateway_shutdown_tx,
+            config_dir,
+        }
+    }
+
+    #[tokio::test]
+    async fn status_has_no_rollback_notice_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path().to_path_buf());
+        let status = current_status(&state).await;
+        assert!(status.rollback_notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn status_surfaces_a_rollback_notice_left_by_the_watchdog() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::update::write_rollback_notice(
+            dir.path(),
+            &crate::update::RollbackNotice {
+                attempted_version: "v2026.09.24".to_string(),
+                reason: "did not become healthy within 60s".to_string(),
+                at: chrono::Utc::now(),
+            },
+        );
+
+        let state = test_state(dir.path().to_path_buf());
+        let status = current_status(&state).await;
+        let notice = status
+            .rollback_notice
+            .expect("rollback notice should be surfaced");
+        assert_eq!(notice.attempted_version, "v2026.09.24");
+        assert_eq!(notice.reason, "did not become healthy within 60s");
+    }
 }

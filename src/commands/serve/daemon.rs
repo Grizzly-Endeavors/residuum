@@ -4,16 +4,9 @@ use residuum::util::FatalError;
 
 use super::ServeArgs;
 
-/// Spawn the gateway as a background daemon process.
-///
-/// Launches `residuum serve --foreground` as a detached child, polls for the
-/// PID file to confirm startup, then exits. Prints a first-launch welcome
-/// message if no config exists yet.
-///
-/// # Errors
-///
-/// Returns `FatalError` if the child process cannot be spawned or
-/// startup times out.
+/// Build the `residuum serve --foreground` arguments for the daemon child,
+/// forwarding everything from the original invocation except a redundant
+/// `serve`/`--foreground`.
 fn build_child_args(raw: &[String]) -> Vec<String> {
     let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
     let skip = if raw.get(1).is_some_and(|a| a == "serve") {
@@ -29,9 +22,22 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
     child_args
 }
 
+/// Spawn the gateway as a background daemon process.
+///
+/// Launches `residuum serve --foreground` as a detached child and waits for
+/// it to report itself healthy (providers, workspace, and its HTTP listener
+/// all ready — see `gateway::event_loop::run_loop::run_gateway`) before
+/// reporting success, so a later init failure is caught here instead of
+/// being reported as "started" and then exiting silently. Prints a
+/// first-launch welcome message if no config exists yet.
+///
+/// # Errors
+///
+/// Returns `FatalError` if the child process cannot be spawned, exits
+/// before becoming healthy, or does not become healthy within the timeout.
 #[tracing::instrument(skip_all)]
 pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
-    use residuum::daemon::{is_process_running, read_pid_file};
+    use residuum::daemon::read_pid_file;
 
     residuum::util::tracing_init::init_default_tracing();
 
@@ -90,12 +96,12 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     let raw_args: Vec<String> = std::env::args().collect();
     let child_args = build_child_args(&raw_args);
 
-    let mut child = std::process::Command::new(&exe)
-        .args(&child_args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    // A previous attempt's readiness/error markers must not leak into this
+    // one's poll below.
+    residuum::daemon::remove_ready_file(&config_dir);
+    residuum::daemon::clear_startup_error(&config_dir);
+
+    let mut child = residuum::daemon::spawn_gateway_process(&exe, &child_args, &config_dir)
         .map_err(|e| FatalError::Gateway(format!("failed to spawn daemon process: {e}")))?;
 
     // When setup is needed, the setup wizard runs before the gateway and
@@ -122,33 +128,57 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         }
     }
 
-    // Poll for PID file to confirm startup (100ms intervals, 10s timeout)
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(10);
-    let poll_interval = std::time::Duration::from_millis(100);
+    // Wait for the daemon to report itself healthy: providers and workspace
+    // initialized, and its HTTP listener bound (see
+    // `gateway::event_loop::run_loop::run_gateway`). Reaching the PID lock
+    // alone isn't enough — a later init failure would otherwise be reported
+    // as "started" and then exit silently.
+    let ready_path = residuum::daemon::ready_file_path(&config_dir);
+    let outcome = residuum::daemon::wait_for_ready(
+        &ready_path,
+        residuum::daemon::READINESS_TIMEOUT,
+        std::time::Duration::from_millis(100),
+        || matches!(child.try_wait(), Ok(None)),
+    );
 
-    loop {
-        if start.elapsed() > timeout {
-            if let Ok(Some(status)) = child.try_wait() {
-                println!("residuum: {label} crashed during startup (exit status: {status})");
-                println!("  check logs: residuum logs");
-                println!("  note: if no log files exist, the daemon crashed before writing any");
-            } else {
-                println!("residuum: {label} did not start within 10 seconds");
-                println!("  check logs: residuum logs");
-            }
-            return Err(FatalError::Gateway("daemon startup timed out".to_string()));
+    match outcome {
+        residuum::daemon::ReadinessOutcome::Ready => {
+            let pid_msg = read_pid_file(&pid_path)
+                .map_or_else(|_| String::new(), |pid| format!(" (pid {pid})"));
+            println!("residuum: {label} started at http://{gateway_addr}{pid_msg}");
+            Ok(())
         }
-
-        if let Ok(pid) = read_pid_file(&pid_path)
-            && is_process_running(pid)
-        {
-            println!("residuum: {label} started at http://{gateway_addr} (pid {pid})");
-            return Ok(());
+        residuum::daemon::ReadinessOutcome::ProcessExited => {
+            report_startup_failure(&config_dir, label, "crashed during startup");
+            Err(FatalError::Gateway(format!(
+                "{label} crashed during startup"
+            )))
         }
-
-        std::thread::sleep(poll_interval);
+        residuum::daemon::ReadinessOutcome::TimedOut => {
+            report_startup_failure(
+                &config_dir,
+                label,
+                &format!(
+                    "did not become healthy within {}s",
+                    residuum::daemon::READINESS_TIMEOUT.as_secs()
+                ),
+            );
+            Err(FatalError::Gateway("daemon startup timed out".to_string()))
+        }
     }
+}
+
+/// Print why startup failed, preferring the plain-language error the
+/// process itself recorded over a generic message.
+fn report_startup_failure(config_dir: &std::path::Path, label: &str, generic_reason: &str) {
+    match residuum::daemon::read_startup_error(config_dir) {
+        Some(reason) => println!("residuum: {label} failed to start: {reason}"),
+        None => println!("residuum: {label} {generic_reason}"),
+    }
+    println!(
+        "  check logs: residuum logs (stderr also at {})",
+        residuum::daemon::stderr_log_path(config_dir).display()
+    );
 }
 
 #[cfg(test)]

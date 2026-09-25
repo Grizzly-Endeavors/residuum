@@ -224,12 +224,20 @@ export type SettingsSection =
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 
+export interface RollbackNoticeResponse {
+  attempted_version: string;
+  reason: string;
+  at: string;
+}
+
 export interface UpdateStatusResponse {
   current: string;
   latest: string | null;
   update_available: boolean;
   last_checked: string | null;
   checking: boolean;
+  /** Present when the most recent restart rolled back instead of completing. */
+  rollback_notice: RollbackNoticeResponse | null;
 }
 
 export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
@@ -239,6 +247,8 @@ export interface CloudStatusResponse {
   user_id: string | null;
   has_token: boolean;
   enabled: boolean;
+  /** True when this response was served to a browser viewing the gateway through the tunnel. */
+  viewed_via_tunnel: boolean;
 }
 
 export interface SettingsProviderEntry {
