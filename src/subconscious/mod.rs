@@ -193,23 +193,30 @@ impl Subconscious {
     ///
     /// Provider construction failure logs an error and falls back to a
     /// disabled instance rather than failing startup — the main agent must
-    /// keep working without its subconscious.
+    /// keep working without its subconscious. `publisher` wires a live
+    /// fallback/recovery notice into the built chain (see
+    /// `FailoverProvider::with_notices`); this instance lives until the next
+    /// config reload rebuilds it, matching the main model's own lifetime, so
+    /// a transition notices exactly once rather than per call.
     #[must_use]
     pub fn build(
         cfg: &crate::config::Config,
         layout: &WorkspaceLayout,
         http: crate::inference::SharedHttpClient,
+        publisher: crate::bus::Publisher,
     ) -> std::sync::Arc<Self> {
         let settings = &cfg.subconscious_settings;
         if !settings.enabled {
             return std::sync::Arc::new(Self::disabled(layout.clone()));
         }
 
-        let provider = match crate::inference::build_provider_chain(
+        let provider = match crate::inference::build_provider_chain_with_notices(
             &cfg.subconscious,
             cfg.max_tokens,
             http,
             cfg.retry.clone(),
+            publisher,
+            "the subconscious",
         ) {
             Ok((provider, dropped)) => {
                 for fallback in &dropped {

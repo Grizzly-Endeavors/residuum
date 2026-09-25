@@ -152,7 +152,7 @@ pub(crate) fn init_session_observer(
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
 ) -> Result<Observer, FatalError> {
-    memory::build_observer(cfg, tz, http)
+    memory::build_observer(cfg, tz, http, None)
 }
 
 /// Fold every degradation collected during startup into one grouped,
@@ -268,7 +268,7 @@ fn build_session_memory_components(
     mem: &memory::MemoryComponents,
     embedding_provider: Option<Arc<dyn crate::inference::EmbeddingProvider>>,
 ) -> (Arc<Observer>, Arc<MemoryMergeWriter>) {
-    let session_observer = Arc::new(match memory::build_observer(cfg, tz, http) {
+    let session_observer = Arc::new(match memory::build_observer(cfg, tz, http, None) {
         Ok(observer) => observer,
         Err(err) => {
             tracing::warn!(error = %err, "session observer degraded: disabled");
@@ -370,6 +370,8 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         a2a_hub: Arc::clone(inputs.a2a_hub),
         a2a_tracker: Arc::clone(inputs.a2a_tracker),
         checkpoints: Arc::clone(inputs.checkpoints),
+        bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
+        ),
     })
 }
 
@@ -1010,10 +1012,10 @@ pub(crate) async fn initialize(
     let mut degradations: Vec<String> = Vec::new();
 
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
-    let providers =
-        providers::init_providers(cfg, tz, http.clone(), publisher.clone(), &mut degradations)?;
+    let providers = providers::init_providers(cfg, tz, http.clone(), publisher, &mut degradations)?;
     let mem = memory::init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
-    let subconscious = crate::subconscious::Subconscious::build(cfg, &layout, http.clone());
+    let subconscious =
+        crate::subconscious::Subconscious::build(cfg, &layout, http.clone(), publisher.clone());
 
     let (action_store, action_notify) =
         init_action_store(&layout, publisher, &mut degradations).await;

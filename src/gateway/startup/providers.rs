@@ -36,7 +36,7 @@ pub fn init_providers(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
-    publisher: Publisher,
+    publisher: &Publisher,
     degradations: &mut Vec<String>,
 ) -> Result<ProviderComponents, FatalError> {
     let (provider, dropped_main) = build_provider_chain_with_notices(
@@ -44,7 +44,7 @@ pub fn init_providers(
         cfg.max_tokens,
         http.clone(),
         cfg.retry.clone(),
-        publisher,
+        publisher.clone(),
         "main model",
     )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
@@ -60,7 +60,8 @@ pub fn init_providers(
         ));
     }
 
-    let (observer, reflector, memory_notices) = build_memory_components(cfg, tz, http.clone());
+    let (observer, reflector, memory_notices) =
+        build_memory_components(cfg, tz, http.clone(), publisher.clone());
     degradations.extend(memory_notices);
 
     let embedding_provider: Option<std::sync::Arc<dyn EmbeddingProvider>> = match cfg

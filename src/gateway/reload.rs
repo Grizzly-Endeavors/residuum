@@ -454,7 +454,12 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
     reload_web_search(rt, new_cfg).await;
     reload_memory_thresholds(rt, new_cfg).await;
     rt.pulse_enabled = new_cfg.pulse_enabled;
-    rt.subconscious = crate::subconscious::Subconscious::build(new_cfg, &rt.layout, http_client);
+    rt.subconscious = crate::subconscious::Subconscious::build(
+        new_cfg,
+        &rt.layout,
+        http_client,
+        rt.publisher.clone(),
+    );
     tracing::debug!(
         enabled = rt.subconscious.enabled(),
         "subconscious rebuilt from new config"
@@ -535,6 +540,8 @@ fn build_spawn_context(
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
         checkpoints: Arc::clone(&rt.checkpoints),
+        bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
+        ),
     })
 }
 
@@ -553,7 +560,7 @@ async fn reload_providers(
         new_cfg,
         rt.tz,
         http_client,
-        rt.publisher.clone(),
+        &rt.publisher,
         &mut degradations,
     ) {
         Ok(components) => {
