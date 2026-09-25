@@ -27,6 +27,24 @@ const REF_NAME: &str = "refs/heads/checkpoints";
 const COMMITTER_NAME: &str = "Residuum";
 const COMMITTER_EMAIL: &str = "checkpoints@residuum.local";
 
+/// Lock file, inside the git-dir, serializing a commit's read-tip ->
+/// write-commit -> update-ref sequence across processes: the gateway and a
+/// `residuum` CLI command may both want to commit to the same repository
+/// at once.
+const COMMIT_LOCK_FILE: &str = "checkpoint.lock";
+
+/// How many times to poll for the cross-process commit lock before giving
+/// up. Checkpointing must never block its caller for long, so this is a
+/// short, bounded wait, not an indefinite one.
+const LOCK_RETRY_ATTEMPTS: u32 = 40;
+const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// How many times to retry the write-commit -> update-ref step if the ref
+/// changed underneath us. With the commit lock held this should never
+/// actually happen -- it's a defensive second layer, not the primary
+/// safety mechanism.
+const REF_CAS_RETRY_ATTEMPTS: u32 = 3;
+
 /// A file to include in a snapshot commit: its path relative to the
 /// snapshotted directory (`/`-separated), its absolute path on disk, and
 /// whether it should be recorded as executable.
@@ -117,6 +135,15 @@ impl GitRepo {
     /// path not present in `files` is simply absent from the result) and, if
     /// it differs from the current tip's tree, commit it as a new
     /// checkpoint. Returns `None` when nothing changed.
+    ///
+    /// Serializes the read-tip -> write-commit -> update-ref sequence
+    /// against every other process (a running gateway, a `residuum` CLI
+    /// command, or another instance of either) that might commit to this
+    /// same repository at the same moment, via a lock file in the git-dir.
+    /// The ref update itself additionally requires the tip to still match
+    /// what was just read (rather than writing unconditionally), and
+    /// retries a few times on a mismatch, as a second, independent layer
+    /// in case the lock ever doesn't cover a real race.
     pub(super) fn commit_snapshot(
         &self,
         files: &[SnapshotFile],
@@ -124,16 +151,57 @@ impl GitRepo {
         ctx: &super::types::CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
         let new_tree_id = self.build_tree(files)?;
+        let _lock = self.acquire_commit_lock()?;
 
-        let parent = self.tip()?;
-        let parent_tree_id = self.tree_id_of(parent)?;
-        if new_tree_id == parent_tree_id {
-            return Ok(None);
+        let mut last_err = None;
+        for _ in 0..REF_CAS_RETRY_ATTEMPTS {
+            let parent = self.tip()?;
+            let parent_tree_id = self.tree_id_of(parent)?;
+            if new_tree_id == parent_tree_id {
+                return Ok(None);
+            }
+
+            let message = build_message(ctx);
+            match self.write_commit(new_tree_id, parent, author_time, &message) {
+                Ok(commit_id) => return Ok(Some(commit_id.to_hex().to_string())),
+                Err(e) => last_err = Some(e),
+            }
         }
+        Err(last_err.unwrap_or_else(|| {
+            CheckpointError::Git("commit retry loop produced no result".to_string())
+        }))
+    }
 
-        let message = build_message(ctx);
-        let commit_id = self.write_commit(new_tree_id, parent, author_time, &message)?;
-        Ok(Some(commit_id.to_hex().to_string()))
+    /// Acquire this repository's cross-process commit lock, polling briefly
+    /// if another process currently holds it. Held by the caller for the
+    /// duration of a commit attempt; released when the returned file is
+    /// dropped.
+    fn acquire_commit_lock(&self) -> Result<std::fs::File, CheckpointError> {
+        let lock_path = self.repo.git_dir().join(COMMIT_LOCK_FILE);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(io_err)?;
+
+        let mut attempt = 0;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::Error(e)) => return Err(io_err(e)),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    attempt += 1;
+                    if attempt >= LOCK_RETRY_ATTEMPTS {
+                        return Err(CheckpointError::Git(format!(
+                            "timed out waiting for the checkpoint commit lock at {} (held by another process)",
+                            lock_path.display()
+                        )));
+                    }
+                    std::thread::sleep(LOCK_RETRY_DELAY);
+                }
+            }
+        }
     }
 
     /// Build a tree object from exactly `files`, starting from the empty
@@ -197,13 +265,21 @@ impl GitRepo {
             extra_headers: vec![],
         };
         let commit_id = self.repo.write_object(commit).map_err(git_err)?.detach();
+        // CAS on the ref: it must still be exactly what we read as `parent`
+        // (or must not exist yet, for the repository's first commit). This
+        // is what actually makes the retry loop in `commit_snapshot`
+        // meaningful — with `PreviousValue::Any` here the write would
+        // always succeed unconditionally and silently orphan a sibling
+        // commit written by another process between our `tip()` read and
+        // this write.
+        let expected = match parent {
+            Some(p) => gix::refs::transaction::PreviousValue::MustExistAndMatch(
+                gix::refs::Target::Object(p),
+            ),
+            None => gix::refs::transaction::PreviousValue::MustNotExist,
+        };
         self.repo
-            .reference(
-                REF_NAME,
-                commit_id,
-                gix::refs::transaction::PreviousValue::Any,
-                "checkpoint",
-            )
+            .reference(REF_NAME, commit_id, expected, "checkpoint")
             .map_err(git_err)?;
         Ok(commit_id)
     }
@@ -777,6 +853,72 @@ mod tests {
             )
             .unwrap();
         assert!(second.is_none(), "unchanged tree should not commit again");
+    }
+
+    #[test]
+    fn concurrent_commits_from_independent_repo_handles_never_lose_one() {
+        // Two independently-opened `GitRepo`s over the same git-dir, each
+        // with its own in-process state, simulate the gateway and a
+        // `residuum` CLI command committing to the same checkpoint
+        // repository at once -- only the on-disk commit lock (never a
+        // shared Rust `Mutex`) can serialize them.
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join("workspace.git");
+        let workspace_a = dir.path().join("a");
+        let workspace_b = dir.path().join("b");
+        std::fs::create_dir_all(&workspace_a).unwrap();
+        std::fs::create_dir_all(&workspace_b).unwrap();
+
+        let repo_a = GitRepo::open_or_init(&git_dir).unwrap();
+        let repo_b = GitRepo::open_or_init(&git_dir).unwrap();
+
+        let handle_a = std::thread::spawn(move || {
+            let files = write_files(&workspace_a, &[("from-a.txt", "committed by a")]);
+            repo_a.commit_snapshot(
+                &files,
+                Utc::now(),
+                &ctx(CheckpointTrigger::TurnEnd, "from a"),
+            )
+        });
+        let handle_b = std::thread::spawn(move || {
+            let files = write_files(&workspace_b, &[("from-b.txt", "committed by b")]);
+            repo_b.commit_snapshot(
+                &files,
+                Utc::now(),
+                &ctx(CheckpointTrigger::TurnEnd, "from b"),
+            )
+        });
+
+        let result_a = handle_a.join().unwrap();
+        let result_b = handle_b.join().unwrap();
+        assert!(
+            result_a.is_ok(),
+            "commit from handle a should not fail: {result_a:?}"
+        );
+        assert!(
+            result_b.is_ok(),
+            "commit from handle b should not fail: {result_b:?}"
+        );
+        assert!(
+            result_a.unwrap().is_some() && result_b.unwrap().is_some(),
+            "both concurrent commits should produce a checkpoint, not silently no-op"
+        );
+
+        // Neither commit lost: history has both, one linear chain (a
+        // silently-overwritten ref would leave only one).
+        let repo = GitRepo::open_or_init(&git_dir).unwrap();
+        let (items, _) = repo.log(None, 10, None).unwrap();
+        assert_eq!(
+            items.len(),
+            2,
+            "both concurrent commits must be present in history, none lost to a ref race"
+        );
+        let summaries: Vec<&str> = items
+            .iter()
+            .map(|(_, fields, _)| fields.summary.as_str())
+            .collect();
+        assert!(summaries.contains(&"from a"));
+        assert!(summaries.contains(&"from b"));
     }
 
     #[test]

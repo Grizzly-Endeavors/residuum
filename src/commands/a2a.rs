@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use residuum::a2a::A2aKeys;
+use residuum::checkpoints::CheckpointEngine;
 use residuum::config::Config;
 use residuum::util::FatalError;
 
@@ -53,10 +54,16 @@ async fn run_a2a_keys_command_at(
     config_dir: PathBuf,
     command: &A2aKeysCommand,
 ) -> Result<(), FatalError> {
+    let checkpoints = CheckpointEngine::open_for_cli(&config_dir);
     let keys = A2aKeys::new(config_dir);
 
     match command {
         A2aKeysCommand::Create { name, description } => {
+            super::checkpoint_config_before_write(
+                checkpoints.as_ref(),
+                format!("CLI create a2a key '{name}'"),
+            )
+            .await;
             let token = keys
                 .create(name, description.as_deref())
                 .await
@@ -93,6 +100,11 @@ async fn run_a2a_keys_command_at(
             }
         }
         A2aKeysCommand::Revoke { name } => {
+            super::checkpoint_config_before_write(
+                checkpoints.as_ref(),
+                format!("CLI revoke a2a key '{name}'"),
+            )
+            .await;
             keys.revoke(name)
                 .await
                 .map_err(|e| FatalError::Config(format!("couldn't revoke A2A caller key: {e}")))?;
@@ -144,6 +156,59 @@ mod tests {
         run_a2a_keys_command_at(dir.path().to_path_buf(), &A2aKeysCommand::List)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_and_revoke_each_checkpoint_the_config_repo() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // First write has nothing preexisting to checkpoint (nothing to
+        // protect yet); the checkpoint appears from the second write on.
+        run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Create {
+                name: "first".to_string(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Create {
+                name: "second".to_string(),
+                description: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        run_a2a_keys_command_at(
+            dir.path().to_path_buf(),
+            &A2aKeysCommand::Revoke {
+                name: "second".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let engine = CheckpointEngine::open_for_cli(dir.path()).unwrap();
+        let page = engine
+            .list_checkpoints(residuum::checkpoints::RepoKind::Config, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.len(),
+            2,
+            "the second create and the revoke should each checkpoint, the first create should not: {:?}",
+            page.items.iter().map(|c| &c.summary).collect::<Vec<_>>()
+        );
+        assert!(
+            page.items
+                .iter()
+                .all(|c| c.trigger == residuum::checkpoints::CheckpointTrigger::PreConfigWrite)
+        );
     }
 
     #[tokio::test]

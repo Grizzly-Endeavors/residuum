@@ -81,6 +81,39 @@ impl CheckpointEngine {
         })
     }
 
+    /// Open the checkpoint repositories for a one-off CLI invocation
+    /// (`residuum secret`/`residuum agent-keys`/`residuum a2a keys`),
+    /// sharing the same on-disk repositories the gateway commits to.
+    /// `workspace_dir` defaults to `config_dir/workspace` since these CLI
+    /// commands never touch the workspace repo, so it need not be exact.
+    ///
+    /// Commits from this instance and the running gateway (or another CLI
+    /// invocation) are safe to interleave — see [`Self::checkpoint_config_now`].
+    ///
+    /// Returns `None` (logged) if the repositories can't be opened: a CLI
+    /// command's own operation must never fail just because checkpointing
+    /// couldn't be set up.
+    #[must_use]
+    pub fn open_for_cli(config_dir: &Path) -> Option<Self> {
+        let checkpoints_dir = config_dir.join("checkpoints");
+        match Self::new(
+            config_dir.join("workspace"),
+            config_dir.to_path_buf(),
+            &checkpoints_dir,
+            None,
+        ) {
+            Ok(engine) => Some(engine),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    checkpoints_dir = %checkpoints_dir.display(),
+                    "couldn't open checkpoint repositories; continuing without checkpointing this command"
+                );
+                None
+            }
+        }
+    }
+
     fn repo(&self, kind: RepoKind) -> Arc<Mutex<GitRepo>> {
         match kind {
             RepoKind::Workspace => Arc::clone(&self.workspace_repo),
@@ -155,15 +188,16 @@ impl CheckpointEngine {
     }
 
     /// Checkpoint the config repository now (root config files and
-    /// encrypted key stores). Synchronous and safe to call from inside a
-    /// blocking context (e.g. a `spawn_blocking` closure already holding a
-    /// store's own write lock) — this does no `.await`ing of its own.
+    /// encrypted key stores). Synchronous — this does no `.await`ing of its
+    /// own, so it's safe to call from a blocking context too. Serializes
+    /// against every other process committing to this same repository (the
+    /// gateway, or a concurrent `residuum` CLI invocation); see
+    /// [`super::backend::GitRepo::commit_snapshot`].
     ///
     /// # Errors
     /// Returns [`CheckpointError`] on failure. Callers on the hot path
     /// should not propagate it — see [`Self::checkpoint_config_before_write`]
-    /// and [`Self::report_config_outcome`] for the "never fail the caller"
-    /// wrapping.
+    /// for the "never fail the caller" wrapping.
     pub fn checkpoint_config_now(
         &self,
         ctx: &CheckpointContext,
@@ -178,23 +212,12 @@ impl CheckpointEngine {
 
     /// Before a write to a root config file or an encrypted key store:
     /// checkpoint the config repository first. Never fails or blocks the
-    /// write.
+    /// write. Used by the Settings-UI web handlers, the agent's own
+    /// agent-key tools, and the `residuum secret`/`agent-keys`/`a2a keys`
+    /// CLI commands (via [`Self::open_for_cli`]) alike.
     pub async fn checkpoint_config_before_write(&self, ctx: CheckpointContext) {
         let result = self.checkpoint_config_now(&ctx);
         report_outcome(self.publisher.as_ref(), "config", &ctx, &result).await;
-    }
-
-    /// Report the outcome of a [`Self::checkpoint_config_now`] call made
-    /// from inside a blocking closure this engine doesn't own (agent-key
-    /// and A2A-key storage checkpoint from inside their own
-    /// `spawn_blocking` write path — see `src/agent_keys/runtime.rs` and
-    /// `src/a2a/keys_runtime.rs`). Call this after returning to async code.
-    pub async fn report_config_outcome(
-        &self,
-        ctx: &CheckpointContext,
-        result: &Result<Option<String>, CheckpointError>,
-    ) {
-        report_outcome(self.publisher.as_ref(), "config", ctx, result).await;
     }
 
     // ─── Tier 1: visibility ──────────────────────────────────────────
