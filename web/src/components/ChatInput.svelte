@@ -18,12 +18,23 @@
     onOpenFeedback,
     isProcessing = false,
     disabled = false,
+    reconnecting = false,
+    pendingCount = 0,
   }: {
     onSend: (text: string, images?: ImageAttachment[]) => void;
     onStop: () => void;
     onOpenFeedback: () => void;
     isProcessing?: boolean;
+    /** Blocks drafting and sending outright, for a reason other than the
+     * connection (there is currently no such caller). Reconnecting never
+     * sets this — see `reconnecting` below. */
     disabled?: boolean;
+    /** The connection is down or coming back up. Drafting and sending stay
+     * enabled; a sent message queues at the transport layer and is shown
+     * as pending until it actually goes out. */
+    reconnecting?: boolean;
+    /** How many of the user's own messages are queued waiting to send. */
+    pendingCount?: number;
   } = $props();
   let value = $state("");
   let textarea: HTMLTextAreaElement | undefined = $state();
@@ -285,7 +296,7 @@
           bind:this={textarea}
           bind:value
           class="chat-input"
-          placeholder={disabled ? "Reconnecting…" : "Send a message..."}
+          placeholder="Send a message..."
           rows="1"
           {disabled}
           onkeydown={handleKeydown}
@@ -304,6 +315,16 @@
           >
         {/if}
       </div>
+      {#if reconnecting || pendingCount > 0}
+        <p class="chat-input-status">
+          {#if pendingCount > 0}
+            Reconnecting — {pendingCount === 1 ? "1 message" : `${pendingCount} messages`} will send once
+            back online.
+          {:else}
+            Reconnecting — messages you send now will go out once back online.
+          {/if}
+        </p>
+      {/if}
       <input
         bind:this={fileInput}
         type="file"
