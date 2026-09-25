@@ -73,6 +73,55 @@ pub struct ExtraApiStates {
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
 }
 
+/// Cloud connection routes. Disconnect is refused over the tunnel, since a
+/// remote disconnect leaves no way to reconnect.
+fn cloud_api_router(state: &GatewayState, config_api_state: &web::ConfigApiState) -> axum::Router {
+    use axum::routing::{get, post};
+
+    let cloud_state = web::cloud::CloudApiState {
+        config_dir: config_api_state.config_dir.clone(),
+        reload_tx: state.reload_tx.clone(),
+        tunnel_status_rx: state.tunnel_status_rx.clone(),
+        secret_lock: Arc::clone(&config_api_state.secret_lock),
+    };
+    axum::Router::new()
+        .route("/api/cloud/status", get(web::cloud::api_cloud_status))
+        .route("/cloud/callback", get(web::cloud::cloud_callback))
+        .with_state(cloud_state.clone())
+        .merge(
+            axum::Router::new()
+                .route(
+                    "/api/cloud/disconnect",
+                    post(web::cloud::api_cloud_disconnect),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+                ))
+                .with_state(cloud_state),
+        )
+}
+
+/// Update and shutdown routes. Shutdown is refused over the tunnel, since a
+/// remote shutdown leaves no way to bring the gateway back.
+fn update_api_router(update_api_state: web::update::UpdateApiState) -> axum::Router {
+    use axum::routing::{get, post};
+
+    axum::Router::new()
+        .route("/api/update/status", get(web::update::api_update_status))
+        .route("/api/update/check", post(web::update::api_update_check))
+        .route("/api/update/apply", post(web::update::api_update_apply))
+        .route("/api/update/restart", post(web::update::api_update_restart))
+        .with_state(update_api_state.clone())
+        .merge(
+            axum::Router::new()
+                .route("/api/shutdown", post(web::update::api_shutdown))
+                .route_layer(axum::middleware::from_fn(
+                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+                ))
+                .with_state(update_api_state),
+        )
+}
+
 /// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
 pub fn build_gateway_app(
     state: GatewayState,
@@ -82,7 +131,7 @@ pub fn build_gateway_app(
     workbench_serving: crate::workbench::server::WorkbenchServing,
     extra: ExtraApiStates,
 ) -> axum::Router {
-    use axum::routing::{get, post};
+    use axum::routing::get;
 
     let a2a_tunnel_status_rx = state.tunnel_status_rx.clone();
 
@@ -99,44 +148,8 @@ pub fn build_gateway_app(
             tz: state.tz,
         });
 
-    let cloud_router = {
-        let cloud_state = web::cloud::CloudApiState {
-            config_dir: config_api_state.config_dir.clone(),
-            reload_tx: state.reload_tx.clone(),
-            tunnel_status_rx: state.tunnel_status_rx.clone(),
-            secret_lock: Arc::clone(&config_api_state.secret_lock),
-        };
-        axum::Router::new()
-            .route("/api/cloud/status", get(web::cloud::api_cloud_status))
-            .route("/cloud/callback", get(web::cloud::cloud_callback))
-            .with_state(cloud_state.clone())
-            .merge(
-                axum::Router::new()
-                    .route(
-                        "/api/cloud/disconnect",
-                        post(web::cloud::api_cloud_disconnect),
-                    )
-                    .route_layer(axum::middleware::from_fn(
-                        crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
-                    ))
-                    .with_state(cloud_state),
-            )
-    };
-
-    let update_router = axum::Router::new()
-        .route("/api/update/status", get(web::update::api_update_status))
-        .route("/api/update/check", post(web::update::api_update_check))
-        .route("/api/update/apply", post(web::update::api_update_apply))
-        .route("/api/update/restart", post(web::update::api_update_restart))
-        .with_state(update_api_state.clone())
-        .merge(
-            axum::Router::new()
-                .route("/api/shutdown", post(web::update::api_shutdown))
-                .route_layer(axum::middleware::from_fn(
-                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
-                ))
-                .with_state(update_api_state),
-        );
+    let cloud_router = cloud_api_router(&state, &config_api_state);
+    let update_router = update_api_router(update_api_state);
 
     let tracing_router = tracing_api_router(tracing_api_state);
 
