@@ -212,6 +212,44 @@
   word-break: break-word;
 }
 
+.notif-dropdown-details {
+  width: 100%;
+}
+
+.notif-dropdown-details > summary.notif-dropdown-item-message {
+  cursor: pointer;
+  list-style: none;
+}
+
+.notif-dropdown-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.notif-dropdown-details > summary::after {
+  content: " · details";
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.notif-dropdown-details[open] > summary::after {
+  content: " · hide details";
+}
+
+.notif-dropdown-detail-body {
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-input);
+  border-left: 2px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 .notif-dropdown-item-time {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);

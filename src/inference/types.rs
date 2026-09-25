@@ -269,6 +269,28 @@ pub struct Usage {
     pub cache_read_tokens: Option<u32>,
 }
 
+/// Why a model response ended, normalized across providers. Each provider
+/// reports this under its own name on the wire (Anthropic's `stop_reason`,
+/// Gemini's `finishReason`, `OpenAI`'s `finish_reason`, Ollama's
+/// `done_reason`) and maps it to this common vocabulary when parsing its
+/// response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopReason {
+    /// The model reached a natural stopping point.
+    EndTurn,
+    /// The model decided to call a tool.
+    ToolUse,
+    /// Generation was cut off by the configured output-token limit —
+    /// the response is incomplete.
+    MaxTokens,
+    /// The provider's content filter stopped generation.
+    ContentFilter,
+    /// A configured stop sequence was hit.
+    StopSequence,
+    /// A reason not covered above, carrying the provider's own raw value.
+    Other(String),
+}
+
 /// Response from a model provider.
 #[derive(Debug, Clone)]
 pub struct InferenceResponse {
@@ -280,6 +302,8 @@ pub struct InferenceResponse {
     pub usage: Option<Usage>,
     /// Thinking/reasoning text from the model (not sent back in context).
     pub thinking: Option<String>,
+    /// Why generation ended, if the provider reports it.
+    pub stop_reason: Option<StopReason>,
 }
 
 impl InferenceResponse {
@@ -291,6 +315,7 @@ impl InferenceResponse {
             tool_calls,
             usage: None,
             thinking: None,
+            stop_reason: None,
         }
     }
 
@@ -298,6 +323,13 @@ impl InferenceResponse {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.tool_calls.is_empty() && !self.content.is_empty()
+    }
+
+    /// Whether generation was cut off by the output-token limit rather than
+    /// ending naturally.
+    #[must_use]
+    pub fn was_truncated(&self) -> bool {
+        self.stop_reason == Some(StopReason::MaxTokens)
     }
 }
 

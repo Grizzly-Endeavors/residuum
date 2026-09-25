@@ -296,7 +296,9 @@ pub enum ServerMessage {
         /// File size in bytes.
         #[ts(type = "number")]
         size: u64,
-        /// URL to fetch the file (e.g. "/api/files/{id}").
+        /// URL to fetch the file: a durable workspace-relative link (e.g.
+        /// "/api/files/workspace?path=...") for a file inside the
+        /// workspace, else an expiring token link (e.g. "/api/files/{id}").
         url: String,
         /// Optional caption text.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -311,8 +313,11 @@ pub enum ServerMessage {
     Error {
         /// Correlation ID of the original message, if applicable.
         reply_to: Option<String>,
-        /// Error description.
+        /// Plain-language error description.
         message: String,
+        /// Full technical cause chain, shown behind a details toggle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
     },
     /// Keepalive pong.
     Pong,
@@ -449,8 +454,11 @@ pub enum ServerMessage {
         address: String,
         /// Run id.
         run_id: String,
-        /// Error description.
+        /// Plain-language error description.
         message: String,
+        /// Full technical cause chain, shown behind a details toggle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
     },
     /// A session's message reached the main agent (a turn-result relay or a
     /// `message_agent` call to `main`). The main chat shows it as a compact
@@ -587,9 +595,14 @@ mod tests {
         let msg = ServerMessage::Error {
             reply_to: Some("id-1".to_string()),
             message: "something failed".to_string(),
+            details: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"error\""), "should have type tag");
+        assert!(
+            !json.contains("\"details\""),
+            "a None details must not appear in the JSON at all"
+        );
         assert!(
             json.contains("\"reply_to\":\"id-1\""),
             "should have reply_to field"

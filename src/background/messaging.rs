@@ -31,7 +31,8 @@ use std::sync::{Arc, Mutex};
 use crate::agent::hop::HopLimits;
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName, topics,
+    AgentMessageEvent, MessageEvent, Publisher, SessionAddress, SessionEventKind, SkillName,
+    SpawnRequestEvent, topics,
 };
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, Message};
@@ -133,14 +134,6 @@ impl AgentMessenger {
             hop_limits,
             pending_main_hops: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// The bus publisher this messenger delivers with, for a caller (e.g.
-    /// [`super::conversation_router::ConversationRouter`]) that needs to
-    /// publish a notice of its own alongside an ordinary delivery.
-    #[must_use]
-    pub(crate) fn publisher(&self) -> Publisher {
-        self.publisher.clone()
     }
 
     /// Recover the hop count of an agent message delivered to main, given
@@ -424,11 +417,17 @@ impl AgentMessenger {
     /// [`Self::send`] this carries no hop-count check: they are always hop
     /// `0`, below both limits by construction.
     ///
+    /// A chat user's message is never refused for capacity the way an
+    /// agent-to-agent message can be (see [`Self::send`]'s own
+    /// [`SendError::Busy`]): there is nobody on the other end of a chat
+    /// message to hand a `Busy` refusal to, so a saturated channel hands
+    /// off to the same detached retry-until-delivered task the
+    /// `Completing` case below already uses, rather than ever erroring.
+    ///
     /// # Errors
     ///
-    /// Returns [`SendError::Busy`] if the target is live but its interrupt
-    /// channel is saturated, and [`SendError::PublishFailed`] if starting or
-    /// resuming the session failed at the bus.
+    /// Returns [`SendError::PublishFailed`] if starting or resuming the
+    /// session failed at the bus.
     pub(crate) async fn deliver_conversation(
         &self,
         address: &SessionAddress,
@@ -442,12 +441,15 @@ impl AgentMessenger {
             DeliverOutcome::Delivered => {
                 return Ok(ConversationDeliveryOutcome::Live(address.clone()));
             }
-            DeliverOutcome::Full => return Err(SendError::Busy(address.clone())),
-            DeliverOutcome::Completing => {
-                // Mirrors `send`'s own `Completing` branch: hand the wait
-                // off to a detached task rather than blocking the caller
-                // (an interface's inbound handler) on however long the
-                // completing run's own teardown takes.
+            DeliverOutcome::Full | DeliverOutcome::Completing => {
+                // `Full`: the run is live and draining its own queue
+                // continuously, so this resolves on its own shortly — the
+                // retry task loops on it directly. `Completing`: its
+                // teardown may itself take a while (an LLM call, in the
+                // worst case), so the retry task waits for that instead.
+                // Either way, hand off to a detached task rather than
+                // blocking the caller (an interface's inbound handler) on
+                // however long either takes.
                 let registry = Arc::clone(&self.registry);
                 let publisher = self.publisher.clone();
                 let deferred_address = address.clone();
@@ -644,10 +646,91 @@ async fn publish_conversation_resume(
     })
 }
 
-/// Wait for `address` to leave the registry, then re-run the same
-/// live-vs-start-vs-resume decision [`AgentMessenger::deliver_conversation`]
-/// makes for a fresh call — the deferred half of its `Completing` branch, run
-/// on its own detached task so the original caller never blocks on it.
+/// How long to wait between retries of a chat user's message against a
+/// saturated interrupt channel. The channel drains continuously (every
+/// tool-loop checkpoint of a live turn), so this is about not busy-looping
+/// while it does, not about giving the run time to do anything in
+/// particular.
+pub(crate) const USER_MESSAGE_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+/// Retry attempts against a saturated channel worth a `warn` log, so a
+/// channel that stays saturated for an unusually long time is visible in
+/// the logs rather than silently retrying forever.
+pub(crate) const USER_MESSAGE_WARN_AFTER_ATTEMPTS: u32 = 20;
+
+/// Retry delivering a chat user's message into `address` — the address a
+/// spawn/resume request lost the race for (see
+/// `crate::background::listener::race_guard_interrupt`) — until it
+/// succeeds, or republish `spawn_event` as a fresh spawn/resume request if
+/// the run that won the race finishes before delivery does.
+///
+/// Mirrors [`resume_or_start_conversation_after_clear`]'s guarantee for the
+/// ordinary conversation-delivery path: a chat user's message must never
+/// be dropped for capacity or for losing a race, unlike an agent-to-agent
+/// message in the same situation (which the callers below still log and
+/// give up on, unchanged — an unusual double-spawn race is a much rarer
+/// event than a session simply running busy or long, and there's a live
+/// agent on the other end to notice and retry itself).
+///
+/// Spawned as a detached task by both callers, so neither
+/// `SessionRuntime::spawn` (a sync fn) nor the listener's own sequential
+/// event dispatch ever blocks on it.
+pub(crate) async fn retry_race_guard_user_message(
+    registry: Arc<SessionRegistry>,
+    publisher: Publisher,
+    address: SessionAddress,
+    inbound: InboundMessage,
+    spawn_event: SpawnRequestEvent,
+) {
+    let mut attempts: u32 = 0;
+    loop {
+        match registry.deliver(&address, Interrupt::UserMessage(inbound.clone())) {
+            DeliverOutcome::Delivered => return,
+            DeliverOutcome::Full => {
+                attempts += 1;
+                if attempts == USER_MESSAGE_WARN_AFTER_ATTEMPTS {
+                    tracing::warn!(
+                        address = %address,
+                        attempts,
+                        "race-guard user message still waiting on a saturated interrupt channel"
+                    );
+                }
+                tokio::time::sleep(USER_MESSAGE_RETRY_DELAY).await;
+            }
+            DeliverOutcome::Completing => {
+                registry.wait_until_clear(&address).await;
+            }
+            DeliverOutcome::NotLive => {
+                // The run that won the original race has since finished.
+                // Give this content a fresh spawn/resume attempt through
+                // the normal listener pipeline (which can rebuild the
+                // session resources this layer doesn't have) rather than
+                // dropping it.
+                if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
+                    tracing::error!(
+                        error = %e,
+                        address = %address,
+                        "failed to republish a race-guard user message after its target \
+                         finished; input dropped"
+                    );
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// Re-run the same live-vs-start-vs-resume decision
+/// [`AgentMessenger::deliver_conversation`] makes for a fresh call, until a
+/// chat user's message is actually delivered — the deferred half of its
+/// `Full`/`Completing` branch, run on its own detached task so the original
+/// caller never blocks on it.
+///
+/// A chat user's message is never dropped for capacity: unlike an
+/// agent-to-agent message, which gets a visible `Busy` refusal the sender
+/// can act on (see [`AgentMessenger::send`]), there's nobody on the other
+/// end of a chat message to hand a refusal to.
 async fn deferred_conversation_resume(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
@@ -656,7 +739,6 @@ async fn deferred_conversation_resume(
     spawn: ConversationSpawn,
 ) {
     loop {
-        registry.wait_until_clear(&address).await;
         let done = resume_or_start_conversation_after_clear(
             &registry, &publisher, &address, &inbound, &spawn,
         )
@@ -664,17 +746,26 @@ async fn deferred_conversation_resume(
         if done {
             return;
         }
-        // Falling through loops back to `wait_until_clear` again — another
-        // resume raced in and is already tearing down once more.
+        // Only `DeliverOutcome::Completing` reaches here (see that
+        // function's own doc): another resume raced in and is already
+        // tearing down again, so wait for it to actually clear before
+        // trying once more — unlike the `Full` case, which that function
+        // already retries in place without needing this wait.
+        registry.wait_until_clear(&address).await;
     }
 }
 
-/// The decision `deferred_conversation_resume` makes once `address` has been
-/// observed clear: deliver into a run that already won the race, resume from
-/// its resume point, or start a fresh run if it never had one. Returns
-/// `false` only for [`DeliverOutcome::Completing`] (another resume raced in
-/// and is *already* tearing down again), telling the caller to wait and
-/// retry — every other outcome, success or failure, is final.
+/// The decision `deferred_conversation_resume` makes on each pass: deliver
+/// into a run that already won the race, resume from its resume point, or
+/// start a fresh run if it never had one.
+///
+/// A saturated channel (`DeliverOutcome::Full`) is retried in place with
+/// [`USER_MESSAGE_RETRY_DELAY`] between attempts, however long that takes —
+/// the run is live and draining its own queue continuously, so this
+/// resolves on its own. Returns `false` only for
+/// [`DeliverOutcome::Completing`] (another resume raced in and is
+/// *already* tearing down again), telling the caller to wait for it to
+/// clear and retry — every other outcome, success or failure, is final.
 async fn resume_or_start_conversation_after_clear(
     registry: &SessionRegistry,
     publisher: &Publisher,
@@ -682,35 +773,42 @@ async fn resume_or_start_conversation_after_clear(
     inbound: &InboundMessage,
     spawn: &ConversationSpawn,
 ) -> bool {
-    match registry.deliver(address, Interrupt::UserMessage(inbound.clone())) {
-        DeliverOutcome::Delivered => true,
-        DeliverOutcome::Completing => false,
-        DeliverOutcome::Full => {
-            tracing::error!(
-                address = %address,
-                "deferred conversation delivery failed: interrupt channel saturated; message dropped"
-            );
-            true
-        }
-        DeliverOutcome::NotLive => {
-            let result = match registry.resume_point(address) {
-                Some(point) => {
-                    publish_conversation_resume(publisher, address, &point, inbound).await
+    let mut attempts: u32 = 0;
+    loop {
+        match registry.deliver(address, Interrupt::UserMessage(inbound.clone())) {
+            DeliverOutcome::Delivered => return true,
+            DeliverOutcome::Completing => return false,
+            DeliverOutcome::Full => {
+                attempts += 1;
+                if attempts == USER_MESSAGE_WARN_AFTER_ATTEMPTS {
+                    tracing::warn!(
+                        address = %address,
+                        attempts,
+                        "user message still waiting on a saturated interrupt channel"
+                    );
                 }
-                None => {
-                    publish_conversation_spawn(
-                        publisher,
-                        address.clone(),
-                        inbound.clone(),
-                        spawn.clone(),
-                    )
-                    .await
-                }
-            };
-            if let Err(e) = result {
-                tracing::error!(error = %e, address = %address, "failed to deliver deferred conversation message");
+                tokio::time::sleep(USER_MESSAGE_RETRY_DELAY).await;
             }
-            true
+            DeliverOutcome::NotLive => {
+                let result = match registry.resume_point(address) {
+                    Some(point) => {
+                        publish_conversation_resume(publisher, address, &point, inbound).await
+                    }
+                    None => {
+                        publish_conversation_spawn(
+                            publisher,
+                            address.clone(),
+                            inbound.clone(),
+                            spawn.clone(),
+                        )
+                        .await
+                    }
+                };
+                if let Err(e) = result {
+                    tracing::error!(error = %e, address = %address, "failed to deliver deferred conversation message");
+                }
+                return true;
+            }
         }
     }
 }
@@ -739,6 +837,7 @@ async fn record_note_if_live_session(sinks: NoteSinks<'_>, address: &SessionAddr
             &info.run_id,
             SessionEventKind::Error {
                 message: note.to_string(),
+                details: None,
             },
         )
         .await;
@@ -1947,7 +2046,7 @@ mod tests {
         for _ in 0..2 {
             let event = events.recv().await.unwrap().unwrap();
             assert!(
-                matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Message Loop Limit")),
+                matches!(&event.kind, SessionEventKind::Error { message, .. } if message.contains("Message Loop Limit")),
                 "a refusal must surface as an error event, got {:?}",
                 event.kind
             );
