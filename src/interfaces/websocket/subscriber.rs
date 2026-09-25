@@ -79,8 +79,8 @@ fn workspace_frame(watch_set: &WatchSet, event: WorkspaceEvent) -> Option<Server
 /// loop within clippy's `too_many_lines` budget.
 async fn response_to_server_message(registry: &FileRegistry, resp: ResponseEvent) -> ServerMessage {
     if let Some(att) = resp.attachment {
-        let id = registry
-            .register(
+        let url = registry
+            .url_for(
                 att.path.clone(),
                 att.mime_type.clone(),
                 att.filename.clone(),
@@ -96,7 +96,7 @@ async fn response_to_server_message(registry: &FileRegistry, resp: ResponseEvent
             filename: att.filename,
             mime_type: att.mime_type,
             size: att.size,
-            url: format!("/api/files/{id}"),
+            url,
             caption,
         }
     } else {

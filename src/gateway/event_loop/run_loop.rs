@@ -237,7 +237,8 @@ async fn spawn_server_and_adapters(
     // at cold start stays correct across reloads without being respawned.
     crate::a2a::spawn_sibling_discovery(Arc::clone(&parts.a2a_hub), tunnel_status_rx.clone());
 
-    let file_registry = crate::gateway::file_server::FileRegistry::new();
+    let file_registry = crate::gateway::file_server::FileRegistry::new()
+        .with_workspace_root(parts.layout.root().to_path_buf());
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
     let (workbench_watcher_handle, change_feed_handle, workspace_watch_health) =

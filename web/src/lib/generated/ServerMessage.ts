@@ -90,7 +90,9 @@ mime_type: string,
  */
 size: number, 
 /**
- * URL to fetch the file (e.g. "/api/files/{id}").
+ * URL to fetch the file: a durable workspace-relative link (e.g.
+ * "/api/files/workspace?path=...") for a file inside the
+ * workspace, else an expiring token link (e.g. "/api/files/{id}").
  */
 url: string, 
 /**

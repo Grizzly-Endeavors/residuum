@@ -296,7 +296,9 @@ pub enum ServerMessage {
         /// File size in bytes.
         #[ts(type = "number")]
         size: u64,
-        /// URL to fetch the file (e.g. "/api/files/{id}").
+        /// URL to fetch the file: a durable workspace-relative link (e.g.
+        /// "/api/files/workspace?path=...") for a file inside the
+        /// workspace, else an expiring token link (e.g. "/api/files/{id}").
         url: String,
         /// Optional caption text.
         #[serde(skip_serializing_if = "Option::is_none")]
