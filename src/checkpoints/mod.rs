@@ -14,6 +14,18 @@ pub use types::{
     CheckpointSummary, CheckpointTrigger, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
 
+/// Whether `path` names something inside a checkpointed root: only plain
+/// relative components, so it can't escape the root it's joined onto. A
+/// rooted path like `/etc/passwd` isn't `is_absolute()` on Windows (no
+/// drive), so each component is checked rather than the whole path.
+#[must_use]
+pub fn is_root_relative(path: &str) -> bool {
+    !path.is_empty()
+        && std::path::Path::new(path)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
 /// A throwaway checkpoint engine backed by a fresh temp directory, for
 /// tests elsewhere in the crate that need a `CheckpointEngine` to satisfy a
 /// constructor but don't exercise checkpointing behavior themselves.

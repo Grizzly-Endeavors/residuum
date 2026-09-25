@@ -405,6 +405,12 @@ impl GitRepo {
         path: &str,
         dest_root: &Path,
     ) -> Result<Vec<String>, CheckpointError> {
+        if !super::is_root_relative(path) {
+            return Err(CheckpointError::PathNotFound(
+                path.to_string(),
+                id.to_hex().to_string(),
+            ));
+        }
         let commit = self.repo.find_commit(id).map_err(git_err)?;
         let tree = commit.tree().map_err(git_err)?;
         let Some(entry) = tree.lookup_entry(path.split('/')).map_err(git_err)? else {
@@ -592,6 +598,10 @@ fn set_executable(path: &Path, executable: bool) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "same signature as the Unix version, which can fail setting the mode"
+)]
 fn set_executable(_path: &Path, _executable: bool) -> std::io::Result<()> {
     // No executable bit to preserve outside Unix.
     Ok(())

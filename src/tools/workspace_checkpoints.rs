@@ -22,11 +22,7 @@ const REPO: RepoKind = RepoKind::Workspace;
 /// Rejects a caller-supplied relative path that could escape the workspace
 /// root (`..` components or an absolute path).
 fn validate_relative_path(path: &str) -> Result<(), ToolError> {
-    let p = std::path::Path::new(path);
-    if p.is_absolute()
-        || p.components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
+    if !crate::checkpoints::is_root_relative(path) {
         return Err(ToolError::InvalidArguments(format!(
             "path '{path}' must be relative to the workspace root and contain no '..' components"
         )));
@@ -318,6 +314,19 @@ mod tests {
         assert!(validate_relative_path("/etc/passwd").is_err());
         assert!(validate_relative_path("wiki/../../secret").is_err());
         assert!(validate_relative_path("wiki/index.md").is_ok());
+    }
+
+    #[test]
+    fn rejects_an_empty_path() {
+        assert!(validate_relative_path("").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_rooted_and_drive_paths() {
+        assert!(validate_relative_path("\\etc\\passwd").is_err());
+        assert!(validate_relative_path("C:\\secret").is_err());
+        assert!(validate_relative_path("C:secret").is_err());
     }
 
     #[tokio::test]
