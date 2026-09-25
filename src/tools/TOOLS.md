@@ -502,14 +502,13 @@ On total failure: error with failure details.
 
 On success, no `attachments` given: `"Added item to user inbox with ID: {filename stem}"`
 
-On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`
+On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`. If any attachment in the batch failed (e.g. a missing source path), the same success output continues with a `"Some attachments could not be copied (the item was still added):"` section naming each one.
 
 On error:
 - Missing `title` or `body`
-- An attachment path doesn't exist, isn't readable, or exceeds the 25 MB size cap — the whole add fails and no item is created (see side effects below)
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated, copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. If any attachment in the batch fails, every file already copied for that item is removed and no item is saved — a partial attachment set is never left behind. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
 
 ---
 
@@ -560,7 +559,7 @@ On error:
 - Notify endpoints: publishes `NotificationEvent` to the endpoint's topic
 - Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic (with optional `FileAttachment` and the validated `conversation` target). If delivery to a named conversation fails later, the owner gets an error message on that interface.
 - **Cannot send to inbox** — the agent has no write path to inbox
-- **File attachments require interactive endpoints** — Telegram allows up to 50MB, others 25MB
+- **File attachments require interactive endpoints** — the size cap is per platform, matching that platform's own upload limit: 50MB on Telegram, 20MB on Discord. Every other endpoint (the web UI, Teams, A2A) has no size cap here.
 
 ---
 

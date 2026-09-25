@@ -63,8 +63,8 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 `user_inbox_add` accepts an optional `attachments` parameter: an array of paths to files the agent has already written to disk (an export, a report, a screenshot). Each file is copied — not moved or linked — into the item's own directory, so the item keeps working even if the original file is later moved or deleted.
 
 - **Copy, not reference**: files land at `inbox/user/attachments/{item id}/{filename}`. Source filenames are reduced to their final path component before use, so a traversal-style source path can't place a copy outside the item's directory, and same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering.
-- **Size cap**: 25 MB per file, the same cap used for chat attachments elsewhere.
-- **All-or-nothing**: if any attachment in a call fails to copy (missing file, oversized, unreadable), no item is created and any files already copied for that item are removed. The failure is returned as a tool error and logged — there's no such thing as an item with a partial attachment set.
+- **No size cap**: these are already-local files, not something arriving over a platform with its own upload limit.
+- **Partial failure is not fatal**: a file that fails to copy (missing, unreadable) is skipped and logged; the item is still created with whichever attachments did succeed, and the tool result names each one that failed.
 - **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving.
 - **Serving**: the web UI fetches attachments from `GET /api/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
 
