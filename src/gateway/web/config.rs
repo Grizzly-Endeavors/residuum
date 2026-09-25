@@ -26,6 +26,17 @@ pub(super) struct StatusResponse {
     mode: &'static str,
     version: &'static str,
     features: &'static [&'static str],
+    /// On-disk size and checkpoint count for each checkpoint repository, so
+    /// growth is visible before the web UI's own checkpoints view lands.
+    /// `null` for a repo whose stats couldn't be read just now.
+    checkpoints: CheckpointsStatus,
+}
+
+/// Per-repository checkpoint stats shown in `/api/status`.
+#[derive(Serialize)]
+pub(super) struct CheckpointsStatus {
+    workspace: Option<crate::checkpoints::RepoStats>,
+    config: Option<crate::checkpoints::RepoStats>,
 }
 
 /// Response from validation or save endpoints.
@@ -54,7 +65,7 @@ pub(super) struct CompleteSetupRequest {
     mcp_json: Option<String>,
 }
 
-/// `GET /api/status` — returns `{ mode, version, features }`.
+/// `GET /api/status` — returns `{ mode, version, features, checkpoints }`.
 pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
     let mode = if state.setup_done.is_some() {
         "setup"
@@ -65,7 +76,27 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
         mode,
         version: update::CURRENT_VERSION,
         features: features::FEATURES,
+        checkpoints: CheckpointsStatus {
+            workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
+                .await,
+            config: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Config).await,
+        },
     })
+}
+
+/// A repo's checkpoint stats, or `None` (logged) if they couldn't be read —
+/// `/api/status` degrades rather than failing over a checkpoint read.
+async fn checkpoint_stats_or_log(
+    state: &ConfigApiState,
+    kind: crate::checkpoints::RepoKind,
+) -> Option<crate::checkpoints::RepoStats> {
+    state.checkpoints.stats(kind).await.map_or_else(
+        |e| {
+            tracing::warn!(error = %e, ?kind, "failed to read checkpoint stats for /api/status");
+            None
+        },
+        Some,
+    )
 }
 
 #[cfg(test)]
