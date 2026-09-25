@@ -239,6 +239,8 @@ export interface CloudStatusResponse {
   user_id: string | null;
   has_token: boolean;
   enabled: boolean;
+  /** True when this response was served to a browser viewing the gateway through the tunnel. */
+  viewed_via_tunnel: boolean;
 }
 
 export interface SettingsProviderEntry {

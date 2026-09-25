@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use super::protocol::TunnelFrame;
+use super::{TUNNEL_NONCE_HEADER, tunnel_nonce};
 
 /// Maximum response body size (10 MB).
 const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
@@ -73,14 +74,19 @@ pub(super) async fn forward(
         None => None,
     };
 
-    // Build the request.
+    // Build the request. The tunnel nonce header is stripped from whatever
+    // the client sent and re-added below with this process's own value, so a
+    // remote caller can never forge or erase the mark that identifies this
+    // request as tunnel-forwarded (see `reject_remote_shutdown_and_disconnect`).
     let mut req = client.request(http_method, &url);
 
     for (name, value) in &headers {
-        if !super::is_hop_by_hop(name) {
-            req = req.header(name, value);
+        if super::is_hop_by_hop(name) || name.eq_ignore_ascii_case(TUNNEL_NONCE_HEADER) {
+            continue;
         }
+        req = req.header(name, value);
     }
+    req = req.header(TUNNEL_NONCE_HEADER, tunnel_nonce());
 
     if let Some(bytes) = decoded_body {
         req = req.body(bytes);
@@ -303,5 +309,51 @@ mod tests {
         };
         assert_eq!(status, 308);
         assert_eq!(headers.get("location").map(String::as_str), Some("/tool/"));
+    }
+
+    #[tokio::test]
+    async fn forwarded_request_carries_the_real_nonce_not_a_spoofed_one() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new().route(
+            "/api/shutdown",
+            axum::routing::post(|headers: axum::http::HeaderMap| async move {
+                headers
+                    .get(TUNNEL_NONCE_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string()
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let client = forwarding_client().unwrap();
+        let mut headers = HashMap::new();
+        headers.insert(TUNNEL_NONCE_HEADER.to_string(), "spoofed-value".to_string());
+
+        let frame = forward(
+            &client,
+            port,
+            "req-1".to_string(),
+            "POST".to_string(),
+            "/api/shutdown".to_string(),
+            headers,
+            None,
+        )
+        .await;
+        server.abort();
+
+        let TunnelFrame::HttpResponse { status, body, .. } = frame else {
+            panic!("expected an HttpResponse");
+        };
+        assert_eq!(status, 200);
+        let body = STANDARD.decode(body.unwrap()).unwrap();
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            tunnel_nonce(),
+            "the target must see this process's real nonce, never a client-supplied one"
+        );
     }
 }

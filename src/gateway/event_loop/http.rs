@@ -109,11 +109,18 @@ pub fn build_gateway_app(
         axum::Router::new()
             .route("/api/cloud/status", get(web::cloud::api_cloud_status))
             .route("/cloud/callback", get(web::cloud::cloud_callback))
-            .route(
-                "/api/cloud/disconnect",
-                post(web::cloud::api_cloud_disconnect),
+            .with_state(cloud_state.clone())
+            .merge(
+                axum::Router::new()
+                    .route(
+                        "/api/cloud/disconnect",
+                        post(web::cloud::api_cloud_disconnect),
+                    )
+                    .route_layer(axum::middleware::from_fn(
+                        crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+                    ))
+                    .with_state(cloud_state),
             )
-            .with_state(cloud_state)
     };
 
     let update_router = axum::Router::new()
@@ -121,8 +128,15 @@ pub fn build_gateway_app(
         .route("/api/update/check", post(web::update::api_update_check))
         .route("/api/update/apply", post(web::update::api_update_apply))
         .route("/api/update/restart", post(web::update::api_update_restart))
-        .route("/api/shutdown", post(web::update::api_shutdown))
-        .with_state(update_api_state);
+        .with_state(update_api_state.clone())
+        .merge(
+            axum::Router::new()
+                .route("/api/shutdown", post(web::update::api_shutdown))
+                .route_layer(axum::middleware::from_fn(
+                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+                ))
+                .with_state(update_api_state),
+        );
 
     let tracing_router = tracing_api_router(tracing_api_state);
 

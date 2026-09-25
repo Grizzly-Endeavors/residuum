@@ -412,29 +412,43 @@
             <span class="cloud-user-id">({cloudStatus.user_id})</span>
           {/if}
         </div>
-        <div class="cloud-actions">
-          <button
-            class="btn btn-sm btn-secondary"
-            onclick={handleCloudDisconnect}
-            disabled={cloudAction}
-          >
-            {cloudAction ? "Disconnecting..." : "Disconnect"}
-          </button>
-        </div>
+        {#if cloudStatus.viewed_via_tunnel}
+          <p class="cloud-hint">
+            Disconnecting can't be done remotely, because nothing could bring Residuum back. Do it
+            on the machine running Residuum.
+          </p>
+        {:else}
+          <div class="cloud-actions">
+            <button
+              class="btn btn-sm btn-secondary"
+              onclick={handleCloudDisconnect}
+              disabled={cloudAction}
+            >
+              {cloudAction ? "Disconnecting..." : "Disconnect"}
+            </button>
+          </div>
+        {/if}
       {:else if cloudStatus?.status === "connecting"}
         <div class="cloud-status-row">
           <span class="cloud-status-dot cloud-status-connecting"></span>
           <span class="cloud-status-text">Connecting...</span>
         </div>
-        <div class="cloud-actions">
-          <button
-            class="btn btn-sm btn-secondary"
-            onclick={handleCloudDisconnect}
-            disabled={cloudAction}
-          >
-            {cloudAction ? "Cancelling..." : "Cancel"}
-          </button>
-        </div>
+        {#if cloudStatus.viewed_via_tunnel}
+          <p class="cloud-hint">
+            Cancelling can't be done remotely, because nothing could bring Residuum back. Do it on
+            the machine running Residuum.
+          </p>
+        {:else}
+          <div class="cloud-actions">
+            <button
+              class="btn btn-sm btn-secondary"
+              onclick={handleCloudDisconnect}
+              disabled={cloudAction}
+            >
+              {cloudAction ? "Cancelling..." : "Cancel"}
+            </button>
+          </div>
+        {/if}
       {:else if cloudStatus?.has_token && !cloudStatus?.enabled}
         <div class="cloud-status-row">
           <span class="cloud-status-dot cloud-status-disconnected"></span>
