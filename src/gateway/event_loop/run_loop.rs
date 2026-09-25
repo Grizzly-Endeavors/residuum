@@ -594,13 +594,14 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
     }
 
-    // Reload notification channel subscribers
-    // Abort old subscriber handles
-    for h in rt.notify_handles.drain(..) {
-        h.abort();
-    }
+    // Reload notification channel subscribers. Parse the new file before
+    // touching anything running: a parse failure must leave the current
+    // subscribers in place rather than aborting them and spawning nothing.
     match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
+            for h in rt.notify_handles.drain(..) {
+                h.abort();
+            }
             let new_handles = crate::gateway::startup::spawn_notify_subscribers(
                 &rt.bus_handle,
                 &configs,
@@ -615,6 +616,13 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
+            crate::gateway::helpers::publish_notice(
+                &rt.publisher,
+                format!(
+                    "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
+                ),
+            )
+            .await;
         }
     }
 
