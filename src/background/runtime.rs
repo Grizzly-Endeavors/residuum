@@ -3822,9 +3822,12 @@ mod tests {
                 external: Duration::from_secs(5),
                 artifact: Duration::from_secs(5),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let first = SessionAddress::from("spawned-slow-first-0001");

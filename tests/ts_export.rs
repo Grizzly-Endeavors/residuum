@@ -14,7 +14,8 @@ mod ts_export {
         CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
     };
     use residuum::gateway::protocol::{
-        ArtifactSummary, ClientMessage, ServerMessage, SessionListResponse, WorkbenchInfo,
+        ActionInfo, ArtifactSummary, ClientMessage, PulseInfo, ServerMessage, SessionListResponse,
+        WorkbenchInfo,
     };
     use residuum::inference::ImageData;
 
@@ -49,6 +50,9 @@ mod ts_export {
         RestoreOutcome::export_all(&cfg).unwrap();
         UndoOutcome::export_all(&cfg).unwrap();
         RepoKind::export_all(&cfg).unwrap();
+        // `GET /api/scheduled/pulses` and `GET /api/scheduled/actions`.
+        PulseInfo::export_all(&cfg).unwrap();
+        ActionInfo::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

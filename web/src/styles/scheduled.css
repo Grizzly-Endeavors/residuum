@@ -1,0 +1,132 @@
+/* ── Scheduled view ───────────────────────────────────────────────────── */
+
+.scheduled-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s-4) var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.scheduled-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.scheduled-empty {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-style: italic;
+}
+
+.scheduled-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.scheduled-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  padding: var(--s-2) var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.scheduled-row.has-problems {
+  border-color: rgba(192, 57, 43, 0.4);
+}
+
+.scheduled-row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.scheduled-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.scheduled-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.scheduled-badge {
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: 999px;
+  line-height: 1.4;
+}
+
+.scheduled-badge-running {
+  background: var(--vein-faint);
+  color: var(--vein-bright);
+  border: 1px solid var(--vein-dim);
+}
+
+.scheduled-badge-overlap {
+  background: rgba(192, 57, 43, 0.12);
+  color: #e8a0a0;
+  border: 1px solid rgba(192, 57, 43, 0.4);
+  cursor: help;
+}
+
+.scheduled-outcome {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.scheduled-outcome.failed {
+  color: #e8a0a0;
+}
+
+.scheduled-problem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-1);
+  font-size: var(--fs-xs);
+  color: #e8a0a0;
+}
+
+.scheduled-problem > :global(svg) {
+  flex: none;
+  margin-top: 0.15em;
+}
+
+.scheduled-cancel {
+  margin-left: auto;
+  font-family: var(--font-body);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.scheduled-cancel:hover:not(:disabled) {
+  color: #e8a0a0;
+  border-color: rgba(192, 57, 43, 0.4);
+}
+
+.scheduled-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

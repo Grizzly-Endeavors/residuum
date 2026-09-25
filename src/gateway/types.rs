@@ -216,6 +216,12 @@ pub(crate) struct GatewayState {
     /// Whether the workspace change feed is running, so a connection that
     /// starts watching can be told when live updates are off.
     pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// Pending one-off scheduled actions, for the Scheduled view's listing
+    /// and cancel button.
+    pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
+    /// Workspace layout, for the Scheduled view's reads of HEARTBEAT.yml,
+    /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
+    pub layout: WorkspaceLayout,
 }
 
 /// All state needed by the main event loop.

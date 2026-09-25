@@ -173,6 +173,15 @@ pub fn build_gateway_app(
         skill_state: Arc::clone(&state.skill_state),
     });
 
+    let scheduled_router =
+        web::scheduled::scheduled_api_router(web::scheduled::ScheduledApiState {
+            registry: Arc::clone(&state.session_registry),
+            store: Arc::clone(&state.session_store),
+            action_store: Arc::clone(&state.action_store),
+            layout: state.layout.clone(),
+            tz: state.tz,
+        });
+
     let workbench_router =
         web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
             dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
@@ -198,6 +207,7 @@ pub fn build_gateway_app(
         .merge(webhook_router)
         .merge(file_router)
         .merge(sessions_router)
+        .merge(scheduled_router)
         .merge(cloud_router)
         .merge(update_router)
         .merge(tracing_router)

@@ -15,6 +15,7 @@
   import SessionsSidebar from "./components/SessionsSidebar.svelte";
   import SessionView from "./components/SessionView.svelte";
   import Workbench from "./components/Workbench.svelte";
+  import Scheduled from "./Scheduled.svelte";
   import { userInbox } from "./lib/inbox.svelte";
   import { router } from "./lib/router.svelte";
 
@@ -25,11 +26,14 @@
   let mode = $state<"loading" | "setup" | "running">("loading");
   router.start();
 
-  let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench">(() => {
-    if (router.settings !== null) return "settings";
-    if (router.workbench !== null) return "workbench";
-    return router.chat.workspace ? "workspace" : "chat";
-  });
+  let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench" | "scheduled">(
+    () => {
+      if (router.settings !== null) return "settings";
+      if (router.workbench !== null) return "workbench";
+      if (router.scheduled) return "scheduled";
+      return router.chat.workspace ? "workspace" : "chat";
+    },
+  );
   let workspaceMounted = $state(false);
   let helpOpen = $state(false);
   let feedbackOpen = $state(false);
@@ -197,11 +201,17 @@
         if (activeView === "workbench") router.closeWorkbench();
         else router.openWorkbench();
       }}
+      onOpenScheduled={() => {
+        if (activeView === "scheduled") router.closeScheduled();
+        else router.openScheduled();
+      }}
       onOpenFeedback={() => openFeedback("bug")}
       onOpenInbox={() => {
         inboxOpen = true;
       }}
-      sessionsToggle={activeView === "settings" || activeView === "workbench"
+      sessionsToggle={activeView === "settings" ||
+      activeView === "workbench" ||
+      activeView === "scheduled"
         ? undefined
         : {
             open: sidebarOpen,
@@ -222,6 +232,8 @@
       full={router.workbench?.full ?? false}
       onClose={() => router.closeWorkbench()}
     />
+  {:else if activeView === "scheduled"}
+    <Scheduled onClose={() => router.closeScheduled()} />
   {:else}
     <div class="app-body">
       {#if sidebarOpen}
