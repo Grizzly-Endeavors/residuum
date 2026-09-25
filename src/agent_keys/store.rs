@@ -34,9 +34,11 @@ pub(crate) const LOCK_FILE: &str = "agent-keys.lock";
 /// Longest accepted key name.
 const MAX_NAME_LEN: usize = 64;
 
-/// Shortest accepted key value. Shorter values can't be redacted by substring
-/// match without also mangling unrelated output that happens to contain them.
-const MIN_VALUE_LEN: usize = 8;
+/// Key value length below which redaction by substring match becomes
+/// unreliable (a short value is more likely to also appear as ordinary,
+/// unrelated output). Not a hard minimum: a value under this length is still
+/// stored, with a warning naming the risk (see [`short_value_warning`]).
+const SHORT_VALUE_WARNING_LEN: usize = 8;
 
 /// Environment variables a key name must not map onto: overriding them would
 /// break or hijack the spawned shell rather than hand it a credential.
@@ -219,6 +221,9 @@ impl AgentKeyStore {
     /// Insert or replace a key in memory. `description: None` keeps an
     /// existing key's description. The caller persists with [`save`](Self::save).
     ///
+    /// Returns a warning (the key is still stored either way) when `value`
+    /// is short enough that redaction by substring match becomes unreliable.
+    ///
     /// # Errors
     /// Returns `AgentKeyError::Invalid` for a bad name or value, and
     /// `AgentKeyError::OwnedByUser` when the agent tries to replace a key
@@ -229,7 +234,7 @@ impl AgentKeyStore {
         value: &str,
         description: Option<&str>,
         creator: KeyCreator,
-    ) -> Result<(), AgentKeyError> {
+    ) -> Result<Option<String>, AgentKeyError> {
         validate_name(name)?;
         validate_value(value)?;
         let existing = self.keys.get(name);
@@ -242,6 +247,7 @@ impl AgentKeyStore {
             || existing.map(|e| e.description.clone()).unwrap_or_default(),
             |d| d.trim().to_string(),
         );
+        let warning = short_value_warning(value);
         self.keys.insert(
             name.to_string(),
             KeyEntry {
@@ -250,7 +256,7 @@ impl AgentKeyStore {
                 created_by: creator,
             },
         );
-        Ok(())
+        Ok(warning)
     }
 
     /// Remove a key in memory. The caller persists with [`save`](Self::save).
@@ -307,22 +313,35 @@ pub fn validate_name(name: &str) -> Result<(), AgentKeyError> {
     Ok(())
 }
 
-/// Check a key value: at least [`MIN_VALUE_LEN`] characters and no NUL.
+/// Check a key value: no NUL byte. There is no minimum length — see
+/// [`short_value_warning`] for the (non-blocking) redaction-risk warning on
+/// a short one.
 ///
 /// # Errors
 /// Returns `AgentKeyError::Invalid` describing what is wrong.
 pub fn validate_value(value: &str) -> Result<(), AgentKeyError> {
-    if value.chars().count() < MIN_VALUE_LEN {
-        return Err(AgentKeyError::Invalid(format!(
-            "key value must be at least {MIN_VALUE_LEN} characters so it can be redacted reliably"
-        )));
-    }
     if value.contains('\0') {
         return Err(AgentKeyError::Invalid(
             "key value must not contain a NUL byte".to_string(),
         ));
     }
     Ok(())
+}
+
+/// A warning that `value` is short enough that redacting it from tool/log
+/// output by substring match is unreliable — it's more likely to also occur
+/// as ordinary, unrelated output — or `None` when it's long enough not to
+/// matter. The value is stored either way; this is advisory only.
+#[must_use]
+pub fn short_value_warning(value: &str) -> Option<String> {
+    let len = value.chars().count();
+    (len < SHORT_VALUE_WARNING_LEN).then(|| {
+        format!(
+            "this key's value is only {len} character(s); values under \
+             {SHORT_VALUE_WARNING_LEN} can't be redacted from output reliably, since a short \
+             string is more likely to also appear as ordinary, unrelated text"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -472,8 +491,19 @@ mod tests {
     #[test]
     fn value_validation() {
         assert!(validate_value("12345678").is_ok());
-        assert!(validate_value("1234567").is_err(), "too short");
+        assert!(
+            validate_value("1234567").is_ok(),
+            "there is no length minimum; a short value is stored, just warned about"
+        );
         assert!(validate_value("abcd\0efgh").is_err(), "NUL rejected");
+    }
+
+    #[test]
+    fn short_value_warning_only_below_the_threshold() {
+        assert!(short_value_warning("12345678").is_none());
+        let warning = short_value_warning("1234567").expect("a short value should warn");
+        assert!(warning.contains('7'), "warning should name the length");
+        assert!(warning.contains("redact"));
     }
 
     #[test]

@@ -18,7 +18,7 @@ Every key has:
 
 - **A name**: lowercase letters, digits, and underscores, starting with a letter, at most 64 characters. Names that would map onto process-critical environment variables (`PATH`, `HOME`, `USER`, `SHELL`, `PWD`, `TMPDIR`, `IFS`, `ENV`, `BASH_ENV`, `LANG`, and anything starting `LD_` or `DYLD_`) are rejected.
 - **An environment variable**: the name uppercased. `github_token` is exposed as `$GITHUB_TOKEN`.
-- **A value** of at least 8 characters. Shorter values can't be redacted by substring match without also mangling unrelated output.
+- **A value**, no NUL byte, no length minimum. A value under 8 characters is still stored, with a warning (in the tool result, the CLI output, or the web UI) that it can't be redacted from output reliably by substring match — a short string is more likely to also appear as ordinary, unrelated text.
 - **A description**, shown to the agent. Say what the key is for and what it can reach.
 - **A creator**: `user` or `agent`. The agent may replace or delete only keys it created. The user may change anything.
 

@@ -142,6 +142,9 @@ impl AgentKeys {
     /// lock on `agent-keys.lock` first, so a concurrent write from the CLI,
     /// the web API, or another handle isn't lost.
     ///
+    /// Returns a warning (the key is still stored either way) when `value`
+    /// is short enough that redaction by substring match becomes unreliable.
+    ///
     /// # Errors
     /// Returns the store's validation or ownership error, or
     /// `AgentKeyError::Storage` if reading or writing the file fails.
@@ -151,7 +154,7 @@ impl AgentKeys {
         value: &str,
         description: Option<&str>,
         creator: KeyCreator,
-    ) -> Result<(), AgentKeyError> {
+    ) -> Result<Option<String>, AgentKeyError> {
         let name = name.to_string();
         let value = value.to_string();
         let description = description.map(str::to_string);
@@ -170,18 +173,22 @@ impl AgentKeys {
             .await
     }
 
-    async fn mutate<F>(&self, change: F) -> Result<(), AgentKeyError>
+    /// Applies `change` to a freshly-loaded store and persists it, returning
+    /// whatever `change` itself returns (e.g. `set`'s short-value warning)
+    /// alongside the usual write/reload machinery.
+    async fn mutate<F, T>(&self, change: F) -> Result<T, AgentKeyError>
     where
-        F: FnOnce(&mut AgentKeyStore) -> Result<(), AgentKeyError> + Send + 'static,
+        F: FnOnce(&mut AgentKeyStore) -> Result<T, AgentKeyError> + Send + 'static,
+        T: Send + 'static,
     {
         let _guard = self.write_lock.lock().await;
         let config_dir = self.config_dir.clone();
-        let store = tokio::task::spawn_blocking(move || {
+        let (store, result) = tokio::task::spawn_blocking(move || {
             let _file_lock = lock_store_file(&config_dir)?;
             let mut store = AgentKeyStore::load(&config_dir)?;
-            change(&mut store)?;
+            let result = change(&mut store)?;
             store.save(&config_dir)?;
-            Ok::<_, AgentKeyError>(store)
+            Ok::<_, AgentKeyError>((store, result))
         })
         .await
         .map_err(|e| AgentKeyError::Storage(format!("agent key write task failed: {e}")))??;
@@ -192,7 +199,7 @@ impl AgentKeys {
         cache.stamp = stamp;
         cache.snapshot = Arc::new(AgentKeysSnapshot::new(store));
         cache.load_error = None;
-        Ok(())
+        Ok(result)
     }
 
     async fn load_blocking(&self) -> Result<AgentKeyStore, AgentKeyError> {
