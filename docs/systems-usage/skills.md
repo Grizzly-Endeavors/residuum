@@ -28,6 +28,8 @@ Skills shipped with the binary are written into `skills/` during workspace creat
 
 If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
 
+A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories.
+
 ## How Skills Appear in Context
 
 - **Available skills**: listed in an `<available_skills>` block with name and description. The agent always sees this index and can decide to activate skills based on the current task.

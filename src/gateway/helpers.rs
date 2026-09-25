@@ -3,7 +3,7 @@
 use crate::bus::{ErrorEvent, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 
 /// Publish a notice to the system notification channel.
-pub(super) async fn publish_notice(publisher: &Publisher, message: String) {
+pub(crate) async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
@@ -16,7 +16,7 @@ pub(super) async fn publish_notice(publisher: &Publisher, message: String) {
 }
 
 /// Publish an error to the system notification channel.
-pub(super) async fn publish_error(publisher: &Publisher, message: String) {
+pub(crate) async fn publish_error(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
         .publish(
             topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),

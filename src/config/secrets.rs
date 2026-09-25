@@ -38,6 +38,19 @@ pub struct SecretStore {
 }
 
 impl SecretStore {
+    /// An empty store: every `secret:` lookup resolves as missing.
+    ///
+    /// Used when the real store can't be loaded (missing key file,
+    /// decryption failure, corrupt TOML) so that degradation is scoped to
+    /// the config entries that actually reference `secret:<name>`, instead
+    /// of failing config loading entirely.
+    #[must_use]
+    pub(crate) fn empty() -> Self {
+        Self {
+            secrets: HashMap::new(),
+        }
+    }
+
     /// Load from the encrypted file. Returns an empty store if the file doesn't exist.
     ///
     /// # Errors

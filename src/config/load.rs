@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::util::FatalError;
 
 use super::Config;
+use super::tolerant::parse_tolerating_unknown_keys;
 use super::{bootstrap, deserialize, resolve};
 
 impl Config {
@@ -62,35 +63,57 @@ impl Config {
     #[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
     pub fn load_at(config_dir: &std::path::Path) -> Result<Self, FatalError> {
         let config_path = config_dir.join("config.toml");
+        let providers_path = find_providers_path(config_dir)?;
+        Self::load_from_paths(config_dir, &config_path, &providers_path)
+    }
 
-        let file_config = if config_path.exists() {
-            let contents = std::fs::read_to_string(&config_path).map_err(|e| {
+    /// Load configuration from explicit `config.toml`/`providers.toml`
+    /// paths, resolved against `config_dir` for everything else (secrets,
+    /// workspace defaults, tool paths).
+    ///
+    /// Used by [`load_at`](Self::load_at) for the normal path, and by the
+    /// last-known-good fallback (`gateway::last_known_good`) to load a
+    /// saved copy under different filenames without touching the user's
+    /// live `config.toml`/`providers.toml`.
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` if either file exists but cannot be
+    /// read or parsed, or if required values are missing.
+    pub(crate) fn load_from_paths(
+        config_dir: &std::path::Path,
+        config_path: &std::path::Path,
+        providers_path: &std::path::Path,
+    ) -> Result<Self, FatalError> {
+        let (file_config, config_notices) = if config_path.exists() {
+            let contents = std::fs::read_to_string(config_path).map_err(|e| {
                 FatalError::Config(format!(
                     "failed to read config at {}: {e}",
                     config_path.display()
                 ))
             })?;
-            Some(
-                toml::from_str::<deserialize::ConfigFile>(&contents).map_err(|e| {
-                    FatalError::Config(format!(
-                        "failed to parse config at {}: {e}",
-                        config_path.display()
-                    ))
-                })?,
-            )
+            let (parsed, notices) =
+                parse_tolerating_unknown_keys::<deserialize::ConfigFile>(&contents, "config.toml")
+                    .map_err(FatalError::Config)?;
+            (Some(parsed), notices)
         } else {
-            None
+            (None, Vec::new())
         };
 
-        let loaded_providers_path = find_providers_path(config_dir)?;
-        let providers = load_providers(&loaded_providers_path)?;
+        let (providers, providers_notices) = load_providers(providers_path)?;
 
-        let cfg = resolve::from_file_and_env(file_config.as_ref(), Some(&providers), config_dir)?;
+        let mut cfg =
+            resolve::from_file_and_env(file_config.as_ref(), Some(&providers), config_dir)?;
+        let mut load_notices = config_notices;
+        load_notices.extend(providers_notices);
+        load_notices.extend(std::mem::take(&mut cfg.load_notices));
+        cfg.load_notices = load_notices;
+
         tracing::info!(
             config = %config_path.display(),
-            providers = %loaded_providers_path.display(),
+            providers = %providers_path.display(),
             main_model = %cfg.main.first().map(|p| p.model.to_string()).unwrap_or_default(),
             timezone = %cfg.timezone,
+            notices = cfg.load_notices.len(),
             "config loaded"
         );
         Ok(cfg)
@@ -128,8 +151,8 @@ impl Config {
     /// # Errors
     /// Returns a human-readable error string if validation fails.
     pub fn validate_toml(contents: &str, config_dir: &std::path::Path) -> Result<(), String> {
-        let file = toml::from_str::<deserialize::ConfigFile>(contents)
-            .map_err(|e| format!("TOML parse error: {e}"))?;
+        let (file, _notices) =
+            parse_tolerating_unknown_keys::<deserialize::ConfigFile>(contents, "config.toml")?;
 
         // Load providers.toml from disk for resolution (may not exist during setup)
         let providers_file = read_optional_toml::<deserialize::ProvidersFile>(
@@ -153,8 +176,10 @@ impl Config {
         contents: &str,
         config_dir: &std::path::Path,
     ) -> Result<(), String> {
-        let providers_file = toml::from_str::<deserialize::ProvidersFile>(contents)
-            .map_err(|e| format!("TOML parse error: {e}"))?;
+        let (providers_file, _notices) = parse_tolerating_unknown_keys::<deserialize::ProvidersFile>(
+            contents,
+            "providers.toml",
+        )?;
 
         // Load config.toml from disk for resolution
         let config_file = read_optional_toml::<deserialize::ConfigFile>(
@@ -218,19 +243,17 @@ fn read_optional_toml<T: serde::de::DeserializeOwned>(
 }
 
 /// Load and parse a `providers.toml` file from the given path.
-fn load_providers(path: &std::path::Path) -> Result<deserialize::ProvidersFile, FatalError> {
+fn load_providers(
+    path: &std::path::Path,
+) -> Result<(deserialize::ProvidersFile, Vec<String>), FatalError> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         FatalError::Config(format!(
             "failed to read providers config at {}: {e}",
             path.display()
         ))
     })?;
-    toml::from_str::<deserialize::ProvidersFile>(&contents).map_err(|e| {
-        FatalError::Config(format!(
-            "failed to parse providers config at {}: {e}",
-            path.display()
-        ))
-    })
+    parse_tolerating_unknown_keys::<deserialize::ProvidersFile>(&contents, "providers.toml")
+        .map_err(FatalError::Config)
 }
 
 #[cfg(test)]
@@ -374,10 +397,12 @@ main = "invalid-format"
         std::fs::write(&path, VALID_PROVIDERS).unwrap();
         let result = super::load_providers(&path);
         assert!(result.is_ok(), "valid providers should parse: {result:?}");
+        let (providers, notices) = result.unwrap();
         assert!(
-            result.unwrap().models.is_some(),
+            providers.models.is_some(),
             "parsed providers should have models section"
         );
+        assert!(notices.is_empty(), "valid file should have no notices");
     }
 
     #[test]
@@ -420,38 +445,40 @@ main = "invalid-format"
     }
 
     #[test]
-    fn idle_channel_rejected_for_unconfigured_interface() {
+    fn idle_channel_disabled_with_notice_for_unconfigured_interface() {
         let dir = tempfile::tempdir().unwrap();
         write_providers(dir.path());
         let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"telegram\"\n";
         std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let result = Config::load_at(dir.path());
+        let cfg = Config::load_at(dir.path()).unwrap();
         assert!(
-            result.is_err(),
-            "idle_channel=telegram without [telegram] should fail"
+            cfg.idle.idle_channel.is_none(),
+            "idle_channel=telegram without [telegram] should be disabled, not fail the config"
         );
-        let err = result.unwrap_err().to_string();
+        assert_eq!(cfg.load_notices.len(), 1);
+        let notice = cfg.load_notices.first().unwrap();
         assert!(
-            err.contains("idle_channel") && err.contains("missing"),
-            "error should mention idle_channel and missing section: {err}"
+            notice.contains("idle_channel") && notice.contains("missing"),
+            "notice should mention idle_channel and missing section: {notice}"
         );
     }
 
     #[test]
-    fn idle_channel_rejected_for_unknown_name() {
+    fn idle_channel_disabled_with_notice_for_unknown_name() {
         let dir = tempfile::tempdir().unwrap();
         write_providers(dir.path());
         let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"sms\"\n";
         std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let result = Config::load_at(dir.path());
+        let cfg = Config::load_at(dir.path()).unwrap();
         assert!(
-            result.is_err(),
-            "idle_channel=sms should be rejected as unknown"
+            cfg.idle.idle_channel.is_none(),
+            "idle_channel=sms should be disabled as unknown, not fail the config"
         );
-        let err = result.unwrap_err().to_string();
+        assert_eq!(cfg.load_notices.len(), 1);
+        let notice = cfg.load_notices.first().unwrap();
         assert!(
-            err.contains("not a recognized interface"),
-            "error should mention unrecognized interface: {err}"
+            notice.contains("not a recognized interface"),
+            "notice should mention unrecognized interface: {notice}"
         );
     }
 
