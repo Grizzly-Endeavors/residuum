@@ -64,8 +64,7 @@ impl SkillIndex {
             };
             tracing::debug!(dir = %dir.display(), source = %source, "scanning skill dir");
             if let Err(err) =
-                scan_skill_directory(dir, source, &mut entries, &mut notices, &mut seen_names)
-                    .await
+                scan_skill_directory(dir, source, &mut entries, &mut notices, &mut seen_names).await
             {
                 tracing::warn!(
                     dir = %dir.display(),
