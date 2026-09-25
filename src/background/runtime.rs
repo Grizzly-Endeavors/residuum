@@ -403,6 +403,7 @@ fn deliver_losing_spawn_input(
                 conversation: info.conversation_target.clone(),
                 inbound: config.inbound.clone(),
                 images: config.images.clone(),
+                overlap: None,
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -1682,6 +1683,7 @@ mod tests {
             }),
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 

@@ -328,6 +328,7 @@ mod tests {
             }),
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         registry
             .register(info, tokio_util::sync::CancellationToken::new())

@@ -636,7 +636,7 @@ impl SessionStore {
         let (outcome, outcome_error) = match status {
             AgentResultStatus::Completed => ("completed", None),
             AgentResultStatus::Cancelled => ("cancelled", None),
-            AgentResultStatus::Failed { error } => ("failed", Some(error.clone())),
+            AgentResultStatus::Failed { error, .. } => ("failed", Some(error.clone())),
         };
         record.outcome = Some(outcome.to_string());
         record.outcome_error = outcome_error;
@@ -964,7 +964,13 @@ mod tests {
         }));
 
         let path = store
-            .complete_run(&info, "completed", Vec::new(), None)
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                Vec::new(),
+                None,
+            )
             .await
             .expect("write should succeed");
 
@@ -1036,6 +1042,7 @@ mod tests {
                 "completed",
                 &AgentResultStatus::Failed {
                     error: "the model call timed out".to_string(),
+                    details: None,
                 },
                 vec![],
                 None,
