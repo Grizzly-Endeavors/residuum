@@ -549,6 +549,7 @@ mod tests {
                     cache_read_tokens: None,
                 }),
                 thinking: None,
+                stop_reason: None,
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -560,6 +561,7 @@ mod tests {
                     cache_read_tokens: None,
                 }),
                 thinking: None,
+                stop_reason: None,
             },
         ]);
 
