@@ -361,6 +361,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(totals) = config::api_usage(State(state)).await;
         assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
@@ -394,6 +395,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(loaded) = config::api_usage(State(state)).await;
         assert_eq!(loaded, totals);
