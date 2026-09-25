@@ -50,6 +50,20 @@ pub(super) struct WriteFileRequest {
     pub content: String,
 }
 
+/// Request body for `POST /api/workspace/validate`.
+#[derive(Deserialize)]
+pub(super) struct ValidateFileRequest {
+    pub path: String,
+    pub content: String,
+}
+
+/// Response from `POST /api/workspace/validate`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct ValidateFileResponse {
+    pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
+}
+
 /// Response from `PUT /api/workspace/file`.
 ///
 /// `diagnostics` is always populated when `path` is one of the
@@ -558,6 +572,25 @@ fn diagnose_write_content(
     };
 
     crate::diagnostics::diagnose(path, text, &paths).unwrap_or_default()
+}
+
+/// `POST /api/workspace/validate` — diagnostics for `content` as if it were
+/// saved to `path`, without writing anything.
+///
+/// `path` is resolved the same way a write would resolve it: against the app
+/// config directory for `config.toml`/`providers.toml`, against the
+/// workspace root for `config/channels.toml`, `config/mcp.json`,
+/// `config/a2a.json`, and by filename alone for `HEARTBEAT.yml` and a skill
+/// `SKILL.md`. Empty diagnostics means either the content is clean or
+/// `path` isn't one of these files — this endpoint never errors on an
+/// unrecognized path, since the editor calls it on every debounced
+/// keystroke and most files have nothing to check.
+pub(super) async fn api_workspace_validate(
+    State(state): State<ConfigApiState>,
+    Json(req): Json<ValidateFileRequest>,
+) -> Json<ValidateFileResponse> {
+    let diagnostics = diagnose_write_content(&state, &req.path, req.content.as_bytes());
+    Json(ValidateFileResponse { diagnostics })
 }
 
 /// Send the workspace reload signal if `relative` names an identity file.
@@ -1643,6 +1676,73 @@ mod tests {
             ok_body.diagnostics.is_empty(),
             "valid HEARTBEAT.yml should have no diagnostics"
         );
+    }
+
+    // ── Validate ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn validate_reports_diagnostics_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "not: valid: yaml: [[[".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(
+            !response.diagnostics.is_empty(),
+            "invalid YAML should produce a diagnostic"
+        );
+        assert!(
+            !ws_dir.join("HEARTBEAT.yml").exists(),
+            "validate must not write anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_clean_content_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "pulses:\n  - name: test\n    schedule: \"1h\"\n    tasks: []\n"
+                    .to_string(),
+            }),
+        )
+        .await;
+
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_unrecognized_path_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        let state = make_state(ws_dir);
+
+        let Json(response) = api_workspace_validate(
+            State(state),
+            Json(ValidateFileRequest {
+                path: "notes.md".to_string(),
+                content: "whatever content".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(response.diagnostics.is_empty());
     }
 
     // ── Raw read/write ──────────────────────────────────────────────

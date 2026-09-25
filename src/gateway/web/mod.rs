@@ -150,6 +150,10 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/workspace/files", get(workspace::api_workspace_files))
         .route("/api/workspace/dir", post(workspace::api_workspace_mkdir))
         .route("/api/workspace/move", post(workspace::api_workspace_move))
+        .route(
+            "/api/workspace/validate",
+            post(workspace::api_workspace_validate),
+        )
         .merge(workspace_file_router)
         .route(
             "/api/workspace/tree",
