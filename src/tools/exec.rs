@@ -994,7 +994,7 @@ mod tests {
         // that `kill_on_drop` alone would reach.
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("grandchild-pid");
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let cancel = CancellationToken::new();
 
         let command = format!("sleep 10 & echo $! > {}; wait", pid_path.display());
