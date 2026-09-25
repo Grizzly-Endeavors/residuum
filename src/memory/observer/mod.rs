@@ -8,6 +8,8 @@
 mod parse;
 mod prompt;
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use chrono::NaiveDateTime;
 use chrono_tz::Tz;
@@ -88,10 +90,23 @@ impl Default for ObserverConfig {
     }
 }
 
-/// The observer extracts structured episodes from recent messages.
-pub struct Observer {
-    provider: Box<dyn InferenceProvider>,
+/// Provider and config, guarded together so a config/provider reload never
+/// observes a torn combination of the two.
+struct ObserverInner {
+    provider: Arc<dyn InferenceProvider>,
     config: ObserverConfig,
+}
+
+/// The observer extracts structured episodes from recent messages.
+///
+/// Provider and config live behind a lock, not owned directly, so `Observer`
+/// can be shared (`Arc<Observer>`) with the background post-turn worker —
+/// see `crate::gateway::post_turn` — while a config reload on the main loop
+/// can still swap them in place. `extract` only ever holds the lock briefly,
+/// to clone out an `Arc` and a couple of `Copy`/cheap-`Clone` fields, never
+/// across the LLM call itself.
+pub struct Observer {
+    inner: std::sync::RwLock<ObserverInner>,
     /// Backs off the automatic extract trigger (threshold crossings) after a
     /// failure, instead of re-attempting — and re-spending, since this is an
     /// LLM call — on every later threshold crossing while recent messages
@@ -105,8 +120,10 @@ impl Observer {
     #[must_use]
     pub fn new(provider: Box<dyn InferenceProvider>, config: ObserverConfig) -> Self {
         Self {
-            provider,
-            config,
+            inner: std::sync::RwLock::new(ObserverInner {
+                provider: Arc::from(provider),
+                config,
+            }),
             automatic_failure: crate::util::BackoffTracker::new(),
         }
     }
@@ -118,40 +135,54 @@ impl Observer {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Box::new(crate::inference::providers::null::NullProvider),
-            config: ObserverConfig {
-                threshold_tokens: usize::MAX,
-                cooldown_secs: u64::MAX,
-                force_threshold_tokens: usize::MAX,
-                tz,
-                role_overrides: None,
-            },
+            inner: std::sync::RwLock::new(ObserverInner {
+                provider: Arc::new(crate::inference::providers::null::NullProvider),
+                config: ObserverConfig {
+                    threshold_tokens: usize::MAX,
+                    cooldown_secs: u64::MAX,
+                    force_threshold_tokens: usize::MAX,
+                    tz,
+                    role_overrides: None,
+                },
+            }),
             automatic_failure: crate::util::BackoffTracker::new(),
         }
+    }
+
+    fn read_inner(&self) -> std::sync::RwLockReadGuard<'_, ObserverInner> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write_inner(&self) -> std::sync::RwLockWriteGuard<'_, ObserverInner> {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The configured cooldown period in seconds.
     #[must_use]
     pub fn cooldown_secs(&self) -> u64 {
-        self.config.cooldown_secs
+        self.read_inner().config.cooldown_secs
     }
 
     /// The soft observation threshold in tokens.
     #[must_use]
     pub fn threshold_tokens(&self) -> usize {
-        self.config.threshold_tokens
+        self.read_inner().config.threshold_tokens
     }
 
     /// The force observation threshold in tokens (bypasses cooldown).
     #[must_use]
     pub fn force_threshold_tokens(&self) -> usize {
-        self.config.force_threshold_tokens
+        self.read_inner().config.force_threshold_tokens
     }
 
     /// The configured timezone.
     #[must_use]
     pub fn timezone(&self) -> Tz {
-        self.config.tz
+        self.read_inner().config.tz
     }
 
     /// Tracks consecutive failures of the *automatic* extract trigger
@@ -164,23 +195,24 @@ impl Observer {
     }
 
     /// Replace the observer's configuration (e.g. after a config reload).
-    pub fn update_config(&mut self, config: ObserverConfig) {
+    pub fn update_config(&self, config: ObserverConfig) {
+        let mut inner = self.write_inner();
         tracing::debug!(
-            old_threshold = self.config.threshold_tokens,
+            old_threshold = inner.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
-            old_cooldown_secs = self.config.cooldown_secs,
+            old_cooldown_secs = inner.config.cooldown_secs,
             new_cooldown_secs = config.cooldown_secs,
-            old_force_threshold = self.config.force_threshold_tokens,
+            old_force_threshold = inner.config.force_threshold_tokens,
             new_force_threshold = config.force_threshold_tokens,
             "updating observer config"
         );
-        self.config = config;
+        inner.config = config;
     }
 
     /// Replace the model provider (e.g. after a provider config change).
-    pub fn swap_provider(&mut self, provider: Box<dyn InferenceProvider>) {
+    pub fn swap_provider(&self, provider: Box<dyn InferenceProvider>) {
         tracing::debug!("swapping observer model provider");
-        self.provider = provider;
+        self.write_inner().provider = Arc::from(provider);
     }
 
     /// Check token thresholds and return the appropriate action.
@@ -190,9 +222,10 @@ impl Observer {
     #[must_use]
     pub fn check_thresholds(&self, recent_messages: &[RecentMessage]) -> ObserveAction {
         let tokens = estimate_recent_tokens(recent_messages);
-        if tokens >= self.config.force_threshold_tokens {
+        let inner = self.read_inner();
+        if tokens >= inner.config.force_threshold_tokens {
             ObserveAction::ForceNow
-        } else if tokens >= self.config.threshold_tokens {
+        } else if tokens >= inner.config.threshold_tokens {
             ObserveAction::StartCooldown
         } else {
             ObserveAction::None
@@ -237,8 +270,21 @@ impl Observer {
         // tool calls) so the observer LLM has complete context.
         let extraction_messages = build_extraction_prompt(recent_messages, &content_guidance);
 
+        // Snapshot the provider (a cheap `Arc` clone) and the config fields
+        // this call needs, then drop the lock before the LLM call below —
+        // held only briefly, never across the `.await`, so a concurrent
+        // config reload is never blocked on an in-flight extraction.
+        let (provider, role_overrides, tz) = {
+            let inner = self.read_inner();
+            (
+                Arc::clone(&inner.provider),
+                inner.config.role_overrides.clone(),
+                inner.config.tz,
+            )
+        };
+
         // Call the model with structured output, applying per-role overrides
-        let ov = self.config.role_overrides.as_ref();
+        let ov = role_overrides.as_ref();
         let options = CompletionOptions {
             temperature: ov.and_then(|o| o.temperature),
             thinking: ov.and_then(|o| o.thinking.clone()),
@@ -248,14 +294,13 @@ impl Observer {
             },
             ..CompletionOptions::default()
         };
-        let response = self
-            .provider
+        let response = provider
             .complete(&extraction_messages, &[], &options)
             .await
             .context("observer LLM call failed")?;
 
         // Parse the response into extraction results and optional narrative.
-        let parsed = parse_observer_response(&response, self.config.tz)?;
+        let parsed = parse_observer_response(&response, tz)?;
 
         let messages: Vec<RecentMessage> = recent_messages.to_vec();
         let observations = parsed
@@ -701,7 +746,6 @@ mod tests {
         assert_eq!(observer.cooldown_secs(), 60);
         assert_eq!(observer.force_threshold_tokens(), 5000);
 
-        let mut observer = observer;
         observer.update_config(ObserverConfig {
             threshold_tokens: 2000,
             cooldown_secs: 120,
@@ -727,7 +771,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut observer = Observer::new(
+        let observer = Observer::new(
             Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,

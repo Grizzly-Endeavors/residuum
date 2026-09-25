@@ -559,7 +559,7 @@ async fn reload_providers(
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
-            rt.observer = components.observer;
+            rt.observer = Arc::new(components.observer);
             rt.merge_writer.swap_reflector(components.reflector).await;
             rt.merge_writer
                 .set_embedding_provider(components.embedding_provider)

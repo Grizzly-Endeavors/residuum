@@ -232,7 +232,12 @@ pub(crate) struct GatewayRuntime {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
-    pub observer: Observer,
+    /// `Arc`-shared with the post-turn background worker (see
+    /// `crate::gateway::post_turn`) so an automatic observe cycle's LLM call
+    /// can run off the event loop while a config reload still safely swaps
+    /// the whole instance in place — `Observer`'s own provider/config are
+    /// interior-mutable for exactly this.
+    pub observer: Arc<Observer>,
     /// The single serialized writer for global memory: episode id
     /// allocation, the observation log, the search index, embedding, and
     /// the reflector trigger. Shared with every session run's completion
