@@ -15,7 +15,7 @@ Fires after agent turns when accumulated unobserved message tokens exceed a thre
 - **Soft threshold** (`threshold_tokens`): starts a cooldown timer; fires when cooldown expires.
 - **Force threshold** (`force_threshold_tokens`): fires immediately, bypassing cooldown.
 
-The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
+The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
 
 | File | Format | Contents |
 |------|--------|----------|
