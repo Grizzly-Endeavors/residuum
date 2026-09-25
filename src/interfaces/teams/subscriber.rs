@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bus::{
-    ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent, TurnLifecycleEvent,
+    ConversationTypingEvent, ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent,
+    TurnLifecycleEvent,
 };
 use crate::interfaces::BaseSubscribers;
 use crate::interfaces::notify_main_of_undeliverable_session_output;
@@ -23,6 +24,9 @@ const TYPING_INTERVAL: Duration = Duration::from_secs(3);
 pub(super) async fn run_teams_subscriber(rt: Arc<TeamsRuntime>, mut subs: BaseSubscribers) {
     // One typing loop per in-flight turn, stopped by dropping its sender.
     let mut typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
+    // Same, but for conversation sessions' own turns — keyed by conversation
+    // id rather than correlation id; see `crate::interfaces::BaseSubscribers`.
+    let mut conversation_typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -39,6 +43,22 @@ pub(super) async fn run_teams_subscriber(rt: Arc<TeamsRuntime>, mut subs: BaseSu
                 Ok(None) => break,
                 Err(e) => {
                     tracing::warn!(error = %e, "teams lifecycle subscription failed");
+                    break;
+                }
+            },
+            event = subs.conversation_typing.recv() => match event {
+                Ok(Some(ConversationTypingEvent { conversation_id, active: true })) => {
+                    if let Some(target) = rt.store.conversation(&conversation_id).await {
+                        conversation_typing
+                            .insert(conversation_id, spawn_typing(Arc::clone(&rt), target));
+                    }
+                }
+                Ok(Some(ConversationTypingEvent { conversation_id, active: false })) => {
+                    conversation_typing.remove(&conversation_id);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!(error = %e, "teams conversation-typing subscription failed");
                     break;
                 }
             },

@@ -5,10 +5,10 @@
 //! topic, providing compile-time safety at publish/subscribe boundaries.
 
 use super::events::{
-    A2aTaskSignalEvent, AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent,
-    MessageEvent, NoticeEvent, NotificationEvent, PostTurnActivityEvent, ResponseEvent,
-    SessionEvent, SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent,
-    TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
+    A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
+    IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, PostTurnActivityEvent,
+    ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent,
+    TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -98,6 +98,11 @@ impl Carries<IntermediateEvent> for Endpoint {
 impl Carries<SessionResponseEvent> for Endpoint {
     // A session's own turn output, delivered straight to its conversation —
     // same stakes as `ResponseEvent`.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<ConversationTypingEvent> for Endpoint {
+    // A dropped `active: false` would leave a conversation's typing
+    // indicator stuck on, same reasoning as `TurnLifecycleEvent`.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 

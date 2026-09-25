@@ -72,6 +72,8 @@ Delivery follows the same rules as Messaging below — interrupt if running, new
 
 A conversation session's turn output — final response and any intermediate pre-tool-call text, the same as main posts mid-turn — goes straight back to its own conversation and **never falls back to the owner's DM** — unlike main's own proactive output. If the interface can't deliver it, the output is dropped, an error is logged naming the session and conversation, and main gets a notice to decide whether the owner needs telling.
 
+Discord/Telegram/Teams also show a typing indicator while the session's own turn runs, same as for main's turns, driven by a separate signal keyed by conversation id rather than main's own correlation-id-keyed lifecycle events.
+
 **A2A callers route the same way.** Each caller of the A2A listener (see the `a2a` skill reference) gets its own conversation session, addressed by `{caller}/{context_id}`, with no admission gate beyond the A2A auth layer's own caller-key/sibling check — every authenticated caller reaches its own session. A session started from the `a2a` endpoint is the only kind that gets `a2a_task_update`, which reports that caller's A2A task outcome back through the listener instead of through this page's own output-delivery path.
 
 ## Tools

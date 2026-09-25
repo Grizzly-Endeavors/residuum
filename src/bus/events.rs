@@ -242,6 +242,19 @@ pub struct SessionResponseEvent {
     pub is_final: bool,
 }
 
+/// A conversation session's turn started or finished running, for a typing
+/// indicator on the interface hosting that conversation — the same
+/// signal [`TurnLifecycleEvent`] gives the main agent's own turns, but keyed
+/// by conversation id rather than a message correlation id, since a
+/// session's turn isn't a reply to any one message.
+#[derive(Debug, Clone)]
+pub struct ConversationTypingEvent {
+    /// Which conversation, on whichever interface subscribes to it.
+    pub conversation_id: String,
+    /// Whether the session's turn just started (`true`) or ended (`false`).
+    pub active: bool,
+}
+
 /// Push notification for notify channels.
 #[derive(Debug, Clone)]
 pub struct NotificationEvent {

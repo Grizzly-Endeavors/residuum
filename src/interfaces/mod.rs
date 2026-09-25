@@ -19,8 +19,9 @@ use std::path::Path;
 
 use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::{
-    BusError, BusHandle, EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName,
-    ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
+    BusError, BusHandle, ConversationTypingEvent, EndpointName, ErrorEvent, IntermediateEvent,
+    NoticeEvent, NotifyName, ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent,
+    topics,
 };
 use crate::interfaces::types::{ConversationContext, ConversationKind};
 
@@ -32,6 +33,10 @@ pub(crate) struct BaseSubscribers {
     /// posts — see [`crate::bus::SessionResponseEvent`]).
     pub(crate) session_response: Subscriber<SessionResponseEvent>,
     pub(crate) turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    /// A conversation session's own turn start/end, for a typing indicator
+    /// on its conversation — the session equivalent of `turn_lifecycle`,
+    /// keyed by conversation id instead of correlation id.
+    pub(crate) conversation_typing: Subscriber<ConversationTypingEvent>,
     pub(crate) intermediate: Subscriber<IntermediateEvent>,
     pub(crate) notice: Subscriber<NoticeEvent>,
     pub(crate) error: Subscriber<ErrorEvent>,
@@ -44,6 +49,7 @@ impl BaseSubscribers {
             response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             session_response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            conversation_typing: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
             notice: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
