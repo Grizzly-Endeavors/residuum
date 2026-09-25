@@ -136,7 +136,13 @@ mod tests {
 
         let engine = CheckpointEngine::open_for_cli(dir.path()).unwrap();
         let page = engine
-            .list_checkpoints(residuum::checkpoints::RepoKind::Config, None, None, None)
+            .list_checkpoints(
+                residuum::checkpoints::RepoKind::Config,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(

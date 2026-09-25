@@ -223,7 +223,10 @@ impl CheckpointEngine {
     // ─── Tier 1: visibility ──────────────────────────────────────────
 
     /// List checkpoints in `kind`, newest first, optionally filtered to
-    /// those that changed `path_filter` (a file, or a directory prefix).
+    /// those that changed `path_filter` (a file, or a directory prefix)
+    /// and/or recorded against `turn_filter` (an exact turn id — see
+    /// [`CheckpointContext::turn_id`], used to find a turn's
+    /// turn-start/turn-end pair for "undo this turn").
     ///
     /// # Errors
     /// Returns [`CheckpointError::InvalidCursor`] if `before` isn't a
@@ -232,6 +235,7 @@ impl CheckpointEngine {
         &self,
         kind: RepoKind,
         path_filter: Option<String>,
+        turn_filter: Option<String>,
         before: Option<String>,
         limit: Option<usize>,
     ) -> Result<CheckpointPage, CheckpointError> {
@@ -246,7 +250,12 @@ impl CheckpointEngine {
                     tracing::debug!(error = %e, "checkpoint list cursor did not resolve");
                     CheckpointError::InvalidCursor
                 })?;
-            let (rows, next) = guard.log(before_id, limit, path_filter.as_deref())?;
+            let (rows, next) = guard.log(
+                before_id,
+                limit,
+                path_filter.as_deref(),
+                turn_filter.as_deref(),
+            )?;
             let items = rows
                 .into_iter()
                 .map(|(id, fields, changed_path_count)| CheckpointSummary {
@@ -777,7 +786,7 @@ mod tests {
     ) -> Vec<CheckpointSummary> {
         for _ in 0..200 {
             let page = engine
-                .list_checkpoints(kind, None, None, Some(count))
+                .list_checkpoints(kind, None, None, None, Some(count))
                 .await
                 .unwrap();
             if page.items.len() >= count {
@@ -840,6 +849,49 @@ mod tests {
         assert_eq!(oldest.trigger, CheckpointTrigger::TurnStart);
     }
 
+    #[tokio::test]
+    async fn list_checkpoints_filters_by_turn_id_to_find_a_turns_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+
+        let turn_ctx = |trigger, summary: &str| CheckpointContext {
+            turn_id: Some("turn-42".to_string()),
+            ..ctx(trigger, summary)
+        };
+
+        std::fs::write(workspace.join("notes.md"), "v1").unwrap();
+        engine.spawn_turn_start_checkpoint(turn_ctx(CheckpointTrigger::TurnStart, "outside edit"));
+        wait_for_checkpoint_count(&engine, RepoKind::Workspace, 1).await;
+
+        std::fs::write(workspace.join("notes.md"), "v2").unwrap();
+        engine.spawn_turn_end_checkpoint(turn_ctx(CheckpointTrigger::TurnEnd, "wrote notes.md"));
+        wait_for_checkpoint_count(&engine, RepoKind::Workspace, 2).await;
+
+        // An unrelated turn shouldn't leak into "turn-42"'s filtered results.
+        std::fs::write(workspace.join("notes.md"), "v3").unwrap();
+        engine.spawn_turn_end_checkpoint(ctx(CheckpointTrigger::TurnEnd, "a different turn"));
+        wait_for_checkpoint_count(&engine, RepoKind::Workspace, 3).await;
+
+        let page = engine
+            .list_checkpoints(
+                RepoKind::Workspace,
+                None,
+                Some("turn-42".to_string()),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2, "only turn-42's start/end pair");
+        assert!(
+            page.items
+                .iter()
+                .all(|c| c.turn_id.as_deref() == Some("turn-42"))
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn checkpoint_failure_never_blocks_or_fails_the_action() {
@@ -900,7 +952,7 @@ mod tests {
             .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "second"))
             .await;
         let page = engine
-            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
             .await
             .unwrap();
         let second_id = page.items.first().unwrap().id.clone();
@@ -946,7 +998,7 @@ mod tests {
             .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "second"))
             .await;
         let second_id = engine
-            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
             .await
             .unwrap()
             .items
@@ -1054,7 +1106,7 @@ mod tests {
             .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "v1"))
             .await;
         let id = engine
-            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
             .await
             .unwrap()
             .items
