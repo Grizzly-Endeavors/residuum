@@ -963,6 +963,17 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
     }
 }
 
+/// Publish each of `cfg.load_notices` individually — already complete,
+/// standalone sentences describing one config.toml/providers.toml entry
+/// that was skipped or degraded while loading (see `config::resolve` and
+/// `config::tolerant`) — as opposed to the subsystem `degradations` above,
+/// which get folded into one shorter grouped sentence.
+async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
+    for notice in &cfg.load_notices {
+        super::helpers::publish_notice(publisher, notice.clone()).await;
+    }
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -977,6 +988,7 @@ pub(crate) async fn initialize(
 ) -> Result<GatewayComponents, FatalError> {
     let (layout, tz) = init_workspace(cfg).await?;
     let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
+    publish_load_notices(publisher, cfg).await;
 
     // Collects a plain-language line for every subsystem that degrades
     // along the way (rather than failing startup outright), so the whole

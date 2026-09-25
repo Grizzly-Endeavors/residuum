@@ -323,6 +323,12 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
             return IdleAction::None;
         }
     };
+    // Each is already a complete, standalone sentence describing one
+    // config.toml/providers.toml entry the new load skipped or degraded
+    // (see `config::resolve` and `config::tolerant`).
+    for notice in &new_cfg.load_notices {
+        publish_notice(&rt.publisher, notice.clone()).await;
+    }
 
     let diff = diff_config(&rt.cfg, &new_cfg);
 

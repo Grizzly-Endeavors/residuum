@@ -126,6 +126,10 @@ pub(crate) struct DroppedFallback {
     pub error: FatalError,
 }
 
+/// The providers a chain successfully built, plus any fallback dropped
+/// along the way — see [`build_provider_list`].
+type BuiltProviderList = (Vec<Box<dyn InferenceProvider>>, Vec<DroppedFallback>);
+
 /// Build every provider in `specs`, dropping (not failing) an unbuildable
 /// fallback — any spec after the first — instead of failing the whole
 /// chain over it: a deleted `secret:` reference or a missing env key on
@@ -139,7 +143,7 @@ fn build_provider_list(
     max_tokens: u32,
     http: &SharedHttpClient,
     retry: &RetryConfig,
-) -> Result<(Vec<Box<dyn InferenceProvider>>, Vec<DroppedFallback>), FatalError> {
+) -> Result<BuiltProviderList, FatalError> {
     let mut providers = Vec::with_capacity(specs.len());
     let mut dropped = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
