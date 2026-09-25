@@ -109,7 +109,7 @@ mod background_integration {
             }],
         };
 
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:status_check");
         assert!(spawn_event.prompt.contains("status_check"));

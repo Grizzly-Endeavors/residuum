@@ -394,6 +394,12 @@ mod tests {
                 crate::workspace::watch::WatchHealth::Native,
             )
             .1,
+            action_store: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::actions::store::ActionStore::new_empty(
+                    workspace_dir.join("scheduled_actions.json"),
+                ),
+            )),
+            layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
         }
     }
 

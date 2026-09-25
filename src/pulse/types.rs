@@ -234,23 +234,102 @@ where
     }
 }
 
+/// Deserialize one entry of HEARTBEAT.yml's `pulses` list from its raw YAML
+/// value, given its index in the list.
+///
+/// Exposed as its own function — not inlined into [`load_heartbeat`] — so
+/// other tooling (e.g. a HEARTBEAT.yml editor-side linter) can reuse the same
+/// per-pulse diagnostics without re-parsing or re-validating the whole
+/// document just to check one entry.
+///
+/// On failure, the returned [`HeartbeatProblem`] names the pulse by its
+/// `name` field when the entry has a readable one, otherwise by its position
+/// (`entry #N`), and includes a source line/column when `serde_yaml_ng`
+/// reports one.
+///
+/// Deserializes by re-serializing this one entry back to a YAML string and
+/// parsing that, rather than deserializing the already-parsed `Value`
+/// directly: a `Value` carries no span info once parsed, so a `from_value`
+/// error never has a location, while re-parsed text does (relative to this
+/// entry's own re-serialized snippet, not the original file's line numbers,
+/// but still enough to point at the right field within the pulse). Falls
+/// back to deserializing the `Value` directly if re-serializing it fails,
+/// which loses the location but still catches the error.
+pub(crate) fn deserialize_pulse_entry(
+    index: usize,
+    value: &serde_yaml_ng::Value,
+) -> Result<PulseDef, HeartbeatProblem> {
+    let result = match serde_yaml_ng::to_string(value) {
+        Ok(entry_yaml) => serde_yaml_ng::from_str::<PulseDef>(&entry_yaml),
+        Err(_) => serde_yaml_ng::from_value::<PulseDef>(value.clone()),
+    };
+    result.map_err(|e| {
+        let name = value
+            .as_mapping()
+            .and_then(|m| m.get("name"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let label = name
+            .clone()
+            .map_or_else(|| format!("entry #{}", index + 1), |n| format!("'{n}'"));
+        let location = e
+            .location()
+            .map(|l| format!(" (line {}, column {})", l.line(), l.column()))
+            .unwrap_or_default();
+        HeartbeatProblem {
+            name: name.unwrap_or_else(|| format!("entry #{}", index + 1)),
+            message: format!(
+                "pulse {label} in HEARTBEAT.yml failed to load{location}: {e} — skipping until \
+                 fixed"
+            ),
+            kind: ProblemKind::Malformed,
+        }
+    })
+}
+
+/// Describe a YAML value's kind in plain words, for a problem message naming
+/// what was found where a list was expected.
+fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
+    match value {
+        serde_yaml_ng::Value::Null => "nothing",
+        serde_yaml_ng::Value::Bool(_) => "a true/false value",
+        serde_yaml_ng::Value::Number(_) => "a number",
+        serde_yaml_ng::Value::String(_) => "text",
+        serde_yaml_ng::Value::Sequence(_) => "a list",
+        serde_yaml_ng::Value::Mapping(_) => "a mapping",
+        serde_yaml_ng::Value::Tagged(_) => "a tagged value",
+    }
+}
+
 /// Load HEARTBEAT.yml from the given path.
 ///
-/// `last_parse_error` carries the most recently logged parse-error message across
-/// calls (this is hot-reloaded on every scheduler tick). A parse failure is logged
-/// at `warn` only the first time it's seen or when the error text changes; an
-/// identical, still-broken file logs at `debug` instead so a typo in HEARTBEAT.yml
-/// doesn't repeat the same warning forever. Returns `None` on parse error (caller
-/// keeps the last good config) or if the file does not exist.
+/// Returns `None` only when the file does not exist. Every other problem
+/// degrades instead of stopping every pulse:
+///
+/// - A single pulse entry that fails to deserialize (see
+///   [`deserialize_pulse_entry`]) is dropped; every other pulse in the file
+///   still loads.
+/// - A whole-document YAML syntax error, or a top-level `pulses` key that
+///   isn't a list, keeps `last_good_pulses` — the last set that loaded
+///   successfully — running rather than firing nothing until the file is
+///   fixed.
+///
+/// `last_parse_error` carries the most recently seen syntax-error message
+/// across calls (this is hot-reloaded on every scheduler tick), cleared once
+/// the file parses again (logged at `info`) — it exists purely to detect
+/// that recovery, not to dedupe the syntax-error problem itself, which goes
+/// through the same `problems` path as everything else below.
 ///
 /// Duplicate pulse names are dropped, keeping the first occurrence: `PulseScheduler`
 /// keys its per-pulse state by name, so two pulses sharing a name would otherwise
 /// silently collapse into one scheduler-state entry.
 ///
-/// `problems` is cleared and refilled with every pulse dropped this call — for using
-/// a removed option (see `validate_pulse`) or for duplicating an earlier pulse's name.
-/// This function itself doesn't log or notify about them — every call re-validates
-/// the whole file, so a caller hot-reloading on a timer (`PulseScheduler`) is
+/// `problems` is cleared and refilled on every call — with a whole-document
+/// syntax error or a non-list `pulses` key (see above), or with one entry
+/// per pulse dropped for failing to deserialize, using a removed option (see
+/// `validate_pulse`), or duplicating an earlier pulse's name. This function
+/// itself doesn't log or notify about them — every call re-validates the
+/// whole file, so a caller hot-reloading on a timer (`PulseScheduler`) is
 /// responsible for comparing against the previous call's result and only
 /// logging/notifying when it actually changed.
 #[must_use]
@@ -258,27 +337,11 @@ pub(crate) fn load_heartbeat(
     path: &Path,
     last_parse_error: &mut Option<String>,
     problems: &mut Vec<HeartbeatProblem>,
+    last_good_pulses: &[PulseDef],
 ) -> Option<HeartbeatConfig> {
     problems.clear();
-    let mut cfg = match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_yaml_ng::from_str::<HeartbeatConfig>(&contents) {
-            Ok(cfg) => {
-                if last_parse_error.take().is_some() {
-                    tracing::info!(path = %path.display(), "HEARTBEAT.yml parses again after previous errors");
-                }
-                cfg
-            }
-            Err(e) => {
-                let message = e.to_string();
-                if last_parse_error.as_deref() == Some(message.as_str()) {
-                    tracing::debug!(path = %path.display(), error = %message, "HEARTBEAT.yml still fails to parse");
-                } else {
-                    tracing::warn!(path = %path.display(), error = %message, "failed to parse HEARTBEAT.yml; pulses will not fire until this is fixed");
-                    *last_parse_error = Some(message);
-                }
-                return None;
-            }
-        },
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             *last_parse_error = None;
             return None;
@@ -289,11 +352,81 @@ pub(crate) fn load_heartbeat(
         }
     };
 
-    problems.extend(dedupe_pulse_names(&mut cfg.pulses));
-    problems.extend(reject_invalid_pulses(&mut cfg.pulses));
+    let root: serde_yaml_ng::Value = match serde_yaml_ng::from_str(&contents) {
+        Ok(v) => v,
+        Err(e) => {
+            let message = e.to_string();
+            *last_parse_error = Some(message.clone());
+            // Reported as a problem (not logged directly here) so the
+            // caller's existing per-tick dedup — comparing this tick's
+            // `problems` against the last tick it checked — decides whether
+            // this is worth a fresh warn log and owner notice, the same way
+            // it already does for every other kind of HEARTBEAT.yml problem.
+            // An unchanged, still-broken file therefore logs and notifies
+            // exactly once, not every tick.
+            problems.push(HeartbeatProblem {
+                name: "HEARTBEAT.yml".to_string(),
+                message: format!(
+                    "HEARTBEAT.yml has a syntax error and could not be parsed: {message}; \
+                     keeping the last working set of pulses running until this is fixed"
+                ),
+                kind: ProblemKind::Malformed,
+            });
+            // Whole document is unparseable — keep the last known-good,
+            // already-validated pulse set running rather than stopping every
+            // pulse until the syntax error is fixed.
+            return Some(HeartbeatConfig {
+                pulses: last_good_pulses.to_vec(),
+            });
+        }
+    };
 
-    tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
-    Some(cfg)
+    if last_parse_error.take().is_some() {
+        tracing::info!(path = %path.display(), "HEARTBEAT.yml parses again after previous errors");
+    }
+
+    let pulses_value = root
+        .as_mapping()
+        .and_then(|m| m.get("pulses"))
+        .cloned()
+        .unwrap_or(serde_yaml_ng::Value::Sequence(Vec::new()));
+
+    let entries = match pulses_value {
+        serde_yaml_ng::Value::Sequence(seq) => seq,
+        serde_yaml_ng::Value::Null => Vec::new(),
+        other @ (serde_yaml_ng::Value::Bool(_)
+        | serde_yaml_ng::Value::Number(_)
+        | serde_yaml_ng::Value::String(_)
+        | serde_yaml_ng::Value::Mapping(_)
+        | serde_yaml_ng::Value::Tagged(_)) => {
+            problems.push(HeartbeatProblem {
+                name: "HEARTBEAT.yml".to_string(),
+                message: format!(
+                    "HEARTBEAT.yml's top-level 'pulses' key must be a list, found {} instead; \
+                     keeping the last working set of pulses running until this is fixed",
+                    yaml_kind(&other)
+                ),
+                kind: ProblemKind::Malformed,
+            });
+            return Some(HeartbeatConfig {
+                pulses: last_good_pulses.to_vec(),
+            });
+        }
+    };
+
+    let mut pulses = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        match deserialize_pulse_entry(index, entry) {
+            Ok(pulse) => pulses.push(pulse),
+            Err(problem) => problems.push(problem),
+        }
+    }
+
+    problems.extend(dedupe_pulse_names(&mut pulses));
+    problems.extend(reject_invalid_pulses(&mut pulses));
+
+    tracing::trace!(path = %path.display(), pulses = pulses.len(), "loaded HEARTBEAT.yml");
+    Some(HeartbeatConfig { pulses })
 }
 
 /// Drop pulses that use a removed option (`agent: "main"` or
@@ -664,7 +797,7 @@ pulses:
         let mut last_error = None;
         let mut problems = Vec::new();
         assert!(
-            load_heartbeat(&path, &mut last_error, &mut problems).is_none(),
+            load_heartbeat(&path, &mut last_error, &mut problems, &[]).is_none(),
             "missing file should return None"
         );
     }
@@ -699,15 +832,54 @@ pulses:
     }
 
     #[test]
-    fn load_heartbeat_invalid_yaml_returns_none() {
+    fn load_heartbeat_invalid_yaml_with_no_prior_good_config_loads_no_pulses() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let mut last_error = None;
         let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[])
+            .expect("a syntax error is never None — it falls back to last_good_pulses");
         assert!(
-            load_heartbeat(&path, &mut last_error, &mut problems).is_none(),
-            "invalid YAML should return None"
+            cfg.pulses.is_empty(),
+            "with nothing known-good yet, the fallback set is empty"
+        );
+        assert!(last_error.is_some(), "the syntax error should be recorded");
+        assert_eq!(
+            problems.len(),
+            1,
+            "the syntax error should be reported as a problem too"
+        );
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
+    }
+
+    #[test]
+    fn load_heartbeat_invalid_yaml_keeps_the_last_good_pulses_running() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+
+        let last_good = vec![PulseDef {
+            name: "still_running".to_string(),
+            enabled: true,
+            schedule: "1h".to_string(),
+            active_hours: None,
+            agent: None,
+            model_tier: None,
+            include_identity: None,
+            tasks: vec![],
+        }];
+
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &last_good)
+            .expect("a syntax error keeps the last good pulse set, never None");
+        let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["still_running"],
+            "a whole-document syntax error must keep the last known-good pulses running \
+             instead of stopping every pulse"
         );
     }
 
@@ -719,7 +891,7 @@ pulses:
         let mut last_error = None;
         let mut problems = Vec::new();
 
-        assert!(load_heartbeat(&path, &mut last_error, &mut problems).is_none());
+        assert!(load_heartbeat(&path, &mut last_error, &mut problems, &[]).is_some());
         assert!(
             last_error.is_some(),
             "first parse failure should record the error text"
@@ -729,7 +901,7 @@ pulses:
         // Same broken file parsed again on a later tick: the recorded error is
         // unchanged, so the caller can tell this isn't a new failure worth a
         // fresh warning (see load_heartbeat's dedup behavior).
-        assert!(load_heartbeat(&path, &mut last_error, &mut problems).is_none());
+        assert!(load_heartbeat(&path, &mut last_error, &mut problems, &[]).is_some());
         assert_eq!(
             last_error, recorded,
             "identical repeated parse error should not change the recorded message"
@@ -743,15 +915,140 @@ pulses:
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         let mut last_error = None;
         let mut problems = Vec::new();
-        assert!(load_heartbeat(&path, &mut last_error, &mut problems).is_none());
+        assert!(load_heartbeat(&path, &mut last_error, &mut problems, &[]).is_some());
         assert!(last_error.is_some(), "broken file should record an error");
 
         std::fs::write(&path, SIMPLE_VALID_HEARTBEAT).unwrap();
-        let cfg = load_heartbeat(&path, &mut last_error, &mut problems);
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]);
         assert!(cfg.is_some(), "fixed file should parse successfully");
         assert!(
             last_error.is_none(),
             "successful parse should clear the recorded error"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_one_invalid_pulse_entry_is_dropped_but_others_still_load() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        // `schedule` must be a string; giving it a mapping makes this one
+        // pulse entry fail to deserialize, without touching the document's
+        // own YAML syntax (which is fine) or the other, valid pulse.
+        let yaml = r#"
+pulses:
+  - name: bad_pulse
+    schedule: {not: a-string}
+    tasks: []
+  - name: good_pulse
+    schedule: "1h"
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+        let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["good_pulse"],
+            "the pulse that fails to deserialize should be dropped, keeping the rest"
+        );
+        assert_eq!(
+            problems.len(),
+            1,
+            "the dropped pulse should be reported as one problem"
+        );
+        assert_eq!(problems.first().unwrap().name, "bad_pulse");
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
+        assert!(last_error.is_none(), "the document itself parses fine");
+    }
+
+    #[test]
+    fn load_heartbeat_unnamed_invalid_pulse_entry_is_labeled_by_position() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = "
+pulses:
+  - schedule: {not: a-string}
+    tasks: []
+";
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+        assert!(cfg.pulses.is_empty());
+        assert_eq!(problems.len(), 1);
+        assert_eq!(
+            problems.first().unwrap().name,
+            "entry #1",
+            "a pulse entry with no readable name should be labeled by position"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_unknown_top_level_keys_do_not_take_down_the_pulses_list() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+some_future_field: true
+pulses:
+  - name: test_pulse
+    schedule: "1h"
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
+        assert_eq!(
+            cfg.pulses.len(),
+            1,
+            "unknown top-level keys should be ignored"
+        );
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn load_heartbeat_non_list_pulses_key_falls_back_to_last_good() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "pulses: \"oops, not a list\"").unwrap();
+        let last_good = vec![PulseDef {
+            name: "still_running".to_string(),
+            enabled: true,
+            schedule: "1h".to_string(),
+            active_hours: None,
+            agent: None,
+            model_tier: None,
+            include_identity: None,
+            tasks: vec![],
+        }];
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &last_good).unwrap();
+        let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["still_running"]);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
+    }
+
+    #[test]
+    fn deserialize_pulse_entry_reports_yaml_location_when_available() {
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+            "
+name: bad_pulse
+schedule: {not: a-string}
+tasks: []
+",
+        )
+        .unwrap();
+        let problem = deserialize_pulse_entry(0, &value).unwrap_err();
+        assert_eq!(problem.name, "bad_pulse");
+        assert!(
+            problem.message.contains("line"),
+            "problem message should include a source location when serde_yaml_ng reports one: \
+             {}",
+            problem.message
         );
     }
 
@@ -785,7 +1082,7 @@ pulses:
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
         let mut problems = Vec::new();
-        let cfg = load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
@@ -816,7 +1113,7 @@ pulses:
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
         let mut problems = Vec::new();
-        let cfg = load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
@@ -851,7 +1148,7 @@ pulses:
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
         let mut problems = Vec::new();
-        let cfg = load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        let cfg = load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
         assert!(
             cfg.pulses.is_empty(),
             "a pulse setting include_identity (removed) must not load"
@@ -875,7 +1172,7 @@ pulses:
         let path = write_heartbeat_for_test(dir.path(), SIMPLE_VALID_HEARTBEAT);
         let mut last_error = None;
         let mut problems = Vec::new();
-        load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
         assert!(
             problems.is_empty(),
             "a valid HEARTBEAT.yml should report no problems"
@@ -898,7 +1195,7 @@ pulses:
         std::fs::write(&path, yaml).unwrap();
         let mut last_error = None;
         let mut problems = Vec::new();
-        load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        load_heartbeat(&path, &mut last_error, &mut problems, &[]).unwrap();
         assert_eq!(problems.len(), 1, "the duplicate should be reported");
         assert_eq!(problems.first().unwrap().name, "dup");
         assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);

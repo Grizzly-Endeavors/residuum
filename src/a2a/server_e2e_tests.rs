@@ -541,6 +541,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                     images: event.images,
                 },
                 conversation_target: event.conversation,
+                overlap: event.overlap,
             };
             deps.runtime.spawn(request, Some(resources));
         }
@@ -1222,6 +1223,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         conversation_target: None,
         started_at: chrono::Utc::now(),
         usage: crate::agent::usage::SessionUsageTotals::default(),
+        overlap: None,
     };
     harness
         .session_registry

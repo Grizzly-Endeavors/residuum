@@ -23,6 +23,7 @@ class Router {
   chat = $state<ChatLocation>(MAIN_CHAT);
   settings = $state<SettingsSection | null>(null);
   workbench = $state<WorkbenchLocation | null>(null);
+  scheduled = $state<boolean>(false);
 
   private started = false;
 
@@ -36,12 +37,18 @@ class Router {
 
   /** Show a run in the main pane, leaving settings or the workbench if open. */
   openSession(runId: string): void {
-    this.go({ chat: { ...this.chat, runId }, settings: null, workbench: null }, "push");
+    this.go(
+      { chat: { ...this.chat, runId }, settings: null, workbench: null, scheduled: false },
+      "push",
+    );
   }
 
   /** Return the main pane to the main chat, leaving settings or the workbench if open. */
   openMainChat(): void {
-    this.go({ chat: { ...this.chat, runId: null }, settings: null, workbench: null }, "push");
+    this.go(
+      { chat: { ...this.chat, runId: null }, settings: null, workbench: null, scheduled: false },
+      "push",
+    );
   }
 
   /**
@@ -50,7 +57,12 @@ class Router {
    */
   replaceSession(runId: string): void {
     this.go(
-      { chat: { ...this.chat, runId }, settings: this.settings, workbench: this.workbench },
+      {
+        chat: { ...this.chat, runId },
+        settings: this.settings,
+        workbench: this.workbench,
+        scheduled: this.scheduled,
+      },
       "replace",
     );
   }
@@ -61,26 +73,39 @@ class Router {
    * place.
    */
   setWorkspace(open: boolean): void {
-    const onChatSide = this.settings === null && this.workbench === null;
+    const onChatSide = this.settings === null && this.workbench === null && !this.scheduled;
     this.go(
-      { chat: { ...this.chat, workspace: open }, settings: null, workbench: null },
+      {
+        chat: { ...this.chat, workspace: open },
+        settings: null,
+        workbench: null,
+        scheduled: false,
+      },
       onChatSide ? "replace" : "push",
     );
   }
 
   openSettings(section: SettingsSection = "runtime"): void {
-    this.go({ chat: this.chat, settings: section, workbench: null }, "push");
+    this.go({ chat: this.chat, settings: section, workbench: null, scheduled: false }, "push");
   }
 
   /** Leave settings for the chat side as it was before settings opened. */
   closeSettings(): void {
     if (this.settings === null) return;
-    this.go({ chat: this.chat, settings: null, workbench: null }, "push");
+    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: false }, "push");
   }
 
   /** Open the workbench: an artifact, or the artifact list when `artifact` is null. */
   openWorkbench(artifact: string | null = null): void {
-    this.go({ chat: this.chat, settings: null, workbench: { artifact, full: false } }, "push");
+    this.go(
+      {
+        chat: this.chat,
+        settings: null,
+        workbench: { artifact, full: false },
+        scheduled: false,
+      },
+      "push",
+    );
   }
 
   /**
@@ -90,13 +115,27 @@ class Router {
   setWorkbenchFull(full: boolean): void {
     const artifact = this.workbench?.artifact ?? null;
     if (artifact === null) return;
-    this.go({ chat: this.chat, settings: null, workbench: { artifact, full } }, "replace");
+    this.go(
+      { chat: this.chat, settings: null, workbench: { artifact, full }, scheduled: false },
+      "replace",
+    );
   }
 
   /** Leave the workbench for the chat side as it was before it opened. */
   closeWorkbench(): void {
     if (this.workbench === null) return;
-    this.go({ chat: this.chat, settings: null, workbench: null }, "push");
+    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: false }, "push");
+  }
+
+  /** Open the Scheduled view (pulses and scheduled actions). */
+  openScheduled(): void {
+    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: true }, "push");
+  }
+
+  /** Leave the Scheduled view for the chat side as it was before it opened. */
+  closeScheduled(): void {
+    if (!this.scheduled) return;
+    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: false }, "push");
   }
 
   private go(location: AppLocation, mode: HistoryMode): void {
@@ -105,6 +144,7 @@ class Router {
     this.chat = location.chat;
     this.settings = location.settings;
     this.workbench = location.workbench;
+    this.scheduled = location.scheduled;
     if (url === current) return;
     if (mode === "push") {
       window.history.pushState(null, "", url);
@@ -122,6 +162,7 @@ class Router {
     this.chat = location.chat;
     this.settings = location.settings;
     this.workbench = location.workbench;
+    this.scheduled = location.scheduled;
     if (corrected) window.history.replaceState(null, "", formatLocation(location));
   }
 }

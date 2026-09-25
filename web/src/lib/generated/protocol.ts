@@ -18,3 +18,8 @@ export type { WorkbenchRelayOrigins } from "./WorkbenchRelayOrigins";
 export type { WorkspaceChange } from "./WorkspaceChange";
 export type { WorkspaceChangeKind } from "./WorkspaceChangeKind";
 export type { WorkspaceResyncReason } from "./WorkspaceResyncReason";
+export type { PulseOverlap } from "./PulseOverlap";
+export type { PulseInfo } from "./PulseInfo";
+export type { ActionInfo } from "./ActionInfo";
+export type { ScheduledCurrentRun } from "./ScheduledCurrentRun";
+export type { ScheduledRunOutcome } from "./ScheduledRunOutcome";

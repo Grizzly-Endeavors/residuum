@@ -171,9 +171,10 @@ fn degradation_notice(degradations: &[String]) -> Option<String> {
 
 /// Load the scheduled action store and create the notification handle.
 ///
-/// A stored action left over from before `agent: "main"` was removed is
-/// dropped by `ActionStore::load` itself; this only raises the owner-facing
-/// notice for whatever it reports, once, at startup.
+/// A stored action left over from before `agent: "main"` was removed, and a
+/// corrupt file moved aside, are both handled by `ActionStore::load` itself;
+/// this only raises the owner-facing notice for whatever it reports, once,
+/// at startup.
 async fn init_action_store(
     layout: &WorkspaceLayout,
     publisher: &crate::bus::Publisher,
@@ -184,11 +185,18 @@ async fn init_action_store(
 ) {
     let actions_path = layout.scheduled_actions_json();
     let action_store = match ActionStore::load(&actions_path).await {
-        Ok((store, rejected)) => {
+        Ok((store, rejected, moved_aside)) => {
             if !rejected.is_empty() {
                 super::helpers::publish_notice(
                     publisher,
                     crate::actions::store::rejected_actions_notice(&rejected),
+                )
+                .await;
+            }
+            if let Some(moved_to) = moved_aside {
+                super::helpers::publish_notice(
+                    publisher,
+                    crate::actions::store::corrupt_actions_notice(&moved_to),
                 )
                 .await;
             }

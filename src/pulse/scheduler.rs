@@ -36,6 +36,13 @@ pub struct PulseScheduler {
     /// `take_problem_notice`.
     #[serde(skip)]
     pending_problem_notice: Option<String>,
+    /// The last pulse set that loaded successfully (parsed and passed
+    /// per-pulse/dedup validation), so a later whole-document YAML syntax
+    /// error can keep these pulses running instead of firing nothing. Not
+    /// persisted: in-memory only, since it's rebuilt from HEARTBEAT.yml on
+    /// every successful tick and a restart always re-reads the file fresh.
+    #[serde(skip)]
+    last_good_pulses: Vec<PulseDef>,
 }
 
 impl Default for PulseScheduler {
@@ -54,6 +61,7 @@ impl PulseScheduler {
             last_heartbeat_parse_error: None,
             last_heartbeat_problems: Vec::new(),
             pending_problem_notice: None,
+            last_good_pulses: Vec::new(),
         }
     }
 
@@ -85,9 +93,16 @@ impl PulseScheduler {
             heartbeat_path,
             &mut self.last_heartbeat_parse_error,
             &mut problems,
+            &self.last_good_pulses,
         ) else {
             return Vec::new();
         };
+
+        // Remember this tick's validated pulse set (whether freshly parsed,
+        // or the previous good set echoed back by a syntax-error fallback —
+        // either way it's what should keep running if the file breaks on a
+        // later tick) before the loop below consumes `heartbeat.pulses`.
+        self.last_good_pulses.clone_from(&heartbeat.pulses);
 
         let current_pulse_names: HashSet<String> =
             heartbeat.pulses.iter().map(|p| p.name.clone()).collect();
@@ -968,5 +983,78 @@ pulses:
                 "tick {minute} over unchanged bad active_hours should not requeue"
             );
         }
+    }
+
+    // ── Whole-document syntax error: last good pulses keep running ─────
+
+    #[test]
+    fn syntax_error_keeps_the_last_good_pulses_running_and_notices_once() {
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        // First tick loads the valid file and fires the pulse once.
+        let first_due = scheduler.due_pulses(now, &path);
+        assert_eq!(first_due.len(), 1, "test_pulse should fire on first run");
+        assert!(
+            scheduler.take_problem_notice().is_none(),
+            "a valid file should queue no notice"
+        );
+
+        // The file goes bad (a syntax error, not just one bad pulse) —
+        // due_pulses must not stop scheduling test_pulse because of it.
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let later = now + chrono::Duration::hours(2);
+        let due_while_broken = scheduler.due_pulses(later, &path);
+        assert_eq!(
+            due_while_broken.len(),
+            1,
+            "test_pulse (the last known-good set) should still fire on schedule even while \
+             HEARTBEAT.yml is syntactically broken"
+        );
+        let notice = scheduler.take_problem_notice();
+        assert!(
+            notice.is_some(),
+            "the first tick that sees a new syntax error should queue a notice"
+        );
+        assert!(notice.unwrap().contains("syntax error"));
+
+        // Further ticks over the same unchanged syntax error must not
+        // requeue the notice.
+        for minute in 1..=5 {
+            let even_later = later + chrono::Duration::minutes(minute);
+            let repeat_due = scheduler.due_pulses(even_later, &path);
+            assert!(
+                repeat_due.is_empty(),
+                "not due again within the 1h schedule from its last (fallback) run"
+            );
+            assert!(
+                scheduler.take_problem_notice().is_none(),
+                "tick {minute} over an unchanged syntax error should not requeue the notice"
+            );
+        }
+    }
+
+    #[test]
+    fn syntax_error_with_no_prior_good_pulses_fires_nothing_but_still_notices() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        let due = scheduler.due_pulses(now, &path);
+        assert!(
+            due.is_empty(),
+            "with nothing known-good yet, a syntax error fires nothing"
+        );
+        assert!(scheduler.take_problem_notice().is_some());
     }
 }

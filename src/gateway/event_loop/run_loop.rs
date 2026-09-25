@@ -306,6 +306,8 @@ fn build_gateway_state(
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
         workspace_watch_health: workspace_watch_health.clone(),
+        action_store: Arc::clone(&parts.action_store),
+        layout: parts.layout.clone(),
     }
 }
 

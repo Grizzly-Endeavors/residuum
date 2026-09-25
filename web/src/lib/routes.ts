@@ -10,6 +10,7 @@
 //   /workbench                     the workbench's artifact list
 //   /workbench/:artifact           one workbench artifact
 //   /workbench/:artifact?full      the artifact filling the window, no Residuum chrome
+//   /scheduled                     pulses and scheduled actions
 
 import type { SettingsSection } from "./types";
 
@@ -48,6 +49,8 @@ export interface AppLocation {
   settings: SettingsSection | null;
   /** The workbench place shown, or null when not on the workbench. */
   workbench: WorkbenchLocation | null;
+  /** Whether the Scheduled view (pulses and scheduled actions) is shown. */
+  scheduled: boolean;
 }
 
 export interface ParsedLocation {
@@ -95,7 +98,12 @@ export function parseLocation(
 
   if (first === undefined) {
     return {
-      location: { chat: { runId: null, workspace }, settings: null, workbench: null },
+      location: {
+        chat: { runId: null, workspace },
+        settings: null,
+        workbench: null,
+        scheduled: false,
+      },
       corrected: false,
     };
   }
@@ -104,12 +112,17 @@ export function parseLocation(
     const section = second === undefined ? null : decodeSegment(second);
     if (section !== null && isSettingsSection(section)) {
       return {
-        location: { chat: currentChat, settings: section, workbench: null },
+        location: { chat: currentChat, settings: section, workbench: null, scheduled: false },
         corrected: false,
       };
     }
     return {
-      location: { chat: currentChat, settings: DEFAULT_SECTION, workbench: null },
+      location: {
+        chat: currentChat,
+        settings: DEFAULT_SECTION,
+        workbench: null,
+        scheduled: false,
+      },
       corrected: true,
     };
   }
@@ -121,8 +134,20 @@ export function parseLocation(
     const wantsFull = new URLSearchParams(search).has("full");
     const full = wantsFull && shown !== null;
     return {
-      location: { chat: currentChat, settings: null, workbench: { artifact: shown, full } },
+      location: {
+        chat: currentChat,
+        settings: null,
+        workbench: { artifact: shown, full },
+        scheduled: false,
+      },
       corrected: !valid || wantsFull !== full,
+    };
+  }
+
+  if (first === "scheduled" && rest.length === 0 && second === undefined) {
+    return {
+      location: { chat: currentChat, settings: null, workbench: null, scheduled: true },
+      corrected: false,
     };
   }
 
@@ -130,14 +155,19 @@ export function parseLocation(
     const runId = decodeSegment(second);
     if (runId !== null && runId !== "") {
       return {
-        location: { chat: { runId, workspace }, settings: null, workbench: null },
+        location: { chat: { runId, workspace }, settings: null, workbench: null, scheduled: false },
         corrected: false,
       };
     }
   }
 
   return {
-    location: { chat: { runId: null, workspace }, settings: null, workbench: null },
+    location: {
+      chat: { runId: null, workspace },
+      settings: null,
+      workbench: null,
+      scheduled: false,
+    },
     corrected: true,
   };
 }
@@ -145,6 +175,7 @@ export function parseLocation(
 /** The URL (path and query) for a location. */
 export function formatLocation(location: AppLocation): string {
   if (location.settings !== null) return `/settings/${location.settings}`;
+  if (location.scheduled) return "/scheduled";
   if (location.workbench !== null) {
     const { artifact, full } = location.workbench;
     if (artifact === null) return "/workbench";

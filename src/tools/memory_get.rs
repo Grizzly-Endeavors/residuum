@@ -256,6 +256,7 @@ mod tests {
             conversation_target: None,
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -335,6 +336,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![
                     Message::user("investigate"),
                     Message::assistant("found it", None),
@@ -371,6 +373,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![Message::user("one"), Message::assistant("two", None)],
                 None,
             )

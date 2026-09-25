@@ -1,7 +1,7 @@
 //! Pulse task builder: converts a pulse definition into a spawn request.
 
 use crate::background::registry::{MAIN_DEPTH, generate_address};
-use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, SpawnRequestEvent};
+use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, SpawnRequestEvent};
 
 use super::types::PulseDef;
 
@@ -13,8 +13,13 @@ use super::types::PulseDef;
 /// `validate_pulse`) and never reaches this function.
 ///
 /// The model tier comes from the pulse's own `model_tier`, defaulting to `small`.
+///
+/// `overlap` is `Some` when the caller found this pulse's previous run still
+/// live in the session registry — the new run still starts normally, this
+/// only tags it so the overlap is visible in the Scheduled view and the
+/// run's own session view (see `crate::gateway::event_loop::pulse`).
 #[must_use]
-pub fn build_pulse_execution(pulse: &PulseDef) -> SpawnRequestEvent {
+pub fn build_pulse_execution(pulse: &PulseDef, overlap: Option<PulseOverlap>) -> SpawnRequestEvent {
     let prompt = build_pulse_prompt(pulse);
     let skill = pulse.agent.as_deref();
 
@@ -47,6 +52,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> SpawnRequestEvent {
         conversation: None,
         inbound: None,
         images: Vec::new(),
+        overlap,
     }
 }
 
@@ -115,7 +121,7 @@ mod tests {
     #[test]
     fn execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(spawn_event.prompt.contains("email_check"));
@@ -137,7 +143,7 @@ mod tests {
     fn execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(
             spawn_event.skill.as_ref().map(AsRef::as_ref),
             Some("memory-agent")
@@ -239,7 +245,7 @@ mod tests {
             include_identity: None,
             tasks: vec![],
         };
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(spawn_event.source_label, "pulse:empty");
         assert!(
             spawn_event.prompt.contains(HEARTBEAT_OK),

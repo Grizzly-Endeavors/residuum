@@ -397,6 +397,7 @@ impl Tool for SubagentSpawnTool {
             conversation: None,
             inbound: None,
             images: Vec::new(),
+            overlap: None,
         };
 
         self.publisher

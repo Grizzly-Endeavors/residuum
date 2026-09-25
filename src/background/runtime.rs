@@ -20,8 +20,8 @@ use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
-    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress,
-    SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
+    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, PulseOverlap, ResultDisposition,
+    SessionAddress, SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
 use crate::interfaces::types::InboundMessage;
@@ -103,6 +103,9 @@ pub(crate) struct SessionSpawnRequest {
     /// The conversation this session replies to, for a conversation-triggered
     /// session. `None` for every other trigger.
     pub conversation_target: Option<ConversationTarget>,
+    /// Set when this is a pulse fire that started while its previous run was
+    /// still live. `None` for every other trigger. See [`PulseOverlap`].
+    pub overlap: Option<PulseOverlap>,
 }
 
 /// Shared handles [`SessionRuntime::new`] stores as-is, grouped to keep its
@@ -197,6 +200,7 @@ impl SessionRuntime {
             conversation_target: req.conversation_target,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: req.overlap,
         };
 
         let stop_token = CancellationToken::new();
@@ -399,6 +403,7 @@ fn deliver_losing_spawn_input(
                 conversation: info.conversation_target.clone(),
                 inbound: config.inbound.clone(),
                 images: config.images.clone(),
+                overlap: None,
             };
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
@@ -553,6 +558,7 @@ async fn recover_from_panic(
         .complete_run(
             info,
             SessionState::Completed.as_str(),
+            &status,
             transcript,
             episode_id.clone(),
         )
@@ -747,6 +753,12 @@ async fn run_session(
     let mut turn_number: u32 = 0;
 
     loop {
+        // Registered and ready for this turn but not necessarily able to
+        // start it yet — the permit below may or may not be immediately
+        // available. Shown as its own state (rather than leaving the run
+        // looking like it's still forking, or idle with nothing to do)
+        // whenever `max_concurrent` is exhausted by other live sessions.
+        transition_state(&env.registry, &env.publisher, &info, SessionState::Queued).await;
         (status, summary) = tokio::select! {
             biased;
             () = stop_token.cancelled() => {
@@ -942,6 +954,7 @@ async fn finish_run(
         .complete_run(
             info,
             SessionState::Completed.as_str(),
+            &status,
             recent_messages.messages().to_vec(),
             episode_id.clone(),
         )
@@ -1490,6 +1503,31 @@ mod tests {
         }
     }
 
+    /// Like [`MockProvider`], but holds its turn's concurrency permit for a
+    /// while before responding — used to prove a second session waiting on
+    /// the same `max_concurrent` permit shows as `Queued` in the meantime.
+    struct SlowMockProvider {
+        response: String,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for SlowMockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "mock-slow"
+        }
+    }
+
     fn make_resources(response: &str) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
@@ -1497,6 +1535,30 @@ mod tests {
             repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(MockProvider {
                 response: response.to_string(),
+            }),
+            tools: crate::tools::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
+        }
+    }
+
+    fn make_slow_resources(response: &str, delay: Duration) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
+        SubAgentResources {
+            max_tool_iterations: None,
+            provider: Box::new(SlowMockProvider {
+                response: response.to_string(),
+                delay,
             }),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -1532,6 +1594,7 @@ mod tests {
                 images: Vec::new(),
             },
             conversation_target: None,
+            overlap: None,
         }
     }
 
@@ -1580,6 +1643,7 @@ mod tests {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),
             }),
+            overlap: None,
         }
     }
 
@@ -1610,6 +1674,7 @@ mod tests {
             }),
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let mut rx = registry
             .register(winner.clone(), CancellationToken::new())
@@ -1674,6 +1739,7 @@ mod tests {
             }),
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -1869,6 +1935,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let mut winner_rx = runtime
             .registry
@@ -2172,6 +2239,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         store.begin_run(&info).await;
         let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> =
@@ -2630,6 +2698,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         store.begin_run(&info).await;
 
@@ -2909,6 +2978,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let event = build_result_event(
             &info,
@@ -2955,6 +3025,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let summary = "Found something worth flagging. The instruction to omit \
              HEARTBEAT_OK was honored, so this note does not end with it."
@@ -2990,6 +3061,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let event = build_result_event(
             &info,
@@ -3607,6 +3679,7 @@ mod tests {
             labels,
             vec![
                 "started:forking",
+                "state:queued",
                 "state:running",
                 "turn_started",
                 "intermediate:checking",
@@ -3721,6 +3794,7 @@ mod tests {
             labels,
             vec![
                 "started:forking",
+                "state:queued",
                 "state:running",
                 "turn_started",
                 "error",
@@ -3732,5 +3806,76 @@ mod tests {
             ],
             "an unclassified session failure gets a plain-language message, never the raw cause"
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_on_the_concurrency_permit_shows_as_queued() {
+        // max_concurrent = 1: the first session's slow turn holds the only
+        // permit, so the second session must show as `Queued` — not still
+        // `Forking` and not `Idle` — for as long as it's waiting for one.
+        let bus_handle = crate::bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            1,
+            IdleTimeouts {
+                scheduled: Duration::from_secs(5),
+                spawned: Duration::from_secs(5),
+                external: Duration::from_secs(5),
+                artifact: Duration::from_secs(5),
+            },
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
+        );
+
+        let first = SessionAddress::from("spawned-slow-first-0001");
+        runtime.spawn(
+            sample_request(first.as_ref()),
+            Some(make_slow_resources(
+                "first done",
+                Duration::from_millis(400),
+            )),
+        );
+        wait_for(&runtime, &first, Duration::from_secs(1), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("first session should reach running and hold the only permit");
+
+        let second = SessionAddress::from("spawned-second-waiting-0002");
+        runtime.spawn(
+            sample_request(second.as_ref()),
+            Some(make_resources("second done")),
+        );
+
+        wait_for(&runtime, &second, Duration::from_millis(300), |info| {
+            info.state == SessionState::Queued
+        })
+        .await
+        .expect(
+            "second session should show as queued while the first session holds the \
+             only concurrency permit",
+        );
+
+        // Once the first session finishes and releases its permit, the
+        // second should proceed to running rather than staying queued.
+        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
+            info.state == SessionState::Running || info.state == SessionState::Idle
+        })
+        .await
+        .expect("second session should proceed once the permit is released");
     }
 }

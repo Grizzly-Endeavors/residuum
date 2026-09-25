@@ -34,13 +34,15 @@ export function isLiveState(state: SessionState): boolean {
 
 /** States in which a stop request can still take effect. */
 export function isStoppableState(state: SessionState): boolean {
-  return state === "forking" || state === "running" || state === "idle";
+  return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
 export function stateLabel(state: SessionState): string {
   switch (state) {
     case "forking":
       return "starting";
+    case "queued":
+      return "queued";
     case "running":
       return "working";
     case "idle":
@@ -174,8 +176,13 @@ const STARTED_FORMATTER = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
+/** An RFC 3339 timestamp as a short local date and time. */
+export function formatLocalDateTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : STARTED_FORMATTER.format(date);
+}
+
 /** When a run started, as a short local date and time. */
 export function formatStarted(session: SessionSummary): string {
-  const start = new Date(session.started_at);
-  return Number.isNaN(start.getTime()) ? session.started_at : STARTED_FORMATTER.format(start);
+  return formatLocalDateTime(session.started_at);
 }

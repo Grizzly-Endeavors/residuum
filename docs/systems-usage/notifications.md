@@ -20,6 +20,8 @@ Results from conversation-triggered sessions (A2A callers, and non-owner Discord
 
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
+A failed or stopped run's summary is always empty (a failed or cancelled turn produces no text output), so its inbox item's body names what happened directly — the failure reason for a failed run, or that the run was stopped for a cancelled one — rather than being blank. A failed pulse or scheduled action also publishes its own owner-facing notice (a toast in the web UI, and the same message on any chat interface), separate from the routine inbox item, naming the pulse or action and the failure reason.
+
 ### Steering it
 
 Because urgency is the session's judgment, you steer it by wording the pulse's prompt, not by editing configuration. A pulse that says "report anything unusual" will escalate more than one that says "summarize today's activity". The pulse prompt tells the session that `HEARTBEAT_URGENT` means "this needs attention before the user would next check in".
