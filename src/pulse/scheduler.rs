@@ -36,6 +36,13 @@ pub struct PulseScheduler {
     /// `take_problem_notice`.
     #[serde(skip)]
     pending_problem_notice: Option<String>,
+    /// The last pulse set that loaded successfully (parsed and passed
+    /// per-pulse/dedup validation), so a later whole-document YAML syntax
+    /// error can keep these pulses running instead of firing nothing. Not
+    /// persisted: in-memory only, since it's rebuilt from HEARTBEAT.yml on
+    /// every successful tick and a restart always re-reads the file fresh.
+    #[serde(skip)]
+    last_good_pulses: Vec<PulseDef>,
 }
 
 impl Default for PulseScheduler {
@@ -54,6 +61,7 @@ impl PulseScheduler {
             last_heartbeat_parse_error: None,
             last_heartbeat_problems: Vec::new(),
             pending_problem_notice: None,
+            last_good_pulses: Vec::new(),
         }
     }
 
@@ -85,9 +93,16 @@ impl PulseScheduler {
             heartbeat_path,
             &mut self.last_heartbeat_parse_error,
             &mut problems,
+            &self.last_good_pulses,
         ) else {
             return Vec::new();
         };
+
+        // Remember this tick's validated pulse set (whether freshly parsed,
+        // or the previous good set echoed back by a syntax-error fallback —
+        // either way it's what should keep running if the file breaks on a
+        // later tick) before the loop below consumes `heartbeat.pulses`.
+        self.last_good_pulses.clone_from(&heartbeat.pulses);
 
         let current_pulse_names: HashSet<String> =
             heartbeat.pulses.iter().map(|p| p.name.clone()).collect();
