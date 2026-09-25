@@ -13,7 +13,7 @@ use crate::agent_keys::SharedAgentKeys;
 use crate::inference::ToolDefinition;
 use crate::tools::{SharedToolsPath, ToolError, ToolResult};
 
-use super::client::McpClient;
+use super::client::{McpClient, McpClientHandle};
 use super::types::McpServerEntry;
 
 /// Shared MCP registry, accessible from the gateway.
@@ -496,7 +496,15 @@ impl McpRegistry {
         defs
     }
 
-    /// Call a tool by name, routing to the server that owns it.
+    /// Resolve `name` to a cheap-to-clone handle for the server that owns
+    /// it, without borrowing `self` for the eventual RPC call.
+    ///
+    /// The caller is meant to resolve this while holding the registry's
+    /// lock, then drop that guard *before* awaiting
+    /// [`McpClientHandle::call_tool`] on the returned handle — the point of
+    /// splitting resolution from the call is that a slow or hung MCP server
+    /// then never blocks a config reload's write lock, or another agent's
+    /// next iteration, for as long as the call takes.
     ///
     /// When two running servers expose the same name the first-registered one
     /// wins, matching the de-duplication in
@@ -506,9 +514,7 @@ impl McpRegistry {
     ///
     /// # Errors
     /// Returns `ToolError::NotFound` if no running server has the tool.
-    /// Returns `ToolError::Execution` if the RPC call fails.
-    #[tracing::instrument(skip_all, fields(mcp.tool = %name))]
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+    pub fn resolve_tool(&self, name: &str) -> Result<McpClientHandle, ToolError> {
         let server = self
             .servers
             .iter()
@@ -529,7 +535,24 @@ impl McpRegistry {
         })?;
 
         tracing::debug!(mcp.server = %server.name, "routing tool call to server");
-        client.call_tool(name, args).await
+        Ok(client.handle())
+    }
+
+    /// Call a tool by name, routing to the server that owns it and
+    /// awaiting the call in one step.
+    ///
+    /// A convenience wrapper over [`resolve_tool`](Self::resolve_tool) for
+    /// a caller that isn't holding this registry behind a lock it needs to
+    /// release first (tests, callers that already have their own owned
+    /// registry) — see `resolve_tool`'s docs for why the turn loop's own
+    /// dispatch path resolves and awaits separately instead of calling this.
+    ///
+    /// # Errors
+    /// Returns `ToolError::NotFound` if no running server has the tool.
+    /// Returns `ToolError::Execution` if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.tool = %name))]
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+        self.resolve_tool(name)?.call_tool(name, args).await
     }
 
     /// Mark a server as running (used in tests without a live client).
@@ -845,6 +868,29 @@ mod tests {
             err,
             ToolError::NotFound("nonexistent".to_string()),
             "should be NotFound carrying the tool name"
+        );
+    }
+
+    #[test]
+    fn resolve_tool_not_found() {
+        let registry = McpRegistry::new();
+        let err = registry.resolve_tool("nonexistent").unwrap_err();
+        assert_eq!(err, ToolError::NotFound("nonexistent".to_string()));
+    }
+
+    #[test]
+    fn resolve_tool_routes_collision_to_first_registered_server() {
+        let mut registry = McpRegistry::new();
+        push_running_server(&mut registry, "first", &["shared"]);
+        push_running_server(&mut registry, "second", &["shared"]);
+
+        // Neither server has a live client, so the winner surfaces the
+        // "no client" execution error — proving resolution reached it,
+        // not NotFound.
+        let err = registry.resolve_tool("shared").unwrap_err();
+        assert!(
+            matches!(&err, ToolError::Execution(msg) if msg.contains("first")),
+            "should resolve to the first-registered server, got: {err:?}"
         );
     }
 

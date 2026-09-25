@@ -151,6 +151,54 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns `ToolError::Execution` if the RPC call fails.
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+        self.handle().call_tool(name, args).await
+    }
+
+    /// A cheap-to-clone handle to this connection's peer, so a caller (the
+    /// registry) can drop whatever lock it holds before awaiting a
+    /// potentially slow tool call, rather than holding it for the call's
+    /// whole duration.
+    #[must_use]
+    pub fn handle(&self) -> McpClientHandle {
+        McpClientHandle {
+            peer: self.service.peer().clone(),
+            server_name: self.server_name.clone(),
+            timeout: self.timeout,
+        }
+    }
+
+    /// Gracefully shut down the MCP server connection.
+    pub async fn shutdown(self) {
+        if let Err(e) = self.service.cancel().await {
+            tracing::warn!(
+                server = %self.server_name,
+                error = %e,
+                "mcp server shutdown returned error"
+            );
+        } else {
+            tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
+        }
+    }
+}
+
+/// A cheap-to-clone handle for calling tools on one MCP server, independent
+/// of the [`McpClient`] (and whatever registry lock guards it) that
+/// produced it — see [`McpClient::handle`].
+#[derive(Debug, Clone)]
+pub struct McpClientHandle {
+    peer: rmcp::service::Peer<RoleClient>,
+    server_name: String,
+    /// Optional per-server timeout for tool calls, carried over from
+    /// [`McpClient`] (see its own field doc for why it defaults off).
+    timeout: Option<Duration>,
+}
+
+impl McpClientHandle {
+    /// Call a tool on this MCP server.
+    ///
+    /// # Errors
+    /// Returns `ToolError::Execution` if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.tool = %name, mcp.server = %self.server_name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
@@ -163,7 +211,7 @@ impl McpClient {
             task: None,
         };
 
-        let call = self.service.peer().call_tool(params);
+        let call = self.peer.call_tool(params);
         let outcome = run_with_optional_timeout(self.timeout, call).await;
         let result: CallToolResult = match outcome {
             Ok(inner) => inner.map_err(|e| {
@@ -196,19 +244,6 @@ impl McpClient {
             is_error,
             images: vec![],
         })
-    }
-
-    /// Gracefully shut down the MCP server connection.
-    pub async fn shutdown(self) {
-        if let Err(e) = self.service.cancel().await {
-            tracing::warn!(
-                server = %self.server_name,
-                error = %e,
-                "mcp server shutdown returned error"
-            );
-        } else {
-            tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
-        }
     }
 }
 

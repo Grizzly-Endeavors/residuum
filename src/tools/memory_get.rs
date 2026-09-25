@@ -480,6 +480,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![
                     Message::user("run it"),
                     Message::tool(long_content.clone(), "c1"),
