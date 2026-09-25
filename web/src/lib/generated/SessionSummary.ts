@@ -58,24 +58,24 @@ episode_id: string | null,
  * `true` when the run was completed at startup because the process
  * exited before it finished on its own.
  */
-interrupted: boolean,
+interrupted: boolean, 
 /**
  * This run's cumulative token usage, for the `SessionView` footer —
  * live for a run still going, final for a completed one. See
  * `docs/systems-usage/turn-control.md`.
  */
-usage: SessionUsageTotals,
+usage: SessionUsageTotals, 
 /**
  * How the run ended — completed, cancelled, or failed. `None` while the
  * run is still live, and `None` for a completed run recorded before
  * this field existed (it shows as plain "finished" rather than a
  * guessed outcome).
  */
-outcome: SessionRunStatus | null,
+outcome: SessionRunStatus | null, 
 /**
  * The failure reason, when `outcome` is `Failed`. `None` otherwise.
  */
-error: string | null,
+error: string | null, 
 /**
  * Set when this run is a pulse fire that started while its previous run
  * was still live. `None` for every other trigger.

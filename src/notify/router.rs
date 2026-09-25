@@ -569,7 +569,7 @@ mod tests {
         let mut event = sample_event(ResultDisposition::Normal);
         event.status = AgentResultStatus::Failed {
             error: "the model call timed out".to_string(),
-           details: None,
+            details: None,
         };
         event.summary = String::new();
         route_agent_result(&event, &router).await;
@@ -639,7 +639,7 @@ mod tests {
         event.source_label = "pulse:email_check".to_string();
         event.status = AgentResultStatus::Failed {
             error: "the model call timed out".to_string(),
-           details: None,
+            details: None,
         };
         route_agent_result(&event, &router).await;
 
@@ -669,7 +669,7 @@ mod tests {
         event.source_label = "action:nightly digest".to_string();
         event.status = AgentResultStatus::Failed {
             error: "skill not found".to_string(),
-           details: None,
+            details: None,
         };
         route_agent_result(&event, &router).await;
 
@@ -725,7 +725,7 @@ mod tests {
         event.source = EventTrigger::Agent;
         event.status = AgentResultStatus::Failed {
             error: "boom".to_string(),
-           details: None,
+            details: None,
         };
         route_agent_result(&event, &router).await;
 
