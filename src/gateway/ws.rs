@@ -418,31 +418,22 @@ enum SessionCommand {
     },
 }
 
-/// Maximum number of images per message.
-const MAX_IMAGES: usize = 5;
-
-/// Maximum raw image size in bytes (5 MB).
+/// Maximum raw image size in bytes, per the model API's per-image limit (5 MB).
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
-/// Allowed MIME types for image uploads.
+/// MIME types the model API accepts for image input.
 const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 /// Validate image attachments before publishing to the bus.
 ///
-/// Enforces the same limits as the client: max 5 images, 5 MB each,
-/// and only JPEG/PNG/GIF/WebP MIME types.
+/// Enforces the model API's own per-image limits — 5 MB and JPEG/PNG/GIF/WebP
+/// only — since those are provider facts, not a residuum-imposed cap. There
+/// is no limit on how many images a message can carry.
 ///
 /// # Errors
 ///
 /// Returns a human-readable error describing the first violation found.
 fn validate_images(images: &[ImageData]) -> Result<(), String> {
-    if images.len() > MAX_IMAGES {
-        return Err(format!(
-            "too many images: {} (max {MAX_IMAGES})",
-            images.len()
-        ));
-    }
-
     for img in images {
         if !ALLOWED_MIME_TYPES.contains(&img.media_type.as_str()) {
             return Err(format!(
@@ -510,16 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_images_rejects_too_many() {
-        let images: Vec<_> = (0..6).map(|_| make_image("image/png", 100)).collect();
-        let result = validate_images(&images);
-        assert!(result.is_err(), "should reject more than 5 images");
+    fn validate_images_accepts_many_images() {
+        // There is no cap on how many images a message can carry.
+        let images: Vec<_> = (0..50).map(|_| make_image("image/png", 100)).collect();
         assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.contains("too many")),
-            "error should mention 'too many'"
+            validate_images(&images).is_ok(),
+            "any number of images should be accepted"
         );
     }
 
@@ -559,17 +546,6 @@ mod tests {
             let images = vec![make_image(mime, 100)];
             assert!(validate_images(&images).is_ok(), "{mime} should be allowed");
         }
-    }
-
-    #[test]
-    fn validate_images_accepts_exactly_max_count() {
-        let images: Vec<_> = (0..MAX_IMAGES)
-            .map(|_| make_image("image/png", 100))
-            .collect();
-        assert!(
-            validate_images(&images).is_ok(),
-            "exactly {MAX_IMAGES} images should be accepted"
-        );
     }
 
     #[test]

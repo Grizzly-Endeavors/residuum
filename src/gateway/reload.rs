@@ -799,7 +799,10 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
 ///
 /// A directory the rescan couldn't read is already skipped rather than
 /// failing the whole rescan (see `SkillIndex::scan`); this surfaces each
-/// skip as a notice.
+/// skip as a notice. Separately, publishes any notice the rescan produced
+/// (a skill with an oversized description that loaded anyway, or a skill
+/// skipped for invalid frontmatter) so it reaches the user, not just the
+/// logs.
 async fn reload_skills(rt: &mut GatewayRuntime) {
     let mut skill_guard = rt.skill_state.lock().await;
     if let Err(err) = skill_guard.rescan().await {
@@ -808,6 +811,7 @@ async fn reload_skills(rt: &mut GatewayRuntime) {
     }
     tracing::debug!("skills rescanned");
     let skipped: Vec<(std::path::PathBuf, String)> = skill_guard.index().skipped_dirs().to_vec();
+    let notices: Vec<String> = skill_guard.index().notices().to_vec();
     drop(skill_guard);
     for (dir, err) in skipped {
         publish_notice(
@@ -818,6 +822,9 @@ async fn reload_skills(rt: &mut GatewayRuntime) {
             ),
         )
         .await;
+    }
+    for notice in notices {
+        publish_notice(&rt.publisher, notice).await;
     }
 }
 

@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
+> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit to page through the rest — there is no file size limit, the output header reports the file's total size and line count either way. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
 
 ### Input
 
@@ -21,17 +21,13 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 ### Output
 
-**Text files:** lines formatted as `{line_num:>4}\t{content}` joined by newlines, optionally preceded by warning lines.
+**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N; ...`) when the output doesn't cover the whole file, and a line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
 
-Warnings prepended when:
-- File exceeds 2000 lines and no explicit `limit`/`offset` was given
-- Any lines exceed 2000 characters (they are truncated with `... (truncated)`)
-
-**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images.
+**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images. Capped at the model API's inline image size limit (20 MB); over that, the error names the limit as a model API fact, not a residuum one.
 
 On error (returned as `is_error = true`):
 - File does not exist or cannot be read
-- File exceeds 10 MB size cap
+- Image exceeds the model API's inline size limit
 
 **Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
 
@@ -146,11 +142,11 @@ Output is capped at 100 KB; larger output is truncated with `\n... (output trunc
 With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
 
 With `store_output_as`:
-- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.**
+- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.** There is no minimum length; a value under 8 characters is still stored, with `" Warning: {reason}."` appended naming that it can't be redacted from output reliably.
 - Non-zero exit: `"command exited with code {N}; nothing was stored and stdout was discarded"` plus stderr.
 - Empty stdout: `"command produced no stdout; nothing was stored"`.
 - A name that is invalid or belongs to a user-created key is refused before the command runs (`"... Nothing was run."`).
-- A value that fails storage rules (shorter than 8 characters): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+- A value that fails storage rules (contains a NUL byte, or the name conflicts): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
 - Timeout or cancellation: nothing is stored and stdout is discarded from the message too, the same as a non-zero exit — `"{reason}; nothing was stored and stdout was discarded"` plus stderr.
 
 stderr in a `store_output_as` result is redacted against the new value as well as every existing key.
@@ -225,11 +221,12 @@ On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created b
 | Parameter         | Type            | Required | Description                                                  |
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
-| `limit`           | integer         | no       | Maximum results to return (default: 5, max: 20)              |
+| `limit`           | integer         | no       | Maximum results to return (default: 5, no upper cap)         |
 | `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
 | `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs (excludes wiki pages) |
+| `min_score`       | number          | no       | Override the configured relevance threshold for this search only (0.0-1.0) |
 
 ### Output
 
@@ -240,8 +237,11 @@ Found {N} result(s):
 1. [{source_type}] {id} | {date} | lines {s}-{e} (score: {score})
    {snippet}
 ```
+If any candidate scored below the relevance threshold, a trailing note is appended: `"({N} additional weaker match(es) fell below the relevance threshold; pass a lower min_score to see them)"`.
 
-On success with no results: `"no results found"`
+On success with no results above the threshold but some below it: `"no strong matches; {N} weaker match(es) fell below the relevance threshold — pass a lower min_score to see them"`
+
+On success with no results at all: `"no results found"`
 
 On error: `"search failed: {reason}"`
 
@@ -252,24 +252,27 @@ On error: `"search failed: {reason}"`
 **Source:** `memory_get.rs` · `MemoryGetTool`
 
 **Description sent to LLM:**
-> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers.
+> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers. A tool result line over 500 chars is shown truncated with its original length; pass expand_line with that line number to retrieve it in full.
 
 ### Input
 
-| Parameter    | Type    | Required | Description                                              |
-|--------------|---------|----------|----------------------------------------------------------|
-| `episode_id` | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
-| `run_id`     | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
-| `from_line`  | integer | no       | Start reading from this line offset (1-indexed, default: start) |
-| `lines`      | integer | no       | Number of message lines to return (default: 50, max: 200) |
+| Parameter     | Type    | Required | Description                                              |
+|---------------|---------|----------|----------------------------------------------------------|
+| `episode_id`  | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
+| `run_id`      | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
+| `from_line`   | integer | no       | Start reading from this line offset (1-indexed, default: start) |
+| `lines`       | integer | no       | Number of message lines to return (default: 50, max: 200) |
+| `expand_line` | integer | no       | Return this one line number in full, uncut by the 500-char tool result truncation. Overrides from_line/lines. |
 
 **Security:** `episode_id`/`run_id` containing `/`, `\`, or `..` is rejected with a path-traversal error.
 
 ### Output
 
-On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used.
+On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used. A `Tool:` line over 500 chars is truncated with `(showing 500 of {N} chars; use memory_get with expand_line={N} to see the full result)`.
 
-On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
+On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines and truncation notice, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
+
+On success with `expand_line`: the same header, followed by just that one line's message with its full content (no 500-char truncation). `from_line`/`lines` are ignored when `expand_line` is given.
 
 On error:
 - Both `episode_id` and `run_id` given → `"provide exactly one of 'episode_id' or 'run_id', not both"`
@@ -502,14 +505,13 @@ On total failure: error with failure details.
 
 On success, no `attachments` given: `"Added item to user inbox with ID: {filename stem}"`
 
-On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`
+On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`. If any attachment in the batch failed (e.g. a missing source path), the same success output continues with a `"Some attachments could not be copied (the item was still added):"` section naming each one.
 
 On error:
 - Missing `title` or `body`
-- An attachment path doesn't exist, isn't readable, or exceeds the 25 MB size cap — the whole add fails and no item is created (see side effects below)
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated, copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. If any attachment in the batch fails, every file already copied for that item is removed and no item is saved — a partial attachment set is never left behind. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
 
 ---
 
@@ -560,7 +562,7 @@ On error:
 - Notify endpoints: publishes `NotificationEvent` to the endpoint's topic
 - Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic (with optional `FileAttachment` and the validated `conversation` target). If delivery to a named conversation fails later, the owner gets an error message on that interface.
 - **Cannot send to inbox** — the agent has no write path to inbox
-- **File attachments require interactive endpoints** — Telegram allows up to 50MB, others 25MB
+- **File attachments require interactive endpoints** — the size cap is per platform, matching that platform's own upload limit: 50MB on Telegram, 20MB on Discord. Every other endpoint (the web UI, Teams, A2A) has no size cap here.
 
 ---
 
@@ -817,23 +819,22 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 **Source:** `web_fetch.rs` · `WebFetchTool`
 
 **Description sent to LLM:**
-> Fetch a web page and extract its main content as readable text. Returns the page title and cleaned content, optimized for reading. Use this to read articles, documentation, or any web page.
+> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports.
 
 ### Input
 
-| Parameter | Type   | Required | Description          |
-|-----------|--------|----------|----------------------|
-| `url`     | string | yes      | The URL to fetch     |
+| Parameter | Type    | Required | Description                                                                                          |
+|-----------|---------|----------|-------------------------------------------------------------------------------------------------------|
+| `url`     | string  | yes      | The URL to fetch                                                                                     |
+| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0); continue from a previous response's offset |
 
 ### Output
 
-On success: extracted readable text from the page, with the title as a markdown heading if available. Content is truncated at 50,000 characters with a `[content truncated]` notice if exceeded.
-
-For `text/plain` responses: returns the raw text content (truncated if needed).
+On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. HTML is extracted to readable text; any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is. There is no total-size limit — a longer page is read in full by paging through `offset`, not truncated.
 
 On error (`is_error = true`):
 - HTTP error status: `"HTTP {status} fetching {url}"`
-- Unsupported content type (not `text/html` or `text/plain`): `"unsupported content type: {type}"`
+- Binary content type: `"content type '{type}' is binary — web_fetch only handles textual content (HTML, JSON, XML, plain text, and similar)"`
 
 On execution error:
 - Network/connection failure: `"failed to fetch {url}: {details}"`

@@ -22,13 +22,6 @@ use crate::features;
 use crate::gateway::protocol::ArtifactSummary;
 use crate::update;
 
-/// Files larger than this are refused rather than served.
-pub(crate) const MAX_ARTIFACT_FILE_BYTES: u64 = 8 * 1024 * 1024;
-
-/// A folder artifact's files are counted up to this many when listing and
-/// watching, so a runaway folder can't stall either.
-const MAX_FOLDER_FILES: usize = 5_000;
-
 /// Only the start of a page is scanned for its `<title>` when listing.
 const TITLE_SCAN_BYTES: usize = 64 * 1024;
 
@@ -145,7 +138,10 @@ pub(crate) async fn discover_artifacts(dir: &Path) -> std::io::Result<Vec<Discov
 }
 
 /// Newest modification time, total size, and file count of a folder artifact,
-/// walking at most [`MAX_FOLDER_FILES`] files and skipping symlinks.
+/// skipping symlinks. Unbounded: a workbench folder is a hand-built tool, not
+/// user-uploaded content, so there is no realistic file count that needs
+/// capping, and the watcher's change detection depends on an honest count and
+/// size to notice edits past whatever a cap would have cut off at.
 async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64, usize)> {
     let mut newest: Option<SystemTime> = None;
     let mut size = 0_u64;
@@ -163,9 +159,6 @@ async fn folder_stats(root: PathBuf) -> std::io::Result<(Option<SystemTime>, u64
                 files += 1;
                 if let Ok(m) = metadata.modified() {
                     newest = Some(newest.map_or(m, |n| n.max(m)));
-                }
-                if files >= MAX_FOLDER_FILES {
-                    return Ok((newest, size, files));
                 }
             }
         }
@@ -306,14 +299,6 @@ pub(crate) enum ArtifactFileError {
     NoSuchArtifact(String),
     #[error("workbench artifact {artifact:?} has no file {path:?}")]
     NotFound { artifact: String, path: String },
-    #[error(
-        "{path:?} in workbench artifact {artifact:?} is {size} bytes, over the {MAX_ARTIFACT_FILE_BYTES}-byte limit"
-    )]
-    TooLarge {
-        artifact: String,
-        path: String,
-        size: u64,
-    },
     #[error("failed to read {path:?} in workbench artifact {artifact:?}: {source}")]
     Io {
         artifact: String,
@@ -323,10 +308,22 @@ pub(crate) enum ArtifactFileError {
     },
 }
 
+/// An artifact file's body, ready to serve.
+///
+/// HTML needs the SDK injected, so it's read fully and rewritten in memory.
+/// Everything else is streamed straight from disk, so serving a large local
+/// artifact file (an exported dataset, a video) doesn't buffer it whole —
+/// there is no size cap on serving it locally. A relay tunnel session
+/// forwarding this response applies its own size limit
+/// (`tunnel::forward_http::MAX_RESPONSE_SIZE`) on that path, not this one.
+pub(crate) enum ArtifactBody {
+    Bytes(Vec<u8>),
+    File(tokio::fs::File),
+}
+
 /// An artifact file ready to serve.
-#[derive(Debug)]
 pub(crate) struct ArtifactFile {
-    pub bytes: Vec<u8>,
+    pub body: ArtifactBody,
     pub content_type: String,
 }
 
@@ -334,13 +331,14 @@ pub(crate) struct ArtifactFile {
 /// SDK injected.
 ///
 /// `rest` is a `/`-separated path relative to a folder artifact. A trailing `/`
-/// means that directory's `index.html`. Segments that are empty, `.`, `..`,
-/// or start with `.` are refused, and the resolved file must stay inside the
-/// artifact's folder after symlinks. A single-page artifact has no other files.
+/// means that directory's `index.html`. Empty, `.`, and `..` segments are
+/// refused (a dot-prefixed filename like `.env.example` is not), and the
+/// resolved file must stay inside the artifact's folder after symlinks. A
+/// single-page artifact has no other files.
 ///
 /// # Errors
-/// Returns [`ArtifactFileError`] when the artifact or file does not exist, the file
-/// is too large, or it cannot be read.
+/// Returns [`ArtifactFileError`] when the artifact or file does not exist or
+/// cannot be read.
 pub(crate) async fn read_artifact_file(
     dir: &Path,
     name: &str,
@@ -371,25 +369,20 @@ pub(crate) async fn read_artifact_file(
     if !metadata.is_file() {
         return Err(not_found());
     }
-    if metadata.len() > MAX_ARTIFACT_FILE_BYTES {
-        return Err(ArtifactFileError::TooLarge {
-            artifact: name.to_string(),
-            path: rest.to_string(),
-            size: metadata.len(),
-        });
-    }
-    let bytes = tokio::fs::read(&path).await.map_err(io_err)?;
 
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     if mime.essence_str() == "text/html" {
+        let bytes = tokio::fs::read(&path).await.map_err(io_err)?;
         Ok(ArtifactFile {
-            bytes: inject_sdk(
-                &String::from_utf8_lossy(&bytes),
-                name,
-                update::CURRENT_VERSION,
-                features::FEATURES,
-            )
-            .into_bytes(),
+            body: ArtifactBody::Bytes(
+                inject_sdk(
+                    &String::from_utf8_lossy(&bytes),
+                    name,
+                    update::CURRENT_VERSION,
+                    features::FEATURES,
+                )
+                .into_bytes(),
+            ),
             content_type: "text/html; charset=utf-8".to_string(),
         })
     } else {
@@ -400,8 +393,9 @@ pub(crate) async fn read_artifact_file(
         } else {
             mime.essence_str().to_string()
         };
+        let file = tokio::fs::File::open(&path).await.map_err(io_err)?;
         Ok(ArtifactFile {
-            bytes,
+            body: ArtifactBody::File(file),
             content_type,
         })
     }
@@ -412,7 +406,13 @@ async fn resolve_in_folder(root: &Path, rest: &str) -> Option<PathBuf> {
     let mut path = root.to_path_buf();
     let wants_index = rest.is_empty() || rest.ends_with('/');
     for segment in rest.split('/').filter(|s| !s.is_empty()) {
-        if segment.starts_with('.') || segment.contains('\\') {
+        // Only `.`/`..` (traversal) and a literal backslash are refused. A
+        // dot-prefixed filename like `.well-known/` or `.env.example` is an
+        // ordinary file the artifact's author chose to include, and is
+        // otherwise served like any other; the canonicalize check below is
+        // the actual traversal guard, this just avoids hitting the
+        // filesystem for the common case.
+        if segment == "." || segment == ".." || segment.contains('\\') {
             return None;
         }
         path.push(segment);
@@ -672,6 +672,18 @@ mod tests {
         );
     }
 
+    async fn body_to_bytes(body: ArtifactBody) -> Vec<u8> {
+        match body {
+            ArtifactBody::Bytes(b) => b,
+            ArtifactBody::File(mut f) => {
+                use tokio::io::AsyncReadExt;
+                let mut buf = Vec::new();
+                f.read_to_end(&mut buf).await.unwrap();
+                buf
+            }
+        }
+    }
+
     #[tokio::test]
     async fn reads_pages_and_folder_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -683,7 +695,7 @@ mod tests {
 
         let page = read_artifact_file(p, "single", "").await.unwrap();
         assert!(
-            String::from_utf8(page.bytes)
+            String::from_utf8(body_to_bytes(page.body).await)
                 .unwrap()
                 .starts_with("<head><script>")
         );
@@ -691,18 +703,18 @@ mod tests {
 
         let index = read_artifact_file(p, "graph", "").await.unwrap();
         assert!(
-            String::from_utf8(index.bytes)
+            String::from_utf8(body_to_bytes(index.body).await)
                 .unwrap()
                 .contains("window.residuum")
         );
 
         let script = read_artifact_file(p, "graph", "lib/app.js").await.unwrap();
-        assert_eq!(script.bytes, b"console.log(1)");
+        assert_eq!(body_to_bytes(script.body).await, b"console.log(1)");
         assert!(script.content_type.contains("javascript"));
 
         let nested = read_artifact_file(p, "graph", "docs/").await.unwrap();
         assert!(
-            String::from_utf8(nested.bytes)
+            String::from_utf8(body_to_bytes(nested.body).await)
                 .unwrap()
                 .contains("window.residuum")
         );
@@ -718,20 +730,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn folder_paths_cannot_escape_or_reach_hidden_files() {
+    async fn a_file_over_the_old_eight_mb_cap_is_streamed_not_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        write(&p.join("big/index.html"), "<head></head>");
+        let big = vec![b'x'; 9 * 1024 * 1024];
+        std::fs::write(p.join("big/data.bin"), &big).unwrap();
+
+        let served = read_artifact_file(p, "big", "data.bin").await.unwrap();
+        assert!(matches!(served.body, ArtifactBody::File(_)));
+        assert_eq!(body_to_bytes(served.body).await.len(), big.len());
+    }
+
+    #[tokio::test]
+    async fn folder_paths_cannot_escape_the_artifact_root() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
         write(&p.join("graph/index.html"), "x");
-        write(&p.join("graph/.secret"), "x");
         write(&p.join("other/index.html"), "x");
         write(&p.join("graph.state.json"), "{}");
 
-        for rest in [
-            "../other/index.html",
-            ".secret",
-            "..",
-            "a/../../graph.state.json",
-        ] {
+        for rest in ["../other/index.html", "..", "a/../../graph.state.json"] {
             assert!(
                 matches!(
                     read_artifact_file(p, "graph", rest).await,
@@ -740,6 +759,20 @@ mod tests {
                 "{rest} must not resolve"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn folder_paths_allow_dot_prefixed_files() {
+        // A dot-prefixed segment (e.g. a build tool's `.well-known/` or an
+        // author's `.env.example`) is an ordinary file within the artifact's
+        // own folder, not a traversal attempt — it should serve normally.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        write(&p.join("graph/index.html"), "x");
+        write(&p.join("graph/.secret"), "shh");
+
+        let served = read_artifact_file(p, "graph", ".secret").await.unwrap();
+        assert_eq!(body_to_bytes(served.body).await, b"shh");
     }
 
     #[cfg(unix)]

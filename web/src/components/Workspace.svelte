@@ -7,6 +7,7 @@
     fetchWorkspaceFile,
     putWorkspaceFile,
     validateWorkspaceFile,
+    workspaceConflictFromApiError,
   } from "../lib/api";
   import { toast } from "../lib/toast.svelte";
   import { Icon } from "../lib/icons";
@@ -25,6 +26,8 @@
   let selectedFile = $state("");
   let fileContent = $state("");
   let editContent = $state("");
+  /** The version the file was last read/saved at, sent back as `If-Match`. */
+  let fileVersion = $state<string | null>(null);
   let loading = $state(false);
   let saving = $state(false);
   let error = $state("");
@@ -34,6 +37,8 @@
   let mobileEditorOpen = $state(false);
   let switchConfirmOpen = $state(false);
   let pendingFilePath = $state("");
+  /** Someone else saved this file first; offer to reload or overwrite. */
+  let conflictOpen = $state(false);
 
   // Derived
   let dirty = $derived(editContent !== fileContent);
@@ -133,9 +138,10 @@
     error = "";
     diagnostics = [];
     try {
-      const content = await fetchWorkspaceFile(path);
-      fileContent = content;
-      editContent = content;
+      const file = await fetchWorkspaceFile(path);
+      fileContent = file.content;
+      editContent = file.content;
+      fileVersion = file.version;
       mobileEditorOpen = true;
     } catch (e) {
       error = userErrorMessage(e, {
@@ -144,6 +150,7 @@
       });
       fileContent = "";
       editContent = "";
+      fileVersion = null;
     } finally {
       loading = false;
     }
@@ -154,10 +161,50 @@
     saving = true;
     error = "";
     try {
-      const response = await putWorkspaceFile(selectedFile, editContent);
+      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion);
       fileContent = editContent;
+      fileVersion = response.version;
       diagnostics = response.diagnostics ?? [];
       toast.success(diagnostics.length > 0 ? "Saved, with problems noted below." : "Saved.");
+    } catch (e) {
+      const conflict = workspaceConflictFromApiError(e);
+      if (conflict) {
+        fileVersion = conflict.currentVersion;
+        conflictOpen = true;
+      } else {
+        toast.error(userErrorMessage(e, { action: "Couldn't save this file." }));
+      }
+    } finally {
+      saving = false;
+    }
+  }
+
+  /** Reload the file's current content from disk, discarding local edits. */
+  async function resolveConflictByReloading() {
+    conflictOpen = false;
+    await loadFile(selectedFile);
+  }
+
+  /**
+   * Overwrite the other writer's change with this one. `fileVersion` was
+   * already updated to the conflict's `current_version` in `handleSave`,
+   * so this still goes through `If-Match` against exactly what's on disk
+   * now — a further concurrent change in the meantime still 412s rather
+   * than being silently clobbered too.
+   */
+  async function resolveConflictByOverwriting() {
+    conflictOpen = false;
+    saving = true;
+    try {
+      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion);
+      fileContent = editContent;
+      fileVersion = response.version;
+      diagnostics = response.diagnostics ?? [];
+      toast.success(
+        diagnostics.length > 0
+          ? "Saved (overwrote the other change), with problems noted below."
+          : "Saved (overwrote the other change).",
+      );
     } catch (e) {
       toast.error(userErrorMessage(e, { action: "Couldn't save this file." }));
     } finally {
@@ -258,5 +305,19 @@
   {#snippet actions()}
     <button class="btn btn-secondary" onclick={cancelSwitchFile}>Cancel</button>
     <button class="btn btn-danger" onclick={confirmSwitchFile}>Discard and switch</button>
+  {/snippet}
+</Modal>
+
+<Modal open={conflictOpen} title="This file changed" onClose={() => (conflictOpen = false)}>
+  {fileName(selectedFile)} was saved by someone else (or something else) since you opened it. Reload to
+  see the current version and lose your edits, or overwrite it with your edits.
+
+  {#snippet actions()}
+    <button class="btn btn-secondary" onclick={() => void resolveConflictByReloading()}
+      >Reload, discard my edits</button
+    >
+    <button class="btn btn-danger" onclick={() => void resolveConflictByOverwriting()}
+      >Overwrite with my edits</button
+    >
   {/snippet}
 </Modal>

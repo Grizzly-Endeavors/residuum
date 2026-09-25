@@ -29,9 +29,6 @@ const PER_FILE_CONTENT_LIMIT_BYTES: u64 = 1024 * 1024;
 /// walking and sets `listing_truncated`.
 const TREE_ENTRY_LIMIT: usize = 20_000;
 
-/// Maximum number of paths accepted in one batch-read request.
-const BATCH_READ_PATH_LIMIT: usize = 1_000;
-
 /// Serialized response budget for bulk reads, in bytes (8 MiB). Leaves
 /// headroom under the relay tunnel's 10 MB response limit; once adding a
 /// file's content would push the response past this, the content is
@@ -740,24 +737,16 @@ fn batch_read(workspace_dir: &Path, paths: &[String]) -> (Vec<BatchFileResult>, 
 /// exactly what changed in one request. Results are returned in request
 /// order; one bad path never fails the request — it gets a per-file
 /// `error` instead. The same per-file (1 MiB) and response (8 MiB) budgets
-/// as the tree endpoint apply.
+/// as the tree endpoint apply; there is no separate cap on how many paths
+/// one request may name, since that response budget already bounds the
+/// total size regardless of path count.
 ///
 /// # Errors
-/// Returns 400 if more than 1,000 paths are requested.
+/// Returns 500 if the batch-read task itself fails to run.
 pub(super) async fn api_workspace_read(
     State(state): State<ConfigApiState>,
     Json(req): Json<BatchReadRequest>,
 ) -> Result<Json<BatchReadResponse>, (StatusCode, String)> {
-    if req.paths.len() > BATCH_READ_PATH_LIMIT {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "at most {BATCH_READ_PATH_LIMIT} paths may be requested at once ({} given)",
-                req.paths.len()
-            ),
-        ));
-    }
-
     let workspace_dir = state.workspace_dir.clone();
     let (files, content_truncated) =
         tokio::task::spawn_blocking(move || batch_read(&workspace_dir, &req.paths))
@@ -916,8 +905,10 @@ mod tests {
     async fn blocked_paths_and_symlinks_are_absent() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
-        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        tokio::fs::write(ws_dir.join("vectors.db"), "bin")
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "bin")
             .await
             .unwrap();
         tokio::fs::write(ws_dir.join("real.md"), "real")
@@ -931,7 +922,7 @@ mod tests {
 
         let response = tree(&state, "").await;
         let paths: Vec<&str> = response.entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(!paths.contains(&"vectors.db"));
+        assert!(!paths.contains(&"memory/vectors.db"));
         #[cfg(unix)]
         assert!(!paths.contains(&"link.md"));
         assert!(paths.contains(&"real.md"));
@@ -1081,7 +1072,7 @@ mod tests {
                     "a.md".to_string(),
                     "gone.md".to_string(),
                     "adir".to_string(),
-                    "vectors.db".to_string(),
+                    "memory/vectors.db".to_string(),
                     "../escape.md".to_string(),
                 ],
             }),
@@ -1102,7 +1093,7 @@ mod tests {
         assert_eq!(adir.path, "adir");
         assert_eq!(adir.error, Some("is_directory"));
         let db = files.next().unwrap();
-        assert_eq!(db.path, "vectors.db");
+        assert_eq!(db.path, "memory/vectors.db");
         assert_eq!(db.error, Some("blocked"));
         let escape = files.next().unwrap();
         assert_eq!(escape.path, "../escape.md");
@@ -1116,19 +1107,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_read_rejects_over_the_path_limit() {
+    async fn batch_read_accepts_more_than_the_old_path_limit() {
+        // There is no cap on path count: the response budget already
+        // bounds the total size regardless of how many paths are named.
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
         let state = make_state(ws_dir);
 
-        let paths = (0..=BATCH_READ_PATH_LIMIT)
-            .map(|i| format!("f{i}.md"))
-            .collect();
-        let err = api_workspace_read(State(state), Json(BatchReadRequest { paths }))
+        let paths: Vec<String> = (0..1500).map(|i| format!("f{i}.md")).collect();
+        let path_count = paths.len();
+        let response = api_workspace_read(State(state), Json(BatchReadRequest { paths }))
             .await
-            .unwrap_err();
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+            .unwrap();
+        assert_eq!(response.files.len(), path_count);
     }
 
     #[tokio::test]

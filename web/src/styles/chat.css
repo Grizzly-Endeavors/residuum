@@ -1221,6 +1221,13 @@
   opacity: 0.85;
 }
 
+.chat-input-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 12px 0;
+  opacity: 0.85;
+}
+
 /* ── Image preview strip ──────────────────────────────────────────────── */
 
 .image-preview-strip {

@@ -7,8 +7,9 @@
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingSelector from "./ThinkingSelector.svelte";
 
+  // Model API limits, not residuum's own: 5 MB and these MIME types per image.
+  // There is no limit on how many images a message can carry.
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
-  const MAX_IMAGES = 5;
   const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
   let {
@@ -17,12 +18,23 @@
     onOpenFeedback,
     isProcessing = false,
     disabled = false,
+    reconnecting = false,
+    pendingCount = 0,
   }: {
     onSend: (text: string, images?: ImageAttachment[]) => void;
     onStop: () => void;
     onOpenFeedback: () => void;
     isProcessing?: boolean;
+    /** Blocks drafting and sending outright, for a reason other than the
+     * connection (there is currently no such caller). Reconnecting never
+     * sets this — see `reconnecting` below. */
     disabled?: boolean;
+    /** The connection is down or coming back up. Drafting and sending stay
+     * enabled; a sent message queues at the transport layer and is shown
+     * as pending until it actually goes out. */
+    reconnecting?: boolean;
+    /** How many of the user's own messages are queued waiting to send. */
+    pendingCount?: number;
   } = $props();
   let value = $state("");
   let textarea: HTMLTextAreaElement | undefined = $state();
@@ -170,10 +182,6 @@
 
   async function handleFiles(files: FileList | File[]) {
     for (const file of files) {
-      if (pendingImages.length >= MAX_IMAGES) {
-        showRejection(`Maximum ${MAX_IMAGES} images`);
-        break;
-      }
       if (!ACCEPTED_TYPES.includes(file.type)) {
         showRejection("Unsupported file type");
         continue;
@@ -288,7 +296,7 @@
           bind:this={textarea}
           bind:value
           class="chat-input"
-          placeholder={disabled ? "Reconnecting…" : "Send a message..."}
+          placeholder="Send a message..."
           rows="1"
           {disabled}
           onkeydown={handleKeydown}
@@ -307,6 +315,16 @@
           >
         {/if}
       </div>
+      {#if reconnecting || pendingCount > 0}
+        <p class="chat-input-status">
+          {#if pendingCount > 0}
+            Reconnecting — {pendingCount === 1 ? "1 message" : `${pendingCount} messages`} will send once
+            back online.
+          {:else}
+            Reconnecting — messages you send now will go out once back online.
+          {/if}
+        </p>
+      {/if}
       <input
         bind:this={fileInput}
         type="file"
