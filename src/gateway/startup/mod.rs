@@ -219,11 +219,18 @@ async fn init_action_store(
 /// Scan for skills and return the shared state handle.
 ///
 /// A directory `SkillIndex::scan` couldn't read is already skipped rather
-/// than failing the whole scan; this only turns each skip into a
-/// degradation for the caller to report. A scan failure with no partial
-/// index at all (not currently possible, but the API still allows it)
-/// falls back to an empty index with a warning.
-async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkillState {
+/// than failing the whole scan; this turns each skip into a degradation for
+/// the caller to report. A scan failure with no partial index at all (not
+/// currently possible, but the API still allows it) falls back to an empty
+/// index with a warning. Separately, publishes any notice the scan produced
+/// (a skill with an oversized description that loaded anyway, or a skill
+/// skipped for invalid frontmatter) so it reaches the user, not just the
+/// logs.
+async fn init_skills(
+    cfg: &Config,
+    degradations: &mut Vec<String>,
+    publisher: &crate::bus::Publisher,
+) -> SharedSkillState {
     let skill_index = match SkillIndex::scan(&cfg.skills.dirs).await {
         Ok(idx) => {
             for (dir, err) in idx.skipped_dirs() {
@@ -242,6 +249,9 @@ async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkil
             SkillIndex::default()
         }
     };
+    for notice in skill_index.notices() {
+        super::helpers::publish_notice(publisher, notice.clone()).await;
+    }
     SkillState::new_shared(skill_index, cfg.skills.dirs.clone())
 }
 
@@ -1017,7 +1027,7 @@ pub(crate) async fn initialize(
 
     let (action_store, action_notify) =
         init_action_store(&layout, publisher, &mut degradations).await;
-    let skill_state = init_skills(cfg, &mut degradations).await;
+    let skill_state = init_skills(cfg, &mut degradations, publisher).await;
 
     let (session_observer, merge_writer) = build_session_memory_components(
         cfg,

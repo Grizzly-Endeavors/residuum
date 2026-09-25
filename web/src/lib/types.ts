@@ -335,6 +335,8 @@ export interface AgentKeysListResponse {
 export interface SetAgentKeyResponse {
   name: string;
   env_var: string;
+  /** Present when the value is short enough that redaction becomes unreliable; the key is stored either way. */
+  warning?: string;
 }
 
 export interface SecretsListResponse {

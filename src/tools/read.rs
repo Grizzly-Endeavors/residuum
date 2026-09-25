@@ -5,13 +5,12 @@ use std::path::Path;
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::file_tracker::SharedFileTracker;
 use super::{Tool, ToolError, ToolResult};
 use crate::inference::{ImageData, ToolDefinition};
-
-/// Hard cap on file size (10 MB safety net).
-const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
+use crate::interfaces::attachment::MAX_IMAGE_INLINE_SIZE;
 
 /// Default maximum lines returned when no explicit offset/limit is given.
 const DEFAULT_MAX_LINES: usize = 2000;
@@ -72,10 +71,13 @@ impl Tool for ReadTool {
             description: "Read the contents of a file. Each output line is prefixed with its \
                           line number and a tab (e.g. `   1\\thello`); the prefix is not part of \
                           the file, so leave it out of edit_file's old_string. \
-                          By default returns the first 2000 lines; use offset/limit for larger files. \
+                          By default returns the first 2000 lines; use offset/limit to page through \
+                          the rest — there is no file size limit, the output header reports the \
+                          file's total size and line count either way. \
                           Lines longer than 2000 characters are truncated. \
                           Image files (JPEG, PNG, GIF, WebP) are returned as inline images \
-                          for visual inspection instead of raw bytes."
+                          for visual inspection instead of raw bytes, capped by the model API's \
+                          inline image size limit."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -113,76 +115,93 @@ impl Tool for ReadTool {
             Ok(m) => m,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
+        let total_size = metadata.len();
 
-        if metadata.len() > MAX_READ_BYTES {
-            return Ok(ToolResult::error(format!(
-                "file {path} is too large ({} bytes, max {MAX_READ_BYTES})",
-                metadata.len()
-            )));
-        }
-
-        // Check if this is a supported image file — return inline image data
+        // Check if this is a supported image file — return inline image data.
+        // The size cap here is a model API fact (the maximum image size the
+        // provider accepts inline), not a residuum-imposed limit.
         if let Some(mime) = image_mime_type(Path::new(path)) {
-            return self.read_image(path, metadata.len(), mime).await;
+            if total_size > u64::from(MAX_IMAGE_INLINE_SIZE) {
+                return Ok(ToolResult::error(format!(
+                    "image {path} is too large to send inline ({total_size} bytes, max \
+                     {MAX_IMAGE_INLINE_SIZE} bytes — this is a model API limit)"
+                )));
+            }
+            return self.read_image(path, total_size, mime).await;
         }
 
-        let file_contents = match tokio::fs::read_to_string(path).await {
-            Ok(c) => c,
+        // Text files have no size limit: page through by offset/limit rather
+        // than loading the whole file into memory. `start` and `effective_limit`
+        // are resolved against line numbers as we stream, not against a
+        // pre-counted total, so a file of any size can be paged with bounded
+        // memory use.
+        // `try_from` rather than `as`: a fallible conversion clamped to
+        // `usize::MAX` on overflow, so no truncating cast is needed here.
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+
+        // Apply the default limit only when no explicit limit/offset given.
+        let effective_limit: Option<usize> = explicit_limit.map_or_else(
+            || (offset == 0).then_some(DEFAULT_MAX_LINES),
+            |l| Some(usize::try_from(l).unwrap_or(usize::MAX)),
+        );
+
+        let file = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
+        let mut lines_stream = BufReader::new(file).lines();
 
-        let lines: Vec<&str> = file_contents.lines().collect();
-        let total_lines = lines.len();
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "offset from JSON u64 capped by line count"
-        )]
-        let start = (offset as usize).min(total_lines);
-
-        // Apply default limit only when no explicit limit/offset given
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "limit from JSON u64 capped by line count"
-        )]
-        let effective_limit = explicit_limit.map_or_else(
-            || {
-                if offset == 0 {
-                    DEFAULT_MAX_LINES
-                } else {
-                    total_lines
-                }
-            },
-            |l| l as usize,
-        );
-        let end = (start + effective_limit).min(total_lines);
-        let line_limit_applied = end < total_lines && explicit_limit.is_none() && offset == 0;
-
+        let mut selected: Vec<String> = Vec::new();
         let mut truncated_count: usize = 0;
+        let mut total_lines: usize = 0;
+        let mut first_shown_line: Option<usize> = None;
+        let mut last_shown_line: usize = 0;
 
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "start and end are clamped to total_lines; the slice is always in-bounds"
-        )]
-        let selected: Vec<String> = lines[start..end]
-            .iter()
-            .enumerate()
-            .map(|(i, line)| {
-                let (formatted, was_truncated) = format_numbered_line(start + i + 1, line);
-                if was_truncated {
-                    truncated_count += 1;
-                }
-                formatted
-            })
-            .collect();
+        loop {
+            let line = match lines_stream.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => break,
+                Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+            };
+            total_lines += 1;
+            let line_no = total_lines;
 
-        // Build warnings header
-        let mut warnings: Vec<String> = Vec::new();
-        if line_limit_applied {
-            warnings.push(format!(
-                "warning: file has {total_lines} lines, showing first {DEFAULT_MAX_LINES}; \
-                 use offset/limit or exec with grep to find specific content"
-            ));
+            if line_no <= start {
+                continue;
+            }
+            // Keep streaming (without collecting) past the limit so total_lines stays accurate.
+            if effective_limit.is_some_and(|limit| selected.len() >= limit) {
+                continue;
+            }
+
+            let (formatted, was_truncated) = format_numbered_line(line_no, &line);
+            if was_truncated {
+                truncated_count += 1;
+            }
+            selected.push(formatted);
+            first_shown_line.get_or_insert(line_no);
+            last_shown_line = line_no;
+        }
+
+        // Build the info/warnings header. Total size and line count are
+        // always reported so a paged or truncated view never hides how much
+        // more there is to see.
+        let mut warnings: Vec<String> = vec![format!(
+            "file: {total_size} bytes, {total_lines} line(s) total"
+        )];
+        match first_shown_line {
+            Some(first) if first > 1 || last_shown_line < total_lines => {
+                warnings.push(format!(
+                    "showing lines {first}-{last_shown_line} of {total_lines}; \
+                     use offset/limit to see more, or exec with grep to find specific content"
+                ));
+            }
+            None if total_lines > 0 => {
+                warnings.push(format!(
+                    "offset {offset} is at or beyond the file's {total_lines} line(s); nothing to show"
+                ));
+            }
+            Some(_) | None => {}
         }
         if truncated_count > 0 {
             warnings.push(format!(
@@ -193,11 +212,11 @@ impl Tool for ReadTool {
         // Record read in tracker
         self.tracker.lock().await.record_read(path);
 
+        let header = warnings.join("\n");
         let body = selected.join("\n");
-        if warnings.is_empty() {
-            Ok(ToolResult::success(body))
+        if body.is_empty() {
+            Ok(ToolResult::success(header))
         } else {
-            let header = warnings.join("\n");
             Ok(ToolResult::success(format!("{header}\n\n{body}")))
         }
     }
@@ -337,9 +356,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result.output, "   1\thello\n   2\tworld",
-            "each line should be its number, a tab, then the text"
+        assert!(
+            result.output.ends_with("\n\n   1\thello\n   2\tworld"),
+            "each line should be its number, a tab, then the text: {}",
+            result.output
         );
     }
 
@@ -362,8 +382,12 @@ mod tests {
 
         assert!(!result.is_error, "read should succeed");
         assert!(
-            result.output.contains("warning: file has 3000 lines"),
-            "should warn about line limit"
+            result.output.contains("3000 line(s) total"),
+            "should report total line count"
+        );
+        assert!(
+            result.output.contains("showing lines 1-2000 of 3000"),
+            "should show the default-limited range"
         );
         // Count actual content lines (skip warning lines)
         let content_lines: Vec<&str> = result.output.lines().filter(|l| l.contains('\t')).collect();
@@ -398,6 +422,10 @@ mod tests {
         assert!(
             !result.output.contains("warning:"),
             "no warning when explicit limit is used"
+        );
+        assert!(
+            !result.output.contains("showing lines"),
+            "no partial-range notice when the explicit limit covers the whole file"
         );
         let content_lines: Vec<&str> = result.output.lines().filter(|l| l.contains('\t')).collect();
         assert_eq!(
@@ -530,6 +558,35 @@ mod tests {
                 .await
                 .has_been_read(file_path.to_str().unwrap()),
             "tracker should record image file read"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_over_old_ten_mb_cap_is_not_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("huge.bin");
+        let file = tokio::fs::File::create(&file_path).await.unwrap();
+        // Sparse file past the old 10 MB hard cap; content is all NUL bytes,
+        // which are valid UTF-8, so this exercises size handling without
+        // writing real data to disk.
+        file.set_len(11 * 1024 * 1024).await.unwrap();
+        drop(file);
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "a file over the old 10 MB cap should no longer be refused: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("11534336 bytes"),
+            "should report the true total size: {}",
+            result.output
         );
     }
 

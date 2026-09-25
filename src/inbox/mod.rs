@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::interfaces::attachment::{FileAttachment, MAX_ATTACHMENT_SIZE};
+use crate::interfaces::attachment::FileAttachment;
 
 /// Workspace-root-relative directory that user inbox attachments are copied into,
 /// one subdirectory per item ID. Mirrors `WorkspaceLayout::user_inbox_attachments_dir`
@@ -67,18 +67,15 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
-/// Default an inbox item's title from its body: the first line, cut to 60
-/// characters. Shared by every caller that lets a title be omitted — the WS
-/// `/inbox` command and the `POST /api/agent-inbox` endpoint — so the rule
-/// stays in one place.
+/// Default an inbox item's title from its body: the first line, in full.
+/// Shared by every caller that lets a title be omitted — the WS `/inbox`
+/// command, chat-interface inbox commands, and the `POST /api/agent-inbox`
+/// endpoint — so the rule stays in one place. The generated filename bounds
+/// its own length (see [`generate_filename`]); the title itself is never
+/// truncated.
 #[must_use]
 pub fn derive_title(body: &str) -> String {
-    body.lines()
-        .next()
-        .unwrap_or("Inbox message")
-        .chars()
-        .take(60)
-        .collect()
+    body.lines().next().unwrap_or("Inbox message").to_string()
 }
 
 /// Add an inbox item in one call: generates a filename, builds the item, and saves.
@@ -114,13 +111,16 @@ pub async fn quick_add(
 /// into the item's own directory, generates a filename, builds the item, and saves.
 ///
 /// Behaves exactly like `quick_add` when `attachment_paths` is empty. Otherwise, see
-/// `copy_attachments` for how the files are copied and named, and what happens if a
-/// copy fails partway through.
+/// `copy_attachments` for how the files are copied and named. The item is saved with
+/// whichever attachments succeeded even if some failed; the second return value
+/// describes each failure so the caller can tell the user about it.
 ///
-/// Returns the filename for confirmation messages.
+/// Returns the filename for confirmation messages, and a description of each
+/// attachment that failed to copy (empty if all succeeded).
 ///
 /// # Errors
-/// Returns an error if an attachment cannot be copied or the item cannot be saved.
+/// Returns an error if the item cannot be saved, or an attachment directory
+/// cannot be created.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub async fn quick_add_with_attachments(
     inbox_dir: &Path,
@@ -130,12 +130,13 @@ pub async fn quick_add_with_attachments(
     source: &str,
     tz: chrono_tz::Tz,
     attachment_paths: &[PathBuf],
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Vec<String>)> {
     let now = crate::time::now_local(tz);
     let filename = generate_filename(title, now);
     let item_id = filename.trim_end_matches(".json");
 
-    let attachments = copy_attachments(attachments_dir, item_id, attachment_paths).await?;
+    let (attachments, failures) =
+        copy_attachments(attachments_dir, item_id, attachment_paths).await?;
 
     let item = InboxItem {
         title: title.to_string(),
@@ -150,39 +151,43 @@ pub async fn quick_add_with_attachments(
         filename = %filename,
         title = %title,
         attachment_count = attachment_paths.len(),
+        failure_count = failures.len(),
         "inbox item created via quick_add_with_attachments"
     );
-    Ok(filename)
+    Ok((filename, failures))
 }
 
 /// Copy attachment source files into an item's own attachment directory
 /// (`attachments_dir/<item_id>/`), keyed by item ID so the item survives its
 /// sources being moved or deleted.
 ///
-/// Each source path is validated (must exist, be readable, and be at most 25 MB —
-/// the same cap `FileAttachment` enforces elsewhere) before being copied. Only the
+/// Each source path is validated (must exist and be readable — there is no
+/// size cap, since these are already-local files, not something arriving
+/// over a platform with its own upload limit) before being copied. Only the
 /// source path's final component is used as the destination filename, so a
 /// traversal-style source path (e.g. `../../../etc/passwd`) cannot place a copy
 /// outside the item's directory; collisions within the batch are resolved by
 /// appending a numeric suffix rather than overwriting.
 ///
-/// If any attachment in the batch fails validation or copy, every file already
-/// copied for this item is removed and the error is returned — callers must not
-/// end up with an item that only has some of its attachments.
+/// A source that fails validation or copy is skipped, not fatal to the whole
+/// batch: the item still gets every attachment that did succeed. Returns the
+/// successfully-copied attachments plus a description of each one that
+/// failed, so the caller can tell the user what happened to each file.
 ///
 /// # Errors
-/// Returns an error if a source file cannot be read, exceeds the size cap, or
-/// cannot be copied.
+/// Returns an error only if the item's attachment directory itself cannot be
+/// created — a per-file failure is reported in the second return value
+/// instead.
 #[tracing::instrument(skip_all, fields(item_id = %item_id, count = source_paths.len()))]
 pub async fn copy_attachments(
     attachments_dir: &Path,
     item_id: &str,
     source_paths: &[PathBuf],
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> anyhow::Result<(Vec<PathBuf>, Vec<String>)> {
     use anyhow::Context as _;
 
     if source_paths.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let item_dir = attachments_dir.join(item_id);
@@ -192,6 +197,7 @@ pub async fn copy_attachments(
 
     let mut used_names: HashSet<String> = HashSet::new();
     let mut recorded = Vec::new();
+    let mut failures = Vec::new();
 
     for source in source_paths {
         match copy_one_attachment(source, &item_dir, &mut used_names).await {
@@ -203,28 +209,18 @@ pub async fn copy_attachments(
                 );
             }
             Err(e) => {
-                tracing::error!(
+                tracing::warn!(
                     item_id = %item_id,
                     source = %source.display(),
                     error = %e,
-                    "failed to copy inbox attachment, removing attachments copied so far for this item"
+                    "failed to copy one inbox attachment; continuing with the rest"
                 );
-                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&item_dir).await {
-                    tracing::warn!(
-                        path = %item_dir.display(),
-                        error = %cleanup_err,
-                        "failed to clean up partially-copied attachments after failure"
-                    );
-                }
-                return Err(e.context(format!(
-                    "couldn't attach '{}' — no attachments were saved for this item",
-                    source.display()
-                )));
+                failures.push(format!("couldn't attach '{}': {e}", source.display()));
             }
         }
     }
 
-    Ok(recorded)
+    Ok((recorded, failures))
 }
 
 /// Validate and copy a single attachment source into `item_dir`, returning the
@@ -239,14 +235,6 @@ async fn copy_one_attachment(
     let attachment = FileAttachment::from_path(source)
         .await
         .map_err(anyhow::Error::msg)?;
-
-    if attachment.size > u64::from(MAX_ATTACHMENT_SIZE) {
-        anyhow::bail!(
-            "'{}' is {} bytes, which is over the 25 MB attachment limit",
-            attachment.filename,
-            attachment.size
-        );
-    }
 
     let sanitized = sanitize_attachment_filename(&attachment.filename);
     let unique = dedupe_filename(&sanitized, used_names);
@@ -542,9 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn derive_title_truncates_to_60_chars() {
+    fn derive_title_keeps_the_full_line_untruncated() {
         let long_line = "a".repeat(100);
-        assert_eq!(derive_title(&long_line), "a".repeat(60));
+        assert_eq!(
+            derive_title(&long_line),
+            long_line,
+            "the title itself has no length cap; only the generated filename does"
+        );
     }
 
     #[test]
@@ -922,10 +914,11 @@ mod tests {
     async fn copy_attachments_empty_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let attachments_dir = dir.path().join("attachments");
-        let result = copy_attachments(&attachments_dir, "item1", &[])
+        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[])
             .await
             .unwrap();
-        assert!(result.is_empty());
+        assert!(recorded.is_empty());
+        assert!(failures.is_empty());
         assert!(
             !attachments_dir.exists(),
             "no directory should be created when there are no attachments"
@@ -941,7 +934,7 @@ mod tests {
         tokio::fs::write(&source_file, b"pdf bytes").await.unwrap();
 
         let attachments_dir = dir.path().join("attachments");
-        let recorded = copy_attachments(
+        let (recorded, failures) = copy_attachments(
             &attachments_dir,
             "item1",
             std::slice::from_ref(&source_file),
@@ -949,6 +942,7 @@ mod tests {
         .await
         .unwrap();
 
+        assert!(failures.is_empty());
         assert_eq!(
             recorded,
             vec![PathBuf::from("inbox/user/attachments/item1/report.pdf")]
@@ -998,10 +992,11 @@ mod tests {
         tokio::fs::write(&file_b, b"second").await.unwrap();
 
         let attachments_dir = dir.path().join("attachments");
-        let recorded = copy_attachments(&attachments_dir, "item1", &[file_a, file_b])
+        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[file_a, file_b])
             .await
             .unwrap();
 
+        assert!(failures.is_empty());
         assert_eq!(recorded.len(), 2);
         let item_dir = attachments_dir.join("item1");
         assert!(item_dir.join("report.pdf").exists());
@@ -1035,10 +1030,11 @@ mod tests {
             .unwrap();
 
         let attachments_dir = dir.path().join("attachments");
-        let recorded = copy_attachments(&attachments_dir, "item1", &[source_file])
+        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[source_file])
             .await
             .unwrap();
 
+        assert!(failures.is_empty());
         assert_eq!(
             recorded,
             vec![PathBuf::from("inbox/user/attachments/item1/passwd")]
@@ -1049,46 +1045,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_attachments_rejects_oversized_file() {
+    async fn copy_attachments_accepts_large_file() {
         let dir = tempfile::tempdir().unwrap();
         let source_file = dir.path().join("huge.bin");
-        // Sparse file: reports the target length via metadata without writing
-        // real bytes, so the test stays fast.
+        // Sparse file: reports a large length via metadata without writing
+        // real bytes, so the test stays fast. There is no size cap on a
+        // local file being attached.
         let file = tokio::fs::File::create(&source_file).await.unwrap();
-        file.set_len(u64::from(MAX_ATTACHMENT_SIZE) + 1)
-            .await
-            .unwrap();
+        file.set_len(30 * 1024 * 1024).await.unwrap();
         drop(file);
 
         let attachments_dir = dir.path().join("attachments");
-        let result = copy_attachments(&attachments_dir, "item1", &[source_file]).await;
+        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[source_file])
+            .await
+            .unwrap();
 
-        assert!(result.is_err(), "oversized attachment should be rejected");
-        let err = format!("{:#}", result.unwrap_err());
-        assert!(
-            err.contains("25 MB"),
-            "error should mention the size limit: {err}"
-        );
-        assert!(
-            !attachments_dir.join("item1").exists(),
-            "no attachment directory should remain after rejection"
-        );
+        assert!(failures.is_empty());
+        assert_eq!(recorded.len(), 1);
     }
 
     #[tokio::test]
-    async fn copy_attachments_missing_source_fails_and_cleans_up() {
+    async fn copy_attachments_missing_source_is_skipped_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
         let good = dir.path().join("good.txt");
         tokio::fs::write(&good, b"here").await.unwrap();
         let missing = dir.path().join("does_not_exist.txt");
 
         let attachments_dir = dir.path().join("attachments");
-        let result = copy_attachments(&attachments_dir, "item1", &[good, missing]).await;
+        let (recorded, failures) = copy_attachments(&attachments_dir, "item1", &[good, missing])
+            .await
+            .unwrap();
 
-        assert!(result.is_err(), "missing source should fail the batch");
+        assert_eq!(
+            recorded,
+            vec![PathBuf::from("inbox/user/attachments/item1/good.txt")],
+            "the good file should still be copied despite the other failing"
+        );
+        assert_eq!(failures.len(), 1, "the missing source should be reported");
         assert!(
-            !attachments_dir.join("item1").exists(),
-            "the successfully-copied file should be cleaned up after the batch fails"
+            attachments_dir.join("item1").join("good.txt").exists(),
+            "the successfully-copied file must not be removed because another file failed"
         );
     }
 
@@ -1099,7 +1095,7 @@ mod tests {
         let attachments_dir = dir.path().join("attachments");
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
-        let filename = quick_add_with_attachments(
+        let (filename, failures) = quick_add_with_attachments(
             &inbox_dir,
             &attachments_dir,
             "no attachments here",
@@ -1111,6 +1107,7 @@ mod tests {
         .await
         .unwrap();
 
+        assert!(failures.is_empty());
         let item = load_item(&inbox_dir.join(&filename)).await.unwrap();
         assert_eq!(item.title, "no attachments here");
         assert!(item.attachments.is_empty());
@@ -1129,7 +1126,7 @@ mod tests {
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
         tokio::fs::write(&source_file, b"jpeg bytes").await.unwrap();
 
-        let filename = quick_add_with_attachments(
+        let (filename, failures) = quick_add_with_attachments(
             &inbox_dir,
             &attachments_dir,
             "with a photo",
@@ -1141,6 +1138,7 @@ mod tests {
         .await
         .unwrap();
 
+        assert!(failures.is_empty());
         let item = load_item(&inbox_dir.join(&filename)).await.unwrap();
         let item_id = filename.trim_end_matches(".json");
         assert_eq!(item.attachments.len(), 1);

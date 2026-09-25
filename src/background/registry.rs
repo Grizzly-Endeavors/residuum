@@ -308,15 +308,8 @@ pub struct ResumePoint {
     pub conversation_target: Option<ConversationTarget>,
     /// When this resume point was recorded, set by
     /// [`SessionRegistry::record_resume_point`] regardless of what a caller
-    /// passes in — the timestamp a resume point's persisted copy is pruned
-    /// against on load (see [`Self::MAX_AGE_DAYS`]).
+    /// passes in.
     pub recorded_at: DateTime<Utc>,
-}
-
-impl ResumePoint {
-    /// Age past which a persisted resume point is pruned on load, rather
-    /// than kept forever for an address nobody has messaged in months.
-    const MAX_AGE_DAYS: i64 = 90;
 }
 
 /// Registry of every live (running, idle, or completing) session, plus a
@@ -364,9 +357,9 @@ impl SessionRegistry {
     /// logged at `warn` with the path and error and likewise starts empty —
     /// a corrupt or unreadable resume-points file must never block startup,
     /// since the worst case is only that in-flight resumes fall back to
-    /// fresh sessions. Entries older than [`ResumePoint::MAX_AGE_DAYS`] are
-    /// dropped on load rather than kept (and immediately eligible for
-    /// pruning) forever.
+    /// fresh sessions. Entries are kept regardless of age: a resume point is
+    /// small, and an address staying resumable no matter how long it's been
+    /// idle is the point of persisting it at all.
     #[must_use]
     pub async fn load(persist_path: PathBuf) -> Self {
         let resume_points = load_resume_points(&persist_path).await;
@@ -714,12 +707,12 @@ impl crate::agent::usage::UsageSink for SessionUsageSink<'_> {
     }
 }
 
-/// Load persisted resume points from `path`, pruning entries older than
-/// [`ResumePoint::MAX_AGE_DAYS`].
+/// Load persisted resume points from `path`.
 ///
 /// A missing file, or one that fails to read or parse, produces an empty map
 /// rather than an error — see [`SessionRegistry::load`] for why a load
-/// failure here must never block startup.
+/// failure here must never block startup. Entries are kept regardless of
+/// age.
 async fn load_resume_points(path: &Path) -> HashMap<SessionAddress, ResumePoint> {
     let contents = match tokio::fs::read_to_string(path).await {
         Ok(contents) => contents,
@@ -736,7 +729,7 @@ async fn load_resume_points(path: &Path) -> HashMap<SessionAddress, ResumePoint>
     if contents.trim().is_empty() {
         return HashMap::new();
     }
-    let points: HashMap<SessionAddress, ResumePoint> = match serde_json::from_str(&contents) {
+    match serde_json::from_str(&contents) {
         Ok(points) => points,
         Err(e) => {
             tracing::warn!(
@@ -744,14 +737,9 @@ async fn load_resume_points(path: &Path) -> HashMap<SessionAddress, ResumePoint>
                 error = %e,
                 "failed to parse persisted resume points, starting with none"
             );
-            return HashMap::new();
+            HashMap::new()
         }
-    };
-    let cutoff = Utc::now() - chrono::Duration::days(ResumePoint::MAX_AGE_DAYS);
-    points
-        .into_iter()
-        .filter(|(_, point)| point.recorded_at >= cutoff)
-        .collect()
+    }
 }
 
 /// Write `points` to `path` atomically (temp file plus rename), replacing
@@ -1610,17 +1598,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_prunes_entries_older_than_the_max_age() {
+    async fn load_keeps_entries_regardless_of_age() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resume_points.json");
 
-        let mut stale = sample_resume_point("run-stale");
-        stale.recorded_at = Utc::now() - chrono::Duration::days(ResumePoint::MAX_AGE_DAYS + 1);
+        let mut ancient = sample_resume_point("run-ancient");
+        ancient.recorded_at = Utc::now() - chrono::Duration::days(400);
         let mut fresh = sample_resume_point("run-fresh");
         fresh.recorded_at = Utc::now() - chrono::Duration::days(1);
 
         let mut on_disk = HashMap::new();
-        on_disk.insert(SessionAddress::from("spawned-stale"), stale);
+        on_disk.insert(SessionAddress::from("spawned-ancient"), ancient);
         on_disk.insert(SessionAddress::from("spawned-fresh"), fresh);
         tokio::fs::write(&path, serde_json::to_string(&on_disk).unwrap())
             .await
@@ -1629,15 +1617,14 @@ mod tests {
         let registry = SessionRegistry::load(path).await;
         assert!(
             registry
-                .resume_point(&SessionAddress::from("spawned-stale"))
-                .is_none(),
-            "an entry older than the max age must be pruned on load"
+                .resume_point(&SessionAddress::from("spawned-ancient"))
+                .is_some(),
+            "a resume point is small; there's no reason to drop an old one on load"
         );
         assert!(
             registry
                 .resume_point(&SessionAddress::from("spawned-fresh"))
-                .is_some(),
-            "an entry within the max age must survive pruning"
+                .is_some()
         );
     }
 }

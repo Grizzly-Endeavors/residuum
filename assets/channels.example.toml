@@ -13,7 +13,7 @@
 # type = "macos"
 # default_priority = "active"       # optional: passive, active, time_sensitive
 #                                   # urgent results always post at time_sensitive
-# throttle_window_secs = 30         # optional, 1-300, default: 30
+# throttle_window_secs = 30         # optional, any positive value, default: 30
 # sound = true                      # optional, default: true
 # app_name = "Residuum"             # optional, default: "Residuum"
 # web_url = "http://localhost:3000" # optional, enables "Open" action button
@@ -21,7 +21,7 @@
 # ── Native Windows Toast notifications (Windows only) ───────────────────────
 # [channels.windows]
 # type = "windows"
-# throttle_window_secs = 30         # optional, 1-300, default: 30
+# throttle_window_secs = 30         # optional, any positive value, default: 30
 # sound = true                      # optional, default: true
 # app_name = "Residuum"             # optional, default: "Residuum"
 # app_id = "GrizzlyEndeavors.Residuum"  # optional, WinRT App User Model ID
