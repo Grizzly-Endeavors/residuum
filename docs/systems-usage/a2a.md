@@ -204,7 +204,7 @@ Each configured agent's `.well-known/agent-card.json` is resolved on load and re
 Which output format do you want?
 ```
 
-A short text artifact (≤4 KB) is inlined in the same message; a longer one, or any file artifact, is saved to the agent inbox and referenced by path. If the sender no longer exists (e.g. a spawned session that has since completed with nothing waiting on it), the result goes to `main` instead, with a note that the original sender is gone. If an agent stays unreachable for 3 hours, the sender gets one notice; retries continue regardless.
+A short text artifact (≤4 KB) is inlined in the same message; a longer one, or any file artifact, is saved to the agent inbox and referenced by path. If the sender no longer exists (e.g. a spawned session that has since completed with nothing waiting on it), the result goes to `main` instead, with a note that the original sender is gone. If an agent stays unreachable for 10 minutes, the sender gets one notice (as a transcript note) and the user gets a matching one (a system notice); retries continue with the same backoff either way, and both get a second notice once the agent is reachable again. A failed poll is logged once when the streak starts, not on every retry.
 
 **Persistence.** Every tracked task — its sender, agent, task and context ids, state, and last status text — is persisted at `{workspace}/a2a/outbound.json`, so open tasks resume being watched across a restart.
 

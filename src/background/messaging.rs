@@ -137,6 +137,16 @@ impl AgentMessenger {
         }
     }
 
+    /// The bus publisher this messenger sends agent-to-agent deliveries
+    /// through — reused by callers (e.g. [`crate::a2a::RemoteTaskTracker`])
+    /// that need to publish a user-facing notice alongside an agent-facing
+    /// one, rather than threading a second `Publisher` through their own
+    /// constructor.
+    #[must_use]
+    pub fn publisher(&self) -> &Publisher {
+        &self.publisher
+    }
+
     /// Recover the hop count of an agent message delivered to main, given
     /// the `MessageEvent.id` it arrived under. Removes the entry on read.
     /// Returns `0` for any id this messenger never published under — a

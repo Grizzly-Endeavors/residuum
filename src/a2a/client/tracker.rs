@@ -17,14 +17,14 @@ use tokio::sync::RwLock;
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
 use crate::background::registry::MAIN_ADDRESS;
-use crate::bus::SessionAddress;
+use crate::bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, SessionAddress, topics};
 use crate::interfaces::attachment::{self, AttachmentInfo};
 
 use super::hub::{A2aClientHub, HubError, task_state_str};
 
 /// How long an agent must stay unreachable before the sender gets a single
 /// notice; retries continue either way.
-const UNREACHABLE_NOTICE_AFTER: chrono::Duration = chrono::Duration::hours(3);
+const UNREACHABLE_NOTICE_AFTER: chrono::Duration = chrono::Duration::minutes(10);
 /// How long a completed task's record is kept before being pruned on load.
 const PRUNE_TERMINAL_AFTER: chrono::Duration = chrono::Duration::days(30);
 /// Poll/reconnect backoff bounds, matching the plan's 5s→60s.
@@ -349,7 +349,7 @@ impl RemoteTaskTracker {
         text: Option<String>,
         is_final: bool,
     ) -> Option<(TrackedTask, bool)> {
-        let (result, snapshot) = {
+        let (result, recovered, snapshot) = {
             let mut store = self.store.write().await;
             let entry = store.tasks.get_mut(task_id)?;
             entry.state = state.to_string();
@@ -357,21 +357,33 @@ impl RemoteTaskTracker {
                 entry.last_status_text = Some(t);
             }
             entry.updated_at = Utc::now();
+            // Captured before clearing: whether this successful contact
+            // ends a streak the sender was already told about, so exactly
+            // one recovery notice goes out — same one-notice-per-streak
+            // shape as `note_unreachable`'s own notice.
+            let recovered = entry.unreachable_notified;
             entry.first_unreachable_at = None;
             entry.unreachable_notified = false;
             let should_deliver = is_final && !entry.notified_this_turn;
             if should_deliver {
                 entry.notified_this_turn = true;
             }
-            ((entry.clone(), should_deliver), store.clone())
+            ((entry.clone(), should_deliver), recovered, store.clone())
         };
         self.persist(&snapshot).await;
+        if recovered {
+            tracing::info!(task_id, agent = %result.0.agent, "a2a remote task reachable again");
+            self.notify_unreachable_recovered(&result.0).await;
+        }
         Some(result)
     }
 
     /// Record an unreachable attempt against `task_id`. After the streak
-    /// passes [`UNREACHABLE_NOTICE_AFTER`], sends the sender exactly one
-    /// notice — retries continue regardless.
+    /// passes [`UNREACHABLE_NOTICE_AFTER`], tells the sending agent (a
+    /// transcript note, same as before) and publishes a user-facing
+    /// notice — retries continue regardless, with the same backoff either
+    /// way. [`Self::update_state`] sends a matching notice once the task
+    /// becomes reachable again.
     async fn note_unreachable(&self, task_id: &str, reason: &str) {
         let outcome = {
             let mut store = self.store.write().await;
@@ -379,6 +391,7 @@ impl RemoteTaskTracker {
                 return;
             };
             let now = Utc::now();
+            let is_new_streak = entry.first_unreachable_at.is_none();
             let first = *entry.first_unreachable_at.get_or_insert(now);
             let should_notify =
                 !entry.unreachable_notified && now - first >= UNREACHABLE_NOTICE_AFTER;
@@ -386,6 +399,7 @@ impl RemoteTaskTracker {
                 entry.unreachable_notified = true;
             }
             (
+                is_new_streak,
                 should_notify,
                 entry.sender_address.clone(),
                 entry.agent.clone(),
@@ -393,16 +407,64 @@ impl RemoteTaskTracker {
                 store.clone(),
             )
         };
-        let (should_notify, sender, agent, hop_count, snapshot) = outcome;
+        let (is_new_streak, should_notify, sender, agent, hop_count, snapshot) = outcome;
         self.persist(&snapshot).await;
-        tracing::warn!(task_id, agent = %agent, reason, "a2a remote task unreachable");
+        // Logged once when a streak starts, not on every failed poll —
+        // repeat failures within the same streak stay quiet until it
+        // resolves, either by recovering or by crossing the notice
+        // threshold below.
+        if is_new_streak {
+            tracing::warn!(task_id, agent = %agent, reason, "a2a remote task became unreachable");
+        }
         if should_notify {
             let content = format!(
-                "[Remote agent a2a:{agent} — task {task_id}] Still unreachable after 3 hours \
+                "[Remote agent a2a:{agent} — task {task_id}] Still unreachable after 10 minutes \
                  ({reason}). Still retrying in the background."
             );
             self.deliver_to_sender(&sender, &agent, hop_count, content)
                 .await;
+            self.publish_user_notice(&format!(
+                "a2a:{agent} has been unreachable for 10 minutes (task {task_id}): {reason}. \
+                 Still retrying in the background."
+            ))
+            .await;
+        }
+    }
+
+    /// Tell both the sending agent and the user that a task's agent is
+    /// reachable again, mirroring [`Self::note_unreachable`]'s own
+    /// delivery shape.
+    async fn notify_unreachable_recovered(&self, task: &TrackedTask) {
+        let content = format!(
+            "[Remote agent a2a:{} — task {}] Reachable again.",
+            task.agent, task.task_id
+        );
+        self.deliver_to_sender(&task.sender_address, &task.agent, task.hop_count, content)
+            .await;
+        self.publish_user_notice(&format!(
+            "a2a:{} is reachable again (task {}).",
+            task.agent, task.task_id
+        ))
+        .await;
+    }
+
+    /// Publish a plain-language notice to the system notification channel
+    /// (the web UI's toast/notice stream, and every other interface
+    /// subscribed to it) — the user-facing half of an unreachable/recovery
+    /// notice, alongside the agent-facing transcript note.
+    async fn publish_user_notice(&self, message: &str) {
+        if let Err(e) = self
+            .messenger
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                NoticeEvent {
+                    message: message.to_string(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish a2a task notice");
         }
     }
 
@@ -957,5 +1019,160 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, HubError::Offline(name, _) if name == "laptop"));
+    }
+
+    #[tokio::test]
+    async fn note_unreachable_notifies_once_after_ten_minutes_not_on_every_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, bus) = messenger();
+        let mut notices = bus
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        // First failure starts the streak; under the 10-minute threshold,
+        // so no user notice yet.
+        tracker.note_unreachable("t1", "connection refused").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "must not notify before the streak is 10 minutes old"
+        );
+
+        // Backdate the streak's start past the threshold and fail again.
+        {
+            let mut store = tracker.store.write().await;
+            let entry = store.tasks.get_mut("t1").unwrap();
+            entry.first_unreachable_at = Some(Utc::now() - chrono::Duration::minutes(11));
+        }
+        tracker.note_unreachable("t1", "connection refused").await;
+        let notice = notices.recv().await.unwrap().unwrap();
+        assert!(notice.message.contains("laptop"), "got: {}", notice.message);
+        assert!(
+            notice.message.contains("10 minutes"),
+            "got: {}",
+            notice.message
+        );
+
+        // A third failure in the same streak must not renotify.
+        tracker.note_unreachable("t1", "connection refused").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "must not renotify within the same unreachable streak"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_state_notifies_recovery_once_after_an_unreachable_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, bus) = messenger();
+        let mut notices = bus
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        // Simulate an already-notified unreachable streak directly, rather
+        // than waiting out the real threshold.
+        {
+            let mut store = tracker.store.write().await;
+            let entry = store.tasks.get_mut("t1").unwrap();
+            entry.first_unreachable_at = Some(Utc::now() - chrono::Duration::minutes(11));
+            entry.unreachable_notified = true;
+        }
+
+        tracker.update_state("t1", "working", None, false).await;
+        let notice = notices.recv().await.unwrap().unwrap();
+        assert!(
+            notice.message.contains("reachable again"),
+            "got: {}",
+            notice.message
+        );
+
+        // A second successful contact must not renotify — recovery is
+        // reported exactly once per streak, like the unreachable notice
+        // itself.
+        tracker.update_state("t1", "working", None, false).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "must not renotify recovery on a later successful contact"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_state_does_not_notify_when_never_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, bus) = messenger();
+        let mut notices = bus
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        tracker.update_state("t1", "working", None, false).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "a task that was never unreachable has no recovery to report"
+        );
     }
 }
