@@ -57,6 +57,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 |--------|-----|---------------|--------|
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
 | [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `wiki/` |
+| [Checkpoints](checkpoints.md) | Hidden git history of the workspace and root config files, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/checkpoints/` |
 | [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
 | [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |
