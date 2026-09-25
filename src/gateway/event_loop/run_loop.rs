@@ -576,7 +576,9 @@ async fn build_runtime(
         observer: Arc::new(parts.observer),
         merge_writer: parts.merge_writer,
         subconscious: parts.subconscious,
-        learning_state: crate::subconscious::LearningState::default(),
+        learning_state: Arc::new(std::sync::Mutex::new(
+            crate::subconscious::LearningState::default(),
+        )),
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,

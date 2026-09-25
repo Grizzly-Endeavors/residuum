@@ -451,9 +451,11 @@ async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
         return;
     }
     let cooldown = rt.cfg.subconscious_settings.learning_cooldown();
-    let Some(spawn) =
-        rt.learning_state
-            .on_turn_completed(nudge_after, cooldown, std::time::Instant::now())
+    let Some(spawn) = rt
+        .learning_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .on_turn_completed(nudge_after, cooldown, std::time::Instant::now())
     else {
         return;
     };

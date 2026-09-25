@@ -91,9 +91,11 @@ pub(super) async fn run_end_of_turn_subconscious(
 /// live cooldown is a no-op. Decisions are logged inside `LearningState`.
 async fn maybe_spawn_learner(rt: &mut GatewayRuntime, learnings: &[LearnSignal]) {
     let cooldown = rt.cfg.subconscious_settings.learning_cooldown();
-    let Some(spawn) =
-        rt.learning_state
-            .on_learn_signals(learnings, cooldown, std::time::Instant::now())
+    let Some(spawn) = rt
+        .learning_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .on_learn_signals(learnings, cooldown, std::time::Instant::now())
     else {
         return;
     };

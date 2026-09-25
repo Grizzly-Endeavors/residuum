@@ -245,8 +245,10 @@ pub(crate) struct GatewayRuntime {
     pub merge_writer: Arc<MemoryMergeWriter>,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
     /// In-memory learning-loop state (cooldown + fallback turn counter). Resets
-    /// on restart.
-    pub learning_state: crate::subconscious::LearningState,
+    /// on restart. `Arc<Mutex<_>>` so the post-turn background worker (see
+    /// `crate::gateway::post_turn`) and the main loop's own turn-count
+    /// fallback can both reach it without racing.
+    pub learning_state: Arc<std::sync::Mutex<crate::subconscious::LearningState>>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,
