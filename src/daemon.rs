@@ -734,12 +734,15 @@ mod tests {
     #[test]
     fn spawn_gateway_process_redirects_stderr_to_the_log_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut child = spawn_gateway_process(
-            std::path::Path::new("sh"),
-            &["-c".to_string(), "echo boom 1>&2".to_string()],
-            dir.path(),
-        )
-        .unwrap();
+        // A native shell on each platform: MSYS `sh` on the Windows runner
+        // wrote nothing to the append-only handle the log file is opened
+        // with, which native processes (the gateway itself) write to fine.
+        #[cfg(windows)]
+        let (shell, args) = ("cmd", ["/C".to_string(), "echo boom 1>&2".to_string()]);
+        #[cfg(not(windows))]
+        let (shell, args) = ("sh", ["-c".to_string(), "echo boom 1>&2".to_string()]);
+        let mut child =
+            spawn_gateway_process(std::path::Path::new(shell), &args, dir.path()).unwrap();
         child.wait().unwrap();
         let logged = std::fs::read_to_string(stderr_log_path(dir.path())).unwrap();
         assert!(
