@@ -311,7 +311,10 @@ export class SessionsStore {
   loaded = $state(false);
   listError = $state<string | null>(null);
   /** How runs ended, for those that finished while this page was open. */
-  outcomes = new SvelteMap<string, { status: SessionRunStatus; error: string | null }>();
+  outcomes = new SvelteMap<
+    string,
+    { status: SessionRunStatus; error: string | null; errorDetails: string | null }
+  >();
   /** Latest error per live run, flagged in the sidebar. */
   errors = new SvelteMap<string, string>();
   /**
@@ -552,7 +555,11 @@ export class SessionsStore {
     frame: Extract<SessionFrame, { type: "session_completed" }>,
     live: SessionSummary | undefined,
   ): void {
-    this.outcomes.set(frame.run_id, { status: frame.status, error: frame.error });
+    this.outcomes.set(frame.run_id, {
+      status: frame.status,
+      error: frame.error,
+      errorDetails: frame.error_details,
+    });
     this.errors.delete(frame.run_id);
     if (!live) return;
     this.stopping.delete(live.address);

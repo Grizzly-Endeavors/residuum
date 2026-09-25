@@ -44,6 +44,7 @@
     return summary.interrupted ? "interrupted" : "finished";
   });
   let errorText = $derived(outcome?.error ?? summary?.error ?? null);
+  let errorDetails = $derived(outcome?.errorDetails ?? summary?.error_details ?? null);
   let spawnerIsSession = $derived(summary?.spawner != null && summary.spawner !== "main");
   let artifact = $derived(summary ? sessionArtifact(summary) : null);
 
@@ -177,10 +178,17 @@
         </p>
       {/if}
       {#if stateText === "failed" && errorText}
-        <p class="session-view-note session-view-note-failed">
+        <div class="session-view-note session-view-note-failed">
           <Icon name="warning" size={12} />
-          {errorText}
-        </p>
+          {#if errorDetails}
+            <details class="msg-status-details">
+              <summary>{errorText}</summary>
+              <pre class="msg-status-detail-body">{errorDetails}</pre>
+            </details>
+          {:else}
+            <span>{errorText}</span>
+          {/if}
+        </div>
       {/if}
       {#if summary.overlap}
         <p class="session-view-note">

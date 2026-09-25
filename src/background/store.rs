@@ -86,6 +86,13 @@ pub struct RunRecord {
     /// The failure reason, when `outcome` is `"failed"`. `None` otherwise.
     #[serde(default)]
     pub outcome_error: Option<String>,
+    /// Full technical cause chain behind `outcome_error`, when the failure
+    /// was classified from a model-call error. `None` for a failure with
+    /// nothing richer to show (a panic, a shutdown mid-run), and `None` for
+    /// a record written before this field existed — old records stay
+    /// loadable, they just show no details toggle.
+    #[serde(default)]
+    pub outcome_error_details: Option<String>,
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. See [`PulseOverlap`].
     #[serde(default)]
@@ -114,6 +121,7 @@ impl RunRecord {
             usage: info.usage,
             outcome: None,
             outcome_error: None,
+            outcome_error_details: None,
             overlap: info.overlap.clone(),
         }
     }
@@ -160,6 +168,8 @@ struct RunRecordHeader {
     #[serde(default)]
     outcome_error: Option<String>,
     #[serde(default)]
+    outcome_error_details: Option<String>,
+    #[serde(default)]
     overlap: Option<PulseOverlap>,
 }
 
@@ -183,6 +193,7 @@ impl From<RunRecordHeader> for RunRecord {
             usage: header.usage,
             outcome: header.outcome,
             outcome_error: header.outcome_error,
+            outcome_error_details: header.outcome_error_details,
             overlap: header.overlap,
         }
     }
@@ -633,13 +644,16 @@ impl SessionStore {
         record.completed_at = Some(Utc::now());
         record.transcript = transcript;
         record.episode_id = episode_id;
-        let (outcome, outcome_error) = match status {
-            AgentResultStatus::Completed => ("completed", None),
-            AgentResultStatus::Cancelled => ("cancelled", None),
-            AgentResultStatus::Failed { error, .. } => ("failed", Some(error.clone())),
+        let (outcome, outcome_error, outcome_error_details) = match status {
+            AgentResultStatus::Completed => ("completed", None, None),
+            AgentResultStatus::Cancelled => ("cancelled", None, None),
+            AgentResultStatus::Failed { error, details } => {
+                ("failed", Some(error.clone()), details.clone())
+            }
         };
         record.outcome = Some(outcome.to_string());
         record.outcome_error = outcome_error;
+        record.outcome_error_details = outcome_error_details;
         match write_record(&path, &record).await {
             Ok(()) => Some(path),
             Err(e) => {
@@ -1056,6 +1070,71 @@ mod tests {
         assert_eq!(
             record.outcome_error.as_deref(),
             Some("the model call timed out")
+        );
+        assert_eq!(
+            record.outcome_error_details, None,
+            "no details to show should persist as None, not a guessed value"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_run_persists_the_full_cause_chain_alongside_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Failed {
+                    error: "the model call timed out".to_string(),
+                    details: Some("connect timeout after 30s: api.example.com:443".to_string()),
+                },
+                vec![],
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(
+            record.outcome_error_details.as_deref(),
+            Some("connect timeout after 30s: api.example.com:443"),
+            "the full cause chain must survive alongside the plain-language message"
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_error_details_existed_still_loads() {
+        // No `outcome_error_details` key at all — as a pre-upgrade record on
+        // disk would look.
+        let json = serde_json::json!({
+            "address": "main",
+            "run_id": "20260101-000000-abcdef",
+            "category": "spawned",
+            "source_label": "test",
+            "spawner": null,
+            "depth": 0,
+            "purpose": "test",
+            "agent_skill": null,
+            "started_at": "2026-01-01T00:00:00Z",
+            "completed_at": "2026-01-01T00:01:00Z",
+            "state": "completed",
+            "outcome": "failed",
+            "outcome_error": "the model call timed out",
+        });
+        let record: RunRecord =
+            serde_json::from_value(json).expect("old record should deserialize");
+        assert_eq!(
+            record.outcome_error.as_deref(),
+            Some("the model call timed out")
+        );
+        assert_eq!(
+            record.outcome_error_details, None,
+            "a field missing from an old record must default to None, not fail to load"
         );
     }
 
