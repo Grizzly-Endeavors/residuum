@@ -90,7 +90,9 @@ mime_type: string,
  */
 size: number, 
 /**
- * URL to fetch the file (e.g. "/api/files/{id}").
+ * URL to fetch the file: a durable workspace-relative link (e.g.
+ * "/api/files/workspace?path=...") for a file inside the
+ * workspace, else an expiring token link (e.g. "/api/files/{id}").
  */
 url: string, 
 /**
@@ -106,9 +108,13 @@ content: string, } | { "type": "error",
  */
 reply_to: string | null, 
 /**
- * Error description.
+ * Plain-language error description.
  */
-message: string, } | { "type": "pong" } | { "type": "reloading" } | { "type": "notice", 
+message: string, 
+/**
+ * Full technical cause chain, shown behind a details toggle.
+ */
+details: string | null, } | { "type": "pong" } | { "type": "reloading" } | { "type": "notice", 
 /**
  * Human-readable result message.
  */
@@ -278,9 +284,13 @@ address: string,
  */
 run_id: string, 
 /**
- * Error description.
+ * Plain-language error description.
  */
-message: string, } | { "type": "session_message_to_main", 
+message: string, 
+/**
+ * Full technical cause chain, shown behind a details toggle.
+ */
+details: string | null, } | { "type": "session_message_to_main", 
 /**
  * Sending session's address.
  */

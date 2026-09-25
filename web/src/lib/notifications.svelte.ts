@@ -18,6 +18,8 @@ export interface Notification {
   id: number;
   kind: NotificationKind;
   message: string;
+  /** Full technical detail behind an expandable toggle in the recall list. */
+  details?: string;
   timestamp: Date;
 }
 
@@ -27,8 +29,12 @@ class NotificationStore {
   history = $state<Notification[]>([]);
   private nextId = 1;
 
-  /** Show as a transient toast AND record in history. */
-  surface(kind: NotificationKind, message: string): void {
+  /**
+   * Show as a transient toast AND record in history. `details`, when
+   * given, is never shown in the toast itself — only behind the recall
+   * list's expandable toggle.
+   */
+  surface(kind: NotificationKind, message: string, details?: string): void {
     if (kind === "error") {
       toast.error(message);
     } else {
@@ -38,6 +44,7 @@ class NotificationStore {
       id: this.nextId++,
       kind,
       message,
+      details,
       timestamp: new Date(),
     };
     this.history.unshift(entry);

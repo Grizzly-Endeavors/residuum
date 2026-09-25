@@ -317,7 +317,7 @@ impl Agent {
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
-        interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
+        interrupt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<interrupt::Interrupt>,
         images: &[crate::inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
@@ -549,6 +549,7 @@ mod tests {
                     cache_read_tokens: None,
                 }),
                 thinking: None,
+                stop_reason: None,
             },
             InferenceResponse {
                 content: "second".to_string(),
@@ -560,6 +561,7 @@ mod tests {
                     cache_read_tokens: None,
                 }),
                 thinking: None,
+                stop_reason: None,
             },
         ]);
 
@@ -1055,13 +1057,13 @@ mod tests {
         captured: Arc<tokio::sync::Mutex<Vec<Vec<Message>>>>,
         /// Interrupts to send after a given call index: `(call_index, interrupts)`.
         inject_after: Arc<tokio::sync::Mutex<Vec<InjectEntry>>>,
-        interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
+        interrupt_tx: tokio::sync::mpsc::UnboundedSender<interrupt::Interrupt>,
     }
 
     impl CapturingProvider {
         fn new(
             responses: Vec<InferenceResponse>,
-            interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
+            interrupt_tx: tokio::sync::mpsc::UnboundedSender<interrupt::Interrupt>,
         ) -> Self {
             Self {
                 responses,
@@ -1108,7 +1110,7 @@ mod tests {
                     .collect()
             };
             for intr in scheduled {
-                drop(self.interrupt_tx.try_send(intr));
+                drop(self.interrupt_tx.send(intr));
             }
 
             Ok(response)
@@ -1140,7 +1142,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let provider = CapturingProvider::new(
             vec![
@@ -1216,7 +1218,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let provider = CapturingProvider::new(
             vec![
@@ -1288,7 +1290,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_during_final_response_not_consumed() {
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let provider = CapturingProvider::new(
             vec![
@@ -1422,7 +1424,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
             vec![
                 InferenceResponse::new(
@@ -1704,7 +1706,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
             vec![
                 InferenceResponse::new("turn one".to_string(), vec![]),
@@ -1792,7 +1794,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
             vec![
                 InferenceResponse::new("turn one".to_string(), vec![]),
@@ -1874,7 +1876,7 @@ mod tests {
         // error, so IdentityFiles::load fails and the reload falls back.
         tokio::fs::create_dir(layout.soul_md()).await.unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let provider =
             CapturingProvider::new(vec![InferenceResponse::new("ok".to_string(), vec![])], tx);
         let captured = Arc::clone(&provider.captured);

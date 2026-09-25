@@ -554,7 +554,14 @@ async fn reload_providers(
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) {
-    match startup::init_providers(new_cfg, rt.tz, http_client) {
+    let mut degradations: Vec<String> = Vec::new();
+    match startup::init_providers(
+        new_cfg,
+        rt.tz,
+        http_client,
+        rt.publisher.clone(),
+        &mut degradations,
+    ) {
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
@@ -564,6 +571,17 @@ async fn reload_providers(
                 .set_embedding_provider(components.embedding_provider)
                 .await;
             tracing::debug!("providers swapped successfully");
+            if !degradations.is_empty() {
+                publish_notice(
+                    &rt.publisher,
+                    format!(
+                        "providers reloaded, but {} degraded: {}.",
+                        degradations.len(),
+                        degradations.join("; ")
+                    ),
+                )
+                .await;
+            }
         }
         Err(err) => {
             tracing::warn!(error = %err, "provider rebuild failed, keeping current providers");

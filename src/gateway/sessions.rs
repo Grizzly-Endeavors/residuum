@@ -98,7 +98,10 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             let (status, error) = match status {
                 AgentResultStatus::Completed => (SessionRunStatus::Completed, None),
                 AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None),
-                AgentResultStatus::Failed { error } => (SessionRunStatus::Failed, Some(error)),
+                // The persisted run summary keeps only the plain-language
+                // message; the fuller `details` lives on the live
+                // `SessionError` notice, not this after-the-fact record.
+                AgentResultStatus::Failed { error, .. } => (SessionRunStatus::Failed, Some(error)),
             };
             ServerMessage::SessionCompleted {
                 address,
@@ -155,10 +158,11 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             turn_id,
             content,
         },
-        SessionEventKind::Error { message } => ServerMessage::SessionError {
+        SessionEventKind::Error { message, details } => ServerMessage::SessionError {
             address,
             run_id,
             message,
+            details,
         },
         SessionEventKind::MessageToMain { content } => ServerMessage::SessionMessageToMain {
             address,
@@ -559,6 +563,7 @@ mod tests {
             kind: SessionEventKind::Completed {
                 status: AgentResultStatus::Failed {
                     error: "model down".to_string(),
+                    details: None,
                 },
                 episode_id: Some("ep-007".to_string()),
             },

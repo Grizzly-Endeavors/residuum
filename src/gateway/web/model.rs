@@ -587,6 +587,7 @@ mod tests {
             tool_calls: vec![],
             usage: Some(usage),
             thinking: None,
+            stop_reason: None,
         }
     }
 

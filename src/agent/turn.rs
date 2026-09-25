@@ -1,12 +1,14 @@
 //! Turn execution: the tool loop that drives the agent.
 
 use async_trait::async_trait;
+#[cfg(test)]
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::{
-    EndpointName, Publisher, SessionAddress, SessionEventKind, SessionResponseEvent,
-    ToolActivityEvent, ToolCallEvent, ToolResultEvent, TurnUsageEvent, topics,
+    EndpointName, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, SessionAddress,
+    SessionEventKind, SessionResponseEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
+    TurnUsageEvent, topics,
 };
 use crate::inference::{
     CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
@@ -20,7 +22,7 @@ use anyhow::Context;
 
 use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
 use super::hop::HopCounter;
-use super::interrupt::Interrupt;
+use super::interrupt::{Interrupt, InterruptSource};
 use super::recent_messages::RecentMessages;
 use super::usage::{SessionUsageTotals, TurnUsage, UsageSink};
 
@@ -284,6 +286,47 @@ pub(crate) struct TurnResources<'a> {
 /// than completed or abandoned.
 const STOP_NOTE: &str = "[Stopped] the user stopped this turn before it finished; review what's already been done above before continuing or repeating any of it.";
 
+/// A model response was cut off by the configured output-token limit: tell
+/// the user (a transient notice, not an error — the turn otherwise
+/// completed normally) and leave a system note in the transcript so the
+/// agent knows its own last response was truncated. There is no automatic
+/// continuation — whether to pick up where it left off is the agent's own
+/// call, made the same way any other turn decision is.
+async fn handle_output_truncated(
+    response: &InferenceResponse,
+    resources: &TurnResources<'_>,
+    events: &EventContext<'_>,
+    recent_messages: &mut RecentMessages,
+) {
+    let limit_desc = resources.options.max_tokens.map_or_else(
+        || "its configured output-token limit".to_string(),
+        |n| format!("the {n}-token output limit"),
+    );
+    tracing::warn!(
+        max_tokens = ?resources.options.max_tokens,
+        stop_reason = ?response.stop_reason,
+        "model response truncated at the output-token limit"
+    );
+
+    let notice = format!("The response was cut off at {limit_desc}.");
+    if let Err(e) = events
+        .publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message: notice },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish truncation notice");
+    }
+
+    let note = Message::system(format!(
+        "[Truncated] your previous response was cut off at {limit_desc}; it may be \
+         incomplete. Continue from where it left off if that's still useful, or start fresh."
+    ));
+    push_and_record(recent_messages, resources.transcript_sink, note).await;
+}
+
 /// Push a message onto the turn's history and, when a sink is configured,
 /// durably record it in the same step — the one place every message that
 /// enters `recent_messages` during a turn also reaches the transcript sink.
@@ -338,7 +381,7 @@ pub(crate) async fn execute_turn(
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
     status_line: Option<&StatusLine>,
-    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    interrupt_rx: &mut dyn InterruptSource,
     subconscious: Option<&crate::subconscious::SubconsciousWatch>,
 ) -> anyhow::Result<Vec<String>> {
     let mut texts: Vec<String> = Vec::new();
@@ -399,6 +442,10 @@ pub(crate) async fn execute_turn(
             );
         }
         response.content = super::think_tags::strip_think_tags(&response.content);
+
+        if response.was_truncated() {
+            handle_output_truncated(&response, resources, events, recent_messages).await;
+        }
 
         if response.tool_calls.is_empty() {
             log_usage(&response);
@@ -490,7 +537,7 @@ async fn check_tool_iteration_limit(
 /// should stop, logging the reason. Split out of [`execute_turn`] purely to
 /// keep that function's line count down.
 async fn check_interrupts_and_stop(
-    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
     resources: &TurnResources<'_>,
     iteration: usize,
@@ -533,7 +580,7 @@ async fn check_interrupts_and_stop(
 /// continues to the end of the buffered batch even after a stop is seen, so
 /// any interrupts queued just before it are still folded into history.
 async fn drain_interrupts(
-    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    interrupt_rx: &mut dyn InterruptSource,
     recent_messages: &mut RecentMessages,
     sink: Option<&dyn TranscriptSink>,
     hop_counter: &HopCounter,
@@ -841,11 +888,11 @@ mod tests {
 
     #[tokio::test]
     async fn drain_injects_subconscious_correction_as_system_message() {
-        let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
         let sink = MockSink::default();
 
-        tx.try_send(Interrupt::Subconscious(
+        tx.send(Interrupt::Subconscious(
             "[Subconscious] Save the preference.".to_string(),
         ))
         .ok();
@@ -870,11 +917,11 @@ mod tests {
 
     #[tokio::test]
     async fn drain_reports_stop_and_injects_note() {
-        let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
         let sink = MockSink::default();
 
-        tx.try_send(Interrupt::Stopped).ok();
+        tx.send(Interrupt::Stopped).ok();
         let stopped =
             drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
 
@@ -898,7 +945,7 @@ mod tests {
 
     #[tokio::test]
     async fn drain_with_no_interrupts_reports_no_stop() {
-        let (_tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let (_tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
 
         let stopped = drain_interrupts(&mut rx, &mut recent, None, &HopCounter::new(0)).await;
@@ -911,7 +958,7 @@ mod tests {
     async fn drain_injects_user_message_history_through_the_sink() {
         use crate::interfaces::types::{InboundMessage, MessageOrigin};
 
-        let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
         let sink = MockSink::default();
 
@@ -928,7 +975,7 @@ mod tests {
             images: vec![],
             context: None,
         };
-        tx.try_send(Interrupt::UserMessage(inbound)).ok();
+        tx.send(Interrupt::UserMessage(inbound)).ok();
         let stopped =
             drain_interrupts(&mut rx, &mut recent, Some(&sink), &HopCounter::new(0)).await;
 
@@ -1454,7 +1501,7 @@ mod tests {
             recent_context: None,
         };
         let prompt_ctx = PromptContext::default();
-        let (_interrupt_tx, mut interrupt_rx) = mpsc::channel(4);
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("go"));
 
@@ -1516,6 +1563,26 @@ mod tests {
                 .any(|m| m.role == Role::System && m.content == STOP_NOTE),
             "the stop must be recorded in history for the next turn"
         );
+    }
+
+    struct TruncatedProvider;
+
+    #[async_trait]
+    impl InferenceProvider for TruncatedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let mut resp = InferenceResponse::new("cut off mid-sen".to_string(), vec![]);
+            resp.stop_reason = Some(crate::inference::StopReason::MaxTokens);
+            Ok(resp)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "truncated"
+        }
     }
 
     /// A [`UsageSink`] test double that records every call it's asked to
@@ -1696,12 +1763,8 @@ mod tests {
         };
 
         let mut turn_usage = TurnUsage::default();
-        let response = InferenceResponse {
-            content: "hi".to_string(),
-            tool_calls: vec![],
-            usage: Some(usage(100, 20)),
-            thinking: None,
-        };
+        let mut response = InferenceResponse::new("hi".to_string(), vec![]);
+        response.usage = Some(usage(100, 20));
         update_and_publish_usage(&response, &mut turn_usage, Some(&sink), &events).await;
 
         assert_eq!(
@@ -1743,12 +1806,8 @@ mod tests {
         };
 
         let mut turn_usage = TurnUsage::default();
-        let response = InferenceResponse {
-            content: "hi".to_string(),
-            tool_calls: vec![],
-            usage: Some(usage(50, 5)),
-            thinking: None,
-        };
+        let mut response = InferenceResponse::new("hi".to_string(), vec![]);
+        response.usage = Some(usage(50, 5));
         update_and_publish_usage(&response, &mut turn_usage, None, &events).await;
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
@@ -1784,12 +1843,7 @@ mod tests {
         };
 
         let mut turn_usage = TurnUsage::default();
-        let response = InferenceResponse {
-            content: "hi".to_string(),
-            tool_calls: vec![],
-            usage: None,
-            thinking: None,
-        };
+        let response = InferenceResponse::new("hi".to_string(), vec![]);
         update_and_publish_usage(&response, &mut turn_usage, Some(&sink), &events).await;
 
         assert!(
@@ -1803,5 +1857,88 @@ mod tests {
             .unwrap();
         assert!(!event.has_usage);
         assert_eq!(event.output_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn execute_turn_notices_and_notes_a_truncated_response() {
+        let provider = TruncatedProvider;
+        let tools = ToolRegistry::new();
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions {
+            max_tokens: Some(64),
+            ..CompletionOptions::default()
+        };
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<crate::bus::NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("go"));
+
+        let texts = execute_turn(
+            &resources,
+            &memory_ctx,
+            &prompt_ctx,
+            &mut recent,
+            &events,
+            None,
+            &mut interrupt_rx,
+            None,
+        )
+        .await
+        .expect("a truncated response is still a completed turn, not an error");
+        assert_eq!(texts, vec!["cut off mid-sen".to_string()]);
+
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(1), notices.recv())
+            .await
+            .expect("a truncation notice should be published")
+            .unwrap()
+            .unwrap();
+        assert!(
+            notice.message.contains("64-token output limit"),
+            "the notice should name the configured limit: {}",
+            notice.message
+        );
+
+        assert!(
+            recent
+                .messages()
+                .iter()
+                .any(|m| m.role == Role::System && m.content.contains("[Truncated]")),
+            "a system note about the truncation must be added to the transcript"
+        );
     }
 }

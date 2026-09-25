@@ -142,7 +142,7 @@ export class SessionView {
         this.items.push({ id: nextFeedId(), kind: "assistant", content: frame.content });
         break;
       case "session_error":
-        this.pushStatus("error", frame.message);
+        this.pushStatus("error", frame.message, frame.details ?? undefined);
         break;
       case "session_completed":
         this.stopRequested = false;
@@ -170,8 +170,8 @@ export class SessionView {
     }
   }
 
-  pushStatus(tone: "info" | "error", content: string): void {
-    this.items.push({ id: nextFeedId(), kind: "status", tone, content });
+  pushStatus(tone: "info" | "error", content: string, details?: string): void {
+    this.items.push({ id: nextFeedId(), kind: "status", tone, content, details });
   }
 
   pushOwnerMessage(content: string): void {

@@ -122,6 +122,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 let err_msg = ServerMessage::Error {
                     reply_to: None,
                     message: format!("malformed message: {e}"),
+                    details: None,
                 };
                 tracing::warn!(error = %e, "malformed WebSocket message from client");
                 local_tx.send(err_msg).ok();
@@ -164,6 +165,7 @@ async fn handle_client_message(
                     .send(ServerMessage::Error {
                         reply_to: Some(id),
                         message: reason,
+                        details: None,
                     })
                     .ok();
                 return true;
@@ -237,6 +239,7 @@ async fn handle_client_message(
                         .send(ServerMessage::Error {
                             reply_to: None,
                             message: reason,
+                            details: None,
                         })
                         .ok();
                 }
@@ -293,6 +296,7 @@ async fn handle_client_message(
                         tx.send(ServerMessage::Error {
                             reply_to: None,
                             message: format!("inbox add failed: {e}"),
+                            details: None,
                         })
                         .ok();
                     }
@@ -331,6 +335,7 @@ fn replace_watch_set(
                 .send(ServerMessage::Error {
                     reply_to: None,
                     message: format!("Couldn't watch the workspace: {e}."),
+                    details: None,
                 })
                 .ok();
         }
@@ -631,7 +636,7 @@ mod tests {
         );
         assert!(matches!(
             local_rx.try_recv(),
-            Ok(ServerMessage::Error { reply_to: None, message }) if message.contains("../secrets")
+            Ok(ServerMessage::Error { reply_to: None, message, .. }) if message.contains("../secrets")
         ));
         assert!(watch_rx.borrow().matches("wiki/a.md"));
         assert!(!watch_rx.borrow().matches("notes/a.md"));
@@ -689,6 +694,7 @@ mod tests {
             address: "spawned-a-0001".into(),
             run_id: "run-a".into(),
             message: "loop limit".into(),
+            details: None,
         };
         assert!(!is_verbose_only(&response));
         assert!(!is_verbose_only(&error));

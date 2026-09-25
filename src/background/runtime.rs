@@ -203,7 +203,13 @@ impl SessionRuntime {
         let interrupt_rx = match self.registry.register(info.clone(), stop_token.clone()) {
             Ok(rx) => rx,
             Err(e) => {
-                deliver_losing_spawn_input(&self.registry, &info, &req.subagent_config, &e);
+                deliver_losing_spawn_input(
+                    &self.registry,
+                    &self.publisher,
+                    &info,
+                    &req.subagent_config,
+                    &e,
+                );
                 return;
             }
         };
@@ -317,8 +323,18 @@ impl SessionRuntime {
 /// this can legitimately happen). Rather than drop this run's input on the
 /// floor, deliver it into the run that won, the same way a `message_agent`
 /// call would.
+///
+/// A chat user's message (a `Conversation`-triggered request carrying its
+/// original inbound message) is never dropped here: a saturated or
+/// torn-down channel hands off to the same detached retry task
+/// [`listener::deliver_race_guard_content`](super::listener) uses for the
+/// wider race window, via [`super::messaging::retry_race_guard_user_message`].
+/// An agent-to-agent message in the same situation still just logs and
+/// gives up, unchanged — an unusual double-register race, with a live
+/// agent on the other end able to notice and retry itself.
 fn deliver_losing_spawn_input(
-    registry: &SessionRegistry,
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
     info: &SessionInfo,
     config: &SubAgentConfig,
     register_error: &super::registry::RegisterError,
@@ -343,19 +359,61 @@ fn deliver_losing_spawn_input(
     // free, but before this run actually won `SessionRegistry::register`. A
     // `Conversation`-triggered run must still deliver its carried inbound
     // message as `Interrupt::UserMessage`, not misattribute it to `main`.
-    let outcome = registry.deliver(
-        &info.address,
-        super::listener::race_guard_interrupt(
-            &info.trigger,
-            config.inbound.clone(),
-            info.spawner.clone(),
-            info.category,
-            content,
-            config.hop_count,
-        ),
+    let interrupt = super::listener::race_guard_interrupt(
+        &info.trigger,
+        config.inbound.clone(),
+        info.spawner.clone(),
+        info.category,
+        content,
+        config.hop_count,
     );
+    let retryable_inbound = if matches!(interrupt, Interrupt::UserMessage(_)) {
+        config.inbound.clone()
+    } else {
+        None
+    };
+    let outcome = registry.deliver(&info.address, interrupt);
     match outcome {
         DeliverOutcome::Delivered => {}
+        DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive
+            if let Some(inbound) = retryable_inbound =>
+        {
+            tracing::warn!(
+                address = %info.address,
+                outcome = ?outcome,
+                "losing spawn's user message could not be delivered immediately; retrying on a \
+                 detached task rather than dropping it"
+            );
+            let spawn_event = crate::bus::SpawnRequestEvent {
+                address: info.address.clone(),
+                skill: info.agent_skill.clone(),
+                source_label: info.source_label.clone(),
+                prompt: config.prompt.clone(),
+                context: config.context.clone(),
+                source: info.trigger.clone(),
+                model_tier: config.model_tier,
+                spawner: info.spawner.clone(),
+                depth: info.depth,
+                hop_count: config.hop_count,
+                sender: config.sender.clone(),
+                conversation: info.conversation_target.clone(),
+                inbound: config.inbound.clone(),
+                images: config.images.clone(),
+            };
+            let registry = Arc::clone(registry);
+            let publisher = publisher.clone();
+            let address = info.address.clone();
+            tokio::spawn(async move {
+                super::messaging::retry_race_guard_user_message(
+                    registry,
+                    publisher,
+                    address,
+                    inbound,
+                    spawn_event,
+                )
+                .await;
+            });
+        }
         DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive => {
             tracing::error!(
                 address = %info.address,
@@ -427,6 +485,7 @@ async fn recover_from_panic(
         &info.run_id,
         SessionEventKind::Error {
             message: format!("session task panicked: {panic_msg}"),
+            details: None,
         },
     )
     .await;
@@ -460,6 +519,7 @@ async fn recover_from_panic(
 
     let status = AgentResultStatus::Failed {
         error: format!("session task panicked: {panic_msg}"),
+        details: None,
     };
 
     // A panicked turn is exactly the outcome the spawner must never be left
@@ -715,6 +775,7 @@ async fn run_session(
                         (
                             AgentResultStatus::Failed {
                                 error: "gateway is shutting down".to_string(),
+                                details: None,
                             },
                             String::new(),
                         )
@@ -1045,6 +1106,7 @@ async fn relay_result_to_spawner(
         &info.run_id,
         SessionEventKind::Error {
             message: note_text.clone(),
+            details: None,
         },
     )
     .await;
@@ -1180,9 +1242,10 @@ async fn run_turn(
             })
             .await;
         }
-        (AgentResultStatus::Failed { error }, _) => {
+        (AgentResultStatus::Failed { error, details }, _) => {
             publish(SessionEventKind::Error {
                 message: format!("turn failed: {error}"),
+                details: details.clone(),
             })
             .await;
         }
@@ -1227,7 +1290,7 @@ fn turn_end_summary(result: &(AgentResultStatus, String)) -> String {
         }
         (AgentResultStatus::Completed, _) => "turn completed".to_string(),
         (AgentResultStatus::Cancelled, _) => "turn stopped".to_string(),
-        (AgentResultStatus::Failed { error }, _) => format!("turn failed: {error}"),
+        (AgentResultStatus::Failed { error, .. }, _) => format!("turn failed: {error}"),
     }
 }
 
@@ -1292,10 +1355,12 @@ async fn execute_turn_outcome(
             (AgentResultStatus::Completed, summary)
         }
         Err(e) => {
-            tracing::warn!(error = %e, "session turn failed");
+            let described = crate::inference::describe_turn_failure(&e);
+            tracing::warn!(error = %described.details, "session turn failed");
             (
                 AgentResultStatus::Failed {
-                    error: e.to_string(),
+                    error: described.message,
+                    details: Some(described.details),
                 },
                 String::new(),
             )
@@ -1523,7 +1588,8 @@ mod tests {
         // same race-guard misattribution bug, just hit through the narrower
         // window between `handle_spawn_request`'s own live-address check
         // passing and this run actually winning `SessionRegistry::register`.
-        let registry = SessionRegistry::new();
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
         let address = SessionAddress::from("external-discord-race");
         let winner = SessionInfo {
             address: address.clone(),
@@ -1566,7 +1632,13 @@ mod tests {
             address: address.clone(),
         };
 
-        deliver_losing_spawn_input(&registry, &losing_info, &config, &register_error);
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
 
         let delivered = rx
             .try_recv()
@@ -1580,6 +1652,154 @@ mod tests {
                 )
             }
         }
+    }
+
+    fn conversation_winner_info(address: &SessionAddress, run_id: &str) -> SessionInfo {
+        SessionInfo {
+            address: address.clone(),
+            run_id: run_id.to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: SessionState::Idle,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: Some(ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+            started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn deliver_losing_spawn_input_saturated_channel_still_delivers_via_retry() {
+        // Regression: a losing spawn's chat-user content used to be
+        // dropped outright ("input dropped") when the winning run's
+        // channel was saturated. There's nobody on the other end of a chat
+        // message to hand a refusal to, so this must retry until the
+        // channel drains.
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
+        let address = SessionAddress::from("external-discord-race-full");
+        let winner = conversation_winner_info(&address, "run-winner");
+        let mut rx = registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+            assert!(matches!(
+                registry.deliver(
+                    &address,
+                    Interrupt::UserMessage(sample_inbound_message("filler"))
+                ),
+                DeliverOutcome::Delivered
+            ));
+        }
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let config = SubAgentConfig {
+            prompt: "can anyone see this?".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            hop_count: 0,
+            sender: None,
+            inbound: Some(sample_inbound_message("can anyone see this?")),
+            images: Vec::new(),
+        };
+        let register_error = super::super::registry::RegisterError {
+            address: address.clone(),
+        };
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
+
+        let mut delivered = false;
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
+            let Ok(Some(interrupt)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await
+            else {
+                break;
+            };
+            if let Interrupt::UserMessage(m) = interrupt
+                && m.content == "can anyone see this?"
+            {
+                delivered = true;
+                break;
+            }
+        }
+        assert!(
+            delivered,
+            "the losing spawn's user message must eventually be delivered, never dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_losing_spawn_input_republishes_a_spawn_request_once_its_target_finishes() {
+        // The `NotLive` case: the winning run finishes (and leaves the
+        // registry) before this content can be delivered into it. The
+        // message must still not be dropped — it gets a fresh spawn/resume
+        // attempt through the ordinary listener pipeline instead.
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let registry = Arc::new(SessionRegistry::new());
+        let address = SessionAddress::from("external-discord-race-notlive");
+        let winner = conversation_winner_info(&address, "run-winner");
+        registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+        registry.remove(&address, "run-winner");
+
+        let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> = bus_handle
+            .subscribe(crate::bus::topics::Background)
+            .await
+            .unwrap();
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let config = SubAgentConfig {
+            prompt: "can anyone see this?".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            hop_count: 0,
+            sender: None,
+            inbound: Some(sample_inbound_message("can anyone see this?")),
+            images: Vec::new(),
+        };
+        let register_error = super::super::registry::RegisterError {
+            address: address.clone(),
+        };
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
+
+        let republished = tokio::time::timeout(Duration::from_secs(1), spawns.recv())
+            .await
+            .expect("a fresh spawn request should be republished promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(republished.address, address);
+        assert_eq!(
+            republished.inbound.map(|m| m.content),
+            Some("can anyone see this?".to_string()),
+            "the republished request must still carry the original user message"
+        );
     }
 
     #[tokio::test]
@@ -1979,7 +2199,7 @@ mod tests {
         assert_eq!(event.address, info.address);
         assert_eq!(event.run_id, info.run_id);
         assert!(
-            matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Result Relay Failed")),
+            matches!(&event.kind, SessionEventKind::Error { message, .. } if message.contains("Result Relay Failed")),
             "the relay failure must appear as an error on the session's own stream, got {:?}",
             event.kind
         );
@@ -3496,8 +3716,10 @@ mod tests {
                 "turn_ended",
                 "state:idle",
                 "state:completing",
-                "completed:failed: session run requires SubAgentResources",
-            ]
+                "completed:failed: Something went wrong while the agent was working. Try \
+                 again; if it keeps happening, check Residuum's logs for details.",
+            ],
+            "an unclassified session failure gets a plain-language message, never the raw cause"
         );
     }
 }

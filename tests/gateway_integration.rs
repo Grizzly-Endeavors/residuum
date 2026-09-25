@@ -228,6 +228,7 @@ mod gateway_integration {
                         .send(ServerMessage::Error {
                             reply_to: Some(reply_id),
                             message: e.to_string(),
+                            details: None,
                         })
                         .is_err()
                     {
@@ -285,6 +286,7 @@ mod gateway_integration {
                         .send(ServerMessage::Error {
                             reply_to: None,
                             message: format!("malformed message: {e}"),
+                            details: None,
                         })
                         .is_err()
                     {
@@ -423,10 +425,17 @@ mod gateway_integration {
         )
         .await;
 
-        // With typed subscribers, TurnStarted and Response may arrive in either order
+        // With typed subscribers, TurnStarted and Response may arrive in
+        // either order, interleaved with any number of TurnUsage progress
+        // events for the turn's model call — those are ignored here; a
+        // fixed bound just guards against an infinite loop if one is
+        // somehow never received.
         let mut got_turn_started = false;
         let mut got_response = false;
-        for _ in 0..2 {
+        for _ in 0..10 {
+            if got_turn_started && got_response {
+                break;
+            }
             let msg = recv_msg(&mut rx).await;
             match msg {
                 ServerMessage::TurnStarted { ref reply_to } if reply_to == "msg-1" => {
@@ -438,6 +447,7 @@ mod gateway_integration {
                 } if reply_to == "msg-1" && content == "hello back!" => {
                     got_response = true;
                 }
+                ServerMessage::TurnUsage { .. } => {}
                 other => panic!("unexpected message: {other:?}"),
             }
         }
@@ -553,7 +563,7 @@ mod gateway_integration {
         assert!(
             matches!(
                 &msg,
-                ServerMessage::Error { reply_to, message }
+                ServerMessage::Error { reply_to, message, .. }
                     if reply_to.is_none() && message.contains("malformed")
             ),
             "should receive Error with 'malformed' message, got: {msg:?}"

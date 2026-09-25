@@ -56,6 +56,7 @@ mod tests {
             "run-1",
             SessionEventKind::Error {
                 message: "boom".to_string(),
+                details: None,
             },
         )
         .await;
@@ -64,7 +65,7 @@ mod tests {
         assert_eq!(event.address.as_ref(), "spawned-x-0001");
         assert_eq!(event.run_id, "run-1");
         assert!(
-            matches!(event.kind, SessionEventKind::Error { ref message } if message == "boom"),
+            matches!(event.kind, SessionEventKind::Error { ref message, .. } if message == "boom"),
             "the payload should round-trip unchanged"
         );
     }

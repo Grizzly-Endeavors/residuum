@@ -80,40 +80,6 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
     }
 }
 
-/// Tell `main` that a participant's inbound message could not be delivered
-/// to its conversation session.
-///
-/// Mirrors [`notify_main_of_undeliverable_session_output`] for the opposite
-/// direction: an inbound message a session's interrupt channel refused
-/// (saturated) rather than an outbound reply the interface couldn't post.
-/// Without this, a busy session drops the message with nothing but a log
-/// line — the participant sees no reply and nothing in the agent system ever
-/// learns their message went nowhere. Logged at `error` regardless of
-/// whether the notice itself reaches main.
-pub(crate) async fn notify_main_of_undeliverable_conversation_message(
-    publisher: &crate::bus::Publisher,
-    session_address: &crate::bus::SessionAddress,
-    conversation_id: &str,
-    reason: &str,
-) {
-    tracing::error!(
-        session = %session_address,
-        conversation = %conversation_id,
-        reason,
-        "a participant's message could not be delivered to its conversation session"
-    );
-    let event = crate::bus::MessageEvent::from_background(format!(
-        "[Delivery Failed] a participant's message to conversation {conversation_id} \
-         (session {session_address}) could not be delivered: {reason}"
-    ));
-    if let Err(e) = publisher.publish(topics::UserMessage, event).await {
-        tracing::warn!(
-            error = %e,
-            "failed to notify main about an undeliverable conversation message"
-        );
-    }
-}
-
 /// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
     pub(crate) reload_tx: &'a tokio::sync::watch::Sender<crate::gateway::types::ReloadSignal>,

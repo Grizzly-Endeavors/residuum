@@ -73,7 +73,7 @@ class WsCoordinator {
         return;
       }
       if (msg.type === "error") {
-        notifications.surface("error", msg.message);
+        notifications.surface("error", msg.message, msg.details ?? undefined);
       } else if (msg.type === "workspace_watch_unavailable") {
         if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
         this.liveUpdatesOffShown = true;

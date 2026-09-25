@@ -155,6 +155,20 @@ pub(crate) fn init_session_observer(
     memory::build_observer(cfg, tz, http)
 }
 
+/// Fold every degradation collected during startup into one grouped,
+/// plain-language notice, or `None` when nothing degraded.
+fn degradation_notice(degradations: &[String]) -> Option<String> {
+    if degradations.is_empty() {
+        return None;
+    }
+    let count = degradations.len();
+    let plural = if count == 1 { "" } else { "s" };
+    Some(format!(
+        "Residuum started with {count} thing{plural} degraded: {}.",
+        degradations.join("; ")
+    ))
+}
+
 /// Load the scheduled action store and create the notification handle.
 ///
 /// A stored action left over from before `agent: "main"` was removed is
@@ -163,6 +177,7 @@ pub(crate) fn init_session_observer(
 async fn init_action_store(
     layout: &WorkspaceLayout,
     publisher: &crate::bus::Publisher,
+    degradations: &mut Vec<String>,
 ) -> (
     Arc<tokio::sync::Mutex<ActionStore>>,
     Arc<tokio::sync::Notify>,
@@ -181,6 +196,9 @@ async fn init_action_store(
         }
         Err(err) => {
             tracing::warn!(error = %err, "action store degraded: starting empty");
+            degradations.push(format!(
+                "scheduled actions couldn't be loaded and started empty: {err}"
+            ));
             Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
                 actions_path,
             )))
@@ -191,11 +209,14 @@ async fn init_action_store(
 }
 
 /// Scan for skills and return the shared state handle.
-async fn init_skills(cfg: &Config) -> SharedSkillState {
+async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkillState {
     let skill_index = match SkillIndex::scan(&cfg.skills.dirs).await {
         Ok(idx) => idx,
         Err(err) => {
             tracing::warn!(error = %err, "skill index degraded: starting empty");
+            degradations.push(format!(
+                "skills couldn't be scanned and started empty: {err}"
+            ));
             SkillIndex::default()
         }
     };
@@ -394,6 +415,7 @@ async fn init_mcp_servers(
     layout: &WorkspaceLayout,
     tools_path: SharedToolsPath,
     agent_keys: crate::agent_keys::SharedAgentKeys,
+    degradations: &mut Vec<String>,
 ) -> SharedMcpRegistry {
     let mcp_registry = crate::mcp::McpRegistry::new_shared_with_spawn_env(tools_path, agent_keys);
     match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
@@ -412,11 +434,15 @@ async fn init_mcp_servers(
                 );
                 for (server_name, err) in &report.failures {
                     tracing::warn!(server = %server_name, error = %err, "mcp server failed to start");
+                    degradations.push(format!(
+                        "the MCP server '{server_name}' failed to start: {err}"
+                    ));
                 }
             }
         }
         Err(err) => {
             tracing::warn!(error = %err, "workspace MCP servers degraded");
+            degradations.push(format!("workspace MCP servers couldn't be loaded: {err}"));
         }
     }
     mcp_registry
@@ -524,6 +550,7 @@ async fn init_a2a_client(
 fn init_channels_and_registry(
     layout: &WorkspaceLayout,
     cfg: &Config,
+    degradations: &mut Vec<String>,
 ) -> (
     Vec<crate::notify::types::ExternalChannelConfig>,
     EndpointRegistry,
@@ -533,6 +560,7 @@ fn init_channels_and_registry(
             Ok(configs) => configs,
             Err(err) => {
                 tracing::warn!(error = %err, "workspace channels degraded");
+                degradations.push(format!("notification channels couldn't be loaded: {err}"));
                 Vec::new()
             }
         };
@@ -552,14 +580,29 @@ struct NetworkingComponents {
 
 /// Build the shared tools `PATH` and agent key store, connect workspace MCP
 /// servers, and load the channel/endpoint registry.
-async fn init_networking(cfg: &Config, layout: &WorkspaceLayout) -> NetworkingComponents {
+async fn init_networking(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+    degradations: &mut Vec<String>,
+) -> NetworkingComponents {
     let tools_path: SharedToolsPath =
         Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
     let agent_keys = crate::agent_keys::AgentKeys::new_shared(&cfg.config_dir);
-    let mcp_registry =
-        init_mcp_servers(layout, Arc::clone(&tools_path), Arc::clone(&agent_keys)).await;
-    connect_web_search_mcp(cfg, &mcp_registry).await;
-    let (channel_configs, endpoint_registry) = init_channels_and_registry(layout, cfg);
+    let mcp_registry = init_mcp_servers(
+        layout,
+        Arc::clone(&tools_path),
+        Arc::clone(&agent_keys),
+        degradations,
+    )
+    .await;
+    let web_search_report = connect_web_search_mcp(cfg, &mcp_registry).await;
+    for (server_name, err) in &web_search_report.failures {
+        degradations.push(format!(
+            "the web search server '{server_name}' failed to start: {err}"
+        ));
+    }
+    let (channel_configs, endpoint_registry) =
+        init_channels_and_registry(layout, cfg, degradations);
     NetworkingComponents {
         tools_path,
         agent_keys,
@@ -880,6 +923,23 @@ async fn build_spawn_context_and_agent(
     (spawn_context, agent, output_topic_override_tx)
 }
 
+/// The shared path policy for file tools, with the config-derived write blocks.
+fn build_path_policy(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+) -> crate::tools::path_policy::SharedPathPolicy {
+    crate::tools::PathPolicy::new_shared_with_blocked(
+        crate::tools::path_policy::blocked_write_paths(cfg, layout),
+    )
+}
+
+/// Publish the grouped startup-degradation notice, if anything degraded.
+async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradations: &[String]) {
+    if let Some(message) = degradation_notice(degradations) {
+        super::helpers::publish_notice(publisher, message).await;
+    }
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -895,13 +955,21 @@ pub(crate) async fn initialize(
     let (layout, tz) = init_workspace(cfg).await?;
     let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
 
+    // Collects a plain-language line for every subsystem that degrades
+    // along the way (rather than failing startup outright), so the whole
+    // batch can be reported to the user as one grouped notice once
+    // everything below has had its chance to add to it.
+    let mut degradations: Vec<String> = Vec::new();
+
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
-    let providers = providers::init_providers(cfg, tz, http.clone())?;
+    let providers =
+        providers::init_providers(cfg, tz, http.clone(), publisher.clone(), &mut degradations)?;
     let mem = memory::init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
     let subconscious = crate::subconscious::Subconscious::build(cfg, &layout, http.clone());
 
-    let (action_store, action_notify) = init_action_store(&layout, publisher).await;
-    let skill_state = init_skills(cfg).await;
+    let (action_store, action_notify) =
+        init_action_store(&layout, publisher, &mut degradations).await;
+    let skill_state = init_skills(cfg, &mut degradations).await;
 
     let (session_observer, merge_writer) = build_session_memory_components(
         cfg,
@@ -922,11 +990,9 @@ pub(crate) async fn initialize(
             &checkpoints,
         )
         .await;
-    let net = init_networking(cfg, &layout).await;
+    let net = init_networking(cfg, &layout, &mut degradations).await;
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
-    let path_policy = crate::tools::PathPolicy::new_shared_with_blocked(
-        crate::tools::path_policy::blocked_write_paths(cfg, &layout),
-    );
+    let path_policy = build_path_policy(cfg, &layout);
     let (a2a_hub, a2a_tracker) =
         init_a2a_client(&layout, &net.agent_keys, Arc::clone(&agent_messenger)).await;
 
@@ -958,6 +1024,8 @@ pub(crate) async fn initialize(
             options: providers.options,
         })
         .await;
+
+    publish_degradation_notice(publisher, &degradations).await;
 
     Ok(GatewayComponents {
         layout,
@@ -991,4 +1059,42 @@ pub(crate) async fn initialize(
         a2a_tracker,
         checkpoints,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn degradation_notice_is_none_when_nothing_degraded() {
+        assert_eq!(degradation_notice(&[]), None);
+    }
+
+    #[test]
+    fn degradation_notice_names_a_single_degradation_without_pluralizing() {
+        let message =
+            degradation_notice(&["skills couldn't be scanned and started empty: boom".to_string()])
+                .expect("one degradation should produce a notice");
+        assert_eq!(
+            message,
+            "Residuum started with 1 thing degraded: skills couldn't be scanned and started \
+             empty: boom."
+        );
+    }
+
+    #[test]
+    fn degradation_notice_lists_every_degradation_and_pluralizes() {
+        let message = degradation_notice(&[
+            "skills couldn't be scanned and started empty: boom".to_string(),
+            "the embedding provider is unavailable, so semantic search is disabled: kaboom"
+                .to_string(),
+        ])
+        .expect("degradations should produce a notice");
+        assert!(
+            message.starts_with("Residuum started with 2 things degraded: "),
+            "should pluralize and count every degradation: {message}"
+        );
+        assert!(message.contains("skills couldn't be scanned"));
+        assert!(message.contains("embedding provider is unavailable"));
+    }
 }

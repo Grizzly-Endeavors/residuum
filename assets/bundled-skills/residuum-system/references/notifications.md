@@ -34,6 +34,12 @@ No routing target injects into the agent's message feed. Two mechanisms do that 
 
 Everything else, except an `artifact` session's or a conversation-triggered session's results, reaches the agent through the inbox, which it reads with `inbox_list`.
 
+## Error and Degradation Notices
+
+Turn and session failures are classified into a plain-language message with a next step (bad API key, rate limiting, network problem, timeout, context limit exceeded, model unavailable, provider outage) rather than shown raw. The full technical chain travels alongside as a separate `details` field, shown in the web UI behind an expandable toggle and always in the logs — chat interfaces get the plain message only.
+
+A fallback or recovery on the main model gets one notice per transition (failing over, and coming back), never per call or per retry. A response cut off by the output-token limit gets a notice naming the limit, plus a system note in the turn's own transcript — no automatic continuation. Startup degradations (an MCP server failing, a broken skills directory, channels or the action store failing to load, memory/embedding providers unavailable) are collected and published as one grouped notice once startup finishes, instead of sitting log-only.
+
 ## Endpoints
 
 The endpoint registry tracks all available I/O endpoints. The `list_endpoints` tool shows what's available.
