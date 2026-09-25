@@ -49,6 +49,14 @@ A stop request can name the specific turn to stop (its correlation id, as a WebS
 
 Either way, a request that finds nothing running is discarded once answered; it never lingers to affect whatever runs next.
 
+## Mid-Turn Interrupt Queue
+
+A stop request, a mid-turn user message, an agent message addressed to this turn, and a subconscious correction are all delivered the same way: queued on the turn's interrupt channel and drained at the tool loop's next checkpoint (see [What Happens on Stop](#what-happens-on-stop) above for the stop case specifically). The main agent's own channel is unbounded, so a message sent mid-turn is never dropped for want of queue space — there is no "busy" signal to give the user back if it were, so a dropped message would just silently vanish. A session's own interrupt channel (used to deliver an agent message to a *running* session) stays bounded on purpose: a session that's stuck reports itself busy to the caller rather than accepting unbounded backlog, which is a deliberate, visible signal rather than a silent drop.
+
+## Output Truncation
+
+When a model response is cut off by the provider's own output-token limit rather than ending naturally, the turn treats it as a completed (not failed) turn, but publishes a notice naming the limit and adds a system note to the transcript — `[Truncated] your previous response was cut off at the N-token output limit` — so the next turn's model call knows its own last response was incomplete. There is no automatic continuation: whether to pick up where it left off, and how, is left entirely to the agent's own judgment on its next turn, the same as any other turn decision.
+
 ## Tool-Call Limit
 
 There is no built-in cap on how many tool calls a turn may make. A user can bound this themselves with `max_tool_iterations` under `[agent]` in `config.toml` (also editable from the web UI's Settings page); left unset, a turn's tool loop runs unlimited, and the stop mechanisms above are the intended safety valve for a runaway turn. This applies to every turn loop: the main agent's own turns and every background/session/artifact turn.
