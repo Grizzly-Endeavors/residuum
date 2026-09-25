@@ -557,6 +557,7 @@ async fn recover_from_panic(
         .complete_run(
             info,
             SessionState::Completed.as_str(),
+            &status,
             transcript,
             episode_id.clone(),
         )
@@ -946,6 +947,7 @@ async fn finish_run(
         .complete_run(
             info,
             SessionState::Completed.as_str(),
+            &status,
             recent_messages.messages().to_vec(),
             episode_id.clone(),
         )

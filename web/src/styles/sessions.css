@@ -723,6 +723,19 @@ button.session-row-artifact-link:focus-visible {
   color: var(--text-muted);
 }
 
+.session-view-note-failed {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-1);
+  font-style: normal;
+  color: #e8a0a0;
+}
+
+.session-view-note-failed > svg {
+  flex: none;
+  margin-top: 0.15em;
+}
+
 .session-feed-frame {
   position: relative;
   display: flex;

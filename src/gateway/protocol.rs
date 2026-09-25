@@ -120,6 +120,16 @@ pub struct SessionSummary {
     /// live for a run still going, final for a completed one. See
     /// `docs/systems-usage/turn-control.md`.
     pub usage: SessionUsageTotals,
+    /// How the run ended — completed, cancelled, or failed. `None` while the
+    /// run is still live, and `None` for a completed run recorded before
+    /// this field existed (it shows as plain "finished" rather than a
+    /// guessed outcome).
+    pub outcome: Option<SessionRunStatus>,
+    /// The failure reason, when `outcome` is `Failed`. `None` otherwise.
+    pub error: Option<String>,
+    /// Set when this run is a pulse fire that started while its previous run
+    /// was still live. `None` for every other trigger.
+    pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
 /// `GET /api/sessions` response: live sessions plus one page of completed
@@ -148,6 +158,30 @@ pub enum SessionRunStatus {
     Cancelled,
     /// The last turn failed.
     Failed,
+}
+
+impl SessionRunStatus {
+    /// Lowercase label used in the session store (see `RunRecord::outcome`).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Parse the label [`Self::as_str`] produces, as recorded in the session
+    /// store. `None` for anything else.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "completed" => Some(Self::Completed),
+            "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
 }
 
 /// Where a `SessionSendMessage` landed.

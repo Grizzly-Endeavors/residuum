@@ -336,6 +336,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![
                     Message::user("investigate"),
                     Message::assistant("found it", None),
@@ -372,6 +373,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![Message::user("one"), Message::assistant("two", None)],
                 None,
             )

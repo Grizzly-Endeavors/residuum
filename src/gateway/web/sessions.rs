@@ -650,6 +650,7 @@ mod tests {
             .complete_run(
                 info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![Message::user("go"), Message::assistant("done", None)],
                 Some("ep-001".to_string()),
             )

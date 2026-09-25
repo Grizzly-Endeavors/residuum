@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::agent::turn::TranscriptSink;
+use crate::bus::{AgentResultStatus, PulseOverlap};
 use crate::inference::Message;
 
 use super::registry::SessionInfo;
@@ -76,6 +77,19 @@ pub struct RunRecord {
     /// final totals.
     #[serde(default)]
     pub usage: crate::agent::usage::SessionUsageTotals,
+    /// How the run ended — `"completed"`, `"cancelled"`, or `"failed"` —
+    /// filled in by [`SessionStore::complete_run`]. `None` while the run is
+    /// still live (`state` says so already), and `None` for a record written
+    /// before this field existed.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// The failure reason, when `outcome` is `"failed"`. `None` otherwise.
+    #[serde(default)]
+    pub outcome_error: Option<String>,
+    /// Set when this run is a pulse fire that started while its previous run
+    /// was still live. See [`PulseOverlap`].
+    #[serde(default)]
+    pub overlap: Option<PulseOverlap>,
 }
 
 impl RunRecord {
@@ -98,6 +112,9 @@ impl RunRecord {
             episode_id: None,
             transcript: Vec::new(),
             usage: info.usage,
+            outcome: None,
+            outcome_error: None,
+            overlap: info.overlap.clone(),
         }
     }
 }
@@ -138,6 +155,12 @@ struct RunRecordHeader {
     episode_id: Option<String>,
     #[serde(default)]
     usage: crate::agent::usage::SessionUsageTotals,
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    outcome_error: Option<String>,
+    #[serde(default)]
+    overlap: Option<PulseOverlap>,
 }
 
 impl From<RunRecordHeader> for RunRecord {
@@ -158,6 +181,9 @@ impl From<RunRecordHeader> for RunRecord {
             episode_id: header.episode_id,
             transcript: Vec::new(),
             usage: header.usage,
+            outcome: header.outcome,
+            outcome_error: header.outcome_error,
+            overlap: header.overlap,
         }
     }
 }
@@ -585,7 +611,10 @@ impl SessionStore {
     }
 
     /// Finalize a run's record: set its terminal state, completion time,
-    /// full transcript, and the episode it was merged into (if any).
+    /// full transcript, the episode it was merged into (if any), and its
+    /// outcome (`status`) — completed, cancelled, or failed with a reason —
+    /// so a listing or reload can show what actually happened instead of
+    /// just "finished".
     ///
     /// Returns the path the record was written to, or `None` if the write
     /// failed — callers must not report a transcript to exist when it
@@ -594,6 +623,7 @@ impl SessionStore {
         &self,
         info: &SessionInfo,
         state: &str,
+        status: &AgentResultStatus,
         transcript: Vec<Message>,
         episode_id: Option<String>,
     ) -> Option<PathBuf> {
@@ -603,6 +633,13 @@ impl SessionStore {
         record.completed_at = Some(Utc::now());
         record.transcript = transcript;
         record.episode_id = episode_id;
+        let (outcome, outcome_error) = match status {
+            AgentResultStatus::Completed => ("completed", None),
+            AgentResultStatus::Cancelled => ("cancelled", None),
+            AgentResultStatus::Failed { error } => ("failed", Some(error.clone())),
+        };
+        record.outcome = Some(outcome.to_string());
+        record.outcome_error = outcome_error;
         match write_record(&path, &record).await {
             Ok(()) => Some(path),
             Err(e) => {
@@ -892,7 +929,13 @@ mod tests {
 
         let transcript = vec![Message::user("hello"), Message::assistant("hi", None)];
         let path = store
-            .complete_run(&info, "completed", transcript, None)
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                transcript,
+                None,
+            )
             .await
             .expect("write should succeed");
 
@@ -965,13 +1008,72 @@ mod tests {
 
         let transcript = vec![Message::user("hello")];
         store
-            .complete_run(&info, "completed", transcript.clone(), None)
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                transcript.clone(),
+                None,
+            )
             .await;
 
         let path = store.run_path(&info.run_id, info.started_at);
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         let record: RunRecord = serde_json::from_str(&contents).unwrap();
         assert_eq!(record.transcript.len(), transcript.len());
+    }
+
+    #[tokio::test]
+    async fn complete_run_records_the_failure_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Failed {
+                    error: "the model call timed out".to_string(),
+                },
+                vec![],
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("failed"));
+        assert_eq!(
+            record.outcome_error.as_deref(),
+            Some("the model call timed out")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_run_records_a_cancelled_outcome_with_no_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Cancelled,
+                vec![],
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("cancelled"));
+        assert!(record.outcome_error.is_none());
     }
 
     #[tokio::test]
@@ -1009,7 +1111,15 @@ mod tests {
         let store = SessionStore::new(dir.path().to_path_buf());
         let info = sample_info();
         store.begin_run(&info).await;
-        store.complete_run(&info, "completed", vec![], None).await;
+        store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                vec![],
+                None,
+            )
+            .await;
 
         let (layout, observer, merge_writer) = test_env();
         let env = SessionMemoryEnv {
@@ -1322,6 +1432,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &AgentResultStatus::Completed,
                 transcript.clone(),
                 Some("ep-001".to_string()),
             )
@@ -1378,7 +1489,15 @@ mod tests {
         let store = SessionStore::new(blocked_path);
         let info = sample_info();
 
-        let result = store.complete_run(&info, "completed", vec![], None).await;
+        let result = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                vec![],
+                None,
+            )
+            .await;
         assert!(
             result.is_none(),
             "a failed write must not report a transcript path"
