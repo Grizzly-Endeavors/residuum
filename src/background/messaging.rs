@@ -89,7 +89,8 @@ impl fmt::Display for SendError {
                 f,
                 "message loop limit reached ({hop_count} hops, limit {limit}); this looks like \
                  a message loop between agents, so delivery was refused — stop replying and \
-                 report back to your spawner or the user instead"
+                 report back to your spawner or the user instead. Raise the `hop_hard_limit` \
+                 setting under `[background]` in config.toml to allow more hops"
             ),
         }
     }
@@ -601,6 +602,7 @@ async fn publish_conversation_spawn(
         }),
         images: original_inbound.images.clone(),
         inbound: Some(original_inbound),
+        overlap: None,
     };
     publisher
         .publish(topics::Background, event)
@@ -639,6 +641,7 @@ async fn publish_conversation_resume(
         conversation: point.conversation_target.clone(),
         images: inbound.images.clone(),
         inbound: Some(inbound.clone()),
+        overlap: None,
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -1020,6 +1023,7 @@ async fn publish_resume(
         // fabricate a `UserMessage` with no real sender.
         inbound: None,
         images,
+        overlap: None,
     };
 
     publisher
@@ -1109,6 +1113,7 @@ mod tests {
             conversation_target: None,
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -1933,6 +1938,10 @@ mod tests {
             }
         ));
         assert!(err.to_string().contains("loop"));
+        assert!(
+            err.to_string().contains("hop_hard_limit"),
+            "error should name the config setting that controls the limit, got: {err}"
+        );
 
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())

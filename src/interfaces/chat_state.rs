@@ -119,14 +119,26 @@ where
 {
     /// Load the store from `path`; a missing file starts empty.
     ///
+    /// A file that exists but fails to parse is moved aside (best-effort)
+    /// rather than left to keep the adapter dead until someone manually
+    /// fixes it — the store starts fresh instead, and the returned
+    /// `Option<String>` names what happened for the caller to surface as
+    /// a notice. A read failure other than "not found" (permissions, a
+    /// bad mount) is still a hard error — that's not a corrupt-content
+    /// problem this can self-heal.
+    ///
     /// # Errors
-    /// Returns an error if the file exists but cannot be read or parsed.
-    pub(crate) async fn load(path: PathBuf) -> anyhow::Result<Self> {
-        let state = match tokio::fs::read_to_string(&path).await {
-            Ok(contents) => serde_json::from_str(&contents).with_context(|| {
-                format!("failed to parse chat interface state at {}", path.display())
-            })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => StoredState::default(),
+    /// Returns an error if the file exists but cannot be read.
+    pub(crate) async fn load(path: PathBuf) -> anyhow::Result<(Self, Option<String>)> {
+        let (state, notice) = match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => match serde_json::from_str(&contents) {
+                Ok(state) => (state, None),
+                Err(parse_err) => {
+                    let notice = Self::recover_from_corrupt_file(&path, &parse_err).await;
+                    (StoredState::default(), Some(notice))
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (StoredState::default(), None),
             Err(e) => {
                 return Err(anyhow::Error::new(e).context(format!(
                     "failed to read chat interface state at {}",
@@ -134,10 +146,50 @@ where
                 )));
             }
         };
-        Ok(Self {
-            path,
-            state: tokio::sync::Mutex::new(state),
-        })
+        Ok((
+            Self {
+                path,
+                state: tokio::sync::Mutex::new(state),
+            },
+            notice,
+        ))
+    }
+
+    /// Move a corrupt chat-state file aside (best-effort) and describe
+    /// what happened, so a fresh, empty store can take its place instead
+    /// of leaving the interface dead until someone fixes the file by hand.
+    async fn recover_from_corrupt_file(
+        path: &std::path::Path,
+        parse_err: &serde_json::Error,
+    ) -> String {
+        let moved_aside = path.with_extension("json.corrupt");
+        match tokio::fs::rename(path, &moved_aside).await {
+            Ok(()) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    moved_to = %moved_aside.display(),
+                    error = %parse_err,
+                    "chat interface state was corrupt, moved aside and starting fresh"
+                );
+                format!(
+                    "Your chat state file at {} was corrupt ({parse_err}) and has been moved to {} for reference. Starting fresh — whoever was recognized as the owner will need to message the bot again.",
+                    path.display(),
+                    moved_aside.display()
+                )
+            }
+            Err(rename_err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %parse_err,
+                    rename_error = %rename_err,
+                    "chat interface state was corrupt and couldn't be moved aside, starting fresh anyway"
+                );
+                format!(
+                    "Your chat state file at {} was corrupt ({parse_err}) and couldn't be moved aside ({rename_err}). Starting fresh — whoever was recognized as the owner will need to message the bot again.",
+                    path.display()
+                )
+            }
+        }
     }
 
     pub(crate) async fn owner(&self) -> Option<Owner> {
@@ -280,6 +332,7 @@ mod tests {
         ChatStateStore::load(dir.path().join("state.json"))
             .await
             .unwrap()
+            .0
     }
 
     #[tokio::test]
@@ -287,16 +340,59 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
 
-        let store = ChatStateStore::<Chat>::load(path.clone()).await.unwrap();
+        let (store, notice) = ChatStateStore::<Chat>::load(path.clone()).await.unwrap();
+        assert!(
+            notice.is_none(),
+            "a fresh file should have nothing to report"
+        );
         assert!(store.claim_owner(owner()).await.unwrap());
         store.remember("dm", chat("direct message")).await.unwrap();
 
-        let reloaded = ChatStateStore::<Chat>::load(path).await.unwrap();
+        let (reloaded, reload_notice) = ChatStateStore::<Chat>::load(path).await.unwrap();
+        assert!(
+            reload_notice.is_none(),
+            "a valid saved file should have nothing to report"
+        );
         assert_eq!(reloaded.owner().await, Some(owner()));
         assert_eq!(
             reloaded.conversation("dm").await,
             Some(chat("direct message"))
         );
+    }
+
+    #[tokio::test]
+    async fn corrupt_file_is_moved_aside_and_starts_fresh_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        tokio::fs::write(&path, "{ not valid json").await.unwrap();
+
+        let (store, notice) = ChatStateStore::<Chat>::load(path.clone()).await.unwrap();
+        let notice = notice.expect("a corrupt file should produce a notice");
+        assert!(notice.contains(&path.display().to_string()), "{notice}");
+
+        assert_eq!(store.owner().await, None, "should start with no owner");
+
+        let moved_aside = path.with_extension("json.corrupt");
+        assert!(moved_aside.exists(), "corrupt file should be moved aside");
+        assert!(
+            !path.exists(),
+            "corrupt file should no longer be at the original path"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&moved_aside).await.unwrap(),
+            "{ not valid json",
+            "moved-aside copy should keep the original corrupt content"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_file_starts_empty_with_no_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+
+        let (store, notice) = ChatStateStore::<Chat>::load(path).await.unwrap();
+        assert!(notice.is_none(), "a missing file is not corruption");
+        assert_eq!(store.owner().await, None);
     }
 
     #[tokio::test]
@@ -367,7 +463,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let store = ChatStateStore::<Chat>::load(path).await.unwrap();
+        let (store, _notice) = ChatStateStore::<Chat>::load(path).await.unwrap();
         assert_eq!(
             store.owner().await.map(|o| o.user_id).as_deref(),
             Some("aad-bear")
@@ -381,13 +477,5 @@ mod tests {
         store.remember("19:chat", chat("group chat")).await.unwrap();
         store.forget("19:chat").await.unwrap();
         assert_eq!(store.conversation("19:chat").await, None);
-    }
-
-    #[tokio::test]
-    async fn corrupt_state_is_an_error_not_a_reset() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json");
-        tokio::fs::write(&path, "{not json").await.unwrap();
-        assert!(ChatStateStore::<Chat>::load(path).await.is_err());
     }
 }

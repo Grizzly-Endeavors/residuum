@@ -122,6 +122,114 @@ fn update_api_router(update_api_state: web::update::UpdateApiState) -> axum::Rou
         )
 }
 
+/// The smaller, cross-cutting API routers [`build_gateway_app`] merges in,
+/// built once by [`build_feature_routers`] so the top-level function stays
+/// under the line-count lint.
+struct FeatureRouters {
+    webhook: axum::Router,
+    cloud: axum::Router,
+    update: axum::Router,
+    tracing: axum::Router,
+    file: axum::Router,
+    sessions: axum::Router,
+    scheduled: axum::Router,
+    workbench: axum::Router,
+    checkpoints: axum::Router,
+    agent_inbox: axum::Router,
+    memory: axum::Router,
+    model: axum::Router,
+    a2a_agents: axum::Router,
+}
+
+/// Build every feature router [`build_gateway_app`] merges onto the base
+/// `/ws` router. Split out purely to keep that function's line count under
+/// the lint threshold — each router here is independent and self-contained.
+fn build_feature_routers(
+    state: &GatewayState,
+    config_api_state: &web::ConfigApiState,
+    update_api_state: web::update::UpdateApiState,
+    tracing_api_state: web::tracing_api::TracingApiState,
+    workbench_serving: crate::workbench::server::WorkbenchServing,
+    extra: ExtraApiStates,
+) -> FeatureRouters {
+    use axum::routing::get;
+
+    // Always mounted: the table is swapped on reload, so webhooks added later
+    // work without rebinding the server. Unknown names get a 404.
+    let webhook = axum::Router::new()
+        .route(
+            "/webhook/{name}",
+            axum::routing::post(crate::interfaces::webhook::webhook_handler),
+        )
+        .with_state(crate::interfaces::webhook::WebhookState {
+            publisher: state.publisher.clone(),
+            webhooks: state.webhooks.clone(),
+            tz: state.tz,
+        });
+
+    let cloud = cloud_api_router(state, config_api_state);
+    let update = update_api_router(update_api_state);
+
+    let tracing = tracing_api_router(tracing_api_state);
+
+    let file = axum::Router::new()
+        .route(
+            "/api/files/{id}",
+            get(crate::gateway::file_server::serve_file),
+        )
+        .route(
+            "/api/files/workspace",
+            get(crate::gateway::file_server::serve_workspace_file),
+        )
+        .with_state(state.file_registry.clone());
+
+    let sessions = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
+        registry: Arc::clone(&state.session_registry),
+        store: Arc::clone(&state.session_store),
+        tz: state.tz,
+        messenger: Arc::clone(&state.agent_messenger),
+        publisher: state.publisher.clone(),
+        skill_state: Arc::clone(&state.skill_state),
+    });
+
+    let scheduled = web::scheduled::scheduled_api_router(web::scheduled::ScheduledApiState {
+        registry: Arc::clone(&state.session_registry),
+        store: Arc::clone(&state.session_store),
+        action_store: Arc::clone(&state.action_store),
+        layout: state.layout.clone(),
+        tz: state.tz,
+    });
+
+    let workbench = web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
+        dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
+            .workbench_dir(),
+        serving: workbench_serving,
+        tunnel_status_rx: state.tunnel_status_rx.clone(),
+        checkpoints: Arc::clone(&config_api_state.checkpoints),
+    });
+
+    let checkpoints =
+        web::checkpoints::checkpoints_api_router(web::checkpoints::CheckpointApiState {
+            checkpoints: Arc::clone(&config_api_state.checkpoints),
+        });
+
+    FeatureRouters {
+        webhook,
+        cloud,
+        update,
+        tracing,
+        file,
+        sessions,
+        scheduled,
+        workbench,
+        checkpoints,
+        agent_inbox: web::inbox::agent_inbox_api_router(state.clone()),
+        memory: web::memory::memory_api_router(extra.memory),
+        model: web::model::model_api_router(extra.model),
+        a2a_agents: web::a2a::a2a_agents_status_router(extra.a2a_agents),
+    }
+}
+
 /// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
 pub fn build_gateway_app(
     state: GatewayState,
@@ -134,79 +242,31 @@ pub fn build_gateway_app(
     use axum::routing::get;
 
     let a2a_tunnel_status_rx = state.tunnel_status_rx.clone();
-
-    // Always mounted: the table is swapped on reload, so webhooks added later
-    // work without rebinding the server. Unknown names get a 404.
-    let webhook_router = axum::Router::new()
-        .route(
-            "/webhook/{name}",
-            axum::routing::post(crate::interfaces::webhook::webhook_handler),
-        )
-        .with_state(crate::interfaces::webhook::WebhookState {
-            publisher: state.publisher.clone(),
-            webhooks: state.webhooks.clone(),
-            tz: state.tz,
-        });
-
-    let cloud_router = cloud_api_router(&state, &config_api_state);
-    let update_router = update_api_router(update_api_state);
-
-    let tracing_router = tracing_api_router(tracing_api_state);
-
-    let file_router = axum::Router::new()
-        .route(
-            "/api/files/{id}",
-            get(crate::gateway::file_server::serve_file),
-        )
-        .route(
-            "/api/files/workspace",
-            get(crate::gateway::file_server::serve_workspace_file),
-        )
-        .with_state(state.file_registry.clone());
-
-    let sessions_router = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
-        registry: Arc::clone(&state.session_registry),
-        store: Arc::clone(&state.session_store),
-        tz: state.tz,
-        messenger: Arc::clone(&state.agent_messenger),
-        publisher: state.publisher.clone(),
-        skill_state: Arc::clone(&state.skill_state),
-    });
-
-    let workbench_router =
-        web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
-            dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
-                .workbench_dir(),
-            serving: workbench_serving,
-            tunnel_status_rx: state.tunnel_status_rx.clone(),
-            checkpoints: Arc::clone(&config_api_state.checkpoints),
-        });
-
-    let checkpoints_router =
-        web::checkpoints::checkpoints_api_router(web::checkpoints::CheckpointApiState {
-            checkpoints: Arc::clone(&config_api_state.checkpoints),
-        });
-
-    let agent_inbox_router = web::inbox::agent_inbox_api_router(state.clone());
-    let memory_router = web::memory::memory_api_router(extra.memory);
-    let model_router = web::model::model_api_router(extra.model);
-    let a2a_agents_router = web::a2a::a2a_agents_status_router(extra.a2a_agents);
+    let routers = build_feature_routers(
+        &state,
+        &config_api_state,
+        update_api_state,
+        tracing_api_state,
+        workbench_serving,
+        extra,
+    );
 
     axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state)
-        .merge(webhook_router)
-        .merge(file_router)
-        .merge(sessions_router)
-        .merge(cloud_router)
-        .merge(update_router)
-        .merge(tracing_router)
-        .merge(workbench_router)
-        .merge(checkpoints_router)
-        .merge(agent_inbox_router)
-        .merge(memory_router)
-        .merge(model_router)
-        .merge(a2a_agents_router)
+        .merge(routers.webhook)
+        .merge(routers.file)
+        .merge(routers.sessions)
+        .merge(routers.scheduled)
+        .merge(routers.cloud)
+        .merge(routers.update)
+        .merge(routers.tracing)
+        .merge(routers.workbench)
+        .merge(routers.checkpoints)
+        .merge(routers.agent_inbox)
+        .merge(routers.memory)
+        .merge(routers.model)
+        .merge(routers.a2a_agents)
         .merge(web::a2a::a2a_status_router(web::a2a::A2aStatusApiState {
             config: config_api_state.clone(),
             tunnel_status_rx: a2a_tunnel_status_rx,

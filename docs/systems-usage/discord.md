@@ -8,6 +8,10 @@ Create an application and bot at [discord.com/developers](https://discord.com/de
 
 To use the bot in a server, invite it with the `bot` and `applications.commands` scopes and at least the View Channels, Send Messages, Read Message History, and Attach Files permissions. Direct messages need no invite: DM the bot from any server you share with it.
 
+## Startup and recovery
+
+Building the Discord client validates the bot token against Discord's API. A transient failure there (network not up yet, a momentary API error) retries with exponential backoff instead of leaving the adapter dead until a config reload — a notice is published once when retries start, once on recovery, and once if it gives up after 10 attempts. A corrupt `discord_state.json` is moved aside (to `discord_state.json.corrupt`) and the interface starts fresh with a notice, rather than staying down until someone fixes the file by hand — the owner will need to DM the bot again to be recognized.
+
 ## Who the agent answers
 
 The **owner** is whoever first sends the bot a direct message. Their Discord user ID and DM channel are saved in `discord_state.json` in the workspace, so ownership survives restarts. To hand the bot to someone else, stop Residuum, remove the `owner` entry from that file, and have the new owner DM the bot.

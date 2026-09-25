@@ -3,4 +3,4 @@
 /**
  * A session's lifecycle state.
  */
-export type SessionState = "forking" | "running" | "idle" | "completing" | "completed";
+export type SessionState = "forking" | "queued" | "running" | "idle" | "completing" | "completed";

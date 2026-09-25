@@ -171,9 +171,10 @@ fn degradation_notice(degradations: &[String]) -> Option<String> {
 
 /// Load the scheduled action store and create the notification handle.
 ///
-/// A stored action left over from before `agent: "main"` was removed is
-/// dropped by `ActionStore::load` itself; this only raises the owner-facing
-/// notice for whatever it reports, once, at startup.
+/// A stored action left over from before `agent: "main"` was removed, and a
+/// corrupt file moved aside, are both handled by `ActionStore::load` itself;
+/// this only raises the owner-facing notice for whatever it reports, once,
+/// at startup.
 async fn init_action_store(
     layout: &WorkspaceLayout,
     publisher: &crate::bus::Publisher,
@@ -184,11 +185,18 @@ async fn init_action_store(
 ) {
     let actions_path = layout.scheduled_actions_json();
     let action_store = match ActionStore::load(&actions_path).await {
-        Ok((store, rejected)) => {
+        Ok((store, rejected, moved_aside)) => {
             if !rejected.is_empty() {
                 super::helpers::publish_notice(
                     publisher,
                     crate::actions::store::rejected_actions_notice(&rejected),
+                )
+                .await;
+            }
+            if let Some(moved_to) = moved_aside {
+                super::helpers::publish_notice(
+                    publisher,
+                    crate::actions::store::corrupt_actions_notice(&moved_to),
                 )
                 .await;
             }
@@ -209,9 +217,23 @@ async fn init_action_store(
 }
 
 /// Scan for skills and return the shared state handle.
+///
+/// A directory `SkillIndex::scan` couldn't read is already skipped rather
+/// than failing the whole scan; this only turns each skip into a
+/// degradation for the caller to report. A scan failure with no partial
+/// index at all (not currently possible, but the API still allows it)
+/// falls back to an empty index with a warning.
 async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkillState {
     let skill_index = match SkillIndex::scan(&cfg.skills.dirs).await {
-        Ok(idx) => idx,
+        Ok(idx) => {
+            for (dir, err) in idx.skipped_dirs() {
+                degradations.push(format!(
+                    "your skills directory \"{}\" couldn't be read and was skipped, but skills in your other directories still loaded: {err}",
+                    dir.display()
+                ));
+            }
+            idx
+        }
         Err(err) => {
             tracing::warn!(error = %err, "skill index degraded: starting empty");
             degradations.push(format!(
@@ -232,8 +254,11 @@ async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkil
 /// config reload, matching the rest of it. The merge writer is shared with
 /// the main agent so episode numbering and log appends never race.
 ///
-/// # Errors
-/// Returns `FatalError::Config` if the session observer's provider cannot be built.
+/// Degrades rather than failing startup: an unusable observer provider here
+/// falls back to [`Observer::disabled`] with a warning. The main agent's own
+/// observer build (in `providers::init_providers`) already surfaces a
+/// user-facing notice for the same underlying `[observer]` misconfiguration,
+/// so this one only logs.
 fn build_session_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
@@ -242,8 +267,14 @@ fn build_session_memory_components(
     reflector: crate::memory::reflector::Reflector,
     mem: &memory::MemoryComponents,
     embedding_provider: Option<Arc<dyn crate::inference::EmbeddingProvider>>,
-) -> Result<(Arc<Observer>, Arc<MemoryMergeWriter>), FatalError> {
-    let session_observer = Arc::new(memory::build_observer(cfg, tz, http)?);
+) -> (Arc<Observer>, Arc<MemoryMergeWriter>) {
+    let session_observer = Arc::new(match memory::build_observer(cfg, tz, http) {
+        Ok(observer) => observer,
+        Err(err) => {
+            tracing::warn!(error = %err, "session observer degraded: disabled");
+            Observer::disabled(tz)
+        }
+    });
     let merge_writer = Arc::new(MemoryMergeWriter::new(
         reflector,
         layout.clone(),
@@ -251,7 +282,7 @@ fn build_session_memory_components(
         mem.vector_store.clone(),
         embedding_provider,
     ));
-    Ok((session_observer, merge_writer))
+    (session_observer, merge_writer)
 }
 
 /// Inputs to [`build_startup_spawn_context`], gathered because
@@ -313,6 +344,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
             ..crate::inference::CompletionOptions::default()
         },
         max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
+        repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
         layout: inputs.layout.clone(),
         config_dir: inputs.cfg.config_dir.clone(),
         tz: inputs.tz,
@@ -469,6 +501,7 @@ fn web_search_mcp_entry(
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }),
         "tavily" => Some(crate::mcp::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
@@ -480,6 +513,7 @@ fn web_search_mcp_entry(
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }),
         _ => None,
     }
@@ -744,6 +778,7 @@ async fn build_tools_and_agent(
             provider: inputs.provider,
             options: inputs.options,
             max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
+            repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
             tools,
             identity: inputs.identity,
             hop_counter: inputs.hop_counter,
@@ -941,6 +976,17 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
     }
 }
 
+/// Publish each of `cfg.load_notices` individually — already complete,
+/// standalone sentences describing one config.toml/providers.toml entry
+/// that was skipped or degraded while loading (see `config::resolve` and
+/// `config::tolerant`) — as opposed to the subsystem `degradations` above,
+/// which get folded into one shorter grouped sentence.
+async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
+    for notice in &cfg.load_notices {
+        super::helpers::publish_notice(publisher, notice.clone()).await;
+    }
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -955,6 +1001,7 @@ pub(crate) async fn initialize(
 ) -> Result<GatewayComponents, FatalError> {
     let (layout, tz) = init_workspace(cfg).await?;
     let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
+    publish_load_notices(publisher, cfg).await;
 
     // Collects a plain-language line for every subsystem that degrades
     // along the way (rather than failing startup outright), so the whole
@@ -980,7 +1027,7 @@ pub(crate) async fn initialize(
         providers.reflector,
         &mem,
         providers.embedding_provider.clone(),
-    )?;
+    );
     let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
         init_session_runtime(
             cfg,

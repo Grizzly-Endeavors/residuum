@@ -238,6 +238,7 @@ mod tests {
             tracing: crate::config::TracingConfig::default(),
             role_overrides: HashMap::new(),
             config_dir: PathBuf::from("/tmp"),
+            load_notices: vec![],
         }
     }
 

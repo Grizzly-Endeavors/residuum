@@ -21,9 +21,10 @@ pub(super) enum ConfigProblem {
 /// file never does, because the setup wizard would present the user's
 /// existing config as if it were gone. The user's files are never modified.
 pub(super) fn classify_load_error(config_dir: &Path, err: &FatalError) -> ConfigProblem {
-    // The gateway backs up the config each time one loads successfully, so
-    // no backup means no config has ever loaded: a fresh install.
-    let has_loaded_before = config_dir.join("config.toml.bak").exists();
+    // Only reached when there's no last-known-good copy to fall back on
+    // either (the caller already checked), so no last-known-good save
+    // means no config has ever loaded successfully here: a fresh install.
+    let has_loaded_before = residuum::gateway::has_last_known_good(config_dir);
     if !has_loaded_before && Config::check_files_parse_at(config_dir).is_ok() {
         return ConfigProblem::NotSetUp;
     }
@@ -31,23 +32,29 @@ pub(super) fn classify_load_error(config_dir: &Path, err: &FatalError) -> Config
 }
 
 /// The startup error for a config that exists but can't be loaded: what is
-/// wrong, how to fix it, and where the last working config is.
-fn invalid_config_error(config_dir: &Path, err: &FatalError, has_backup: bool) -> FatalError {
+/// wrong, how to fix it, and whether a last-known-good copy exists (it
+/// still failed to initialize too, or `classify_load_error` wouldn't have
+/// been reached — see its caller).
+fn invalid_config_error(
+    config_dir: &Path,
+    err: &FatalError,
+    has_last_known_good: bool,
+) -> FatalError {
     let detail = match err {
         FatalError::Config(msg) => msg.clone(),
         other @ (FatalError::Workspace(_) | FatalError::Gateway(_) | FatalError::Other(_)) => {
             other.to_string()
         }
     };
-    let backup_hint = if has_backup {
-        "\nThe last configuration that loaded successfully is saved next to them as \
-         config.toml.bak and providers.toml.bak."
+    let lkg_hint = if has_last_known_good {
+        "\nresiduum also tried the last configuration that worked \
+         (config.last-known-good.toml / providers.last-known-good.toml), but it failed to start too."
     } else {
         ""
     };
     FatalError::Config(format!(
         "residuum could not start because its configuration is invalid:\n  {detail}\n\n\
-         Fix config.toml or providers.toml in {}, then start residuum again.{backup_hint}\n\
+         Fix config.toml or providers.toml in {}, then start residuum again.{lkg_hint}\n\
          To set it up from scratch instead, run `residuum setup`.",
         config_dir.display()
     ))
@@ -86,30 +93,55 @@ mod tests {
     }
 
     #[test]
-    fn unknown_key_on_fresh_install_is_invalid_and_names_the_key() {
+    fn unknown_key_on_fresh_install_no_longer_fails_load() {
+        // An unknown key is now skipped with a notice rather than failing
+        // the config — see `config::tolerant`. `classify_load_error` is
+        // only reached when `Config::load_at` itself failed, so this case
+        // doesn't reach it at all any more.
         let dir = config_dir("timezone = \"UTC\"\ntranscript_retention_days = 30\n");
-        let message = invalid_message(classify(dir.path()));
+        let cfg = Config::load_at(dir.path()).expect("unknown key should not fail the load");
         assert!(
-            message.contains("transcript_retention_days"),
-            "message should name the bad key: {message}"
+            cfg.load_notices
+                .iter()
+                .any(|n| n.contains("transcript_retention_days")),
+            "a notice should name the skipped key: {:?}",
+            cfg.load_notices
         );
+    }
+
+    #[test]
+    fn type_error_on_a_known_field_is_invalid_and_names_the_field() {
+        let dir = config_dir("timezone = \"UTC\"\nmax_tokens = \"not-a-number\"\n");
+        let message = invalid_message(classify(dir.path()));
         assert!(message.contains("residuum setup"), "{message}");
         assert!(!message.contains(".bak"), "no backup exists yet: {message}");
+    }
+
+    /// Write a last-known-good pair directly, mirroring what
+    /// `gateway::last_known_good::save` would have written after an
+    /// earlier successful start.
+    fn write_last_known_good(dir: &Path) {
+        std::fs::write(
+            dir.join("config.last-known-good.toml"),
+            "timezone = \"UTC\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("providers.last-known-good.toml"), PROVIDERS).unwrap();
     }
 
     #[test]
     fn any_failure_after_a_successful_load_is_invalid() {
         let dir = config_dir("# timezone = \"America/New_York\"\n");
-        std::fs::write(dir.path().join("config.toml.bak"), "timezone = \"UTC\"\n").unwrap();
+        write_last_known_good(dir.path());
         let message = invalid_message(classify(dir.path()));
-        assert!(message.contains("config.toml.bak"), "{message}");
+        assert!(message.contains("last-known-good"), "{message}");
     }
 
     #[test]
     fn classifying_never_touches_the_users_files() {
-        let broken = "timezone = \"UTC\"\nnot_a_real_key = true\n";
+        let broken = "timezone = \"UTC\"\nmax_tokens = \"not-a-number\"\n";
         let dir = config_dir(broken);
-        std::fs::write(dir.path().join("config.toml.bak"), "timezone = \"UTC\"\n").unwrap();
+        write_last_known_good(dir.path());
         let _problem = classify(dir.path());
         assert_eq!(
             std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),

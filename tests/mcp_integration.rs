@@ -30,6 +30,7 @@ mod mcp_integration {
             env: HashMap::new(),
             transport: McpTransport::default(),
             headers: HashMap::new(),
+            timeout_secs: None,
         }
     }
 
@@ -117,6 +118,7 @@ mod mcp_integration {
             env: HashMap::new(),
             transport: McpTransport::default(),
             headers: HashMap::new(),
+            timeout_secs: None,
         };
 
         let mut registry = McpRegistry::new();
@@ -159,6 +161,7 @@ mod mcp_integration {
             env: HashMap::new(),
             transport: McpTransport::default(),
             headers: HashMap::new(),
+            timeout_secs: None,
         };
         let also_missing = McpServerEntry {
             name: "also-bad".to_string(),
@@ -167,6 +170,7 @@ mod mcp_integration {
             env: HashMap::new(),
             transport: McpTransport::default(),
             headers: HashMap::new(),
+            timeout_secs: None,
         };
 
         let mut registry = McpRegistry::new();

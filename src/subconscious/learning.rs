@@ -173,6 +173,7 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
         conversation: None,
         inbound: None,
         images: Vec::new(),
+        overlap: None,
     }
 }
 

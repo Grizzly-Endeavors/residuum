@@ -2,6 +2,10 @@
 
 The Telegram interface lets the agent chat in Telegram private chats and in groups the bot has been added to. Residuum long-polls the Bot API with the bot token, so no public endpoint is needed.
 
+## Startup and recovery
+
+Verifying the bot token (`getMe`) at startup talks to the Bot API. A transient failure there (network not up yet, a momentary API error) retries with exponential backoff instead of leaving the adapter dead until a config reload — a notice is published once when retries start, once on recovery, and once if it gives up after 10 attempts. A corrupt `telegram_state.json` is moved aside (to `telegram_state.json.corrupt`) and the interface starts fresh with a notice, rather than staying down until someone fixes the file by hand — the owner will need to message the bot again to be recognized.
+
 ## Who the agent answers
 
 The **owner** is whoever first sends the bot a private message. Their Telegram user ID and chat are saved in `telegram_state.json` in the workspace, so ownership survives restarts. To hand the bot to someone else, stop Residuum, remove the `owner` entry from that file, and have the new owner message the bot.

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::config::Config;
-use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
+use crate::gateway::types::{
+    CoreReceivers, GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal,
+};
 use crate::pulse::scheduler::PulseScheduler;
 use crate::util::FatalError;
 
@@ -20,23 +22,112 @@ use super::pulse::handle_pulse_tick;
 use super::turns::handle_inbound_message;
 
 use crate::gateway::memory::execute_observation;
-use crate::gateway::{actions, idle, reload, watcher, web};
+use crate::gateway::{actions, idle, last_known_good, reload, watcher, web};
 
 /// Start the WebSocket gateway server and run the main event loop.
 ///
-/// Initializes all subsystems, spawns the axum WebSocket server, then enters
-/// the event loop via `run_event_loop`.
+/// Loads config from `config_dir`. If the live files fail to load, or load
+/// but the gateway can't actually start on them (no usable main provider,
+/// etc.), falls back to the last-known-good copy (see [`last_known_good`])
+/// instead of refusing to start. A fallback is announced with a notice once
+/// the gateway is up, so it's visible to anyone using the web UI.
+///
+/// # Errors
+///
+/// Returns `FatalError` if the config can't be loaded and no working
+/// last-known-good copy is available, or the server cannot bind.
+#[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
+pub async fn run_gateway(config_dir: &std::path::Path) -> Result<GatewayExit, FatalError> {
+    let (core, receivers) = GatewayCore::new(config_dir.to_path_buf());
+    let (cfg, parts, fallback_problem) = load_and_initialize(config_dir, &core.publisher).await?;
+    Box::pin(run_gateway_from_parts(
+        cfg,
+        parts,
+        core,
+        receivers,
+        fallback_problem,
+    ))
+    .await
+}
+
+/// Start the gateway from an already-built `Config`, bypassing the
+/// last-known-good load-and-fallback in [`run_gateway`].
+///
+/// Used by the setup wizard's isolated temp-directory flow, which builds
+/// its own `Config` (with an overridden workspace directory) instead of
+/// loading one from a config directory — there's no last-known-good copy
+/// to fall back to there anyway.
 ///
 /// # Errors
 ///
 /// Returns `FatalError` if initialization fails or the server cannot bind.
 #[tracing::instrument(skip_all, fields(bind = %cfg.gateway.addr()))]
-pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
-    reload::backup_config(&cfg.config_dir);
-
+pub async fn run_gateway_with_config(cfg: Config) -> Result<GatewayExit, FatalError> {
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
     let parts = crate::gateway::startup::initialize(&cfg, &core.publisher).await?;
+    Box::pin(run_gateway_from_parts(cfg, parts, core, receivers, None)).await
+}
 
+/// Load `config_dir`'s config and initialize the gateway on it, falling
+/// back to the last-known-good copy if either step fails. Returns the
+/// config actually used, its initialized components, and — only when a
+/// fallback was used — a description of what was wrong with the live
+/// files, for the caller to publish once the gateway is up.
+async fn load_and_initialize(
+    config_dir: &std::path::Path,
+    publisher: &crate::bus::Publisher,
+) -> Result<
+    (
+        Config,
+        crate::gateway::startup::GatewayComponents,
+        Option<String>,
+    ),
+    FatalError,
+> {
+    match Config::load_at(config_dir) {
+        Ok(cfg) => match crate::gateway::startup::initialize(&cfg, publisher).await {
+            Ok(parts) => Ok((cfg, parts, None)),
+            Err(err) => last_known_good_fallback(config_dir, publisher, err).await,
+        },
+        Err(err) => last_known_good_fallback(config_dir, publisher, err).await,
+    }
+}
+
+/// Try starting from the last-known-good config after `original_err` broke
+/// the live files. Returns `original_err` untouched if there's no
+/// last-known-good copy, or it fails to initialize too — the live files
+/// are still the more relevant problem to report in that case.
+async fn last_known_good_fallback(
+    config_dir: &std::path::Path,
+    publisher: &crate::bus::Publisher,
+    original_err: FatalError,
+) -> Result<
+    (
+        Config,
+        crate::gateway::startup::GatewayComponents,
+        Option<String>,
+    ),
+    FatalError,
+> {
+    let Ok(lkg_cfg) = last_known_good::load(config_dir) else {
+        return Err(original_err);
+    };
+    match crate::gateway::startup::initialize(&lkg_cfg, publisher).await {
+        Ok(parts) => Ok((lkg_cfg, parts, Some(original_err.to_string()))),
+        Err(_lkg_init_err) => Err(original_err),
+    }
+}
+
+/// Shared tail of [`run_gateway`] and [`run_gateway_with_config`]: spawn the
+/// server and adapters, report the fallback (or save a fresh last-known-good
+/// copy), and enter the event loop.
+async fn run_gateway_from_parts(
+    cfg: Config,
+    parts: crate::gateway::startup::GatewayComponents,
+    core: GatewayCore,
+    receivers: CoreReceivers,
+    fallback_problem: Option<String>,
+) -> Result<GatewayExit, FatalError> {
     let update_status = crate::update::SharedUpdateStatus::default();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
     let (gateway_shutdown_tx, gateway_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -62,6 +153,22 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     // on to know the gateway is actually healthy rather than merely running.
     crate::daemon::write_ready_file(&cfg.config_dir);
 
+    if let Some(problem) = fallback_problem {
+        tracing::error!(
+            error = %problem,
+            "startup fell back to the last-known-good config"
+        );
+        crate::gateway::helpers::publish_notice(
+            &core.publisher,
+            format!(
+                "residuum couldn't start using your current config.toml/providers.toml ({problem}). It's running on the last configuration that worked instead — fix the files above, then reload (or restart residuum) to apply your changes."
+            ),
+        )
+        .await;
+    } else {
+        last_known_good::save(&cfg.config_dir);
+    }
+
     let channels = RuntimeChannels {
         status: update_status,
         restart_tx,
@@ -73,7 +180,10 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     let cloud_config = cfg.cloud.clone();
     let rt = build_runtime(parts, core, receivers, cfg, spawned, channels, cloud_config).await?;
 
-    Ok(run_event_loop(rt).await)
+    // `run_event_loop`'s state (the accumulated select! branches' locals)
+    // has grown past clippy's large-future threshold; boxing moves it to the
+    // heap so this call site's own stack frame stays small.
+    Ok(Box::pin(run_event_loop(rt)).await)
 }
 
 /// Handles returned from spawning the HTTP server, adapters, tunnel, and watcher.
@@ -196,6 +306,8 @@ fn build_gateway_state(
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
         workspace_watch_health: workspace_watch_health.clone(),
+        action_store: Arc::clone(&parts.action_store),
+        layout: parts.layout.clone(),
     }
 }
 
@@ -594,13 +706,14 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
     }
 
-    // Reload notification channel subscribers
-    // Abort old subscriber handles
-    for h in rt.notify_handles.drain(..) {
-        h.abort();
-    }
+    // Reload notification channel subscribers. Parse the new file before
+    // touching anything running: a parse failure must leave the current
+    // subscribers in place rather than aborting them and spawning nothing.
     match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
+            for h in rt.notify_handles.drain(..) {
+                h.abort();
+            }
             let new_handles = crate::gateway::startup::spawn_notify_subscribers(
                 &rt.bus_handle,
                 &configs,
@@ -615,6 +728,13 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
+            crate::gateway::helpers::publish_notice(
+                &rt.publisher,
+                format!(
+                    "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
+                ),
+            )
+            .await;
         }
     }
 
@@ -1089,7 +1209,54 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
 #[cfg(test)]
 mod tests {
-    use crate::gateway::types::ReloadSignal;
+    use super::last_known_good_fallback;
+    use crate::gateway::types::{GatewayCore, ReloadSignal};
+    use crate::util::FatalError;
+
+    #[tokio::test]
+    async fn fallback_with_no_saved_copy_returns_the_original_error_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let original = FatalError::Config("original problem".to_string());
+
+        let result = last_known_good_fallback(dir.path(), &core.publisher, original).await;
+
+        match result {
+            Err(FatalError::Config(msg)) => assert_eq!(msg, "original problem"),
+            Err(other) => panic!("expected FatalError::Config, got: {other}"),
+            Ok(_) => panic!("expected an error, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_with_an_unloadable_saved_copy_returns_the_original_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // A last-known-good pair that exists but is itself broken (should
+        // never happen in practice, since it's only ever saved after a
+        // successful start) still must not surface its own error in place
+        // of the live config's — the live config is what the user needs to
+        // fix.
+        std::fs::write(
+            dir.path().join("config.last-known-good.toml"),
+            "not valid toml [[[",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("providers.last-known-good.toml"),
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
+        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let original = FatalError::Config("original problem".to_string());
+
+        let result = last_known_good_fallback(dir.path(), &core.publisher, original).await;
+
+        match result {
+            Err(FatalError::Config(msg)) => assert_eq!(msg, "original problem"),
+            Err(other) => panic!("expected FatalError::Config, got: {other}"),
+            Ok(_) => panic!("expected an error, got Ok"),
+        }
+    }
 
     #[tokio::test]
     async fn consecutive_reload_signals_both_received() {

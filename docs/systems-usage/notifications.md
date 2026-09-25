@@ -20,6 +20,8 @@ Results from conversation-triggered sessions (A2A callers, and non-owner Discord
 
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
 
+A failed or stopped run's summary is always empty (a failed or cancelled turn produces no text output), so its inbox item's body names what happened directly — the failure reason for a failed run, or that the run was stopped for a cancelled one — rather than being blank. A failed pulse or scheduled action also publishes its own owner-facing notice (a toast in the web UI, and the same message on any chat interface), separate from the routine inbox item, naming the pulse or action and the failure reason.
+
 ### Steering it
 
 Because urgency is the session's judgment, you steer it by wording the pulse's prompt, not by editing configuration. A pulse that says "report anything unusual" will escalate more than one that says "summarize today's activity". The pulse prompt tells the session that `HEARTBEAT_URGENT` means "this needs attention before the user would next check in".
@@ -122,3 +124,5 @@ method = "POST"                     # optional, default POST
 External channel delivery failures are logged at warn level. They do not retry or block other channels.
 
 Editing `config/channels.toml` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems the loader would skip or ignore: a TOML syntax error (with the parser's line/column), a channel missing a field its type needs (`ntfy` without `url`/`topic`, `webhook` without `url` or with an unsupported `method`), an unrecognized channel type, or a retired option (`default_category`, `default_scenario`) left in place — the retired-option case is a warning since the channel still loads; the others are errors since that channel won't. The save always goes through; a diagnostic names the problem instead of the write being rejected.
+
+A config reload that touches `channels.toml` parses the new file completely before touching anything running — a `channels.toml` that fails to parse leaves every currently-running channel subscriber in place, with a notice naming the parse error, instead of tearing them all down and starting none.

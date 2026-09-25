@@ -35,7 +35,7 @@ mod proactivity_integration {
     #[test]
     fn build_pulse_execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
@@ -44,7 +44,7 @@ mod proactivity_integration {
     #[test]
     fn build_pulse_execution_prompt_contains_pulse_name_and_heartbeat_ok() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert!(
             spawn_event.prompt.contains("email_check"),
             "prompt should contain pulse name"
@@ -76,7 +76,7 @@ mod proactivity_integration {
             tasks: vec![],
         };
 
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(spawn_event.source_label, "pulse:empty_test");
         assert!(
             spawn_event.prompt.contains("HEARTBEAT_OK"),
@@ -88,7 +88,7 @@ mod proactivity_integration {
     fn build_pulse_execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        let spawn_event = build_pulse_execution(&pulse);
+        let spawn_event = build_pulse_execution(&pulse, None);
         assert_eq!(
             spawn_event.skill.as_ref().map(AsRef::as_ref),
             Some("memory-agent")
@@ -177,12 +177,12 @@ mod proactivity_integration {
             created_at: now,
         };
 
-        let (mut store, rejected_on_first_load) = ActionStore::load(&path).await.unwrap();
+        let (mut store, rejected_on_first_load, _) = ActionStore::load(&path).await.unwrap();
         assert!(rejected_on_first_load.is_empty());
         store.add(action);
         store.save().await.unwrap();
 
-        let (reloaded, rejected_on_reload) = ActionStore::load(&path).await.unwrap();
+        let (reloaded, rejected_on_reload, _) = ActionStore::load(&path).await.unwrap();
         assert!(rejected_on_reload.is_empty());
         assert_eq!(
             reloaded.list().len(),
@@ -235,7 +235,7 @@ mod proactivity_integration {
             created_at: now,
         };
 
-        let (mut store, _rejected) = ActionStore::load(&path).await.unwrap();
+        let (mut store, _rejected, _moved_aside) = ActionStore::load(&path).await.unwrap();
         store.add(past_action);
         store.add(future_action);
 
@@ -264,7 +264,7 @@ mod proactivity_integration {
             created_at: now,
         };
 
-        let (mut store, _rejected) = ActionStore::load(&path).await.unwrap();
+        let (mut store, _rejected, _moved_aside) = ActionStore::load(&path).await.unwrap();
         store.add(action);
         assert_eq!(store.list().len(), 1);
 

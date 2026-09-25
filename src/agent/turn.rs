@@ -1,6 +1,7 @@
 //! Turn execution: the tool loop that drives the agent.
 
 use async_trait::async_trait;
+use serde_json::Value;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -260,6 +261,9 @@ pub(crate) struct TurnResources<'a> {
     /// Cancel / `stop_agent` is the intended safety valve for a runaway
     /// turn. See [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
     pub max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call over and
+    /// over. See [`crate::config::AgentAbilitiesConfig::repeat_call_guard`].
+    pub repeat_call_guard: crate::config::RepeatCallGuardConfig,
     /// Cancelled when the user asks to stop this turn. Raced directly
     /// against the in-flight model call so generation aborts immediately;
     /// turns that don't support being stopped (system/wake turns) pass a
@@ -355,6 +359,21 @@ async fn push_and_record_many(
     recent_messages.extend(messages);
 }
 
+/// Push `notice` as the turn's one final assistant message and return it as
+/// the turn's whole result. Shared by every "end the turn here with a
+/// message the user sees" path in [`execute_turn`]'s loop (the
+/// `max_tool_iterations` cutoff, the repeat-call guard's stop threshold) so
+/// the push/record/return sequence lives in one place.
+async fn finish_turn_with_notice(
+    notice: String,
+    recent_messages: &mut RecentMessages,
+    resources: &TurnResources<'_>,
+) -> anyhow::Result<Vec<String>> {
+    let final_message = Message::assistant(notice.clone(), None);
+    push_and_record(recent_messages, resources.transcript_sink, final_message).await;
+    Ok(vec![notice])
+}
+
 /// Execute the tool loop against the given message buffer.
 ///
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
@@ -391,6 +410,7 @@ pub(crate) async fn execute_turn(
     // This turn's own running totals for the web UI's turn-in-progress
     // indicator. Never exposed to the agent — see `docs/systems-usage/turn-control.md`.
     let mut turn_usage = TurnUsage::default();
+    let mut repeat_guard = RepeatCallGuard::new();
 
     let mut iteration: usize = 0;
     loop {
@@ -477,23 +497,22 @@ pub(crate) async fn execute_turn(
             "processing tool calls"
         );
 
-        if !response.content.is_empty() {
-            events.publish_intermediate(&response.content).await;
-        }
-
-        let msg = Message::assistant(response.content.clone(), Some(response.tool_calls.clone()));
-        push_and_record(recent_messages, resources.transcript_sink, msg).await;
-
-        // Classification runs concurrently with tool execution; a correction
-        // lands at a later drain_interrupts poll.
-        if let Some(watch) = subconscious {
-            watch.maybe_spawn(
+        if let Some(notice) = handle_tool_call_response(
+            &response,
+            recent_messages,
+            &mut repeat_guard,
+            ToolCallResponseContext {
+                resources,
+                events,
+                subconscious,
                 iteration,
-                recent_messages.messages_since(turn_start).to_vec(),
-            );
+                turn_start,
+            },
+        )
+        .await
+        {
+            return finish_turn_with_notice(notice, recent_messages, resources).await;
         }
-
-        run_tool_call_batch(&response.tool_calls, resources, recent_messages, events).await;
 
         log_usage(&response);
         update_and_publish_usage(&response, &mut turn_usage, resources.usage_sink, events).await;
@@ -531,6 +550,69 @@ async fn check_tool_iteration_limit(
     push_and_record(recent_messages, resources.transcript_sink, final_message).await;
     texts.push(notice);
     true
+}
+
+/// Per-iteration locals [`handle_tool_call_response`] needs from
+/// [`execute_turn`]'s loop, bundled so the function itself stays within a
+/// normal argument count.
+struct ToolCallResponseContext<'a> {
+    resources: &'a TurnResources<'a>,
+    events: &'a EventContext<'a>,
+    subconscious: Option<&'a crate::subconscious::SubconsciousWatch>,
+    iteration: usize,
+    turn_start: usize,
+}
+
+/// Handle a model response that carries tool calls: publish the
+/// intermediate text, record the assistant message, kick off a mid-turn
+/// subconscious evaluation, and run the tool-call batch. Split out of
+/// [`execute_turn`] purely to keep that function's line count down.
+///
+/// Returns `Some(notice)` when the repeat-call guard's stop threshold ended
+/// the turn on this batch — the caller turns that into the turn's final
+/// user-visible message. `None` means the loop should continue as normal.
+async fn handle_tool_call_response(
+    response: &InferenceResponse,
+    recent_messages: &mut RecentMessages,
+    repeat_guard: &mut RepeatCallGuard,
+    ctx: ToolCallResponseContext<'_>,
+) -> Option<String> {
+    if !response.content.is_empty() {
+        ctx.events.publish_intermediate(&response.content).await;
+    }
+
+    let msg = Message::assistant(response.content.clone(), Some(response.tool_calls.clone()));
+    push_and_record(recent_messages, ctx.resources.transcript_sink, msg).await;
+
+    // Classification runs concurrently with tool execution; a correction
+    // lands at a later drain_interrupts poll.
+    if let Some(watch) = ctx.subconscious {
+        watch.maybe_spawn(
+            ctx.iteration,
+            recent_messages.messages_since(ctx.turn_start).to_vec(),
+        );
+    }
+
+    let (tool_name, count) = run_tool_call_batch(
+        &response.tool_calls,
+        ctx.resources,
+        recent_messages,
+        ctx.events,
+        repeat_guard,
+    )
+    .await?;
+
+    tracing::warn!(
+        tool_name = %tool_name,
+        consecutive = count,
+        "turn stopped: model repeated the same tool call too many times in a row"
+    );
+    Some(format!(
+        "I stopped this turn because I called `{tool_name}` with the exact same arguments \
+         {count} times in a row — the result can't change by calling it again. Adjust \
+         `repeat_call_stop_after` under `[agent]` in your Residuum config (or in Settings) if \
+         this is expected, or let me know what you'd like me to try instead."
+    ))
 }
 
 /// Drain interrupts at a tool-loop checkpoint and report whether the turn
@@ -616,27 +698,97 @@ async fn drain_interrupts(
     stopped
 }
 
+/// Tracks the current streak of consecutive identical tool calls within a
+/// turn, for [`run_tool_call_batch`]'s repeat-call guard.
+///
+/// Observed failure this guards against: GLM 5.3 Flash has been seen calling
+/// a tool with byte-identical arguments hundreds of times in a row — the
+/// result cannot change, so repeating the call again never makes progress.
+/// A call "repeats" the previous one when it names the same tool and its
+/// raw argument JSON (as received from the model) is identical; any other
+/// call — a different tool, or different arguments — resets the streak back
+/// to a single call. Calls within a single model response's batch count in
+/// order, exactly like calls from separate model responses.
+struct RepeatCallGuard {
+    last: Option<(String, Value)>,
+    consecutive: u32,
+}
+
+impl RepeatCallGuard {
+    fn new() -> Self {
+        Self {
+            last: None,
+            consecutive: 0,
+        }
+    }
+
+    /// Record the next call about to be considered and return the updated
+    /// streak length (1 for a call that doesn't repeat the previous one).
+    fn record(&mut self, name: &str, arguments: &Value) -> u32 {
+        let repeats_last = self
+            .last
+            .as_ref()
+            .is_some_and(|(last_name, last_args)| last_name == name && last_args == arguments);
+        if repeats_last {
+            self.consecutive += 1;
+        } else {
+            self.consecutive = 1;
+            self.last = Some((name.to_string(), arguments.clone()));
+        }
+        self.consecutive
+    }
+}
+
 /// Run every tool call a model response carries, in order.
 ///
 /// Once the turn is stopped — whether that happens during one of these
 /// calls or was already true going in — every remaining call in the batch
 /// is skipped rather than run, but still gets a recorded result (see
 /// `skip_tool_call`) so the transcript stays valid for the next provider
-/// call.
+/// call. The same happens once the repeat-call guard's stop threshold is
+/// reached; when that happens this returns `Some((tool_name, consecutive))`
+/// so the caller can end the turn with a user-visible notice.
 async fn run_tool_call_batch(
     tool_calls: &[ToolCall],
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
-) {
+    repeat_guard: &mut RepeatCallGuard,
+) -> Option<(String, u32)> {
+    let guard_cfg = resources.repeat_call_guard;
+    let mut stopped_by_repeat_guard = None;
     let mut skipped = 0_usize;
     for tool_call in tool_calls {
-        if resources.stop_token.is_cancelled() {
+        if resources.stop_token.is_cancelled() || stopped_by_repeat_guard.is_some() {
             skip_tool_call(tool_call, resources, recent_messages, events).await;
             skipped += 1;
             continue;
         }
-        execute_tool(tool_call, resources, recent_messages, events).await;
+
+        if guard_cfg.enabled {
+            let consecutive = repeat_guard.record(&tool_call.name, &tool_call.arguments);
+            if consecutive >= guard_cfg.stop_after {
+                stop_repeated_tool_call(tool_call, consecutive, resources, recent_messages, events)
+                    .await;
+                stopped_by_repeat_guard = Some((tool_call.name.clone(), consecutive));
+                continue;
+            }
+            if consecutive >= guard_cfg.steer_after {
+                tracing::debug!(
+                    tool_name = %tool_call.name,
+                    consecutive,
+                    "steering a repeated tool call"
+                );
+                let note = format!(
+                    "You've made this exact call {consecutive} times in a row with the same \
+                     arguments; the result won't change. Try something different or finish."
+                );
+                execute_tool(tool_call, resources, recent_messages, events, Some(note)).await;
+                continue;
+            }
+        }
+
+        execute_tool(tool_call, resources, recent_messages, events, None).await;
     }
     if skipped > 0 {
         tracing::info!(
@@ -645,15 +797,78 @@ async fn run_tool_call_batch(
             "skipped remaining tool calls after the turn was stopped"
         );
     }
+    stopped_by_repeat_guard
+}
+
+/// Dispatch a tool call to the built-in registry, falling back to MCP.
+///
+/// Returns the result alongside whether the MCP fallback was used, so the
+/// caller's error-source logging can distinguish a built-in failure from an
+/// MCP one. A malformed name means the inference provider failed to parse
+/// the model's tool-call syntax into structured JSON (e.g. GLM's
+/// `<arg_key>`/`<arg_value>` template leaking through unparsed) — dispatch
+/// to the built-in or MCP registry would only ever produce a confusing
+/// "unknown tool" lookup failure, so this short-circuits with a clear error
+/// instead of trying both registries first.
+async fn dispatch_tool_call(
+    tool_call: &ToolCall,
+    resources: &TurnResources<'_>,
+) -> (Result<ToolResult, ToolError>, bool) {
+    if !crate::tools::is_plausible_tool_name(&tool_call.name) {
+        return (
+            Err(ToolError::MalformedName(
+                crate::tools::truncate_tool_name_for_display(&tool_call.name),
+            )),
+            false,
+        );
+    }
+
+    match resources
+        .tools
+        .execute_cancellable(
+            &tool_call.name,
+            tool_call.arguments.clone(),
+            resources.stop_token,
+        )
+        .await
+    {
+        // Try built-in tools first, fall back to MCP servers. This ordering
+        // is the dispatch half of the collision policy: a built-in always
+        // wins its name, and the registry has already hidden any shadowed
+        // MCP tool from the model (src/mcp/CLAUDE.md), so the fallback only
+        // ever reaches genuinely MCP-owned names.
+        Err(ToolError::NotFound(_)) => {
+            tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
+            // The MCP registry has no cancellation awareness of its own
+            // (unlike `execute_cancellable`'s built-in path), so this races
+            // the call directly: on a stop, the call is dropped and a
+            // cancellation result reported instead of waiting for an MCP
+            // server that may never answer.
+            let mcp_guard = resources.mcp_registry.read().await;
+            let call = mcp_guard.call_tool(&tool_call.name, tool_call.arguments.clone());
+            let result = tokio::select! {
+                biased;
+                () = resources.stop_token.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
+                r = call => r,
+            };
+            (result, true)
+        }
+        other => (other, false),
+    }
 }
 
 /// Execute a single tool call, falling back to MCP servers.
+///
+/// `steering_note`, when set, is appended to the tool's own result — used by
+/// the repeat-call guard to nudge a model that keeps calling this tool with
+/// the same arguments, without altering whether the call itself succeeded.
 #[tracing::instrument(skip_all, fields(tool.name = %tool_call.name, tool.id = %tool_call.id))]
 async fn execute_tool(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
+    steering_note: Option<String>,
 ) {
     events
         .publish_tool_activity(
@@ -667,52 +882,7 @@ async fn execute_tool(
         )
         .await;
 
-    // A malformed name means the inference provider failed to parse the
-    // model's tool-call syntax into structured JSON (e.g. GLM's
-    // `<arg_key>`/`<arg_value>` template leaking through unparsed) — dispatch
-    // to the built-in or MCP registry would only ever produce a confusing
-    // "unknown tool" lookup failure, so short-circuit with a clear error
-    // instead of trying both registries first.
-    let mut used_mcp = false;
-    let result = if crate::tools::is_plausible_tool_name(&tool_call.name) {
-        match resources
-            .tools
-            .execute_cancellable(
-                &tool_call.name,
-                tool_call.arguments.clone(),
-                resources.stop_token,
-            )
-            .await
-        {
-            // Try built-in tools first, fall back to MCP servers. This
-            // ordering is the dispatch half of the collision policy: a
-            // built-in always wins its name, and the registry has already
-            // hidden any shadowed MCP tool from the model
-            // (src/mcp/CLAUDE.md), so the fallback only ever reaches
-            // genuinely MCP-owned names.
-            Err(ToolError::NotFound(_)) => {
-                tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
-                used_mcp = true;
-                // The MCP registry has no cancellation awareness of its own
-                // (unlike `execute_cancellable`'s built-in path), so this
-                // races the call directly: on a stop, the call is dropped
-                // and a cancellation result reported instead of waiting for
-                // an MCP server that may never answer.
-                let mcp_guard = resources.mcp_registry.read().await;
-                let call = mcp_guard.call_tool(&tool_call.name, tool_call.arguments.clone());
-                tokio::select! {
-                    biased;
-                    () = resources.stop_token.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
-                    r = call => r,
-                }
-            }
-            other => other,
-        }
-    } else {
-        Err(ToolError::MalformedName(
-            crate::tools::truncate_tool_name_for_display(&tool_call.name),
-        ))
-    };
+    let (result, used_mcp) = dispatch_tool_call(tool_call, resources).await;
 
     let (mut output, is_error, images) = match result {
         Ok(r) => (r.output, r.is_error, r.images),
@@ -761,6 +931,13 @@ async fn execute_tool(
         );
     }
 
+    // Repeat-call guard steering note, appended after redaction so it never
+    // gets mistaken for agent-key-bearing tool output.
+    if let Some(note) = steering_note {
+        output.push_str("\n\n");
+        output.push_str(&note);
+    }
+
     events
         .publish_tool_activity(
             ToolActivityEvent::Result(ToolResultEvent {
@@ -782,15 +959,14 @@ async fn execute_tool(
     push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
 }
 
-/// Record a tool call that never ran because the turn had already been
-/// stopped by the time its turn came up in this response's batch.
-///
-/// Every tool call a response carries still needs a matching tool result —
-/// providers reject a transcript with a call left unanswered — so this
-/// reports the same call/result event pair a real execution would, with a
-/// cancellation notice standing in for the result.
-async fn skip_tool_call(
+/// Record a tool call that never ran, publishing the same call/result event
+/// pair a real execution would, with a cancellation notice standing in for
+/// the result. Shared by [`skip_tool_call`] and [`stop_repeated_tool_call`]:
+/// every tool call a response carries still needs a matching tool result —
+/// providers reject a transcript with a call left unanswered.
+async fn record_cancelled_tool_call(
     tool_call: &ToolCall,
+    output: String,
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
@@ -807,13 +983,7 @@ async fn skip_tool_call(
         )
         .await;
 
-    tracing::info!(
-        tool_name = %tool_call.name,
-        tool_call_id = %tool_call.id,
-        "tool call skipped: the turn was stopped before it started"
-    );
-
-    let result = ToolResult::cancelled(CANCELLED_BEFORE_START);
+    let result = ToolResult::cancelled(output);
 
     events
         .publish_tool_activity(
@@ -830,6 +1000,49 @@ async fn skip_tool_call(
 
     let tool_message = Message::tool(result.output, tool_call.id.clone());
     push_and_record(recent_messages, resources.transcript_sink, tool_message).await;
+}
+
+/// Record a tool call that never ran because the turn had already been
+/// stopped (or the repeat-call guard had already fired) by the time its
+/// turn came up in this response's batch.
+async fn skip_tool_call(
+    tool_call: &ToolCall,
+    resources: &TurnResources<'_>,
+    recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
+) {
+    tracing::info!(
+        tool_name = %tool_call.name,
+        tool_call_id = %tool_call.id,
+        "tool call skipped: the turn was stopped before it started"
+    );
+    record_cancelled_tool_call(
+        tool_call,
+        CANCELLED_BEFORE_START.to_string(),
+        resources,
+        recent_messages,
+        events,
+    )
+    .await;
+}
+
+/// Record a tool call that the repeat-call guard did not run because its
+/// stop threshold was reached: the model has called this tool with
+/// byte-identical arguments `consecutive` times in a row, and repeating it
+/// again cannot produce a different result.
+async fn stop_repeated_tool_call(
+    tool_call: &ToolCall,
+    consecutive: u32,
+    resources: &TurnResources<'_>,
+    recent_messages: &mut RecentMessages,
+    events: &EventContext<'_>,
+) {
+    let output = format!(
+        "cancelled: this exact call (same tool, same arguments) was made {consecutive} times \
+         in a row; the turn was stopped instead of running it again because the result cannot \
+         change — try a different approach or report back instead"
+    );
+    record_cancelled_tool_call(tool_call, output, resources, recent_messages, events).await;
 }
 
 /// Log token usage from a model response at debug level.
@@ -869,8 +1082,8 @@ async fn update_and_publish_usage(
 mod tests {
     use super::*;
     use crate::inference::Role;
-    use std::sync::Mutex as StdMutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
 
     /// Collects every message it's asked to record, so a test can assert the
     /// incremental transcript sink saw exactly what `recent_messages` did.
@@ -1155,6 +1368,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
@@ -1174,7 +1388,7 @@ mod tests {
         };
 
         let mut recent = RecentMessages::new();
-        execute_tool(&tool_call, &resources, &mut recent, &events).await;
+        execute_tool(&tool_call, &resources, &mut recent, &events, None).await;
 
         let msg = recent
             .messages()
@@ -1240,6 +1454,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
@@ -1258,7 +1473,7 @@ mod tests {
         };
 
         let mut recent = RecentMessages::new();
-        execute_tool(&tool_call, &resources, &mut recent, &events).await;
+        execute_tool(&tool_call, &resources, &mut recent, &events, None).await;
 
         let msg = recent
             .messages()
@@ -1326,6 +1541,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
@@ -1354,7 +1570,7 @@ mod tests {
         let mut recent = RecentMessages::new();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             tokio::join!(
-                execute_tool(&tool_call, &resources, &mut recent, &events),
+                execute_tool(&tool_call, &resources, &mut recent, &events, None),
                 cancel_after_a_moment,
             )
         })
@@ -1395,6 +1611,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
@@ -1484,6 +1701,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             hop_counter: &hop_counter,
@@ -1625,6 +1843,80 @@ mod tests {
             output_tokens: output,
             cache_creation_tokens: None,
             cache_read_tokens: None,
+        }
+    }
+
+    // ── RepeatCallGuard ──────────────────────────────────────────────────────
+
+    #[test]
+    fn repeat_call_guard_counts_consecutive_identical_calls() {
+        let mut guard = RepeatCallGuard::new();
+        let args = serde_json::json!({"x": 1});
+        assert_eq!(guard.record("a", &args), 1);
+        assert_eq!(guard.record("a", &args), 2);
+        assert_eq!(guard.record("a", &args), 3);
+    }
+
+    #[test]
+    fn repeat_call_guard_resets_on_different_arguments() {
+        let mut guard = RepeatCallGuard::new();
+        assert_eq!(guard.record("a", &serde_json::json!({"x": 1})), 1);
+        assert_eq!(guard.record("a", &serde_json::json!({"x": 1})), 2);
+        assert_eq!(
+            guard.record("a", &serde_json::json!({"x": 2})),
+            1,
+            "different arguments should reset the streak"
+        );
+        assert_eq!(guard.record("a", &serde_json::json!({"x": 2})), 2);
+    }
+
+    #[test]
+    fn repeat_call_guard_resets_on_different_tool_name() {
+        let mut guard = RepeatCallGuard::new();
+        let args = serde_json::json!({});
+        assert_eq!(guard.record("a", &args), 1);
+        assert_eq!(guard.record("a", &args), 2);
+        assert_eq!(
+            guard.record("b", &args),
+            1,
+            "a different tool name should reset the streak"
+        );
+    }
+
+    /// Records how many times it actually ran, so a test can prove the
+    /// repeat-call guard's stop threshold prevented a call from executing
+    /// rather than merely producing a cancelled-looking result some other way.
+    struct CountingTool {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::tools::Tool for CountingTool {
+        fn name(&self) -> &'static str {
+            "counting_tool"
+        }
+
+        fn definition(&self) -> crate::inference::ToolDefinition {
+            crate::inference::ToolDefinition {
+                name: self.name().to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        async fn execute(&self, _arguments: serde_json::Value) -> Result<ToolResult, ToolError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult::success("ok"))
+        }
+    }
+
+    /// Build a `counting_tool` call with the given id, always carrying the
+    /// same arguments — used to drive the repeat-call guard's streak.
+    fn counting_tool_call(id: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: "counting_tool".to_string(),
+            arguments: serde_json::json!({"x": 1}),
         }
     }
 
@@ -1882,6 +2174,7 @@ mod tests {
             identity: &identity,
             options: &options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             stop_token: &stop_token,
             transcript_sink: None,
             usage_sink: None,
@@ -1943,6 +2236,347 @@ mod tests {
                 .iter()
                 .any(|m| m.role == Role::System && m.content.contains("[Truncated]")),
             "a system note about the truncation must be added to the transcript"
+        );
+    }
+    #[tokio::test]
+    async fn repeat_guard_steers_at_the_configured_threshold_without_blocking_the_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }));
+        let batch = vec![
+            counting_tool_call("c1"),
+            counting_tool_call("c2"),
+            counting_tool_call("c3"),
+        ];
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig {
+                enabled: true,
+                steer_after: 3,
+                stop_after: 6,
+            },
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        let mut guard = RepeatCallGuard::new();
+        let stopped =
+            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
+
+        assert!(stopped.is_none(), "3 repeats is below the stop threshold");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "all three calls should have actually run"
+        );
+
+        let tool_messages: Vec<_> = recent
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| m.content.clone())
+            .collect();
+        let [first, second, third] = tool_messages.as_slice() else {
+            panic!(
+                "expected exactly 3 tool-result messages, got {}",
+                tool_messages.len()
+            );
+        };
+        assert!(
+            !first.contains("Try something different"),
+            "the first call should carry no steering note: {first}"
+        );
+        assert!(
+            !second.contains("Try something different"),
+            "the second call should carry no steering note: {second}"
+        );
+        assert!(
+            third.contains("3 times in a row"),
+            "the third (threshold-reaching) call should carry the steering note: {third}"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_guard_stops_at_the_configured_threshold_without_running_that_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }));
+        let batch: Vec<ToolCall> = (0..7)
+            .map(|i| counting_tool_call(&format!("c{i}")))
+            .collect();
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig {
+                enabled: true,
+                steer_after: 3,
+                stop_after: 6,
+            },
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        let mut guard = RepeatCallGuard::new();
+        let stopped =
+            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
+
+        let (name, count) = stopped.expect("the 6th identical call should stop the turn");
+        assert_eq!(name, "counting_tool");
+        assert_eq!(count, 6);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            5,
+            "only the first 5 calls should actually run; the 6th is refused and the 7th skipped"
+        );
+
+        let tool_messages: Vec<_> = recent
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .map(|m| m.content.clone())
+            .collect();
+        let [_, _, _, _, _, sixth, seventh] = tool_messages.as_slice() else {
+            panic!(
+                "expected exactly 7 tool-result messages (one per call in the batch), got {}",
+                tool_messages.len()
+            );
+        };
+        assert!(
+            sixth.contains("cancelled"),
+            "the 6th call's result should explain the stop, not run: {sixth}"
+        );
+        assert_eq!(
+            seventh.as_str(),
+            crate::tools::CANCELLED_BEFORE_START,
+            "the 7th call should be skipped outright, not attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_guard_disabled_never_steers_or_stops() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }));
+        let batch: Vec<ToolCall> = (0..10)
+            .map(|i| counting_tool_call(&format!("c{i}")))
+            .collect();
+
+        let provider = crate::inference::providers::null::NullProvider;
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig {
+                enabled: false,
+                steer_after: 3,
+                stop_after: 6,
+            },
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut recent = RecentMessages::new();
+        let mut guard = RepeatCallGuard::new();
+        let stopped =
+            run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
+
+        assert!(stopped.is_none(), "a disabled guard never stops the turn");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            10,
+            "every call should run when the guard is disabled"
+        );
+        assert!(
+            recent
+                .messages()
+                .iter()
+                .filter(|m| m.role == Role::Tool)
+                .all(|m| !m.content.contains("Try something different")),
+            "no steering note should appear when the guard is disabled"
+        );
+    }
+
+    /// Always returns the same single `counting_tool` call, counting how
+    /// many times `complete()` was invoked — a test asserts this stays at
+    /// the configured stop threshold instead of growing without bound.
+    struct RepeatingCallProvider {
+        completions: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for RepeatingCallProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let n = self.completions.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(InferenceResponse::new(
+                String::new(),
+                vec![counting_tool_call(&format!("call-{n}"))],
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "repeating-call"
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_turn_stops_when_the_model_repeats_the_same_call_past_the_stop_threshold() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }));
+
+        let provider = RepeatingCallProvider {
+            completions: AtomicUsize::new(0),
+        };
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: None,
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: None,
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::channel(4);
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("loop forever"));
+
+        let texts = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            execute_turn(
+                &resources,
+                &memory_ctx,
+                &prompt_ctx,
+                &mut recent,
+                &events,
+                None,
+                &mut interrupt_rx,
+                None,
+            ),
+        )
+        .await
+        .expect("the repeat-call guard should end the turn well within 2s")
+        .expect("a guard-stopped turn is not a turn error");
+
+        assert_eq!(texts.len(), 1);
+        let notice = texts.first().unwrap();
+        assert!(
+            notice.contains("times in a row"),
+            "the notice should explain why the turn stopped: {notice}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            5,
+            "the 6th identical call must never actually run"
         );
     }
 }

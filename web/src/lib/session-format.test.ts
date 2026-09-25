@@ -30,6 +30,9 @@ function session(
     episode_id: null,
     interrupted: false,
     usage: { input_tokens: 0, output_tokens: 0, context_tokens: null },
+    outcome: null,
+    error: null,
+    overlap: null,
   };
 }
 
@@ -94,6 +97,7 @@ describe("artifact sessions", () => {
 describe("isStoppableState", () => {
   it.each([
     ["forking", true],
+    ["queued", true],
     ["running", true],
     ["idle", true],
     ["completing", false],

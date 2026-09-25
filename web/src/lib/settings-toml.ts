@@ -51,7 +51,6 @@ export interface ConfigFields {
   subconscious_enabled: boolean;
   subconscious_mid_turn: boolean;
   subconscious_every_n_iterations: string;
-  subconscious_max_interventions_per_turn: string;
   subconscious_max_transcript_tokens: string;
   subconscious_learning: boolean;
   subconscious_learning_cooldown_minutes: string;
@@ -76,6 +75,9 @@ export interface ConfigFields {
   agent_modify_mcp: boolean;
   agent_modify_channels: boolean;
   agent_max_tool_iterations: string;
+  agent_repeat_call_guard_enabled: boolean;
+  agent_repeat_call_steer_after: string;
+  agent_repeat_call_stop_after: string;
   // idle
   idle_timeout_minutes: string;
   idle_channel: string;
@@ -147,7 +149,6 @@ export function defaultConfigFields(): ConfigFields {
     subconscious_enabled: false,
     subconscious_mid_turn: true,
     subconscious_every_n_iterations: "",
-    subconscious_max_interventions_per_turn: "",
     subconscious_max_transcript_tokens: "",
     subconscious_learning: false,
     subconscious_learning_cooldown_minutes: "",
@@ -168,6 +169,9 @@ export function defaultConfigFields(): ConfigFields {
     agent_modify_mcp: true,
     agent_modify_channels: true,
     agent_max_tool_iterations: "",
+    agent_repeat_call_guard_enabled: true,
+    agent_repeat_call_steer_after: "",
+    agent_repeat_call_stop_after: "",
     idle_timeout_minutes: "",
     idle_channel: "",
     observer_threshold_tokens: "",
@@ -268,7 +272,6 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.subconscious_enabled = bool(subconscious.enabled, false);
     fields.subconscious_mid_turn = bool(subconscious.mid_turn, true);
     fields.subconscious_every_n_iterations = str(subconscious.every_n_iterations);
-    fields.subconscious_max_interventions_per_turn = str(subconscious.max_interventions_per_turn);
     fields.subconscious_max_transcript_tokens = str(subconscious.max_transcript_tokens);
     fields.subconscious_learning = bool(subconscious.learning, false);
     fields.subconscious_learning_cooldown_minutes = str(subconscious.learning_cooldown_minutes);
@@ -305,6 +308,9 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.agent_modify_mcp = bool(agent.modify_mcp, true);
     fields.agent_modify_channels = bool(agent.modify_channels, true);
     fields.agent_max_tool_iterations = str(agent.max_tool_iterations);
+    fields.agent_repeat_call_guard_enabled = bool(agent.repeat_call_guard_enabled, true);
+    fields.agent_repeat_call_steer_after = str(agent.repeat_call_steer_after);
+    fields.agent_repeat_call_stop_after = str(agent.repeat_call_stop_after);
   }
 
   const idle = doc.idle as Record<string, unknown> | undefined;
@@ -690,11 +696,6 @@ const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
     kind: "number",
   },
   {
-    key: "subconscious_max_interventions_per_turn",
-    path: ["subconscious", "max_interventions_per_turn"],
-    kind: "number",
-  },
-  {
     key: "subconscious_max_transcript_tokens",
     path: ["subconscious", "max_transcript_tokens"],
     kind: "number",
@@ -751,6 +752,22 @@ const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "agent_modify_mcp", path: ["agent", "modify_mcp"], kind: "bool", default: true },
   { key: "agent_modify_channels", path: ["agent", "modify_channels"], kind: "bool", default: true },
   { key: "agent_max_tool_iterations", path: ["agent", "max_tool_iterations"], kind: "number" },
+  {
+    key: "agent_repeat_call_guard_enabled",
+    path: ["agent", "repeat_call_guard_enabled"],
+    kind: "bool",
+    default: true,
+  },
+  {
+    key: "agent_repeat_call_steer_after",
+    path: ["agent", "repeat_call_steer_after"],
+    kind: "number",
+  },
+  {
+    key: "agent_repeat_call_stop_after",
+    path: ["agent", "repeat_call_stop_after"],
+    kind: "number",
+  },
 
   { key: "idle_timeout_minutes", path: ["idle", "timeout_minutes"], kind: "number" },
   { key: "idle_channel", path: ["idle", "idle_channel"], kind: "string" },

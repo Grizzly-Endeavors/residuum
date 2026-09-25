@@ -5,6 +5,7 @@
 //! flows through that session's normal completion pipeline into memory, the
 //! same as any other session run.
 
+pub mod edit;
 pub mod executor;
 pub mod scheduler;
 pub mod types;

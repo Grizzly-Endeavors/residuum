@@ -1,6 +1,7 @@
 //! Communication interfaces between the user and the agent.
 
 pub mod attachment;
+pub(crate) mod boot_retry;
 pub(crate) mod chat_state;
 pub mod chunking;
 pub mod commands;
@@ -340,6 +341,7 @@ mod tests {
             conversation_target: None,
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 

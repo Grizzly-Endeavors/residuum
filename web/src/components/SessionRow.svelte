@@ -29,8 +29,13 @@
 
   let stateText = $derived.by(() => {
     if (!finished) return stateLabel(session.state);
-    if (outcome?.status === "failed") return "failed";
-    if (outcome?.status === "cancelled") return "stopped";
+    // A live outcome frame (this process, this connection) is preferred when
+    // present; a reloaded page has none, so the summary's own recorded
+    // outcome — persisted with the run — is the fallback that keeps a
+    // failed or stopped run from showing as plain "finished" after reload.
+    const status = outcome?.status ?? session.outcome ?? undefined;
+    if (status === "failed") return "failed";
+    if (status === "cancelled") return "stopped";
     if (session.interrupted) return "interrupted";
     return "finished";
   });
@@ -40,7 +45,7 @@
   <div
     class="session-row state-{session.state}"
     class:selected
-    class:failed={outcome?.status === "failed"}
+    class:failed={stateText === "failed"}
   >
     <button
       type="button"

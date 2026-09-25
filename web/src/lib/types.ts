@@ -22,6 +22,11 @@ export type {
   WorkspaceChange,
   WorkspaceChangeKind,
   WorkspaceResyncReason,
+  PulseOverlap,
+  PulseInfo,
+  ActionInfo,
+  ScheduledCurrentRun,
+  ScheduledRunOutcome,
 } from "./generated/protocol";
 
 // Local aliases for use within this file

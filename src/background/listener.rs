@@ -5,6 +5,7 @@
 //! Everything the session runs with — model tier, skill, identity — comes
 //! from the request itself; there is no resolution step in between.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,8 +20,8 @@ use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
 use crate::bus::{
-    AgentMessageEvent, BusHandle, EventTrigger, Publisher, SessionAddress, SpawnRequestEvent,
-    Subscriber, topics,
+    AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
+    SessionAddress, SpawnRequestEvent, Subscriber, topics,
 };
 use crate::interfaces::types::InboundMessage;
 
@@ -50,17 +51,39 @@ pub(crate) async fn spawn_listener(
 }
 
 /// Main loop: reads spawn requests and executes them.
+///
+/// `spawn_failures` dedupes fork failures for pulse/action triggers (see
+/// [`handle_spawn_failure`]) across the whole life of this loop — those are
+/// the triggers that retry automatically (a pulse re-fires on its schedule,
+/// a due action is kept and retried per `spawn_due_actions`), so a
+/// persistently broken one (e.g. naming a skill that doesn't exist) would
+/// otherwise warn-log and notice on every single retry forever.
 async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnRequestEvent>) {
+    let mut spawn_failures: HashMap<String, String> = HashMap::new();
     loop {
         match subscriber.recv().await {
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
-                if let Err(e) = handle_spawn_request(&ctx, event).await {
-                    tracing::warn!(
-                        source = %source_label,
-                        error = %e,
-                        "failed to fork session"
-                    );
+                let trigger = event.source.clone();
+                match handle_spawn_request(&ctx, event).await {
+                    Ok(()) => {
+                        if spawn_failures.remove(&source_label).is_some() {
+                            tracing::info!(
+                                source = %source_label,
+                                "session fork recovered after previously failing"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        handle_spawn_failure(
+                            &ctx.publisher,
+                            &mut spawn_failures,
+                            &trigger,
+                            &source_label,
+                            &e,
+                        )
+                        .await;
+                    }
                 }
             }
             Ok(None) => break,
@@ -71,6 +94,65 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
         }
     }
     tracing::info!("spawn listener shutting down");
+}
+
+/// Record a spawn failure, deduplicated for scheduled triggers (pulses and
+/// actions): logs `warn` and publishes an owner-facing notice only the
+/// first time a given source label fails, or when the error text changes
+/// from what was last reported for it; an unchanged, still-failing retry
+/// logs at `debug` instead and publishes nothing. Every other trigger
+/// (spawned/webhook/conversation/artifact) isn't retried automatically the
+/// same way, so it keeps warning on every occurrence, same as before.
+async fn handle_spawn_failure(
+    publisher: &Publisher,
+    spawn_failures: &mut HashMap<String, String>,
+    trigger: &EventTrigger,
+    source_label: &str,
+    error: &anyhow::Error,
+) {
+    let message = error.to_string();
+
+    if !matches!(trigger, EventTrigger::Pulse | EventTrigger::Action) {
+        tracing::warn!(source = %source_label, error = %message, "failed to fork session");
+        return;
+    }
+
+    if spawn_failures.get(source_label) == Some(&message) {
+        tracing::debug!(
+            source = %source_label,
+            error = %message,
+            "session fork still failing with the same error"
+        );
+        return;
+    }
+
+    tracing::warn!(source = %source_label, error = %message, "failed to fork session");
+    spawn_failures.insert(source_label.to_string(), message.clone());
+
+    let kind = match trigger {
+        EventTrigger::Pulse => "pulse",
+        EventTrigger::Action => "scheduled action",
+        // The caller only reaches here for Pulse/Action; every other
+        // trigger keeps a generic label rather than a wildcard match, so a
+        // future trigger variant doesn't silently fall through unnoticed.
+        EventTrigger::Agent
+        | EventTrigger::Webhook(_)
+        | EventTrigger::Conversation
+        | EventTrigger::Artifact(_) => "scheduled run",
+    };
+    let name = source_label
+        .split_once(':')
+        .map_or(source_label, |(_, n)| n);
+    let notice = format!("Your {kind} \"{name}\" couldn't start: {message}");
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message: notice },
+        )
+        .await
+    {
+        tracing::warn!(source = %source_label, error = %e, "failed to publish spawn-failure notice");
+    }
 }
 
 /// Handle a single spawn request: guard against a live or tearing-down
@@ -126,7 +208,10 @@ fn handle_spawn_request<'a>(
                     });
                     return Ok(());
                 }
-                SessionState::Forking | SessionState::Running | SessionState::Idle => {
+                SessionState::Forking
+                | SessionState::Queued
+                | SessionState::Running
+                | SessionState::Idle => {
                     // Two concurrent resume attempts for the same address
                     // (e.g. two messages queued while a session was
                     // completing, each deferred separately — see
@@ -308,6 +393,7 @@ async fn fork_and_spawn(
             images: event.images,
         },
         conversation_target: event.conversation,
+        overlap: event.overlap,
     };
 
     let log_address = request.address.clone();
@@ -376,6 +462,7 @@ mod tests {
             }),
             images: inbound.images.clone(),
             inbound: Some(inbound),
+            overlap: None,
         }
     }
 
@@ -398,6 +485,7 @@ mod tests {
             }),
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -605,5 +693,157 @@ mod tests {
             Some("can anyone see this?".to_string()),
             "the republished request must still carry the original user message"
         );
+    }
+
+    // ── handle_spawn_failure dedup ───────────────────────────────────────
+
+    async fn recv_notice(sub: &mut Subscriber<NoticeEvent>) -> Option<NoticeEvent> {
+        tokio::time::timeout(std::time::Duration::from_millis(150), sub.recv())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn first_pulse_spawn_failure_publishes_a_notice() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &anyhow::anyhow!("skill 'ghost' not found"),
+        )
+        .await;
+
+        let notice = recv_notice(&mut sub)
+            .await
+            .expect("first failure should notice");
+        assert!(notice.message.contains("email_check"));
+        assert!(notice.message.contains("skill 'ghost' not found"));
+    }
+
+    #[tokio::test]
+    async fn repeated_identical_pulse_failure_does_not_renotice() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+        let err = anyhow::anyhow!("skill 'ghost' not found");
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &err,
+        )
+        .await;
+        assert!(recv_notice(&mut sub).await.is_some(), "first call notices");
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &err,
+        )
+        .await;
+        assert!(
+            recv_notice(&mut sub).await.is_none(),
+            "an unchanged, still-failing retry must not notice again"
+        );
+    }
+
+    #[tokio::test]
+    async fn pulse_failure_renotices_once_the_error_changes() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &anyhow::anyhow!("skill 'ghost' not found"),
+        )
+        .await;
+        assert!(recv_notice(&mut sub).await.is_some());
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &anyhow::anyhow!("a different failure now"),
+        )
+        .await;
+        let notice = recv_notice(&mut sub)
+            .await
+            .expect("a genuinely new error should notice again");
+        assert!(notice.message.contains("a different failure now"));
+    }
+
+    #[tokio::test]
+    async fn action_spawn_failure_notice_names_it_a_scheduled_action() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Action,
+            "action:nightly digest",
+            &anyhow::anyhow!("skill not found"),
+        )
+        .await;
+
+        let notice = recv_notice(&mut sub).await.expect("should notice");
+        assert!(notice.message.contains("scheduled action"));
+        assert!(notice.message.contains("nightly digest"));
+    }
+
+    #[tokio::test]
+    async fn non_scheduled_trigger_never_publishes_a_notice() {
+        // Spawned/webhook/conversation/artifact triggers aren't retried
+        // automatically the way a pulse or action is, so this dedup+notice
+        // mechanism is scoped to scheduled triggers only — every other
+        // failure just keeps warning (unchanged from before).
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        for _ in 0..3 {
+            handle_spawn_failure(
+                &bus.publisher(),
+                &mut failures,
+                &EventTrigger::Agent,
+                "agent:researcher",
+                &anyhow::anyhow!("boom"),
+            )
+            .await;
+        }
+
+        assert!(recv_notice(&mut sub).await.is_none());
     }
 }

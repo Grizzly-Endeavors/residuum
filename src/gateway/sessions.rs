@@ -35,6 +35,11 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         episode_id: None,
         interrupted: false,
         usage: info.usage,
+        // A live run has no outcome yet; `session_completed` carries it when
+        // the run finishes (see `session_event_to_server_message` below).
+        outcome: None,
+        error: None,
+        overlap: info.overlap.clone(),
     }
 }
 
@@ -59,6 +64,17 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         );
         return None;
     };
+    let outcome = record.outcome.as_deref().and_then(|label| {
+        let parsed = SessionRunStatus::from_label(label);
+        if parsed.is_none() {
+            tracing::warn!(
+                run_id = %record.run_id,
+                outcome = %label,
+                "session run record has an unrecognized outcome, showing it as plain 'finished'"
+            );
+        }
+        parsed
+    });
     Some(SessionSummary {
         address: record.address.clone(),
         run_id: record.run_id.clone(),
@@ -73,6 +89,9 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         episode_id: record.episode_id.clone(),
         interrupted: record.interrupted,
         usage: record.usage,
+        outcome,
+        error: record.outcome_error.clone(),
+        overlap: record.overlap.clone(),
     })
 }
 
@@ -340,6 +359,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -613,6 +633,9 @@ mod tests {
                         "output_tokens": 0,
                         "context_tokens": null,
                     },
+                    "outcome": null,
+                    "error": null,
+                    "overlap": null,
                 },
             })
         );
@@ -651,5 +674,70 @@ mod tests {
         assert!(summary_from_record(&record).is_some());
         record.category = "mystery".to_string();
         assert!(summary_from_record(&record).is_none());
+    }
+
+    #[test]
+    fn failed_run_outcome_and_error_survive_into_the_summary() {
+        let info = live_info("spawned-h-0001", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.state = "completed".to_string();
+        record.outcome = Some("failed".to_string());
+        record.outcome_error = Some("the model call timed out".to_string());
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(
+            summary.outcome,
+            Some(crate::gateway::protocol::SessionRunStatus::Failed),
+            "a reloaded record must show its real outcome, not just 'completed' state"
+        );
+        assert_eq!(
+            summary.error.as_deref(),
+            Some("the model call timed out"),
+            "the failure reason must survive into the summary"
+        );
+    }
+
+    #[test]
+    fn stopped_run_outcome_survives_into_the_summary() {
+        let info = live_info("spawned-h-0002", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.state = "completed".to_string();
+        record.outcome = Some("cancelled".to_string());
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(
+            summary.outcome,
+            Some(crate::gateway::protocol::SessionRunStatus::Cancelled)
+        );
+        assert_eq!(summary.error, None);
+    }
+
+    #[test]
+    fn record_with_no_recorded_outcome_summarizes_with_none() {
+        // A record written before this field existed: must not fail to
+        // summarize, and must not fabricate an outcome it never recorded.
+        let info = live_info("spawned-h-0003", SessionState::Running);
+        let record = RunRecord::starting(&info);
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(summary.outcome, None);
+        assert_eq!(summary.error, None);
+    }
+
+    #[test]
+    fn record_with_unrecognized_outcome_falls_back_to_none_rather_than_dropping_the_record() {
+        let info = live_info("spawned-h-0004", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.outcome = Some("mystery".to_string());
+        let summary = summary_from_record(&record).expect(
+            "an unrecognized outcome must not \
+             drop the whole record, unlike an unrecognized category or state",
+        );
+        assert_eq!(summary.outcome, None);
+    }
+
+    #[test]
+    fn live_summary_has_no_outcome_yet() {
+        let info = live_info("spawned-h-0005", SessionState::Running);
+        let summary = summary_from_live(&info);
+        assert_eq!(summary.outcome, None);
+        assert_eq!(summary.error, None);
     }
 }

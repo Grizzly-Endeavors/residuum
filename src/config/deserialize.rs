@@ -247,8 +247,6 @@ pub(super) struct SubconsciousConfigFile {
     pub(super) mid_turn: Option<bool>,
     /// Evaluate every N tool-loop iterations.
     pub(super) every_n_iterations: Option<usize>,
-    /// Maximum mid-turn corrections injected per turn.
-    pub(super) max_interventions_per_turn: Option<usize>,
     /// Token cap for the transcript sent to the classifier.
     pub(super) max_transcript_tokens: Option<usize>,
     /// Whether the activity-triggered learning loop is enabled (opt-in, default false).
@@ -388,6 +386,13 @@ pub(super) struct AgentConfigFile {
     /// Maximum tool-call iterations per turn before it stops itself
     /// gracefully. Unset means unlimited. Must be at least 1 when set.
     pub(super) max_tool_iterations: Option<usize>,
+    /// Master switch for the repeat-identical-tool-call guard.
+    pub(super) repeat_call_guard_enabled: Option<bool>,
+    /// Consecutive identical calls at which a steering note is appended.
+    pub(super) repeat_call_steer_after: Option<u32>,
+    /// Consecutive identical calls at which the turn ends instead of
+    /// running the call again.
+    pub(super) repeat_call_stop_after: Option<u32>,
 }
 
 /// Raw TOML `[idle]` section.

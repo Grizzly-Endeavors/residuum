@@ -120,6 +120,16 @@ pub struct SessionSummary {
     /// live for a run still going, final for a completed one. See
     /// `docs/systems-usage/turn-control.md`.
     pub usage: SessionUsageTotals,
+    /// How the run ended — completed, cancelled, or failed. `None` while the
+    /// run is still live, and `None` for a completed run recorded before
+    /// this field existed (it shows as plain "finished" rather than a
+    /// guessed outcome).
+    pub outcome: Option<SessionRunStatus>,
+    /// The failure reason, when `outcome` is `Failed`. `None` otherwise.
+    pub error: Option<String>,
+    /// Set when this run is a pulse fire that started while its previous run
+    /// was still live. `None` for every other trigger.
+    pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
 /// `GET /api/sessions` response: live sessions plus one page of completed
@@ -148,6 +158,89 @@ pub enum SessionRunStatus {
     Cancelled,
     /// The last turn failed.
     Failed,
+}
+
+impl SessionRunStatus {
+    /// Lowercase label used in the session store (see `RunRecord::outcome`).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Parse the label [`Self::as_str`] produces, as recorded in the session
+    /// store. `None` for anything else.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "completed" => Some(Self::Completed),
+            "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// One run's outcome, for a pulse's or action's "last outcome" in the
+/// Scheduled view.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduledRunOutcome {
+    pub status: SessionRunStatus,
+    #[ts(type = "string")]
+    pub at: DateTime<Utc>,
+    pub error: Option<String>,
+}
+
+/// A pulse's or action's currently live run, if it has one, in the
+/// Scheduled view.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduledCurrentRun {
+    pub address: String,
+    pub run_id: String,
+    /// Set when this run started while its previous run was still going.
+    pub overlap: Option<crate::bus::PulseOverlap>,
+}
+
+/// One pulse, as listed by `GET /api/scheduled/pulses`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PulseInfo {
+    pub name: String,
+    /// `false` for a pulse that failed to load at all (see `problems`) —
+    /// there is no real `enabled` value to report for it.
+    pub enabled: bool,
+    pub schedule: Option<String>,
+    pub active_hours: Option<String>,
+    pub agent: Option<String>,
+    /// Estimated from the schedule and `pulse_state.json`'s last run time;
+    /// does not account for an `active_hours` window that would delay the
+    /// actual fire.
+    #[ts(type = "string | null")]
+    pub next_fire_at: Option<DateTime<Utc>>,
+    pub last_outcome: Option<ScheduledRunOutcome>,
+    pub current_run: Option<ScheduledCurrentRun>,
+    /// Loading problems naming this pulse (a removed option, a duplicate
+    /// name, a bad `schedule`/`active_hours` string, or a per-entry
+    /// deserialize failure). Plain-language messages, ready to show as-is.
+    pub problems: Vec<String>,
+}
+
+/// One pending scheduled action, as listed by `GET /api/scheduled/actions`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActionInfo {
+    pub id: String,
+    pub name: String,
+    #[ts(type = "string")]
+    pub run_at: DateTime<Utc>,
+    pub agent: Option<String>,
+    pub model_tier: Option<String>,
+    pub current_run: Option<ScheduledCurrentRun>,
 }
 
 /// Where a `SessionSendMessage` landed.

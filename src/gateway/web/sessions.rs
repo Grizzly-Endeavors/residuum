@@ -431,6 +431,7 @@ pub(crate) async fn api_session_start(
         conversation: None,
         inbound: None,
         images: Vec::new(),
+        overlap: None,
     };
     if let Err(e) = state.publisher.publish(topics::Background, event).await {
         tracing::warn!(artifact = %artifact, address = %address, error = %e, "failed to publish an artifact's session start");
@@ -605,6 +606,7 @@ mod tests {
             started_at: Utc.with_ymd_and_hms(2026, 9, 20, 12, 0, 0).unwrap()
                 + Duration::minutes(minutes),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -648,6 +650,7 @@ mod tests {
             .complete_run(
                 info,
                 "completed",
+                &crate::bus::AgentResultStatus::Completed,
                 vec![Message::user("go"), Message::assistant("done", None)],
                 Some("ep-001".to_string()),
             )

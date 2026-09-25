@@ -16,7 +16,8 @@ and exposed alongside the agent's built-in tools.
     "hosted-search": {
       "type": "http",
       "url": "https://example.com/mcp",
-      "headers": { "Authorization": "Bearer ${API_TOKEN}" }
+      "headers": { "Authorization": "Bearer ${API_TOKEN}" },
+      "timeout_secs": 30
     }
   }
 }
@@ -32,6 +33,12 @@ Editing `mcp.json` via `write_file`/`edit_file`, the workspace editor, or
 `command`/`url`, or an unrecognized/deprecated transport as a diagnostic
 alongside the save — the write always goes through on these surfaces rather
 than being rejected.
+
+A tool call has no automatic cutoff by default: it runs until it finishes or
+the turn is stopped (Cancel / `stop_agent` interrupts an in-flight call
+immediately). Setting `timeout_secs` on a server opts that server's calls
+into a fixed timeout instead; a call that runs past it returns a plain-language
+error naming the tool, the server, and the number of seconds.
 
 To give a server a credential without writing it into `mcp.json`, reference
 an agent key: `"env": { "GITHUB_TOKEN": "${agent-key:github_token}" }` or

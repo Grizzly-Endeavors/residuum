@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use crate::agent::interrupt::Interrupt;
-use crate::bus::{ConversationTarget, EventTrigger, SessionAddress, SkillName};
+use crate::bus::{ConversationTarget, EventTrigger, PulseOverlap, SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
 
 /// Capacity of a session's interrupt channel: agent messages delivered to it
@@ -126,6 +126,13 @@ pub enum SessionState {
     /// The session is being forked (resources are being built); no turn has
     /// started yet.
     Forking,
+    /// The run is registered and ready for its next turn but is waiting on a
+    /// `max_concurrent` concurrency permit — either its first turn (right
+    /// after forking) or a later one (right after idle). Distinct from
+    /// `Forking`/`Idle` so a run stuck behind other live sessions is visibly
+    /// queued rather than looking like it's still starting up or sitting
+    /// idle with nothing to do.
+    Queued,
     /// A turn is executing. Holds one concurrency permit.
     Running,
     /// The turn ended; the session is still live and will complete after its
@@ -144,6 +151,7 @@ impl SessionState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Forking => "forking",
+            Self::Queued => "queued",
             Self::Running => "running",
             Self::Idle => "idle",
             Self::Completing => "completing",
@@ -157,6 +165,7 @@ impl SessionState {
     pub fn from_label(label: &str) -> Option<Self> {
         match label {
             "forking" => Some(Self::Forking),
+            "queued" => Some(Self::Queued),
             "running" => Some(Self::Running),
             "idle" => Some(Self::Idle),
             "completing" => Some(Self::Completing),
@@ -252,6 +261,9 @@ pub struct SessionInfo {
     /// see [`SessionRegistry::accumulate_usage`]. Mirrored into the run's
     /// store record at completion so a finished run's totals survive too.
     pub usage: crate::agent::usage::SessionUsageTotals,
+    /// Set when this run is a pulse fire that started while its previous run
+    /// was still live. See [`PulseOverlap`].
+    pub overlap: Option<PulseOverlap>,
 }
 
 /// A registered session's bookkeeping: its metadata, the token that cancels
@@ -857,6 +869,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 

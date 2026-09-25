@@ -24,6 +24,7 @@ pub mod inbox;
 pub(crate) mod memory;
 pub(crate) mod model;
 pub mod providers;
+pub(crate) mod scheduled;
 pub mod secrets;
 pub(crate) mod sessions;
 pub mod tracing_api;

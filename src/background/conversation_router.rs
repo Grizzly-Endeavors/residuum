@@ -246,6 +246,7 @@ mod tests {
             }),
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         // The receiver must stay alive and be drained below like a live
         // session's own tool loop would — dropping it here would close the
@@ -327,6 +328,7 @@ mod tests {
             }),
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         registry
             .register(info, tokio_util::sync::CancellationToken::new())

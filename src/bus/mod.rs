@@ -20,9 +20,9 @@ pub use events::{
     A2aTaskSignalEvent, A2aTaskSignalState, AgentMessageEvent, AgentResultEvent, AgentResultStatus,
     ConversationTarget, ErrorEvent, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT,
     InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent,
-    ResponseEvent, ResultDisposition, SessionEvent, SessionEventKind, SessionResponseEvent,
-    SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
-    TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
+    PulseOverlap, ResponseEvent, ResultDisposition, SessionEvent, SessionEventKind,
+    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
+    TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, ends_with_sentinel,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

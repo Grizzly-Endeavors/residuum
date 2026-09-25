@@ -139,6 +139,9 @@ pub struct SubAgentResources {
     /// stops itself gracefully. `None` means unlimited — see
     /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
     pub(crate) max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call — see
+    /// [`crate::config::AgentAbilitiesConfig::repeat_call_guard`].
+    pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
     /// Formatted skill index for the system prompt (built at fork time).
     pub(crate) skills_index: Option<String>,
     /// Snapshot of the global observation log, taken at fork time.
@@ -228,6 +231,7 @@ pub async fn build_subagent_resources(
         identity,
         options,
         max_tool_iterations,
+        repeat_call_guard,
         tz,
         skill,
         observations,
@@ -305,6 +309,7 @@ pub async fn build_subagent_resources(
 
     Ok(SubAgentResources {
         max_tool_iterations,
+        repeat_call_guard,
         provider,
         tools,
         mcp_registry,
@@ -442,6 +447,7 @@ pub(crate) async fn execute_subagent(
         identity: &resources.identity,
         options: &resources.options,
         max_tool_iterations: resources.max_tool_iterations,
+        repeat_call_guard: resources.repeat_call_guard,
         stop_token,
         transcript_sink,
         usage_sink,
@@ -561,6 +567,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
             }),
@@ -1018,6 +1025,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(CapturingProvider {
                 response: "done".to_string(),
                 seen: Arc::clone(&seen),
@@ -1142,6 +1150,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(ToolCallThenTextProvider {
                 call_count: std::sync::atomic::AtomicUsize::new(0),
             }),
@@ -1261,6 +1270,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1335,6 +1345,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,

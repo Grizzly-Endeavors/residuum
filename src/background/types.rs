@@ -76,6 +76,9 @@ pub struct SubAgentBuildConfig {
     /// Maximum tool-call iterations for this session's turns before a turn
     /// stops itself gracefully. `None` means unlimited.
     pub max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call in this
+    /// session's turns.
+    pub repeat_call_guard: crate::config::RepeatCallGuardConfig,
     /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
     /// Skill to activate for this session, if any. Its body becomes the

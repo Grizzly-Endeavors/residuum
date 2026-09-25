@@ -76,3 +76,12 @@ The web UI shows elapsed time and token progress for a turn while it runs, and c
 **Persistence.** The main chat's totals live in `memory/usage_totals.json` in the workspace, written through after every model call and read back at startup so a restart doesn't reset the footer to zero; `GET /api/usage` serves the same file for the web client to seed the footer on connect/reconnect, the same way `GET /api/chat/history` seeds the feed from `recent_messages.json`. A session's totals live on its registry entry while it runs (mirrored into `SessionSummary.usage`, which both the live listing and a completed run's store record carry) and are copied into its store record at completion, so a finished run's session view still shows correct totals.
 
 **Degradation.** A provider that reports no usage for a call leaves the numeric fields unchanged rather than showing a `0` or erroring, and is logged at `debug` — this can happen per call, not just per provider, so a session's or the main chat's totals may simply stop advancing for a stretch without any error surfacing.
+
+## Repeat-Call Guard
+
+An observed failure — GLM 5.3 Flash calling a tool with byte-identical arguments hundreds of times in a row, spinning instead of finishing — is guarded against directly, in every turn loop (main and background/session/artifact turns alike). The turn tracks a streak of consecutive calls whose tool name and raw argument JSON exactly match the previous call; any different call (a different tool, or different arguments) resets the streak. Calls within one model response's batch count in order, the same as calls from separate model responses.
+
+- At `repeat_call_steer_after` (default `3`) consecutive identical calls, the call still runs, but its own result carries an appended note telling the model the exact call has repeated and to try something different or finish.
+- At `repeat_call_stop_after` (default `6`), the call is not run at all: it gets a cancelled-style result explaining why, every remaining call in that batch is skipped the same way a user stop skips them, and the turn ends with a plain-language reply naming the repeated tool and how many times it repeated, plus which config setting to raise if the repetition was actually expected. A `warn`-level log records the tool name and streak length; the steering note at the lower threshold logs at `debug`.
+
+Both thresholds are configurable under `[agent]` in `config.toml` (also editable from the web UI's Settings page), and the guard can be turned off entirely with `repeat_call_guard_enabled = false`.

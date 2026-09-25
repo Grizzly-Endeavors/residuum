@@ -70,7 +70,6 @@ enabled = true
 # enabled = true
 # mid_turn = true                  # also watch while the agent is mid-turn
 # every_n_iterations = 3           # mid-turn: evaluate every N tool iterations
-# max_interventions_per_turn = 1   # mid-turn: cap on injected corrections
 # max_transcript_tokens = 12000    # transcript budget sent to the classifier
 # learning = false                 # spawn the `learner` sub-agent when the
 #                                  #   end-of-turn triage detects a learnable
@@ -230,6 +229,14 @@ port = 7700
 #                             # A runaway turn is still stoppable at any time via the
 #                             # web UI's Cancel button, /stop, or stop_agent — this only
 #                             # sets an automatic cutoff. Must be at least 1 when set.
+#
+# Guards against a model repeating the exact same tool call (name + byte-identical
+# arguments) over and over without the result ever changing.
+# repeat_call_guard_enabled = true   # set false to turn the guard off entirely
+# repeat_call_steer_after = 3        # consecutive identical calls before a steering note
+#                                     # is appended to the call's own result
+# repeat_call_stop_after = 6         # consecutive identical calls before the turn ends
+#                                     # instead of running the call again
 
 # ── Web search (optional) ────────────────────────────────────────────────
 # Providers with native search (Anthropic, OpenAI, Gemini) enable it
@@ -277,6 +284,6 @@ port = 7700
 # idle_timeout_external_minutes = 30    # non-webhook external sessions
 # idle_timeout_artifact_minutes = 10    # sessions a workbench artifact starts
 # episode_skip_token_floor = 2000       # below this, a run with nothing staged produces no episode
-# subagent_depth_cap = 2                # max nesting depth for subagent_spawn (main = 0)
+# subagent_depth_cap = 3                # max nesting depth for subagent_spawn (main = 0)
 # hop_soft_limit = 8                    # at/above this hop count, delivered messages carry a "reply only if needed" note
 # hop_hard_limit = 32                   # at/above this hop count, message delivery is refused (bounds message loops)

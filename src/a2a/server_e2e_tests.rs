@@ -145,6 +145,7 @@ fn test_config(dir: &std::path::Path) -> Config {
         tracing: TracingConfig::default(),
         role_overrides: HashMap::new(),
         config_dir: dir.to_path_buf(),
+        load_notices: vec![],
     }
 }
 
@@ -540,6 +541,7 @@ fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps)
                     images: event.images,
                 },
                 conversation_target: event.conversation,
+                overlap: event.overlap,
             };
             deps.runtime.spawn(request, Some(resources));
         }
@@ -594,6 +596,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
 
     SubAgentResources {
         max_tool_iterations: None,
+        repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
         provider: Box::new(ScriptedProvider {
             queue: Arc::clone(&deps.queue),
             seen: Arc::clone(&deps.seen),
@@ -1221,6 +1224,7 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         conversation_target: None,
         started_at: chrono::Utc::now(),
         usage: crate::agent::usage::SessionUsageTotals::default(),
+        overlap: None,
     };
     harness
         .session_registry

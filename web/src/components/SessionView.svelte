@@ -6,6 +6,7 @@
   import type { SessionView } from "../lib/sessions.svelte";
   import {
     categoryDescription,
+    formatLocalDateTime,
     isStoppableState,
     runDuration,
     sessionArtifact,
@@ -25,16 +26,24 @@
   let summary = $derived(view.summary);
   let connected = $derived(ws.transport.status === "connected");
   let finished = $derived(summary?.state === "completed");
-  let working = $derived(summary?.state === "running" || summary?.state === "forking");
+  let working = $derived(
+    summary?.state === "running" || summary?.state === "forking" || summary?.state === "queued",
+  );
   let canStop = $derived(summary ? isStoppableState(summary.state) : false);
   let outcome = $derived(ws.sessions.outcomes.get(view.runId));
   let stateText = $derived.by(() => {
     if (!summary) return "";
     if (!finished) return stateLabel(summary.state);
-    if (outcome?.status === "failed") return "failed";
-    if (outcome?.status === "cancelled") return "stopped";
+    // Prefer a live outcome frame; fall back to the summary's own recorded
+    // outcome so a run loaded fresh from the store (after a reload, or one
+    // paged in from "Show older") doesn't show as plain "finished" when it
+    // actually failed or was stopped.
+    const status = outcome?.status ?? summary.outcome ?? undefined;
+    if (status === "failed") return "failed";
+    if (status === "cancelled") return "stopped";
     return summary.interrupted ? "interrupted" : "finished";
   });
+  let errorText = $derived(outcome?.error ?? summary?.error ?? null);
   let spawnerIsSession = $derived(summary?.spawner != null && summary.spawner !== "main");
   let artifact = $derived(summary ? sessionArtifact(summary) : null);
 
@@ -102,7 +111,7 @@
         <span class="session-view-source">{sessionSourceText(summary)}</span>
         <span
           class="session-view-state state-{summary.state}"
-          class:failed={outcome?.status === "failed"}
+          class:failed={stateText === "failed"}
         >
           {stateText}
         </span>
@@ -165,6 +174,18 @@
       {#if summary.interrupted}
         <p class="session-view-note">
           This run was cut short when Residuum stopped, and was closed out at the next start.
+        </p>
+      {/if}
+      {#if stateText === "failed" && errorText}
+        <p class="session-view-note session-view-note-failed">
+          <Icon name="warning" size={12} />
+          {errorText}
+        </p>
+      {/if}
+      {#if summary.overlap}
+        <p class="session-view-note">
+          This run started while its previous run (started
+          {formatLocalDateTime(summary.overlap.previous_started_at)}) was still going.
         </p>
       {/if}
     {/if}

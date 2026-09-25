@@ -219,6 +219,7 @@ async fn route_webhook_content(
                 conversation: None,
                 inbound: None,
                 images: Vec::new(),
+                overlap: None,
             };
             if let Err(e) = state
                 .publisher

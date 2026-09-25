@@ -33,6 +33,8 @@ import type {
   SessionUsageTotals,
   WorkbenchInfo,
   ArtifactSummary,
+  PulseInfo,
+  ActionInfo,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -523,6 +525,34 @@ export async function fetchSessionTranscript(runId: string): Promise<SessionTran
   return apiFetch<SessionTranscriptResponse>(
     `/api/sessions/runs/${encodeURIComponent(runId)}/transcript`,
   );
+}
+
+// ── Scheduled view API wrappers ──────────────────────────────────────
+
+/** Every pulse in HEARTBEAT.yml. Not cached: run state changes live. */
+export async function fetchScheduledPulses(): Promise<PulseInfo[]> {
+  return apiFetch<PulseInfo[]>("/api/scheduled/pulses");
+}
+
+/** Flip a pulse's `enabled` field in HEARTBEAT.yml. Throws `ApiError` (404 if the pulse is gone). */
+export async function setPulseEnabled(name: string, enabled: boolean): Promise<void> {
+  await apiFetch<unknown>(`/api/scheduled/pulses/${encodeURIComponent(name)}/enabled`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+/** Every pending scheduled action. Not cached: it changes as actions fire. */
+export async function fetchScheduledActions(): Promise<ActionInfo[]> {
+  return apiFetch<ActionInfo[]>("/api/scheduled/actions");
+}
+
+/** Cancel a pending scheduled action. Throws `ApiError` (404 if already gone). */
+export async function cancelScheduledAction(id: string): Promise<void> {
+  await apiFetch<unknown>(`/api/scheduled/actions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
 
 // ── Workbench API wrappers ──────────────────────────────────────────

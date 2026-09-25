@@ -297,6 +297,7 @@
 }
 
 .session-row.state-forking .session-row-seam,
+.session-row.state-queued .session-row-seam,
 .session-row.state-completing .session-row-seam {
   background: var(--moss);
   opacity: 0.7;
@@ -720,6 +721,19 @@ button.session-row-artifact-link:focus-visible {
   font-size: var(--fs-sm);
   font-style: italic;
   color: var(--text-muted);
+}
+
+.session-view-note-failed {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-1);
+  font-style: normal;
+  color: #e8a0a0;
+}
+
+.session-view-note-failed > svg {
+  flex: none;
+  margin-top: 0.15em;
 }
 
 .session-feed-frame {
