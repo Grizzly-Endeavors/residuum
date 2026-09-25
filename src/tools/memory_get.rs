@@ -26,17 +26,19 @@ fn rejects_path_traversal(id: &str) -> bool {
 
 /// Format a run's transcript for LLM consumption, in the same bounded,
 /// line-numbered style as [`read_episode_lines`].
+///
+/// `expand_line`, when given, overrides `from_line`/`request_limit`: it
+/// returns just that one line's message in full, uncut by
+/// `MAX_TOOL_RESULT_CHARS` — the way to retrieve a tool result a windowed
+/// read reported as truncated.
 fn format_run_transcript(
     record: &RunRecord,
     messages: &[Message],
     from_line: Option<usize>,
     request_limit: Option<usize>,
+    expand_line: Option<usize>,
 ) -> String {
     let total = messages.len();
-    let limit = request_limit.map_or(DEFAULT_LINES, |l| l.clamp(1, MAX_LINES));
-    // from_line is 1-indexed; message lines start at index 0.
-    let start_idx = from_line.map_or(0, |f| f.saturating_sub(1));
-    let end_idx = total.min(start_idx + limit);
 
     let mut parts: Vec<String> = Vec::new();
 
@@ -50,8 +52,24 @@ fn format_run_transcript(
     ));
     parts.push(String::new());
 
+    if let Some(target) = expand_line {
+        let idx = target.saturating_sub(1);
+        match messages.get(idx).filter(|_| target >= 1) {
+            None => parts.push(format!(
+                "line {target} does not exist; the run has {total} line(s) total"
+            )),
+            Some(msg) => format_message_line(&mut parts, target, msg, true),
+        }
+        return parts.join("\n");
+    }
+
+    let limit = request_limit.map_or(DEFAULT_LINES, |l| l.clamp(1, MAX_LINES));
+    // from_line is 1-indexed; message lines start at index 0.
+    let start_idx = from_line.map_or(0, |f| f.saturating_sub(1));
+    let end_idx = total.min(start_idx + limit);
+
     for (idx, msg) in messages.iter().enumerate().take(end_idx).skip(start_idx) {
-        format_message_line(&mut parts, idx + 1, msg);
+        format_message_line(&mut parts, idx + 1, msg, false);
     }
 
     if start_idx >= total && start_idx > 0 {
@@ -84,7 +102,9 @@ impl Tool for MemoryGetTool {
                           session run's transcript directly from the session store — e.g. to \
                           follow a resume pointer to a run that produced no episode, or to check \
                           on a run that's still in progress. Returns formatted message lines \
-                          with role labels and line numbers."
+                          with role labels and line numbers. A tool result line over 500 chars \
+                          is shown truncated with its original length; pass expand_line with \
+                          that line number to retrieve it in full."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -104,6 +124,10 @@ impl Tool for MemoryGetTool {
                     "lines": {
                         "type": "integer",
                         "description": "Number of message lines to return (default: 50, max: 200)"
+                    },
+                    "expand_line": {
+                        "type": "integer",
+                        "description": "Return this one line number in full, uncut by the 500-char tool result truncation. Overrides from_line/lines."
                     }
                 }
             }),
@@ -124,6 +148,11 @@ impl Tool for MemoryGetTool {
             .and_then(Value::as_u64)
             .and_then(|v| usize::try_from(v).ok());
 
+        let expand_line = arguments
+            .get("expand_line")
+            .and_then(Value::as_u64)
+            .and_then(|v| usize::try_from(v).ok());
+
         match (episode_id, run_id) {
             (Some(_), Some(_)) => Err(ToolError::InvalidArguments(
                 "provide exactly one of 'episode_id' or 'run_id', not both".to_string(),
@@ -131,8 +160,11 @@ impl Tool for MemoryGetTool {
             (None, None) => Err(ToolError::InvalidArguments(
                 "missing required 'episode_id' or 'run_id' argument".to_string(),
             )),
-            (Some(episode_id), None) => self.get_episode(episode_id, from_line, lines).await,
-            (None, Some(run_id)) => self.get_run(run_id, from_line, lines).await,
+            (Some(episode_id), None) => {
+                self.get_episode(episode_id, from_line, lines, expand_line)
+                    .await
+            }
+            (None, Some(run_id)) => self.get_run(run_id, from_line, lines, expand_line).await,
         }
     }
 }
@@ -153,6 +185,7 @@ impl MemoryGetTool {
         episode_id: &str,
         from_line: Option<usize>,
         lines: Option<usize>,
+        expand_line: Option<usize>,
     ) -> Result<ToolResult, ToolError> {
         if episode_id.trim().is_empty() {
             return Ok(ToolResult::error("episode_id cannot be empty"));
@@ -178,7 +211,7 @@ impl MemoryGetTool {
             }
         };
 
-        match read_episode_lines(&path, from_line, lines).await {
+        match read_episode_lines(&path, from_line, lines, expand_line).await {
             Ok(output) => Ok(ToolResult::success(output)),
             Err(e) => {
                 tracing::error!(error = %e, episode_id = %episode_id, "failed to read episode transcript");
@@ -194,6 +227,7 @@ impl MemoryGetTool {
         run_id: &str,
         from_line: Option<usize>,
         lines: Option<usize>,
+        expand_line: Option<usize>,
     ) -> Result<ToolResult, ToolError> {
         if run_id.trim().is_empty() {
             return Ok(ToolResult::error("run_id cannot be empty"));
@@ -206,7 +240,11 @@ impl MemoryGetTool {
 
         match self.session_store.read_run(run_id).await {
             Ok(Some((record, messages))) => Ok(ToolResult::success(format_run_transcript(
-                &record, &messages, from_line, lines,
+                &record,
+                &messages,
+                from_line,
+                lines,
+                expand_line,
             ))),
             Ok(None) => Ok(ToolResult::error(format!(
                 "run '{run_id}' not found; use list_agents to find live session addresses, or \
@@ -428,6 +466,51 @@ mod tests {
         );
         assert!(result.output.contains("state: running"));
         assert!(result.output.contains("still going"));
+    }
+
+    #[tokio::test]
+    async fn expand_line_returns_run_tool_result_in_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join("sessions");
+        let store = SessionStore::new(sessions_dir.clone());
+        let info = sample_session_info("run-test-expand");
+        store.begin_run(&info).await;
+        let long_content = "y".repeat(900);
+        store
+            .complete_run(
+                &info,
+                "completed",
+                vec![
+                    Message::user("run it"),
+                    Message::tool(long_content.clone(), "c1"),
+                ],
+                None,
+            )
+            .await;
+
+        let tool = MemoryGetTool::new(dir.path().join("episodes"), sessions_dir);
+
+        // The windowed read shows the tool result truncated with its true length.
+        let windowed = tool
+            .execute(serde_json::json!({"run_id": "run-test-expand"}))
+            .await
+            .unwrap();
+        assert!(!windowed.is_error, "{}", windowed.output);
+        assert!(!windowed.output.contains(&long_content));
+        assert!(windowed.output.contains("showing 500 of 900 chars"));
+        assert!(windowed.output.contains("expand_line=2"));
+
+        // expand_line=2 retrieves that line's full content.
+        let expanded = tool
+            .execute(serde_json::json!({"run_id": "run-test-expand", "expand_line": 2}))
+            .await
+            .unwrap();
+        assert!(!expanded.is_error, "{}", expanded.output);
+        assert!(
+            expanded.output.contains(&long_content),
+            "expand_line should return the full content: {}",
+            expanded.output
+        );
     }
 
     #[tokio::test]
