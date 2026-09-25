@@ -74,6 +74,10 @@ impl Tool for MemorySearchTool {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Filter to results from these episode IDs (excludes wiki pages)"
+                    },
+                    "min_score": {
+                        "type": "number",
+                        "description": "Override the configured relevance threshold for this search only (0.0-1.0). Lower it to see weaker matches after a search reports strong matches were filtered out."
                     }
                 },
                 "required": ["query"]
@@ -131,9 +135,26 @@ impl Tool for MemorySearchTool {
             }),
         };
 
-        match self.searcher.search(query, limit, &filters).await {
-            Ok(results) if results.is_empty() => Ok(ToolResult::success("no results found")),
-            Ok(results) => {
+        let min_score_override = arguments.get("min_score").and_then(Value::as_f64);
+
+        match self
+            .searcher
+            .search(query, limit, &filters, min_score_override)
+            .await
+        {
+            Ok(outcome) if outcome.results.is_empty() => {
+                if outcome.below_threshold > 0 {
+                    Ok(ToolResult::success(format!(
+                        "no strong matches; {} weaker match(es) fell below the relevance \
+                         threshold — pass a lower min_score to see them",
+                        outcome.below_threshold
+                    )))
+                } else {
+                    Ok(ToolResult::success("no results found"))
+                }
+            }
+            Ok(outcome) => {
+                let results = outcome.results;
                 let formatted: Vec<String> = results
                     .iter()
                     .enumerate()
@@ -155,8 +176,18 @@ impl Tool for MemorySearchTool {
                     })
                     .collect();
 
+                let below_note = if outcome.below_threshold > 0 {
+                    format!(
+                        "\n\n({} additional weaker match(es) fell below the relevance \
+                         threshold; pass a lower min_score to see them)",
+                        outcome.below_threshold
+                    )
+                } else {
+                    String::new()
+                };
+
                 Ok(ToolResult::success(format!(
-                    "Found {} result(s):\n\n{}",
+                    "Found {} result(s):\n\n{}{below_note}",
                     results.len(),
                     formatted.join("\n\n")
                 )))
@@ -401,6 +432,69 @@ mod tests {
             result.output.contains("Found 25 result(s)"),
             "a limit above the old 20-result clamp should be honoured, got: {}",
             result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_reports_weaker_matches_below_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join(".index");
+        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
+
+        // A single-result search always normalizes to score 1.0, so it can
+        // never itself be filtered; two observations with a relevance gap
+        // let the weaker one fall below a high threshold.
+        let strong = Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: "rust ownership rust ownership rust ownership model".to_string(),
+            source: crate::memory::types::SourceTag::main(),
+        };
+        let weak = Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: "a passing, incidental mention of rust".to_string(),
+            source: crate::memory::types::SourceTag::main(),
+        };
+        index
+            .index_observations("ep-001", "2026-02-19", &[strong, weak])
+            .unwrap();
+
+        let cfg = SearchConfig {
+            min_score: 0.9,
+            ..SearchConfig::default()
+        };
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, cfg);
+        let tool = MemorySearchTool::new(Arc::new(searcher));
+
+        let result = tool
+            .execute(serde_json::json!({"query": "rust ownership"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error);
+        assert_eq!(
+            result.output.matches("result(s)").count(),
+            1,
+            "should still return the strong match: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("weaker match"),
+            "should note the weaker match filtered by the threshold: {}",
+            result.output
+        );
+
+        // Overriding min_score for this call surfaces the weaker match too.
+        let relaxed = tool
+            .execute(serde_json::json!({"query": "rust ownership", "min_score": 0.0}))
+            .await
+            .unwrap();
+        assert!(
+            relaxed.output.contains("Found 2 result(s)"),
+            "a lower min_score override should surface the weaker match: {}",
+            relaxed.output
         );
     }
 }

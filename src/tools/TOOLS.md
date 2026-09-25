@@ -226,6 +226,7 @@ On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created b
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
 | `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs (excludes wiki pages) |
+| `min_score`       | number          | no       | Override the configured relevance threshold for this search only (0.0-1.0) |
 
 ### Output
 
@@ -236,8 +237,11 @@ Found {N} result(s):
 1. [{source_type}] {id} | {date} | lines {s}-{e} (score: {score})
    {snippet}
 ```
+If any candidate scored below the relevance threshold, a trailing note is appended: `"({N} additional weaker match(es) fell below the relevance threshold; pass a lower min_score to see them)"`.
 
-On success with no results: `"no results found"`
+On success with no results above the threshold but some below it: `"no strong matches; {N} weaker match(es) fell below the relevance threshold — pass a lower min_score to see them"`
+
+On success with no results at all: `"no results found"`
 
 On error: `"search failed: {reason}"`
 

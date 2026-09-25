@@ -47,6 +47,9 @@ pub(super) struct MemorySearchQuery {
     /// Inclusive upper date bound (`YYYY-MM-DD`).
     #[serde(default)]
     date_to: Option<String>,
+    /// Overrides the configured relevance threshold for this search only.
+    #[serde(default)]
+    min_score: Option<f64>,
 }
 
 /// One search result, in the shape the workbench API returns it.
@@ -68,6 +71,9 @@ pub(super) struct MemorySearchResponse {
     pub results: Vec<MemorySearchResultItem>,
     /// Whether vector search contributed to these results.
     pub semantic: bool,
+    /// How many results scored below the relevance threshold and were
+    /// dropped; retry with a lower `min_score` to see them.
+    pub below_threshold: usize,
 }
 
 /// `GET /api/memory/search` — run the same hybrid BM25 + vector search the
@@ -110,9 +116,9 @@ pub(super) async fn api_memory_search(
         episode_ids: None,
     };
 
-    let results = state
+    let outcome = state
         .hybrid_searcher
-        .search(&query.q, limit, &filters)
+        .search(&query.q, limit, &filters, query.min_score)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, query = %query.q, "memory search failed via http");
@@ -123,7 +129,8 @@ pub(super) async fn api_memory_search(
         })?;
 
     let semantic = state.hybrid_searcher.has_vector();
-    let results = results
+    let results = outcome
+        .results
         .into_iter()
         .map(|r| MemorySearchResultItem {
             id: r.id,
@@ -137,7 +144,11 @@ pub(super) async fn api_memory_search(
         })
         .collect();
 
-    Ok(Json(MemorySearchResponse { results, semantic }))
+    Ok(Json(MemorySearchResponse {
+        results,
+        semantic,
+        below_threshold: outcome.below_threshold,
+    }))
 }
 
 #[cfg(test)]
@@ -185,6 +196,7 @@ mod tests {
                 source: None,
                 date_from: None,
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
@@ -203,6 +215,7 @@ mod tests {
                 source: Some("everything".to_string()),
                 date_from: None,
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
@@ -221,6 +234,7 @@ mod tests {
                 source: None,
                 date_from: Some("02-19-2026".to_string()),
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
@@ -241,6 +255,7 @@ mod tests {
                 source: None,
                 date_from: None,
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
@@ -277,6 +292,7 @@ mod tests {
                 source: None,
                 date_from: None,
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
@@ -291,6 +307,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn min_score_override_surfaces_a_filtered_result_and_reports_the_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = MemoryIndex::open_or_create(&dir.path().join(".index")).unwrap();
+        // A single-result search always normalizes to score 1.0, so it can
+        // never itself be filtered; two observations with a relevance gap
+        // let the weaker one fall below a high threshold.
+        let strong = Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: "rust ownership rust ownership rust ownership model".to_string(),
+            source: crate::memory::types::SourceTag::main(),
+        };
+        let weak = Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            source_episodes: Some("ep-001".to_string()),
+            visibility: Visibility::User,
+            content: "a passing, incidental mention of rust".to_string(),
+            source: crate::memory::types::SourceTag::main(),
+        };
+        index
+            .index_observations("ep-001", "2026-02-19", &[strong, weak])
+            .unwrap();
+        let cfg = SearchConfig {
+            min_score: 0.9,
+            ..SearchConfig::default()
+        };
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, cfg);
+        let state = MemoryApiState {
+            hybrid_searcher: Arc::new(searcher),
+        };
+
+        let strict = api_memory_search(
+            Query(MemorySearchQuery {
+                q: "rust ownership".to_string(),
+                limit: None,
+                source: None,
+                date_from: None,
+                date_to: None,
+                min_score: None,
+            }),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(strict.0.results.len(), 1);
+        assert_eq!(strict.0.below_threshold, 1);
+
+        let relaxed = api_memory_search(
+            Query(MemorySearchQuery {
+                q: "rust ownership".to_string(),
+                limit: None,
+                source: None,
+                date_from: None,
+                date_to: None,
+                min_score: Some(0.0),
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            relaxed.0.results.len(),
+            2,
+            "overriding min_score should surface the weaker match too"
+        );
+    }
+
+    #[tokio::test]
     async fn maps_source_filter_and_reports_results() {
         let (_dir, state) = make_state();
         let response = api_memory_search(
@@ -300,6 +385,7 @@ mod tests {
                 source: Some("observations".to_string()),
                 date_from: None,
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
@@ -322,6 +408,7 @@ mod tests {
                 source: Some("wiki".to_string()),
                 date_from: None,
                 date_to: None,
+                min_score: None,
             }),
             State(state),
         )
