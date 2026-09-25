@@ -30,6 +30,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | File | Notes |
 |------|-------|
 | `config.toml`, `providers.toml` | Live outside the workspace directory. Agent writes are blocked by `PathPolicy` — the gateway enforces this at the tool level, not by prompt instruction. The web UI's Settings page edits both through `PATCH /api/config/patch` / `PATCH /api/providers/patch` (`src/config/patch.rs`), which merge only the fields the form changed into the file already on disk — comments, unmodeled sections, and unmodeled keys survive. The Settings page's Raw tab still PUTs whole-file text the user typed directly. |
+| `config.last-known-good.toml`, `providers.last-known-good.toml` | Gateway-owned, next to `config.toml`/`providers.toml`. Not user-edited — the gateway copies the live files here after a successful start or reload, and falls back to these copies if the live files later fail to load or start the gateway. See [Config Loading & Startup Fallback](config-loading.md). |
 | `agent-keys.toml.enc` | Encrypted agent key store, outside the workspace directory. Managed with `residuum agent-keys` or Settings → Agent keys; the agent adds only keys it mints. Write-blocked by `PathPolicy`, like `secrets.toml.enc`. See [Agent keys](agent-keys.md). |
 | `a2a-keys.toml` | A2A caller-key store (hashes only), outside the workspace directory. Managed with `residuum a2a keys` or Settings → A2A. Write-blocked by `PathPolicy`. See [A2A](a2a.md). |
 
@@ -77,6 +78,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Discord](discord.md) | Chat with the agent in Discord DMs and server channels | *(interface — no tools)* | `[discord]` in `config.toml`, `discord_state.json` |
 | [Telegram](telegram.md) | Chat with the agent in Telegram private chats and groups | *(interface — no tools)* | `[telegram]` in `config.toml`, `telegram_state.json` |
 | [A2A](a2a.md) | Lets other agents (including a user's own other instances) delegate tasks to this agent, and lets this agent delegate to them, over the Agent2Agent protocol | `list_agents`, `message_agent`, `stop_agent` (addresses `a2a:<name>`); `a2a_task_update` (A2A sessions only) | `[a2a]` in `config.toml`, `residuum a2a keys`, `config/agent-card.json`, `config/a2a.json` |
+| [Config Loading & Startup Fallback](config-loading.md) | How `config.toml`/`providers.toml` load, what's fatal vs. skipped with a notice, and the last-known-good fallback when startup can't come up on the live files | *(operations — no tools)* | `config.toml`, `providers.toml`, `config.last-known-good.toml`, `providers.last-known-good.toml` |
 
 ## What This Is Not
 
