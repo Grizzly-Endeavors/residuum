@@ -7,11 +7,13 @@ The inbox is a capture system for items the agent or background tasks want to sa
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
 | Populated by | Notification router (`inbox` channel target) for `scheduled` and webhook-triggered `external` results, the WS `/inbox` command, `POST /api/agent-inbox` | `user_inbox_add` tool |
-| Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none for the agent)* |
+| Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none for the agent)* |
 | Consumed by | The agent, via the tools above | The user, via the web UI/HTTP API |
-| Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/inbox/{id}/attachments/{index}` |
+| Attachments | Populated only when a chat attachment is saved to the agent inbox as a companion item; not attachable via `inbox_list`/`inbox_read`/`inbox_archive`/`inbox_restore` | Populated by `user_inbox_add`'s optional `attachments` parameter, served at `GET /api/inbox/{id}/attachments/{index}` |
 
 The agent inbox is a queue for the agent itself to triage — it's where the `inbox` notification-routing target delivers results. The user inbox is a one-way delivery channel *to* the user: the agent (often a background sub-agent, e.g. the built-in `introspection` skill) writes to it with `user_inbox_add`, and the user reads and archives items through the web UI. The agent has no tool to list, read, or archive the user inbox — only to add to it.
+
+Archiving is a soft delete in both inboxes, not a permanent one: an archived item's JSON file (and its attachments directory, if it has one) simply moves under `archive/inbox/`, so restoring it is just moving it back. The agent restores its own inbox items with `inbox_restore`; the user restores inbox items through the web UI's archived view, which calls `POST /api/inbox/{id}/restore`.
 
 ## How Items Arrive
 
@@ -54,9 +56,10 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 
 | Tool | Parameters | Notes |
 |------|-----------|-------|
-| `inbox_list` | `unread_only` (bool, optional, default false) | Lists agent inbox items |
+| `inbox_list` | `unread_only` (bool, optional, default false), `archived` (bool, optional, default false) | Lists agent inbox items. `archived: true` lists `archive/inbox/agent/` instead and ignores `unread_only` (everything there is already read). |
 | `inbox_read` | `id` (string — filename stem) | Reads item content, marks as read as a side effect. Cannot be unmarked. |
 | `inbox_archive` | `ids` (string[] — filename stems) | Moves items from `inbox/agent/` to `archive/inbox/agent/`. This is a move, not a copy. |
+| `inbox_restore` | `ids` (string[] — filename stems) | Moves items from `archive/inbox/agent/` back to `inbox/agent/`. The only way to undo `inbox_archive`. |
 
 ## User Inbox Attachments
 
@@ -65,8 +68,9 @@ A user inbox item created with `user_inbox_add`'s `attachments` parameter record
 - **Copy, not reference**: files land at `inbox/user/attachments/{item id}/{filename}`. Source filenames are reduced to their final path component before use, so a traversal-style source path can't place a copy outside the item's directory, and same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering.
 - **Size cap**: 25 MB per file, the same cap used for chat attachments elsewhere.
 - **All-or-nothing**: if any attachment in a call fails to copy (missing file, oversized, unreadable), no item is created and any files already copied for that item are removed. The failure is returned as a tool error and logged — there's no such thing as an item with a partial attachment set.
-- **Archiving moves attachments too**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving.
+- **Archiving moves attachments too, and restoring moves them back**: when the user archives an item, its `inbox/user/attachments/{item id}/` directory moves to `archive/inbox/user/attachments/{item id}/` alongside the JSON file, so the item's attachments keep serving after archiving; restoring the item reverses that move.
 - **Serving**: the web UI fetches attachments from `GET /api/inbox/{id}/attachments/{index}`, which checks the active inbox first, then the archive, and confines every resolved path to the item's own attachment directory before serving — an out-of-tree path 404s rather than confirming it exists.
+- **Restoring**: `GET /api/inbox/archive` lists archived user inbox items the same shape as `GET /api/inbox`; `POST /api/inbox/{id}/restore` moves one back to the active inbox. The web UI's inbox has an archived view with a Restore action wired to this endpoint.
 
 ## Intended Usage
 

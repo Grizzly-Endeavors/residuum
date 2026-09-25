@@ -120,6 +120,29 @@ pub(super) async fn api_inbox_list(
     Ok(Json(api_items))
 }
 
+/// `GET /api/inbox/archive` — List all archived user inbox items.
+pub(super) async fn api_inbox_archive_list(
+    State(state): State<ConfigApiState>,
+) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
+    let layout = WorkspaceLayout::new(&state.workspace_dir);
+    let archive_dir = layout.user_inbox_archive_dir();
+    let attachments_root = layout.user_inbox_archive_attachments_dir();
+
+    let items = crate::inbox::list_items(&archive_dir).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to list archived inbox items: {e}"),
+        )
+    })?;
+
+    let mut api_items = Vec::with_capacity(items.len());
+    for (id, item) in items {
+        api_items.push(to_api_item(id, item, &attachments_root).await);
+    }
+
+    Ok(Json(api_items))
+}
+
 /// `PUT /api/inbox/:id/read` — Mark an inbox item as read.
 pub(super) async fn api_inbox_read(
     Path(id): Path<String>,
@@ -156,6 +179,28 @@ pub(super) async fn api_inbox_archive(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to archive inbox item: {e}"),
+            )
+        })?;
+
+    Ok(Json(()))
+}
+
+/// `POST /api/inbox/:id/restore` — Restore an archived inbox item back to
+/// the active inbox — the one way to undo `api_inbox_archive`.
+pub(super) async fn api_inbox_restore(
+    Path(id): Path<String>,
+    State(state): State<ConfigApiState>,
+) -> Result<Json<()>, (StatusCode, String)> {
+    let layout = WorkspaceLayout::new(&state.workspace_dir);
+    let user_inbox_dir = layout.user_inbox_dir();
+    let archive_dir = layout.user_inbox_archive_dir();
+
+    crate::inbox::restore_item(&archive_dir, &user_inbox_dir, &id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to restore inbox item: {e}"),
             )
         })?;
 
@@ -654,5 +699,54 @@ mod tests {
         let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_inbox_archive_then_restore_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        write_active_item(&layout, "item1", vec![]).await;
+        let state = make_state(dir.path().to_path_buf());
+
+        let Json(()) = api_inbox_archive(Path("item1".to_string()), State(state.clone()))
+            .await
+            .unwrap();
+
+        let active = api_inbox_list(State(state.clone())).await.unwrap();
+        assert!(
+            active.0.is_empty(),
+            "item should be gone from the active list"
+        );
+        let archived = api_inbox_archive_list(State(state.clone())).await.unwrap();
+        assert_eq!(
+            archived.0.len(),
+            1,
+            "item should show up in the archive list"
+        );
+        assert_eq!(archived.0[0].id, "item1");
+
+        let Json(()) = api_inbox_restore(Path("item1".to_string()), State(state.clone()))
+            .await
+            .unwrap();
+
+        let active_after_restore = api_inbox_list(State(state.clone())).await.unwrap();
+        assert_eq!(active_after_restore.0.len(), 1, "item should be back");
+        assert_eq!(active_after_restore.0[0].id, "item1");
+        let archived_after_restore = api_inbox_archive_list(State(state)).await.unwrap();
+        assert!(
+            archived_after_restore.0.is_empty(),
+            "archive should be empty after restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_inbox_restore_missing_item_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = make_state(dir.path().to_path_buf());
+
+        let err = api_inbox_restore(Path("does-not-exist".to_string()), State(state))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

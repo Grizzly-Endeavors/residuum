@@ -2,6 +2,7 @@ import type { UserInboxItem } from "./types";
 
 class UserInboxState {
   items = $state<UserInboxItem[]>([]);
+  archivedItems = $state<UserInboxItem[]>([]);
   unreadCount = $derived(this.items.filter((item) => !item.read).length);
 
   private intervalId: number | null = null;
@@ -60,6 +61,32 @@ class UserInboxState {
       }
     } catch {
       // Silently ignore — item stays in list, next refresh will reconcile
+    }
+  }
+
+  async refreshArchive() {
+    try {
+      const response = await fetch("/api/inbox/archive");
+      if (response.ok) {
+        const data = await response.json();
+        this.archivedItems = data;
+      }
+    } catch {
+      // Silently ignore fetch failures — the archived view can be reopened to retry
+    }
+  }
+
+  async restore(id: string) {
+    try {
+      const response = await fetch(`/api/inbox/${encodeURIComponent(id)}/restore`, {
+        method: "POST",
+      });
+      if (response.ok) {
+        this.archivedItems = this.archivedItems.filter((item) => item.id !== id);
+        await this.refresh();
+      }
+    } catch {
+      // Silently ignore — item stays in the archived list, retry from there
     }
   }
 }

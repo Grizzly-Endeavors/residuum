@@ -16,7 +16,8 @@
     | "sessions"
     | "back"
     | "expand"
-    | "collapse";
+    | "collapse"
+    | "restore";
 
   interface Props {
     name: IconName;
@@ -94,6 +95,10 @@
       <circle cx="12.5" cy="12" r="1" />
     {:else if name === "back"}
       <path d="M13 8H3.5M7 4.5L3.5 8 7 11.5" />
+    {:else if name === "restore"}
+      <!-- a box (the archive) with an item lifting back out of it -->
+      <rect x="2.5" y="9" width="11" height="4.5" rx="1" />
+      <path d="M8 9.5V3M8 3L5.25 5.75M8 3l2.75 2.75" />
     {/if}
   </g>
   {#if name === "stop"}
