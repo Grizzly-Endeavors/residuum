@@ -91,7 +91,14 @@
           {:else}
             {#each notifications.history as item (item.id)}
               <div class="notif-dropdown-item kind-{item.kind}">
-                <div class="notif-dropdown-item-message">{item.message}</div>
+                {#if item.details}
+                  <details class="notif-dropdown-details">
+                    <summary class="notif-dropdown-item-message">{item.message}</summary>
+                    <pre class="notif-dropdown-detail-body">{item.details}</pre>
+                  </details>
+                {:else}
+                  <div class="notif-dropdown-item-message">{item.message}</div>
+                {/if}
                 <div class="notif-dropdown-item-time">{relativeTime(item.timestamp, now)}</div>
               </div>
             {/each}

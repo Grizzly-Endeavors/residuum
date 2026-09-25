@@ -465,6 +465,8 @@ export interface StatusFeedItem extends FeedItemBase {
   kind: "status";
   tone: "info" | "error";
   content: string;
+  /** Full technical detail behind an expandable toggle, when there is one. */
+  details?: string;
 }
 
 export type FeedItem =

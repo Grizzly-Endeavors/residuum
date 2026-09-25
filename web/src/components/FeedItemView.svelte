@@ -30,5 +30,5 @@
 {:else if item.kind === "agent-message"}
   <MessageAgent {item} />
 {:else if item.kind === "status"}
-  <MessageStatus tone={item.tone} content={item.content} />
+  <MessageStatus tone={item.tone} content={item.content} details={item.details} />
 {/if}
