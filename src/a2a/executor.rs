@@ -383,15 +383,16 @@ async fn stream_until_terminal(
     let mut own_turns: HashSet<String> = HashSet::new();
 
     loop {
+        // Biased, with the session branch first: a task-outcome signal is
+        // always published from inside a turn that has already published
+        // its own `TurnStarted`/`StateChanged(Running)`, so when both
+        // channels have something ready in the same poll, the session
+        // event is the earlier one causally and must be drained first —
+        // otherwise `tokio::select!`'s default random tie-break can act on
+        // the signal first and end the stream before `sent_working` was
+        // ever set, skipping the WORKING status entirely.
         tokio::select! {
-            signal = subs.signals.recv() => {
-                let Ok(Some(signal)) = signal else { return };
-                if signal.address != *stream.address {
-                    continue;
-                }
-                emit_signal_outcome(&stream, signal).await;
-                return;
-            }
+            biased;
             event = subs.sessions.recv() => {
                 let Ok(Some(event)) = event else { return };
                 if event.address != *stream.address {
@@ -400,6 +401,14 @@ async fn stream_until_terminal(
                 if handle_session_event(&stream, event.kind, &mut last_final_text, &mut sent_working, &mut own_turns).await {
                     return;
                 }
+            }
+            signal = subs.signals.recv() => {
+                let Ok(Some(signal)) = signal else { return };
+                if signal.address != *stream.address {
+                    continue;
+                }
+                emit_signal_outcome(&stream, signal).await;
+                return;
             }
         }
     }
@@ -418,15 +427,13 @@ async fn handle_session_event(
     match kind {
         SessionEventKind::TurnStarted { turn_id } => {
             own_turns.insert(turn_id);
-            // The turn actually starting is a stronger, earlier signal that
-            // the session is working than waiting on a separate
-            // `StateChanged(Running)` event below: both are published in
-            // the same burst when a run begins, so relying on only one of
-            // them left this racy under load — a subscriber's bounded bus
-            // channel (`bus::broker::SUBSCRIBER_CAPACITY`) can drop either
-            // one individually if it's momentarily full, and `TurnStarted`
-            // is also the event `own_turns` itself already depends on
-            // being delivered reliably.
+            // `SessionEvent` is a lossless bus route (`bus::topics::Carries`
+            // for `Sessions`), so both this and the `StateChanged(Running)`
+            // arm below are guaranteed delivery — neither can be dropped
+            // under load. Kept as two independent triggers anyway: they're
+            // idempotent (guarded by `sent_working`), `TurnStarted` is the
+            // stronger, earlier signal that the session is working, and
+            // `own_turns` already depends on this event being delivered.
             if *sent_working {
                 return false;
             }
