@@ -601,6 +601,7 @@ async fn publish_conversation_spawn(
         }),
         images: original_inbound.images.clone(),
         inbound: Some(original_inbound),
+        overlap: None,
     };
     publisher
         .publish(topics::Background, event)
@@ -639,6 +640,7 @@ async fn publish_conversation_resume(
         conversation: point.conversation_target.clone(),
         images: inbound.images.clone(),
         inbound: Some(inbound.clone()),
+        overlap: None,
     };
     publisher.publish(topics::Background, event).await.map_err(|e| {
         tracing::error!(error = %e, address = %address, "failed to publish conversation resume");
@@ -1020,6 +1022,7 @@ async fn publish_resume(
         // fabricate a `UserMessage` with no real sender.
         inbound: None,
         images,
+        overlap: None,
     };
 
     publisher
@@ -1109,6 +1112,7 @@ mod tests {
             conversation_target: None,
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 

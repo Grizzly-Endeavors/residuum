@@ -20,8 +20,8 @@ use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
-    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress,
-    SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
+    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, PulseOverlap, ResultDisposition,
+    SessionAddress, SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
 use crate::interfaces::types::InboundMessage;
@@ -103,6 +103,9 @@ pub(crate) struct SessionSpawnRequest {
     /// The conversation this session replies to, for a conversation-triggered
     /// session. `None` for every other trigger.
     pub conversation_target: Option<ConversationTarget>,
+    /// Set when this is a pulse fire that started while its previous run was
+    /// still live. `None` for every other trigger. See [`PulseOverlap`].
+    pub overlap: Option<PulseOverlap>,
 }
 
 /// Shared handles [`SessionRuntime::new`] stores as-is, grouped to keep its
@@ -197,6 +200,7 @@ impl SessionRuntime {
             conversation_target: req.conversation_target,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: req.overlap,
         };
 
         let stop_token = CancellationToken::new();
@@ -1531,6 +1535,7 @@ mod tests {
                 images: Vec::new(),
             },
             conversation_target: None,
+            overlap: None,
         }
     }
 
@@ -1579,6 +1584,7 @@ mod tests {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),
             }),
+            overlap: None,
         }
     }
 
@@ -1609,6 +1615,7 @@ mod tests {
             }),
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let mut rx = registry
             .register(winner.clone(), CancellationToken::new())
@@ -1868,6 +1875,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let mut winner_rx = runtime
             .registry
@@ -2171,6 +2179,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         store.begin_run(&info).await;
         let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> =
@@ -2624,6 +2633,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         store.begin_run(&info).await;
 
@@ -2902,6 +2912,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let event = build_result_event(
             &info,
@@ -2948,6 +2959,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let summary = "Found something worth flagging. The instruction to omit \
              HEARTBEAT_OK was honored, so this note does not end with it."
@@ -2983,6 +2995,7 @@ mod tests {
             conversation_target: None,
             started_at: Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let event = build_result_event(
             &info,

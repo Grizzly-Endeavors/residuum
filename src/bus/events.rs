@@ -533,6 +533,26 @@ pub struct SpawnRequestEvent {
     /// buffered message's images); empty for every other trigger, which have
     /// no images of their own.
     pub images: Vec<ImageData>,
+    /// Set when this is a pulse fire that started while its previous run was
+    /// still live in the registry. `None` for every other trigger, and for a
+    /// pulse fire that found no live previous run. See [`PulseOverlap`].
+    pub overlap: Option<PulseOverlap>,
+}
+
+/// Marks a pulse run that started while its previous run was still going
+/// (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
+/// The new run is never skipped, blocked, or cancelled for this — it starts
+/// normally — but this flag makes the overlap visible in the Scheduled view
+/// and the run's own session view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PulseOverlap {
+    /// Run id of the still-live previous run this one overlapped with.
+    pub previous_run_id: String,
+    /// When that previous run started, so the overlap can be described as
+    /// "still going after N minutes" without a second lookup.
+    #[ts(type = "string")]
+    pub previous_started_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// The conversation an `external` conversation session replies to: which

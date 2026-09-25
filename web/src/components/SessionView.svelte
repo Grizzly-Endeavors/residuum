@@ -25,7 +25,9 @@
   let summary = $derived(view.summary);
   let connected = $derived(ws.transport.status === "connected");
   let finished = $derived(summary?.state === "completed");
-  let working = $derived(summary?.state === "running" || summary?.state === "forking");
+  let working = $derived(
+    summary?.state === "running" || summary?.state === "forking" || summary?.state === "queued",
+  );
   let canStop = $derived(summary ? isStoppableState(summary.state) : false);
   let outcome = $derived(ws.sessions.outcomes.get(view.runId));
   let stateText = $derived.by(() => {

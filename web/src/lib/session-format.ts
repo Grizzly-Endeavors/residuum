@@ -34,13 +34,15 @@ export function isLiveState(state: SessionState): boolean {
 
 /** States in which a stop request can still take effect. */
 export function isStoppableState(state: SessionState): boolean {
-  return state === "forking" || state === "running" || state === "idle";
+  return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
 export function stateLabel(state: SessionState): string {
   switch (state) {
     case "forking":
       return "starting";
+    case "queued":
+      return "queued";
     case "running":
       return "working";
     case "idle":

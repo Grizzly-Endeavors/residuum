@@ -9,21 +9,36 @@ use crate::config::BackgroundModelTier;
 
 /// Fork due scheduled actions as `scheduled` sessions.
 ///
-/// Due actions are drained from the store and saved.
+/// An action is removed from the store only once its spawn request has
+/// actually been published — never before. An action whose publish fails
+/// stays in the store exactly as it was, so it's retried on the next tick
+/// rather than lost; the failure itself is already logged in
+/// [`publish_action_spawn`].
 pub(super) async fn spawn_due_actions(
     action_store: &Arc<tokio::sync::Mutex<ActionStore>>,
     publisher: &Publisher,
 ) {
     let now = chrono::Utc::now();
     let mut store = action_store.lock().await;
-    let due = store.take_due(now);
+    let due = store.due(now);
 
     if due.is_empty() {
         return;
     }
 
+    let mut started_ids = Vec::new();
     for action in &due {
-        publish_action_spawn(action, publisher).await;
+        if publish_action_spawn(action, publisher).await {
+            started_ids.push(action.id.clone());
+        }
+    }
+
+    if started_ids.is_empty() {
+        return;
+    }
+
+    for id in &started_ids {
+        store.remove(id);
     }
 
     if let Err(e) = store.save().await {
@@ -31,11 +46,13 @@ pub(super) async fn spawn_due_actions(
     }
 }
 
-/// Publish a `SpawnRequest` for a scheduled action.
+/// Publish a `SpawnRequest` for a scheduled action. Returns whether the
+/// publish succeeded, so the caller knows whether the action's run actually
+/// started and can be removed from the store.
 async fn publish_action_spawn(
     action: &crate::actions::types::ScheduledAction,
     publisher: &Publisher,
-) {
+) -> bool {
     let tier = action
         .model_tier
         .as_deref()
@@ -60,13 +77,19 @@ async fn publish_action_spawn(
         conversation: None,
         inbound: None,
         images: Vec::new(),
+        overlap: None,
     };
 
-    if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
-        tracing::warn!(
-            action = %action.name,
-            error = %e,
-            "failed to publish action spawn request"
-        );
+    match publisher.publish(topics::Background, spawn_event).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                action = %action.name,
+                error = %e,
+                "failed to publish action spawn request; action stays scheduled and will be \
+                 retried on the next tick"
+            );
+            false
+        }
     }
 }

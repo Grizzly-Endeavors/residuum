@@ -94,6 +94,7 @@ describe("artifact sessions", () => {
 describe("isStoppableState", () => {
   it.each([
     ["forking", true],
+    ["queued", true],
     ["running", true],
     ["idle", true],
     ["completing", false],

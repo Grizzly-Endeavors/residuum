@@ -297,6 +297,7 @@
 }
 
 .session-row.state-forking .session-row-seam,
+.session-row.state-queued .session-row-seam,
 .session-row.state-completing .session-row-seam {
   background: var(--moss);
   opacity: 0.7;

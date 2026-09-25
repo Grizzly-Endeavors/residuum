@@ -126,7 +126,10 @@ fn handle_spawn_request<'a>(
                     });
                     return Ok(());
                 }
-                SessionState::Forking | SessionState::Running | SessionState::Idle => {
+                SessionState::Forking
+                | SessionState::Queued
+                | SessionState::Running
+                | SessionState::Idle => {
                     // Two concurrent resume attempts for the same address
                     // (e.g. two messages queued while a session was
                     // completing, each deferred separately — see
@@ -308,6 +311,7 @@ async fn fork_and_spawn(
             images: event.images,
         },
         conversation_target: event.conversation,
+        overlap: event.overlap,
     };
 
     let log_address = request.address.clone();
@@ -376,6 +380,7 @@ mod tests {
             }),
             images: inbound.images.clone(),
             inbound: Some(inbound),
+            overlap: None,
         }
     }
 
@@ -398,6 +403,7 @@ mod tests {
             }),
             started_at: chrono::Utc::now(),
             usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
