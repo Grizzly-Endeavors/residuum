@@ -7,7 +7,7 @@ use tokio::time::Duration;
 use super::helpers::publish_notice;
 use crate::background::spawn_context::SpawnContext;
 use crate::config::Config;
-use crate::gateway::startup;
+use crate::gateway::{last_known_good, startup};
 use crate::inference::CompletionOptions;
 use crate::inference::InferenceError;
 use crate::inference::SharedHttpClient;
@@ -282,24 +282,6 @@ fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpe
         .collect()
 }
 
-/// Copy `config.toml` and `providers.toml` to `.bak` files after they load
-/// successfully, keeping a copy of the last config that worked.
-///
-/// Best-effort: logs a warning on failure but never panics.
-pub fn backup_config(config_dir: &std::path::Path) {
-    for name in &["config.toml", "providers.toml"] {
-        let src = config_dir.join(name);
-        let dst = config_dir.join(format!("{name}.bak"));
-        if src.exists() {
-            if let Err(err) = std::fs::copy(&src, &dst) {
-                tracing::warn!(file = %name, error = %err, "failed to back up config");
-            } else {
-                tracing::debug!(file = %name, "backed up to .bak");
-            }
-        }
-    }
-}
-
 /// Shut down an adapter task and wait up to 5 seconds for it to stop.
 async fn shutdown_adapter(
     shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
@@ -330,12 +312,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
 
     let new_cfg = match Config::load_at(&rt.config_dir) {
-        Ok(cfg) => {
-            // Only a config that loaded replaces the backup, so the backup is
-            // always the last one that worked.
-            backup_config(&rt.config_dir);
-            cfg
-        }
+        Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
             publish_notice(
@@ -350,6 +327,10 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     let diff = diff_config(&rt.cfg, &new_cfg);
 
     if !diff.changed {
+        // The live files still load and resolve fine even though nothing
+        // changed — worth saving as last-known-good too, in case the
+        // previous save predates a since-reverted edit.
+        last_known_good::save(&rt.config_dir);
         publish_notice(
             &rt.publisher,
             "configuration reloaded: no changes detected".to_string(),
@@ -392,6 +373,11 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 
     // ── Store new config ────────────────────────────────────────────────
     rt.cfg = new_cfg;
+
+    // Every subsystem above degrades independently and never fails this
+    // function outright, so reaching here means the reload fully applied —
+    // exactly what "last-known-good" means.
+    last_known_good::save(&rt.config_dir);
 
     publish_notice(&rt.publisher, format!("configuration reloaded: {summary}")).await;
     tracing::info!(changes = %summary, "configuration reloaded successfully");
@@ -1489,47 +1475,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn backup_config_creates_bak_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config.toml");
-        let providers = dir.path().join("providers.toml");
-        std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
-        std::fs::write(&providers, "# providers\n").unwrap();
-
-        backup_config(dir.path());
-
-        let config_bak = dir.path().join("config.toml.bak");
-        assert!(config_bak.exists(), "backup should create config.toml.bak");
-        assert_eq!(
-            std::fs::read_to_string(&config_bak).unwrap(),
-            "timezone = \"UTC\"\n",
-            "config.toml backup content should match original"
-        );
-
-        let providers_bak = dir.path().join("providers.toml.bak");
-        assert!(
-            providers_bak.exists(),
-            "backup should create providers.toml.bak"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&providers_bak).unwrap(),
-            "# providers\n",
-            "providers.toml backup content should match original"
-        );
-    }
-
-    #[test]
-    fn backup_config_missing_source_does_not_panic() {
-        let dir = tempfile::tempdir().unwrap();
-        // No config.toml exists — backup should warn but not panic
-        backup_config(dir.path());
-        assert!(
-            !dir.path().join("config.toml.bak").exists(),
-            "no backup should be created when source is missing"
-        );
-    }
-
     fn fireworks_spec(api_key: &str) -> ProviderSpec {
         ProviderSpec {
             name: "fireworks".to_string(),
@@ -1602,20 +1547,5 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(!diff.changed);
         assert!(!diff.summary().contains("credential changed for"));
-    }
-
-    #[test]
-    fn backup_config_overwrites_stale_backup() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml.bak"), "old content").unwrap();
-        std::fs::write(dir.path().join("config.toml"), "new content").unwrap();
-
-        backup_config(dir.path());
-
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(),
-            "new content",
-            "backup should overwrite previous backup"
-        );
     }
 }

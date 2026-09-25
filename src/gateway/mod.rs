@@ -6,6 +6,7 @@ pub(crate) mod event_loop;
 pub mod file_server;
 pub(crate) mod helpers;
 mod idle;
+pub(crate) mod last_known_good;
 mod memory;
 pub mod protocol;
 mod reload;
@@ -18,5 +19,6 @@ mod watcher;
 pub(crate) mod web;
 mod ws;
 
-pub use event_loop::run_gateway;
+pub use event_loop::{run_gateway, run_gateway_with_config};
+pub use last_known_good::exists as has_last_known_good;
 pub use types::{GatewayExit, ReloadSignal, ServerCommand};

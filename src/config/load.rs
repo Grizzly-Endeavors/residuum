@@ -63,9 +63,29 @@ impl Config {
     #[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
     pub fn load_at(config_dir: &std::path::Path) -> Result<Self, FatalError> {
         let config_path = config_dir.join("config.toml");
+        let providers_path = find_providers_path(config_dir)?;
+        Self::load_from_paths(config_dir, &config_path, &providers_path)
+    }
 
+    /// Load configuration from explicit `config.toml`/`providers.toml`
+    /// paths, resolved against `config_dir` for everything else (secrets,
+    /// workspace defaults, tool paths).
+    ///
+    /// Used by [`load_at`](Self::load_at) for the normal path, and by the
+    /// last-known-good fallback (`gateway::last_known_good`) to load a
+    /// saved copy under different filenames without touching the user's
+    /// live `config.toml`/`providers.toml`.
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` if either file exists but cannot be
+    /// read or parsed, or if required values are missing.
+    pub(crate) fn load_from_paths(
+        config_dir: &std::path::Path,
+        config_path: &std::path::Path,
+        providers_path: &std::path::Path,
+    ) -> Result<Self, FatalError> {
         let (file_config, config_notices) = if config_path.exists() {
-            let contents = std::fs::read_to_string(&config_path).map_err(|e| {
+            let contents = std::fs::read_to_string(config_path).map_err(|e| {
                 FatalError::Config(format!(
                     "failed to read config at {}: {e}",
                     config_path.display()
@@ -79,8 +99,7 @@ impl Config {
             (None, Vec::new())
         };
 
-        let loaded_providers_path = find_providers_path(config_dir)?;
-        let (providers, providers_notices) = load_providers(&loaded_providers_path)?;
+        let (providers, providers_notices) = load_providers(providers_path)?;
 
         let mut cfg =
             resolve::from_file_and_env(file_config.as_ref(), Some(&providers), config_dir)?;
@@ -91,7 +110,7 @@ impl Config {
 
         tracing::info!(
             config = %config_path.display(),
-            providers = %loaded_providers_path.display(),
+            providers = %providers_path.display(),
             main_model = %cfg.main.first().map(|p| p.model.to_string()).unwrap_or_default(),
             timezone = %cfg.timezone,
             notices = cfg.load_notices.len(),
