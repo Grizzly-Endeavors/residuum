@@ -240,6 +240,7 @@ pub(super) async fn api_a2a_agents_raw_put(
             Json(ValidateResponse {
                 valid: false,
                 error: Some(e),
+                diagnostics: Vec::new(),
             }),
         )
     })?;
@@ -257,6 +258,7 @@ pub(super) async fn api_a2a_agents_raw_put(
                 Json(ValidateResponse {
                     valid: false,
                     error: Some(format!("failed to write a2a.json: {e}")),
+                    diagnostics: Vec::new(),
                 }),
             )
         })?;
@@ -268,6 +270,7 @@ pub(super) async fn api_a2a_agents_raw_put(
     Ok(Json(ValidateResponse {
         valid: true,
         error: None,
+        diagnostics: Vec::new(),
     }))
 }
 

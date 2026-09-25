@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 
 /// How serious a diagnostic is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// The affected entry, pulse, or file will not load or run until fixed.
@@ -36,7 +36,7 @@ pub enum Severity {
 /// A problem found after parsing, where nothing tracks source position (an
 /// unrecognized MCP transport, a duplicate pulse name), gets a [`Location::Path`]
 /// naming the key instead — e.g. `mcpServers.filesystem` or `pulses.morning-check`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Location {
     /// A 1-based line number, with no column (e.g. a whole-pulse problem).
@@ -83,11 +83,11 @@ impl std::fmt::Display for Location {
 
 /// One problem found in a strictly-parsed file: what it is, how serious it
 /// is, and where it is when the parser or checker could tell us.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
 }
 
@@ -157,11 +157,10 @@ pub struct DiagnosticsPaths {
     pub workspace_dir: PathBuf,
 }
 
-/// Pick the validator for `path` and return diagnostics for `content`.
-///
-/// Returns `None` if `path` isn't one of the strictly-parsed files this
-/// module understands — callers treat that as "nothing to check", not as a
-/// problem.
+/// Which strictly-parsed file `path` refers to, independent of content —
+/// used both to dispatch [`diagnose`] and to let a caller with raw bytes
+/// (not yet known to be valid UTF-8) tell whether it's looking at one of
+/// these files before it has decoded text to hand to a validator.
 ///
 /// `config.toml`/`providers.toml` are matched by their canonical location
 /// under `paths.config_dir`; `config/channels.toml`, `config/mcp.json`, and
@@ -170,42 +169,80 @@ pub struct DiagnosticsPaths {
 /// of directory, matching how the rest of the codebase already recognizes
 /// them (see `is_heartbeat_file` in `src/gateway/web/workspace.rs` and the
 /// skill scanner, which accepts a `SKILL.md` anywhere under the skills root).
-#[must_use]
-pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<Vec<Diagnostic>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    ConfigToml,
+    ProvidersToml,
+    ChannelsToml,
+    McpJson,
+    A2aJson,
+    Heartbeat,
+    SkillMd,
+}
+
+/// Recognize `path` as one of the strictly-parsed files this module
+/// understands, or `None` if it's neither — see [`FileKind`].
+fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
     let file_name = path.file_name().and_then(|n| n.to_str())?;
 
     if paths_match(path, &paths.config_dir.join("config.toml")) {
-        return Some(crate::config::Config::diagnose_toml(
-            content,
-            &paths.config_dir,
-        ));
+        return Some(FileKind::ConfigToml);
     }
     if paths_match(path, &paths.config_dir.join("providers.toml")) {
-        return Some(crate::config::Config::diagnose_providers_toml(
-            content,
-            &paths.config_dir,
-        ));
+        return Some(FileKind::ProvidersToml);
     }
 
     let layout = crate::workspace::layout::WorkspaceLayout::new(&paths.workspace_dir);
     if paths_match(path, &layout.channels_toml()) {
-        return Some(crate::workspace::config::diagnose_channels_toml(content));
+        return Some(FileKind::ChannelsToml);
     }
     if paths_match(path, &layout.mcp_json()) {
-        return Some(crate::workspace::config::diagnose_mcp_json(content));
+        return Some(FileKind::McpJson);
     }
     if paths_match(path, &layout.a2a_agents_json()) {
-        return Some(crate::a2a::client::config::diagnose_a2a_json(content));
+        return Some(FileKind::A2aJson);
     }
 
     if file_name == "HEARTBEAT.yml" {
-        return Some(crate::pulse::types::diagnose_heartbeat(content));
+        return Some(FileKind::Heartbeat);
     }
     if file_name == "SKILL.md" {
-        return Some(crate::skills::diagnose_skill_md(content));
+        return Some(FileKind::SkillMd);
     }
 
     None
+}
+
+/// Whether `path` is one of the strictly-parsed files this module
+/// understands, without parsing anything. Lets a caller holding raw bytes
+/// that might not be valid UTF-8 (a workspace write, say) decide whether a
+/// decode failure is itself worth a diagnostic before it has text to hand to
+/// [`diagnose`].
+#[must_use]
+pub fn is_recognized(path: &Path, paths: &DiagnosticsPaths) -> bool {
+    recognize(path, paths).is_some()
+}
+
+/// Pick the validator for `path` and return diagnostics for `content`.
+///
+/// Returns `None` if `path` isn't one of the strictly-parsed files this
+/// module understands — callers treat that as "nothing to check", not as a
+/// problem.
+#[must_use]
+pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<Vec<Diagnostic>> {
+    let kind = recognize(path, paths)?;
+
+    Some(match kind {
+        FileKind::ConfigToml => crate::config::Config::diagnose_toml(content, &paths.config_dir),
+        FileKind::ProvidersToml => {
+            crate::config::Config::diagnose_providers_toml(content, &paths.config_dir)
+        }
+        FileKind::ChannelsToml => crate::workspace::config::diagnose_channels_toml(content),
+        FileKind::McpJson => crate::workspace::config::diagnose_mcp_json(content),
+        FileKind::A2aJson => crate::a2a::client::config::diagnose_a2a_json(content),
+        FileKind::Heartbeat => crate::pulse::types::diagnose_heartbeat(content),
+        FileKind::SkillMd => crate::skills::diagnose_skill_md(content),
+    })
 }
 
 /// Compare `path` against `target` (an absolute path this module builds from
