@@ -185,9 +185,6 @@ type ArtifactRequest =
   | ReadyRequest
   | EscapeRequest;
 
-/** Most prefixes one artifact may watch; the gateway refuses more. */
-const MAX_WATCH_PREFIXES = 256;
-
 /** A relayed response, rebuilt into a `Response` by the SDK. */
 export interface RelayedResponse {
   status: number;
@@ -511,12 +508,6 @@ export class WorkbenchBridge {
   }
 
   private handleWatch(request: WatchRequest): void {
-    if (request.prefixes.length > MAX_WATCH_PREFIXES) {
-      this.reply(request.id, {
-        error: `An artifact can watch at most ${MAX_WATCH_PREFIXES} paths at once.`,
-      });
-      return;
-    }
     const prefixes = new Set<string>();
     for (const prefix of request.prefixes) {
       const normalized = normalizeWatchPrefix(prefix);

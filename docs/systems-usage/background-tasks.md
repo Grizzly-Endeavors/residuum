@@ -280,7 +280,7 @@ A sidebar message is delivered like any agent message, at hop count 0: an interr
 - `completed` — one page of completed runs from the session store, newest first (by start time, then run id).
 - `next_cursor` — an opaque string to pass back as `before` for the next page, or `null` on the last page.
 
-Query parameters: `category` (`scheduled` | `external` | `spawned` | `artifact`; filters both lists), `address` (only runs of the session at that address; filters both lists), `artifact` (only sessions that workbench artifact started — not sessions those spawned in turn; filters both lists; an invalid artifact name is a `400`), `limit` (completed runs per page, 1–200, default 50), `before` (a `next_cursor` from a previous response). An unknown category, an out-of-range limit, or a malformed cursor is a `400`; pass back only a `next_cursor` the server returned. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
+Query parameters: `category` (`scheduled` | `external` | `spawned` | `artifact`; filters both lists), `address` (only runs of the session at that address; filters both lists), `artifact` (only sessions that workbench artifact started — not sessions those spawned in turn; filters both lists; an invalid artifact name is a `400`), `limit` (completed runs per page, at least 1, default 50, no upper cap), `before` (a `next_cursor` from a previous response). An unknown category, a `limit` of zero, or a malformed cursor is a `400`; pass back only a `next_cursor` the server returned. A run that has just been recorded but hasn't yet left the registry is listed only under `live`.
 
 **`POST /api/sessions`** starts an `artifact` session; see [Artifact Sessions](#artifact-sessions).
 

@@ -14,9 +14,6 @@ use crate::memory::types::DocSource;
 /// Fewest results a caller may ask for.
 const MIN_LIMIT: usize = 1;
 
-/// Most results a caller may ask for; also the default-absent clamp ceiling.
-const MAX_LIMIT: usize = 50;
-
 /// Results per page when the request doesn't say.
 const DEFAULT_LIMIT: usize = 10;
 
@@ -38,7 +35,7 @@ pub(crate) fn memory_api_router(state: MemoryApiState) -> axum::Router {
 pub(super) struct MemorySearchQuery {
     /// The search query. Blank answers `400`.
     q: String,
-    /// Results to return, clamped to `1..=50` (default 10).
+    /// Results to return, floored at 1 (default 10). No upper cap.
     #[serde(default)]
     limit: Option<usize>,
     /// `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three.
@@ -87,10 +84,7 @@ pub(super) async fn api_memory_search(
         return Err((StatusCode::BAD_REQUEST, "q must not be blank".to_string()));
     }
 
-    let limit = query
-        .limit
-        .unwrap_or(DEFAULT_LIMIT)
-        .clamp(MIN_LIMIT, MAX_LIMIT);
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).max(MIN_LIMIT);
 
     let source = match query.source.as_deref() {
         Some(s) => Some(DocSource::from_query_str(s).ok_or_else(|| {
@@ -253,6 +247,47 @@ mod tests {
         .await
         .unwrap();
         assert!(response.0.results.len() <= 1);
+    }
+
+    #[tokio::test]
+    async fn limit_above_the_old_fifty_ceiling_is_honoured() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = MemoryIndex::open_or_create(&dir.path().join(".index")).unwrap();
+        let obs: Vec<Observation> = (0..60)
+            .map(|i| Observation {
+                timestamp: chrono::Utc::now().naive_utc(),
+                source_episodes: Some("ep-001".to_string()),
+                visibility: Visibility::User,
+                content: format!("rust memory safety topic number {i}"),
+                source: crate::memory::types::SourceTag::main(),
+            })
+            .collect();
+        index
+            .index_observations("ep-001", "2026-02-19", &obs)
+            .unwrap();
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default());
+        let state = MemoryApiState {
+            hybrid_searcher: Arc::new(searcher),
+        };
+
+        let response = api_memory_search(
+            Query(MemorySearchQuery {
+                q: "rust memory".to_string(),
+                limit: Some(55),
+                source: None,
+                date_from: None,
+                date_to: None,
+            }),
+            State(state),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.0.results.len(),
+            55,
+            "a limit above the old 50-result ceiling should be honoured"
+        );
     }
 
     #[tokio::test]

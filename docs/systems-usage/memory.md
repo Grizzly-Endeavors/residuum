@@ -99,7 +99,7 @@ Temporal decay never applies to wiki pages: they hold maintained knowledge, and 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
 | `query` | string | yes | Supports AND, OR, phrase queries |
-| `limit` | integer | no | Max results. Default 5, cap 20 |
+| `limit` | integer | no | Max results. Default 5, no upper cap |
 | `source` | string enum | no | `"observations"`, `"episodes"`, or `"wiki"`; omit to search all three |
 | `date_from` | string | no | `YYYY-MM-DD`, inclusive lower bound |
 | `date_to` | string | no | `YYYY-MM-DD`, inclusive upper bound |
@@ -107,7 +107,7 @@ Temporal decay never applies to wiki pages: they hold maintained knowledge, and 
 
 A wiki result's ID is the page's workspace-relative path (`wiki/homelab/cluster.md`), ready for `read_file`.
 
-`GET /api/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` runs the same hybrid search for workbench artifacts, with `episode_ids` unsupported (this endpoint has no equivalent parameter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, where `semantic` says whether vector search contributed to the results. A blank `q`, an unrecognized `source`, or a `date_from`/`date_to` that isn't `YYYY-MM-DD` answers `400`.
+`GET /api/memory/search?q=<query>&limit=<at least 1, default 10, no upper cap>&source=observations|episodes|wiki&date_from=&date_to=` runs the same hybrid search for workbench artifacts, with `episode_ids` unsupported (this endpoint has no equivalent parameter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, where `semantic` says whether vector search contributed to the results. A blank `q`, an unrecognized `source`, or a `date_from`/`date_to` that isn't `YYYY-MM-DD` answers `400`.
 
 ### `memory_get`
 

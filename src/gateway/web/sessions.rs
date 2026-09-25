@@ -48,9 +48,6 @@ use crate::workbench::is_valid_artifact_name;
 /// Completed runs per page when the request doesn't say.
 const DEFAULT_PAGE_SIZE: usize = 50;
 
-/// Most completed runs one request may ask for.
-const MAX_PAGE_SIZE: usize = 200;
-
 /// Shared state for the sessions API.
 #[derive(Clone)]
 pub(crate) struct SessionsApiState {
@@ -106,7 +103,7 @@ pub(crate) struct SessionListQuery {
     /// Continue after a previous page: its `next_cursor`.
     #[serde(default)]
     before: Option<String>,
-    /// Completed runs per page (1 to 200, default 50).
+    /// Completed runs per page (at least 1, default 50). No upper cap.
     #[serde(default)]
     limit: Option<usize>,
 }
@@ -124,18 +121,18 @@ pub(crate) struct SessionListQuery {
 /// `live`.
 ///
 /// # Errors
-/// `400` for a malformed cursor, an out-of-range limit, or an invalid
-/// artifact name (an unknown category is rejected by the query parser),
-/// `500` if the session store can't be read.
+/// `400` for a malformed cursor, a `limit` of zero, or an invalid artifact
+/// name (an unknown category is rejected by the query parser), `500` if the
+/// session store can't be read.
 pub(crate) async fn api_sessions_list(
     State(state): State<SessionsApiState>,
     Query(query): Query<SessionListQuery>,
 ) -> Result<Json<SessionListResponse>, ApiError> {
     let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE);
-    if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+    if limit == 0 {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("limit must be between 1 and {MAX_PAGE_SIZE}"),
+            "limit must be at least 1".to_string(),
         ));
     }
     let before = match query.before.as_deref() {
@@ -833,10 +830,9 @@ mod tests {
         let (state, _dir) = state();
         let zero = list(&state, None, None, Some(0)).await.unwrap_err();
         assert_eq!(zero.0, StatusCode::BAD_REQUEST);
-        let huge = list(&state, None, None, Some(MAX_PAGE_SIZE + 1))
-            .await
-            .unwrap_err();
-        assert_eq!(huge.0, StatusCode::BAD_REQUEST);
+        // A limit above the old 200 ceiling is honoured, not rejected.
+        let huge = list(&state, None, None, Some(500)).await.unwrap();
+        assert!(huge.completed.len() <= 500);
         let bad_cursor = list(&state, None, Some("../../etc".to_string()), None)
             .await
             .unwrap_err();

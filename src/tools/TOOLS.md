@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
+> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit to page through the rest — there is no file size limit, the output header reports the file's total size and line count either way. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
 
 ### Input
 
@@ -21,17 +21,13 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 ### Output
 
-**Text files:** lines formatted as `{line_num:>4}\t{content}` joined by newlines, optionally preceded by warning lines.
+**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N; ...`) when the output doesn't cover the whole file, and a line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
 
-Warnings prepended when:
-- File exceeds 2000 lines and no explicit `limit`/`offset` was given
-- Any lines exceed 2000 characters (they are truncated with `... (truncated)`)
-
-**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images.
+**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images. Capped at the model API's inline image size limit (20 MB); over that, the error names the limit as a model API fact, not a residuum one.
 
 On error (returned as `is_error = true`):
 - File does not exist or cannot be read
-- File exceeds 10 MB size cap
+- Image exceeds the model API's inline size limit
 
 **Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
 
@@ -225,7 +221,7 @@ On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created b
 | Parameter         | Type            | Required | Description                                                  |
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
-| `limit`           | integer         | no       | Maximum results to return (default: 5, max: 20)              |
+| `limit`           | integer         | no       | Maximum results to return (default: 5, no upper cap)         |
 | `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
@@ -252,24 +248,27 @@ On error: `"search failed: {reason}"`
 **Source:** `memory_get.rs` · `MemoryGetTool`
 
 **Description sent to LLM:**
-> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers.
+> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers. A tool result line over 500 chars is shown truncated with its original length; pass expand_line with that line number to retrieve it in full.
 
 ### Input
 
-| Parameter    | Type    | Required | Description                                              |
-|--------------|---------|----------|----------------------------------------------------------|
-| `episode_id` | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
-| `run_id`     | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
-| `from_line`  | integer | no       | Start reading from this line offset (1-indexed, default: start) |
-| `lines`      | integer | no       | Number of message lines to return (default: 50, max: 200) |
+| Parameter     | Type    | Required | Description                                              |
+|---------------|---------|----------|----------------------------------------------------------|
+| `episode_id`  | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
+| `run_id`      | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
+| `from_line`   | integer | no       | Start reading from this line offset (1-indexed, default: start) |
+| `lines`       | integer | no       | Number of message lines to return (default: 50, max: 200) |
+| `expand_line` | integer | no       | Return this one line number in full, uncut by the 500-char tool result truncation. Overrides from_line/lines. |
 
 **Security:** `episode_id`/`run_id` containing `/`, `\`, or `..` is rejected with a path-traversal error.
 
 ### Output
 
-On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used.
+On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used. A `Tool:` line over 500 chars is truncated with `(showing 500 of {N} chars; use memory_get with expand_line={N} to see the full result)`.
 
-On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
+On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines and truncation notice, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
+
+On success with `expand_line`: the same header, followed by just that one line's message with its full content (no 500-char truncation). `from_line`/`lines` are ignored when `expand_line` is given.
 
 On error:
 - Both `episode_id` and `run_id` given → `"provide exactly one of 'episode_id' or 'run_id', not both"`
@@ -816,23 +815,22 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 **Source:** `web_fetch.rs` · `WebFetchTool`
 
 **Description sent to LLM:**
-> Fetch a web page and extract its main content as readable text. Returns the page title and cleaned content, optimized for reading. Use this to read articles, documentation, or any web page.
+> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports.
 
 ### Input
 
-| Parameter | Type   | Required | Description          |
-|-----------|--------|----------|----------------------|
-| `url`     | string | yes      | The URL to fetch     |
+| Parameter | Type    | Required | Description                                                                                          |
+|-----------|---------|----------|-------------------------------------------------------------------------------------------------------|
+| `url`     | string  | yes      | The URL to fetch                                                                                     |
+| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0); continue from a previous response's offset |
 
 ### Output
 
-On success: extracted readable text from the page, with the title as a markdown heading if available. Content is truncated at 50,000 characters with a `[content truncated]` notice if exceeded.
-
-For `text/plain` responses: returns the raw text content (truncated if needed).
+On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. HTML is extracted to readable text; any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is. There is no total-size limit — a longer page is read in full by paging through `offset`, not truncated.
 
 On error (`is_error = true`):
 - HTTP error status: `"HTTP {status} fetching {url}"`
-- Unsupported content type (not `text/html` or `text/plain`): `"unsupported content type: {type}"`
+- Binary content type: `"content type '{type}' is binary — web_fetch only handles textual content (HTML, JSON, XML, plain text, and similar)"`
 
 On execution error:
 - Network/connection failure: `"failed to fetch {url}: {details}"`
