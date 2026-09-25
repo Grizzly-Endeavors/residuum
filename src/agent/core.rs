@@ -44,6 +44,11 @@ pub struct Agent {
     /// startup and kept current on every config reload (see
     /// [`Agent::set_max_tool_iterations`]).
     max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call. Set from
+    /// [`crate::config::AgentAbilitiesConfig::repeat_call_guard`] at startup
+    /// and kept current on every config reload (see
+    /// [`Agent::set_repeat_call_guard`]).
+    repeat_call_guard: crate::config::RepeatCallGuardConfig,
     observations: Option<String>,
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
@@ -94,6 +99,7 @@ impl Agent {
             recent_messages: RecentMessages::new(),
             options: config.options,
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             observations: None,
             recent_context: None,
             tz: config.tz,
@@ -171,6 +177,12 @@ impl Agent {
     /// startup, or after a config reload). `None` means unlimited.
     pub fn set_max_tool_iterations(&mut self, limit: Option<usize>) {
         self.max_tool_iterations = limit;
+    }
+
+    /// Set the repeat-call guard config for future turns (e.g. at startup,
+    /// or after a config reload).
+    pub fn set_repeat_call_guard(&mut self, config: crate::config::RepeatCallGuardConfig) {
+        self.repeat_call_guard = config;
     }
 
     /// Reload the `ollama_web_search` tool in place from the current
@@ -354,6 +366,7 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
             max_tool_iterations: self.max_tool_iterations,
+            repeat_call_guard: self.repeat_call_guard,
             stop_token,
             // The main agent persists its transcript separately
             // (`recent_messages.json`, written after the whole turn).
@@ -756,6 +769,9 @@ mod tests {
         // Deliberately well past the old hardcoded 50-iteration cap, proving
         // an unconfigured agent no longer bails out at any fixed count.
         let extra_iterations = 60;
+        // Arguments vary per call (the loop index) so this exercises only
+        // the max_tool_iterations gate, not the unrelated repeat-call guard,
+        // which would otherwise end the turn on an identical call streak.
         let mut responses: Vec<InferenceResponse> = (0..extra_iterations)
             .map(|i| {
                 InferenceResponse::new(
@@ -763,7 +779,7 @@ mod tests {
                     vec![ToolCall {
                         id: format!("call_{i}"),
                         name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo loop"}),
+                        arguments: serde_json::json!({"command": format!("echo loop {i}")}),
                     }],
                 )
             })

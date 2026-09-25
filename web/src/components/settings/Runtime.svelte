@@ -393,6 +393,44 @@
           background sessions).
         </div>
       </div>
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.agent_repeat_call_guard_enabled} />
+            <span class="toggle-slider"></span>
+          </span>
+          Repeat Call Guard
+        </label>
+        <div class="field-hint">
+          Watches for a model repeating the exact same tool call (same tool, byte-identical
+          arguments) over and over.
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="rt-agent-repeat-steer">Steer After (consecutive identical calls)</label>
+        <input
+          id="rt-agent-repeat-steer"
+          type="number"
+          min="1"
+          bind:value={fields.agent_repeat_call_steer_after}
+          placeholder="Default: 3"
+        />
+        <div class="field-hint">
+          The call still runs, but its result carries a note nudging the model to try something
+          else.
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="rt-agent-repeat-stop">Stop After (consecutive identical calls)</label>
+        <input
+          id="rt-agent-repeat-stop"
+          type="number"
+          min="1"
+          bind:value={fields.agent_repeat_call_stop_after}
+          placeholder="Default: 6"
+        />
+        <div class="field-hint">The turn ends instead of running the call again.</div>
+      </div>
     </div>
 
     <div class="settings-group">

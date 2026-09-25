@@ -19,6 +19,7 @@ use super::constants::{
     DEFAULT_LEARNING_COOLDOWN_MINUTES, DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
     DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    DEFAULT_REPEAT_CALL_STEER_AFTER, DEFAULT_REPEAT_CALL_STOP_AFTER,
     DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
     DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBAGENT_DEPTH_CAP,
@@ -392,6 +393,9 @@ pub struct AgentAbilitiesConfig {
     /// gracefully. `None` means unlimited — the user's own Cancel /
     /// `stop_agent` is the intended safety valve for a runaway turn.
     pub max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call over and
+    /// over (see [`RepeatCallGuardConfig`]).
+    pub repeat_call_guard: RepeatCallGuardConfig,
 }
 
 impl Default for AgentAbilitiesConfig {
@@ -400,6 +404,39 @@ impl Default for AgentAbilitiesConfig {
             modify_mcp: DEFAULT_AGENT_MODIFY_MCP,
             modify_channels: DEFAULT_AGENT_MODIFY_CHANNELS,
             max_tool_iterations: None,
+            repeat_call_guard: RepeatCallGuardConfig::default(),
+        }
+    }
+}
+
+/// Thresholds for the consecutive-identical-tool-call guard in the turn loop.
+///
+/// Observed failure this guards against: GLM 5.3 Flash has been seen calling
+/// a tool with byte-identical arguments hundreds of times in a row, spinning
+/// instead of making progress — the result cannot change, so repeating the
+/// call again never helps. `steer_after` consecutive identical calls appends
+/// a steering note to the call's own result nudging the model to try
+/// something else; the call still runs. `stop_after` ends the turn instead
+/// of running the call again, with a cancelled-style result for that call
+/// and a notice naming the repeated tool. Set `enabled = false` to turn the
+/// guard off entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepeatCallGuardConfig {
+    /// Master switch.
+    pub enabled: bool,
+    /// Consecutive identical calls at which a steering note is appended.
+    pub steer_after: u32,
+    /// Consecutive identical calls at which the turn ends instead of
+    /// running the call again.
+    pub stop_after: u32,
+}
+
+impl Default for RepeatCallGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            steer_after: DEFAULT_REPEAT_CALL_STEER_AFTER,
+            stop_after: DEFAULT_REPEAT_CALL_STOP_AFTER,
         }
     }
 }

@@ -40,6 +40,9 @@ pub(crate) struct SpawnContext {
     /// itself gracefully, mirroring `cfg.agent.max_tool_iterations`. `None`
     /// means unlimited.
     pub(crate) max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call, mirroring
+    /// `cfg.agent.repeat_call_guard`.
+    pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
     pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
@@ -218,6 +221,7 @@ pub(crate) async fn build_spawn_resources(
         identity,
         options,
         max_tool_iterations: ctx.max_tool_iterations,
+        repeat_call_guard: ctx.repeat_call_guard,
         tz: ctx.tz,
         skill: skill.map(str::to_string),
         observations,

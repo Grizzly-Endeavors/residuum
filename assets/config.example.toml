@@ -229,6 +229,14 @@ port = 7700
 #                             # A runaway turn is still stoppable at any time via the
 #                             # web UI's Cancel button, /stop, or stop_agent — this only
 #                             # sets an automatic cutoff. Must be at least 1 when set.
+#
+# Guards against a model repeating the exact same tool call (name + byte-identical
+# arguments) over and over without the result ever changing.
+# repeat_call_guard_enabled = true   # set false to turn the guard off entirely
+# repeat_call_steer_after = 3        # consecutive identical calls before a steering note
+#                                     # is appended to the call's own result
+# repeat_call_stop_after = 6         # consecutive identical calls before the turn ends
+#                                     # instead of running the call again
 
 # ── Web search (optional) ────────────────────────────────────────────────
 # Providers with native search (Anthropic, OpenAI, Gemini) enable it

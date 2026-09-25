@@ -133,3 +133,11 @@ pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
 
 /// Default relay WebSocket URL.
 pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
+
+/// Default consecutive identical tool-call count at which the repeat-call
+/// guard appends a steering note to the tool's result.
+pub(super) const DEFAULT_REPEAT_CALL_STEER_AFTER: u32 = 3;
+
+/// Default consecutive identical tool-call count at which the repeat-call
+/// guard ends the turn instead of running the call again.
+pub(super) const DEFAULT_REPEAT_CALL_STOP_AFTER: u32 = 6;
