@@ -723,3 +723,337 @@ fn undo_notice_message(id: &str, reverted: &[String], skipped: &[String]) -> Str
 fn short_id(id: &str) -> String {
     id.chars().take(12).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::super::types::CheckpointTrigger;
+    use super::*;
+
+    fn ctx(trigger: CheckpointTrigger, summary: &str) -> CheckpointContext {
+        CheckpointContext::system(trigger, summary)
+    }
+
+    fn new_engine(dir: &Path) -> CheckpointEngine {
+        CheckpointEngine::new(
+            dir.join("workspace"),
+            dir.join("config"),
+            &dir.join("checkpoints"),
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Poll `list_checkpoints` until at least `count` checkpoints appear,
+    /// for asserting on a fire-and-forget `spawn_*_checkpoint` call.
+    async fn wait_for_checkpoint_count(
+        engine: &CheckpointEngine,
+        kind: RepoKind,
+        count: usize,
+    ) -> Vec<CheckpointSummary> {
+        for _ in 0..200 {
+            let page = engine
+                .list_checkpoints(kind, None, None, Some(count))
+                .await
+                .unwrap();
+            if page.items.len() >= count {
+                return page.items;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("expected {count} checkpoint(s) within the timeout");
+    }
+
+    #[tokio::test]
+    async fn turn_start_checkpoint_attributes_an_outside_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+
+        // An edit made outside Residuum, before any turn runs.
+        std::fs::write(workspace.join("notes.md"), "edited outside residuum").unwrap();
+
+        engine.spawn_turn_start_checkpoint(ctx(
+            CheckpointTrigger::TurnStart,
+            "outside edit before turn start",
+        ));
+
+        let items = wait_for_checkpoint_count(&engine, RepoKind::Workspace, 1).await;
+        let checkpoint = items.into_iter().next().unwrap();
+        assert_eq!(checkpoint.trigger, CheckpointTrigger::TurnStart);
+        let detail = engine
+            .show_checkpoint(RepoKind::Workspace, checkpoint.id)
+            .await
+            .unwrap();
+        assert!(detail.changed_paths.iter().any(|c| c.path == "notes.md"));
+    }
+
+    #[tokio::test]
+    async fn turn_start_and_turn_end_each_produce_a_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+
+        std::fs::write(workspace.join("notes.md"), "v1 (outside edit)").unwrap();
+        engine.spawn_turn_start_checkpoint(ctx(CheckpointTrigger::TurnStart, "outside edit"));
+        wait_for_checkpoint_count(&engine, RepoKind::Workspace, 1).await;
+
+        std::fs::write(workspace.join("notes.md"), "v2 (the turn's own edit)").unwrap();
+        engine.spawn_turn_end_checkpoint(ctx(CheckpointTrigger::TurnEnd, "wrote notes.md"));
+
+        let items = wait_for_checkpoint_count(&engine, RepoKind::Workspace, 2).await;
+        assert_eq!(
+            items.len(),
+            2,
+            "one checkpoint each for turn start and turn end"
+        );
+        // Newest first: the turn-end checkpoint comes before turn-start.
+        let newest = items.first().expect("two items");
+        let oldest = items.get(1).expect("two items");
+        assert_eq!(newest.trigger, CheckpointTrigger::TurnEnd);
+        assert_eq!(oldest.trigger, CheckpointTrigger::TurnStart);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn checkpoint_failure_never_blocks_or_fails_the_action() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let checkpoints_dir = dir.path().join("checkpoints");
+        let engine = CheckpointEngine::new(
+            workspace.clone(),
+            dir.path().join("config"),
+            &checkpoints_dir,
+            None,
+        )
+        .unwrap();
+        std::fs::write(workspace.join("a.txt"), "1").unwrap();
+
+        // Make the workspace git dir's object store unwritable so the next
+        // commit attempt fails with a real I/O error.
+        let objects_dir = checkpoints_dir
+            .join(RepoKind::Workspace.dir_name())
+            .join("objects");
+        std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            engine.checkpoint_workspace_before_action(ctx(
+                CheckpointTrigger::PreAction,
+                "delete a.txt",
+            )),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "checkpoint_workspace_before_action must never hang, even when the underlying commit fails"
+        );
+
+        std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn undo_skips_a_path_changed_again_since_and_reports_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+
+        std::fs::write(workspace.join("a.txt"), "v1").unwrap();
+        std::fs::write(workspace.join("b.txt"), "v1").unwrap();
+        engine
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "first"))
+            .await;
+
+        std::fs::write(workspace.join("a.txt"), "v2").unwrap();
+        std::fs::write(workspace.join("b.txt"), "v2").unwrap();
+        engine
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "second"))
+            .await;
+        let page = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .await
+            .unwrap();
+        let second_id = page.items.first().unwrap().id.clone();
+
+        // A later edit — by the user or a subsequent turn — touches b.txt
+        // after the checkpoint being undone.
+        std::fs::write(workspace.join("b.txt"), "v3 (edited after the checkpoint)").unwrap();
+
+        let outcome = engine
+            .undo_checkpoint(
+                RepoKind::Workspace,
+                second_id,
+                ctx(CheckpointTrigger::Undo, "undo second"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.reverted_paths, vec!["a.txt".to_string()]);
+        assert_eq!(outcome.skipped_paths, vec!["b.txt".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("b.txt")).unwrap(),
+            "v3 (edited after the checkpoint)",
+            "a path changed again since must never be clobbered by undo"
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_is_itself_undoable() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+
+        std::fs::write(workspace.join("a.txt"), "v1").unwrap();
+        engine
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "first"))
+            .await;
+        std::fs::write(workspace.join("a.txt"), "v2").unwrap();
+        engine
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "second"))
+            .await;
+        let second_id = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .await
+            .unwrap()
+            .items
+            .first()
+            .unwrap()
+            .id
+            .clone();
+
+        let undo_outcome = engine
+            .undo_checkpoint(
+                RepoKind::Workspace,
+                second_id,
+                ctx(CheckpointTrigger::Undo, "undo second"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "v1"
+        );
+
+        // Undo the undo: should restore the "v2" state the first undo reverted.
+        let redo_outcome = engine
+            .undo_checkpoint(
+                RepoKind::Workspace,
+                undo_outcome.checkpoint_id,
+                ctx(CheckpointTrigger::Undo, "undo the undo"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redo_outcome.reverted_paths, vec!["a.txt".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_repo_never_configures_a_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
+        let engine = new_engine(dir.path());
+
+        engine
+            .checkpoint_config_before_write(ctx(
+                CheckpointTrigger::PreConfigWrite,
+                "write config.toml",
+            ))
+            .await;
+
+        let config_git_dir = dir
+            .path()
+            .join("checkpoints")
+            .join(RepoKind::Config.dir_name());
+        let config_text =
+            std::fs::read_to_string(config_git_dir.join("config")).unwrap_or_default();
+        assert!(
+            !config_text.contains("[remote"),
+            "the config checkpoint repo must never have a remote configured: {config_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_snapshot_never_includes_machine_key_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
+        std::fs::write(config_dir.join("secrets.toml.enc"), b"ciphertext").unwrap();
+        std::fs::write(config_dir.join("secrets.key"), [0_u8; 32]).unwrap();
+        std::fs::write(config_dir.join("agent-keys.key"), [0_u8; 32]).unwrap();
+        let engine = new_engine(dir.path());
+
+        let id = engine
+            .checkpoint_config_now(&ctx(CheckpointTrigger::PreConfigWrite, "test"))
+            .unwrap()
+            .unwrap();
+        let detail = engine.show_checkpoint(RepoKind::Config, id).await.unwrap();
+        let paths: Vec<&str> = detail
+            .changed_paths
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        assert!(paths.contains(&"config.toml"));
+        assert!(paths.contains(&"secrets.toml.enc"));
+        assert!(
+            !paths.iter().any(|p| Path::new(p)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("key"))),
+            "machine key files must never be checkpointed: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_path_writes_back_checkpointed_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let engine = new_engine(dir.path());
+
+        std::fs::write(workspace.join("notes.md"), "version one").unwrap();
+        engine
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::TurnEnd, "v1"))
+            .await;
+        let id = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .await
+            .unwrap()
+            .items
+            .first()
+            .unwrap()
+            .id
+            .clone();
+
+        std::fs::write(workspace.join("notes.md"), "version two, overwritten").unwrap();
+        let outcome = engine
+            .restore_path(
+                RepoKind::Workspace,
+                id,
+                "notes.md".to_string(),
+                ctx(CheckpointTrigger::Restore, "restore notes.md"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.restored_paths, vec!["notes.md".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("notes.md")).unwrap(),
+            "version one"
+        );
+    }
+}
