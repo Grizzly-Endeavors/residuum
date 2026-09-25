@@ -7,8 +7,9 @@
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingSelector from "./ThinkingSelector.svelte";
 
+  // Model API limits, not residuum's own: 5 MB and these MIME types per image.
+  // There is no limit on how many images a message can carry.
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
-  const MAX_IMAGES = 5;
   const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
   let {
@@ -170,10 +171,6 @@
 
   async function handleFiles(files: FileList | File[]) {
     for (const file of files) {
-      if (pendingImages.length >= MAX_IMAGES) {
-        showRejection(`Maximum ${MAX_IMAGES} images`);
-        break;
-      }
       if (!ACCEPTED_TYPES.includes(file.type)) {
         showRejection("Unsupported file type");
         continue;
