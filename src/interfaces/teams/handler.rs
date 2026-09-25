@@ -592,7 +592,8 @@ mod tests {
             http,
             store: TeamsStore::load(dir.path().join("teams_state.json"))
                 .await
-                .unwrap(),
+                .unwrap()
+                .0,
             buffer: ContextBuffer::new(10),
             reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
             inbound_tx,
