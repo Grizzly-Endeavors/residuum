@@ -228,28 +228,31 @@ pub(super) async fn api_a2a_agents_raw_get(
         })
 }
 
-/// `PUT /api/a2a/agents/raw` — validate JSON + schema, write `config/a2a.json`
-/// atomically, and trigger a workspace reload.
+/// `PUT /api/a2a/agents/raw` — write `config/a2a.json` atomically, save
+/// unconditionally, trigger a workspace reload, and report diagnostics.
+///
+/// The save always succeeds, even when `body` fails validation: the loader
+/// skips an unusable agent entry with a warning and keeps every other agent
+/// running (see `crate::a2a::client::config::load_a2a_agents_map`), so an
+/// invalid save is safe to accept and report rather than reject outright —
+/// consistent with `write_file`/`edit_file`, `config.toml`/`providers.toml`,
+/// and the workspace file editor.
 pub(super) async fn api_a2a_agents_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    crate::a2a::validate_a2a_agents_json(&body).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(e),
-                diagnostics: Vec::new(),
-            }),
-        )
-    })?;
+    let diagnostics = crate::a2a::client::config::diagnose_a2a_json(&body);
 
     let path =
         crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
+
+    state
+        .checkpoint_workspace_before_write("raw write a2a.json")
+        .await;
+
     crate::util::fs::atomic_write(&path, body.as_bytes())
         .await
         .map_err(|e| {
@@ -267,11 +270,10 @@ pub(super) async fn api_a2a_agents_raw_put(
         reload_tx.send(super::super::ReloadSignal::Workspace).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-        diagnostics: Vec::new(),
-    }))
+    Ok(Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "a2a.json",
+    )))
 }
 
 /// `[a2a]` settings as currently written in `config.toml`, resolved with the
@@ -640,29 +642,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agents_raw_put_rejects_invalid_json_with_plain_language_error() {
+    async fn agents_raw_put_saves_invalid_json_with_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        let Err((status, Json(result))) =
-            api_a2a_agents_raw_put(State(test_state(dir.path())), "not json".to_string()).await
-        else {
-            panic!("invalid JSON should be rejected");
-        };
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(!result.valid);
-        assert!(result.error.unwrap().contains("invalid JSON"));
+        let state = test_state(dir.path());
+        let result = api_a2a_agents_raw_put(State(state.clone()), "not json".to_string())
+            .await
+            .unwrap();
+        assert!(!result.valid, "invalid JSON should be flagged invalid");
+        assert!(!result.diagnostics.is_empty());
+
+        let path = WorkspaceLayout::new(&state.workspace_dir).a2a_agents_json();
+        let saved = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            saved, "not json",
+            "the save should have happened despite the invalid content"
+        );
     }
 
     #[tokio::test]
-    async fn agents_raw_put_rejects_bad_agent_name() {
+    async fn agents_raw_put_reports_bad_agent_name_without_blocking_the_save() {
         let dir = tempfile::tempdir().unwrap();
         let content = r#"{"agents":{"Bad Name":{"url":"https://x.example.com"}}}"#;
-        let Err((status, Json(result))) =
-            api_a2a_agents_raw_put(State(test_state(dir.path())), content.to_string()).await
-        else {
-            panic!("bad agent name should be rejected");
-        };
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(!result.valid);
+        let result = api_a2a_agents_raw_put(State(test_state(dir.path())), content.to_string())
+            .await
+            .unwrap();
+        assert!(!result.valid, "a bad agent name should be flagged invalid");
+        assert_eq!(result.diagnostics.len(), 1);
     }
 
     fn write_config(dir: &std::path::Path, toml: &str) {

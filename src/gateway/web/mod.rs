@@ -80,6 +80,20 @@ impl ConfigApiState {
             ))
             .await;
     }
+
+    /// Checkpoint the workspace repository before a destructive workspace
+    /// API action (delete, overwrite, move/rename with overwrite) or a raw
+    /// write to a workspace-owned strictly-parsed file (`mcp.json`,
+    /// `config/a2a.json`). Never fails or blocks the action — see
+    /// `crate::checkpoints`.
+    pub(super) async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
+        self.checkpoints
+            .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                summary,
+            ))
+            .await;
+    }
 }
 
 /// Build the config API router.

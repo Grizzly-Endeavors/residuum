@@ -334,11 +334,10 @@
   /**
    * Raw mode: PUT the whole text the user typed, unchanged from before.
    *
-   * `providers.toml` and `config.toml` always save now, even when invalid —
-   * the reload that picks them up keeps the gateway running on the current
-   * config and reports a diagnostic instead of losing the edit. `mcp.json`
-   * is still rejected outright on malformed JSON, so that one save can stop
-   * partway through; the others already landed by then.
+   * `config.toml`, `providers.toml`, and `mcp.json` all always save now,
+   * even when invalid — the reload that picks each one up keeps the
+   * gateway running on its current config/workspace state and reports a
+   * diagnostic instead of losing the edit.
    */
   async function autoSaveRaw(): Promise<void> {
     const cfgToml = editConfig;
@@ -351,25 +350,20 @@
     const cfgResult = await putConfigRaw(cfgToml);
     rawConfig = cfgToml;
 
+    const mcpResult = await putMcpRaw(mcpJson);
+    rawMcp = mcpJson;
+
     rawDiagnostics = {
       config: cfgResult.diagnostics ?? [],
       providers: provResult.diagnostics ?? [],
-      mcp: rawDiagnostics.mcp,
+      mcp: mcpResult.diagnostics ?? [],
     };
-
-    const mcpResult = await putMcpRaw(mcpJson);
-    if (!mcpResult.valid) {
-      statusMsg = "";
-      statusKind = "";
-      toast.error(`mcp.json: ${mcpResult.error ?? "unknown error"}`);
-      return;
-    }
-    rawMcp = mcpJson;
-    rawDiagnostics = { ...rawDiagnostics, mcp: [] };
 
     lastSavedSnapshot = currentSnapshot();
     const hadProblems =
-      (cfgResult.diagnostics?.length ?? 0) > 0 || (provResult.diagnostics?.length ?? 0) > 0;
+      (cfgResult.diagnostics?.length ?? 0) > 0 ||
+      (provResult.diagnostics?.length ?? 0) > 0 ||
+      (mcpResult.diagnostics?.length ?? 0) > 0;
     showStatus(hadProblems ? "Saved — see the problems noted below" : "Saved", "success");
   }
 

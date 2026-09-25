@@ -403,10 +403,6 @@ export interface A2aRemoteAgent {
   card: A2aAgentCard | null;
 }
 
-export interface A2aAgentsRawResponse {
-  content: string;
-}
-
 // ── Workspace types ─────────────────────────────────────────────────
 
 export interface WorkspaceEntry {

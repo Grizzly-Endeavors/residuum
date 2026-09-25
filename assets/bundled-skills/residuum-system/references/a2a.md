@@ -27,7 +27,7 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 - The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
 - `stop_agent` on `a2a:<name>` cancels your open task with that agent.
 
-Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
+Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, `POST /api/workspace/validate`, or the Settings page's raw editor reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
 ## Your other instances (siblings)
 

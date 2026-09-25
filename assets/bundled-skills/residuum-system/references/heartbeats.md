@@ -70,7 +70,7 @@ The `agent` field controls how the pulse executes:
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid YAML, a removed option, or a duplicate pulse name as a diagnostic alongside the save — the write always goes through rather than being rejected.
+Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
 
 ## Behavior
 

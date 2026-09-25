@@ -808,11 +808,7 @@ pub(super) async fn api_workspace_raw_write(
 /// the action — see `crate::checkpoints`.
 async fn checkpoint_before_destructive_action(state: &ConfigApiState, summary: &str) {
     state
-        .checkpoints
-        .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
-            crate::checkpoints::CheckpointTrigger::PreAction,
-            summary,
-        ))
+        .checkpoint_workspace_before_write(summary.to_string())
         .await;
 }
 

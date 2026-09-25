@@ -70,7 +70,7 @@ Every pulse-triggered session run is framed in its prompt as autonomous: no user
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems `load_heartbeat` would reject or drop: invalid YAML (with the parser's line/column), a pulse using a removed option (`agent: "main"`, `include_identity`), or a duplicate pulse name. The save always goes through — a diagnostic names the problem instead of the write being rejected, so a mistake is visible immediately rather than only showing up as a scheduler warning after the fact.
+Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems `load_heartbeat` would reject or drop, one diagnostic per problem: a whole-document YAML syntax error (with the parser's line/column), a non-list top-level `pulses` key, a pulse entry that fails to deserialize on its own (e.g. a `schedule` given as something other than a string), a pulse using a removed option (`agent: "main"`, `include_identity`), or a duplicate pulse name. One bad pulse doesn't hide problems in the others — each gets its own diagnostic naming that pulse. The save always goes through — a diagnostic names the problem instead of the write being rejected, so a mistake is visible immediately rather than only showing up as a scheduler warning after the fact.
 
 ## Scheduling Behavior
 

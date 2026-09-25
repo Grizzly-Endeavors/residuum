@@ -220,6 +220,61 @@ mod tests {
         assert!(response.valid);
         assert!(response.diagnostics.is_empty());
     }
+
+    #[tokio::test]
+    async fn mcp_raw_put_saves_invalid_json_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(State(state), "not json".to_string())
+            .await
+            .unwrap();
+
+        assert!(!response.valid, "invalid JSON should be flagged invalid");
+        assert!(!response.diagnostics.is_empty());
+        let mcp_path =
+            crate::workspace::layout::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
+        let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
+        assert_eq!(
+            saved, "not json",
+            "the save should have happened despite the invalid content"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_saves_valid_json_with_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(
+            State(state),
+            r#"{"mcpServers":{"fs":{"command":"npx"}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.valid);
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_reports_a_bad_server_entry_without_blocking_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(
+            State(state),
+            r#"{"mcpServers":{"broken":{"type":"sse"}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !response.valid,
+            "a server with a deprecated transport should be flagged invalid"
+        );
+        assert_eq!(response.diagnostics.len(), 1);
+    }
 }
 
 /// `GET /api/config/raw` — return raw `config.toml` contents as text.
@@ -412,28 +467,30 @@ pub(super) async fn api_mcp_raw_get(
         })
 }
 
-/// `PUT /api/mcp/raw` — validate JSON and write `mcp.json`, trigger workspace reload.
+/// `PUT /api/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
+/// workspace reload, and report diagnostics.
+///
+/// The save always succeeds, even when `body` fails validation: the loader
+/// skips an unusable server entry with a warning and keeps every other
+/// server running (see `crate::workspace::config::load_mcp_servers_map`), so
+/// an invalid save is safe to accept and report rather than reject outright
+/// — consistent with `write_file`/`edit_file`, `config.toml`/`providers.toml`,
+/// and the workspace file editor.
 pub(super) async fn api_mcp_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate JSON parse
-    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("invalid JSON: {e}")),
-                diagnostics: Vec::new(),
-            }),
-        )
-    })?;
+    let diagnostics = crate::workspace::config::diagnose_mcp_json(&body);
 
     let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
 
     if let Some(parent) = mcp_path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
     }
+
+    state
+        .checkpoint_workspace_before_write("raw write mcp.json")
+        .await;
 
     tokio::fs::write(&mcp_path, &body).await.map_err(|e| {
         (
@@ -450,11 +507,10 @@ pub(super) async fn api_mcp_raw_put(
         reload_tx.send(super::super::ReloadSignal::Workspace).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-        diagnostics: Vec::new(),
-    }))
+    Ok(Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "mcp.json",
+    )))
 }
 
 /// `PATCH /api/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
