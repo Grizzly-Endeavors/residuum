@@ -67,18 +67,15 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
-/// Default an inbox item's title from its body: the first line, cut to 60
-/// characters. Shared by every caller that lets a title be omitted — the WS
-/// `/inbox` command and the `POST /api/agent-inbox` endpoint — so the rule
-/// stays in one place.
+/// Default an inbox item's title from its body: the first line, in full.
+/// Shared by every caller that lets a title be omitted — the WS `/inbox`
+/// command, chat-interface inbox commands, and the `POST /api/agent-inbox`
+/// endpoint — so the rule stays in one place. The generated filename bounds
+/// its own length (see [`generate_filename`]); the title itself is never
+/// truncated.
 #[must_use]
 pub fn derive_title(body: &str) -> String {
-    body.lines()
-        .next()
-        .unwrap_or("Inbox message")
-        .chars()
-        .take(60)
-        .collect()
+    body.lines().next().unwrap_or("Inbox message").to_string()
 }
 
 /// Add an inbox item in one call: generates a filename, builds the item, and saves.
@@ -533,9 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn derive_title_truncates_to_60_chars() {
+    fn derive_title_keeps_the_full_line_untruncated() {
         let long_line = "a".repeat(100);
-        assert_eq!(derive_title(&long_line), "a".repeat(60));
+        assert_eq!(
+            derive_title(&long_line),
+            long_line,
+            "the title itself has no length cap; only the generated filename does"
+        );
     }
 
     #[test]
