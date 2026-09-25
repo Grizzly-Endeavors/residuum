@@ -63,6 +63,8 @@ On error:
 
 **Side effect:** Records the path in the `FileTracker` after a successful write.
 
+**Note:** `config.toml` and `providers.toml` are writable (the agent may edit them on the user's behalf); `config.example.toml`/`providers.example.toml` are always blocked — Residuum regenerates them from its own defaults on every startup. See the `residuum-system` skill's [config reference](../../assets/bundled-skills/residuum-system/references/config.md) for which file holds what and how to edit them.
+
 ---
 
 ## `edit_file`

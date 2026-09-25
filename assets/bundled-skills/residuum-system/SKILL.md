@@ -1,6 +1,6 @@
 ---
 name: residuum-system
-description: Reference documentation for all Residuum workspace systems — memory, heartbeats, inbox, actions, skills, MCP, notifications, background tasks, and subconscious.
+description: Reference documentation for all Residuum workspace systems — config, memory, heartbeats, inbox, actions, skills, MCP, notifications, background tasks, and subconscious.
 ---
 
 # Residuum System Reference
@@ -11,6 +11,7 @@ This skill provides reference documentation for every major workspace system. Ac
 
 | System | Tools | Config File | Reference |
 |--------|-------|-------------|-----------|
+| Config | `write_file`, `edit_file` | `config.toml`, `providers.toml` | [config](references/config.md) |
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
 | Wiki | `read_file`, `write_file`, `edit_file` | `wiki/` | the `wiki` skill |
 | Workbench | `read_file`, `write_file`, `edit_file` | `workbench/` | the `workbench` skill |

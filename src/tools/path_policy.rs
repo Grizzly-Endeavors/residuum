@@ -1,7 +1,12 @@
 //! Write-scoping policy for file tools.
 //!
-//! Blocks writes to unconditionally protected paths (config files and
-//! credential stores). All other workspace writes are unrestricted.
+//! Blocks writes to unconditionally protected paths: both credential stores,
+//! and the `.example.toml` reference templates, which Residuum regenerates
+//! from its compiled-in defaults on every startup (`config::bootstrap`), so
+//! any edit to them is silently lost at the next restart. `config.toml` and
+//! `providers.toml` themselves are writable — the agent edits them on the
+//! user's behalf and a reload picks up the change, same as any other file
+//! edit. All other workspace writes are unrestricted.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -12,9 +17,10 @@ use tokio::sync::RwLock;
 use crate::config::Config;
 use crate::workspace::layout::WorkspaceLayout;
 
-/// Paths the file tools may never write: user-managed config, both
-/// credential stores, and `mcp.json`/`channels.toml` unless the matching
-/// agent ability (`agent.modify_mcp`/`agent.modify_channels`) is on.
+/// Paths the file tools may never write: both credential stores, the
+/// `.example.toml` reference templates, and `mcp.json`/`channels.toml`
+/// unless the matching agent ability (`agent.modify_mcp`/`agent.modify_channels`)
+/// is on.
 ///
 /// The one definition of the blocked set, used at startup and on every
 /// config reload.
@@ -30,13 +36,17 @@ pub fn blocked_write_paths(cfg: &Config, layout: &WorkspaceLayout) -> HashSet<Pa
     blocked
 }
 
-/// Config and credential-store files in `config_dir` that are blocked
-/// regardless of agent abilities.
+/// Regenerated-template and credential-store files in `config_dir` that are
+/// blocked regardless of agent abilities.
+///
+/// `config.toml` and `providers.toml` are deliberately absent — the agent is
+/// allowed to edit them (see the module doc). The `.example.toml` templates
+/// stay blocked because they are always overwritten from the binary's
+/// compiled-in defaults at the next startup (`config::bootstrap::bootstrap_at`),
+/// so an edit to them would look like it worked and then vanish.
 fn always_blocked_paths(config_dir: &Path) -> HashSet<PathBuf> {
     [
-        "config.toml",
         "config.example.toml",
-        "providers.toml",
         "providers.example.toml",
         crate::config::secrets::ENCRYPTED_FILE,
         crate::config::secrets::KEY_FILE,
@@ -50,6 +60,11 @@ fn always_blocked_paths(config_dir: &Path) -> HashSet<PathBuf> {
     .map(|name| config_dir.join(name))
     .collect()
 }
+
+/// Names (not full paths) of the `.example.toml` reference templates, used to
+/// give a write refusal for one of them a reason distinct from the plain
+/// "user-managed configuration" message the other blocked paths get.
+const REGENERATED_TEMPLATE_NAMES: [&str; 2] = ["config.example.toml", "providers.example.toml"];
 
 /// Shared path policy, checked by `WriteTool` and `EditTool` before every write.
 pub type SharedPathPolicy = Arc<RwLock<PathPolicy>>;
@@ -114,6 +129,19 @@ impl PathPolicy {
 
         if self.blocked_paths.contains(&canonical) {
             tracing::warn!(path = %path.display(), "write rejected: blocked path");
+            let is_regenerated_template = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| REGENERATED_TEMPLATE_NAMES.contains(&name));
+            if is_regenerated_template {
+                return Err(format!(
+                    "writes to {} are not allowed — Residuum regenerates this reference \
+                     template from its own defaults on every startup, so an edit here would \
+                     look like it worked and then be silently overwritten. Edit config.toml or \
+                     providers.toml instead, which are writable",
+                    path.display()
+                ));
+            }
             return Err(format!(
                 "writes to {} are not allowed — it is user-managed configuration or credential \
                  storage",
@@ -210,18 +238,9 @@ mod tests {
     #[test]
     fn blocked_paths_rejected() {
         let (_dir, _ws, cfg_dir) = make_workspace_with_config();
-        let blocked: HashSet<PathBuf> = [
-            cfg_dir.join("config.toml"),
-            cfg_dir.join("config.example.toml"),
-        ]
-        .into_iter()
-        .collect();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.example.toml")].into_iter().collect();
         let policy = PathPolicy::with_blocked_paths(blocked);
 
-        assert!(
-            policy.check_write(&cfg_dir.join("config.toml")).is_err(),
-            "config.toml should be blocked"
-        );
         assert!(
             policy
                 .check_write(&cfg_dir.join("config.example.toml"))
@@ -231,14 +250,41 @@ mod tests {
     }
 
     #[test]
+    fn config_toml_and_providers_toml_are_writable() {
+        let (_dir, _ws, cfg_dir) = make_workspace_with_config();
+        // Neither is in the always-blocked set (see `always_blocked_paths`),
+        // and the policy under test carries no other blocked paths either.
+        let policy = PathPolicy::with_blocked_paths(HashSet::new());
+
+        assert!(
+            policy.check_write(&cfg_dir.join("config.toml")).is_ok(),
+            "config.toml should be writable so the agent can edit it on the user's behalf"
+        );
+        assert!(
+            policy.check_write(&cfg_dir.join("providers.toml")).is_ok(),
+            "providers.toml should be writable so the agent can edit it on the user's behalf"
+        );
+    }
+
+    #[test]
+    fn example_template_refusal_explains_regeneration() {
+        let (_dir, _ws, cfg_dir) = make_workspace_with_config();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.example.toml")].into_iter().collect();
+        let policy = PathPolicy::with_blocked_paths(blocked);
+
+        let err = policy
+            .check_write(&cfg_dir.join("config.example.toml"))
+            .unwrap_err();
+        assert!(
+            err.contains("regenerates") && err.contains("config.toml"),
+            "refusal should explain the template is regenerated and point at the writable file: {err}"
+        );
+    }
+
+    #[test]
     fn blocked_paths_allow_workspace_files() {
         let (_dir, ws, cfg_dir) = make_workspace_with_config();
-        let blocked: HashSet<PathBuf> = [
-            cfg_dir.join("config.toml"),
-            cfg_dir.join("config.example.toml"),
-        ]
-        .into_iter()
-        .collect();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.example.toml")].into_iter().collect();
         let policy = PathPolicy::with_blocked_paths(blocked);
 
         assert!(
@@ -296,7 +342,8 @@ mod tests {
         let config_dir = Path::new("/cfg");
         let blocked = always_blocked_paths(config_dir);
         for name in [
-            "config.toml",
+            "config.example.toml",
+            "providers.example.toml",
             "secrets.toml.enc",
             "secrets.key",
             "agent-keys.toml.enc",
@@ -310,5 +357,19 @@ mod tests {
                 "{name} should be write-blocked"
             );
         }
+    }
+
+    #[test]
+    fn config_and_providers_toml_are_not_in_the_always_blocked_set() {
+        let config_dir = Path::new("/cfg");
+        let blocked = always_blocked_paths(config_dir);
+        assert!(
+            !blocked.contains(&config_dir.join("config.toml")),
+            "config.toml must be editable by the agent"
+        );
+        assert!(
+            !blocked.contains(&config_dir.join("providers.toml")),
+            "providers.toml must be editable by the agent"
+        );
     }
 }
