@@ -28,17 +28,26 @@ pub(super) struct MemoryComponents {
 /// Used both for the main agent's own observer and, independently, for a
 /// session's own observer instance in `SpawnContext` — the same
 /// configuration, but a separate provider/instance so a session fork never
-/// contends with the main agent's config-reload swaps.
+/// contends with the main agent's config-reload swaps. A fallback in the
+/// chain that can't be built is dropped and logged; only an unusable
+/// primary observer provider is returned as an error here.
 ///
 /// # Errors
-/// Returns `FatalError::Config` if the observer provider cannot be built.
+/// Returns `FatalError::Config` if the primary observer provider cannot be built.
 pub(super) fn build_observer(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
 ) -> Result<Observer, FatalError> {
-    let observer_provider =
+    let (observer_provider, dropped) =
         build_provider_chain(&cfg.observer, cfg.max_tokens, http, cfg.retry.clone())?;
+    for fallback in &dropped {
+        tracing::warn!(
+            provider = %fallback.name,
+            error = %fallback.error,
+            "dropped an unbuildable fallback provider from the observer chain"
+        );
+    }
     Ok(Observer::new(
         observer_provider,
         ObserverConfig {
@@ -51,27 +60,66 @@ pub(super) fn build_observer(
 
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
-/// # Errors
-/// Returns `FatalError::Config` if either provider cannot be built.
+/// The two degrade independently: if the observer's provider chain can't be
+/// built, only the observer falls back to [`Observer::disabled`] and the
+/// reflector still builds normally (and vice versa), so one broken role
+/// never disables the other. Returns any user-facing notices describing
+/// what was disabled, for the caller to publish.
 pub(super) fn build_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
-) -> Result<(Observer, Reflector), FatalError> {
-    let observer = build_observer(cfg, tz, http.clone())?;
+) -> (Observer, Reflector, Vec<String>) {
+    let mut notices = Vec::new();
 
-    let reflector_provider =
-        build_provider_chain(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
-    let reflector = Reflector::new(
-        reflector_provider,
-        ReflectorConfig {
-            tz,
-            role_overrides: cfg.role_overrides.get("reflector").cloned(),
-            ..ReflectorConfig::default()
-        },
-    );
+    let observer = match build_observer(cfg, tz, http.clone()) {
+        Ok(observer) => observer,
+        Err(err) => {
+            tracing::warn!(error = %err, "observer degraded: memory observation disabled");
+            notices.push(format!(
+                "the observer model couldn't be started, so memory observation is paused until you fix its provider settings and reload: {err}"
+            ));
+            Observer::disabled(tz)
+        }
+    };
 
-    Ok((observer, reflector))
+    let reflector = match build_provider_chain(
+        &cfg.reflector,
+        cfg.max_tokens,
+        http,
+        cfg.retry.clone(),
+    ) {
+        Ok((reflector_provider, dropped)) => {
+            for fallback in &dropped {
+                tracing::warn!(
+                    provider = %fallback.name,
+                    error = %fallback.error,
+                    "dropped an unbuildable fallback provider from the reflector chain"
+                );
+                notices.push(format!(
+                    "the fallback model \"{}\" in your reflector provider chain couldn't be started and was skipped: {}",
+                    fallback.name, fallback.error
+                ));
+            }
+            Reflector::new(
+                reflector_provider,
+                ReflectorConfig {
+                    tz,
+                    role_overrides: cfg.role_overrides.get("reflector").cloned(),
+                    ..ReflectorConfig::default()
+                },
+            )
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "reflector degraded: memory reflection disabled");
+            notices.push(format!(
+                "the reflector model couldn't be started, so memory reflection is paused until you fix its provider settings and reload: {err}"
+            ));
+            Reflector::disabled(tz)
+        }
+    };
+
+    (observer, reflector, notices)
 }
 
 /// Build the search index, vector store, and hybrid searcher.

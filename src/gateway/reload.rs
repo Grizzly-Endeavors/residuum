@@ -1089,6 +1089,7 @@ mod tests {
             tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
+            load_notices: vec![],
         }
     }
 

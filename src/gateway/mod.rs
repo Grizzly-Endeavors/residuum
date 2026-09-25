@@ -4,7 +4,7 @@ mod actions;
 pub(crate) mod cross_site;
 pub(crate) mod event_loop;
 pub mod file_server;
-mod helpers;
+pub(crate) mod helpers;
 mod idle;
 mod memory;
 pub mod protocol;

@@ -232,8 +232,11 @@ async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkil
 /// config reload, matching the rest of it. The merge writer is shared with
 /// the main agent so episode numbering and log appends never race.
 ///
-/// # Errors
-/// Returns `FatalError::Config` if the session observer's provider cannot be built.
+/// Degrades rather than failing startup: an unusable observer provider here
+/// falls back to [`Observer::disabled`] with a warning. The main agent's own
+/// observer build (in `providers::init_providers`) already surfaces a
+/// user-facing notice for the same underlying `[observer]` misconfiguration,
+/// so this one only logs.
 fn build_session_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
@@ -242,8 +245,14 @@ fn build_session_memory_components(
     reflector: crate::memory::reflector::Reflector,
     mem: &memory::MemoryComponents,
     embedding_provider: Option<Arc<dyn crate::inference::EmbeddingProvider>>,
-) -> Result<(Arc<Observer>, Arc<MemoryMergeWriter>), FatalError> {
-    let session_observer = Arc::new(memory::build_observer(cfg, tz, http)?);
+) -> (Arc<Observer>, Arc<MemoryMergeWriter>) {
+    let session_observer = Arc::new(match memory::build_observer(cfg, tz, http) {
+        Ok(observer) => observer,
+        Err(err) => {
+            tracing::warn!(error = %err, "session observer degraded: disabled");
+            Observer::disabled(tz)
+        }
+    });
     let merge_writer = Arc::new(MemoryMergeWriter::new(
         reflector,
         layout.clone(),
@@ -251,7 +260,7 @@ fn build_session_memory_components(
         mem.vector_store.clone(),
         embedding_provider,
     ));
-    Ok((session_observer, merge_writer))
+    (session_observer, merge_writer)
 }
 
 /// Inputs to [`build_startup_spawn_context`], gathered because
@@ -979,7 +988,7 @@ pub(crate) async fn initialize(
         providers.reflector,
         &mem,
         providers.embedding_provider.clone(),
-    )?;
+    );
     let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
         init_session_runtime(
             cfg,
