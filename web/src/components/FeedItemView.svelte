@@ -14,7 +14,7 @@
 </script>
 
 {#if item.kind === "user"}
-  <MessageUser content={item.content} images={item.images} sender={item.sender} />
+  <MessageUser content={item.content} images={item.images} sender={item.sender} turn={item.turn} />
 {:else if item.kind === "assistant"}
   <MessageAssistant content={item.content} />
 {:else if item.kind === "divider"}

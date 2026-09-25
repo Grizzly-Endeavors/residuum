@@ -195,6 +195,7 @@ export class FeedStore {
         // replies) — harmless no-op if isProcessing already cleared via
         // one of those paths.
         this.isProcessing = false;
+        this.tagTurnStart(msg.reply_to);
         this.activeTurnId = null;
         this.turnStart = null;
         this.turnStartedAt = null;
@@ -478,6 +479,20 @@ export class FeedStore {
   }
 
   // ── Private ──────────────────────────────────────────────────────────
+
+  /**
+   * Tag the user message that started the turn just ending with its turn
+   * id, so the feed can offer "Undo this turn" on it. A no-op when the
+   * turn has no user message to anchor to (a background turn's own message
+   * is a different kind), or the turn never got a start index at all.
+   */
+  private tagTurnStart(turnId: string): void {
+    if (this.turnStart === null) return;
+    const item = this.feed[this.turnStart];
+    if (item?.kind === "user") {
+      item.turn = { turnId, changed: null };
+    }
+  }
 
   /**
    * Older history decided the turn that pending heads continue: insert them

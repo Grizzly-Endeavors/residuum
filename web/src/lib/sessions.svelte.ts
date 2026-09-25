@@ -73,6 +73,11 @@ export class SessionView {
   private buffered: RunFrame[] = [];
   /** Identifies the latest load; an older one finishing late is ignored. */
   private loadToken = 0;
+  /** Feed index where the turn in flight began (its owner message, or the
+   * first item after `session_turn_started`), for tagging it with the
+   * turn id once the turn ends — the session counterpart of the main
+   * chat's `FeedStore.turnStart`. */
+  private turnStart: number | null = null;
 
   constructor(runId: string, summary: SessionSummary | null) {
     this.runId = runId;
@@ -152,11 +157,14 @@ export class SessionView {
         );
         break;
       case "session_turn_started":
+        this.turnStart ??= this.items.length;
         this.turnStartedAt = Date.now();
         this.turnOutputTokens = 0;
         this.turnHasUsage = false;
         break;
       case "session_turn_ended":
+        this.tagTurnStart(frame.turn_id);
+        this.turnStart = null;
         this.turnStartedAt = null;
         break;
       case "session_turn_usage":
@@ -175,7 +183,19 @@ export class SessionView {
   }
 
   pushOwnerMessage(content: string): void {
+    this.turnStart ??= this.items.length;
     this.items.push({ id: nextFeedId(), kind: "user", content });
+  }
+
+  /** Tag the user message that started the turn just ending with its turn
+   * id, so the view can offer "Undo this turn" on it — see
+   * `FeedStore.tagTurnStart`'s main-chat counterpart. */
+  private tagTurnStart(turnId: string): void {
+    if (this.turnStart === null) return;
+    const item = this.items[this.turnStart];
+    if (item?.kind === "user") {
+      item.turn = { turnId, changed: null };
+    }
   }
 
   /**
