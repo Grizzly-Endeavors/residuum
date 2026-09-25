@@ -18,11 +18,11 @@ pub async fn handle_server_command(
         "observe" => {
             *observe_deadline = None;
             let mem = MemorySubsystems {
-                observer: &rt.observer,
-                merge_writer: &rt.merge_writer,
-                layout: &rt.layout,
+                observer: std::sync::Arc::clone(&rt.observer),
+                merge_writer: std::sync::Arc::clone(&rt.merge_writer),
+                layout: rt.layout.clone(),
                 tz: rt.tz,
-                publisher: &rt.publisher,
+                publisher: rt.publisher.clone(),
             };
             run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
         }

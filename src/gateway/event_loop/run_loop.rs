@@ -21,7 +21,6 @@ use super::http::{
 use super::pulse::handle_pulse_tick;
 use super::turns::handle_inbound_message;
 
-use crate::gateway::memory::execute_observation;
 use crate::gateway::{actions, idle, last_known_good, reload, watcher, web};
 
 /// Start the WebSocket gateway server and run the main event loop.
@@ -568,6 +567,10 @@ async fn build_runtime(
     let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
     spawned.sessions_ready_tx.send_replace(true);
     let pulse_state_path = parts.layout.pulse_state_json();
+    // Both post-turn workers report into the same channel — the main loop
+    // applies whichever kind of result arrives, see `run_event_loop`'s own
+    // select branch for it.
+    let (post_turn_result_tx, post_turn_result_rx) = tokio::sync::mpsc::unbounded_channel();
 
     Ok(GatewayRuntime {
         layout: parts.layout,
@@ -579,6 +582,13 @@ async fn build_runtime(
         learning_state: Arc::new(std::sync::Mutex::new(
             crate::subconscious::LearningState::default(),
         )),
+        post_turn_observe: crate::gateway::post_turn::ObserveWorker::new(
+            post_turn_result_tx.clone(),
+        ),
+        post_turn_subconscious: crate::gateway::post_turn::SubconsciousWorker::new(
+            post_turn_result_tx,
+        ),
+        post_turn_result_rx,
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
@@ -838,6 +848,13 @@ async fn check_and_run_due_actions(rt: &mut GatewayRuntime) {
 /// startup recovery.
 const SESSION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum time to wait for an in-flight post-turn background cycle
+/// (observe or subconscious) to finish during graceful shutdown before
+/// giving up on it — its own writes are already atomic, so a cycle cut
+/// short here loses only whatever it hadn't yet persisted, never leaves
+/// something half-written.
+const POST_TURN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     tracing::info!(
@@ -845,6 +862,15 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
         bus_infra_handles = rt.bus_infra_handles.len(),
         "beginning graceful shutdown"
     );
+    // Before sessions: a post-turn cycle may itself be about to publish a
+    // notice or spawn a learner, which still needs the bus infrastructure
+    // (aborted further down) alive to land.
+    rt.post_turn_observe
+        .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
+        .await;
+    rt.post_turn_subconscious
+        .shutdown(POST_TURN_SHUTDOWN_TIMEOUT)
+        .await;
     // Stop live sessions first, while the bus and its subscribers (notify
     // router included) are still running, so their results are recorded and
     // delivered rather than left for startup recovery on the next boot.
@@ -896,15 +922,46 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 }
 
 /// Run the memory observation pipeline.
-async fn run_observation(rt: &mut GatewayRuntime) {
+/// Apply a finished background post-turn cycle's `Agent`-touching tail — the
+/// one thing neither `post_turn` worker can do for itself. See that
+/// module's own docs for why this exists as a deferred, drained-by-the-loop
+/// step instead of being awaited inline by whichever turn triggered it.
+async fn apply_post_turn_result(
+    rt: &mut GatewayRuntime,
+    result: crate::gateway::post_turn::PostTurnResult,
+) {
+    use crate::gateway::post_turn::PostTurnResult;
+    match result {
+        PostTurnResult::ObservationReady => {
+            crate::gateway::memory::apply_observation_reload(&mut rt.agent, &rt.layout).await;
+        }
+        PostTurnResult::IdleObservationReady {
+            reload_needed,
+            continuation,
+        } => {
+            if reload_needed {
+                crate::gateway::memory::apply_observation_reload(&mut rt.agent, &rt.layout).await;
+            }
+            idle::apply_idle_continuation(rt, &continuation);
+        }
+        PostTurnResult::SubconsciousNotes(notes) => {
+            for note in notes {
+                rt.agent
+                    .inject_system_message(format!("[Subconscious note] {note}"));
+            }
+        }
+    }
+}
+
+fn run_observation(rt: &GatewayRuntime) {
     let mem = crate::gateway::memory::MemorySubsystems {
-        observer: &rt.observer,
-        merge_writer: &rt.merge_writer,
-        layout: &rt.layout,
+        observer: Arc::clone(&rt.observer),
+        merge_writer: Arc::clone(&rt.merge_writer),
+        layout: rt.layout.clone(),
         tz: rt.tz,
-        publisher: &rt.publisher,
+        publisher: rt.publisher.clone(),
     };
-    execute_observation(&mem, &mut rt.agent).await;
+    rt.post_turn_observe.trigger(mem);
 }
 
 /// Log the cloud tunnel task's unexpected exit and respawn it.
@@ -1151,12 +1208,19 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
             () = wait_for_deadline(observe_deadline) => {
                 observe_deadline = None;
-                run_observation(&mut rt).await;
+                run_observation(&rt);
             }
 
             () = wait_for_deadline(idle_deadline) => {
                 idle::execute_idle_transition(&mut rt, &mut observe_deadline).await;
                 idle_deadline = None;
+            }
+
+            // A finished background post-turn cycle's `Agent` mutation
+            // (see `crate::gateway::post_turn`) — never awaited inline by
+            // the turn that triggered it.
+            result = rt.post_turn_result_rx.recv() => {
+                if let Some(result) = result { apply_post_turn_result(&mut rt, result).await; }
             }
 
             cmd = rt.command_rx.recv() => {

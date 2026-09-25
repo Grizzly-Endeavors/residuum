@@ -56,18 +56,30 @@ pub(super) async fn persist_and_check_thresholds(
     observer.check_thresholds(&recent)
 }
 
-/// Subsystem references for the main agent's observation flow.
-pub(super) struct MemorySubsystems<'a> {
-    pub observer: &'a Observer,
-    pub merge_writer: &'a Arc<MemoryMergeWriter>,
-    pub layout: &'a WorkspaceLayout,
+/// Subsystem handles for the main agent's observation flow. Owned/`Arc`'d
+/// rather than borrowed so the same value can be handed to the background
+/// post-turn worker (see `crate::gateway::post_turn`), which needs `'static`
+/// data to spawn with — cheap to construct fresh per call, the same way a
+/// borrow used to be.
+#[derive(Clone)]
+pub(crate) struct MemorySubsystems {
+    pub observer: Arc<Observer>,
+    pub merge_writer: Arc<MemoryMergeWriter>,
+    pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     /// For the once-per-streak user notices on an automatic observer/reflector
     /// failure or recovery — see [`execute_observation`].
-    pub publisher: &'a Publisher,
+    pub publisher: Publisher,
 }
 
-/// Execute an observation cycle: extract, merge, clear file, rotate messages, reload.
+/// Run one observation cycle: extract, merge, and persist the file-only
+/// outcomes (recent-context narrative, clearing observed messages).
+///
+/// Returns whether the caller should follow up with
+/// [`apply_observation_reload`] — this function never touches `Agent`
+/// itself, which is what makes it safe to run off the event loop (see
+/// `crate::gateway::post_turn::ObserveWorker`); the reload it may call for
+/// has to happen back on the main loop instead.
 ///
 /// This is the *automatic* trigger (a threshold crossing) — it backs off
 /// after a failure rather than re-attempting, and re-spending an LLM call,
@@ -75,34 +87,34 @@ pub(super) struct MemorySubsystems<'a> {
 /// unobserved; see [`Observer::automatic_failure_tracker`]. A manually
 /// forced observe ([`run_forced_observe`]) always attempts regardless.
 #[tracing::instrument(skip_all)]
-pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut Agent) {
+pub(crate) async fn execute_observation(mem: &MemorySubsystems) -> bool {
     use crate::util::{NoticeAction, RetryGate};
 
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load recent messages for observation");
-            return;
+            return false;
         }
     };
 
     if recent.is_empty() {
-        return;
+        return false;
     }
 
     let tracker = mem.observer.automatic_failure_tracker();
     if tracker.gate() == RetryGate::Skip {
         tracing::debug!("observer is backing off after a recent failure, skipping this attempt");
-        return;
+        return false;
     }
 
-    let extraction = match mem.observer.extract(&recent, mem.layout).await {
+    let extraction = match mem.observer.extract(&recent, &mem.layout).await {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, "observer failed");
             if tracker.record_failure() == NoticeAction::FailureStarted {
                 publish_notice(
-                    mem.publisher,
+                    &mem.publisher,
                     "[memory] the observer couldn't process recent messages; it will keep retrying \
                      with a backing-off delay. Recent messages are safe and will be observed once \
                      it recovers."
@@ -110,7 +122,7 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
                 )
                 .await;
             }
-            return;
+            return false;
         }
     };
 
@@ -123,30 +135,32 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
             tracing::info!(episode_id = %outcome.id, "observer extracted episode");
             if tracker.record_success() == NoticeAction::Recovered {
                 publish_notice(
-                    mem.publisher,
+                    &mem.publisher,
                     "[memory] the observer has recovered".to_string(),
                 )
                 .await;
             }
-            apply_observation_outcome(mem, agent, &outcome).await;
+            persist_observation_outcome(mem, &outcome).await;
             if outcome.reflected {
                 tracing::info!(episode_id = %outcome.id, "reflection triggered");
             }
             if let Some(notice) = outcome.reflector_notice {
-                publish_reflector_notice(mem.publisher, notice).await;
+                publish_reflector_notice(&mem.publisher, notice).await;
             }
+            true
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to merge observation");
             if tracker.record_failure() == NoticeAction::FailureStarted {
                 publish_notice(
-                    mem.publisher,
+                    &mem.publisher,
                     "[memory] the observer extracted new observations but couldn't save them; it \
                      will keep retrying with a backing-off delay."
                         .to_string(),
                 )
                 .await;
             }
+            false
         }
     }
 }
@@ -177,14 +191,14 @@ async fn publish_reflector_notice(publisher: &Publisher, notice: crate::util::No
     }
 }
 
-/// Apply post-merge steps for the main agent: save the recent-context
-/// narrative, clear recent messages, rotate the agent's own history, and
-/// reload its observation/recent-context views. Only the main agent's own
-/// observations replace the recent-context narrative — session merges never
-/// touch it (see the design's "Memory model").
-async fn apply_observation_outcome(
-    mem: &MemorySubsystems<'_>,
-    agent: &mut Agent,
+/// Persist a successful merge's file-only side effects: save the
+/// recent-context narrative and clear the messages that were just observed.
+/// No `Agent` access needed — see [`execute_observation`]'s own doc for why
+/// that matters. Only the main agent's own observations replace the
+/// recent-context narrative — session merges never touch it (see the
+/// design's "Memory model").
+async fn persist_observation_outcome(
+    mem: &MemorySubsystems,
     outcome: &crate::memory::merge_writer::MergeOutcome,
 ) {
     if let Some(narrative) = &outcome.narrative {
@@ -201,12 +215,24 @@ async fn apply_observation_outcome(
     if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
         tracing::warn!(error = %e, "failed to clear recent messages");
     }
-    agent.rotate_messages_after_observation();
+}
 
-    if let Err(e) = agent.reload_observations(mem.layout).await {
+/// The `Agent`-touching tail of a successful observation: rotate its
+/// in-memory history and reload the observations/recent-context views it
+/// assembles prompts from.
+///
+/// Always applied on the main loop — from a manually forced observe
+/// immediately, or from the background worker's result once a cycle
+/// finishes (see `crate::gateway::post_turn`) — never from inside the
+/// background task itself, since `Agent` isn't shared off the event loop.
+/// This is the "one step stale" window the owner accepted: a turn that
+/// starts before this runs still sees the pre-observation context.
+pub(crate) async fn apply_observation_reload(agent: &mut Agent, layout: &WorkspaceLayout) {
+    agent.rotate_messages_after_observation();
+    if let Err(e) = agent.reload_observations(layout).await {
         tracing::warn!(error = %e, "failed to reload observations");
     }
-    if let Err(e) = agent.reload_recent_context(mem.layout).await {
+    if let Err(e) = agent.reload_recent_context(layout).await {
         tracing::warn!(error = %e, "failed to reload recent context");
     }
 }
@@ -217,7 +243,7 @@ async fn apply_observation_outcome(
 /// publishes a notice.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_forced_observe(
-    mem: &MemorySubsystems<'_>,
+    mem: &MemorySubsystems,
     agent: &mut Agent,
     publisher: &Publisher,
 ) {
@@ -243,7 +269,7 @@ pub(super) async fn run_forced_observe(
     // backoff state, but still reports its outcome to it — a working manual
     // retry should un-stick a stuck automatic backoff just as readily as a
     // later automatic success would.
-    let extraction = match mem.observer.extract(&recent, mem.layout).await {
+    let extraction = match mem.observer.extract(&recent, &mem.layout).await {
         Ok(e) => {
             mem.observer.automatic_failure_tracker().record_success();
             e
@@ -269,7 +295,8 @@ pub(super) async fn run_forced_observe(
         }
     };
 
-    apply_observation_outcome(mem, agent, &outcome).await;
+    persist_observation_outcome(mem, &outcome).await;
+    apply_observation_reload(agent, &mem.layout).await;
 
     let suffix = if outcome.reflected {
         "; reflection triggered"
@@ -400,19 +427,21 @@ mod tests {
             .await
             .unwrap();
         let publisher = handle.publisher();
-        let mut agent = test_agent();
 
         let mem = MemorySubsystems {
-            observer: &observer,
-            merge_writer: &mw,
-            layout: &layout,
+            observer: Arc::new(observer),
+            merge_writer: mw,
+            layout: layout.clone(),
             tz: TEST_TZ,
-            publisher: &publisher,
+            publisher,
         };
 
         // First attempt: extract fails (NullProvider always errors) — a new
         // failure streak, so the user is told once.
-        execute_observation(&mem, &mut agent).await;
+        assert!(
+            !execute_observation(&mem).await,
+            "a failed cycle must not report a reload"
+        );
         let first_notice =
             tokio::time::timeout(std::time::Duration::from_millis(200), notices.recv())
                 .await
@@ -438,12 +467,31 @@ mod tests {
 
         // Second attempt, immediately after: backing off, so no repeat
         // attempt and no repeat notice.
-        execute_observation(&mem, &mut agent).await;
+        assert!(
+            !execute_observation(&mem).await,
+            "backed off, so nothing should have run"
+        );
         let second =
             tokio::time::timeout(std::time::Duration::from_millis(100), notices.recv()).await;
         assert!(
             second.is_err(),
             "must not renotify while backing off from the same failure streak"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_observation_reload_does_not_panic_with_no_prior_state() {
+        // The main-loop-applied tail of a successful observation cycle (see
+        // `crate::gateway::post_turn`) — this only needs to run cleanly
+        // against a freshly created workspace with nothing on disk yet, the
+        // same as a brand new gateway's first observation.
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        let mut agent = test_agent();
+
+        apply_observation_reload(&mut agent, &layout).await;
     }
 }

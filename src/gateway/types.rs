@@ -249,6 +249,15 @@ pub(crate) struct GatewayRuntime {
     /// `crate::gateway::post_turn`) and the main loop's own turn-count
     /// fallback can both reach it without racing.
     pub learning_state: Arc<std::sync::Mutex<crate::subconscious::LearningState>>,
+    /// Background worker for the automatic observe cycle (including the
+    /// idle transition's) — see `crate::gateway::post_turn`.
+    pub post_turn_observe: Arc<crate::gateway::post_turn::ObserveWorker>,
+    /// Background worker for the end-of-turn subconscious evaluation.
+    pub post_turn_subconscious: Arc<crate::gateway::post_turn::SubconsciousWorker>,
+    /// Results from both post-turn workers above, applied on the main loop
+    /// (see `run_loop`'s own select branch) — the `Agent`-touching tail
+    /// neither worker can run for itself.
+    pub post_turn_result_rx: mpsc::UnboundedReceiver<crate::gateway::post_turn::PostTurnResult>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,

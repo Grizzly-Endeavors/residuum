@@ -135,20 +135,26 @@ pub async fn persist_and_maybe_observe(
     visibility: Visibility,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
-    use crate::gateway::memory::{execute_observation, persist_and_check_thresholds};
+    use crate::gateway::memory::persist_and_check_thresholds;
 
     let action =
         persist_and_check_thresholds(new_messages, visibility, &rt.observer, &rt.layout, rt.tz)
             .await;
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
         let mem = MemorySubsystems {
-            observer: &rt.observer,
-            merge_writer: &rt.merge_writer,
-            layout: &rt.layout,
+            observer: Arc::clone(&rt.observer),
+            merge_writer: Arc::clone(&rt.merge_writer),
+            layout: rt.layout.clone(),
             tz: rt.tz,
-            publisher: &rt.publisher,
+            publisher: rt.publisher.clone(),
         };
-        execute_observation(&mem, &mut rt.agent).await;
+        // Fire-and-forget: the background worker (see
+        // `crate::gateway::post_turn`) runs the cycle and reports its
+        // `Agent`-touching tail back over `post_turn_result_rx`, which the
+        // main loop applies — this call must not block the turn that
+        // triggered it from returning, or the whole point of backgrounding
+        // this is lost.
+        rt.post_turn_observe.trigger(mem);
     }
 }
 
@@ -327,15 +333,17 @@ async fn run_agent_turn_with_interrupts(
     Option<Arc<std::sync::Mutex<crate::subconscious::TurnScratch>>>,
     Option<crate::gateway::types::ShutdownReason>,
 ) {
-    // A request that arrived while the previous turn's synchronous
-    // post-processing ran (persist, observe, subconscious) sits unread in
-    // `stop_rx` until something drains it — nobody polls this channel
-    // between the end of that turn's own select loop below and this one
-    // starting. Left alone, the inner loop's `stop_req = stop_rx.recv()` arm
-    // would read it as its very first event and, since a chat command's
-    // stop carries `reply_to: None` ("stop whichever turn is running"),
-    // apply it to this brand new, unrelated turn. Draining and answering
-    // every such request here — before this turn's own loop ever starts
+    // A request that arrived in the gap between the previous turn's own
+    // select loop below ending and this one starting sits unread in
+    // `stop_rx` until something drains it — nobody polls this channel in
+    // that gap (persisting, triggering the post-turn background workers —
+    // see `crate::gateway::post_turn` — updating the idle timer, and so on
+    // all happen there, none of them touching `stop_rx`). Left alone, the
+    // inner loop's `stop_req = stop_rx.recv()` arm would read it as its very
+    // first event and, since a chat command's stop carries `reply_to: None`
+    // ("stop whichever turn is running"), apply it to this brand new,
+    // unrelated turn. Draining and answering every such request here —
+    // before this turn's own loop ever starts
     // watching the channel — makes that impossible by construction: nothing
     // left over from before this turn can survive into it.
     drain_stale_stop_requests(stop_rx);
@@ -746,8 +754,7 @@ pub async fn handle_inbound_message(
             &new_messages,
             &reply_id,
             subconscious_scratch.as_ref(),
-        )
-        .await;
+        );
         maybe_nudge_learner(rt).await;
     }
 
@@ -1179,10 +1186,10 @@ mod tests {
         let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
         let (_restart_tx, mut restart_rx) = mpsc::channel::<()>(1);
 
-        // A stop request that arrived while the *previous* turn's
-        // synchronous post-processing ran, before this turn's own select
-        // loop starts watching `stop_rx` — exactly the window nothing used
-        // to drain.
+        // A stop request that arrived in the gap between the *previous*
+        // turn's own select loop ending and this turn's own select loop
+        // starting to watch `stop_rx` — exactly the window nothing used to
+        // drain.
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         stop_tx
             .send(StopRequest {
