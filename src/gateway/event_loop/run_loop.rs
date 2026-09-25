@@ -199,6 +199,7 @@ struct SpawnedHandles {
     file_registry: crate::gateway::file_server::FileRegistry,
     webhooks: crate::interfaces::webhook::WebhookTable,
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
@@ -330,6 +331,35 @@ fn a2a_listener_deps(
     (deps, sessions_ready_tx)
 }
 
+/// Spawn the two config-file pollers: workspace files (`mcp.json`,
+/// `channels.toml`, `agent-card.json`, `a2a.json`) signaling
+/// `ReloadSignal::Workspace`, and root files (`config.toml`,
+/// `providers.toml`) signaling `ReloadSignal::Root`. Split out of
+/// `spawn_server_and_adapters` purely to keep that function's line count
+/// down.
+fn spawn_config_watchers(
+    cfg: &Config,
+    parts: &crate::gateway::startup::GatewayComponents,
+    core: &GatewayCore,
+) -> (
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let watcher_handle = Some(watcher::spawn_workspace_watcher(
+        parts.layout.mcp_json(),
+        parts.layout.channels_toml(),
+        parts.layout.agent_card_json(),
+        parts.layout.a2a_agents_json(),
+        core.reload_tx.clone(),
+    ));
+    let root_config_watcher_handle = Some(watcher::spawn_root_config_watcher(
+        cfg.config_dir.join("config.toml"),
+        cfg.config_dir.join("providers.toml"),
+        core.reload_tx.clone(),
+    ));
+    (watcher_handle, root_config_watcher_handle)
+}
+
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
 async fn spawn_server_and_adapters(
     core: &GatewayCore,
@@ -412,13 +442,7 @@ async fn spawn_server_and_adapters(
         .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
     #[cfg(not(unix))]
     let sigterm = crate::gateway::types::TermSignal::new();
-    let watcher_handle = Some(watcher::spawn_workspace_watcher(
-        parts.layout.mcp_json(),
-        parts.layout.channels_toml(),
-        parts.layout.agent_card_json(),
-        parts.layout.a2a_agents_json(),
-        core.reload_tx.clone(),
-    ));
+    let (watcher_handle, root_config_watcher_handle) = spawn_config_watchers(cfg, parts, core);
 
     Ok(SpawnedHandles {
         server_handle,
@@ -432,6 +456,7 @@ async fn spawn_server_and_adapters(
         file_registry,
         webhooks,
         watcher_handle,
+        root_config_watcher_handle,
         workbench_watcher_handle,
         change_feed_handle,
         workspace_watch_health,
@@ -630,8 +655,10 @@ async fn build_runtime(
         a2a_hub: parts.a2a_hub,
         a2a_tracker: parts.a2a_tracker,
         checkpoints: parts.checkpoints,
+        config_reload_tracker: parts.config_reload_tracker,
         a2a_public_url: spawned.adapters.a2a_public_url,
         watcher_handle: spawned.watcher_handle,
+        root_config_watcher_handle: spawned.root_config_watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         change_feed_handle: spawned.change_feed_handle,
         workspace_watch_health: spawned.workspace_watch_health,
@@ -682,11 +709,10 @@ fn spawn_tunnel(
     }
 }
 
-/// Handle a workspace config reload (mcp.json or channels.toml changed).
-async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
-    tracing::info!("handling workspace config reload");
-
-    // Reload MCP servers
+/// Reload MCP servers from `mcp.json`, returning a plain-language outcome
+/// note — for the agent's own transcript when this reload was triggered by
+/// its own write (see `handle_workspace_reload`).
+async fn reload_mcp_servers_note(rt: &mut GatewayRuntime) -> String {
     match crate::workspace::config::load_mcp_servers(&rt.layout.mcp_json()) {
         Ok(servers) => {
             let report = rt
@@ -700,15 +726,23 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
                 stopped = report.stopped,
                 "MCP servers reconciled"
             );
+            format!(
+                "mcp.json reloaded ({} started, {} stopped)",
+                report.started, report.stopped
+            )
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload mcp.json, keeping current servers");
+            format!("mcp.json failed to reload, keeping current servers: {e}")
         }
     }
+}
 
-    // Reload notification channel subscribers. Parse the new file before
-    // touching anything running: a parse failure must leave the current
-    // subscribers in place rather than aborting them and spawning nothing.
+/// Reload notification channel subscribers from `channels.toml`, returning a
+/// plain-language outcome note. Parses the new file before touching
+/// anything running: a parse failure must leave the current subscribers in
+/// place rather than aborting them and spawning nothing.
+async fn reload_channels_note(rt: &mut GatewayRuntime) -> String {
     match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
             for h in rt.notify_handles.drain(..) {
@@ -725,53 +759,88 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
             rt.notify_handles = new_handles;
             rt.endpoint_registry.refresh(&rt.cfg, &configs);
             rt.channel_configs = configs;
+            "channels.toml reloaded".to_string()
         }
         Err(e) => {
+            let message = format!(
+                "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
+            );
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
-            crate::gateway::helpers::publish_notice(
-                &rt.publisher,
-                format!(
-                    "Couldn't reload your notification channels ({e}). Your existing channels are still running; fix channels.toml and reload again."
-                ),
-            )
-            .await;
+            crate::gateway::helpers::publish_notice(&rt.publisher, message.clone()).await;
+            message
         }
     }
+}
+
+/// Reload the agent card, if A2A is enabled, returning a failure note (the
+/// listener keeps serving the last good card either way, but the operator —
+/// and, when this reload was agent-triggered, the agent — still need to
+/// know).
+async fn reload_agent_card_note(rt: &mut GatewayRuntime) -> Option<String> {
+    let card_state = rt.a2a_card_state.as_ref()?;
+    let tunnel_status = rt.tunnel_status_rx.borrow().clone();
+    let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
+        &rt.cfg.a2a,
+        &rt.cfg.gateway.bind,
+        &tunnel_status,
+    );
+    let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) else {
+        return None;
+    };
+    let message = format!("agent-card.json failed to reload, still serving the previous card: {e}");
+    tracing::warn!(error = %e, "failed to reload agent-card.json, keeping the last good card");
+    if let Err(publish_err) = rt
+        .publisher
+        .publish(
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            )),
+            crate::bus::NoticeEvent {
+                message: message.clone(),
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %publish_err, "failed to publish agent card reload notice");
+    }
+    Some(message)
+}
+
+/// Handle a workspace config reload (mcp.json or channels.toml changed).
+async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
+    tracing::info!("handling workspace config reload");
+
+    // Consumed once, up front: whether this specific reload is the one the
+    // agent's own `write_file`/`edit_file` call to mcp.json/channels.toml/
+    // a2a.json caused — see `ConfigWriteWatch`. Collects a plain-language
+    // line per subsystem below (mirroring the wording already logged or
+    // published as a user notice) so, if `true`, one summary reaches the
+    // agent's own transcript too.
+    let deliver_to_agent = rt
+        .config_reload_tracker
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Workspace);
+    let mut agent_notes: Vec<String> = vec![
+        reload_mcp_servers_note(rt).await,
+        reload_channels_note(rt).await,
+    ];
 
     // Reload the A2A client's remote agents. Bad entries are skipped with a
-    // warning; a read/parse failure keeps the current agents.
+    // warning; a read/parse failure keeps the current agents. No outcome is
+    // reported back to the agent here: `reload_from_file` only logs, with no
+    // success/failure signal this caller can read.
     rt.a2a_hub
         .reload_from_file(&rt.layout.a2a_agents_json(), &rt.agent_keys)
         .await;
 
-    // Reload the agent card, if A2A is enabled. On failure the listener
-    // keeps serving the last good card; the operator still needs to know.
-    if let Some(card_state) = &rt.a2a_card_state {
-        let tunnel_status = rt.tunnel_status_rx.borrow().clone();
-        let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
-            &rt.cfg.a2a,
-            &rt.cfg.gateway.bind,
-            &tunnel_status,
-        );
-        if let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) {
-            tracing::warn!(error = %e, "failed to reload agent-card.json, keeping the last good card");
-            if let Err(publish_err) = rt
-                .publisher
-                .publish(
-                    crate::bus::topics::Notification(crate::bus::NotifyName::from(
-                        crate::bus::SYSTEM_CHANNEL,
-                    )),
-                    crate::bus::NoticeEvent {
-                        message: format!(
-                            "agent-card.json failed to reload, still serving the previous card: {e}"
-                        ),
-                    },
-                )
-                .await
-            {
-                tracing::warn!(error = %publish_err, "failed to publish agent card reload notice");
-            }
-        }
+    if let Some(note) = reload_agent_card_note(rt).await {
+        agent_notes.push(note);
+    }
+
+    if deliver_to_agent {
+        rt.agent.inject_system_message(format!(
+            "workspace configuration reloaded: {}",
+            agent_notes.join("; ")
+        ));
     }
 
     if let Err(e) = rt
@@ -872,6 +941,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(h) = rt.watcher_handle.take() {
         h.abort();
     }
+    if let Some(h) = rt.root_config_watcher_handle.take() {
+        h.abort();
+    }
     if let Some(h) = rt.workbench_watcher_handle.take() {
         h.abort();
     }
@@ -958,6 +1030,7 @@ async fn next_log_only_task_exit(
     telegram: &mut Option<tokio::task::JoinHandle<()>>,
     teams: &mut Option<tokio::task::JoinHandle<()>>,
     watcher: &mut Option<tokio::task::JoinHandle<()>>,
+    root_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     change_feed: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
@@ -966,6 +1039,7 @@ async fn next_log_only_task_exit(
         result = poll_handle(telegram) => ("telegram adapter", result),
         result = poll_handle(teams) => ("teams adapter", result),
         result = poll_handle(watcher) => ("workspace config watcher", result),
+        result = poll_handle(root_config_watcher) => ("root config watcher", result),
         result = poll_handle(workbench_watcher) => ("artifact reload watcher", result),
         result = poll_handle(change_feed) => ("workspace change feed", result),
     }
@@ -1196,6 +1270,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 &mut rt.telegram_handle,
                 &mut rt.teams_handle,
                 &mut rt.watcher_handle,
+                &mut rt.root_config_watcher_handle,
                 &mut rt.workbench_watcher_handle,
                 &mut rt.change_feed_handle,
             ) => {

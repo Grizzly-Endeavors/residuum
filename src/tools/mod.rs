@@ -4,6 +4,7 @@ pub(crate) mod a2a_task_update;
 pub mod actions;
 mod agent_keys;
 pub mod background;
+pub mod config_reload_tracker;
 mod edit;
 mod exec;
 pub(crate) mod file_bug_report;
@@ -26,6 +27,7 @@ pub(crate) mod web_fetch;
 pub mod workspace_checkpoints;
 mod write;
 
+pub use config_reload_tracker::{ConfigWriteWatch, SharedConfigReloadTracker};
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
 pub use registry::{SubagentToolDeps, ToolRegistry};

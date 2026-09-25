@@ -669,6 +669,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         let provider = MockProvider::new(vec![
@@ -728,6 +729,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         // First response has text alongside tool calls (intermediate), second is final.
@@ -808,6 +810,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         let provider = MockProvider::new(responses);
@@ -871,6 +874,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         let provider = MockProvider::new(responses);
@@ -1185,6 +1189,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1265,6 +1270,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1475,6 +1481,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
 
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2053,6 +2060,7 @@ mod tests {
             FileTracker::new_shared(),
             PathPolicy::new_shared(),
             test_diagnostics_paths(),
+            None,
         );
         let mut agent = test_agent(registry);
 

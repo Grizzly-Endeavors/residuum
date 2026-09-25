@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
@@ -14,6 +15,9 @@ pub struct WriteTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
     diagnostics_paths: DiagnosticsPaths,
+    /// Set only for main's own tool registry — see `ConfigWriteWatch`'s doc
+    /// comment for why a session's registry never gets one.
+    config_watch: Option<ConfigWriteWatch>,
 }
 
 impl WriteTool {
@@ -30,7 +34,16 @@ impl WriteTool {
             tracker,
             policy,
             diagnostics_paths,
+            config_watch: None,
         }
+    }
+
+    /// Attach a config-write watch so a write to a recognized config path
+    /// marks the reload it triggers for later delivery back to the agent.
+    #[must_use]
+    pub fn with_config_watch(mut self, config_watch: ConfigWriteWatch) -> Self {
+        self.config_watch = Some(config_watch);
+        self
     }
 }
 
@@ -109,6 +122,9 @@ impl Tool for WriteTool {
             Ok(()) => {
                 // Record in tracker — the agent knows the content since it just wrote it
                 self.tracker.lock().await.record_read(path);
+                if let Some(watch) = &self.config_watch {
+                    watch.note_write(file_path);
+                }
                 let mut output = format!("wrote {} bytes to {path}", file_content.len());
                 append_diagnostics(
                     &mut output,

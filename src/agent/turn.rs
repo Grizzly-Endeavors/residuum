@@ -1430,6 +1430,7 @@ mod tests {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
             },
+            None,
         );
 
         let tool_call = ToolCall {

@@ -43,6 +43,10 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     /// Workspace and config checkpoint repositories.
     pub checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    /// Tracks the agent's own config-file writes so the reload each one
+    /// triggers can report back into its transcript. Wired only into main's
+    /// `write_file`/`edit_file` — see `ConfigWriteWatch`'s doc comment.
+    pub config_reload_tracker: &'a crate::tools::SharedConfigReloadTracker,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -84,10 +88,18 @@ pub(super) fn init_tool_registry(
         config_dir: cfg.config_dir.clone(),
         workspace_dir: cfg.workspace_dir.clone(),
     };
+    let config_watch = crate::tools::ConfigWriteWatch {
+        recognized: crate::tools::config_reload_tracker::RecognizedConfigPaths::new(
+            &cfg.config_dir,
+            layout,
+        ),
+        tracker: deps.config_reload_tracker.clone(),
+    };
     tools.register_defaults(
         file_tracker,
         Arc::clone(deps.path_policy),
         diagnostics_paths,
+        Some(config_watch),
     );
     tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
@@ -347,6 +359,7 @@ mod tests {
         a2a_hub: Arc<crate::a2a::A2aClientHub>,
         a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
         checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+        config_reload_tracker: crate::tools::SharedConfigReloadTracker,
     }
 
     async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -429,6 +442,7 @@ mod tests {
             a2a_hub,
             a2a_tracker,
             checkpoints,
+            config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
         }
     }
 
@@ -518,6 +532,7 @@ mod tests {
             a2a_hub: &h.a2a_hub,
             a2a_tracker: &h.a2a_tracker,
             checkpoints: &h.checkpoints,
+            config_reload_tracker: &h.config_reload_tracker,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
