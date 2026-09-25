@@ -3,6 +3,7 @@
 
 export type { ClientMessage } from "./ClientMessage";
 export type { ServerMessage } from "./ServerMessage";
+export type { PostTurnActivityKind } from "./PostTurnActivityKind";
 export type { ImageAttachment } from "./ImageAttachment";
 export type { SessionCategory } from "./SessionCategory";
 export type { SessionCommandErrorCode } from "./SessionCommandErrorCode";

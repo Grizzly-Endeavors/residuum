@@ -7,6 +7,7 @@ import type {
 export type {
   ClientMessage,
   ServerMessage,
+  PostTurnActivityKind,
   ImageAttachment,
   SessionCategory,
   SessionCommandErrorCode,

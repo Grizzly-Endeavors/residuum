@@ -6,9 +6,9 @@
 
 use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent,
-    MessageEvent, NoticeEvent, NotificationEvent, ResponseEvent, SessionEvent,
-    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent,
-    WorkbenchEvent, WorkspaceEvent,
+    MessageEvent, NoticeEvent, NotificationEvent, PostTurnActivityEvent, ResponseEvent,
+    SessionEvent, SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent,
+    TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -184,6 +184,11 @@ impl Carries<InlineOutputEvent> for Notification {
 impl Carries<ErrorEvent> for Notification {
     // An error tied to a specific turn — silently dropping it is exactly
     // the silent failure `CLAUDE.md` forbids.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<PostTurnActivityEvent> for Notification {
+    // A dropped `active: false` would leave the web UI's quiet indicator
+    // stuck showing background work that already finished.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 

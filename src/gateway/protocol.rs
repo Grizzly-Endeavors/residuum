@@ -317,6 +317,18 @@ pub struct WorkbenchRelayOrigins {
     pub artifacts_origin: String,
 }
 
+/// Which background post-turn cycle a [`ServerMessage::PostTurnActivity`]
+/// is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PostTurnActivityKind {
+    /// The automatic observer/reflector cycle.
+    Memory,
+    /// The end-of-turn subconscious evaluation.
+    Subconscious,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -350,6 +362,15 @@ pub enum ServerMessage {
         /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
+    },
+    /// A background post-turn cycle (the automatic observer/reflector, or
+    /// the end-of-turn subconscious evaluation — see
+    /// `crate::gateway::post_turn`) started or finished running. Drives a
+    /// quiet "updating memory…" / "reviewing turn…" indicator; never blocks
+    /// anything, since this work no longer runs on the event loop.
+    PostTurnActivity {
+        kind: PostTurnActivityKind,
+        active: bool,
     },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {

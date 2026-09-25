@@ -149,6 +149,16 @@ export class FeedStore {
    * `GET /api/usage` fetch on connect).
    */
   sessionUsage = $state<SessionUsageTotals | null>(null);
+  /**
+   * Whether the background post-turn observer/reflector cycle is
+   * currently running (see `crate::gateway::post_turn` on the server) —
+   * drives a quiet "updating memory…" indicator. Never blocks anything;
+   * this work runs off the event loop, so a turn can start while it's
+   * still in flight.
+   */
+  memoryWorking = $state(false);
+  /** Same as `memoryWorking`, for the end-of-turn subconscious evaluation. */
+  subconsciousWorking = $state(false);
   oldestEpisodeCursor = $state<string | null>(null);
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
@@ -204,6 +214,11 @@ export class FeedStore {
         this.turnOutputTokens = msg.output_tokens;
         this.turnHasUsage = msg.has_usage;
         if (msg.session_totals) this.sessionUsage = msg.session_totals;
+        break;
+
+      case "post_turn_activity":
+        if (msg.kind === "memory") this.memoryWorking = msg.active;
+        else this.subconsciousWorking = msg.active;
         break;
 
       case "tool_call":

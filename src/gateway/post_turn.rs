@@ -29,7 +29,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::bus::{MessageEvent, Publisher, topics};
+use crate::bus::{MessageEvent, PostTurnActivityEvent, PostTurnActivityKind, Publisher, topics};
 use crate::gateway::memory::{self, MemorySubsystems};
 use crate::inference::Message;
 use crate::interfaces::types::MessageOrigin;
@@ -95,6 +95,24 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Tell the web UI a background post-turn cycle started or finished, for
+/// the quiet "updating memory…" / "reviewing turn…" indicator. A missing
+/// publisher (no trigger has ever carried one, which shouldn't happen in
+/// practice) is a silent no-op rather than a panic — nothing has run yet
+/// for there to be an indicator about.
+async fn publish_activity(publisher: Option<&Publisher>, kind: PostTurnActivityKind, active: bool) {
+    let Some(publisher) = publisher else { return };
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(crate::bus::NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+            PostTurnActivityEvent { kind, active },
+        )
+        .await
+    {
+        tracing::debug!(error = %e, ?kind, active, "failed to publish post-turn activity signal");
+    }
+}
+
 /// Background worker for the automatic observer/reflector cycle.
 pub(crate) struct ObserveWorker {
     state: Mutex<RunState>,
@@ -150,6 +168,8 @@ impl ObserveWorker {
     }
 
     async fn run_loop(&self) {
+        let publisher = lock(&self.latest_mem).as_ref().map(|m| m.publisher.clone());
+        publish_activity(publisher.as_ref(), PostTurnActivityKind::Memory, true).await;
         loop {
             self.run_one_cycle().await;
             let mut state = lock(&self.state);
@@ -158,8 +178,9 @@ impl ObserveWorker {
                 continue;
             }
             state.running = false;
-            return;
+            break;
         }
+        publish_activity(publisher.as_ref(), PostTurnActivityKind::Memory, false).await;
     }
 
     async fn run_one_cycle(&self) {
@@ -250,6 +271,8 @@ impl SubconsciousWorker {
     }
 
     async fn run_loop(&self) {
+        let publisher = lock(&self.latest).as_ref().map(|t| t.publisher.clone());
+        publish_activity(publisher.as_ref(), PostTurnActivityKind::Subconscious, true).await;
         loop {
             self.run_one_cycle().await;
             let mut state = lock(&self.state);
@@ -258,8 +281,14 @@ impl SubconsciousWorker {
                 continue;
             }
             state.running = false;
-            return;
+            break;
         }
+        publish_activity(
+            publisher.as_ref(),
+            PostTurnActivityKind::Subconscious,
+            false,
+        )
+        .await;
     }
 
     async fn run_one_cycle(&self) {

@@ -52,5 +52,9 @@
     isProcessing={ws.store.isProcessing}
     disabled={ws.transport.status !== "connected"}
   />
-  <ChatFooter usage={ws.store.sessionUsage} />
+  <ChatFooter
+    usage={ws.store.sessionUsage}
+    memoryWorking={ws.store.memoryWorking}
+    subconsciousWorking={ws.store.subconsciousWorking}
+  />
 </div>

@@ -588,6 +588,27 @@ pub struct NoticeEvent {
     pub message: String,
 }
 
+/// Which background post-turn cycle (see `crate::gateway::post_turn`) an
+/// activity signal is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostTurnActivityKind {
+    /// The automatic observer/reflector cycle.
+    Memory,
+    /// The end-of-turn subconscious evaluation.
+    Subconscious,
+}
+
+/// A background post-turn cycle started or finished running, for a quiet
+/// "updating memory…" / "reviewing turn…" indicator in the web UI — see
+/// `crate::gateway::post_turn`'s module docs for why this work no longer
+/// blocks the event loop, and so needs a signal of its own instead of
+/// being implied by the turn indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostTurnActivityEvent {
+    pub kind: PostTurnActivityKind,
+    pub active: bool,
+}
+
 /// Multi-line command output meant for inline rendering in a chat surface.
 ///
 /// Distinct from [`NoticeEvent`]: notices are transient toasts in the web UI,

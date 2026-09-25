@@ -2,8 +2,8 @@
 
 use crate::bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
-    ResponseEvent, SessionEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent,
-    WorkbenchEvent, WorkspaceEvent, topics,
+    PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent, Subscriber,
+    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
@@ -37,6 +37,20 @@ fn turn_lifecycle_frame(event: TurnLifecycleEvent) -> ServerMessage {
         TurnLifecycleEvent::Ended { correlation_id } => ServerMessage::TurnEnded {
             reply_to: correlation_id,
         },
+    }
+}
+
+/// The frame for a background post-turn cycle (see
+/// `crate::gateway::post_turn`) starting or finishing.
+fn post_turn_activity_frame(event: PostTurnActivityEvent) -> ServerMessage {
+    ServerMessage::PostTurnActivity {
+        kind: match event.kind {
+            PostTurnActivityKind::Memory => crate::gateway::protocol::PostTurnActivityKind::Memory,
+            PostTurnActivityKind::Subconscious => {
+                crate::gateway::protocol::PostTurnActivityKind::Subconscious
+            }
+        },
+        active: event.active,
     }
 }
 
@@ -113,6 +127,9 @@ pub struct WsSubscribers {
     pub tool_activity: Subscriber<ToolActivityEvent>,
     pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
     pub turn_usage: Subscriber<TurnUsageEvent>,
+    /// Background post-turn cycle start/finish, for the quiet activity
+    /// indicator — see `crate::gateway::post_turn`.
+    pub post_turn_activity: Subscriber<PostTurnActivityEvent>,
     pub intermediate: Subscriber<IntermediateEvent>,
     pub notice: Subscriber<NoticeEvent>,
     pub inline_output: Subscriber<InlineOutputEvent>,
@@ -149,6 +166,7 @@ impl WsSubscribers {
             turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             turn_usage: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
+            post_turn_activity: bus_handle.subscribe(system_topic()).await?,
             notice: bus_handle.subscribe(system_topic()).await?,
             inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
@@ -174,24 +192,24 @@ impl WsSubscribers {
                         _ => return None,
                     }
                 }
-                event = self.tool_activity.recv() => {
-                    match event {
-                        Ok(Some(activity)) => Some(tool_activity_frame(activity)),
-                        _ => return None,
-                    }
-                }
-                event = self.turn_lifecycle.recv() => {
-                    match event {
-                        Ok(Some(lifecycle)) => Some(turn_lifecycle_frame(lifecycle)),
-                        _ => return None,
-                    }
-                }
+                event = self.tool_activity.recv() => match event {
+                    Ok(Some(activity)) => Some(tool_activity_frame(activity)),
+                    _ => return None,
+                },
+                event = self.turn_lifecycle.recv() => match event {
+                    Ok(Some(lifecycle)) => Some(turn_lifecycle_frame(lifecycle)),
+                    _ => return None,
+                },
                 event = self.turn_usage.recv() => {
                     match event {
                         Ok(Some(usage)) => Some(turn_usage_frame(usage)),
                         _ => return None,
                     }
                 }
+                event = self.post_turn_activity.recv() => match event {
+                    Ok(Some(activity)) => Some(post_turn_activity_frame(activity)),
+                    _ => return None,
+                },
                 event = self.intermediate.recv() => {
                     match event {
                         Ok(Some(im)) => Some(ServerMessage::BroadcastResponse {
