@@ -161,7 +161,72 @@ pub(crate) async fn run_chat_command(
             )
             .await
         }
+        Some(commands::CommandSideEffect::StopSession(session_name)) => {
+            tracing::info!(session = %session_name, source = %source, "named session stop requested via chat command");
+            dispatch_stop_named_session(dispatch.session_registry, &session_name)
+        }
+        Some(commands::CommandSideEffect::ListSessions) => {
+            format_session_list(dispatch.session_registry)
+        }
         None => result.response,
+    }
+}
+
+/// Stop a named session's running turn — `/stop <name>` — through the same
+/// synchronous, atomic check-and-cancel `SessionRegistry::stop_if_running`
+/// the web UI's per-session stop uses, so there's no channel for the
+/// request to sit in. Unlike `SessionRegistry::stop` (which also ends an
+/// idle session outright), this leaves an idle session alone — same
+/// reasoning as plain `/stop`, which uses the same method for the current
+/// conversation's session: "stop" here means "interrupt whatever this
+/// session is doing right now", and an idle session isn't doing anything to
+/// interrupt.
+fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
+    let address = crate::bus::SessionAddress::from(name);
+    if session_registry.stop_if_running(&address) {
+        format!("stopped session '{name}'.")
+    } else if session_registry.get(&address).is_some() {
+        format!("session '{name}' is not currently running a turn.")
+    } else {
+        format!("no session named '{name}' is running.")
+    }
+}
+
+/// Build the `/sessions` response: every live session's address, purpose,
+/// state, and elapsed time since it started.
+fn format_session_list(session_registry: &SessionRegistry) -> String {
+    let mut sessions = session_registry.list_live();
+    if sessions.is_empty() {
+        return "No sessions are running.".to_string();
+    }
+    sessions.sort_by(|a, b| a.address.as_ref().cmp(b.address.as_ref()));
+
+    let now = chrono::Utc::now();
+    let mut lines = vec![format!("{} running session(s):", sessions.len())];
+    for info in sessions {
+        let elapsed = now.signed_duration_since(info.started_at);
+        lines.push(format!(
+            "  {} [{}] {} ({})",
+            info.address,
+            info.state.as_str(),
+            info.purpose,
+            format_elapsed(elapsed)
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Format a duration as a short, human "Xm" / "Xh Ym" label for the
+/// `/sessions` list. Negative or zero durations (clock skew, or a session
+/// that just started) render as `"0m"` rather than something confusing.
+fn format_elapsed(elapsed: chrono::Duration) -> String {
+    let total_mins = elapsed.num_minutes().max(0);
+    let hours = total_mins / 60;
+    let mins = total_mins % 60;
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
     }
 }
 
@@ -506,6 +571,89 @@ mod tests {
         assert!(
             event.origin.belongs_to_main(),
             "the notice must reach main, never a conversation session"
+        );
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_stops_a_running_session() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("pulse-email_check-0001", SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+
+        let reply = dispatch_stop_named_session(&registry, "pulse-email_check-0001");
+
+        assert_eq!(reply, "stopped session 'pulse-email_check-0001'.");
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_leaves_an_idle_session_alone() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("scheduled-backup-0001", SessionState::Idle),
+                token.clone(),
+            )
+            .unwrap();
+
+        let reply = dispatch_stop_named_session(&registry, "scheduled-backup-0001");
+
+        assert_eq!(
+            reply,
+            "session 'scheduled-backup-0001' is not currently running a turn."
+        );
+        assert!(
+            !token.is_cancelled(),
+            "an idle session must not be ended outright by a chat /stop"
+        );
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_reports_an_unknown_name() {
+        let registry = SessionRegistry::new();
+        let reply = dispatch_stop_named_session(&registry, "no-such-session");
+        assert_eq!(reply, "no session named 'no-such-session' is running.");
+    }
+
+    #[test]
+    fn format_session_list_reports_nothing_running() {
+        let registry = SessionRegistry::new();
+        assert_eq!(format_session_list(&registry), "No sessions are running.");
+    }
+
+    #[test]
+    fn format_session_list_includes_address_state_and_purpose() {
+        let registry = SessionRegistry::new();
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info("pulse-email_check-0001", SessionState::Running),
+                token,
+            )
+            .unwrap();
+
+        let listing = format_session_list(&registry);
+
+        assert!(listing.contains("1 running session"));
+        assert!(listing.contains("pulse-email_check-0001"));
+        assert!(listing.contains("running"));
+        assert!(listing.contains("chat-1"), "purpose should be included");
+    }
+
+    #[test]
+    fn format_elapsed_renders_minutes_and_hours() {
+        assert_eq!(format_elapsed(chrono::Duration::minutes(5)), "5m");
+        assert_eq!(format_elapsed(chrono::Duration::minutes(65)), "1h 5m");
+        assert_eq!(
+            format_elapsed(chrono::Duration::seconds(-5)),
+            "0m",
+            "clock skew or a just-started session must not render negative"
         );
     }
 }
