@@ -11,6 +11,7 @@ mod setup;
 mod stop;
 mod tracing_cmd;
 mod update;
+mod update_watchdog;
 
 use clap::Parser;
 
@@ -67,6 +68,11 @@ enum Command {
     Feedback(feedback::FeedbackArgs),
     /// Check for and install updates
     Update(update::UpdateArgs),
+    /// Internal: supervise a self-update restart and roll back on failure.
+    /// `serve::foreground::relaunch` spawns this itself; not meant to be
+    /// run directly.
+    #[command(hide = true)]
+    UpdateWatchdog(update_watchdog::UpdateWatchdogArgs),
 }
 
 pub async fn run() -> Result<(), FatalError> {
@@ -115,6 +121,7 @@ pub async fn run() -> Result<(), FatalError> {
             residuum::util::tracing_init::init_default_tracing();
             update::run_update_command(args).await
         }
+        Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args),
         Command::Tracing { ref command } => {
             residuum::util::tracing_init::init_default_tracing();
             let config_dir = residuum::config::Config::config_dir()?;
