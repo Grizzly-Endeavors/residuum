@@ -167,6 +167,38 @@ impl Config {
         Ok(())
     }
 
+    /// Diagnostics for `contents` as `config.toml`.
+    ///
+    /// Reuses [`Self::validate_toml`] for the semantic check, so a diagnostic
+    /// can never disagree with what loading rejects. Parses the TOML a
+    /// second time first so a syntax error can carry the parser's own
+    /// line/column via its byte span — `validate_toml` only returns the
+    /// crate's pre-formatted `Display` text, which has no structured
+    /// position. Semantic errors (missing timezone, a bad model string) have
+    /// no byte position to report, since they're found only after
+    /// deserialization succeeds.
+    #[must_use]
+    pub fn diagnose_toml(
+        contents: &str,
+        config_dir: &std::path::Path,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        diagnose_toml_file::<deserialize::ConfigFile>(contents, || {
+            Self::validate_toml(contents, config_dir)
+        })
+    }
+
+    /// Diagnostics for `contents` as `providers.toml`. See
+    /// [`Self::diagnose_toml`] for the approach.
+    #[must_use]
+    pub fn diagnose_providers_toml(
+        contents: &str,
+        config_dir: &std::path::Path,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        diagnose_toml_file::<deserialize::ProvidersFile>(contents, || {
+            Self::validate_providers_toml(contents, config_dir)
+        })
+    }
+
     /// Build `CompletionOptions` for a named role, applying per-role overrides
     /// over the global defaults.
     #[must_use]
@@ -215,6 +247,33 @@ fn read_optional_toml<T: serde::de::DeserializeOwned>(
     let parsed =
         toml::from_str::<T>(&contents).map_err(|e| format!("{file_name} parse error: {e}"))?;
     Ok(Some(parsed))
+}
+
+/// Shared syntax-then-semantic diagnostic path for a TOML config file: try
+/// to parse `contents` as `T` first so a syntax error carries the parser's
+/// own line/column (from its byte span); if it parses, defer to `validate`
+/// (the real semantic check `load_at` also runs) for the one error loading
+/// would actually raise.
+fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
+    contents: &str,
+    validate: impl FnOnce() -> Result<(), String>,
+) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    if let Err(e) = toml::from_str::<T>(contents) {
+        let location = e
+            .span()
+            .map(|span| Location::from_byte_offset(contents, span.start));
+        return vec![match location {
+            Some(loc) => Diagnostic::error_at(e.message().to_string(), loc),
+            None => Diagnostic::error(e.message().to_string()),
+        }];
+    }
+
+    match validate() {
+        Ok(()) => Vec::new(),
+        Err(message) => vec![Diagnostic::error(message)],
+    }
 }
 
 /// Load and parse a `providers.toml` file from the given path.
@@ -386,6 +445,63 @@ main = "invalid-format"
         let path = dir.path().join("nonexistent.toml");
         let result = super::load_providers(&path);
         assert!(result.is_err(), "missing file should fail");
+    }
+
+    #[test]
+    fn diagnose_toml_reports_syntax_error_with_line_column() {
+        use crate::diagnostics::Location;
+
+        let dir = tempfile::tempdir().unwrap();
+        let diagnostics = Config::diagnose_toml("this is not valid toml", dir.path());
+        assert_eq!(diagnostics.len(), 1, "should report exactly one diagnostic");
+        assert!(
+            matches!(
+                diagnostics.first().unwrap().location,
+                Some(Location::LineColumn { .. })
+            ),
+            "TOML syntax error should carry a line/column: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diagnose_toml_reports_semantic_error_without_position() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        let diagnostics = Config::diagnose_toml("", dir.path());
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "missing timezone should be one diagnostic"
+        );
+        let diagnostic = diagnostics.first().unwrap();
+        assert!(diagnostic.message.contains("timezone"));
+        assert!(
+            diagnostic.location.is_none(),
+            "semantic error has no source position"
+        );
+    }
+
+    #[test]
+    fn diagnose_toml_clean_config_has_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        assert!(Config::diagnose_toml(VALID_CONFIG, dir.path()).is_empty());
+    }
+
+    #[test]
+    fn diagnose_providers_toml_reports_semantic_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
+        let bad_providers = "[models]\nmain = \"invalid-format\"\n";
+        let diagnostics = Config::diagnose_providers_toml(bad_providers, dir.path());
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics
+                .first()
+                .unwrap()
+                .message
+                .contains("expected 'provider/model' format")
+        );
     }
 
     #[test]

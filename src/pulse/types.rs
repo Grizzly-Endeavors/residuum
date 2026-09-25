@@ -296,6 +296,49 @@ pub(crate) fn load_heartbeat(
     Some(cfg)
 }
 
+/// Diagnostics for `content` as `HEARTBEAT.yml`.
+///
+/// Reuses the same YAML parse and per-pulse checks (`dedupe_pulse_names`,
+/// `reject_invalid_pulses`) that [`load_heartbeat`] applies, so a diagnostic
+/// can never disagree with what loading rejects or drops. A YAML syntax
+/// error carries `serde_yaml_ng`'s own line/column; a dropped pulse carries
+/// its name as the location, since pulses aren't tracked by source line
+/// here. `schedule`/`active_hours` strings aren't checked at load time today
+/// (see `parse_schedule_duration`/`parse_active_hours`, evaluated only when
+/// a pulse is due to fire), so this doesn't flag them either — doing so
+/// would report a problem loading doesn't actually catch.
+#[must_use]
+pub(crate) fn diagnose_heartbeat(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    let mut cfg = match serde_yaml_ng::from_str::<HeartbeatConfig>(content) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let location = e.location().map(|loc| Location::LineColumn {
+                line: u32::try_from(loc.line()).unwrap_or(u32::MAX),
+                column: u32::try_from(loc.column()).unwrap_or(u32::MAX),
+            });
+            return vec![match location {
+                Some(loc) => Diagnostic::error_at(e.to_string(), loc),
+                None => Diagnostic::error(e.to_string()),
+            }];
+        }
+    };
+
+    dedupe_pulse_names(&mut cfg.pulses)
+        .into_iter()
+        .chain(reject_invalid_pulses(&mut cfg.pulses))
+        .map(|problem| {
+            Diagnostic::error_at(
+                problem.message,
+                Location::Path {
+                    path: format!("pulses.{}", problem.name),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Drop pulses that use a removed option (`agent: "main"` or
 /// `include_identity`), returning what was dropped and why.
 ///
@@ -902,6 +945,64 @@ pulses:
         assert_eq!(problems.len(), 1, "the duplicate should be reported");
         assert_eq!(problems.first().unwrap().name, "dup");
         assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
+    }
+
+    // ── diagnose_heartbeat ───────────────────────────────────────────────
+
+    #[test]
+    fn diagnose_heartbeat_clean_file_has_no_diagnostics() {
+        let yaml = "pulses:\n  - name: morning\n    schedule: \"30m\"\n    tasks: []\n";
+        assert!(diagnose_heartbeat(yaml).is_empty());
+    }
+
+    #[test]
+    fn diagnose_heartbeat_reports_syntax_error_with_line_column() {
+        use crate::diagnostics::Location;
+
+        let diagnostics = diagnose_heartbeat(": not valid yaml [[");
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics.first().unwrap().location,
+            Some(Location::LineColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn diagnose_heartbeat_matches_loader_on_duplicate_pulse_fixture() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+pulses:
+  - name: dup
+    schedule: "1h"
+    tasks: []
+  - name: dup
+    schedule: "2h"
+    tasks: []
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let mut problems = Vec::new();
+        load_heartbeat(&path, &mut last_error, &mut problems).unwrap();
+        let diagnostics = diagnose_heartbeat(yaml);
+
+        assert_eq!(problems.len(), diagnostics.len());
+        assert!(diagnostics.first().unwrap().message.contains("dup"));
+    }
+
+    #[test]
+    fn diagnose_heartbeat_reports_removed_option() {
+        let yaml =
+            "pulses:\n  - name: main-pulse\n    schedule: \"1h\"\n    agent: main\n    tasks: []\n";
+        let diagnostics = diagnose_heartbeat(yaml);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics
+                .first()
+                .unwrap()
+                .message
+                .contains("agent: \"main\"")
+        );
     }
 
     #[test]

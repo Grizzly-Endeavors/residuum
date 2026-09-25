@@ -47,6 +47,65 @@ struct McpServerRaw {
     headers: HashMap<String, String>,
 }
 
+/// Resolve one raw `mcp.json` server entry into a usable [`McpServerEntry`],
+/// or the plain-language reason it can't be used.
+///
+/// Shared by [`load_mcp_servers_map`] (which drops the entry with a
+/// `tracing::warn!` naming the reason) and
+/// [`diagnose_mcp_json`] (which reports the same reason as a diagnostic), so
+/// the two can never disagree about which entries load.
+fn resolve_mcp_server(name: &str, raw: McpServerRaw) -> Result<McpServerEntry, String> {
+    // Resolve transport: check `type` first (Claude standard), then `transport` (Residuum)
+    let transport_str = raw.type_.as_deref().or(raw.transport.as_deref());
+    let transport = match transport_str {
+        Some("streamable-http" | "http") => McpTransport::Http,
+        None | Some("stdio") => McpTransport::Stdio,
+        Some("sse") => {
+            return Err(format!(
+                "server '{name}': SSE transport is deprecated by the MCP spec, server will not load"
+            ));
+        }
+        Some(unknown) => {
+            return Err(format!(
+                "server '{name}': unrecognized transport '{unknown}', server will not load"
+            ));
+        }
+    };
+
+    // Resolve command/url based on transport
+    let command = match transport {
+        McpTransport::Http => {
+            if let Some(url) = raw.url.filter(|u| !u.is_empty()) {
+                url
+            } else if let Some(cmd) = raw.command.filter(|c| !c.is_empty()) {
+                cmd
+            } else {
+                return Err(format!(
+                    "server '{name}': HTTP server has no url or command, server will not load"
+                ));
+            }
+        }
+        McpTransport::Stdio => {
+            if let Some(cmd) = raw.command.filter(|c| !c.is_empty()) {
+                cmd
+            } else {
+                return Err(format!(
+                    "server '{name}': stdio server has no command, server will not load"
+                ));
+            }
+        }
+    };
+
+    Ok(McpServerEntry {
+        name: name.to_string(),
+        command,
+        args: raw.args,
+        env: raw.env,
+        transport,
+        headers: raw.headers,
+    })
+}
+
 /// Load MCP server definitions from a JSON file as a name → entry map.
 ///
 /// Returns an empty map if the file does not exist.
@@ -68,71 +127,55 @@ pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpSe
     let servers: HashMap<String, McpServerEntry> = file
         .mcp_servers
         .into_iter()
-        .filter_map(|(name, raw)| {
-            // Resolve transport: check `type` first (Claude standard), then `transport` (Residuum)
-            let transport_str = raw.type_.as_deref().or(raw.transport.as_deref());
-            let transport = match transport_str {
-                Some("streamable-http" | "http") => McpTransport::Http,
-                None | Some("stdio") => McpTransport::Stdio,
-                Some("sse") => {
-                    tracing::warn!(
-                        server = %name,
-                        "SSE transport is deprecated by the MCP spec, skipping server"
-                    );
-                    return None;
-                }
-                Some(unknown) => {
-                    tracing::warn!(
-                        server = %name,
-                        transport = %unknown,
-                        "unrecognized MCP transport, skipping server"
-                    );
-                    return None;
-                }
-            };
-
-            // Resolve command/url based on transport
-            let command = match transport {
-                McpTransport::Http => {
-                    if let Some(url) = raw.url.filter(|u| !u.is_empty()) {
-                        url
-                    } else if let Some(cmd) = raw.command.filter(|c| !c.is_empty()) {
-                        cmd
-                    } else {
-                        tracing::warn!(
-                            server = %name,
-                            "HTTP MCP server has no url or command, skipping"
-                        );
-                        return None;
-                    }
-                }
-                McpTransport::Stdio => {
-                    if let Some(cmd) = raw.command.filter(|c| !c.is_empty()) {
-                        cmd
-                    } else {
-                        tracing::warn!(
-                            server = %name,
-                            "stdio MCP server has no command, skipping"
-                        );
-                        return None;
-                    }
-                }
-            };
-
-            let entry = McpServerEntry {
-                name: name.clone(),
-                command,
-                args: raw.args,
-                env: raw.env,
-                transport,
-                headers: raw.headers,
-            };
-            Some((name, entry))
+        .filter_map(|(name, raw)| match resolve_mcp_server(&name, raw) {
+            Ok(entry) => Some((name, entry)),
+            Err(message) => {
+                tracing::warn!(server = %name, %message, "skipping MCP server");
+                None
+            }
         })
         .collect();
 
     tracing::debug!(count = servers.len(), path = %path.display(), "loaded MCP servers");
     Ok(servers)
+}
+
+/// Diagnostics for `content` as `config/mcp.json`.
+///
+/// Reuses [`resolve_mcp_server`], the same per-entry check
+/// [`load_mcp_servers_map`] applies, so a diagnostic can never disagree with
+/// what loading skips. A JSON syntax error carries `serde_json`'s own
+/// line/column.
+#[must_use]
+pub fn diagnose_mcp_json(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    let file: McpConfigFile = match serde_json::from_str(content) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![Diagnostic::error_at(
+                e.to_string(),
+                Location::LineColumn {
+                    line: u32::try_from(e.line()).unwrap_or(u32::MAX),
+                    column: u32::try_from(e.column()).unwrap_or(u32::MAX),
+                },
+            )];
+        }
+    };
+
+    file.mcp_servers
+        .into_iter()
+        .filter_map(|(name, raw)| {
+            resolve_mcp_server(&name, raw).err().map(|message| {
+                Diagnostic::error_at(
+                    message,
+                    Location::Path {
+                        path: format!("mcpServers.{name}"),
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 /// Load MCP server definitions from a JSON file.
@@ -179,6 +222,90 @@ struct ChannelEntryRaw {
     app_id: Option<String>,
 }
 
+/// Retired channel option keys present on `raw`, kept only so a stale config
+/// warns rather than being silently ignored. The channel still loads with
+/// these fields present — they just do nothing.
+fn retired_channel_keys(raw: &ChannelEntryRaw) -> Vec<&'static str> {
+    let mut keys = Vec::new();
+    if raw.default_category.is_some() {
+        keys.push("default_category");
+    }
+    if raw.default_scenario.is_some() {
+        keys.push("default_scenario");
+    }
+    keys
+}
+
+/// Resolve one raw `channels.toml` entry's type-specific fields into an
+/// [`ExternalChannelKind`], or the plain-language reason the channel can't
+/// be used.
+///
+/// Shared by [`load_channel_configs`] (which drops the channel with a
+/// `tracing::warn!` naming the reason) and [`diagnose_channels_toml`] (which
+/// reports the same reason as a diagnostic), so the two can never disagree
+/// about which channels load.
+fn resolve_channel_kind(name: &str, raw: &ChannelEntryRaw) -> Result<ExternalChannelKind, String> {
+    match raw.type_.as_str() {
+        "ntfy" => {
+            let url = raw.url.clone().filter(|u| !u.is_empty()).ok_or_else(|| {
+                format!("channel '{name}': ntfy channel is missing required 'url' field")
+            })?;
+            let topic = raw.topic.clone().filter(|t| !t.is_empty()).ok_or_else(|| {
+                format!("channel '{name}': ntfy channel is missing required 'topic' field")
+            })?;
+            Ok(ExternalChannelKind::Ntfy {
+                url,
+                topic,
+                priority: raw.priority.clone(),
+            })
+        }
+        "macos" => Ok(ExternalChannelKind::Macos {
+            default_priority: raw.default_priority.clone(),
+            throttle_window_secs: raw.throttle_window_secs,
+            sound: raw.sound,
+            app_name: raw.app_name.clone(),
+            web_url: raw.web_url.clone(),
+        }),
+        "windows" => Ok(ExternalChannelKind::Windows {
+            throttle_window_secs: raw.throttle_window_secs,
+            sound: raw.sound,
+            app_name: raw.app_name.clone(),
+            app_id: raw.app_id.clone(),
+        }),
+        "webhook" => {
+            // Keep in sync with the methods `WebhookChannel::deliver` actually
+            // supports (src/notify/external.rs) — validate here, at config load,
+            // so a typo surfaces at startup instead of at first delivery attempt.
+            const SUPPORTED_METHODS: [&str; 2] = ["POST", "PUT"];
+
+            let url = raw.url.clone().filter(|u| !u.is_empty()).ok_or_else(|| {
+                format!("channel '{name}': webhook channel is missing required 'url' field")
+            })?;
+            if let Some(method) = &raw.method
+                && !SUPPORTED_METHODS.contains(&method.to_uppercase().as_str())
+            {
+                return Err(format!(
+                    "channel '{name}': webhook channel has unsupported 'method' field '{method}' \
+                     (supported: {SUPPORTED_METHODS:?}), skipping channel"
+                ));
+            }
+            Ok(ExternalChannelKind::Webhook {
+                url,
+                method: raw.method.clone(),
+                headers: raw
+                    .headers
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+            })
+        }
+        unknown => Err(format!(
+            "channel '{name}': unrecognized channel type '{unknown}', skipping"
+        )),
+    }
+}
+
 /// Load external channel configs from a TOML file.
 ///
 /// Returns an empty vec if the file does not exist.
@@ -201,90 +328,75 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
         .channels
         .into_iter()
         .filter_map(|(name, raw)| {
-            for (key, present) in [
-                ("default_category", raw.default_category.is_some()),
-                ("default_scenario", raw.default_scenario.is_some()),
-            ] {
-                if present {
-                    tracing::warn!(
-                        channel = %name,
-                        key,
-                        "ignoring retired channel option; notification categories were removed \
-                         because nothing ever selected between them — delete this line"
-                    );
-                }
+            for key in retired_channel_keys(&raw) {
+                tracing::warn!(
+                    channel = %name,
+                    key,
+                    "ignoring retired channel option; notification categories were removed \
+                     because nothing ever selected between them — delete this line"
+                );
             }
 
-            let kind = match raw.type_.as_str() {
-                "ntfy" => {
-                    let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
-                        tracing::warn!(channel = %name, "ntfy channel is missing required 'url' field");
-                        return None;
-                    };
-                    let Some(topic) = raw.topic.filter(|t| !t.is_empty()) else {
-                        tracing::warn!(channel = %name, "ntfy channel is missing required 'topic' field");
-                        return None;
-                    };
-                    ExternalChannelKind::Ntfy {
-                        url,
-                        topic,
-                        priority: raw.priority,
-                    }
+            match resolve_channel_kind(&name, &raw) {
+                Ok(kind) => Some(ExternalChannelConfig { name, kind }),
+                Err(message) => {
+                    tracing::warn!(%message, "skipping channel");
+                    None
                 }
-                "macos" => ExternalChannelKind::Macos {
-                    default_priority: raw.default_priority,
-                    throttle_window_secs: raw.throttle_window_secs,
-                    sound: raw.sound,
-                    app_name: raw.app_name,
-                    web_url: raw.web_url,
-                },
-                "windows" => ExternalChannelKind::Windows {
-                    throttle_window_secs: raw.throttle_window_secs,
-                    sound: raw.sound,
-                    app_name: raw.app_name,
-                    app_id: raw.app_id,
-                },
-                "webhook" => {
-                    // Keep in sync with the methods `WebhookChannel::deliver` actually
-                    // supports (src/notify/external.rs) — validate here, at config load,
-                    // so a typo surfaces at startup instead of at first delivery attempt.
-                    const SUPPORTED_METHODS: [&str; 2] = ["POST", "PUT"];
-
-                    let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
-                        tracing::warn!(channel = %name, "webhook channel is missing required 'url' field");
-                        return None;
-                    };
-                    if let Some(method) = &raw.method
-                        && !SUPPORTED_METHODS.contains(&method.to_uppercase().as_str())
-                    {
-                        tracing::warn!(
-                            channel = %name,
-                            method = %method,
-                            supported = ?SUPPORTED_METHODS,
-                            "webhook channel has unsupported 'method' field, skipping channel"
-                        );
-                        return None;
-                    }
-                    ExternalChannelKind::Webhook {
-                        url,
-                        method: raw.method,
-                        headers: raw.headers.unwrap_or_default().into_iter().collect(),
-                    }
-                }
-                unknown => {
-                    tracing::warn!(
-                        channel = %name,
-                        type_ = %unknown,
-                        "unrecognized channel type, skipping"
-                    );
-                    return None;
-                }
-            };
-            Some(ExternalChannelConfig { name, kind })
+            }
         })
         .collect();
 
     Ok(configs)
+}
+
+/// Diagnostics for `content` as `config/channels.toml`.
+///
+/// Reuses [`resolve_channel_kind`] and [`retired_channel_keys`], the same
+/// per-entry checks [`load_channel_configs`] applies, so a diagnostic can
+/// never disagree with what loading skips or ignores. A TOML syntax error
+/// carries the parser's own line/column.
+#[must_use]
+pub fn diagnose_channels_toml(content: &str) -> Vec<crate::diagnostics::Diagnostic> {
+    use crate::diagnostics::{Diagnostic, Location};
+
+    let file: ChannelsFile = match toml::from_str(content) {
+        Ok(f) => f,
+        Err(e) => {
+            let location = e
+                .span()
+                .map(|span| Location::from_byte_offset(content, span.start));
+            return vec![match location {
+                Some(loc) => Diagnostic::error_at(e.message().to_string(), loc),
+                None => Diagnostic::error(e.message().to_string()),
+            }];
+        }
+    };
+
+    let mut diagnostics = Vec::new();
+    for (name, raw) in &file.channels {
+        for key in retired_channel_keys(raw) {
+            diagnostics.push(Diagnostic::warning_at(
+                format!(
+                    "channel '{name}': '{key}' was retired and is ignored; notification \
+                     categories were removed because nothing ever selected between them — \
+                     delete this line"
+                ),
+                Location::Path {
+                    path: format!("channels.{name}.{key}"),
+                },
+            ));
+        }
+        if let Err(message) = resolve_channel_kind(name, raw) {
+            diagnostics.push(Diagnostic::error_at(
+                message,
+                Location::Path {
+                    path: format!("channels.{name}"),
+                },
+            ));
+        }
+    }
+    diagnostics
 }
 
 #[cfg(test)]
@@ -986,6 +1098,117 @@ web_url = "http://localhost:3000"
         assert_eq!(*sound, Some(true));
         assert_eq!(app_name.as_deref(), Some("Residuum"));
         assert_eq!(web_url.as_deref(), Some("http://localhost:3000"));
+    }
+
+    // ── Channel diagnostics ──────────────────────────────────────────────
+
+    #[test]
+    fn diagnose_channels_toml_clean_file_has_no_diagnostics() {
+        let content = "[channels.my-ntfy]\ntype = \"ntfy\"\nurl = \"https://ntfy.sh\"\ntopic = \"residuum\"\n";
+        assert!(diagnose_channels_toml(content).is_empty());
+    }
+
+    #[test]
+    fn diagnose_channels_toml_reports_syntax_error_with_line_column() {
+        use crate::diagnostics::Location;
+
+        let diagnostics = diagnose_channels_toml("not valid toml [[[");
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics[0].location,
+            Some(Location::LineColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn diagnose_channels_toml_reports_retired_field_as_warning() {
+        let content = "[channels.macos]\ntype = \"macos\"\ndefault_category = \"alerts\"\n";
+        let diagnostics = diagnose_channels_toml(content);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].severity,
+            crate::diagnostics::Severity::Warning
+        );
+        assert!(diagnostics[0].message.contains("default_category"));
+    }
+
+    #[test]
+    fn diagnose_channels_toml_matches_loader_on_same_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        let content = r#"
+[channels.bad-hook]
+type = "webhook"
+
+[channels.good-hook]
+type = "webhook"
+url = "https://hooks.example.com/notify"
+"#;
+        std::fs::write(&path, content).unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        let diagnostics = diagnose_channels_toml(content);
+
+        assert_eq!(configs.len(), 1, "one channel should load");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "one diagnostic for the dropped channel"
+        );
+        assert!(diagnostics[0].message.contains("bad-hook"));
+    }
+
+    // ── MCP diagnostics ──────────────────────────────────────────────────
+
+    #[test]
+    fn diagnose_mcp_json_clean_file_has_no_diagnostics() {
+        let content = r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#;
+        assert!(diagnose_mcp_json(content).is_empty());
+    }
+
+    #[test]
+    fn diagnose_mcp_json_reports_syntax_error_with_line_column() {
+        use crate::diagnostics::Location;
+
+        let diagnostics = diagnose_mcp_json("not valid json {{{");
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics[0].location,
+            Some(Location::LineColumn { .. })
+        ));
+    }
+
+    #[test]
+    fn diagnose_mcp_json_reports_dropped_entry() {
+        let content = r#"{"mcpServers": {"broken": {"type": "sse", "url": "http://x"}}}"#;
+        let diagnostics = diagnose_mcp_json(content);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, crate::diagnostics::Severity::Error);
+        assert!(diagnostics[0].message.contains("broken"));
+    }
+
+    #[test]
+    fn diagnose_mcp_json_matches_loader_on_same_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        let content = r#"{
+            "mcpServers": {
+                "good": { "command": "mcp-good" },
+                "sse-server": { "type": "sse", "url": "http://x" }
+            }
+        }"#;
+        std::fs::write(&path, content).unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        let diagnostics = diagnose_mcp_json(content);
+
+        assert_eq!(servers.len(), 1, "one server should load");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "one diagnostic for the dropped server"
+        );
+        assert!(diagnostics[0].message.contains("sse-server"));
     }
 
     // ── MCP map + resolution tests ──────────────────────────────────────
