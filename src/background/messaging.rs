@@ -89,7 +89,8 @@ impl fmt::Display for SendError {
                 f,
                 "message loop limit reached ({hop_count} hops, limit {limit}); this looks like \
                  a message loop between agents, so delivery was refused — stop replying and \
-                 report back to your spawner or the user instead"
+                 report back to your spawner or the user instead. Raise the `hop_hard_limit` \
+                 setting under `[background]` in config.toml to allow more hops"
             ),
         }
     }
@@ -1937,6 +1938,10 @@ mod tests {
             }
         ));
         assert!(err.to_string().contains("loop"));
+        assert!(
+            err.to_string().contains("hop_hard_limit"),
+            "error should name the config setting that controls the limit, got: {err}"
+        );
 
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), sub.recv())

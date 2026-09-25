@@ -114,16 +114,26 @@ impl TelegramInterface {
     /// Start the Telegram long-polling loop.
     ///
     /// This blocks until a shutdown signal is received, an error occurs, or the
-    /// task is cancelled.
+    /// task is cancelled. A corrupt saved Telegram state file is moved aside
+    /// and started fresh rather than treated as an error (see
+    /// [`ChatStateStore::load`]). Verifying the bot token retries with
+    /// backoff on a transient failure instead of failing immediately — see
+    /// [`crate::interfaces::boot_retry`].
     ///
     /// # Errors
-    /// Returns an error if the saved Telegram state cannot be loaded, the bot
-    /// cannot connect, or the bus subscription fails.
+    /// Returns an error if the saved Telegram state cannot be read (a
+    /// permissions problem, not corrupt content), the bot still can't
+    /// connect after retrying, or the bus subscription fails.
     pub(crate) async fn start(self) -> anyhow::Result<()> {
         let layout = crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir);
+        let (chat_store, chat_state_notice) =
+            ChatStateStore::load(layout.telegram_state_json()).await?;
+        if let Some(notice) = chat_state_notice {
+            crate::gateway::helpers::publish_notice(&self.senders.publisher, notice).await;
+        }
         let state = Arc::new(TelegramState {
             respond_to_others: self.cfg.respond_to_others,
-            store: ChatStateStore::load(layout.telegram_state_json()).await?,
+            store: chat_store,
             reply_targets: ReplyTargets::default(),
             context_buffer: ContextBuffer::new(self.cfg.context_messages),
             publisher: self.senders.publisher.clone(),

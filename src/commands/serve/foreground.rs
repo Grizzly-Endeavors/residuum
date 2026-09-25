@@ -99,7 +99,7 @@ async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
         workspace = %cfg.workspace_dir.display(),
         "setup-mode: configuration loaded, starting gateway"
     );
-    match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+    match Box::pin(residuum::gateway::run_gateway_with_config(cfg)).await? {
         residuum::gateway::GatewayExit::Shutdown => {}
         residuum::gateway::GatewayExit::Restart => {
             // Relaunching would repeat `--setup`, which wipes the temp config.
@@ -122,25 +122,16 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     let config_dir = residuum::config::Config::config_dir()?;
     loop {
         Config::bootstrap_at_dir(&config_dir)?;
-        match Config::load_at(&config_dir) {
-            Ok(mut cfg) => {
-                cfg.config_dir.clone_from(&config_dir);
-                tracing::info!(
-                    model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
-                    provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
-                    workspace = %cfg.workspace_dir.display(),
-                    "configuration loaded"
-                );
-                // Gateway handles reloads in-place and only returns on shutdown
-                // or fatal error. Backup is created inside run_gateway().
-                // Box::pin reduces stack frame size — this future is large
-                match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                    residuum::gateway::GatewayExit::Restart => return Ok(ForegroundExit::Restart),
-                    residuum::gateway::GatewayExit::Shutdown => {}
-                }
-                break;
-            }
-            Err(err) => match classify_load_error(&config_dir, &err) {
+
+        // A live config that fails to load is only classified (fresh
+        // install vs. a file to fix) when there's no last-known-good copy
+        // to fall back on — `run_gateway` itself retries on one and
+        // publishes a notice once it's up if it had to. This mirrors the
+        // check `run_serve_command` makes before spawning the daemon.
+        if let Err(err) = Config::load_at(&config_dir)
+            && !residuum::gateway::has_last_known_good(&config_dir)
+        {
+            match classify_load_error(&config_dir, &err) {
                 ConfigProblem::NotSetUp => {
                     tracing::info!(error = %err, "config not set up yet, starting setup wizard");
                     // Box::pin reduces stack frame size — this future is large
@@ -150,10 +141,21 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
                         }
                         residuum::gateway::setup::SetupExit::Shutdown => break,
                     }
+                    continue;
                 }
                 ConfigProblem::Invalid(invalid) => return Err(invalid),
-            },
+            }
         }
+
+        // Gateway handles reloads in-place and only returns on shutdown or
+        // a fatal error neither the live config nor its last-known-good
+        // copy could recover from.
+        // Box::pin reduces stack frame size — this future is large
+        match Box::pin(residuum::gateway::run_gateway(&config_dir)).await? {
+            residuum::gateway::GatewayExit::Restart => return Ok(ForegroundExit::Restart),
+            residuum::gateway::GatewayExit::Shutdown => {}
+        }
+        break;
     }
     Ok(ForegroundExit::Done)
 }

@@ -1532,6 +1532,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(MockProvider {
                 response: response.to_string(),
             }),
@@ -2313,6 +2314,7 @@ mod tests {
             sample_request(address.as_ref()),
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2358,6 +2360,7 @@ mod tests {
             sample_request(address.as_ref()),
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2447,6 +2450,7 @@ mod tests {
             sample_request(address.as_ref()),
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2534,6 +2538,7 @@ mod tests {
             sample_request(address.as_ref()),
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(PanickingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2594,6 +2599,7 @@ mod tests {
             sample_request(address.as_ref()),
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(PanickingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2777,6 +2783,7 @@ mod tests {
             sample_request(address.as_ref()),
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -3112,6 +3119,7 @@ mod tests {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SequencedProvider::new(responses)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -3472,6 +3480,7 @@ mod tests {
         ));
         let resources = SubAgentResources {
             max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SequencedProvider::new(responses)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -3644,6 +3653,7 @@ mod tests {
             request,
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
@@ -3727,6 +3737,7 @@ mod tests {
             request,
             Some(SubAgentResources {
                 max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),

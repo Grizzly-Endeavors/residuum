@@ -95,7 +95,7 @@ Two limits, both configurable in `[background]`:
 | Limit | Config key | Default | Effect |
 |-------|-----------|---------|--------|
 | Soft | `hop_soft_limit` | 8 | The delivered message carries a note asking the receiver to reply only if a reply is actually needed. |
-| Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session, and shown as an error on that session in the web UI. |
+| Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit and naming the `hop_hard_limit` setting; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session, and shown as an error on that session in the web UI. |
 
 A hard-limit refusal never reaches the target — the tool result is the only thing the sender sees.
 
@@ -115,7 +115,7 @@ The session sees the inbound message with the same sender attribution the main a
 
 Sessions can spawn sessions with their own `subagent_spawn` tool. Depth counts from the main agent: main is depth 0, every `scheduled`/`external`/`artifact` session is depth 1, and a `spawned` session is its spawner's depth plus 1 — whatever the spawner's own category. The spawned session's spawner is recorded as the calling agent's address (`main`, or the calling session's own address). A session resumed via `message_agent` keeps its original spawner and depth rather than resetting to a fresh depth-1 session.
 
-Depth is capped by `subagent_depth_cap` in `[background]` (default 2). Spawning a session that would exceed the cap is refused with an error explaining the limit; the calling agent should either handle the task directly or ask a shallower agent to spawn it.
+Depth is capped by `subagent_depth_cap` in `[background]` (default 3). Spawning a session that would exceed the cap is refused with an error explaining the limit and naming the `subagent_depth_cap` setting; the calling agent should either handle the task directly, ask a shallower agent to spawn it, or raise the setting.
 
 ## Tools
 

@@ -68,9 +68,13 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
 
     // Catch an invalid config here, where the user can see the error. The
     // child takes its PID lock before loading config, so the startup poll
-    // below would report success before the child exits.
+    // below would report success before the child exits. A live config
+    // that fails to load is only blocked here when there's no
+    // last-known-good copy either — the child falls back to one and keeps
+    // running, same as `run_serve_foreground_inner`'s check.
     if !needs_setup
         && let Err(err) = residuum::config::Config::load_at(&config_dir)
+        && !residuum::gateway::has_last_known_good(&config_dir)
         && let super::startup_config::ConfigProblem::Invalid(invalid) =
             super::startup_config::classify_load_error(&config_dir, &err)
     {

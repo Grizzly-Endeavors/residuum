@@ -27,6 +27,8 @@ Skills are discovered from multiple locations, scanned in priority order:
 
 **Deduplication**: If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
 
+A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories.
+
 ## Tools
 
 | Tool | Parameters | Description |

@@ -84,8 +84,22 @@ pub(super) async fn run_telegram_polling(
     let inbox_dir =
         crate::workspace::layout::WorkspaceLayout::new(&workspace_dir).agent_inbox_dir();
 
-    // Verify the bot token is valid
-    let me = bot.get_me().await?;
+    // Verify the bot token is valid. A network blip or a momentary API
+    // error here used to leave the adapter dead until a config reload;
+    // retry with backoff instead, and let a shutdown signal cut retries
+    // short.
+    let me = tokio::select! {
+        result = crate::interfaces::boot_retry::retry_connect(&publisher, "Telegram", || bot.get_me()) => {
+            match result {
+                Some(me) => me,
+                None => anyhow::bail!("telegram bot token could not be verified after repeated retries"),
+            }
+        }
+        _ = shutdown_rx.changed() => {
+            tracing::info!("telegram adapter received shutdown signal while connecting");
+            return Ok(());
+        }
+    };
     tracing::info!(
         bot_name = %me.first_name,
         bot_username = %me.username(),
@@ -804,7 +818,8 @@ mod tests {
             respond_to_others,
             store: ChatStateStore::load(dir.path().join("telegram_state.json"))
                 .await
-                .unwrap(),
+                .unwrap()
+                .0,
             reply_targets: ReplyTargets::default(),
             context_buffer: ContextBuffer::new(context_messages),
             publisher: bus.publisher(),

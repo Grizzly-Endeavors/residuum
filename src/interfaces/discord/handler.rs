@@ -32,6 +32,11 @@ use super::channels::{guild_channel_label, strip_bot_mention};
 
 /// Serenity event handler that filters for DMs, enforces who may use the
 /// bot, registers slash commands, and handles attachments.
+///
+/// `Clone` so the client-build retry in [`super::DiscordInterface::start`]
+/// can hand a fresh clone to each attempt — `Client::builder(..)
+/// .event_handler(handler)` consumes it by value.
+#[derive(Clone)]
 pub(super) struct DiscordHandler {
     pub(super) state: Arc<DiscordState>,
     pub(super) publisher: Publisher,
@@ -409,7 +414,8 @@ mod tests {
             respond_to_others: false,
             store: ChatStateStore::load(dir.path().join("discord_state.json"))
                 .await
-                .unwrap(),
+                .unwrap()
+                .0,
             reply_targets: ReplyTargets::default(),
             bot_id: OnceLock::new(),
             channel_labels: Mutex::new(HashMap::new()),

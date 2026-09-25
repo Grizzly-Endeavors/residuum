@@ -84,6 +84,10 @@ const SYSTEM_SKILL_MD: &str = include_str!("../../assets/bundled-skills/residuum
 /// SKILL.md links to each by name; the bootstrap writes all of them.
 const SYSTEM_REFS: &[(&str, &str)] = &[
     (
+        "config.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/config.md"),
+    ),
+    (
         "agent-keys.md",
         include_str!("../../assets/bundled-skills/residuum-system/references/agent-keys.md"),
     ),

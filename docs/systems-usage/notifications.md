@@ -122,3 +122,5 @@ method = "POST"                     # optional, default POST
 ```
 
 External channel delivery failures are logged at warn level. They do not retry or block other channels.
+
+A config reload that touches `channels.toml` parses the new file completely before touching anything running — a `channels.toml` that fails to parse leaves every currently-running channel subscriber in place, with a notice naming the parse error, instead of tearing them all down and starting none.

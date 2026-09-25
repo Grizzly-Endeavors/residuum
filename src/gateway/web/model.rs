@@ -373,7 +373,17 @@ pub(super) async fn api_model_complete(
         resources.http_client.clone(),
         resources.retry_config.clone(),
     ) {
-        Ok(p) => p,
+        Ok((p, dropped)) => {
+            for fallback in &dropped {
+                tracing::warn!(
+                    artifact = %identity_label,
+                    provider = %fallback.name,
+                    error = %fallback.error,
+                    "dropped an unbuildable fallback provider for this model call"
+                );
+            }
+            p
+        }
         Err(e) => {
             tracing::error!(
                 error = %e,

@@ -146,9 +146,14 @@ impl TeamsInterface {
 
     /// Run until the shutdown signal fires.
     ///
+    /// A corrupt saved Teams state file is moved aside and started fresh
+    /// rather than treated as an error (see
+    /// [`ChatStateStore::load`](crate::interfaces::chat_state::ChatStateStore::load)).
+    ///
     /// # Errors
-    /// Returns an error if the saved Teams state cannot be loaded, the bus
-    /// subscription fails, or the listener port cannot be bound.
+    /// Returns an error if the saved Teams state cannot be read (a
+    /// permissions problem, not corrupt content), the bus subscription
+    /// fails, or the listener port cannot be bound.
     pub async fn start(self) -> anyhow::Result<()> {
         use anyhow::Context as _;
 
@@ -156,7 +161,10 @@ impl TeamsInterface {
             .timeout(HTTP_TIMEOUT)
             .build()
             .context("failed to build teams http client")?;
-        let store = TeamsStore::load(self.layout.teams_state_json()).await?;
+        let (store, chat_state_notice) = TeamsStore::load(self.layout.teams_state_json()).await?;
+        if let Some(notice) = chat_state_notice {
+            crate::gateway::helpers::publish_notice(&self.senders.publisher, notice).await;
+        }
         let subs = crate::interfaces::BaseSubscribers::new(
             &self.senders.bus_handle,
             EndpointName::from(ENDPOINT),
