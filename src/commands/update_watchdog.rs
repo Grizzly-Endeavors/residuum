@@ -179,16 +179,30 @@ mod tests {
     #[test]
     fn roll_back_restores_previous_binary_and_writes_notice() {
         let dir = tempfile::tempdir().unwrap();
-        let gateway_exe = dir.path().join("residuum");
-        let prev_exe = dir.path().join("residuum.prev");
         // A stub "previous binary": something that exists and is
-        // executable so the restart-after-rollback spawn succeeds.
-        std::fs::write(&prev_exe, "#!/bin/sh\nexit 0\n").unwrap();
+        // executable so the restart-after-rollback spawn succeeds. Windows
+        // won't run a script as a binary, so it gets a copy of a real one.
         #[cfg(unix)]
-        {
+        let (gateway_exe, prev_exe) = {
             use std::os::unix::fs::PermissionsExt;
+            let prev_exe = dir.path().join("residuum.prev");
+            std::fs::write(&prev_exe, "#!/bin/sh\nexit 0\n").unwrap();
             std::fs::set_permissions(&prev_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+            (dir.path().join("residuum"), prev_exe)
+        };
+        #[cfg(windows)]
+        let (gateway_exe, prev_exe) = {
+            let prev_exe = dir.path().join("residuum.exe.prev");
+            let system_root = std::env::var("SystemRoot").unwrap();
+            std::fs::copy(
+                std::path::Path::new(&system_root)
+                    .join("System32")
+                    .join("whoami.exe"),
+                &prev_exe,
+            )
+            .unwrap();
+            (dir.path().join("residuum.exe"), prev_exe)
+        };
 
         let a = args(gateway_exe.clone(), prev_exe.clone());
         roll_back(&a, dir.path(), "did not become healthy within 60s").unwrap();
