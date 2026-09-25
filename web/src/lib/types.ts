@@ -3,6 +3,7 @@
 import type {
   ImageAttachment as _ImageAttachment,
   SessionSummary as _SessionSummary,
+  RepoStats as _RepoStats,
 } from "./generated/protocol";
 export type {
   ClientMessage,
@@ -22,6 +23,16 @@ export type {
   WorkspaceChange,
   WorkspaceChangeKind,
   WorkspaceResyncReason,
+  CheckpointSummary,
+  CheckpointPage,
+  CheckpointDetail,
+  ChangedPath,
+  ChangeKind,
+  RepoKind,
+  RepoStats,
+  RestoreOutcome,
+  UndoOutcome,
+  CheckpointTrigger,
   PulseOverlap,
   PulseInfo,
   ActionInfo,
@@ -32,6 +43,7 @@ export type {
 // Local aliases for use within this file
 type ImageAttachment = _ImageAttachment;
 type SessionSummary = _SessionSummary;
+type RepoStats = _RepoStats;
 
 // ── Chat history ─────────────────────────────────────────────────────
 
@@ -114,6 +126,8 @@ export interface StatusResponse {
   version: string;
   /** Feature ids this build supports, the same list the workbench SDK exposes as `residuum.features`. */
   features: string[];
+  /** Each checkpoint repository's on-disk size and count, or `null` if just-now unreadable. */
+  checkpoints: { workspace: RepoStats | null; config: RepoStats | null };
 }
 
 // ── Setup wizard types ──────────────────────────────────────────────
@@ -250,7 +264,8 @@ export type SettingsSection =
   | "integrations"
   | "mcp"
   | "agent-keys"
-  | "a2a";
+  | "a2a"
+  | "history";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 

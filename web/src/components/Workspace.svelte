@@ -7,12 +7,16 @@
     fetchWorkspaceFile,
     putWorkspaceFile,
     validateWorkspaceFile,
+    deleteWorkspaceFile,
+    moveWorkspaceFile,
   } from "../lib/api";
   import { toast } from "../lib/toast.svelte";
   import { Icon } from "../lib/icons";
   import { userErrorMessage } from "../lib/errors";
   import { formatDiagnosticLocation } from "../lib/diagnostics";
+  import { notifyWithUndo } from "../lib/undo";
   import FileTree from "./FileTree.svelte";
+  import FileHistoryModal from "./FileHistoryModal.svelte";
   import Modal from "./Modal.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
@@ -34,6 +38,7 @@
   let mobileEditorOpen = $state(false);
   let switchConfirmOpen = $state(false);
   let pendingFilePath = $state("");
+  let historyPath = $state<string | null>(null);
 
   // Derived
   let dirty = $derived(editContent !== fileContent);
@@ -95,6 +100,56 @@
         notFound: "It may have been moved or deleted.",
       });
     }
+  }
+
+  function parentDir(path: string): string {
+    const slash = path.lastIndexOf("/");
+    return slash < 0 ? "" : path.slice(0, slash);
+  }
+
+  /** Drop a directory's cached listing and reload it, so the tree reflects
+   * a delete, move, or restore made outside the normal `loadFile`/`handleSave` flow. */
+  async function refreshDir(path: string): Promise<void> {
+    const { [path]: _dropped, ...rest } = treeCache;
+    treeCache = rest;
+    await loadDir(path);
+  }
+
+  function clearEditorIfOpen(path: string): void {
+    if (selectedFile !== path) return;
+    selectedFile = "";
+    fileContent = "";
+    editContent = "";
+  }
+
+  async function handleDeleteFile(path: string): Promise<void> {
+    try {
+      await deleteWorkspaceFile(path);
+      clearEditorIfOpen(path);
+      await refreshDir(parentDir(path));
+      notifyWithUndo(`Deleted ${fileName(path)}.`, "workspace", path, () =>
+        refreshDir(parentDir(path)),
+      );
+    } catch (e) {
+      toast.error(userErrorMessage(e, { action: `Couldn't delete ${fileName(path)}.` }));
+    }
+  }
+
+  async function handleRenameFile(path: string, newName: string): Promise<void> {
+    const dir = parentDir(path);
+    const to = dir ? `${dir}/${newName}` : newName;
+    try {
+      await moveWorkspaceFile(path, to);
+      if (selectedFile === path) selectedFile = to;
+      await refreshDir(dir);
+      toast.success(`Renamed to ${newName}.`);
+    } catch (e) {
+      toast.error(userErrorMessage(e, { action: `Couldn't rename ${fileName(path)}.` }));
+    }
+  }
+
+  function handleShowHistory(path: string): void {
+    historyPath = path;
   }
 
   async function handleToggleDir(path: string) {
@@ -187,6 +242,9 @@
       {expandedDirs}
       onSelectFile={handleSelectFile}
       onToggleDir={handleToggleDir}
+      onDeleteFile={(path) => void handleDeleteFile(path)}
+      onRenameFile={(path, name) => void handleRenameFile(path, name)}
+      onShowHistory={handleShowHistory}
     />
   </div>
 
@@ -260,3 +318,18 @@
     <button class="btn btn-danger" onclick={confirmSwitchFile}>Discard and switch</button>
   {/snippet}
 </Modal>
+
+{#if historyPath}
+  <FileHistoryModal
+    path={historyPath}
+    onClose={() => {
+      historyPath = null;
+    }}
+    onRestored={() => {
+      const path = historyPath;
+      if (!path) return;
+      void refreshDir(parentDir(path));
+      if (selectedFile === path) void loadFile(path);
+    }}
+  />
+{/if}

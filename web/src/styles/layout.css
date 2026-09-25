@@ -416,6 +416,87 @@
   text-overflow: ellipsis;
 }
 
+/* ── File row actions (History / Rename / Delete) ────────────────────── */
+
+.tree-entry-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.tree-entry-row .tree-entry {
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-entry-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-right: 8px;
+}
+
+.tree-entry-action {
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.tree-entry-action:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--bg-raised);
+}
+
+.tree-entry-action-danger:hover {
+  color: var(--error);
+  border-color: rgba(192, 57, 43, 0.4);
+  background: var(--error-bg);
+}
+
+/* Actions stay out of the way until the row is in play. Touch screens have
+   no hover, so they stay visible there. */
+@media (hover: hover) {
+  .tree-entry-actions {
+    opacity: 0;
+    transition: opacity var(--dur-quick);
+  }
+
+  .tree-entry-row:hover .tree-entry-actions,
+  .tree-entry-row:focus-within .tree-entry-actions {
+    opacity: 1;
+  }
+}
+
+.tree-entry-rename {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding-right: 12px;
+}
+
+.tree-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--vein-dim);
+  border-radius: var(--radius-sm);
+}
+
 .tree-empty {
   padding: 12px;
   font-size: 12px;
