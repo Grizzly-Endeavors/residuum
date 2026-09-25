@@ -743,6 +743,11 @@ struct ToolsAndAgentInputs<'a> {
     /// Main's current-turn hop counter — the same instance already threaded
     /// into `tool_deps` for the `message_agent`/`subagent_spawn` tools.
     hop_counter: crate::agent::HopCounter,
+    /// Collects a plain-language line for each degradation
+    /// `tools::create_agent` hits while loading observations, recent
+    /// context, or recent messages, folded into the same grouped
+    /// startup-degradation notice as every other subsystem.
+    degradations: &'a mut Vec<String>,
 }
 
 /// Build the tool registry, reserve its names against MCP name collisions,
@@ -788,6 +793,7 @@ async fn build_tools_and_agent(
         inputs.mcp_registry,
         inputs.tz,
         inputs.layout,
+        inputs.degradations,
     )
     .await;
 
@@ -817,6 +823,8 @@ struct MainAgentInputs<'a> {
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    /// See `ToolsAndAgentInputs::degradations`.
+    degradations: &'a mut Vec<String>,
 }
 
 /// Create main's hop counter and build the agent from it, wrapping
@@ -862,6 +870,7 @@ async fn build_main_agent(
         options: inputs.options,
         identity: inputs.identity,
         hop_counter: hop_counter.clone(),
+        degradations: inputs.degradations,
     })
     .await
 }
@@ -895,6 +904,8 @@ struct AgentInitInputs<'a> {
     identity: IdentityFiles,
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,
+    /// See `ToolsAndAgentInputs::degradations`.
+    degradations: &'a mut Vec<String>,
 }
 
 /// Build the `SpawnContext` every session forks from, and the main agent
@@ -955,6 +966,7 @@ async fn build_spawn_context_and_agent(
         a2a_hub: inputs.a2a_hub,
         a2a_tracker: inputs.a2a_tracker,
         checkpoints: inputs.checkpoints,
+        degradations: inputs.degradations,
     })
     .await;
 
@@ -989,6 +1001,27 @@ async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
     }
 }
 
+/// Bootstrap the workspace, open the checkpoint repositories, and publish
+/// this config load's own notices — the first independent steps
+/// [`initialize`] needs before anything else can start. Split out purely to
+/// keep that function's line count down.
+async fn init_workspace_and_checkpoints(
+    cfg: &Config,
+    publisher: &crate::bus::Publisher,
+) -> Result<
+    (
+        WorkspaceLayout,
+        chrono_tz::Tz,
+        Arc<crate::checkpoints::CheckpointEngine>,
+    ),
+    FatalError,
+> {
+    let (layout, tz) = init_workspace(cfg).await?;
+    let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
+    publish_load_notices(publisher, cfg).await;
+    Ok((layout, tz, checkpoints))
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -1001,9 +1034,7 @@ pub(crate) async fn initialize(
     cfg: &Config,
     publisher: &crate::bus::Publisher,
 ) -> Result<GatewayComponents, FatalError> {
-    let (layout, tz) = init_workspace(cfg).await?;
-    let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
-    publish_load_notices(publisher, cfg).await;
+    let (layout, tz, checkpoints) = init_workspace_and_checkpoints(cfg, publisher).await?;
 
     // Collects a plain-language line for every subsystem that degrades
     // along the way (rather than failing startup outright), so the whole
@@ -1072,6 +1103,7 @@ pub(crate) async fn initialize(
             identity,
             provider: providers.provider,
             options: providers.options,
+            degradations: &mut degradations,
         })
         .await;
 
