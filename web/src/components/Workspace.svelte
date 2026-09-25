@@ -1,15 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import type { WorkspaceEntry } from "../lib/types";
-  import { fetchWorkspaceFiles, fetchWorkspaceFile, putWorkspaceFile } from "../lib/api";
+  import type { WorkspaceEntry, Diagnostic } from "../lib/types";
+  import {
+    fetchWorkspaceFiles,
+    fetchWorkspaceFile,
+    putWorkspaceFile,
+    validateWorkspaceFile,
+  } from "../lib/api";
   import { toast } from "../lib/toast.svelte";
   import { Icon } from "../lib/icons";
   import { userErrorMessage } from "../lib/errors";
+  import { formatDiagnosticLocation } from "../lib/diagnostics";
   import FileTree from "./FileTree.svelte";
   import Modal from "./Modal.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
+
+  /** How long to wait after the last keystroke before validating — long
+   * enough to not fire on every character, short enough to feel live. */
+  const VALIDATE_DEBOUNCE_MS = 500;
 
   // State
   let selectedFile = $state("");
@@ -18,6 +28,7 @@
   let loading = $state(false);
   let saving = $state(false);
   let error = $state("");
+  let diagnostics = $state<Diagnostic[]>([]);
   let expandedDirs = new SvelteSet<string>();
   let treeCache = $state<Record<string, WorkspaceEntry[]>>({});
   let mobileEditorOpen = $state(false);
@@ -53,6 +64,24 @@
 
   onMount(() => {
     void loadDir("");
+  });
+
+  // Debounced live validation: re-checks `editContent` shortly after each
+  // change. Diagnostics for an unrecognized path just come back empty, so
+  // this runs unconditionally rather than special-casing which files matter.
+  $effect(() => {
+    const path = selectedFile;
+    const content = editContent;
+    if (!path) {
+      diagnostics = [];
+      return;
+    }
+    const timer = setTimeout(() => {
+      void validateWorkspaceFile(path, content).then((result) => {
+        diagnostics = result;
+      });
+    }, VALIDATE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
   });
 
   async function loadDir(path: string) {
@@ -102,6 +131,7 @@
     selectedFile = path;
     loading = true;
     error = "";
+    diagnostics = [];
     try {
       const content = await fetchWorkspaceFile(path);
       fileContent = content;
@@ -124,9 +154,10 @@
     saving = true;
     error = "";
     try {
-      await putWorkspaceFile(selectedFile, editContent);
+      const response = await putWorkspaceFile(selectedFile, editContent);
       fileContent = editContent;
-      toast.success("Saved.");
+      diagnostics = response.diagnostics ?? [];
+      toast.success(diagnostics.length > 0 ? "Saved, with problems noted below." : "Saved.");
     } catch (e) {
       toast.error(userErrorMessage(e, { action: "Couldn't save this file." }));
     } finally {
@@ -170,6 +201,21 @@
         <div class="workspace-empty">Loading...</div>
       {:else}
         <textarea class="workspace-textarea" bind:value={editContent} spellcheck="false"></textarea>
+        {#if diagnostics.length > 0}
+          <ul class="workspace-diagnostics">
+            {#each diagnostics as diagnostic, i (i)}
+              <li class="workspace-diagnostic workspace-diagnostic-{diagnostic.severity}">
+                <span class="workspace-diagnostic-severity">{diagnostic.severity}</span>
+                {#if diagnostic.location}
+                  <span class="workspace-diagnostic-location"
+                    >{formatDiagnosticLocation(diagnostic.location)}</span
+                  >
+                {/if}
+                <span class="workspace-diagnostic-message">{diagnostic.message}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
         <div class="workspace-footer">
           <span class="workspace-file-info">
             {selectedFile}

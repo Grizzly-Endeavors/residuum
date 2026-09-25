@@ -374,18 +374,11 @@ pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    match Config::validate_toml(&body, &state.config_dir) {
-        Ok(()) => Json(ValidateResponse {
-            valid: true,
-            error: None,
-            diagnostics: Vec::new(),
-        }),
-        Err(e) => Json(ValidateResponse {
-            valid: false,
-            error: Some(e),
-            diagnostics: Vec::new(),
-        }),
-    }
+    let diagnostics = Config::diagnose_toml(&body, &state.config_dir);
+    Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "config.toml",
+    ))
 }
 
 /// `GET /api/mcp/raw` — return raw `mcp.json` contents as JSON.

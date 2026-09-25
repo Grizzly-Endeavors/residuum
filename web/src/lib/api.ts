@@ -22,6 +22,9 @@ import type {
   A2aRemoteAgent,
   A2aAgentsRawResponse,
   WorkspaceEntry,
+  WorkspaceWriteResponse,
+  WorkspaceValidateResponse,
+  Diagnostic,
   CloudStatusResponse,
   UpdateStatusResponse,
   SessionCategory,
@@ -552,12 +555,32 @@ export async function fetchWorkspaceFile(path: string): Promise<string> {
   return apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`);
 }
 
-export async function putWorkspaceFile(path: string, content: string): Promise<void> {
-  await apiFetch<unknown>("/api/workspace/file", {
+export async function putWorkspaceFile(
+  path: string,
+  content: string,
+): Promise<WorkspaceWriteResponse> {
+  return apiFetch<WorkspaceWriteResponse>("/api/workspace/file", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, content }),
   });
+}
+
+/** Diagnostics for `content` as if it were saved to `path`, without writing
+ * anything. Empty means either the content is clean or `path` isn't one of
+ * the strictly-parsed files the server checks. Graceful fallback: a network
+ * or server error returns no diagnostics rather than interrupting typing. */
+export async function validateWorkspaceFile(path: string, content: string): Promise<Diagnostic[]> {
+  try {
+    const result = await apiFetch<WorkspaceValidateResponse>("/api/workspace/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    });
+    return result.diagnostics;
+  } catch {
+    return [];
+  }
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────

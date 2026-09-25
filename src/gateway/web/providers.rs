@@ -537,18 +537,11 @@ pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    match Config::validate_providers_toml(&body, &state.config_dir) {
-        Ok(()) => Json(ValidateResponse {
-            valid: true,
-            error: None,
-            diagnostics: Vec::new(),
-        }),
-        Err(e) => Json(ValidateResponse {
-            valid: false,
-            error: Some(e),
-            diagnostics: Vec::new(),
-        }),
-    }
+    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
+    Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "providers.toml",
+    ))
 }
 
 #[cfg(test)]
