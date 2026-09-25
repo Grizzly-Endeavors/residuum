@@ -145,6 +145,10 @@ pub fn build_gateway_app(
             "/api/files/{id}",
             get(crate::gateway::file_server::serve_file),
         )
+        .route(
+            "/api/files/workspace",
+            get(crate::gateway::file_server::serve_workspace_file),
+        )
         .with_state(state.file_registry.clone());
 
     let sessions_router = web::sessions::sessions_api_router(web::sessions::SessionsApiState {

@@ -11,7 +11,7 @@ use crate::inference::http::{
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, ThinkingConfig, ToolCall, ToolDefinition,
+    ResponseFormat, StopReason, ThinkingConfig, ToolCall, ToolDefinition,
 };
 
 /// Ollama API client implementing the [`InferenceProvider`] trait.
@@ -125,6 +125,7 @@ impl OllamaClient {
         let chat_response: OllamaChatResponse = serde_json::from_str(&body)
             .map_err(|e| InferenceError::Parse(format!("failed to parse ollama response: {e}")))?;
 
+        let done_reason = chat_response.done_reason;
         let content = chat_response.message.content.unwrap_or_default();
         let tool_calls = chat_response
             .message
@@ -144,6 +145,7 @@ impl OllamaClient {
 
         let mut resp = InferenceResponse::new(content, tool_calls);
         resp.thinking = chat_response.message.thinking;
+        resp.stop_reason = done_reason.as_deref().map(map_stop_reason);
         info!(
             model = %request.model,
             content_len = resp.content.len(),
@@ -355,6 +357,17 @@ struct OllamaFunctionCall {
 #[derive(Deserialize)]
 struct OllamaChatResponse {
     message: OllamaResponseMessage,
+    #[serde(default)]
+    done_reason: Option<String>,
+}
+
+/// Map Ollama's `done_reason` to the provider-agnostic [`StopReason`].
+fn map_stop_reason(raw: &str) -> StopReason {
+    match raw {
+        "stop" => StopReason::EndTurn,
+        "length" => StopReason::MaxTokens,
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -784,6 +797,75 @@ mod tests {
             response.is_complete(),
             "text-only response should be complete"
         );
+        assert_eq!(
+            response.stop_reason, None,
+            "a response with no done_reason field must parse, not error"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_length_maps_to_truncation() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "cut off mid-sen"
+                },
+                "done": true,
+                "done_reason": "length"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.stop_reason, Some(StopReason::MaxTokens));
+        assert!(
+            response.was_truncated(),
+            "length must be reported as a truncation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_stop_maps_to_end_turn() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "done"
+                },
+                "done": true,
+                "done_reason": "stop"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
+        assert!(!response.was_truncated());
     }
 
     #[tokio::test]

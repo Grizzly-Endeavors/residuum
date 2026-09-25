@@ -102,7 +102,7 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, agent: &mut Agent)
 }
 
 /// Drain remaining interrupts from an interrupt channel after a turn completes.
-pub fn drain_interrupts(interrupt_rx: &mut mpsc::Receiver<Interrupt>) -> Vec<Interrupt> {
+pub fn drain_interrupts(interrupt_rx: &mut mpsc::UnboundedReceiver<Interrupt>) -> Vec<Interrupt> {
     let mut leftovers = Vec::new();
     while let Ok(intr) = interrupt_rx.try_recv() {
         leftovers.push(intr);
@@ -186,13 +186,13 @@ fn stop_turn_for_shutdown(
     reason: crate::gateway::types::ShutdownReason,
     correlation_id: &str,
     stop_token: &CancellationToken,
-    interrupt_tx: &mpsc::Sender<Interrupt>,
+    interrupt_tx: &mpsc::UnboundedSender<Interrupt>,
 ) -> crate::gateway::types::ShutdownReason {
     tracing::info!(correlation_id = %correlation_id, ?reason, "shutdown trigger received, stopping active turn");
     stop_token.cancel();
-    if interrupt_tx.try_send(Interrupt::Stopped).is_err() {
+    if interrupt_tx.send(Interrupt::Stopped).is_err() {
         tracing::warn!(
-            "interrupt channel full, stop marker dropped (model-call cancellation still applies)"
+            "interrupt channel closed, stop marker dropped (model-call cancellation still applies)"
         );
     }
     reason
@@ -208,7 +208,7 @@ fn handle_mid_turn_message(
     next_msg: Result<Option<MessageEvent>, crate::bus::BusError>,
     agent_messenger: &crate::background::messaging::AgentMessenger,
     conversation_router: &Arc<crate::background::ConversationRouter>,
-    interrupt_tx: &mpsc::Sender<Interrupt>,
+    interrupt_tx: &mpsc::UnboundedSender<Interrupt>,
     hop_counter: &crate::agent::HopCounter,
 ) {
     match next_msg {
@@ -232,13 +232,10 @@ fn handle_mid_turn_message(
                 // is actually queued into the turn — bumping on a failed
                 // send would claim a hop the turn never actually received.
                 let hop = agent_messenger.take_main_hop(&inbound.id);
-                if interrupt_tx
-                    .try_send(Interrupt::UserMessage(inbound))
-                    .is_ok()
-                {
+                if interrupt_tx.send(Interrupt::UserMessage(inbound)).is_ok() {
                     hop_counter.bump(hop);
                 } else {
-                    tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                    tracing::warn!("interrupt channel closed, dropping user message mid-turn");
                 }
             } else {
                 // Not main's: a group chat, a channel, or a non-owner DM
@@ -270,7 +267,7 @@ fn handle_mid_turn_stop_request(
     stop_req: Option<StopRequest>,
     correlation_id: &str,
     stop_token: &CancellationToken,
-    interrupt_tx: &mpsc::Sender<Interrupt>,
+    interrupt_tx: &mpsc::UnboundedSender<Interrupt>,
 ) {
     let Some(req) = stop_req else {
         tracing::debug!("stop request channel closed during turn");
@@ -283,9 +280,9 @@ fn handle_mid_turn_stop_request(
     if matches {
         tracing::info!(correlation_id = %correlation_id, "stopping active turn");
         stop_token.cancel();
-        if interrupt_tx.try_send(Interrupt::Stopped).is_err() {
+        if interrupt_tx.send(Interrupt::Stopped).is_err() {
             tracing::warn!(
-                "interrupt channel full, stop marker dropped (model-call cancellation still applies)"
+                "interrupt channel closed, stop marker dropped (model-call cancellation still applies)"
             );
         }
     } else {
@@ -347,7 +344,7 @@ async fn run_agent_turn_with_interrupts(
     // refers to the same shared cell, so mid-turn bumps below and reads from
     // the `message_agent`/`subagent_spawn` tools stay in sync regardless.
     let hop_counter = agent.hop_counter().clone();
-    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+    let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
     let watch =
         subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
     // Cancelled to abort an in-flight model call immediately; a stop that
@@ -527,13 +524,15 @@ async fn publish_turn_outcome(
             publish_turn_ended(publisher, ep, correlation_id).await;
         }
         Err(e) => {
-            tracing::error!(error = %e, "agent processing error");
+            let described = crate::inference::describe_turn_failure(&e);
+            tracing::error!(error = %described.details, "agent processing error");
             if let Err(pub_err) = publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
                     ErrorEvent {
                         correlation_id: correlation_id.to_string(),
-                        message: e.to_string(),
+                        message: described.message,
+                        details: Some(described.details),
                     },
                 )
                 .await
@@ -711,6 +710,26 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_channel_accepts_more_than_the_old_bounded_capacity() {
+        // Regression: the interrupt channel used to be a 32-slot bounded
+        // channel, silently dropping a mid-turn user message (with only a
+        // warn log) once a long turn's queue filled up. It's unbounded now,
+        // so sending well past that old limit must never fail or drop.
+        const PAST_OLD_CAPACITY: usize = 100;
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        for _ in 0..PAST_OLD_CAPACITY {
+            tx.send(Interrupt::Stopped)
+                .expect("an unbounded channel must never refuse a send");
+        }
+        let leftovers = drain_interrupts(&mut rx);
+        assert_eq!(
+            leftovers.len(),
+            PAST_OLD_CAPACITY,
+            "every queued interrupt must be drained, none dropped"
+        );
+    }
+
+    #[test]
     fn background_output_prefers_the_switched_endpoint() {
         let telegram = EndpointName::from("telegram");
         assert_eq!(
@@ -843,7 +862,17 @@ mod tests {
 
         let error = errors.recv().await.unwrap().unwrap();
         assert_eq!(error.correlation_id, "corr-4");
-        assert_eq!(error.message, "boom");
+        assert_eq!(
+            error.message,
+            "Something went wrong while the agent was working. Try again; if it keeps \
+             happening, check Residuum's logs for details.",
+            "an unclassified error must still get a plain-language message, never the raw cause"
+        );
+        assert_eq!(
+            error.details.as_deref(),
+            Some("boom"),
+            "the raw cause must survive in details for a developer or the details toggle"
+        );
 
         let ended = lifecycle.recv().await.unwrap().unwrap();
         assert!(
@@ -876,7 +905,11 @@ mod tests {
 
         let error = errors.recv().await.unwrap().unwrap();
         assert_eq!(error.correlation_id, "corr-5");
-        assert_eq!(error.message, "kaboom");
+        assert_eq!(
+            error.details.as_deref(),
+            Some("kaboom"),
+            "the raw cause must survive in details even with no output endpoint"
+        );
         assert_no_event(&mut lifecycle).await;
     }
 

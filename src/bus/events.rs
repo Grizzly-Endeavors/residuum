@@ -121,8 +121,12 @@ pub enum AgentResultStatus {
     Cancelled,
     /// Task failed with an error.
     Failed {
-        /// Description of what went wrong.
+        /// Plain-language description of what went wrong.
         error: String,
+        /// Full technical cause chain, when the failure was classified from
+        /// a model-call error. `None` for failures with nothing richer to
+        /// show (a panic, a shutdown mid-run).
+        details: Option<String>,
     },
 }
 
@@ -131,7 +135,7 @@ impl fmt::Display for AgentResultStatus {
         match self {
             Self::Completed => write!(f, "completed"),
             Self::Cancelled => write!(f, "cancelled"),
-            Self::Failed { error } => write!(f, "failed: {error}"),
+            Self::Failed { error, .. } => write!(f, "failed: {error}"),
         }
     }
 }
@@ -579,8 +583,12 @@ pub struct InlineOutputEvent {
 pub struct ErrorEvent {
     /// Links back to the originating message.
     pub correlation_id: String,
-    /// Error description.
+    /// Plain-language error description, safe to show as-is.
     pub message: String,
+    /// Full technical cause chain, for a web UI details toggle or a
+    /// developer's own logs. Chat interfaces (Discord, Telegram, Teams)
+    /// never show this — they destructure only `message`.
+    pub details: Option<String>,
 }
 
 /// Something observable happened in a live agent session: a lifecycle
@@ -658,8 +666,11 @@ pub enum SessionEventKind {
     /// refused message (hop limit), or a result relay that could not be
     /// delivered.
     Error {
-        /// Human-readable description.
+        /// Plain-language description.
         message: String,
+        /// Full technical cause chain, when there is one richer than
+        /// `message` (e.g. classified from a failed model call).
+        details: Option<String>,
     },
     /// The session's message reached the main agent: a turn-result relay to
     /// its spawner or a `message_agent` call addressed to `main`. Lets the
@@ -843,7 +854,8 @@ mod tests {
         assert_eq!(AgentResultStatus::Cancelled.to_string(), "cancelled");
         assert_eq!(
             AgentResultStatus::Failed {
-                error: "timeout".into()
+                error: "timeout".into(),
+                details: None,
             }
             .to_string(),
             "failed: timeout"

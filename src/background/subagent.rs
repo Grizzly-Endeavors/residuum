@@ -2,11 +2,13 @@
 
 use anyhow::Context as _;
 use std::sync::Arc;
+#[cfg(test)]
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
+#[cfg(test)]
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{
@@ -358,7 +360,7 @@ pub(crate) struct TurnExecution<'a> {
     /// boundary. Between turns, the caller drains the same channel itself to
     /// decide whether to wake for another turn (see
     /// `crate::background::runtime`).
-    pub(crate) interrupt_rx: &'a mut mpsc::Receiver<Interrupt>,
+    pub(crate) interrupt_rx: &'a mut dyn crate::agent::interrupt::InterruptSource,
 }
 
 /// Execute one turn of a session's run.
@@ -886,8 +888,8 @@ mod tests {
         // run's existing turn.
         let resources = make_resources("wrapping up");
 
-        let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        tx.send(Interrupt::AgentMessage(AgentMessageEvent {
             from: crate::bus::SessionAddress::from("main"),
             from_category: "main".to_string(),
             content: "any updates?".to_string(),
@@ -933,8 +935,8 @@ mod tests {
         // via the shared `execute_turn` interrupt draining.
         let resources = make_resources("wrapping up");
 
-        let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Interrupt::UserMessage(InboundMessage {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        tx.send(Interrupt::UserMessage(InboundMessage {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
             origin: crate::interfaces::types::MessageOrigin {

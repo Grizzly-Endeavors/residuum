@@ -35,7 +35,7 @@ fn record_note(scratch: &Mutex<TurnScratch>, finding: Finding) {
 /// pass reads to triage rather than re-classify the same turn.
 pub struct SubconsciousWatch {
     subconscious: Arc<Subconscious>,
-    interrupt_tx: mpsc::Sender<Interrupt>,
+    interrupt_tx: mpsc::UnboundedSender<Interrupt>,
     in_flight: Arc<AtomicBool>,
     interventions: Arc<AtomicUsize>,
     scratch: Arc<Mutex<TurnScratch>>,
@@ -45,7 +45,10 @@ impl SubconsciousWatch {
     /// Create a watch for one turn, holding a sender into that turn's
     /// interrupt channel.
     #[must_use]
-    pub fn new(subconscious: Arc<Subconscious>, interrupt_tx: mpsc::Sender<Interrupt>) -> Self {
+    pub fn new(
+        subconscious: Arc<Subconscious>,
+        interrupt_tx: mpsc::UnboundedSender<Interrupt>,
+    ) -> Self {
         Self {
             subconscious,
             interrupt_tx,
@@ -121,10 +124,7 @@ impl SubconsciousWatch {
                                 "[Subconscious] Course correction for the work in progress:\n{}",
                                 finding.instruction
                             );
-                            if interrupt_tx
-                                .try_send(Interrupt::Subconscious(content))
-                                .is_ok()
-                            {
+                            if interrupt_tx.send(Interrupt::Subconscious(content)).is_ok() {
                                 record_applied(&scratch, finding.instruction);
                             } else {
                                 // The turn already ended; the correction never
@@ -166,8 +166,8 @@ mod tests {
     fn make_watch(
         response: &str,
         config: SubconsciousConfig,
-    ) -> (SubconsciousWatch, mpsc::Receiver<Interrupt>) {
-        let (tx, rx) = mpsc::channel(8);
+    ) -> (SubconsciousWatch, mpsc::UnboundedReceiver<Interrupt>) {
+        let (tx, rx) = mpsc::unbounded_channel();
         let sub = Arc::new(Subconscious::new(
             Box::new(MockMemoryProvider::new(response)),
             config,
@@ -344,7 +344,7 @@ mod tests {
         drop(rx);
         watch.maybe_spawn(0, transcript());
         // Give the spawned task time to run; spawn_monitored would log a panic,
-        // and the test harness would surface an abort if try_send panicked.
+        // and the test harness would surface an abort if send panicked.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }

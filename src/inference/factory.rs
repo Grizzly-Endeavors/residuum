@@ -148,6 +148,40 @@ pub(crate) fn build_provider_chain(
     Ok(Box::new(FailoverProvider::new(providers)))
 }
 
+/// Build the main model's provider chain, with a user notice wired to
+/// `role` on a fallback/recovery transition (see
+/// [`FailoverProvider::with_notices`]). Single-provider specs have nothing
+/// to fail over to, so `publisher`/`role` are simply unused in that case.
+///
+/// # Errors
+/// Returns `FatalError::Config` if any provider in the chain cannot be built.
+pub(crate) fn build_provider_chain_with_notices(
+    specs: &[ProviderSpec],
+    max_tokens: u32,
+    http: SharedHttpClient,
+    retry: RetryConfig,
+    publisher: crate::bus::Publisher,
+    role: impl Into<String>,
+) -> Result<Box<dyn InferenceProvider>, FatalError> {
+    if let [spec] = specs {
+        return build_provider_from_provider_spec(spec, max_tokens, http, retry);
+    }
+
+    let mut providers = Vec::with_capacity(specs.len());
+    for spec in specs {
+        providers.push(build_provider_from_provider_spec(
+            spec,
+            max_tokens,
+            http.clone(),
+            retry.clone(),
+        )?);
+    }
+
+    Ok(Box::new(
+        FailoverProvider::new(providers).with_notices(publisher, role),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

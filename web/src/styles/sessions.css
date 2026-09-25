@@ -767,6 +767,42 @@ button.session-row-artifact-link:focus-visible {
   border-radius: var(--radius-sm);
 }
 
+.msg-status-details summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.msg-status-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.msg-status-details summary::after {
+  content: " · details";
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  opacity: 0.75;
+}
+
+.msg-status-details[open] summary::after {
+  content: " · hide details";
+}
+
+.msg-status-detail-body {
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-input);
+  border-left: 2px solid rgba(192, 57, 43, 0.25);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-style: normal;
+  color: var(--text-muted);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 /* ── Agent message: a session speaking into a conversation ───────────── */
 /* A moss seam, not a card: it reads as something that grew in from
    elsewhere, quieter than the conversation it sits in. */

@@ -34,6 +34,18 @@ No routing target injects into the agent's message feed. Two mechanisms do that 
 
 Everything else, except an `artifact` session's or a conversation-triggered session's results, reaches the agent through the inbox, which it reads with `inbox_list`.
 
+## Error and Degradation Notices
+
+Besides routing background-task results, the system notification channel carries operational notices and errors — published the same way (`NoticeEvent`/`ErrorEvent` on the bus), shown as a toast in the web UI and recorded in its recall history, and DMed to the owner on Discord, Telegram, and Teams.
+
+**Turn and session failures** are classified into a plain-language message naming the cause and a next step (an invalid or expired API key, rate limiting, a network problem, a timeout, the conversation exceeding the model's context limit, the configured model being unavailable, or a provider outage) rather than shown as the raw error. The full technical cause chain travels alongside as a separate `details` field: the web UI shows it behind an expandable "details" toggle in the notification corner's recall list and in a session's inline status messages, and it's always in the logs. Chat interfaces (Discord, Telegram, Teams) show the plain message only — they never receive `details`. A cause that doesn't match any of the categories above still gets a plain generic message, never the raw error.
+
+**A fallback or recovery on the main model** gets its own notice: one when the main model's provider chain fails over to a fallback, naming why and which fallback it switched to, and one when it's back on the primary. Neither fires again while nothing changes — a turn that keeps landing on the same fallback while the primary stays down produces no repeat notice, and a retry within a single provider never surfaces to the user at all (it stays in the logs, at `warn` once when retries start and once when they resolve or exhaust).
+
+**A response cut off by the model's output-token limit** gets a notice naming the limit, and a system note is added to the turn's own transcript so the agent knows its last response was incomplete. There is no automatic continuation — whether to pick up where it left off is left to the agent.
+
+**Startup degradations** — an MCP server that failed to start, a broken skills directory, workspace channels or the scheduled action store that couldn't be loaded, the memory/embedding providers being unavailable — are collected while the gateway starts and published as one grouped notice once startup finishes, naming every degradation together, rather than sitting log-only. A config reload that degrades the same way (currently: the memory or embedding provider) gets its own grouped notice.
+
 ## Endpoints
 
 The endpoint registry tracks all available I/O endpoints. The `list_endpoints` tool shows what's available. It is rebuilt whenever `config.toml` or `channels.toml` reloads, so an interface or channel added or removed takes effect for tools and urgent-notification routing without a restart.
@@ -44,7 +56,7 @@ Bidirectional channels (WebSocket, Discord, Telegram, Microsoft Teams). The agen
 - `switch_endpoint` to send background output (relayed session results, scheduled work, other turns the user didn't start) to a different interactive endpoint. The reply in progress is unaffected, and the user's next message switches output back to wherever they wrote from.
 - `send_message` to send a one-off message to any interactive endpoint.
 - `send_message` with `conversation` to post into a specific DM, group chat, or channel on a chat interface (Discord, Telegram, Teams). `list_conversations` shows the IDs. Without `conversation`, a proactive message on a chat interface goes to the owner's direct message.
-- `send_message` with `file_path` to deliver a file attachment. Images render inline, audio gets a native player, other files appear as downloads. Telegram allows up to 50 MB; Discord, WebSocket, and notification-only endpoints cap at 25 MB. File attachments require an interactive endpoint — notification-only endpoints reject them. Microsoft Teams cannot receive files from the agent: the text is delivered with a note giving the file's path.
+- `send_message` with `file_path` to deliver a file attachment. Images render inline, audio gets a native player, other files appear as downloads. Telegram allows up to 50 MB; Discord, WebSocket, and notification-only endpoints cap at 25 MB. File attachments require an interactive endpoint — notification-only endpoints reject them. Microsoft Teams cannot receive files from the agent: the text is delivered with a note giving the file's path. On the web UI, a file inside the workspace gets a durable link keyed by its workspace-relative path (`/api/files/workspace?path=...`), which keeps working for as long as the file itself exists rather than expiring after an hour; a file outside the workspace still gets the older kind of link, a random token that expires after an hour. Either way, a link to a file that's since been deleted or moved answers with a plain explanation rather than a bare 404.
 - Only the main agent talks to the owner. A session's `send_message` refuses the WebSocket endpoint and the owner's DM on every chat interface — named explicitly as `conversation`, or reached through the no-conversation default — with an error telling it to message `main` instead. Posting to any other conversation or endpoint still works. `switch_endpoint` is main-only regardless.
 
 ### Notification endpoints
