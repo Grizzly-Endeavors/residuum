@@ -48,7 +48,10 @@ const RESERVED_ENV_VARS: &[&str] = &[
 /// loader controls on Linux and macOS).
 const RESERVED_ENV_PREFIXES: &[&str] = &["LD_", "DYLD_"];
 
-/// Who created a key, which decides who may overwrite or delete it.
+/// Who created a key. Recorded for display in listings and to decide
+/// whether overwriting or deleting it through the agent's tools should
+/// carry a user-visible notice — the agent may manage any key regardless of
+/// who created it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyCreator {
@@ -216,13 +219,15 @@ impl AgentKeyStore {
             .map(|(name, entry)| (name.as_str(), entry.value.as_str()))
     }
 
-    /// Insert or replace a key in memory. `description: None` keeps an
-    /// existing key's description. The caller persists with [`save`](Self::save).
+    /// Insert or replace a key in memory, whoever created it — the agent
+    /// may overwrite a key the user created (the config repository is
+    /// checkpointed before every write here, so it's always undoable; see
+    /// `docs/systems-usage/agent-keys.md`). `description: None` keeps an
+    /// existing key's description. The caller persists with
+    /// [`save`](Self::save).
     ///
     /// # Errors
-    /// Returns `AgentKeyError::Invalid` for a bad name or value, and
-    /// `AgentKeyError::OwnedByUser` when the agent tries to replace a key
-    /// the user created.
+    /// Returns `AgentKeyError::Invalid` for a bad name or value.
     pub fn set(
         &mut self,
         name: &str,
@@ -233,11 +238,6 @@ impl AgentKeyStore {
         validate_name(name)?;
         validate_value(value)?;
         let existing = self.keys.get(name);
-        if creator == KeyCreator::Agent
-            && existing.is_some_and(|e| e.created_by == KeyCreator::User)
-        {
-            return Err(AgentKeyError::OwnedByUser(name.to_string()));
-        }
         let description = description.map_or_else(
             || existing.map(|e| e.description.clone()).unwrap_or_default(),
             |d| d.trim().to_string(),
@@ -253,23 +253,16 @@ impl AgentKeyStore {
         Ok(())
     }
 
-    /// Remove a key in memory. The caller persists with [`save`](Self::save).
+    /// Remove a key in memory, whoever created it. The caller persists with
+    /// [`save`](Self::save).
     ///
     /// # Errors
-    /// Returns `AgentKeyError::NotFound` for an unknown name and
-    /// `AgentKeyError::OwnedByUser` when the agent tries to delete a key the
-    /// user created.
-    pub fn delete(&mut self, name: &str, requester: KeyCreator) -> Result<(), AgentKeyError> {
-        match self.keys.get(name) {
-            None => Err(AgentKeyError::NotFound(name.to_string())),
-            Some(e) if requester == KeyCreator::Agent && e.created_by == KeyCreator::User => {
-                Err(AgentKeyError::OwnedByUser(name.to_string()))
-            }
-            Some(_) => {
-                self.keys.remove(name);
-                Ok(())
-            }
+    /// Returns `AgentKeyError::NotFound` for an unknown name.
+    pub fn delete(&mut self, name: &str) -> Result<(), AgentKeyError> {
+        if self.keys.remove(name).is_none() {
+            return Err(AgentKeyError::NotFound(name.to_string()));
         }
+        Ok(())
     }
 }
 
@@ -386,25 +379,20 @@ mod tests {
     }
 
     #[test]
-    fn agent_cannot_overwrite_or_delete_user_keys() {
+    fn agent_can_overwrite_and_delete_user_keys() {
         let mut store = AgentKeyStore::default();
         store
             .set("shared", "user-value-123", None, KeyCreator::User)
             .unwrap();
 
-        let overwrite = store.set("shared", "agent-value-123", None, KeyCreator::Agent);
-        assert_eq!(
-            overwrite,
-            Err(AgentKeyError::OwnedByUser("shared".to_string()))
-        );
-        assert_eq!(store.value("shared"), Some("user-value-123"));
+        store
+            .set("shared", "agent-value-123", None, KeyCreator::Agent)
+            .unwrap();
+        assert_eq!(store.value("shared"), Some("agent-value-123"));
+        assert_eq!(store.creator("shared"), Some(KeyCreator::Agent));
 
-        let delete = store.delete("shared", KeyCreator::Agent);
-        assert_eq!(
-            delete,
-            Err(AgentKeyError::OwnedByUser("shared".to_string()))
-        );
-        assert!(store.value("shared").is_some());
+        store.delete("shared").unwrap();
+        assert!(store.value("shared").is_none());
     }
 
     #[test]
@@ -422,7 +410,7 @@ mod tests {
             Some("desc"),
             "omitted description keeps the existing one"
         );
-        store.delete("minted", KeyCreator::Agent).unwrap();
+        store.delete("minted").unwrap();
         assert!(store.value("minted").is_none());
     }
 
@@ -442,7 +430,7 @@ mod tests {
     fn delete_unknown_key_is_not_found() {
         let mut store = AgentKeyStore::default();
         assert_eq!(
-            store.delete("nope", KeyCreator::User),
+            store.delete("nope"),
             Err(AgentKeyError::NotFound("nope".to_string()))
         );
     }

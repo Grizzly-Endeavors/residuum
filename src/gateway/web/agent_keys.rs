@@ -45,7 +45,6 @@ fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
     let status = match e {
         AgentKeyError::Invalid(_) => StatusCode::BAD_REQUEST,
         AgentKeyError::NotFound(_) => StatusCode::NOT_FOUND,
-        AgentKeyError::OwnedByUser(_) => StatusCode::CONFLICT,
         AgentKeyError::Storage(_) => {
             tracing::error!(error = %e, "agent key store request failed");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -99,7 +98,7 @@ pub(super) async fn api_agent_keys_delete(
         .checkpoint_config_before_write(format!("delete agent key '{name}'"))
         .await;
     AgentKeys::new(state.config_dir)
-        .delete(&name, KeyCreator::User)
+        .delete(&name)
         .await
         .map_err(|e| error_response(&e))?;
     Ok(Json(DeleteAgentKeyResponse { deleted: true }))

@@ -11,7 +11,7 @@ use crate::agent::HopCounter;
 use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, SessionAddress};
+use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, Publisher, SessionAddress};
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
@@ -35,6 +35,11 @@ pub struct ToolRegistry {
     /// registration. `None` means minting a key through `exec` isn't
     /// checkpointed (matches `agent_keys: None`'s "not available" story).
     checkpoints: Option<Arc<crate::checkpoints::CheckpointEngine>>,
+    /// Bus publisher injected into `exec` and `agent_key_delete`, so they can
+    /// surface a notice when they overwrite or delete a key the user
+    /// created. `None` means that notice goes unpublished (the action still
+    /// happens).
+    publisher: Option<Publisher>,
 }
 
 impl Default for ToolRegistry {
@@ -145,6 +150,7 @@ impl ToolRegistry {
             tools_path: None,
             agent_keys: None,
             checkpoints: None,
+            publisher: None,
         }
     }
 
@@ -171,6 +177,15 @@ impl ToolRegistry {
     /// Call before [`register_defaults`](Self::register_defaults).
     pub fn set_checkpoints(&mut self, checkpoints: Arc<crate::checkpoints::CheckpointEngine>) {
         self.checkpoints = Some(checkpoints);
+    }
+
+    /// Set the bus publisher injected into `exec` and `agent_key_delete`, so
+    /// overwriting or deleting a key the user created is reported.
+    ///
+    /// Call before [`register_defaults`](Self::register_defaults) and
+    /// [`register_agent_key_tools`](Self::register_agent_key_tools).
+    pub fn set_publisher(&mut self, publisher: Publisher) {
+        self.publisher = Some(publisher);
     }
 
     /// The redactor for every current agent-key value; empty when no key
@@ -284,18 +299,21 @@ impl ToolRegistry {
             policy,
             diagnostics_paths,
         )));
-        self.register(Box::new(exec::ExecTool::new(
+        let mut exec_tool = exec::ExecTool::new(
             self.tools_path.clone(),
             self.agent_keys.clone(),
             self.checkpoints.clone(),
-        )));
+        );
+        if let Some(publisher) = &self.publisher {
+            exec_tool = exec_tool.with_publisher(publisher.clone());
+        }
+        self.register(Box::new(exec_tool));
     }
 
     /// Register agent key tools (`agent_keys_list`, `agent_key_delete`).
     ///
-    /// `checkpoints` is checkpointed before a delete, so a user-visible
-    /// key deletion (including one a future change lets the agent make on
-    /// the user's own keys) can be undone.
+    /// `checkpoints` is checkpointed before a delete — including one on a
+    /// key the user created — so it's always undoable.
     pub fn register_agent_key_tools(
         &mut self,
         keys: SharedAgentKeys,
@@ -304,10 +322,11 @@ impl ToolRegistry {
         self.register(Box::new(agent_keys::AgentKeysListTool::new(Arc::clone(
             &keys,
         ))));
-        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(
-            keys,
-            checkpoints,
-        )));
+        let mut delete_tool = agent_keys::AgentKeyDeleteTool::new(keys, checkpoints);
+        if let Some(publisher) = &self.publisher {
+            delete_tool = delete_tool.with_publisher(publisher.clone());
+        }
+        self.register(Box::new(delete_tool));
     }
 
     /// Register the `memory_search` tool with a shared hybrid searcher.
@@ -521,6 +540,7 @@ impl ToolRegistry {
         registry.set_tools_path(tools_path);
         registry.set_agent_keys(Arc::clone(&agent_keys));
         registry.set_checkpoints(Arc::clone(&checkpoints));
+        registry.set_publisher(publisher.clone());
 
         // Core I/O tools
         let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {

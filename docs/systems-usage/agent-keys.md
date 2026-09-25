@@ -20,7 +20,7 @@ Every key has:
 - **An environment variable**: the name uppercased. `github_token` is exposed as `$GITHUB_TOKEN`.
 - **A value** of at least 8 characters. Shorter values can't be redacted by substring match without also mangling unrelated output.
 - **A description**, shown to the agent. Say what the key is for and what it can reach.
-- **A creator**: `user` or `agent`. The agent may replace or delete only keys it created. The user may change anything.
+- **A creator**: `user` or `agent`, shown in listings and used to decide when to notify. Either the agent or the user may replace or delete any key, whoever created it. Overwriting or deleting a key through the agent's tools (`exec`'s `store_output_as`, `agent_key_delete`) checkpoints the config repository first, so it's always undoable from checkpoint history; when the key being overwritten or deleted was created by the user, the agent also publishes a notice naming the key so it doesn't happen invisibly.
 
 Keys have no expiry; they live until deleted.
 
@@ -53,9 +53,9 @@ Changes from any surface take effect on the agent's next tool call; no restart i
 
 A key not named in `keys` is not in the child's environment. An unknown name fails the call before anything runs. Pulses, scheduled actions, and sub-agents all run as agent turns using the same `exec`, so they use keys the same way.
 
-**Minting.** `exec` takes a `store_output_as: { name, description }` parameter. When the command exits 0 with non-empty stdout, stdout (trailing newline trimmed) is stored as an agent-created key and the tool reports only the key's name, length, and environment variable; stdout is never returned. On a non-zero exit or empty stdout nothing is stored and stdout is discarded. stderr is still returned, redacted. Naming a user-created key is refused before the command runs.
+**Minting.** `exec` takes a `store_output_as: { name, description }` parameter. When the command exits 0 with non-empty stdout, stdout (trailing newline trimmed) is stored as an agent-created key and the tool reports only the key's name, length, and environment variable; stdout is never returned. On a non-zero exit or empty stdout nothing is stored and stdout is discarded. stderr is still returned, redacted. Naming an existing key — the agent's own or one the user created — replaces it; replacing a user-created key publishes a notice naming it.
 
-**Cleanup.** `agent_key_delete` removes a key the agent created.
+**Cleanup.** `agent_key_delete` removes a key, whoever created it; deleting one the user created publishes a notice naming it.
 
 ## MCP servers
 
