@@ -24,6 +24,13 @@
   const SIDEBAR_PREF_KEY = "residuum-sessions-sidebar";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
+
+  // A native OS notification's "Open" action (see the macOS/Windows bridges
+  // in src/notify/) points here for a batch summary, since there's no
+  // single item to deep-link to — read before `router.start()` replaces an
+  // unrecognized path, and open the inbox to the full list once running.
+  const openedFromNotificationSummary = window.location.pathname.startsWith("/notification");
+
   router.start();
 
   let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench" | "scheduled">(
@@ -128,6 +135,9 @@
       mode = status.mode === "setup" ? "setup" : "running";
     } catch {
       mode = "running";
+    }
+    if (openedFromNotificationSummary) {
+      inboxOpen = true;
     }
   });
 

@@ -66,6 +66,8 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 
 On macOS an urgent result posts at the `time_sensitive` interruption level so it breaks through Focus modes. Windows Toasts do not vary by urgency.
 
+Both platforms batch deliveries within a throttle window (default 30s): past three notifications in one window, the rest collapse into a single summary rather than flooding the notification surface. The summary's body always ends with "See all in your inbox." — every notification that reaches a native channel was filed to the inbox too, so nothing summarized is ever lost, just not individually shown. On macOS the summary's "Open" action also deep-links into the web UI's inbox list; Windows Toasts have no click action at all, which is why the body text carries the pointer.
+
 Editing `config/channels.toml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports a TOML syntax error, a channel missing a required field, an unrecognized channel type, or a retired option left in place as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
 ### Inbox
