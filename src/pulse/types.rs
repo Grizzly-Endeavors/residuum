@@ -314,23 +314,24 @@ fn yaml_kind(value: &serde_yaml_ng::Value) -> &'static str {
 ///   successfully — running rather than firing nothing until the file is
 ///   fixed.
 ///
-/// `last_parse_error` carries the most recently logged syntax-error message
-/// across calls (this is hot-reloaded on every scheduler tick). A syntax
-/// error is logged at `warn` only the first time it's seen or when the error
-/// text changes; an identical, still-broken file logs at `debug` instead so a
-/// typo in HEARTBEAT.yml doesn't repeat the same warning forever.
+/// `last_parse_error` carries the most recently seen syntax-error message
+/// across calls (this is hot-reloaded on every scheduler tick), cleared once
+/// the file parses again (logged at `info`) — it exists purely to detect
+/// that recovery, not to dedupe the syntax-error problem itself, which goes
+/// through the same `problems` path as everything else below.
 ///
 /// Duplicate pulse names are dropped, keeping the first occurrence: `PulseScheduler`
 /// keys its per-pulse state by name, so two pulses sharing a name would otherwise
 /// silently collapse into one scheduler-state entry.
 ///
-/// `problems` is cleared and refilled with every pulse dropped this call — for
-/// failing to deserialize, using a removed option (see `validate_pulse`), or
-/// duplicating an earlier pulse's name. This function itself doesn't log or
-/// notify about them — every call re-validates the whole file, so a caller
-/// hot-reloading on a timer (`PulseScheduler`) is responsible for comparing
-/// against the previous call's result and only logging/notifying when it
-/// actually changed.
+/// `problems` is cleared and refilled on every call — with a whole-document
+/// syntax error or a non-list `pulses` key (see above), or with one entry
+/// per pulse dropped for failing to deserialize, using a removed option (see
+/// `validate_pulse`), or duplicating an earlier pulse's name. This function
+/// itself doesn't log or notify about them — every call re-validates the
+/// whole file, so a caller hot-reloading on a timer (`PulseScheduler`) is
+/// responsible for comparing against the previous call's result and only
+/// logging/notifying when it actually changed.
 #[must_use]
 pub(crate) fn load_heartbeat(
     path: &Path,
@@ -355,12 +356,22 @@ pub(crate) fn load_heartbeat(
         Ok(v) => v,
         Err(e) => {
             let message = e.to_string();
-            if last_parse_error.as_deref() == Some(message.as_str()) {
-                tracing::debug!(path = %path.display(), error = %message, "HEARTBEAT.yml still fails to parse");
-            } else {
-                tracing::warn!(path = %path.display(), error = %message, "HEARTBEAT.yml has a syntax error; keeping the last working set of pulses running until this is fixed");
-                *last_parse_error = Some(message);
-            }
+            *last_parse_error = Some(message.clone());
+            // Reported as a problem (not logged directly here) so the
+            // caller's existing per-tick dedup — comparing this tick's
+            // `problems` against the last tick it checked — decides whether
+            // this is worth a fresh warn log and owner notice, the same way
+            // it already does for every other kind of HEARTBEAT.yml problem.
+            // An unchanged, still-broken file therefore logs and notifies
+            // exactly once, not every tick.
+            problems.push(HeartbeatProblem {
+                name: "HEARTBEAT.yml".to_string(),
+                message: format!(
+                    "HEARTBEAT.yml has a syntax error and could not be parsed: {message}; \
+                     keeping the last working set of pulses running until this is fixed"
+                ),
+                kind: ProblemKind::Malformed,
+            });
             // Whole document is unparseable — keep the last known-good,
             // already-validated pulse set running rather than stopping every
             // pulse until the syntax error is fixed.
@@ -834,6 +845,12 @@ pulses:
             "with nothing known-good yet, the fallback set is empty"
         );
         assert!(last_error.is_some(), "the syntax error should be recorded");
+        assert_eq!(
+            problems.len(),
+            1,
+            "the syntax error should be reported as a problem too"
+        );
+        assert_eq!(problems.first().unwrap().kind, ProblemKind::Malformed);
     }
 
     #[test]
