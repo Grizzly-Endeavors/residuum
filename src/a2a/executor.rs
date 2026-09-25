@@ -418,7 +418,21 @@ async fn handle_session_event(
     match kind {
         SessionEventKind::TurnStarted { turn_id } => {
             own_turns.insert(turn_id);
-            false
+            // The turn actually starting is a stronger, earlier signal that
+            // the session is working than waiting on a separate
+            // `StateChanged(Running)` event below: both are published in
+            // the same burst when a run begins, so relying on only one of
+            // them left this racy under load — a subscriber's bounded bus
+            // channel (`bus::broker::SUBSCRIBER_CAPACITY`) can drop either
+            // one individually if it's momentarily full, and `TurnStarted`
+            // is also the event `own_turns` itself already depends on
+            // being delivered reliably.
+            if *sent_working {
+                return false;
+            }
+            *sent_working = true;
+            let update = status_update(stream.task_id, stream.context_id, TaskState::Working, None);
+            stream.tx.send(Ok(update)).await.is_err()
         }
         SessionEventKind::Response { turn_id, content } => {
             if !own_turns.contains(&turn_id) || content.is_empty() {
