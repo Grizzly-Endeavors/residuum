@@ -1,20 +1,38 @@
 <script lang="ts">
   import { relativeTime } from "../../lib/time";
-  import { onMount } from "svelte";
-  import type { UpdateStatusResponse } from "../../lib/types";
+  import { onMount, onDestroy } from "svelte";
+  import type { RollbackNoticeResponse, UpdateStatusResponse } from "../../lib/types";
   import { fetchUpdateStatus, triggerUpdateCheck, applyUpdate } from "../../lib/api";
   import { userErrorMessage } from "../../lib/errors";
+
+  const RESTART_POLL_INTERVAL_MS = 1500;
+  const RESTART_TIMEOUT_MS = 90_000;
 
   let status = $state<UpdateStatusResponse | null>(null);
   let loading = $state(true);
   let checking = $state(false);
   let applying = $state(false);
   let restarting = $state(false);
+  let waitedSeconds = $state(0);
+  let restartOutcome = $state<"updated" | "rolled_back" | "timed_out" | null>(null);
+  let rollbackNotice = $state<RollbackNoticeResponse | null>(null);
   let errorMsg = $state("");
+
+  let restartPollHandle: ReturnType<typeof setInterval> | null = null;
+  let restartStartedAt = 0;
+
+  /** Apply a freshly-fetched status, surfacing a rollback notice whenever it's present — not just one this session triggered, since it may have happened before the page was open. */
+  function applyStatus(s: UpdateStatusResponse) {
+    status = s;
+    if (s.rollback_notice) {
+      rollbackNotice = s.rollback_notice;
+      restartOutcome = "rolled_back";
+    }
+  }
 
   async function pollStatus() {
     try {
-      status = await fetchUpdateStatus();
+      applyStatus(await fetchUpdateStatus());
       errorMsg = "";
     } catch {
       // fetch failures are non-critical
@@ -23,15 +41,54 @@
     }
   }
 
+  function stopRestartPolling() {
+    if (restartPollHandle !== null) {
+      clearInterval(restartPollHandle);
+      restartPollHandle = null;
+    }
+  }
+
+  async function pollDuringRestart() {
+    waitedSeconds = Math.floor((Date.now() - restartStartedAt) / 1000);
+    try {
+      const s = await fetchUpdateStatus();
+      applyStatus(s);
+      restarting = false;
+      if (!s.rollback_notice) {
+        restartOutcome = "updated";
+      }
+      stopRestartPolling();
+      return;
+    } catch {
+      // The gateway is still down mid-restart — keep waiting.
+    }
+    if (Date.now() - restartStartedAt > RESTART_TIMEOUT_MS) {
+      restarting = false;
+      restartOutcome = "timed_out";
+      stopRestartPolling();
+    }
+  }
+
+  function startRestartPolling() {
+    restartStartedAt = Date.now();
+    restartOutcome = null;
+    rollbackNotice = null;
+    waitedSeconds = 0;
+    stopRestartPolling();
+    restartPollHandle = setInterval(() => void pollDuringRestart(), RESTART_POLL_INTERVAL_MS);
+  }
+
   onMount(() => {
     void pollStatus();
   });
+
+  onDestroy(stopRestartPolling);
 
   async function handleCheck() {
     checking = true;
     errorMsg = "";
     try {
-      status = await triggerUpdateCheck();
+      applyStatus(await triggerUpdateCheck());
     } catch (e: unknown) {
       errorMsg = userErrorMessage(e, { action: "Couldn't check for updates." });
     } finally {
@@ -46,6 +103,7 @@
       await applyUpdate();
       applying = false;
       restarting = true;
+      startRestartPolling();
     } catch (e: unknown) {
       errorMsg = userErrorMessage(e, { action: "Couldn't apply the update." });
       applying = false;
@@ -65,12 +123,36 @@
       {:else if restarting}
         <div class="update-status-row">
           <span class="update-dot update-dot-restarting"></span>
-          <span class="update-status-text">Restarting...</span>
+          <span class="update-status-text">Restarting... ({waitedSeconds}s)</span>
         </div>
         <p class="update-hint">
-          The gateway is restarting with the new version. This page will reconnect automatically.
+          Waiting for the gateway to come back up. If it doesn't within
+          {Math.round(RESTART_TIMEOUT_MS / 1000)}s, it likely rolled back to the previous version.
         </p>
       {:else if status}
+        {#if restartOutcome === "rolled_back" && rollbackNotice}
+          <div class="update-status-row">
+            <span class="update-dot update-dot-error"></span>
+            <span class="update-status-text"
+              >Update to {rollbackNotice.attempted_version} failed and was rolled back</span
+            >
+          </div>
+          <p class="update-hint">{rollbackNotice.reason}. Now running {status.current}.</p>
+        {:else if restartOutcome === "updated"}
+          <div class="update-status-row">
+            <span class="update-dot update-dot-current"></span>
+            <span class="update-status-text">Updated to {status.current}</span>
+          </div>
+        {:else if restartOutcome === "timed_out"}
+          <div class="update-status-row">
+            <span class="update-dot update-dot-error"></span>
+            <span class="update-status-text">Still waiting for the gateway to come back</span>
+          </div>
+          <p class="update-hint">
+            It's been over {Math.round(RESTART_TIMEOUT_MS / 1000)}s with no response. Check
+            <code>residuum logs</code> on the machine running Residuum, or restart it manually.
+          </p>
+        {/if}
         <div class="update-status-row">
           {#if status.update_available}
             <span class="update-dot update-dot-available"></span>
@@ -161,6 +243,11 @@
 
   .update-dot-unknown {
     background: #666;
+  }
+
+  .update-dot-error {
+    background: var(--error, #c0392b);
+    box-shadow: 0 0 6px rgba(192, 57, 43, 0.4);
   }
 
   .update-dot-loading,

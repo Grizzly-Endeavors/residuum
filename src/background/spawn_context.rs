@@ -99,6 +99,9 @@ pub(crate) struct SpawnContext {
     /// Outbound A2A tasks this instance started on other agents, shared with
     /// main.
     pub(crate) a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs the `workspace_history`/`workspace_restore` tools.
+    pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -146,6 +149,20 @@ pub(crate) struct NewSessionContext {
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key), the
 /// identity files cannot be read, or `skill` names a skill that does not resolve.
+/// Log a warning for each fallback provider dropped from a background
+/// tier's chain — visible in diagnostics without stopping the spawn, since
+/// the tier's primary (or another fallback) still built successfully.
+fn log_dropped_fallbacks(tier: BackgroundModelTier, dropped: &[crate::inference::DroppedFallback]) {
+    for fallback in dropped {
+        tracing::warn!(
+            tier = ?tier,
+            provider = %fallback.name,
+            error = %fallback.error,
+            "dropped an unbuildable fallback provider for this background tier"
+        );
+    }
+}
+
 #[tracing::instrument(skip_all, fields(tier = ?tier, skill = skill.unwrap_or("none")))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
@@ -166,13 +183,14 @@ pub(crate) async fn build_spawn_resources(
         .models
         .resolve_tier(tier, &ctx.main_provider_specs);
 
-    let provider = build_provider_chain(
+    let (provider, dropped) = build_provider_chain(
         &specs,
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
     )
     .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
+    log_dropped_fallbacks(*tier, &dropped);
 
     // Apply per-tier overrides over global options
     let tier_key = match tier {
@@ -251,6 +269,7 @@ pub(crate) async fn build_spawn_resources(
         agent_keys: Arc::clone(&ctx.agent_keys),
         a2a_hub: Arc::clone(&ctx.a2a_hub),
         a2a_tracker: Arc::clone(&ctx.a2a_tracker),
+        checkpoints: Arc::clone(&ctx.checkpoints),
     };
 
     build_subagent_resources(

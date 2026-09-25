@@ -468,6 +468,35 @@ async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
 }
 
 /// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
+/// Publish `TurnLifecycleEvent::Started` (if there's an output endpoint)
+/// and spawn the turn-start checkpoint, which captures the workspace state
+/// before anything this turn does, attributed as an outside edit.
+async fn publish_turn_started(
+    rt: &GatewayRuntime,
+    output_endpoint: Option<&EndpointName>,
+    correlation_id: &str,
+) {
+    if let Some(ep) = output_endpoint
+        && let Err(e) = rt
+            .publisher
+            .publish(
+                topics::Endpoint(ep.clone()),
+                TurnLifecycleEvent::Started {
+                    correlation_id: correlation_id.to_string(),
+                },
+            )
+            .await
+    {
+        tracing::warn!(error = %e, "failed to publish turn started event");
+    }
+    rt.checkpoints
+        .spawn_turn_start_checkpoint(main_turn_checkpoint_context(
+            correlation_id,
+            crate::checkpoints::CheckpointTrigger::TurnStart,
+            "outside edit before turn start".to_string(),
+        ));
+}
+
 async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, correlation_id: &str) {
     if let Err(e) = publisher
         .publish(
@@ -480,6 +509,50 @@ async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, corr
     {
         tracing::warn!(error = %e, "failed to publish turn ended event");
     }
+}
+
+/// Build the checkpoint context for a main-agent turn boundary. `correlation_id`
+/// (the inbound message id) doubles as the turn id — main has no separate
+/// run id, so `run_id` is left unset.
+fn main_turn_checkpoint_context(
+    correlation_id: &str,
+    trigger: crate::checkpoints::CheckpointTrigger,
+    summary: String,
+) -> crate::checkpoints::CheckpointContext {
+    crate::checkpoints::CheckpointContext {
+        address: "main".to_string(),
+        run_id: None,
+        turn_id: Some(correlation_id.to_string()),
+        trigger,
+        summary,
+    }
+}
+
+/// A short, one-line description of a main-agent turn's outcome, for the
+/// turn-end checkpoint's commit message.
+fn main_turn_end_summary(turn_result: &anyhow::Result<Vec<String>>) -> String {
+    match turn_result {
+        Ok(texts) => texts.first().filter(|t| !t.is_empty()).map_or_else(
+            || "turn completed".to_string(),
+            |t| t.chars().take(120).collect(),
+        ),
+        Err(e) => format!("turn failed: {e}"),
+    }
+}
+
+/// Spawn the turn-end checkpoint, attributed with a short summary of the
+/// turn's outcome.
+fn spawn_main_turn_end_checkpoint(
+    rt: &GatewayRuntime,
+    correlation_id: &str,
+    turn_result: &anyhow::Result<Vec<String>>,
+) {
+    rt.checkpoints
+        .spawn_turn_end_checkpoint(main_turn_checkpoint_context(
+            correlation_id,
+            crate::checkpoints::CheckpointTrigger::TurnEnd,
+            main_turn_end_summary(turn_result),
+        ));
 }
 
 /// Translate a completed turn's result into the bus events clients observe.
@@ -597,19 +670,7 @@ pub async fn handle_inbound_message(
             .is_some_and(|entry| entry.capabilities.contains(EndpointCapabilities::STREAMING))
     });
 
-    if let Some(ref ep) = output_endpoint
-        && let Err(e) = rt
-            .publisher
-            .publish(
-                topics::Endpoint(ep.clone()),
-                TurnLifecycleEvent::Started {
-                    correlation_id: reply_id.clone(),
-                },
-            )
-            .await
-    {
-        tracing::warn!(error = %e, "failed to publish turn started event");
-    }
+    publish_turn_started(rt, output_endpoint.as_ref(), &reply_id).await;
 
     let before = rt.agent.message_count();
 
@@ -654,6 +715,8 @@ pub async fn handle_inbound_message(
                 .then(|| Arc::clone(&rt.subconscious)),
         )
         .await;
+
+    spawn_main_turn_end_checkpoint(rt, &reply_id, &turn_result);
 
     publish_turn_outcome(
         turn_result,

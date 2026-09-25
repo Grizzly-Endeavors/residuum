@@ -1,5 +1,6 @@
 //! Setup subcommand: interactive or flag-driven configuration wizard.
 
+use residuum::checkpoints::CheckpointEngine;
 use residuum::config::Config;
 use residuum::util::FatalError;
 
@@ -29,10 +30,19 @@ pub(super) struct SetupArgs {
 }
 
 /// Run the `setup` subcommand — interactive or flag-driven config wizard.
-pub(super) fn run_setup_command(args: &SetupArgs) -> Result<(), FatalError> {
+pub(super) async fn run_setup_command(args: &SetupArgs) -> Result<(), FatalError> {
+    run_setup_command_at(Config::config_dir()?, args).await
+}
+
+/// [`run_setup_command`] against an explicit config directory, so the
+/// non-interactive (flag-driven) path is testable without touching the real
+/// `~/.residuum`.
+async fn run_setup_command_at(
+    config_dir: std::path::PathBuf,
+    args: &SetupArgs,
+) -> Result<(), FatalError> {
     use residuum::config::wizard;
 
-    let config_dir = Config::config_dir()?;
     let config_path = config_dir.join("config.toml");
 
     if config_path.exists() {
@@ -66,6 +76,14 @@ pub(super) fn run_setup_command(args: &SetupArgs) -> Result<(), FatalError> {
 
     // Bootstrap creates the directory + example config
     Config::bootstrap_at_dir(&config_dir)?;
+
+    let checkpoints = CheckpointEngine::open_for_cli(&config_dir);
+    super::checkpoint_config_before_write(
+        checkpoints.as_ref(),
+        "CLI setup: providers.toml + config.toml".to_string(),
+    )
+    .await;
+
     // Write the wizard-generated config (overwrites the minimal template)
     wizard::write_config(&config_dir, &answers)?;
 
@@ -89,4 +107,75 @@ pub(super) fn run_setup_command(args: &SetupArgs) -> Result<(), FatalError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn flag_driven_setup_checkpoints_the_config_repo() {
+        let dir = tempfile::tempdir().unwrap();
+
+        run_setup_command_at(
+            dir.path().to_path_buf(),
+            &SetupArgs {
+                timezone: Some("UTC".to_string()),
+                provider: Some("ollama".to_string()),
+                api_key: None,
+                model: Some("llama3".to_string()),
+                web_search_backend: None,
+                web_search_api_key: None,
+                web_search_base_url: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(dir.path().join("config.toml").exists());
+
+        let engine = CheckpointEngine::open_for_cli(dir.path()).unwrap();
+        let page = engine
+            .list_checkpoints(residuum::checkpoints::RepoKind::Config, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.len(),
+            1,
+            "the initial bootstrap file should be checkpointed before the wizard overwrites it: {:?}",
+            page.items.iter().map(|c| &c.summary).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            page.items.first().unwrap().trigger,
+            residuum::checkpoints::CheckpointTrigger::PreConfigWrite
+        );
+    }
+
+    #[tokio::test]
+    async fn setup_refuses_to_overwrite_an_existing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(dir.path().join("config.toml"), "# existing\n").unwrap();
+
+        run_setup_command_at(
+            dir.path().to_path_buf(),
+            &SetupArgs {
+                timezone: None,
+                provider: None,
+                api_key: None,
+                model: None,
+                web_search_backend: None,
+                web_search_api_key: None,
+                web_search_base_url: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let contents = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert_eq!(
+            contents, "# existing\n",
+            "existing config must be untouched"
+        );
+    }
 }

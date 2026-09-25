@@ -955,6 +955,61 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 
 On success: `"Task marked {completed|marked as needing more input|marked failed}; the caller has been notified."`
 
+---
+
+## `workspace_history`
+
+**Source:** `workspace_checkpoints.rs` · `WorkspaceHistoryTool`
+
+**Description sent to LLM:**
+> List workspace checkpoints (recovery snapshots of workspace files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.
+
+### Input
+
+| Parameter       | Type   | Required | Description                                                                 |
+|-----------------|--------|----------|-------------------------------------------------------------------------------|
+| `action`        | string (enum) | yes | `"list"` to list checkpoints, `"show"` to see what one checkpoint changed. |
+| `path`          | string | no (list only) | Restrict to checkpoints that changed this workspace-relative file or directory. |
+| `limit`         | integer | no (list only) | Maximum checkpoints to return (default 50). |
+| `checkpoint_id` | string | no (show only) | The checkpoint id to describe, from a previous `list` call. |
+
+Scoped to the workspace checkpoint repository only — the config repository (root `config.toml`/`providers.toml` and the encrypted key stores) is never reachable from this tool.
+
+### Output
+
+`list`: `"{N} checkpoint(s):"` followed by one line per checkpoint (`short id [trigger] address — summary (N path(s) changed)`), or `"No checkpoints yet."`.
+
+`show`: a header line naming the checkpoint's trigger, address, and summary, followed by one line per changed path (`Added|Modified|Deleted <path>`), or `"(no changes)"`.
+
+On error (returned as `is_error = true`): `action` is missing or unrecognized, `checkpoint_id` is missing for `show`, `path` contains `..` or is absolute, or the checkpoint id doesn't resolve.
+
+---
+
+## `workspace_restore`
+
+**Source:** `workspace_checkpoints.rs` · `WorkspaceRestoreTool`
+
+**Description sent to LLM:**
+> Restore a workspace file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.
+
+### Input
+
+| Parameter       | Type   | Required | Description |
+|-----------------|--------|----------|--------------|
+| `action`        | string (enum) | yes | `"restore_path"` to restore one file/directory, `"undo_turn"` to revert everything a checkpoint changed. |
+| `checkpoint_id` | string | yes | The checkpoint id, from `workspace_history`. |
+| `path`          | string | yes (restore_path only) | The workspace-relative file or directory to restore. |
+
+Scoped to the workspace checkpoint repository only, like `workspace_history`.
+
+### Output
+
+`restore_path`: `"Restored {N} path(s) from checkpoint {short id}: {paths}"`.
+
+`undo_turn`: `"Reverted {N} path(s) from checkpoint {short id}: {paths}."`, plus `" Skipped {N} path(s) changed again since: {paths}."` when any were skipped to avoid clobbering a later edit.
+
+On error (returned as `is_error = true`): `action` or `checkpoint_id` is missing or unrecognized, `path` contains `..` or is absolute, the checkpoint id doesn't resolve, or (`restore_path` only) `path` isn't present at that checkpoint.
+
 On error: an unknown `state`, an empty `message`, or an artifact path that's empty, escapes the workspace, doesn't exist, or exceeds 20 MB — reported as `is_error = true` naming the specific artifact and reason.
 
 **Side effect:** Publishes an `A2aTaskSignalEvent` on the bus, which the session's A2A task executor is waiting on to end the task's execution stream with the matching status. Each requested artifact is read into an A2A part first (UTF-8 text becomes a text part; anything else becomes a raw part with a detected media type) — a read failure fails the whole call before anything is published, so a caller never sees a partial update.

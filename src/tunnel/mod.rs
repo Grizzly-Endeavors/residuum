@@ -124,10 +124,12 @@ fn build_capabilities_header(a2a: Option<TunnelA2a>) -> String {
     capabilities.join(",")
 }
 
-/// Header the tunnel adds to every request it forwards to the local A2A
-/// listener, carrying [`tunnel_nonce`]. The A2A listener's auth layer uses it
-/// to tell a genuinely tunnel-forwarded sibling request apart from anyone who
-/// connects to the A2A port directly and forges the sibling header themselves.
+/// Header the tunnel adds to every request it forwards to a local listener,
+/// carrying [`tunnel_nonce`]. Two things rely on it to tell a genuinely
+/// tunnel-forwarded request apart from anyone who connects to a local port
+/// directly and forges the header themselves: the A2A listener's auth layer
+/// (sibling attestation), and the gateway's guard against remote shutdown or
+/// cloud-disconnect (`gateway::remote_control_guard`).
 pub(crate) const TUNNEL_NONCE_HEADER: &str = "x-residuum-tunnel";
 
 /// Length, in characters, of the per-process tunnel nonce.
@@ -136,7 +138,7 @@ const TUNNEL_NONCE_LEN: usize = 32;
 static TUNNEL_NONCE: OnceLock<String> = OnceLock::new();
 
 /// The per-process nonce sent as [`TUNNEL_NONCE_HEADER`] on every request the
-/// tunnel forwards to the local A2A listener.
+/// tunnel forwards to a local listener.
 ///
 /// Generated once per process with a CSPRNG and never persisted, so it changes
 /// on every restart. That's fine because both sides of the comparison — this

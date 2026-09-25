@@ -41,6 +41,8 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     /// Outbound A2A tasks this instance started on other agents.
     pub a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -76,9 +78,10 @@ pub(super) fn init_tool_registry(
     let mut tools = ToolRegistry::new();
     tools.set_tools_path(Arc::clone(deps.tools_path));
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
+    tools.set_checkpoints(Arc::clone(deps.checkpoints));
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(deps.path_policy));
-    tools.register_agent_key_tools(Arc::clone(deps.agent_keys));
+    tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
     tools.register_action_tools(
@@ -139,6 +142,9 @@ pub(super) fn init_tool_registry(
         Arc::clone(deps.tracing_client_context),
         Arc::clone(deps.session_registry),
     );
+
+    // Workspace checkpoint history (workspace repository only)
+    tools.register_workspace_checkpoint_tools(Arc::clone(deps.checkpoints));
 
     // Register Ollama Cloud web search tool if configured
     if let Some(backend) = &cfg.web_search.standalone_backend
@@ -288,6 +294,7 @@ mod tests {
             tracing: TracingConfig::default(),
             role_overrides: HashMap::new(),
             config_dir: dir.to_path_buf(),
+            load_notices: vec![],
         }
     }
 
@@ -314,6 +321,7 @@ mod tests {
         hop_counter: HopCounter,
         a2a_hub: Arc<crate::a2a::A2aClientHub>,
         a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     }
 
     async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -366,6 +374,15 @@ mod tests {
             layout.agent_inbox_dir(),
         )
         .await;
+        let checkpoints = Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                layout.root().to_path_buf(),
+                dir.to_path_buf(),
+                &dir.join("checkpoints"),
+                None,
+            )
+            .expect("checkpoint repos should open in a fresh tempdir"),
+        );
 
         Harness {
             cfg,
@@ -386,6 +403,7 @@ mod tests {
             hop_counter,
             a2a_hub,
             a2a_tracker,
+            checkpoints,
         }
     }
 
@@ -432,6 +450,7 @@ mod tests {
             web_search_backend: h.cfg.web_search.standalone_backend.clone(),
             a2a_hub: Arc::clone(&h.a2a_hub),
             a2a_tracker: Arc::clone(&h.a2a_tracker),
+            checkpoints: Arc::clone(&h.checkpoints),
         })
     }
 
@@ -472,6 +491,7 @@ mod tests {
             hop_counter: &h.hop_counter,
             a2a_hub: &h.a2a_hub,
             a2a_tracker: &h.a2a_tracker,
+            checkpoints: &h.checkpoints,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();

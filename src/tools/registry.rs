@@ -20,7 +20,7 @@ use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
     a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
     memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
-    submit_feedback, web_fetch, write,
+    submit_feedback, web_fetch, workspace_checkpoints, write,
 };
 
 /// Registry of available tools.
@@ -31,6 +31,10 @@ pub struct ToolRegistry {
     /// Agent key store injected into the `exec` tool at registration, and
     /// the source of the redactor applied to every tool result.
     agent_keys: Option<SharedAgentKeys>,
+    /// Checkpoint engine injected into `exec` (for `store_output_as`) at
+    /// registration. `None` means minting a key through `exec` isn't
+    /// checkpointed (matches `agent_keys: None`'s "not available" story).
+    checkpoints: Option<Arc<crate::checkpoints::CheckpointEngine>>,
 }
 
 impl Default for ToolRegistry {
@@ -121,6 +125,9 @@ pub struct SubagentToolDeps {
     /// Outbound A2A tasks this instance started on other agents, shared with
     /// main.
     pub a2a_tracker: Arc<RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs `workspace_history`/`workspace_restore`.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 impl ToolRegistry {
@@ -131,6 +138,7 @@ impl ToolRegistry {
             tools: Vec::new(),
             tools_path: None,
             agent_keys: None,
+            checkpoints: None,
         }
     }
 
@@ -149,6 +157,14 @@ impl ToolRegistry {
     /// tool can expose and mint keys.
     pub fn set_agent_keys(&mut self, agent_keys: SharedAgentKeys) {
         self.agent_keys = Some(agent_keys);
+    }
+
+    /// Set the checkpoint engine injected into the `exec` tool, so minting a
+    /// key through `store_output_as` checkpoints the config repo first.
+    ///
+    /// Call before [`register_defaults`](Self::register_defaults).
+    pub fn set_checkpoints(&mut self, checkpoints: Arc<crate::checkpoints::CheckpointEngine>) {
+        self.checkpoints = Some(checkpoints);
     }
 
     /// The redactor for every current agent-key value; empty when no key
@@ -249,15 +265,27 @@ impl ToolRegistry {
         self.register(Box::new(exec::ExecTool::new(
             self.tools_path.clone(),
             self.agent_keys.clone(),
+            self.checkpoints.clone(),
         )));
     }
 
     /// Register agent key tools (`agent_keys_list`, `agent_key_delete`).
-    pub fn register_agent_key_tools(&mut self, keys: SharedAgentKeys) {
+    ///
+    /// `checkpoints` is checkpointed before a delete, so a user-visible
+    /// key deletion (including one a future change lets the agent make on
+    /// the user's own keys) can be undone.
+    pub fn register_agent_key_tools(
+        &mut self,
+        keys: SharedAgentKeys,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
         self.register(Box::new(agent_keys::AgentKeysListTool::new(Arc::clone(
             &keys,
         ))));
-        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(keys)));
+        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(
+            keys,
+            checkpoints,
+        )));
     }
 
     /// Register the `memory_search` tool with a shared hybrid searcher.
@@ -463,15 +491,17 @@ impl ToolRegistry {
             web_search_backend,
             a2a_hub,
             a2a_tracker,
+            checkpoints,
         } = deps;
 
         let mut registry = Self::new();
         registry.set_tools_path(tools_path);
         registry.set_agent_keys(Arc::clone(&agent_keys));
+        registry.set_checkpoints(Arc::clone(&checkpoints));
 
         // Core I/O tools
         registry.register_defaults(tracker, path_policy);
-        registry.register_agent_key_tools(agent_keys);
+        registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
 
         // Skill tools: activate, deactivate
         registry.register_skill_tools(Arc::clone(&skill_state));
@@ -534,6 +564,9 @@ impl ToolRegistry {
         // Web fetch
         registry.register_web_fetch_tool();
 
+        // Workspace checkpoint history (workspace repository only)
+        registry.register_workspace_checkpoint_tools(checkpoints);
+
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
 
@@ -583,6 +616,20 @@ impl ToolRegistry {
     /// Register the `web_fetch` tool for fetching web page content.
     pub fn register_web_fetch_tool(&mut self) {
         self.register(Box::new(web_fetch::WebFetchTool::new()));
+    }
+
+    /// Register the `workspace_history` and `workspace_restore` tools,
+    /// scoped to the workspace checkpoint repository only.
+    pub fn register_workspace_checkpoint_tools(
+        &mut self,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
+        self.register(Box::new(workspace_checkpoints::WorkspaceHistoryTool::new(
+            Arc::clone(&checkpoints),
+        )));
+        self.register(Box::new(workspace_checkpoints::WorkspaceRestoreTool::new(
+            checkpoints,
+        )));
     }
 
     /// Register the `file_bug_report` and `submit_feedback` tools.

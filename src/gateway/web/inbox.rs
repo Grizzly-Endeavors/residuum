@@ -345,6 +345,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 

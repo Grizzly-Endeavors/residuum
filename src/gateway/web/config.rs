@@ -26,6 +26,17 @@ pub(super) struct StatusResponse {
     mode: &'static str,
     version: &'static str,
     features: &'static [&'static str],
+    /// On-disk size and checkpoint count for each checkpoint repository, so
+    /// growth is visible before the web UI's own checkpoints view lands.
+    /// `null` for a repo whose stats couldn't be read just now.
+    checkpoints: CheckpointsStatus,
+}
+
+/// Per-repository checkpoint stats shown in `/api/status`.
+#[derive(Serialize)]
+pub(super) struct CheckpointsStatus {
+    workspace: Option<crate::checkpoints::RepoStats>,
+    config: Option<crate::checkpoints::RepoStats>,
 }
 
 /// Response from validation or save endpoints.
@@ -54,7 +65,7 @@ pub(super) struct CompleteSetupRequest {
     mcp_json: Option<String>,
 }
 
-/// `GET /api/status` — returns `{ mode, version, features }`.
+/// `GET /api/status` — returns `{ mode, version, features, checkpoints }`.
 pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
     let mode = if state.setup_done.is_some() {
         "setup"
@@ -65,7 +76,27 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
         mode,
         version: update::CURRENT_VERSION,
         features: features::FEATURES,
+        checkpoints: CheckpointsStatus {
+            workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
+                .await,
+            config: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Config).await,
+        },
     })
+}
+
+/// A repo's checkpoint stats, or `None` (logged) if they couldn't be read —
+/// `/api/status` degrades rather than failing over a checkpoint read.
+async fn checkpoint_stats_or_log(
+    state: &ConfigApiState,
+    kind: crate::checkpoints::RepoKind,
+) -> Option<crate::checkpoints::RepoStats> {
+    state.checkpoints.stats(kind).await.map_or_else(
+        |e| {
+            tracing::warn!(error = %e, ?kind, "failed to read checkpoint stats for /api/status");
+            None
+        },
+        Some,
+    )
 }
 
 #[cfg(test)]
@@ -84,6 +115,7 @@ mod tests {
             reload_tx: None,
             setup_done,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 
@@ -140,6 +172,9 @@ pub(super) async fn api_config_raw_put(
 
     // Write the config
     let config_path = state.config_dir.join("config.toml");
+    state
+        .checkpoint_config_before_write("raw write config.toml")
+        .await;
     tokio::fs::write(&config_path, &body).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -215,6 +250,9 @@ pub(super) async fn api_config_patch(
         bad_request(e)
     })?;
 
+    state
+        .checkpoint_config_before_write("patch config.toml")
+        .await;
     crate::util::fs::atomic_write(&config_path, &patched)
         .await
         .map_err(|e| {
@@ -430,6 +468,9 @@ pub(super) async fn api_complete_setup(
 
     // Write providers.toml first (config validation reads it from disk)
     let providers_path = state.config_dir.join("providers.toml");
+    state
+        .checkpoint_config_before_write("complete setup: providers.toml + config.toml")
+        .await;
     tokio::fs::write(&providers_path, &body.providers)
         .await
         .map_err(|e| {

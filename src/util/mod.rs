@@ -14,7 +14,7 @@ mod xml;
 pub use error::FatalError;
 pub use frontmatter::{parse_frontmatter_md, validate_kebab_name};
 pub use secret_compare::secrets_match;
-pub use spawn::{panic_message, spawn_monitored, spawn_supervised};
+pub use spawn::{panic_message, spawn_monitored};
 pub use xml::xml_escape;
 
 /// Guide linked from owner notices about `HEARTBEAT.yml` pulses or scheduled

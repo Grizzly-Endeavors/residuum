@@ -211,7 +211,16 @@ impl Subconscious {
             http,
             cfg.retry.clone(),
         ) {
-            Ok(p) => p,
+            Ok((provider, dropped)) => {
+                for fallback in &dropped {
+                    tracing::warn!(
+                        provider = %fallback.name,
+                        error = %fallback.error,
+                        "dropped an unbuildable fallback provider from the subconscious chain"
+                    );
+                }
+                provider
+            }
             Err(e) => {
                 tracing::error!(error = %e, "failed to build subconscious provider, subconscious disabled");
                 return std::sync::Arc::new(Self::disabled(layout.clone()));

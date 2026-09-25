@@ -72,6 +72,9 @@ pub(super) async fn api_agent_keys_set(
     State(state): State<ConfigApiState>,
     Json(req): Json<SetAgentKeyRequest>,
 ) -> Result<Json<SetAgentKeyResponse>, (StatusCode, String)> {
+    state
+        .checkpoint_config_before_write(format!("set agent key '{}'", req.name))
+        .await;
     AgentKeys::new(state.config_dir)
         .set(
             &req.name,
@@ -92,6 +95,9 @@ pub(super) async fn api_agent_keys_delete(
     State(state): State<ConfigApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteAgentKeyResponse>, (StatusCode, String)> {
+    state
+        .checkpoint_config_before_write(format!("delete agent key '{name}'"))
+        .await;
     AgentKeys::new(state.config_dir)
         .delete(&name, KeyCreator::User)
         .await
@@ -111,6 +117,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 

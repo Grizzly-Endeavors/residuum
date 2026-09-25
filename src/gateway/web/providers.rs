@@ -422,6 +422,9 @@ pub(super) async fn api_providers_raw_put(
     }
 
     let providers_path = state.config_dir.join("providers.toml");
+    state
+        .checkpoint_config_before_write("raw write providers.toml")
+        .await;
     tokio::fs::write(&providers_path, &body)
         .await
         .map_err(|e| {
@@ -501,6 +504,9 @@ pub(super) async fn api_providers_patch(
         bad_request(e)
     })?;
 
+    state
+        .checkpoint_config_before_write("patch providers.toml")
+        .await;
     crate::util::fs::atomic_write(&providers_path, &patched)
         .await
         .map_err(|e| {

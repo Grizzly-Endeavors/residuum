@@ -10,6 +10,9 @@
 mod ts_export {
     use ts_rs::TS;
 
+    use residuum::checkpoints::{
+        CheckpointDetail, CheckpointPage, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
+    };
     use residuum::gateway::protocol::{
         ArtifactSummary, ClientMessage, ServerMessage, SessionListResponse, WorkbenchInfo,
     };
@@ -34,6 +37,18 @@ mod ts_export {
         ArtifactSummary::export_all(&cfg).unwrap();
         // `GET /api/workbench/info` (its relay origins are exported with it).
         WorkbenchInfo::export_all(&cfg).unwrap();
+        // The checkpoints API: `GET /api/checkpoints` (its `CheckpointSummary`
+        // items and `CheckpointTrigger` are exported with it), `GET
+        // /api/checkpoints/{id}` (its `ChangedPath`/`ChangeKind` are exported
+        // with it), `GET /api/checkpoints/stats`, and the `POST
+        // .../restore`/`.../undo` responses. `RepoKind` is the `repo` query
+        // parameter/request-body field every checkpoints route takes.
+        CheckpointPage::export_all(&cfg).unwrap();
+        CheckpointDetail::export_all(&cfg).unwrap();
+        RepoStats::export_all(&cfg).unwrap();
+        RestoreOutcome::export_all(&cfg).unwrap();
+        UndoOutcome::export_all(&cfg).unwrap();
+        RepoKind::export_all(&cfg).unwrap();
 
         // Verify the generated files exist
         assert!(

@@ -105,6 +105,17 @@ pub(crate) struct SessionSpawnRequest {
     pub conversation_target: Option<ConversationTarget>,
 }
 
+/// Shared handles [`SessionRuntime::new`] stores as-is, grouped to keep its
+/// argument count down.
+pub(crate) struct SessionRuntimeHandles {
+    pub(crate) publisher: Publisher,
+    pub(crate) tz: chrono_tz::Tz,
+    pub(crate) messenger: Arc<AgentMessenger>,
+    /// Checkpoints the workspace at the start and end of every turn this
+    /// runtime drives. See `crate::checkpoints`.
+    pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+}
+
 /// Executes session turns with bounded concurrency, tracking each session's
 /// lifecycle in the registry and its record in the store.
 pub struct SessionRuntime {
@@ -119,6 +130,9 @@ pub struct SessionRuntime {
     /// `finish_run`. Ordinary live delivery goes through the registry
     /// directly and never touches this.
     messenger: Arc<AgentMessenger>,
+    /// Checkpoints the workspace at the start and end of every turn this
+    /// runtime drives. See `crate::checkpoints`.
+    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -130,6 +144,7 @@ struct RunEnv {
     publisher: Publisher,
     tz: chrono_tz::Tz,
     messenger: Arc<AgentMessenger>,
+    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 impl SessionRuntime {
@@ -140,18 +155,17 @@ impl SessionRuntime {
         store: Arc<SessionStore>,
         max_concurrent: usize,
         idle_timeouts: impl Into<IdleTimeouts>,
-        publisher: Publisher,
-        tz: chrono_tz::Tz,
-        messenger: Arc<AgentMessenger>,
+        handles: SessionRuntimeHandles,
     ) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             registry,
             store,
             idle_timeouts: idle_timeouts.into(),
-            publisher,
-            tz,
-            messenger,
+            publisher: handles.publisher,
+            tz: handles.tz,
+            messenger: handles.messenger,
+            checkpoints: handles.checkpoints,
         }
     }
 
@@ -208,6 +222,7 @@ impl SessionRuntime {
             publisher: self.publisher.clone(),
             tz: self.tz,
             messenger: Arc::clone(&self.messenger),
+            checkpoints: Arc::clone(&self.checkpoints),
         };
         let config = req.subagent_config;
 
@@ -750,6 +765,7 @@ async fn run_session(
                             store: &env.store,
                             publisher: &env.publisher,
                             registry: env.registry.as_ref(),
+                            checkpoints: &env.checkpoints,
                         };
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
                         run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
@@ -1178,6 +1194,7 @@ struct TurnCtx<'a> {
     /// Where this turn's model-call usage accumulates — see
     /// [`super::registry::SessionUsageSink`].
     registry: &'a SessionRegistry,
+    checkpoints: &'a crate::checkpoints::CheckpointEngine,
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -1207,6 +1224,13 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    ctx.checkpoints
+        .spawn_turn_start_checkpoint(turn_checkpoint_context(
+            ctx,
+            turn_id,
+            crate::checkpoints::CheckpointTrigger::TurnStart,
+            "outside edit before turn start".to_string(),
+        ));
 
     let result = execute_turn_outcome(ctx, recent_messages, kickoff, interrupt_rx).await;
 
@@ -1231,7 +1255,43 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    ctx.checkpoints
+        .spawn_turn_end_checkpoint(turn_checkpoint_context(
+            ctx,
+            turn_id,
+            crate::checkpoints::CheckpointTrigger::TurnEnd,
+            turn_end_summary(&result),
+        ));
     result
+}
+
+/// Build the checkpoint context for a session turn boundary.
+fn turn_checkpoint_context(
+    ctx: &TurnCtx<'_>,
+    turn_id: &str,
+    trigger: crate::checkpoints::CheckpointTrigger,
+    summary: String,
+) -> crate::checkpoints::CheckpointContext {
+    crate::checkpoints::CheckpointContext {
+        address: ctx.info.address.to_string(),
+        run_id: Some(ctx.info.run_id.clone()),
+        turn_id: Some(turn_id.to_string()),
+        trigger,
+        summary,
+    }
+}
+
+/// A short, one-line description of a turn's outcome, for the turn-end
+/// checkpoint's commit message.
+fn turn_end_summary(result: &(AgentResultStatus, String)) -> String {
+    match result {
+        (AgentResultStatus::Completed, summary) if !summary.is_empty() => {
+            truncate_prompt_preview(summary)
+        }
+        (AgentResultStatus::Completed, _) => "turn completed".to_string(),
+        (AgentResultStatus::Cancelled, _) => "turn stopped".to_string(),
+        (AgentResultStatus::Failed { error, .. }, _) => format!("turn failed: {error}"),
+    }
 }
 
 /// Execute the turn itself and classify how it ended. Split out of
@@ -1359,6 +1419,20 @@ mod tests {
     use super::super::subagent::test_memory_extras;
     use crate::bus::MessageEvent;
 
+    /// A throwaway checkpoint engine for tests that need a `SessionRuntime`
+    /// but don't exercise checkpointing behavior themselves.
+    fn test_checkpoints(dir: &std::path::Path) -> Arc<crate::checkpoints::CheckpointEngine> {
+        Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                dir.join("workspace"),
+                dir.join("config"),
+                &dir.join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        )
+    }
+
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
     /// subscriber for the `AgentResultEvent`s it publishes on completion.
     async fn test_runtime(
@@ -1386,9 +1460,12 @@ mod tests {
             store,
             max_concurrent,
             idle_timeouts,
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
         (runtime, sub)
     }
@@ -1923,9 +2000,12 @@ mod tests {
             store,
             max_concurrent,
             idle_timeouts,
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
         (runtime, sub, bus_handle)
     }
@@ -2288,9 +2368,12 @@ mod tests {
                 external: Duration::from_mins(1),
                 artifact: Duration::from_mins(1),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let address = SessionAddress::from("spawned-researcher-000t");
@@ -2708,9 +2791,12 @@ mod tests {
                 external: idle_window,
                 artifact: idle_window,
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let first = SessionAddress::from("spawned-first-0001");
@@ -3007,9 +3093,12 @@ mod tests {
                 external: idle_window,
                 artifact: idle_window,
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
         (runtime, sub)
     }
@@ -3210,9 +3299,12 @@ mod tests {
                 external: Duration::from_millis(50),
                 artifact: Duration::from_millis(50),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let address = SessionAddress::from("external-discord-output");
@@ -3262,9 +3354,12 @@ mod tests {
                 external: Duration::from_millis(50),
                 artifact: Duration::from_millis(50),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let address = SessionAddress::from("spawned-researcher-no-output");
