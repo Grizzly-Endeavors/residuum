@@ -21,7 +21,7 @@
   import { userErrorMessage } from "../../lib/errors";
   import { Icon } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
-  import ConfirmButton from "../ConfirmButton.svelte";
+  import { notifyWithUndo } from "../../lib/undo";
 
   const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
@@ -133,7 +133,12 @@
   async function handleRevokeKey(name: string) {
     try {
       await revokeA2aKey(name);
-      toast.success(`Revoked ${name}. It can no longer reach this agent.`);
+      notifyWithUndo(
+        `Revoked ${name}. It can no longer reach this agent.`,
+        "config",
+        "a2a-keys.toml",
+        loadKeys,
+      );
       await loadKeys();
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: `Couldn't revoke ${name}.` }));
@@ -429,7 +434,13 @@
             <span class="agent-key-desc">{key.description}</span>
           {/if}
         </div>
-        <ConfirmButton onConfirm={() => handleRevokeKey(key.name)} title="Revoke {key.name}" />
+        <button
+          class="btn btn-sm btn-danger"
+          onclick={() => handleRevokeKey(key.name)}
+          title="Revoke {key.name}"
+        >
+          Revoke
+        </button>
       </div>
     {/each}
 

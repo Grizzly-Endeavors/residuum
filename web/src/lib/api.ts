@@ -34,6 +34,12 @@ import type {
   ArtifactSummary,
   PulseInfo,
   ActionInfo,
+  CheckpointPage,
+  CheckpointDetail,
+  RepoStats,
+  RestoreOutcome,
+  UndoOutcome,
+  RepoKind,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -594,6 +600,120 @@ export async function validateWorkspaceFile(path: string, content: string): Prom
   } catch {
     return [];
   }
+}
+
+/** Delete a workspace file. Throws `ApiError` (404 if already gone). */
+export async function deleteWorkspaceFile(path: string): Promise<void> {
+  await apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Move or rename a workspace file. Throws `ApiError` (409 if `to` exists and `overwrite` isn't set). */
+export async function moveWorkspaceFile(
+  from: string,
+  to: string,
+  overwrite = false,
+): Promise<void> {
+  await apiFetch<unknown>("/api/workspace/move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to, overwrite }),
+  });
+}
+
+// ── Checkpoints API wrappers ─────────────────────────────────────────
+
+/**
+ * One page of checkpoints, newest first. `path` restricts to checkpoints
+ * that changed it; `turnId` restricts to a single turn's checkpoints (its
+ * turn-start/turn-end pair); `before`/`limit` page. Never cached — the
+ * list changes on every turn and action.
+ */
+export async function fetchCheckpoints(query: {
+  repo: RepoKind;
+  path?: string;
+  turnId?: string;
+  before?: string;
+  limit?: number;
+}): Promise<CheckpointPage> {
+  const params = new URLSearchParams({ repo: query.repo });
+  if (query.path) params.set("path", query.path);
+  if (query.turnId) params.set("turn_id", query.turnId);
+  if (query.before) params.set("before", query.before);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  return apiFetch<CheckpointPage>(`/api/checkpoints?${params}`);
+}
+
+/** On-disk size, checkpoint count, and oldest checkpoint for a repository. */
+export async function fetchCheckpointStats(repo: RepoKind): Promise<RepoStats> {
+  return apiFetch<RepoStats>(`/api/checkpoints/stats?repo=${repo}`);
+}
+
+/** A checkpoint's metadata plus the paths it changed. */
+export async function fetchCheckpointDetail(id: string, repo: RepoKind): Promise<CheckpointDetail> {
+  return apiFetch<CheckpointDetail>(`/api/checkpoints/${encodeURIComponent(id)}?repo=${repo}`);
+}
+
+/** Unified diff for one file at a checkpoint, `null` if it didn't change there. */
+export async function fetchCheckpointDiff(
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<string | null> {
+  const data = await apiFetch<{ diff: string | null }>(
+    `/api/checkpoints/${encodeURIComponent(id)}/diff?repo=${repo}&path=${encodeURIComponent(path)}`,
+  );
+  return data.diff;
+}
+
+/** A file's raw text content at a checkpoint. Throws `ApiError` (404 if it's a directory or absent there). */
+export async function fetchCheckpointFile(
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<string> {
+  return apiFetchText(
+    `/api/checkpoints/${encodeURIComponent(id)}/file?repo=${repo}&path=${encodeURIComponent(path)}`,
+  );
+}
+
+/** Restore `path` to its content at checkpoint `id`. Checkpoints the result, so it can itself be undone. */
+export async function restoreCheckpoint(
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<RestoreOutcome> {
+  return apiFetch<RestoreOutcome>(`/api/checkpoints/${encodeURIComponent(id)}/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo, path }),
+  });
+}
+
+/** Undo everything checkpoint `id` changed, skipping any path changed again since. */
+export async function undoCheckpoint(id: string, repo: RepoKind): Promise<UndoOutcome> {
+  return apiFetch<UndoOutcome>(`/api/checkpoints/${encodeURIComponent(id)}/undo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo }),
+  });
+}
+
+/**
+ * Restore `path` from the most recent checkpoint in `repo` — the pre-action
+ * snapshot a destructive Settings/workspace action just took (checkpointing
+ * happens synchronously before the action's own write, so it's already the
+ * repo's tip by the time that action's request resolves). Used to back a
+ * single-click destructive action's toast with a direct "Undo" instead of a
+ * confirm step. Returns `null` (rather than throwing) if there's no
+ * checkpoint to restore from, so callers can degrade to a plain toast.
+ */
+export async function undoLastAction(repo: RepoKind, path: string): Promise<RestoreOutcome | null> {
+  const page = await fetchCheckpoints({ repo, limit: 1 });
+  const last = page.items[0];
+  if (!last) return null;
+  return restoreCheckpoint(last.id, repo, path);
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────

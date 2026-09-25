@@ -28,19 +28,50 @@
 
 .notif-toast {
   pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
   max-width: min(440px, calc(100vw - 64px));
-  padding: var(--s-3) var(--s-4);
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--elev-3);
+  animation: notif-toast-emerge var(--dur-default) var(--ease-out-stone) forwards;
+}
+
+.notif-toast-message {
+  flex: 1;
+  padding: var(--s-1) 0;
+  background: transparent;
+  border: none;
   color: var(--text);
   font-family: var(--font-body);
   font-size: var(--fs-md);
   line-height: 1.5;
   text-align: left;
   cursor: pointer;
-  box-shadow: var(--elev-3);
-  animation: notif-toast-emerge var(--dur-default) var(--ease-out-stone) forwards;
+}
+
+.notif-toast-action {
+  flex-shrink: 0;
+  padding: var(--s-1) var(--s-3);
+  background: transparent;
+  border: 1px solid var(--vein-dim);
+  border-radius: var(--radius-sm);
+  color: var(--vein-bright);
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.notif-toast-action:hover {
+  background: var(--vein-faint);
+  border-color: var(--vein);
 }
 
 .notif-toast-success {
@@ -49,6 +80,9 @@
 
 .notif-toast-error {
   border-color: rgba(192, 57, 43, 0.5);
+}
+
+.notif-toast-error .notif-toast-message {
   color: #e8a0a0;
 }
 
@@ -288,10 +322,6 @@
 
 .notif-dropdown-clear:hover {
   color: var(--text);
-}
-
-.notif-dropdown-clear.confirm {
-  color: var(--error);
 }
 
 @media (max-width: 600px) {

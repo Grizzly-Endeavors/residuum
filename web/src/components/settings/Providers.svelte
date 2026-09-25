@@ -16,7 +16,7 @@
     type ModelEntry,
   } from "../../lib/models";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
-  import ConfirmButton from "../ConfirmButton.svelte";
+  import { toast } from "../../lib/toast.svelte";
 
   let {
     providers = $bindable(),
@@ -158,7 +158,14 @@
   }
 
   function removeProvider(idx: number) {
-    providers.splice(idx, 1);
+    const [removed] = providers.splice(idx, 1);
+    if (!removed) return;
+    toast.success(`Removed ${removed.name || "provider"}.`, {
+      label: "Undo",
+      onClick: () => {
+        providers.splice(idx, 0, removed);
+      },
+    });
   }
 
   function providerNameOptions(): string[] {
@@ -279,13 +286,14 @@
             </div>
           {/if}
         </div>
-        <ConfirmButton
+        <button
+          type="button"
           class="provider-remove-btn"
-          label="✕"
-          armedLabel="Remove?"
           title="Remove provider"
-          onConfirm={() => removeProvider(i)}
-        />
+          onclick={() => removeProvider(i)}
+        >
+          ✕
+        </button>
       </div>
     {/each}
 
