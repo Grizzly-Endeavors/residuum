@@ -31,6 +31,10 @@ pub struct ToolRegistry {
     /// Agent key store injected into the `exec` tool at registration, and
     /// the source of the redactor applied to every tool result.
     agent_keys: Option<SharedAgentKeys>,
+    /// Checkpoint engine injected into `exec` (for `store_output_as`) at
+    /// registration. `None` means minting a key through `exec` isn't
+    /// checkpointed (matches `agent_keys: None`'s "not available" story).
+    checkpoints: Option<Arc<crate::checkpoints::CheckpointEngine>>,
 }
 
 impl Default for ToolRegistry {
@@ -134,6 +138,7 @@ impl ToolRegistry {
             tools: Vec::new(),
             tools_path: None,
             agent_keys: None,
+            checkpoints: None,
         }
     }
 
@@ -152,6 +157,14 @@ impl ToolRegistry {
     /// tool can expose and mint keys.
     pub fn set_agent_keys(&mut self, agent_keys: SharedAgentKeys) {
         self.agent_keys = Some(agent_keys);
+    }
+
+    /// Set the checkpoint engine injected into the `exec` tool, so minting a
+    /// key through `store_output_as` checkpoints the config repo first.
+    ///
+    /// Call before [`register_defaults`](Self::register_defaults).
+    pub fn set_checkpoints(&mut self, checkpoints: Arc<crate::checkpoints::CheckpointEngine>) {
+        self.checkpoints = Some(checkpoints);
     }
 
     /// The redactor for every current agent-key value; empty when no key
@@ -252,15 +265,27 @@ impl ToolRegistry {
         self.register(Box::new(exec::ExecTool::new(
             self.tools_path.clone(),
             self.agent_keys.clone(),
+            self.checkpoints.clone(),
         )));
     }
 
     /// Register agent key tools (`agent_keys_list`, `agent_key_delete`).
-    pub fn register_agent_key_tools(&mut self, keys: SharedAgentKeys) {
+    ///
+    /// `checkpoints` is checkpointed before a delete, so a user-visible
+    /// key deletion (including one a future change lets the agent make on
+    /// the user's own keys) can be undone.
+    pub fn register_agent_key_tools(
+        &mut self,
+        keys: SharedAgentKeys,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
         self.register(Box::new(agent_keys::AgentKeysListTool::new(Arc::clone(
             &keys,
         ))));
-        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(keys)));
+        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(
+            keys,
+            checkpoints,
+        )));
     }
 
     /// Register the `memory_search` tool with a shared hybrid searcher.
@@ -472,10 +497,11 @@ impl ToolRegistry {
         let mut registry = Self::new();
         registry.set_tools_path(tools_path);
         registry.set_agent_keys(Arc::clone(&agent_keys));
+        registry.set_checkpoints(Arc::clone(&checkpoints));
 
         // Core I/O tools
         registry.register_defaults(tracker, path_policy);
-        registry.register_agent_key_tools(agent_keys);
+        registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
 
         // Skill tools: activate, deactivate
         registry.register_skill_tools(Arc::clone(&skill_state));
