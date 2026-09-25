@@ -32,6 +32,7 @@ function session(
     usage: { input_tokens: 0, output_tokens: 0, context_tokens: null },
     outcome: null,
     error: null,
+    error_details: null,
     overlap: null,
   };
 }

@@ -311,15 +311,24 @@ async fn shutdown_adapter(
 pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
 
+    // Consumed once, up front: whether this specific reload is the one the
+    // agent's own `write_file`/`edit_file` call to config.toml/providers.toml
+    // caused — see `ConfigWriteWatch`. Every exit path below delivers the
+    // same text it already publishes as a user notice into the agent's own
+    // transcript too, when this is `true`.
+    let deliver_to_agent = rt
+        .config_reload_tracker
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Root);
+
     let new_cfg = match Config::load_at(&rt.config_dir) {
         Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
-            publish_notice(
-                &rt.publisher,
-                format!("config reload failed (keeping current config): {err}"),
-            )
-            .await;
+            let message = format!("config reload failed (keeping current config): {err}");
+            publish_notice(&rt.publisher, message.clone()).await;
+            if deliver_to_agent {
+                rt.agent.inject_system_message(message);
+            }
             return IdleAction::None;
         }
     };
@@ -337,11 +346,11 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         // changed — worth saving as last-known-good too, in case the
         // previous save predates a since-reverted edit.
         last_known_good::save(&rt.config_dir);
-        publish_notice(
-            &rt.publisher,
-            "configuration reloaded: no changes detected".to_string(),
-        )
-        .await;
+        let message = "configuration reloaded: no changes detected".to_string();
+        publish_notice(&rt.publisher, message.clone()).await;
+        if deliver_to_agent {
+            rt.agent.inject_system_message(message);
+        }
         tracing::info!("config reload: no changes detected");
         return IdleAction::None;
     }
@@ -385,7 +394,11 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     // exactly what "last-known-good" means.
     last_known_good::save(&rt.config_dir);
 
-    publish_notice(&rt.publisher, format!("configuration reloaded: {summary}")).await;
+    let message = format!("configuration reloaded: {summary}");
+    publish_notice(&rt.publisher, message.clone()).await;
+    if deliver_to_agent {
+        rt.agent.inject_system_message(message);
+    }
     tracing::info!(changes = %summary, "configuration reloaded successfully");
 
     if diff.idle_changed {
@@ -454,7 +467,12 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
     reload_web_search(rt, new_cfg).await;
     reload_memory_thresholds(rt, new_cfg).await;
     rt.pulse_enabled = new_cfg.pulse_enabled;
-    rt.subconscious = crate::subconscious::Subconscious::build(new_cfg, &rt.layout, http_client);
+    rt.subconscious = crate::subconscious::Subconscious::build(
+        new_cfg,
+        &rt.layout,
+        http_client,
+        rt.publisher.clone(),
+    );
     tracing::debug!(
         enabled = rt.subconscious.enabled(),
         "subconscious rebuilt from new config"
@@ -535,6 +553,8 @@ fn build_spawn_context(
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
         checkpoints: Arc::clone(&rt.checkpoints),
+        bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
+        ),
     })
 }
 
@@ -553,7 +573,7 @@ async fn reload_providers(
         new_cfg,
         rt.tz,
         http_client,
-        rt.publisher.clone(),
+        &rt.publisher,
         &mut degradations,
     ) {
         Ok(components) => {

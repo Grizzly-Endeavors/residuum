@@ -14,6 +14,7 @@ pub use embedding::{EmbeddingProvider, EmbeddingResponse};
 pub use error::{FailureDescription, InferenceError, describe_turn_failure};
 pub(crate) use factory::{
     DroppedFallback, build_provider_chain, build_provider_chain_with_notices,
+    build_provider_chain_with_shared_notices,
 };
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use types::{

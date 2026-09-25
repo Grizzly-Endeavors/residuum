@@ -322,6 +322,7 @@ function completeSession(
   session: MockSession,
   status: "completed" | "cancelled" | "failed",
   error: string | null,
+  errorDetails: string | null = null,
 ) {
   setSessionState(broadcast, session, "completing");
   setTimeout(() => {
@@ -336,6 +337,7 @@ function completeSession(
       run_id: session.run_id,
       status,
       error,
+      error_details: errorDetails,
       episode_id: session.episode_id,
     });
   }, 800);
@@ -537,13 +539,20 @@ function createState(): MockState {
       ],
     ]),
     a2aKeys: new Map([
-      ["laptop", { description: "My other instance, before siblings exist", created_at: new Date(Date.now() - 86400000 * 3).toISOString() }],
+      [
+        "laptop",
+        {
+          description: "My other instance, before siblings exist",
+          created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+        },
+      ],
     ]),
-    a2aAgentsJson: JSON.stringify(
-      { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
-      null,
-      2,
-    ) + "\n",
+    a2aAgentsJson:
+      JSON.stringify(
+        { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
+        null,
+        2,
+      ) + "\n",
     configToml: loadAsset("config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
     mcpJson: loadAsset("mcp.example.json"),
@@ -1131,7 +1140,11 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
     try {
       // ── Status & system ────────────────────────────────────────────────
       if (path === "/api/status" && method === "GET") {
-        json(res, 200, { mode: state.mode, version: MOCK_RESIDUUM_VERSION, features: MOCK_FEATURES });
+        json(res, 200, {
+          mode: state.mode,
+          version: MOCK_RESIDUUM_VERSION,
+          features: MOCK_FEATURES,
+        });
         return;
       }
 
@@ -1257,7 +1270,12 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         state.broadcast({ type: "session_started", session });
         setTimeout(
           () =>
-            runSessionTurn(sessions, state.broadcast, session, `Working on it: ${prompt.slice(0, 80)}.`),
+            runSessionTurn(
+              sessions,
+              state.broadcast,
+              session,
+              `Working on it: ${prompt.slice(0, 80)}.`,
+            ),
           400,
         );
         json(res, 202, { address: session.address });

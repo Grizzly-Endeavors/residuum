@@ -336,9 +336,17 @@ pub(crate) struct GatewayRuntime {
     pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
     /// Workspace and config checkpoint repositories.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Tracks the agent's own config-file writes so the reload each one
+    /// triggers can report back into its transcript instead of only
+    /// reaching the user's interfaces.
+    pub config_reload_tracker: crate::tools::SharedConfigReloadTracker,
     /// This instance's current A2A public URL, read by the web settings API. `None` when A2A is disabled.
     pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Polls `config.toml`/`providers.toml` for changes made outside the web
+    /// config API (the agent's own `write_file`/`edit_file`, or a manual
+    /// edit) and signals a root reload.
+    pub root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// The workspace change feed (one recursive watcher over the workspace).
     pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     /// Whether the change feed is running; handed to the HTTP server's state

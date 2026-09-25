@@ -9,6 +9,7 @@ use std::ops::Range;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::read::format_numbered_line;
@@ -31,6 +32,9 @@ pub struct EditTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
     diagnostics_paths: DiagnosticsPaths,
+    /// Set only for main's own tool registry — see `ConfigWriteWatch`'s doc
+    /// comment for why a session's registry never gets one.
+    config_watch: Option<ConfigWriteWatch>,
 }
 
 impl EditTool {
@@ -47,7 +51,16 @@ impl EditTool {
             tracker,
             policy,
             diagnostics_paths,
+            config_watch: None,
         }
+    }
+
+    /// Attach a config-write watch so an edit to a recognized config path
+    /// marks the reload it triggers for later delivery back to the agent.
+    #[must_use]
+    pub fn with_config_watch(mut self, config_watch: ConfigWriteWatch) -> Self {
+        self.config_watch = Some(config_watch);
+        self
     }
 }
 
@@ -525,6 +538,9 @@ impl Tool for EditTool {
 
         if let Err(e) = tokio::fs::write(path, &outcome.text).await {
             return Ok(ToolResult::error(format!("failed to write {path}: {e}")));
+        }
+        if let Some(watch) = &self.config_watch {
+            watch.note_write(std::path::Path::new(path));
         }
 
         let mut output = format_success(path, &outcome);
