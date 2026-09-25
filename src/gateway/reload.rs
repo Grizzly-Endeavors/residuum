@@ -780,12 +780,28 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
 }
 
 /// Rescan skill directories.
+///
+/// A directory the rescan couldn't read is already skipped rather than
+/// failing the whole rescan (see `SkillIndex::scan`); this surfaces each
+/// skip as a notice.
 async fn reload_skills(rt: &mut GatewayRuntime) {
     let mut skill_guard = rt.skill_state.lock().await;
     if let Err(err) = skill_guard.rescan().await {
         tracing::warn!(error = %err, "skill rescan failed during reload");
-    } else {
-        tracing::debug!("skills rescanned");
+        return;
+    }
+    tracing::debug!("skills rescanned");
+    let skipped: Vec<(std::path::PathBuf, String)> = skill_guard.index().skipped_dirs().to_vec();
+    drop(skill_guard);
+    for (dir, err) in skipped {
+        publish_notice(
+            &rt.publisher,
+            format!(
+                "Skipped your skills directory \"{}\" — it couldn't be read ({err}). Skills in your other directories were still rescanned.",
+                dir.display()
+            ),
+        )
+        .await;
     }
 }
 

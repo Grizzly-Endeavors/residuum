@@ -12,6 +12,12 @@ use super::{
 #[derive(Debug, Clone, Default)]
 pub struct SkillIndex {
     entries: Vec<SkillIndexEntry>,
+    /// Directories that couldn't be read during the scan that built this
+    /// index (permission errors, etc. — a missing directory is not an
+    /// error and isn't recorded here), as `(dir, error message)` pairs. The
+    /// rest of the scan still ran; callers with a publisher in scope
+    /// surface these as a notice.
+    skipped: Vec<(PathBuf, String)>,
 }
 
 impl SkillIndex {
@@ -19,7 +25,10 @@ impl SkillIndex {
     ///
     /// For each subdirectory containing a `SKILL.md`, parses the frontmatter
     /// and builds an index entry. Invalid or missing files are warned and
-    /// skipped. Duplicate names keep the first found.
+    /// skipped. Duplicate names keep the first found. A directory that
+    /// cannot be read (e.g. a permissions error) is skipped with a warning
+    /// — see [`Self::skipped_dirs`] — rather than discarding the rest of
+    /// the scan; a missing directory is skipped silently.
     ///
     /// # Arguments
     /// - `dirs`: Skill directories in priority order. `dirs[0]` is treated as
@@ -29,12 +38,16 @@ impl SkillIndex {
     ///   source tagging.
     ///
     /// # Errors
-    /// Returns an error if a directory cannot be read (except `NotFound`,
-    /// which is silently skipped).
+    /// Never returns `Err` today — every failure a scan can hit (an
+    /// unreadable directory, a bad `SKILL.md`) is degraded internally and
+    /// reported through [`Self::skipped_dirs`] or a warning instead. Kept
+    /// as a `Result` so a future caller-facing failure mode doesn't need
+    /// another signature change.
     #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
     pub async fn scan(dirs: &[PathBuf]) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
+        let mut skipped = Vec::new();
 
         // Workspace is dirs[0], user-global are the rest
         for (i, dir) in dirs.iter().enumerate() {
@@ -44,11 +57,26 @@ impl SkillIndex {
                 SkillSource::UserGlobal
             };
             tracing::debug!(dir = %dir.display(), source = %source, "scanning skill dir");
-            scan_skill_directory(dir, source, &mut entries, &mut seen_names).await?;
+            if let Err(err) = scan_skill_directory(dir, source, &mut entries, &mut seen_names).await
+            {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %err,
+                    "skipping unreadable skills directory, keeping the rest of the scan"
+                );
+                skipped.push((dir.clone(), err.to_string()));
+            }
         }
 
         tracing::info!(total = entries.len(), "skill index built");
-        Ok(Self { entries })
+        Ok(Self { entries, skipped })
+    }
+
+    /// Directories skipped during the scan that built this index because
+    /// they couldn't be read, as `(dir, error message)` pairs.
+    #[must_use]
+    pub fn skipped_dirs(&self) -> &[(PathBuf, String)] {
+        &self.skipped
     }
 
     /// Look up a skill by name (case-insensitive).
@@ -438,6 +466,7 @@ mod tests {
     #[test]
     fn find_by_name_case_insensitive() {
         let index = SkillIndex {
+            skipped: Vec::new(),
             entries: vec![SkillIndexEntry {
                 name: "my-skill".to_string(),
                 description: "A skill".to_string(),
@@ -467,6 +496,7 @@ mod tests {
     #[test]
     fn format_for_prompt_with_entries() {
         let index = SkillIndex {
+            skipped: Vec::new(),
             entries: vec![SkillIndexEntry {
                 name: "pdf-processing".to_string(),
                 description: "Extracts text from PDFs".to_string(),
@@ -502,6 +532,7 @@ mod tests {
     #[test]
     fn format_for_prompt_escapes_xml_special_chars() {
         let index = SkillIndex {
+            skipped: Vec::new(),
             entries: vec![SkillIndexEntry {
                 name: "my-skill".to_string(),
                 description: "Handles <tags> & \"quotes\"".to_string(),

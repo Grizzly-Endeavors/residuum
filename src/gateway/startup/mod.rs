@@ -209,9 +209,23 @@ async fn init_action_store(
 }
 
 /// Scan for skills and return the shared state handle.
+///
+/// A directory `SkillIndex::scan` couldn't read is already skipped rather
+/// than failing the whole scan; this only turns each skip into a
+/// degradation for the caller to report. A scan failure with no partial
+/// index at all (not currently possible, but the API still allows it)
+/// falls back to an empty index with a warning.
 async fn init_skills(cfg: &Config, degradations: &mut Vec<String>) -> SharedSkillState {
     let skill_index = match SkillIndex::scan(&cfg.skills.dirs).await {
-        Ok(idx) => idx,
+        Ok(idx) => {
+            for (dir, err) in idx.skipped_dirs() {
+                degradations.push(format!(
+                    "your skills directory \"{}\" couldn't be read and was skipped, but skills in your other directories still loaded: {err}",
+                    dir.display()
+                ));
+            }
+            idx
+        }
         Err(err) => {
             tracing::warn!(error = %err, "skill index degraded: starting empty");
             degradations.push(format!(
