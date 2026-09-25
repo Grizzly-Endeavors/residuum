@@ -96,6 +96,9 @@ pub(crate) struct SpawnContext {
     /// Outbound A2A tasks this instance started on other agents, shared with
     /// main.
     pub(crate) a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs the `workspace_history`/`workspace_restore` tools.
+    pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -247,6 +250,7 @@ pub(crate) async fn build_spawn_resources(
         agent_keys: Arc::clone(&ctx.agent_keys),
         a2a_hub: Arc::clone(&ctx.a2a_hub),
         a2a_tracker: Arc::clone(&ctx.a2a_tracker),
+        checkpoints: Arc::clone(&ctx.checkpoints),
     };
 
     build_subagent_resources(

@@ -15,6 +15,7 @@ use super::{SharedToolsPath, Tool, ToolError, ToolResult};
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
+use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
 
 /// Maximum output size from a command (100KB).
@@ -32,6 +33,9 @@ pub struct ExecTool {
     /// Agent key store backing the `keys` and `store_output_as` parameters.
     /// `None` makes both parameters fail with an explanation.
     agent_keys: Option<SharedAgentKeys>,
+    /// Checkpoint engine, checkpointed before `store_output_as` mints a new
+    /// agent key. `None` means minting isn't checkpointed.
+    checkpoints: Option<Arc<CheckpointEngine>>,
 }
 
 /// Where a minted key goes: the `store_output_as` parameter.
@@ -48,10 +52,15 @@ impl ExecTool {
     /// process `PATH` unchanged. Pass the agent key store to enable the
     /// `keys` and `store_output_as` parameters.
     #[must_use]
-    pub fn new(tools_path: Option<SharedToolsPath>, agent_keys: Option<SharedAgentKeys>) -> Self {
+    pub fn new(
+        tools_path: Option<SharedToolsPath>,
+        agent_keys: Option<SharedAgentKeys>,
+        checkpoints: Option<Arc<CheckpointEngine>>,
+    ) -> Self {
         Self {
             tools_path,
             agent_keys,
+            checkpoints,
         }
     }
 
@@ -156,6 +165,15 @@ impl ExecTool {
         let Some(keys) = &self.agent_keys else {
             return ToolResult::error("agent keys are not available in this context");
         };
+
+        if let Some(checkpoints) = &self.checkpoints {
+            checkpoints
+                .checkpoint_config_before_write(CheckpointContext::system(
+                    CheckpointTrigger::PreConfigWrite,
+                    format!("exec minted agent key '{}'", target.name),
+                ))
+                .await;
+        }
 
         match keys
             .set(
@@ -694,7 +712,7 @@ mod tests {
         let handle: SharedToolsPath = std::sync::Arc::new(tokio::sync::RwLock::new(Some(path)));
 
         // With the handle, the bare binary name resolves.
-        let tool = ExecTool::new(Some(handle), None);
+        let tool = ExecTool::new(Some(handle), None, None);
         let result = tool
             .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
             .await
@@ -711,7 +729,7 @@ mod tests {
         );
 
         // Without the handle, the same bare name is not on PATH → fails.
-        let bare = ExecTool::new(None, None);
+        let bare = ExecTool::new(None, None, None);
         let missing = bare
             .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
             .await
@@ -727,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_simple_command() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let result = tool
             .execute(serde_json::json!({ "command": "echo hello" }))
             .await
@@ -742,7 +760,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_failing_command() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let result = tool
             .execute(serde_json::json!({ "command": "false" }))
             .await
@@ -763,7 +781,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_timeout() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let result = tool
             .execute(serde_json::json!({
                 "command": "sleep 10",
@@ -820,7 +838,7 @@ mod tests {
     async fn exec_timeout_kills_the_whole_process_tree() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("pid");
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
 
         // The shell's own pid doubles as the process group id (see
         // `shell_command`), so reading it back is enough to check the
@@ -847,7 +865,7 @@ mod tests {
     async fn exec_cancellation_kills_the_process_and_returns_partial_output() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("pid");
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let cancel = CancellationToken::new();
 
         let command = format!(
@@ -885,14 +903,14 @@ mod tests {
 
     #[tokio::test]
     async fn exec_missing_command() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing command should return ToolError");
     }
 
     #[tokio::test]
     async fn exec_stderr_output() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let result = tool
             .execute(serde_json::json!({ "command": "echo error >&2" }))
             .await
@@ -908,7 +926,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_passes_quotes_through_to_the_shell() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         let result = tool
             .execute(serde_json::json!({ "command": "echo \"hello  world\"" }))
             .await
@@ -929,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_output_truncated() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         // Generate more than 100KB of output
         let command = if cfg!(windows) {
             "powershell -NoProfile -Command \"'x' * 204800\""
@@ -963,7 +981,7 @@ mod tests {
             keys.set("api_key", "sk-test-abcdef123", None, KeyCreator::User)
                 .await
                 .unwrap();
-            (ExecTool::new(None, Some(Arc::clone(&keys))), keys)
+            (ExecTool::new(None, Some(Arc::clone(&keys)), None), keys)
         }
 
         #[tokio::test]
@@ -1028,7 +1046,7 @@ mod tests {
 
         #[tokio::test]
         async fn keys_without_store_explain_unavailability() {
-            let result = ExecTool::new(None, None)
+            let result = ExecTool::new(None, None, None)
                 .execute(serde_json::json!({ "command": "true", "keys": ["api_key"] }))
                 .await
                 .unwrap();
@@ -1078,6 +1096,54 @@ mod tests {
                 snap.store.creator("minted"),
                 Some(KeyCreator::Agent),
                 "minted keys are agent-owned"
+            );
+        }
+
+        #[tokio::test]
+        async fn store_output_as_checkpoints_the_config_repo_before_storing() {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = AgentKeys::new_shared(dir.path());
+            let checkpoints_dir = dir.path().join("checkpoints");
+            let engine = std::sync::Arc::new(
+                crate::checkpoints::CheckpointEngine::new(
+                    dir.path().join("workspace"),
+                    dir.path().to_path_buf(),
+                    &checkpoints_dir,
+                    None,
+                )
+                .unwrap(),
+            );
+            // A first write with nothing preexisting has nothing to
+            // checkpoint (the pre-write snapshot would be empty either way),
+            // so store a first key without an engine attached, then attach
+            // one and store a second key -- that second write's pre-write
+            // checkpoint has real prior state (the first key) to capture.
+            keys.set("first", "value-one-abc123", None, KeyCreator::Agent)
+                .await
+                .unwrap();
+            let tool = ExecTool::new(None, Some(keys), Some(std::sync::Arc::clone(&engine)));
+
+            let result = tool
+                .execute(serde_json::json!({
+                    "command": "echo minted-token-checkpoint",
+                    "store_output_as": { "name": "minted" }
+                }))
+                .await
+                .unwrap();
+            assert!(!result.is_error, "store should succeed: {}", result.output);
+
+            let page = engine
+                .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                page.items.len(),
+                1,
+                "minting a key through exec should checkpoint the config repo's prior state"
+            );
+            assert_eq!(
+                page.items.first().unwrap().trigger,
+                crate::checkpoints::CheckpointTrigger::PreConfigWrite
             );
         }
 
@@ -1153,7 +1219,7 @@ mod tests {
 
     #[test]
     fn exec_tool_definition() {
-        let tool = ExecTool::new(None, None);
+        let tool = ExecTool::new(None, None, None);
         assert_eq!(tool.name(), "exec", "tool name should match");
     }
 }

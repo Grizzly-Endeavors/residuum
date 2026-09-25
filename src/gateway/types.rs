@@ -328,6 +328,8 @@ pub(crate) struct GatewayRuntime {
     pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
     /// Outbound A2A tasks this instance started on other agents.
     pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     /// This instance's current A2A public URL, read by the web settings API. `None` when A2A is disabled.
     pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,

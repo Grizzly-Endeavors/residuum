@@ -1,12 +1,14 @@
 //! Agent key discovery and cleanup tools: `agent_keys_list`, `agent_key_delete`.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{Tool, ToolError, ToolResult, require_str};
 use crate::agent_keys::{AgentKeyError, KeyCreator, SharedAgentKeys};
+use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
 
 /// Lists agent keys: names, environment variables, creators, descriptions.
@@ -87,12 +89,13 @@ impl Tool for AgentKeysListTool {
 /// Deletes an agent key the agent itself created.
 pub struct AgentKeyDeleteTool {
     keys: SharedAgentKeys,
+    checkpoints: Arc<CheckpointEngine>,
 }
 
 impl AgentKeyDeleteTool {
     #[must_use]
-    pub fn new(keys: SharedAgentKeys) -> Self {
-        Self { keys }
+    pub fn new(keys: SharedAgentKeys, checkpoints: Arc<CheckpointEngine>) -> Self {
+        Self { keys, checkpoints }
     }
 }
 
@@ -123,6 +126,12 @@ impl Tool for AgentKeyDeleteTool {
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let name = require_str(&arguments, "name")?;
+        self.checkpoints
+            .checkpoint_config_before_write(CheckpointContext::system(
+                CheckpointTrigger::PreConfigWrite,
+                format!("agent deleted agent key '{name}'"),
+            ))
+            .await;
         match self.keys.delete(name, KeyCreator::Agent).await {
             Ok(()) => Ok(ToolResult::success(format!("deleted agent key '{name}'"))),
             Err(e @ (AgentKeyError::NotFound(_) | AgentKeyError::OwnedByUser(_))) => {
@@ -196,7 +205,10 @@ mod tests {
         keys.set("minted", "agent-value-123", None, KeyCreator::Agent)
             .await
             .unwrap();
-        let tool = AgentKeyDeleteTool::new(std::sync::Arc::clone(&keys));
+        let tool = AgentKeyDeleteTool::new(
+            std::sync::Arc::clone(&keys),
+            crate::checkpoints::test_engine(),
+        );
 
         let refused = tool
             .execute(serde_json::json!({ "name": "users" }))
@@ -217,5 +229,44 @@ mod tests {
         let snap = keys.snapshot().await.unwrap();
         assert!(snap.store.value("minted").is_none(), "minted key gone");
         assert!(snap.store.value("users").is_some(), "user key kept");
+    }
+
+    #[tokio::test]
+    async fn delete_checkpoints_the_config_repo_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = AgentKeys::new_shared(dir.path());
+        keys.set("minted", "agent-value-123", None, KeyCreator::Agent)
+            .await
+            .unwrap();
+        let engine = Arc::new(
+            CheckpointEngine::new(
+                dir.path().join("workspace"),
+                dir.path().to_path_buf(),
+                &dir.path().join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        );
+        let tool = AgentKeyDeleteTool::new(keys, Arc::clone(&engine));
+
+        let result = tool
+            .execute(serde_json::json!({ "name": "minted" }))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "delete should succeed: {}", result.output);
+
+        let page = engine
+            .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.len(),
+            1,
+            "deleting an agent key should checkpoint the config repo before the write"
+        );
+        assert_eq!(
+            page.items.first().unwrap().trigger,
+            CheckpointTrigger::PreConfigWrite
+        );
     }
 }

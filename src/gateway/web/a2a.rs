@@ -86,6 +86,9 @@ pub(super) async fn api_a2a_keys_create(
     State(state): State<ConfigApiState>,
     Json(req): Json<CreateA2aKeyRequest>,
 ) -> Result<Json<CreateA2aKeyResponse>, (StatusCode, String)> {
+    state
+        .checkpoint_config_before_write(format!("create a2a key '{}'", req.name))
+        .await;
     let token = A2aKeys::new(state.config_dir)
         .create(&req.name, req.description.as_deref())
         .await
@@ -101,6 +104,9 @@ pub(super) async fn api_a2a_keys_revoke(
     State(state): State<ConfigApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<RevokeA2aKeyResponse>, (StatusCode, String)> {
+    state
+        .checkpoint_config_before_write(format!("revoke a2a key '{name}'"))
+        .await;
     A2aKeys::new(state.config_dir)
         .revoke(&name)
         .await
@@ -481,6 +487,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 
