@@ -63,6 +63,9 @@ pub(super) async fn api_secrets_set(
     }
 
     let _guard = state.secret_lock.lock().await;
+    state
+        .checkpoint_config_before_write(format!("set secret '{}'", req.name))
+        .await;
 
     let config_dir = state.config_dir.clone();
     let name = req.name;
@@ -124,6 +127,9 @@ pub(super) async fn api_secrets_delete(
     State(state): State<ConfigApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteSecretResponse>, (StatusCode, String)> {
+    state
+        .checkpoint_config_before_write(format!("delete secret '{name}'"))
+        .await;
     let config_dir = state.config_dir.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -166,6 +172,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 

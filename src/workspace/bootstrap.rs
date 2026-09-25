@@ -92,6 +92,10 @@ const SYSTEM_REFS: &[(&str, &str)] = &[
         include_str!("../../assets/bundled-skills/residuum-system/references/memory-system.md"),
     ),
     (
+        "checkpoints.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/checkpoints.md"),
+    ),
+    (
         "heartbeats.md",
         include_str!("../../assets/bundled-skills/residuum-system/references/heartbeats.md"),
     ),

@@ -540,6 +540,7 @@ fn build_spawn_context(
         agent_keys: Arc::clone(&rt.agent_keys),
         a2a_hub: Arc::clone(&rt.a2a_hub),
         a2a_tracker: Arc::clone(&rt.a2a_tracker),
+        checkpoints: Arc::clone(&rt.checkpoints),
     })
 }
 
@@ -716,6 +717,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 reload_tx: Some(rt.reload_tx.clone()),
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                checkpoints: std::sync::Arc::clone(&rt.checkpoints),
             };
             let update_api_state = crate::gateway::web::update::UpdateApiState {
                 update_status: std::sync::Arc::clone(&rt.update_status),

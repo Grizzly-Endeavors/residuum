@@ -256,6 +256,7 @@ pub async fn build_subagent_resources(
         agent_keys,
         a2a_hub,
         a2a_tracker,
+        checkpoints,
     } = config;
 
     let (skill_state, skills_index) =
@@ -297,6 +298,7 @@ pub async fn build_subagent_resources(
         web_search_backend,
         a2a_hub,
         a2a_tracker,
+        checkpoints,
     });
 
     Ok(SubAgentResources {

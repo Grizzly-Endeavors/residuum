@@ -49,6 +49,15 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Fatal
     // During setup, workspace_dir defaults to config_dir/workspace since the user
     // hasn't configured a custom workspace yet.
     let workspace_dir = config_dir.join("workspace");
+    let checkpoints = Arc::new(
+        crate::checkpoints::CheckpointEngine::new(
+            workspace_dir.clone(),
+            config_dir.clone(),
+            &config_dir.join("checkpoints"),
+            None,
+        )
+        .map_err(|e| FatalError::Gateway(format!("failed to open checkpoint repositories: {e}")))?,
+    );
     let api_state = ConfigApiState {
         config_dir,
         workspace_dir,
@@ -56,6 +65,7 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Fatal
         reload_tx: None,
         setup_done: Some(Arc::clone(&setup_done_tx)),
         secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        checkpoints,
     };
 
     let app = web::config_api_router(api_state)

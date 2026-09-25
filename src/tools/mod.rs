@@ -23,6 +23,7 @@ pub mod skills;
 pub(crate) mod submit_feedback;
 pub(crate) mod switch_endpoint;
 pub(crate) mod web_fetch;
+pub mod workspace_checkpoints;
 mod write;
 
 pub use file_tracker::{FileTracker, SharedFileTracker};

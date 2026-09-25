@@ -291,6 +291,7 @@ struct RuntimeDeps {
     layout: WorkspaceLayout,
     a2a_hub: Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Build the scripted-provider queue/call-log and spawn the mini background
@@ -328,6 +329,7 @@ fn start_scripted_sessions(
         tracing_client_context,
         a2a_hub: deps.a2a_hub,
         a2a_tracker: deps.a2a_tracker,
+        checkpoints: deps.checkpoints,
         response_delay,
     };
     spawn_mini_background_listener(deps.bus_handle, mini_deps);
@@ -404,14 +406,26 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         idle_timeout_external: opts.idle_timeout,
         ..crate::config::BackgroundConfig::default()
     };
+    let checkpoints = Arc::new(
+        crate::checkpoints::CheckpointEngine::new(
+            layout.root().to_path_buf(),
+            workspace_dir.clone(),
+            &workspace_dir.join("checkpoints"),
+            None,
+        )
+        .unwrap(),
+    );
     let runtime = Arc::new(SessionRuntime::new(
         Arc::clone(&session_registry),
         Arc::clone(&session_store),
         8,
         &background_config,
-        bus_handle.publisher(),
-        chrono_tz::UTC,
-        Arc::clone(&messenger),
+        crate::background::runtime::SessionRuntimeHandles {
+            publisher: bus_handle.publisher(),
+            tz: chrono_tz::UTC,
+            messenger: Arc::clone(&messenger),
+            checkpoints: Arc::clone(&checkpoints),
+        },
     ));
 
     let a2a_hub = crate::a2a::A2aClientHub::new_shared();
@@ -434,6 +448,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
             layout: layout.clone(),
             a2a_hub,
             a2a_tracker,
+            checkpoints: Arc::clone(&checkpoints),
         },
         opts.response_delay,
     );
@@ -495,6 +510,7 @@ struct MiniListenerDeps {
     tracing_client_context: Arc<crate::tracing_service::ClientContext>,
     a2a_hub: Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
     response_delay: Duration,
 }
 
@@ -572,6 +588,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         web_search_backend: None,
         a2a_hub: Arc::clone(&deps.a2a_hub),
         a2a_tracker: Arc::clone(&deps.a2a_tracker),
+        checkpoints: Arc::clone(&deps.checkpoints),
     });
 
     SubAgentResources {

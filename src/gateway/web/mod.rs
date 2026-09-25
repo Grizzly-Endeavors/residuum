@@ -17,6 +17,7 @@ use super::ReloadSignal;
 pub(crate) mod a2a;
 mod agent_keys;
 pub(crate) mod artifact_identity;
+pub mod checkpoints;
 pub mod cloud;
 pub mod config;
 pub mod inbox;
@@ -62,6 +63,22 @@ pub(crate) struct ConfigApiState {
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
     /// Serializes secret store writes to prevent lost-update races.
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+}
+
+impl ConfigApiState {
+    /// Checkpoint the config repository (root `config.toml`/`providers.toml`
+    /// and the encrypted key stores) before a write to one of them. Never
+    /// fails or blocks the write — see `crate::checkpoints`.
+    pub(super) async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
+        self.checkpoints
+            .checkpoint_config_before_write(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                summary,
+            ))
+            .await;
+    }
 }
 
 /// Build the config API router.
@@ -310,6 +327,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(segment) = config::api_chat_history(
             State(state),
@@ -343,6 +361,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(totals) = config::api_usage(State(state)).await;
         assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
@@ -376,6 +395,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(loaded) = config::api_usage(State(state)).await;
         assert_eq!(loaded, totals);
@@ -393,6 +413,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(segment) = config::api_chat_history(
             State(state),
@@ -460,6 +481,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(segment) = config::api_chat_history(
             State(state),
@@ -526,6 +548,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         let Json(segment) = config::api_chat_history(
@@ -573,6 +596,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         let err = config::api_chat_history(
@@ -614,6 +638,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         let err = config::api_chat_history(
@@ -642,6 +667,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         // Set a secret

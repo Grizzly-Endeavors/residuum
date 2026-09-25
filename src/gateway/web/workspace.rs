@@ -762,7 +762,21 @@ pub(super) async fn api_workspace_raw_write(
         ));
     }
 
+    checkpoint_before_destructive_action(&state, &format!("raw write {}", query.path)).await;
     write_workspace_bytes(&state, &query.path, &body, &headers).await
+}
+
+/// Checkpoint the workspace before a destructive workspace API action
+/// (delete, overwrite, move/rename with overwrite). Never blocks or fails
+/// the action — see `crate::checkpoints`.
+async fn checkpoint_before_destructive_action(state: &ConfigApiState, summary: &str) {
+    state
+        .checkpoints
+        .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+            crate::checkpoints::CheckpointTrigger::PreAction,
+            summary,
+        ))
+        .await;
 }
 
 /// `DELETE /api/workspace/file` — delete a workspace file or directory.
@@ -842,6 +856,7 @@ pub(super) async fn api_workspace_delete(
             ));
         }
         refuse_if_dir_holds_internal_data(&path, relative).await?;
+        checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
         tokio::fs::remove_dir_all(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -852,6 +867,7 @@ pub(super) async fn api_workspace_delete(
         if let Some(conflict) = check_conditional_write(&path, &headers).await? {
             return Ok(conflict);
         }
+        checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
         tokio::fs::remove_file(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1064,6 +1080,8 @@ pub(super) async fn api_workspace_move(
 
     ready_move_destination(&to_path, to_relative, req.overwrite, from_metadata.is_dir()).await?;
 
+    checkpoint_before_destructive_action(&state, &format!("move {from_relative} to {to_relative}"))
+        .await;
     tokio::fs::rename(&from_path, &to_path).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1172,6 +1190,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
 
@@ -1540,6 +1559,7 @@ mod tests {
             reload_tx: Some(tx),
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         api_workspace_file_write(
@@ -1998,6 +2018,7 @@ mod tests {
             reload_tx: Some(tx),
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         api_workspace_delete(
@@ -2472,6 +2493,7 @@ mod tests {
             reload_tx: Some(tx),
             setup_done: None,
             secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         api_workspace_move(
