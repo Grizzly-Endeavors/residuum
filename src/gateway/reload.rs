@@ -501,6 +501,7 @@ fn build_spawn_context(
             ..CompletionOptions::default()
         },
         max_tool_iterations: new_cfg.agent.max_tool_iterations,
+        repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
@@ -819,10 +820,13 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         ));
     rt.agent
         .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
+    rt.agent
+        .set_repeat_call_guard(new_cfg.agent.repeat_call_guard);
     tracing::debug!(
         modify_mcp = new_cfg.agent.modify_mcp,
         modify_channels = new_cfg.agent.modify_channels,
         max_tool_iterations = ?new_cfg.agent.max_tool_iterations,
+        repeat_call_guard = ?new_cfg.agent.repeat_call_guard,
         "agent ability gates updated"
     );
 }

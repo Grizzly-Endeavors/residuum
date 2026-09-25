@@ -336,6 +336,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
             ..crate::inference::CompletionOptions::default()
         },
         max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
+        repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
         layout: inputs.layout.clone(),
         tz: inputs.tz,
         role_overrides: inputs.cfg.role_overrides.clone(),
@@ -491,6 +492,7 @@ fn web_search_mcp_entry(
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }),
         "tavily" => Some(crate::mcp::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
@@ -502,6 +504,7 @@ fn web_search_mcp_entry(
             )]),
             transport: crate::mcp::types::McpTransport::Stdio,
             headers: std::collections::HashMap::new(),
+            timeout_secs: None,
         }),
         _ => None,
     }
@@ -766,6 +769,7 @@ async fn build_tools_and_agent(
             provider: inputs.provider,
             options: inputs.options,
             max_tool_iterations: inputs.cfg.agent.max_tool_iterations,
+            repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
             tools,
             identity: inputs.identity,
             hop_counter: inputs.hop_counter,

@@ -372,7 +372,9 @@ impl Tool for SubagentSpawnTool {
         if new_depth > self.depth_cap {
             return Ok(ToolResult::error(format!(
                 "cannot spawn: nesting depth cap ({}) reached at depth {} — handle this task \
-                 directly instead of spawning further, or have a shallower agent spawn it",
+                 directly instead of spawning further, or have a shallower agent spawn it. \
+                 Raise the `subagent_depth_cap` setting under `[background]` in config.toml to \
+                 allow deeper nesting",
                 self.depth_cap, self.depth
             )));
         }
@@ -605,6 +607,11 @@ mod tests {
         assert!(
             result.output.contains("depth cap"),
             "error should explain the depth cap, got: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("subagent_depth_cap"),
+            "error should name the config setting that controls the cap, got: {}",
             result.output
         );
     }

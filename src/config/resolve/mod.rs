@@ -733,9 +733,6 @@ fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> Su
         if let Some(v) = s.every_n_iterations {
             settings.every_n_iterations = v;
         }
-        if let Some(v) = s.max_interventions_per_turn {
-            settings.max_interventions_per_turn = v;
-        }
         if let Some(v) = s.max_transcript_tokens {
             settings.max_transcript_tokens = v;
         }
@@ -1106,6 +1103,15 @@ fn resolve_agent_config(
             }
             cfg.max_tool_iterations = Some(limit);
         }
+        if let Some(v) = s.repeat_call_guard_enabled {
+            cfg.repeat_call_guard.enabled = v;
+        }
+        if let Some(v) = s.repeat_call_steer_after {
+            cfg.repeat_call_guard.steer_after = v;
+        }
+        if let Some(v) = s.repeat_call_stop_after {
+            cfg.repeat_call_guard.stop_after = v;
+        }
     }
     Ok(cfg)
 }
@@ -1398,7 +1404,6 @@ timezone = "UTC"
 enabled = true
 mid_turn = false
 every_n_iterations = 5
-max_interventions_per_turn = 2
 max_transcript_tokens = 8000
 learning = true
 learning_cooldown_minutes = 60
@@ -1414,7 +1419,6 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(cfg.subconscious_settings.enabled);
         assert!(!cfg.subconscious_settings.mid_turn);
         assert_eq!(cfg.subconscious_settings.every_n_iterations, 5);
-        assert_eq!(cfg.subconscious_settings.max_interventions_per_turn, 2);
         assert_eq!(cfg.subconscious_settings.max_transcript_tokens, 8000);
         assert!(cfg.subconscious_settings.learning, "learning parses");
         assert_eq!(cfg.subconscious_settings.learning_cooldown_minutes, 60);
@@ -2041,6 +2045,65 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(
             err.to_string().contains("max_tool_iterations"),
             "error should name the offending setting: {err}"
+        );
+    }
+
+    #[test]
+    fn repeat_call_guard_defaults_to_three_and_six_enabled() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.agent.repeat_call_guard.enabled,
+            "guard is on by default"
+        );
+        assert_eq!(cfg.agent.repeat_call_guard.steer_after, 3);
+        assert_eq!(cfg.agent.repeat_call_guard.stop_after, 6);
+    }
+
+    #[test]
+    fn repeat_call_guard_thresholds_and_disabling_are_configurable() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+repeat_call_steer_after = 2
+repeat_call_stop_after = 4
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.agent.repeat_call_guard.steer_after, 2);
+        assert_eq!(cfg.agent.repeat_call_guard.stop_after, 4);
+        assert!(
+            cfg.agent.repeat_call_guard.enabled,
+            "still enabled by default"
+        );
+
+        let disabled_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+repeat_call_guard_enabled = false
+"#,
+        );
+        let disabled_cfg =
+            from_file_and_env(Some(&disabled_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            !disabled_cfg.agent.repeat_call_guard.enabled,
+            "should be disableable"
         );
     }
 

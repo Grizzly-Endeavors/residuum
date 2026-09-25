@@ -180,7 +180,10 @@ async fn run_gateway_from_parts(
     let cloud_config = cfg.cloud.clone();
     let rt = build_runtime(parts, core, receivers, cfg, spawned, channels, cloud_config).await?;
 
-    Ok(run_event_loop(rt).await)
+    // `run_event_loop`'s state (the accumulated select! branches' locals)
+    // has grown past clippy's large-future threshold; boxing moves it to the
+    // heap so this call site's own stack frame stays small.
+    Ok(Box::pin(run_event_loop(rt)).await)
 }
 
 /// Handles returned from spawning the HTTP server, adapters, tunnel, and watcher.
