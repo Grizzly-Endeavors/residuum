@@ -39,11 +39,11 @@ The agent has two tools, scoped to the workspace repository only — they can ne
 
 ## HTTP API
 
-For the web UI (not yet built): every route takes `repo` (`workspace` or `config`) as a query parameter or request-body field.
+Backs the web UI's history view: every route takes `repo` (`workspace` or `config`) as a query parameter or request-body field.
 
 | Route | Does |
 |-------|------|
-| `GET /api/checkpoints` | One page of checkpoints, newest first. `path` restricts to checkpoints that changed it; `before` and `limit` page. |
+| `GET /api/checkpoints` | One page of checkpoints, newest first. `path` restricts to checkpoints that changed it; `turn_id` restricts to the checkpoints recorded against one turn (its turn-start/turn-end pair — how the UI finds a turn's checkpoints for "undo this turn"); `before` and `limit` page. |
 | `GET /api/checkpoints/stats` | On-disk size, checkpoint count, and oldest checkpoint for a repository. |
 | `GET /api/checkpoints/{id}` | A checkpoint's metadata plus the paths it changed. |
 | `GET /api/checkpoints/{id}/diff` | Unified diff for one `path` at a checkpoint, relative to the checkpoint before it. |
@@ -52,3 +52,13 @@ For the web UI (not yet built): every route takes `repo` (`workspace` or `config
 | `POST /api/checkpoints/{id}/undo` | Undoes this checkpoint's changes. |
 
 `/api/status` additionally carries a `checkpoints` field with each repository's stats, so size is visible without the routes above.
+
+## Web UI
+
+Settings → History lists checkpoints from either repository (a tab per repo), filterable by path, with repo size and checkpoint count shown above the list. Selecting one shows the paths it changed, each with a diff or full-content view and a Restore action; a checkpoint can also be undone outright. The config repo's encrypted key stores (`secrets.toml.enc`, `agent-keys.toml.enc`) never show a diff or content there — only that they changed, with a restore action described in plain language ("restores the saved keys to how they were at this point").
+
+The Workspace file browser opens the same history, filtered to one file, from a History action on each file row — with a restore per version — alongside single-click Delete and an inline Rename, both introduced alongside this view (the file browser previously had neither).
+
+A turn's own checkpoint pair is exposed as "Undo this turn" on the user message that started it, in both the main chat and a session view, once it's confirmed the turn changed the workspace — hidden while that's still being checked or once it's confirmed the turn changed nothing. This is only available for a turn observed live in the current connection: checkpoints don't persist a turn's id into chat history, so an older turn is only undoable from Settings → History (find its checkpoint, undo it there).
+
+Every other destructive action reachable from Settings or the workspace browser (agent key delete, A2A key revoke, MCP server removal, provider removal, workbench artifact delete, and more) fires on a single click; its result toast carries a direct Undo backed by the checkpoint taken just before the action, rather than a confirm-before-acting step.
