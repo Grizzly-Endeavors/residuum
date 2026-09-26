@@ -71,7 +71,7 @@ impl WorkspaceHistoryTool {
 
         let page = self
             .engine
-            .list_checkpoints(REPO, path, None, limit)
+            .list_checkpoints(REPO, path, None, None, limit)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
@@ -385,7 +385,7 @@ mod tests {
         std::fs::write(ws.join("notes.md"), "v2").unwrap();
         let restore = WorkspaceRestoreTool::new(Arc::clone(&checkpoints_engine));
         let page = checkpoints_engine
-            .list_checkpoints(RepoKind::Workspace, None, None, None)
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
             .await
             .unwrap();
         let first_id = page.items.last().expect("one checkpoint").id.clone();

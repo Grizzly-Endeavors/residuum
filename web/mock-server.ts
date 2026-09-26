@@ -1548,7 +1548,10 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
           res.end(`no agent key named '${name}'`);
           return;
         }
-        json(res, 200, { deleted: true });
+        // The mock doesn't keep a checkpoint repository, so there is no id
+        // for Undo to restore. A null id hides the button instead of offering
+        // a restore that would 404.
+        json(res, 200, { deleted: true, checkpoint_id: null });
         return;
       }
 
@@ -1611,7 +1614,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
           json(res, 404, { error: `no A2A caller key named '${name}'` });
           return;
         }
-        json(res, 200, { revoked: true });
+        json(res, 200, { revoked: true, checkpoint_id: null });
         return;
       }
 
@@ -1739,7 +1742,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
             text(res, 404, "That artifact no longer exists. It may already have been deleted.");
             return;
           }
-          json(res, 200, { removed: [`${name}.html`] });
+          json(res, 200, { removed: [`${name}.html`], checkpoint_id: null });
           return;
         }
       }

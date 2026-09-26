@@ -4,10 +4,21 @@
   import type { ConfigFields } from "../../lib/settings-toml";
   import { fetchCloudStatus, disconnectCloud, storeSecret } from "../../lib/api";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
-  import ConfirmButton from "../ConfirmButton.svelte";
+  import { toast } from "../../lib/toast.svelte";
+  import { notifyFormUndo } from "../../lib/form-undo";
+  import type { PendingSaveTracker } from "../../lib/pending-save";
 
-  let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
-    $props();
+  let {
+    fields = $bindable(),
+    simple = false,
+    pendingSave,
+    onReload,
+  }: {
+    fields: ConfigFields;
+    simple?: boolean;
+    pendingSave: PendingSaveTracker;
+    onReload: () => Promise<void>;
+  } = $props();
 
   // ── Skills ─────────────────────────────────────────────────────────
 
@@ -22,7 +33,19 @@
   }
 
   function removeSkillDir(idx: number) {
+    const removed = fields.skills_dirs[idx];
+    if (removed === undefined) return;
     fields.skills_dirs = fields.skills_dirs.filter((_, i) => i !== idx);
+    toast.success(`Removed ${removed}.`, {
+      label: "Undo",
+      onClick: () => {
+        fields.skills_dirs = [
+          ...fields.skills_dirs.slice(0, idx),
+          removed,
+          ...fields.skills_dirs.slice(idx),
+        ];
+      },
+    });
   }
 
   // ── Tools ──────────────────────────────────────────────────────────
@@ -38,7 +61,19 @@
   }
 
   function removeToolDir(idx: number) {
+    const removed = fields.tools_path[idx];
+    if (removed === undefined) return;
     fields.tools_path = fields.tools_path.filter((_, i) => i !== idx);
+    toast.success(`Removed ${removed}.`, {
+      label: "Undo",
+      onClick: () => {
+        fields.tools_path = [
+          ...fields.tools_path.slice(0, idx),
+          removed,
+          ...fields.tools_path.slice(idx),
+        ];
+      },
+    });
   }
 
   // ── Webhooks ───────────────────────────────────────────────────────
@@ -51,7 +86,23 @@
   }
 
   function removeWebhook(idx: number) {
+    const removed = fields.webhooks[idx];
+    if (!removed) return;
     fields.webhooks = fields.webhooks.filter((_, i) => i !== idx);
+    notifyFormUndo(
+      `Removed ${removed.name || "webhook"}.`,
+      pendingSave,
+      () => {
+        fields.webhooks = [
+          ...fields.webhooks.slice(0, idx),
+          removed,
+          ...fields.webhooks.slice(idx),
+        ];
+      },
+      "config",
+      "config.toml",
+      onReload,
+    );
   }
 
   // ── Cloud ──────────────────────────────────────────────────────────
@@ -114,8 +165,17 @@
   }
 
   function handleCloudRemoveAccount() {
+    const previousToken = fields.cloud_token;
+    const previousEnabled = fields.cloud_enabled;
     fields.cloud_token = "";
     fields.cloud_enabled = false;
+    toast.success("Removed the Residuum Cloud account.", {
+      label: "Undo",
+      onClick: () => {
+        fields.cloud_token = previousToken;
+        fields.cloud_enabled = previousEnabled;
+      },
+    });
   }
 
   // ── Web Search ─────────────────────────────────────────────────────
@@ -462,12 +522,13 @@
           >
             Reconnect
           </button>
-          <ConfirmButton
-            label="Remove Account"
-            armedLabel="Remove Account?"
-            onConfirm={handleCloudRemoveAccount}
+          <button
+            class="btn btn-sm btn-danger"
+            onclick={handleCloudRemoveAccount}
             disabled={cloudAction}
-          />
+          >
+            Remove Account
+          </button>
         </div>
         <p class="cloud-hint">Click Reconnect then Save to re-enable the tunnel.</p>
       {:else}
@@ -560,7 +621,7 @@
               <span class="webhook-entry-label">
                 {wh.name ? `/webhook/${wh.name}` : "New webhook"}
               </span>
-              <ConfirmButton onConfirm={() => removeWebhook(i)} />
+              <button class="btn btn-sm btn-danger" onclick={() => removeWebhook(i)}>Remove</button>
             </div>
 
             <div class="webhook-entry-fields">
@@ -655,7 +716,7 @@
         {#each fields.skills_dirs as dir, i (dir)}
           <div class="skill-dir-entry">
             <span class="skill-dir-path">{dir}</span>
-            <ConfirmButton onConfirm={() => removeSkillDir(i)} />
+            <button class="btn btn-sm btn-danger" onclick={() => removeSkillDir(i)}>Remove</button>
           </div>
         {/each}
         <div class="skill-dir-add">
@@ -684,7 +745,7 @@
         {#each fields.tools_path as dir, i (dir)}
           <div class="skill-dir-entry">
             <span class="skill-dir-path">{dir}</span>
-            <ConfirmButton onConfirm={() => removeToolDir(i)} />
+            <button class="btn btn-sm btn-danger" onclick={() => removeToolDir(i)}>Remove</button>
           </div>
         {/each}
         <div class="skill-dir-add">

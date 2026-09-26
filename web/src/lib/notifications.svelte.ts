@@ -48,8 +48,18 @@ class NotificationStore {
     this.history.unshift(entry);
   }
 
-  clear(): void {
+  /** Clear history and return the cleared entries, so a caller can offer
+   * an "Undo" that restores them with {@link restore}. */
+  clear(): Notification[] {
+    const cleared = this.history;
     this.history = [];
+    return cleared;
+  }
+
+  /** Restore entries {@link clear} removed, e.g. from a toast's Undo
+   * action. A no-op if something new has arrived since (never clobbers it). */
+  restore(entries: Notification[]): void {
+    this.history = [...entries, ...this.history];
   }
 }
 

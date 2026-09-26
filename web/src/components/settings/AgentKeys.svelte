@@ -4,7 +4,7 @@
   import { fetchAgentKeys, storeAgentKey, deleteAgentKey } from "../../lib/api";
   import { toast } from "../../lib/toast.svelte";
   import { userErrorMessage } from "../../lib/errors";
-  import ConfirmButton from "../ConfirmButton.svelte";
+  import { notifyWithUndo } from "../../lib/undo";
 
   const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
   // Below this length, redaction by substring match becomes unreliable —
@@ -67,8 +67,8 @@
 
   async function handleRemove(name: string) {
     try {
-      await deleteAgentKey(name);
-      toast.success(`Removed ${name}.`);
+      const checkpointId = await deleteAgentKey(name);
+      notifyWithUndo(`Removed ${name}.`, "config", "agent-keys.toml.enc", checkpointId, load);
       await load();
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: `Couldn't remove ${name}.` }));
@@ -108,7 +108,13 @@
             <span class="agent-key-origin">Saved by the agent</span>
           {/if}
         </div>
-        <ConfirmButton onConfirm={() => handleRemove(key.name)} title="Remove {key.name}" />
+        <button
+          class="btn btn-sm btn-danger"
+          onclick={() => handleRemove(key.name)}
+          title="Remove {key.name}"
+        >
+          Remove
+        </button>
       </div>
     {/each}
 

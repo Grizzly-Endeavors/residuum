@@ -22,9 +22,14 @@
     validateConfig,
     validateProviders,
     validateWorkspaceFile,
+    CACHE_KEY_CONFIG_RAW,
+    CACHE_KEY_PROVIDERS_RAW,
+    CACHE_KEY_MCP_RAW,
   } from "./lib/api";
+  import { invalidate } from "./lib/cache";
   import { isStoredReference } from "./lib/secrets";
   import { formatDiagnosticLocation } from "./lib/diagnostics";
+  import { PendingSaveTracker } from "./lib/pending-save";
   import {
     parseConfigToml,
     parseProvidersToml,
@@ -43,6 +48,7 @@
   import MCP from "./components/settings/MCP.svelte";
   import AgentKeys from "./components/settings/AgentKeys.svelte";
   import A2a from "./components/settings/A2a.svelte";
+  import History from "./components/settings/History.svelte";
   import Modal from "./components/Modal.svelte";
   import { Icon } from "./lib/icons";
   import { toast } from "./lib/toast.svelte";
@@ -105,6 +111,10 @@
   let autoSaveTimer: ReturnType<typeof setTimeout> | undefined;
   let statusClearTimer: ReturnType<typeof setTimeout> | undefined;
   let lastSavedSnapshot = "";
+  // Tracks whether the debounced autosave below has (or hasn't) actually
+  // sent a given change yet, so a removal made in Providers/MCP/Integrations
+  // can be undone safely either way — see `lib/form-undo.ts`.
+  const pendingSave = new PendingSaveTracker();
 
   // ── Sidebar ────────────────────────────────────────────────────────
 
@@ -118,6 +128,7 @@
     { id: "mcp", label: "MCP" },
     { id: "agent-keys", label: "Agent keys" },
     { id: "a2a", label: "A2A" },
+    { id: "history", label: "History" },
   ];
 
   let simple = $derived(settingsMode === "simple");
@@ -166,6 +177,51 @@
     baselineProviderEntries = $state.snapshot(providerEntries);
     baselineModelAssignments = $state.snapshot(modelAssignments);
     baselineMcpServers = $state.snapshot(mcpServers);
+  }
+
+  /**
+   * Reload just `providers.toml`/`config.toml`/`mcp.json` from disk into
+   * form state, after something outside the normal save path (a
+   * checkpoint restore) changed it on the server. Deliberately doesn't
+   * touch `lastSavedSnapshot`: if another file still has an unsaved edit,
+   * the next autosave cycle must still see it and save it. Once this
+   * file's baseline matches what was just reloaded, that cycle's diff for
+   * it is empty (a no-op) regardless.
+   */
+  async function reloadProvidersFile(): Promise<void> {
+    try {
+      invalidate(CACHE_KEY_PROVIDERS_RAW);
+      rawProviders = await fetchProvidersRaw();
+      const prov = parseProvidersToml(rawProviders);
+      providerEntries = prov.providers;
+      modelAssignments = prov.models;
+      baselineProviderEntries = $state.snapshot(providerEntries);
+      baselineModelAssignments = $state.snapshot(modelAssignments);
+    } catch (err: unknown) {
+      toast.error(userErrorMessage(err, { action: "Couldn't reload providers.toml." }));
+    }
+  }
+
+  async function reloadConfigFile(): Promise<void> {
+    try {
+      invalidate(CACHE_KEY_CONFIG_RAW);
+      rawConfig = await fetchConfigRaw();
+      configFields = parseConfigToml(rawConfig);
+      baselineConfigFields = $state.snapshot(configFields);
+    } catch (err: unknown) {
+      toast.error(userErrorMessage(err, { action: "Couldn't reload config.toml." }));
+    }
+  }
+
+  async function reloadMcpFile(): Promise<void> {
+    try {
+      invalidate(CACHE_KEY_MCP_RAW);
+      rawMcp = await fetchMcpRaw();
+      mcpServers = parseMcpJson(rawMcp);
+      baselineMcpServers = $state.snapshot(mcpServers);
+    } catch (err: unknown) {
+      toast.error(userErrorMessage(err, { action: "Couldn't reload mcp.json." }));
+    }
   }
 
   // ── Mode switching ────────────────────────────────────────────────
@@ -267,6 +323,7 @@
     autoSaveTimer = setTimeout(() => {
       void autoSave();
     }, 800);
+    pendingSave.markScheduled(autoSaveTimer);
   }
 
   // Form mode: watch all form state for changes
@@ -313,6 +370,7 @@
     if (snap === lastSavedSnapshot) return;
 
     saving = true;
+    pendingSave.markSaving();
     statusMsg = "Saving...";
     statusKind = "saving";
 
@@ -328,6 +386,7 @@
       toast.error(userErrorMessage(err, { action: "Couldn't save settings." }));
     } finally {
       saving = false;
+      pendingSave.markSettled();
     }
   }
 
@@ -404,7 +463,10 @@
     if (provResult.valid) {
       baselineProviderEntries = currentProviders;
       baselineModelAssignments = currentModels;
-      if (Object.keys(providersDiff).length > 0) saved.push("providers.toml");
+      if (Object.keys(providersDiff).length > 0) {
+        saved.push("providers.toml");
+        pendingSave.recordWrite("providers.toml", provResult.checkpoint_id ?? null);
+      }
     } else {
       failed.push({ file: "providers.toml", error: provResult.error ?? "unknown error" });
     }
@@ -415,7 +477,10 @@
       const cfgResult = await patchConfig(configDiff);
       if (cfgResult.valid) {
         baselineConfigFields = currentConfig;
-        if (Object.keys(configDiff).length > 0) saved.push("config.toml");
+        if (Object.keys(configDiff).length > 0) {
+          saved.push("config.toml");
+          pendingSave.recordWrite("config.toml", cfgResult.checkpoint_id ?? null);
+        }
       } else {
         failed.push({ file: "config.toml", error: cfgResult.error ?? "unknown error" });
       }
@@ -424,7 +489,10 @@
     const mcpResult = await patchMcp(mcpDiff);
     if (mcpResult.valid) {
       baselineMcpServers = currentMcp;
-      if (Object.keys(mcpDiff).length > 0) saved.push("mcp.json");
+      if (Object.keys(mcpDiff).length > 0) {
+        saved.push("mcp.json");
+        pendingSave.recordWrite("config/mcp.json", mcpResult.checkpoint_id ?? null);
+      }
     } else {
       failed.push({ file: "mcp.json", error: mcpResult.error ?? "unknown error" });
     }
@@ -651,17 +719,29 @@
       {:else if activeSection === "runtime"}
         <Runtime bind:fields={configFields} {simple} />
       {:else if activeSection === "providers"}
-        <Providers bind:providers={providerEntries} bind:models={modelAssignments} />
+        <Providers
+          bind:providers={providerEntries}
+          bind:models={modelAssignments}
+          {pendingSave}
+          onReload={reloadProvidersFile}
+        />
       {:else if activeSection === "memory"}
         <Memory bind:fields={configFields} {simple} />
       {:else if activeSection === "integrations"}
-        <Integrations bind:fields={configFields} {simple} />
+        <Integrations
+          bind:fields={configFields}
+          {simple}
+          {pendingSave}
+          onReload={reloadConfigFile}
+        />
       {:else if activeSection === "mcp"}
-        <MCP bind:servers={mcpServers} />
+        <MCP bind:servers={mcpServers} {pendingSave} onReload={reloadMcpFile} />
       {:else if activeSection === "agent-keys"}
         <AgentKeys />
       {:else if activeSection === "a2a"}
         <A2a bind:fields={configFields} {simple} />
+      {:else if activeSection === "history"}
+        <History />
       {/if}
     </div>
   </div>

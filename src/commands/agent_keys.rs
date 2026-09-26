@@ -102,7 +102,7 @@ async fn run_agent_keys_command_at(
                 format!("CLI delete agent key '{name}'"),
             )
             .await;
-            keys.delete(name, KeyCreator::User)
+            keys.delete(name)
                 .await
                 .map_err(|e| FatalError::Config(format!("couldn't delete agent key: {e}")))?;
             println!("agent key '{name}' deleted");
@@ -173,7 +173,13 @@ mod tests {
 
         let engine = CheckpointEngine::open_for_cli(dir.path()).unwrap();
         let page = engine
-            .list_checkpoints(residuum::checkpoints::RepoKind::Config, None, None, None)
+            .list_checkpoints(
+                residuum::checkpoints::RepoKind::Config,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(

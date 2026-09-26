@@ -3,6 +3,7 @@
 import type {
   ImageAttachment as _ImageAttachment,
   SessionSummary as _SessionSummary,
+  RepoStats as _RepoStats,
 } from "./generated/protocol";
 export type {
   ClientMessage,
@@ -24,6 +25,16 @@ export type {
   WorkspaceChange,
   WorkspaceChangeKind,
   WorkspaceResyncReason,
+  CheckpointSummary,
+  CheckpointPage,
+  CheckpointDetail,
+  ChangedPath,
+  ChangeKind,
+  RepoKind,
+  RepoStats,
+  RestoreOutcome,
+  UndoOutcome,
+  CheckpointTrigger,
   PulseOverlap,
   PulseInfo,
   ActionInfo,
@@ -34,6 +45,7 @@ export type {
 // Local aliases for use within this file
 type ImageAttachment = _ImageAttachment;
 type SessionSummary = _SessionSummary;
+type RepoStats = _RepoStats;
 
 // ── Chat history ─────────────────────────────────────────────────────
 
@@ -116,6 +128,8 @@ export interface StatusResponse {
   version: string;
   /** Feature ids this build supports, the same list the workbench SDK exposes as `residuum.features`. */
   features: string[];
+  /** Each checkpoint repository's on-disk size and count, or `null` if just-now unreadable. */
+  checkpoints: { workspace: RepoStats | null; config: RepoStats | null };
 }
 
 // ── Setup wizard types ──────────────────────────────────────────────
@@ -241,6 +255,9 @@ export interface ValidateResponse {
   valid: boolean;
   error?: string;
   diagnostics?: Diagnostic[];
+  /** On a successful Settings PATCH: the checkpoint taken just before the
+   * write. Absent when that checkpoint failed (the write still happened). */
+  checkpoint_id?: string;
 }
 
 // ── Settings types ───────────────────────────────────────────────────
@@ -252,7 +269,8 @@ export type SettingsSection =
   | "integrations"
   | "mcp"
   | "agent-keys"
-  | "a2a";
+  | "a2a"
+  | "history";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 
@@ -462,11 +480,25 @@ interface FeedItemBase {
   id: number;
 }
 
+/**
+ * The turn a user message started, once it's finished — set from a live
+ * `turn_ended`/`session_turn_ended` frame, never from history (checkpoints
+ * don't persist a turn's id past the live session that ran it, so "Undo
+ * this turn" is only offered for a turn observed live). `changed` is
+ * `null` until checked against the workspace's checkpoint history for this
+ * turn id, then `true`/`false`.
+ */
+export interface TurnRef {
+  turnId: string;
+  changed: boolean | null;
+}
+
 export interface UserFeedItem extends FeedItemBase {
   kind: "user";
   content: string;
   images?: ImageAttachment[];
   sender?: MessageSender;
+  turn?: TurnRef;
 }
 
 export interface AssistantFeedItem extends FeedItemBase {

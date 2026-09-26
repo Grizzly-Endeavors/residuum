@@ -193,6 +193,28 @@ pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'
         .ok_or_else(|| ToolError::InvalidArguments(format!("{field} is required")))
 }
 
+/// Publish a plain-language notice to the system notification channel, if a
+/// publisher is configured. Never fails the caller: a publish error is
+/// logged and otherwise ignored. Shared by tools that take user-visible
+/// action on the user's behalf (e.g. overwriting or deleting a key the user
+/// created) and need to surface it outside the transcript.
+pub(super) async fn publish_notice(publisher: Option<&crate::bus::Publisher>, message: String) {
+    let Some(publisher) = publisher else {
+        return;
+    };
+    if let Err(e) = publisher
+        .publish(
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            )),
+            crate::bus::NoticeEvent { message },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish tool notice to bus");
+    }
+}
+
 /// Trait for tool implementations that the agent can invoke.
 #[async_trait]
 pub trait Tool: Send + Sync {

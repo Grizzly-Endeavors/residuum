@@ -56,6 +56,10 @@ pub(super) struct ListA2aKeysResponse {
 #[derive(Serialize)]
 pub(super) struct RevokeA2aKeyResponse {
     pub revoked: bool,
+    /// Checkpoint holding the caller-key store as it was before this revoke.
+    /// `None` when that checkpoint could not be recorded; the revoke still
+    /// succeeded, and the UI should not offer Undo.
+    pub checkpoint_id: Option<String>,
 }
 
 fn error_response(e: &A2aKeyError) -> (StatusCode, String) {
@@ -107,14 +111,17 @@ pub(super) async fn api_a2a_keys_revoke(
     State(state): State<ConfigApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<RevokeA2aKeyResponse>, (StatusCode, String)> {
-    state
-        .checkpoint_config_before_write(format!("revoke a2a key '{name}'"))
+    let checkpoint_id = state
+        .checkpoint_config_id_before_write(format!("revoke a2a key '{name}'"))
         .await;
     A2aKeys::new(state.config_dir)
         .revoke(&name)
         .await
         .map_err(|e| error_response(&e))?;
-    Ok(Json(RevokeA2aKeyResponse { revoked: true }))
+    Ok(Json(RevokeA2aKeyResponse {
+        revoked: true,
+        checkpoint_id,
+    }))
 }
 
 // ── Remote agents (client side) ─────────────────────────────────────────
@@ -622,6 +629,52 @@ mod tests {
             .await
             .unwrap();
         assert!(after.keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoke_returns_the_checkpoint_taken_before_the_revoke() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let _created = api_a2a_keys_create(
+            State(state.clone()),
+            Json(CreateA2aKeyRequest {
+                name: "laptop".to_string(),
+                description: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let revoked = api_a2a_keys_revoke(State(state.clone()), Path("laptop".to_string()))
+            .await
+            .unwrap();
+        let id = revoked
+            .checkpoint_id
+            .clone()
+            .expect("revoke should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Config,
+                id.clone(),
+                "a2a-keys.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "the returned checkpoint must still contain the caller-key file"
+        );
+
+        std::fs::write(state.config_dir.join("config.toml"), "later = true").unwrap();
+        let later = state
+            .checkpoint_config_id_before_write("later config write")
+            .await
+            .expect("a later checkpoint should be recorded");
+        assert_ne!(
+            later, id,
+            "the id returned for Undo stays the pre-revoke checkpoint after a newer one is taken"
+        );
     }
 
     #[tokio::test]

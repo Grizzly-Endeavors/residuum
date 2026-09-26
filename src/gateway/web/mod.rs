@@ -73,12 +73,23 @@ impl ConfigApiState {
     /// and the encrypted key stores) before a write to one of them. Never
     /// fails or blocks the write — see `crate::checkpoints`.
     pub(super) async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
+        let _checkpoint_id = self.checkpoint_config_id_before_write(summary).await;
+    }
+
+    /// [`Self::checkpoint_config_before_write`], returning the id of the
+    /// checkpoint that holds the pre-write tree. `None` when that checkpoint
+    /// could not be recorded; the write still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_config_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
         self.checkpoints
-            .checkpoint_config_before_write(crate::checkpoints::CheckpointContext::system(
+            .checkpoint_config_id_before_write(crate::checkpoints::CheckpointContext::system(
                 crate::checkpoints::CheckpointTrigger::PreConfigWrite,
                 summary,
             ))
-            .await;
+            .await
     }
 
     /// Checkpoint the workspace repository before a destructive workspace
@@ -87,12 +98,23 @@ impl ConfigApiState {
     /// `config/a2a.json`). Never fails or blocks the action — see
     /// `crate::checkpoints`.
     pub(super) async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
+        let _checkpoint_id = self.checkpoint_workspace_id_before_write(summary).await;
+    }
+
+    /// [`Self::checkpoint_workspace_before_write`], returning the id of the
+    /// checkpoint that holds the pre-action tree. `None` when that checkpoint
+    /// could not be recorded; the action still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_workspace_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
         self.checkpoints
-            .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+            .checkpoint_workspace_id_before_action(crate::checkpoints::CheckpointContext::system(
                 crate::checkpoints::CheckpointTrigger::PreAction,
                 summary,
             ))
-            .await;
+            .await
     }
 }
 
@@ -719,5 +741,38 @@ mod tests {
         // Verify it's gone
         let after_delete = secrets::api_secrets_list(State(state)).await.unwrap();
         assert!(after_delete.0.names.is_empty());
+    }
+}
+
+/// A config API state whose checkpoint engine watches the same config and
+/// workspace directories the handlers write to. `test_engine` deliberately
+/// does not, so a test that asserts on the returned checkpoint id needs this.
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::ConfigApiState;
+
+    pub(super) fn watching_state(root: &std::path::Path) -> ConfigApiState {
+        let config_dir = root.join("config");
+        let workspace_dir = root.join("workspace");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        let checkpoints = std::sync::Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                workspace_dir.clone(),
+                config_dir.clone(),
+                &root.join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        );
+        ConfigApiState {
+            config_dir,
+            workspace_dir,
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints,
+        }
     }
 }

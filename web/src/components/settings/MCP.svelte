@@ -2,9 +2,18 @@
   import { onMount } from "svelte";
   import type { McpServerEntry, McpCatalogEntry } from "../../lib/types";
   import { fetchMcpCatalog } from "../../lib/api";
-  import ConfirmButton from "../ConfirmButton.svelte";
+  import { notifyFormUndo } from "../../lib/form-undo";
+  import type { PendingSaveTracker } from "../../lib/pending-save";
 
-  let { servers = $bindable() }: { servers: McpServerEntry[] } = $props();
+  let {
+    servers = $bindable(),
+    pendingSave,
+    onReload,
+  }: {
+    servers: McpServerEntry[];
+    pendingSave: PendingSaveTracker;
+    onReload: () => Promise<void>;
+  } = $props();
 
   let catalog = $state<McpCatalogEntry[]>([]);
   let pendingIdx = $state<number | null>(null);
@@ -35,7 +44,18 @@
   });
 
   function removeServer(idx: number) {
-    servers.splice(idx, 1);
+    const [removed] = servers.splice(idx, 1);
+    if (!removed) return;
+    notifyFormUndo(
+      `Removed ${removed.name}.`,
+      pendingSave,
+      () => {
+        servers.splice(idx, 0, removed);
+      },
+      "workspace",
+      "config/mcp.json",
+      onReload,
+    );
   }
 
   // ── Catalog handling ─────────────────────────────────────────────────
@@ -179,7 +199,7 @@
             <span class="mcp-server-cmd">{srv.command} {srv.args.join(" ")}</span>
           {/if}
         </div>
-        <ConfirmButton onConfirm={() => removeServer(i)} />
+        <button class="btn btn-sm btn-danger" onclick={() => removeServer(i)}>Remove</button>
       </div>
     {/each}
 

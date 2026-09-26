@@ -61,14 +61,17 @@ pub(super) struct ListQuery {
     /// Restrict to checkpoints that changed this path (a file, or a
     /// directory prefix).
     pub path: Option<String>,
+    /// Restrict to checkpoints recorded against this exact turn id — finds
+    /// a turn's turn-start/turn-end pair for "undo this turn".
+    pub turn_id: Option<String>,
     /// Opaque cursor from a previous response's `next_cursor`.
     pub before: Option<String>,
     /// Page size, 1-200 (default 50).
     pub limit: Option<usize>,
 }
 
-/// `GET /api/checkpoints?repo=workspace|config&path=&before=&limit=` — one
-/// page of checkpoints, newest first.
+/// `GET /api/checkpoints?repo=workspace|config&path=&turn_id=&before=&limit=`
+/// — one page of checkpoints, newest first.
 async fn api_checkpoints_list(
     State(state): State<CheckpointApiState>,
     Query(query): Query<ListQuery>,
@@ -76,7 +79,7 @@ async fn api_checkpoints_list(
     let limit = query.limit.map(|n| n.clamp(1, 200));
     state
         .checkpoints
-        .list_checkpoints(query.repo, query.path, query.before, limit)
+        .list_checkpoints(query.repo, query.path, query.turn_id, query.before, limit)
         .await
         .map(Json)
         .map_err(|e| error_response(&e))

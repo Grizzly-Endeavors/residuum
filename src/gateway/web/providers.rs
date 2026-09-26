@@ -13,7 +13,7 @@ use crate::config::secrets::SecretStore;
 use crate::inference::providers::anthropic::is_oauth_key;
 
 use super::ConfigApiState;
-use super::config::ValidateResponse;
+use super::config::{PatchSavedResponse, ValidateResponse};
 
 /// Request body for `POST /api/providers/models`.
 #[derive(Deserialize)]
@@ -457,7 +457,7 @@ pub(super) async fn api_providers_raw_put(
 pub(super) async fn api_providers_patch(
     State(state): State<ConfigApiState>,
     Json(diff): Json<serde_json::Value>,
-) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
     let bad_request = |msg: String| {
         (
             StatusCode::BAD_REQUEST,
@@ -503,8 +503,8 @@ pub(super) async fn api_providers_patch(
         bad_request(e)
     })?;
 
-    state
-        .checkpoint_config_before_write("patch providers.toml")
+    let checkpoint_id = state
+        .checkpoint_config_id_before_write("patch providers.toml")
         .await;
     crate::util::fs::atomic_write(&providers_path, &patched)
         .await
@@ -525,11 +525,7 @@ pub(super) async fn api_providers_patch(
         reload_tx.send(super::super::ReloadSignal::Root).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-        diagnostics: Vec::new(),
-    }))
+    Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
 /// `POST /api/providers/validate` — validate providers TOML body without saving.
@@ -665,6 +661,41 @@ mod tests {
                 "text-embedding-3-small".to_string(),
             ],
             "every listed model is offered, fine-tunes included"
+        );
+    }
+
+    #[tokio::test]
+    async fn providers_patch_returns_the_checkpoint_taken_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        std::fs::write(state.config_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        let before = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        std::fs::write(state.config_dir.join("providers.toml"), before).unwrap();
+
+        let Json(saved) = api_providers_patch(
+            State(state.clone()),
+            Json(serde_json::json!({"models": {"main": "anthropic/claude-opus-4-6"}})),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.validation.valid, "{:?}", saved.validation.error);
+        let id = saved
+            .checkpoint_id
+            .expect("a patch should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Config,
+                id,
+                "providers.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(before.as_bytes()),
+            "the returned checkpoint must hold providers.toml as it was before the patch"
         );
     }
 }

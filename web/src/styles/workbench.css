@@ -168,8 +168,7 @@
   }
 
   .workbench-slab:hover .workbench-delete,
-  .workbench-slab:focus-within .workbench-delete,
-  .workbench-delete.armed {
+  .workbench-slab:focus-within .workbench-delete {
     opacity: 1;
   }
 }
