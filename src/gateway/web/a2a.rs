@@ -1,7 +1,9 @@
 //! A2A web API endpoints: caller-key management, the client-side "remote
 //! agents" endpoints (`GET /api/a2a/agents` for live status and
-//! `GET`/`PUT /api/a2a/agents/raw` for the `config/a2a.json` editor), and
-//! the settings page's `GET /api/a2a/status` and `GET /api/a2a/card`.
+//! `GET`/`PUT /api/a2a/agents/raw` for the `config/a2a.json` editor), the
+//! sessions sidebar's tasks sent to remote agents (`GET /api/a2a/outbound`
+//! and the stop endpoints under it), and the settings page's
+//! `GET /api/a2a/status` and `GET /api/a2a/card`.
 //!
 //! Each request opens its own handle on the key store; writes are serialized
 //! across handles and processes by the store's file lock, so the web UI,
@@ -19,9 +21,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::a2a::{
     A2aClientHub, A2aKeyError, A2aKeyInfo, A2aKeys, AUTH_CHECK_PATH, AgentCardFile, AgentSnapshot,
-    AgentSource, AgentStatus, CardError, CardRuntime, build_agent_card,
+    AgentSource, AgentStatus, CardError, CardRuntime, RemoteTaskTracker, build_agent_card,
 };
 use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
+use crate::gateway::protocol::OutboundA2aTaskSummary;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::ConfigApiState;
@@ -123,17 +126,106 @@ pub(super) async fn api_a2a_keys_revoke(
 
 // ── Remote agents (client side) ─────────────────────────────────────────
 
-/// Shared state for `GET /api/a2a/agents`.
+/// Shared state for `GET /api/a2a/agents` and the outbound-task endpoints.
 #[derive(Clone)]
 pub(crate) struct A2aAgentsStatusState {
     pub hub: Arc<A2aClientHub>,
+    pub tracker: Arc<RemoteTaskTracker>,
 }
 
-/// Build the remote-agents status API router.
+/// Build the remote-agents status and outbound-task API router.
 pub(crate) fn a2a_agents_status_router(state: A2aAgentsStatusState) -> axum::Router {
     axum::Router::new()
         .route("/api/a2a/agents", axum::routing::get(api_a2a_agents_list))
+        .route(
+            "/api/a2a/outbound",
+            axum::routing::get(api_a2a_outbound_list),
+        )
+        .route(
+            "/api/a2a/outbound/{task_id}/stop",
+            axum::routing::post(api_a2a_outbound_stop),
+        )
+        .route(
+            "/api/a2a/outbound/{task_id}/stop-watching",
+            axum::routing::post(api_a2a_outbound_stop_watching),
+        )
         .with_state(state)
+}
+
+/// Error body for the outbound-task endpoints: a message for the user and a
+/// machine-readable `code` (`not_open`, or `unreachable` when the agent
+/// couldn't be reached to cancel the task — the web UI then offers
+/// stop-watching instead).
+#[derive(Debug, Serialize)]
+pub(crate) struct OutboundTaskError {
+    error: String,
+    code: &'static str,
+}
+
+fn outbound_not_open(task_id: &str) -> (StatusCode, Json<OutboundTaskError>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(OutboundTaskError {
+            error: format!("Task {task_id} isn't running anymore, so there's nothing to stop."),
+            code: "not_open",
+        }),
+    )
+}
+
+/// `GET /api/a2a/outbound` — every open task sent to a remote agent, newest
+/// first.
+pub(crate) async fn api_a2a_outbound_list(
+    State(state): State<A2aAgentsStatusState>,
+) -> Json<Vec<OutboundA2aTaskSummary>> {
+    let tasks = state.tracker.open_tasks().await;
+    Json(tasks.iter().map(OutboundA2aTaskSummary::from).collect())
+}
+
+/// `POST /api/a2a/outbound/{task_id}/stop` — ask the remote agent to cancel
+/// the task, the same cancel the agent's own `stop_agent a2a:<name>` makes.
+///
+/// # Errors
+/// `404` (`not_open`) when no open task has that id; `502` (`unreachable`)
+/// when its agent can't be reached to cancel it.
+pub(crate) async fn api_a2a_outbound_stop(
+    State(state): State<A2aAgentsStatusState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<OutboundA2aTaskSummary>, (StatusCode, Json<OutboundTaskError>)> {
+    match state.tracker.stop_task(&task_id).await {
+        Ok(Some(task)) => Ok(Json(OutboundA2aTaskSummary::from(&task))),
+        Ok(None) => Err(outbound_not_open(&task_id)),
+        Err(e) => {
+            tracing::warn!(task_id, error = %e, "user stop of a2a remote task failed");
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(OutboundTaskError {
+                    error: format!(
+                        "Couldn't reach {} to cancel the task. You can stop watching it instead; it \
+                         may keep running on their side.",
+                        e.agent_name()
+                    ),
+                    code: "unreachable",
+                }),
+            ))
+        }
+    }
+}
+
+/// `POST /api/a2a/outbound/{task_id}/stop-watching` — close the task locally
+/// without reaching its agent, ending the retries and their notices.
+///
+/// # Errors
+/// `404` (`not_open`) when no open task has that id.
+pub(crate) async fn api_a2a_outbound_stop_watching(
+    State(state): State<A2aAgentsStatusState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<OutboundA2aTaskSummary>, (StatusCode, Json<OutboundTaskError>)> {
+    state
+        .tracker
+        .stop_watching(&task_id)
+        .await
+        .map(|task| Json(OutboundA2aTaskSummary::from(&task)))
+        .ok_or_else(|| outbound_not_open(&task_id))
 }
 
 /// One skill on a remote agent's card, in the shape the web UI wants.
@@ -638,6 +730,109 @@ mod tests {
 
     // ── Remote agents ────────────────────────────────────────────────
 
+    async fn agents_state(hub: &Arc<A2aClientHub>, dir: &FsPath) -> A2aAgentsStatusState {
+        let bus = crate::bus::spawn_broker();
+        let messenger = Arc::new(crate::background::messaging::AgentMessenger::new(
+            Arc::new(crate::background::registry::SessionRegistry::new()),
+            bus.publisher(),
+            Arc::new(crate::background::store::SessionStore::new(
+                dir.join("sessions"),
+            )),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let tracker = RemoteTaskTracker::load(
+            dir.join("outbound.json"),
+            Arc::clone(hub),
+            messenger,
+            dir.join("inbox"),
+        )
+        .await;
+        A2aAgentsStatusState {
+            hub: Arc::clone(hub),
+            tracker,
+        }
+    }
+
+    async fn unreachable_laptop_with_task(dir: &FsPath) -> A2aAgentsStatusState {
+        let hub = crate::a2a::A2aClientHub::new_shared();
+        hub.register_external(
+            "laptop".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            std::collections::HashMap::new(),
+            crate::a2a::AgentSource::Config,
+        )
+        .await;
+        let state = agents_state(&hub, dir).await;
+        state
+            .tracker
+            .track(
+                &crate::bus::SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        state
+    }
+
+    #[tokio::test]
+    async fn outbound_list_shows_open_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = unreachable_laptop_with_task(dir.path()).await;
+        let Json(tasks) = api_a2a_outbound_list(State(state)).await;
+        let [only] = tasks.as_slice() else {
+            panic!("expected exactly one task");
+        };
+        assert_eq!(only.task_id, "t1");
+        assert_eq!(only.agent, "laptop");
+        assert_eq!(only.state, "working");
+        assert!(only.open);
+    }
+
+    #[tokio::test]
+    async fn outbound_stop_reports_unreachable_then_stop_watching_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = unreachable_laptop_with_task(dir.path()).await;
+
+        let Err((status, Json(err))) =
+            api_a2a_outbound_stop(State(state.clone()), Path("t1".to_string())).await
+        else {
+            panic!("an unreachable agent can't be asked to cancel");
+        };
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(err.code, "unreachable");
+        assert!(err.error.contains("laptop"), "got: {}", err.error);
+
+        let Json(closed) =
+            api_a2a_outbound_stop_watching(State(state.clone()), Path("t1".to_string()))
+                .await
+                .unwrap();
+        assert!(!closed.open);
+        let Json(tasks) = api_a2a_outbound_list(State(state.clone())).await;
+        assert!(tasks.is_empty());
+
+        let Err((gone_status, Json(gone_err))) =
+            api_a2a_outbound_stop_watching(State(state), Path("t1".to_string())).await
+        else {
+            panic!("a closed task has nothing to stop");
+        };
+        assert_eq!(gone_status, StatusCode::NOT_FOUND);
+        assert_eq!(gone_err.code, "not_open");
+    }
+
+    #[tokio::test]
+    async fn outbound_stop_unknown_task_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = unreachable_laptop_with_task(dir.path()).await;
+        let Err((status, _)) = api_a2a_outbound_stop(State(state), Path("nope".to_string())).await
+        else {
+            panic!("an unknown task can't be stopped");
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn agents_list_reports_status_and_card() {
         let hub = crate::a2a::A2aClientHub::new_shared();
@@ -648,10 +843,8 @@ mod tests {
             crate::a2a::AgentSource::Config,
         )
         .await;
-        let Json(agents) = api_a2a_agents_list(State(A2aAgentsStatusState {
-            hub: Arc::clone(&hub),
-        }))
-        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let Json(agents) = api_a2a_agents_list(State(agents_state(&hub, dir.path()).await)).await;
         let [only] = agents.as_slice() else {
             panic!("expected exactly one agent");
         };

@@ -153,6 +153,50 @@ pub struct SessionListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// A task this instance sent to a remote agent (`message_agent a2a:<name>`),
+/// as listed in the web sessions sidebar by `GET /api/a2a/outbound` and
+/// carried by `SessionOutboundA2aTask`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OutboundA2aTaskSummary {
+    /// The remote agent's task id.
+    pub task_id: String,
+    /// The remote agent's name, as registered in `config/a2a.json`.
+    pub agent: String,
+    /// The session (or `main`) that sent the task.
+    pub sender_address: String,
+    /// The task's A2A state as a plain word: `submitted`, `working`,
+    /// `input_required`, `auth_required`, `completed`, `failed`, `canceled`,
+    /// `rejected`.
+    pub state: String,
+    /// The remote agent's latest status message, if it sent one.
+    pub status_text: Option<String>,
+    /// Still being watched: not in a terminal state.
+    pub open: bool,
+    /// When the task was sent (RFC 3339, UTC).
+    #[ts(type = "string")]
+    pub started_at: DateTime<Utc>,
+    /// When the remote agent was first found unreachable in the current
+    /// run of failed checks, or `null` while it answers.
+    #[ts(type = "string | null")]
+    pub unreachable_since: Option<DateTime<Utc>>,
+}
+
+impl From<&crate::a2a::TrackedTask> for OutboundA2aTaskSummary {
+    fn from(task: &crate::a2a::TrackedTask) -> Self {
+        Self {
+            task_id: task.task_id.clone(),
+            agent: task.agent.clone(),
+            sender_address: task.sender_address.clone(),
+            state: task.state.clone(),
+            status_text: task.last_status_text.clone(),
+            open: task.is_open(),
+            started_at: task.created_at,
+            unreachable_since: task.first_unreachable_at,
+        }
+    }
+}
+
 /// How a session's run ended, as reported by `SessionCompleted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -323,6 +367,18 @@ pub struct WorkbenchRelayOrigins {
     pub artifacts_origin: String,
 }
 
+/// Which background post-turn cycle a [`ServerMessage::PostTurnActivity`]
+/// is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PostTurnActivityKind {
+    /// The automatic observer/reflector cycle.
+    Memory,
+    /// The end-of-turn subconscious evaluation.
+    Subconscious,
+}
+
 /// Messages sent from the server to WebSocket clients.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -356,6 +412,15 @@ pub enum ServerMessage {
         /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
+    },
+    /// A background post-turn cycle (the automatic observer/reflector, or
+    /// the end-of-turn subconscious evaluation — see
+    /// `crate::gateway::post_turn`) started or finished running. Drives a
+    /// quiet "updating memory…" / "reviewing turn…" indicator; never blocks
+    /// anything, since this work no longer runs on the event loop.
+    PostTurnActivity {
+        kind: PostTurnActivityKind,
+        active: bool,
     },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
@@ -603,6 +668,9 @@ pub enum ServerMessage {
         /// Human-readable explanation, suitable to show the user.
         message: String,
     },
+    /// A task sent to a remote agent was recorded, changed state, or was
+    /// stopped. A task no longer `open` leaves the sidebar's list.
+    SessionOutboundA2aTask { task: OutboundA2aTaskSummary },
     /// A workbench artifact's page was created or modified.
     ArtifactUpdated {
         /// Artifact name, as used in `/workbench/{name}`.

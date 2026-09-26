@@ -26,6 +26,8 @@ You can also delegate to other agents over A2A with your ordinary tools — `lis
 - `message_agent` to `a2a:<name>` sends a follow-up on your open task with that agent if one is waiting on you (`INPUT_REQUIRED`/`AUTH_REQUIRED`), otherwise starts a new one. It returns immediately — the reply is not synchronous. An optional `skill` parameter names one of the remote agent's advertised skills.
 - The reply arrives later as an ordinary agent message from `a2a:<name>`, naming the task and its new state, once the task needs your attention (it asks a question, needs auth, or finishes). Don't wait for it inline; go on with other work and react when it lands.
 - `stop_agent` on `a2a:<name>` cancels your open task with that agent.
+- If the agent stays unreachable for 10 minutes, you get a note saying so (retries continue in the background), and another once it's reachable again. The user is told too.
+- The user sees your open tasks in the web UI's sessions sidebar and can stop one there. A task the user stopped arrives as `canceled` with the line "Stopped by the user from the web UI."; don't resend it unless they ask. If its agent couldn't be reached, the user may instead stop watching it, and you're told it may still be running on the remote side.
 
 Editing `config/a2a.json` via `write_file`/`edit_file`, the workspace editor, `POST /api/workspace/validate`, or the Settings page's raw editor reports invalid JSON, an invalid agent name, or an empty url as a diagnostic alongside the save — the write always goes through rather than being rejected.
 

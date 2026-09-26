@@ -24,6 +24,14 @@
   const SIDEBAR_PREF_KEY = "residuum-sessions-sidebar";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
+
+  // A native OS notification's "Open" action (see the macOS bridge in
+  // src/notify/) points here. Every result it shows was filed to the agent
+  // inbox, whose files are under inbox/agent in the workspace, so open the
+  // workspace panel. Read before `router.start()` replaces the unrecognized
+  // path.
+  const openedFromNotification = window.location.pathname.startsWith("/notification");
+
   router.start();
 
   let activeView = $derived.by<"chat" | "workspace" | "settings" | "workbench" | "scheduled">(
@@ -95,7 +103,7 @@
 
   // Tick the clock behind elapsed times only while something is live.
   $effect(() => {
-    const anyLive = sessions.live.length > 0;
+    const anyLive = sessions.live.length + sessions.outbound.length > 0;
     if (!anyLive) return;
     sessions.now = Date.now();
     const timer = window.setInterval(() => {
@@ -128,6 +136,9 @@
       mode = status.mode === "setup" ? "setup" : "running";
     } catch {
       mode = "running";
+    }
+    if (openedFromNotification) {
+      router.setWorkspace(true);
     }
   });
 
@@ -215,7 +226,7 @@
         ? undefined
         : {
             open: sidebarOpen,
-            liveCount: sessions.live.length,
+            liveCount: sessions.live.length + sessions.outbound.length,
             onToggle: () => setSidebarOpen(!sidebarOpen),
           }}
     />

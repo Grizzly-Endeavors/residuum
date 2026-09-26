@@ -498,6 +498,78 @@ async fn kill_process_tree(pid: Option<u32>) {
     }
 }
 
+/// Kills a spawned command's whole process tree if dropped while the child
+/// may still be running.
+///
+/// `Command::kill_on_drop` alone only signals the immediate shell process
+/// when the future awaiting it is dropped instead of run to completion (e.g.
+/// the turn future itself is dropped rather than cancelled through the
+/// `select!` in [`run_with_timeout_and_cancel`]) — any grandchildren the
+/// shell spawned are left running, orphaned. This guard uses the same
+/// process-group kill (Unix) / `taskkill /T` (Windows) as the timeout and
+/// stop paths, run synchronously since `Drop` can't await.
+struct ProcessTreeGuard {
+    pid: Option<u32>,
+}
+
+impl ProcessTreeGuard {
+    const fn new(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    /// Mark the tree as already handled (killed, or the child already
+    /// reaped after exiting on its own) so the drop handler is a no-op.
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for ProcessTreeGuard {
+    fn drop(&mut self) {
+        let Some(pid) = self.pid else {
+            return;
+        };
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{Signal, killpg};
+            use nix::unistd::Pid;
+
+            let Ok(pid) = i32::try_from(pid) else {
+                tracing::warn!(
+                    pid,
+                    "exec pid doesn't fit a pid_t, skipping process-group kill on drop"
+                );
+                return;
+            };
+            // Safe: `shell_command` puts the shell in its own process
+            // group, so this reaches only the command's own tree.
+            if let Err(e) = killpg(Pid::from_raw(pid), Signal::SIGKILL) {
+                tracing::warn!(
+                    error = %e,
+                    pid,
+                    "failed to kill exec command's process group on drop"
+                );
+            }
+        }
+        #[cfg(windows)]
+        {
+            // Synchronous std::process::Command, not tokio's — Drop can't
+            // await, and this is a best-effort cleanup on an already-dying
+            // future so blocking briefly here is acceptable.
+            if let Err(e) = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .output()
+            {
+                tracing::warn!(
+                    error = %e,
+                    pid,
+                    "failed to kill exec command's process tree on drop"
+                );
+            }
+        }
+    }
+}
+
 /// How a spawned command's run ended.
 enum RunOutcome {
     /// The command exited on its own before the timeout or a stop.
@@ -537,6 +609,12 @@ async fn run_with_timeout_and_cancel(
 
     let mut child = cmd.spawn()?;
     let pid = child.id();
+    // Guards the window between spawn and the point below where the
+    // process tree has already been killed or the child already reaped —
+    // covers the case where this future itself is dropped (not cancelled
+    // through the `select!` below), e.g. the caller's turn future being
+    // dropped while this is still suspended awaiting the child.
+    let mut tree_guard = ProcessTreeGuard::new(pid);
     let stdout_pipe = child
         .stdout
         .take()
@@ -561,13 +639,19 @@ async fn run_with_timeout_and_cancel(
     };
 
     let (outcome, status) = match wait {
-        Wait::Exited(status) => (RunOutcome::Finished, status),
+        Wait::Exited(status) => {
+            // The child already exited on its own; nothing left to kill.
+            tree_guard.disarm();
+            (RunOutcome::Finished, status)
+        }
         Wait::TimedOut => {
             kill_process_tree(pid).await;
+            tree_guard.disarm();
             (RunOutcome::TimedOut, child.wait().await?)
         }
         Wait::Cancelled => {
             kill_process_tree(pid).await;
+            tree_guard.disarm();
             (RunOutcome::Cancelled, child.wait().await?)
         }
     };
@@ -933,6 +1017,33 @@ mod tests {
             result.output
         );
         wait_for_pid_to_die(pid).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_future_dropped_before_completion_kills_grandchildren() {
+        // Regression test for the drop-guard: dropping the turn future
+        // (simulated here with `select!` dropping the losing branch) must
+        // still kill the whole process tree, not just the immediate shell
+        // that `kill_on_drop` alone would reach.
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("grandchild-pid");
+        let tool = ExecTool::new(None, None, None);
+        let cancel = CancellationToken::new();
+
+        let command = format!("sleep 10 & echo $! > {}; wait", pid_path.display());
+
+        let grandchild_pid = tokio::select! {
+            result = tool.execute_cancellable(serde_json::json!({ "command": command }), &cancel) => {
+                panic!(
+                    "command should still be running when dropped, got: {:?}",
+                    result.map(|r| r.output)
+                );
+            }
+            pid = read_pid_file(&pid_path) => pid,
+        };
+
+        wait_for_pid_to_die(grandchild_pid).await;
     }
 
     #[tokio::test]

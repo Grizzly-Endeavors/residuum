@@ -58,6 +58,12 @@ interface MockState {
    */
   broadcast: (frame: Record<string, unknown>) => void;
   /**
+   * Open tasks sent to remote agents, for the sessions sidebar. `laptop`'s
+   * task is unreachable, so stopping it answers `502 unreachable` and the
+   * row offers "Stop watching".
+   */
+  outboundTasks: Array<Record<string, unknown>>;
+  /**
    * Set once a "drop compress" chat message has simulated the observer
    * compressing history into `ep-004`: how many `extraRecent` entries went
    * into that episode.
@@ -656,6 +662,28 @@ function createState(): MockState {
         '{"text":"User is building a personal agent framework focused on genuine autonomy and persistent memory","timestamp":"2026-03-09T12:00:00Z","observations":5}\n',
     },
     sessions: createSessions(),
+    outboundTasks: [
+      {
+        task_id: "task-7f3a",
+        agent: "research-buddy",
+        sender_address: "main",
+        state: "working",
+        status_text: "Reading the three papers you linked and pulling out their benchmark numbers.",
+        open: true,
+        started_at: new Date(Date.now() - 4 * 60_000).toISOString(),
+        unreachable_since: null,
+      },
+      {
+        task_id: "task-19c2",
+        agent: "laptop",
+        sender_address: "main",
+        state: "working",
+        status_text: null,
+        open: true,
+        started_at: new Date(Date.now() - 42 * 60_000).toISOString(),
+        unreachable_since: new Date(Date.now() - 17 * 60_000).toISOString(),
+      },
+    ],
     extraRecent: [],
     dropSockets: () => {},
     broadcast: () => {},
@@ -1613,6 +1641,38 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
             card: null,
           },
         ]);
+        return;
+      }
+
+      if (path === "/api/a2a/outbound" && method === "GET") {
+        json(res, 200, state.outboundTasks);
+        return;
+      }
+
+      const outboundStop = /^\/api\/a2a\/outbound\/([^/]+)\/(stop|stop-watching)$/.exec(path);
+      if (outboundStop && method === "POST") {
+        const [, taskId, action] = outboundStop;
+        const task = state.outboundTasks.find(
+          (t) => t.task_id === decodeURIComponent(taskId ?? ""),
+        );
+        if (!task) {
+          json(res, 404, {
+            error: `Task ${taskId} isn't running anymore, so there's nothing to stop.`,
+            code: "not_open",
+          });
+          return;
+        }
+        if (action === "stop" && task.unreachable_since) {
+          json(res, 502, {
+            error: `Couldn't reach ${String(task.agent)} to cancel the task. You can stop watching it instead; it may keep running on their side.`,
+            code: "unreachable",
+          });
+          return;
+        }
+        state.outboundTasks = state.outboundTasks.filter((t) => t !== task);
+        const closed = { ...task, state: "canceled", open: false, unreachable_since: null };
+        state.broadcast({ type: "session_outbound_a2a_task", task: closed });
+        json(res, 200, closed);
         return;
       }
 

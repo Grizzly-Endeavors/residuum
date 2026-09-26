@@ -11,6 +11,7 @@
   } from "../lib/session-format";
   import type { SessionCategory } from "../lib/types";
   import SessionRow from "./SessionRow.svelte";
+  import OutboundTaskRow from "./OutboundTaskRow.svelte";
 
   let {
     overlay,
@@ -132,8 +133,9 @@
     <h2 id="sessions-sidebar-title" class="sessions-title" tabindex="-1" bind:this={headingEl}>
       Sessions
     </h2>
-    {#if sessions.live.length > 0}
-      <span class="sessions-live-count">{sessions.live.length} live</span>
+    {#if sessions.live.length + sessions.outbound.length > 0}
+      <span class="sessions-live-count">{sessions.live.length + sessions.outbound.length} live</span
+      >
     {/if}
     <button
       type="button"
@@ -161,6 +163,8 @@
     {:else if sessions.loaded}
       {#each SESSION_CATEGORIES as category (category)}
         {@const live = liveByCategory[category]}
+        {@const outbound = category === "external" ? sessions.outbound : []}
+        {@const liveCount = live.length + outbound.length}
         {@const finished = sessions.completed[category]}
         <section class="sessions-group" aria-labelledby="sessions-group-{category}-heading">
           <h3 class="sessions-group-heading" id="sessions-group-{category}-heading">
@@ -176,20 +180,39 @@
                 <Icon name="chevron" size={12} />
               </span>
               {categoryHeading(category)}
-              {#if live.length > 0}
-                <span class="sessions-group-live-count">{live.length} live</span>
+              {#if liveCount > 0}
+                <span class="sessions-group-live-count">{liveCount} live</span>
               {/if}
             </button>
           </h3>
           {#if !collapsed[category]}
             <div id="sessions-group-{category}" class="sessions-group-body">
+              {#if category === "external" && sessions.outboundError}
+                <div class="sessions-error" role="alert">
+                  <p>{sessions.outboundError}</p>
+                  <button
+                    type="button"
+                    class="sessions-text-btn"
+                    onclick={() => void sessions.refreshOutbound()}
+                  >
+                    Try again
+                  </button>
+                </div>
+              {/if}
+              {#if outbound.length > 0}
+                <ul class="sessions-list" aria-label="Tasks sent to other agents">
+                  {#each outbound as task (task.task_id)}
+                    <OutboundTaskRow {task} />
+                  {/each}
+                </ul>
+              {/if}
               {#if live.length > 0}
                 <ul class="sessions-list" aria-label="Live {category} sessions">
                   {#each live as session (session.run_id)}
                     <SessionRow {session} selected={session.run_id === selectedRunId} {onSelect} />
                   {/each}
                 </ul>
-              {:else}
+              {:else if outbound.length === 0}
                 <p class="sessions-empty">{categoryIdleText(category)}</p>
               {/if}
 

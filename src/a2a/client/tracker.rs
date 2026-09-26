@@ -17,14 +17,16 @@ use tokio::sync::RwLock;
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
 use crate::background::registry::MAIN_ADDRESS;
-use crate::bus::SessionAddress;
+use crate::bus::{
+    NoticeEvent, NotifyName, OutboundA2aTaskEvent, SYSTEM_CHANNEL, SessionAddress, topics,
+};
 use crate::interfaces::attachment::{self, AttachmentInfo};
 
 use super::hub::{A2aClientHub, HubError, task_state_str};
 
 /// How long an agent must stay unreachable before the sender gets a single
 /// notice; retries continue either way.
-const UNREACHABLE_NOTICE_AFTER: chrono::Duration = chrono::Duration::hours(3);
+const UNREACHABLE_NOTICE_AFTER: chrono::Duration = chrono::Duration::minutes(10);
 /// How long a completed task's record is kept before being pruned on load.
 const PRUNE_TERMINAL_AFTER: chrono::Duration = chrono::Duration::days(30);
 /// Poll/reconnect backoff bounds, matching the plan's 5s→60s.
@@ -33,6 +35,10 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Text parts at or under this size are delivered inline; larger ones (and
 /// every file part) are saved to the agent inbox instead.
 const INLINE_TEXT_LIMIT: usize = 4096;
+/// Appended to what the sending agent is told when the user stops one of
+/// its tasks from the web UI, so it doesn't take the cancel for the remote
+/// agent's own doing and retry.
+const USER_STOPPED_NOTE: &str = "Stopped by the user from the web UI.";
 
 /// One tracked outbound task, persisted at `{workspace}/a2a/outbound.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,8 +59,9 @@ pub struct TrackedTask {
     /// unreachable streak; cleared on the next successful contact.
     #[serde(default)]
     pub first_unreachable_at: Option<DateTime<Utc>>,
-    /// Whether the one-time 3-hour unreachable notice has already fired for
-    /// the current unreachable streak.
+    /// Whether the unreachable notice (sent once a streak passes
+    /// [`UNREACHABLE_NOTICE_AFTER`]) has already fired for the current
+    /// streak.
     #[serde(default)]
     pub unreachable_notified: bool,
     /// Whether a delivery has already fired for the current turn (since the
@@ -64,6 +71,12 @@ pub struct TrackedTask {
     /// every time `track` records a new send or follow-up.
     #[serde(default)]
     pub notified_this_turn: bool,
+    /// Set when the user stopped watching this task because its agent
+    /// couldn't be reached to cancel it (see
+    /// [`RemoteTaskTracker::stop_watching`]). A late update from the agent
+    /// is ignored rather than reopening a task the user closed.
+    #[serde(default)]
+    pub stopped_by_user: bool,
 }
 
 impl TrackedTask {
@@ -282,6 +295,7 @@ impl RemoteTaskTracker {
                     first_unreachable_at: None,
                     unreachable_notified: false,
                     notified_this_turn: false,
+                    stopped_by_user: false,
                 });
             entry.state = state.to_string();
             entry.hop_count = hop_count;
@@ -290,10 +304,75 @@ impl RemoteTaskTracker {
             entry.first_unreachable_at = None;
             entry.unreachable_notified = false;
             entry.notified_this_turn = false;
-            store.clone()
+            entry.stopped_by_user = false;
+            (entry.clone(), store.clone())
+        };
+        let (task, snapshot) = snapshot;
+        self.persist(&snapshot).await;
+        self.publish_task_change(&task).await;
+        self.spawn_watch(task_id);
+    }
+
+    /// Every open task, from every sender, newest first — the web sessions
+    /// sidebar's list of tasks sent to other agents.
+    pub async fn open_tasks(&self) -> Vec<TrackedTask> {
+        let store = self.store.read().await;
+        let mut tasks: Vec<TrackedTask> = store
+            .tasks
+            .values()
+            .filter(|t| t.is_open())
+            .cloned()
+            .collect();
+        tasks.sort_by_key(|t| std::cmp::Reverse(t.created_at));
+        tasks
+    }
+
+    /// Cancel the open task `task_id` on its remote agent — the web sessions
+    /// sidebar's Stop button. The sending agent is told the task was
+    /// canceled and that the user stopped it.
+    ///
+    /// Returns `Ok(None)` when no open task has that id.
+    ///
+    /// # Errors
+    /// Returns [`HubError`] if the agent can't currently be reached to
+    /// cancel it; [`Self::stop_watching`] is the way out of that.
+    pub async fn stop_task(&self, task_id: &str) -> Result<Option<TrackedTask>, HubError> {
+        let Some(task) = self.get(task_id).await.filter(TrackedTask::is_open) else {
+            return Ok(None);
+        };
+        self.cancel_remote(&task, Some(USER_STOPPED_NOTE)).await?;
+        Ok(self.get(task_id).await)
+    }
+
+    /// Close the open task `task_id` locally without reaching its agent —
+    /// for a task whose agent is unreachable, so the user can end the
+    /// retries (and their notices) anyway. The task may still be running
+    /// on the remote side; the sending agent is told so.
+    ///
+    /// Returns `None` when no open task has that id.
+    pub async fn stop_watching(&self, task_id: &str) -> Option<TrackedTask> {
+        let (task, snapshot) = {
+            let mut store = self.store.write().await;
+            let entry = store.tasks.get_mut(task_id).filter(|t| t.is_open())?;
+            entry.state = "canceled".to_string();
+            entry.last_status_text = Some(
+                "The user stopped watching this task because its agent couldn't be reached to \
+                 cancel it. It may still be running on the remote side."
+                    .to_string(),
+            );
+            entry.stopped_by_user = true;
+            entry.first_unreachable_at = None;
+            entry.unreachable_notified = false;
+            entry.notified_this_turn = true;
+            entry.updated_at = Utc::now();
+            (entry.clone(), store.clone())
         };
         self.persist(&snapshot).await;
-        self.spawn_watch(task_id);
+        tracing::info!(task_id, agent = %task.agent, "user stopped watching a2a remote task");
+        self.publish_task_change(&task).await;
+        self.deliver(&task, task.last_status_text.as_deref(), Vec::new(), None)
+            .await;
+        Some(task)
     }
 
     /// Cancel the sender's open task with `agent`, if any, returning its
@@ -310,7 +389,14 @@ impl RemoteTaskTracker {
         let Some(task) = self.any_open_task_for(sender, agent).await else {
             return Ok(None);
         };
-        let (client, _card) = self.hub.client_for(agent).await?;
+        self.cancel_remote(&task, None).await?;
+        Ok(Some(task.task_id))
+    }
+
+    /// Ask `task`'s agent to cancel it and apply the reply, adding `note`
+    /// to what the sending agent is told.
+    async fn cancel_remote(&self, task: &TrackedTask, note: Option<&str>) -> Result<(), HubError> {
+        let (client, _card) = self.hub.client_for(&task.agent).await?;
         match client
             .cancel_task(&a2a::CancelTaskRequest {
                 id: task.task_id.clone(),
@@ -320,14 +406,14 @@ impl RemoteTaskTracker {
             .await
         {
             Ok(remote_task) => {
-                self.apply_remote_task(remote_task).await;
+                self.apply_remote_task_noted(remote_task, note).await;
+                Ok(())
             }
             Err(e) => {
-                tracing::warn!(task_id = %task.task_id, agent, error = %e, "failed to cancel a2a remote task");
-                return Err(HubError::RequestFailed(agent.to_string(), e.to_string()));
+                tracing::warn!(task_id = %task.task_id, agent = %task.agent, error = %e, "failed to cancel a2a remote task");
+                Err(HubError::RequestFailed(task.agent.clone(), e.to_string()))
             }
         }
-        Ok(Some(task.task_id))
     }
 
     async fn get(&self, task_id: &str) -> Option<TrackedTask> {
@@ -349,37 +435,60 @@ impl RemoteTaskTracker {
         text: Option<String>,
         is_final: bool,
     ) -> Option<(TrackedTask, bool)> {
-        let (result, snapshot, recovered) = {
+        let (result, snapshot, streak_ended, sender_was_told, changed) = {
             let mut store = self.store.write().await;
             let entry = store.tasks.get_mut(task_id)?;
+            if entry.stopped_by_user {
+                return None;
+            }
+            let before = (entry.state.clone(), entry.last_status_text.clone());
             entry.state = state.to_string();
             if let Some(t) = text {
                 entry.last_status_text = Some(t);
             }
             entry.updated_at = Utc::now();
-            let recovered = entry.first_unreachable_at.take().is_some();
+            let streak_ended = entry.first_unreachable_at.take().is_some();
+            // Captured before clearing: whether this successful contact
+            // ends a streak the sender and user were already told about,
+            // so exactly one recovery notice goes out per notified streak.
+            let sender_was_told = entry.unreachable_notified;
             entry.unreachable_notified = false;
             let should_deliver = is_final && !entry.notified_this_turn;
             if should_deliver {
                 entry.notified_this_turn = true;
             }
-            let recovered_agent = recovered.then(|| entry.agent.clone());
+            let changed =
+                streak_ended || before != (entry.state.clone(), entry.last_status_text.clone());
             let task = entry.clone();
-            ((task, should_deliver), store.clone(), recovered_agent)
+            (
+                (task, should_deliver),
+                store.clone(),
+                streak_ended,
+                sender_was_told,
+                changed,
+            )
         };
         self.persist(&snapshot).await;
-        if let Some(agent) = recovered {
-            tracing::info!(task_id, agent, "a2a remote task poll recovered");
+        if changed {
+            self.publish_task_change(&result.0).await;
+        }
+        if streak_ended {
+            tracing::info!(task_id, agent = %result.0.agent, "a2a remote task poll recovered");
+        }
+        if sender_was_told {
+            self.notify_unreachable_recovered(&result.0).await;
         }
         Some(result)
     }
 
     /// Record an unreachable attempt against `task_id`. Logs at `warn` once
     /// when the failure streak starts, not on every poll — see
-    /// [`update_state`] for the matching single-line recovery log (polling
-    /// never gives up; it retries until it recovers or the task is
-    /// cancelled). After the streak passes [`UNREACHABLE_NOTICE_AFTER`],
-    /// sends the sender exactly one notice — retries continue regardless.
+    /// [`Self::update_state`] for the matching single-line recovery log
+    /// (polling never gives up; it retries with backoff until it recovers or
+    /// the task is cancelled). After the streak passes
+    /// [`UNREACHABLE_NOTICE_AFTER`], tells the sending agent (a transcript
+    /// note) and publishes a user-facing notice, once per streak;
+    /// [`Self::update_state`] sends a matching notice to both on recovery.
     async fn note_unreachable(&self, task_id: &str, reason: &str) {
         let outcome = {
             let mut store = self.store.write().await;
@@ -405,16 +514,76 @@ impl RemoteTaskTracker {
         };
         let (is_streak_start, should_notify, sender, agent, hop_count, snapshot) = outcome;
         self.persist(&snapshot).await;
+        if is_streak_start && let Some(task) = snapshot.tasks.get(task_id) {
+            self.publish_task_change(task).await;
+        }
         if is_streak_start {
             tracing::warn!(task_id, agent = %agent, reason, "a2a remote task poll failing; will keep retrying");
         }
         if should_notify {
             let content = format!(
-                "[Remote agent a2a:{agent} — task {task_id}] Still unreachable after 3 hours \
+                "[Remote agent a2a:{agent} — task {task_id}] Still unreachable after 10 minutes \
                  ({reason}). Still retrying in the background."
             );
             self.deliver_to_sender(&sender, &agent, hop_count, content)
                 .await;
+            self.publish_user_notice(&format!(
+                "a2a:{agent} has been unreachable for 10 minutes (task {task_id}): {reason}. \
+                 Still retrying in the background."
+            ))
+            .await;
+        }
+    }
+
+    /// Tell both the sending agent and the user that a task's agent is
+    /// reachable again, mirroring [`Self::note_unreachable`]'s own
+    /// delivery shape.
+    async fn notify_unreachable_recovered(&self, task: &TrackedTask) {
+        let content = format!(
+            "[Remote agent a2a:{} — task {}] Reachable again.",
+            task.agent, task.task_id
+        );
+        self.deliver_to_sender(&task.sender_address, &task.agent, task.hop_count, content)
+            .await;
+        self.publish_user_notice(&format!(
+            "a2a:{} is reachable again (task {}).",
+            task.agent, task.task_id
+        ))
+        .await;
+    }
+
+    /// Publish a plain-language notice to the system notification channel
+    /// (the web UI's toast/notice stream, and every other interface
+    /// subscribed to it) — the user-facing half of an unreachable/recovery
+    /// notice, alongside the agent-facing transcript note.
+    async fn publish_user_notice(&self, message: &str) {
+        if let Err(e) = self
+            .messenger
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                NoticeEvent {
+                    message: message.to_string(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish a2a task notice");
+        }
+    }
+
+    /// Tell the web sessions sidebar a task was recorded or changed state.
+    async fn publish_task_change(&self, task: &TrackedTask) {
+        if let Err(e) = self
+            .messenger
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                OutboundA2aTaskEvent { task: task.clone() },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, task_id = %task.task_id, "failed to publish a2a task change");
         }
     }
 
@@ -455,6 +624,12 @@ impl RemoteTaskTracker {
     /// attention. Returns whether that happened (the caller should stop
     /// watching).
     async fn apply_remote_task(&self, task: a2a::Task) -> bool {
+        self.apply_remote_task_noted(task, None).await
+    }
+
+    /// [`Self::apply_remote_task`], adding `note` to the delivery if this
+    /// update delivers one.
+    async fn apply_remote_task_noted(&self, task: a2a::Task, note: Option<&str>) -> bool {
         let state = task_state_str(&task.status.state);
         let text = task
             .status
@@ -476,6 +651,7 @@ impl RemoteTaskTracker {
                 &updated,
                 text.as_deref(),
                 task.artifacts.unwrap_or_default(),
+                note,
             )
             .await;
         }
@@ -632,6 +808,7 @@ impl RemoteTaskTracker {
                                 &updated,
                                 text.as_deref(),
                                 std::mem::take(&mut pending_artifacts),
+                                None,
                             )
                             .await;
                         }
@@ -667,7 +844,13 @@ impl RemoteTaskTracker {
         }
     }
 
-    async fn deliver(&self, task: &TrackedTask, text: Option<&str>, artifacts: Vec<a2a::Artifact>) {
+    async fn deliver(
+        &self,
+        task: &TrackedTask,
+        text: Option<&str>,
+        artifacts: Vec<a2a::Artifact>,
+        note: Option<&str>,
+    ) {
         let mut body = format!(
             "[Remote agent a2a:{agent} — task {task_id}: {state}]\n{text}",
             agent = task.agent,
@@ -675,6 +858,9 @@ impl RemoteTaskTracker {
             state = task.state,
             text = text.unwrap_or("(no status message)"),
         );
+        if let Some(note) = note {
+            write!(body, "\n{note}").ok();
+        }
         for artifact in artifacts {
             self.append_artifact(&mut body, &artifact).await;
         }
@@ -961,6 +1147,7 @@ mod tests {
                 first_unreachable_at: None,
                 unreachable_notified: false,
                 notified_this_turn: false,
+                stopped_by_user: false,
             },
         );
         tokio::fs::write(&path, serde_json::to_vec(&store).unwrap())
@@ -1023,5 +1210,320 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, HubError::Offline(name, _) if name == "laptop"));
+    }
+
+    #[tokio::test]
+    async fn note_unreachable_notifies_once_after_ten_minutes_not_on_every_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, bus) = messenger();
+        let mut notices = bus
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        // First failure starts the streak; under the 10-minute threshold,
+        // so no user notice yet.
+        tracker.note_unreachable("t1", "connection refused").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "must not notify before the streak is 10 minutes old"
+        );
+
+        // Backdate the streak's start past the threshold and fail again.
+        {
+            let mut store = tracker.store.write().await;
+            let entry = store.tasks.get_mut("t1").unwrap();
+            entry.first_unreachable_at = Some(Utc::now() - chrono::Duration::minutes(11));
+        }
+        tracker.note_unreachable("t1", "connection refused").await;
+        let notice = notices.recv().await.unwrap().unwrap();
+        assert!(notice.message.contains("laptop"), "got: {}", notice.message);
+        assert!(
+            notice.message.contains("10 minutes"),
+            "got: {}",
+            notice.message
+        );
+
+        // A third failure in the same streak must not renotify.
+        tracker.note_unreachable("t1", "connection refused").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "must not renotify within the same unreachable streak"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_state_notifies_recovery_once_after_an_unreachable_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, bus) = messenger();
+        let mut notices = bus
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        // Simulate an already-notified unreachable streak directly, rather
+        // than waiting out the real threshold.
+        {
+            let mut store = tracker.store.write().await;
+            let entry = store.tasks.get_mut("t1").unwrap();
+            entry.first_unreachable_at = Some(Utc::now() - chrono::Duration::minutes(11));
+            entry.unreachable_notified = true;
+        }
+
+        tracker.update_state("t1", "working", None, false).await;
+        let notice = notices.recv().await.unwrap().unwrap();
+        assert!(
+            notice.message.contains("reachable again"),
+            "got: {}",
+            notice.message
+        );
+
+        // A second successful contact must not renotify — recovery is
+        // reported exactly once per streak, like the unreachable notice
+        // itself.
+        tracker.update_state("t1", "working", None, false).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "must not renotify recovery on a later successful contact"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_state_does_not_notify_when_never_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, bus) = messenger();
+        let mut notices = bus
+            .subscribe::<_, NoticeEvent>(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        tracker.update_state("t1", "working", None, false).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), notices.recv())
+                .await
+                .is_err(),
+            "a task that was never unreachable has no recovery to report"
+        );
+    }
+
+    async fn tracker_with_task(
+        dir: &std::path::Path,
+        hub: Arc<A2aClientHub>,
+        messenger: Arc<AgentMessenger>,
+    ) -> Arc<RemoteTaskTracker> {
+        let tracker =
+            RemoteTaskTracker::load(dir.join("outbound.json"), hub, messenger, dir.join("inbox"))
+                .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        tracker
+    }
+
+    #[tokio::test]
+    async fn open_tasks_lists_only_open_tasks_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (messenger, _bus) = messenger();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "desktop",
+                "t2".to_string(),
+                "c2".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "phone",
+                "t3".to_string(),
+                "c3".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        {
+            let mut store = tracker.store.write().await;
+            let t2 = store.tasks.get_mut("t2").unwrap();
+            t2.created_at = Utc::now() + chrono::Duration::seconds(5);
+            store.tasks.get_mut("t3").unwrap().state = "completed".to_string();
+        }
+
+        let ids: Vec<String> = tracker
+            .open_tasks()
+            .await
+            .into_iter()
+            .map(|t| t.task_id)
+            .collect();
+        assert_eq!(ids, ["t2", "t1"]);
+    }
+
+    #[tokio::test]
+    async fn track_and_state_changes_publish_a_task_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let (messenger, bus) = messenger();
+        let mut events = bus
+            .subscribe::<_, OutboundA2aTaskEvent>(topics::Notification(NotifyName::from(
+                SYSTEM_CHANNEL,
+            )))
+            .await
+            .unwrap();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+
+        let recorded = events.recv().await.unwrap().unwrap();
+        assert_eq!(recorded.task.task_id, "t1");
+        assert_eq!(recorded.task.state, "working");
+
+        // A poll that changes nothing the sidebar shows publishes nothing.
+        tracker.update_state("t1", "working", None, false).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), events.recv())
+                .await
+                .is_err(),
+            "an unchanged poll must not publish"
+        );
+
+        tracker
+            .update_state("t1", "completed", Some("done".to_string()), true)
+            .await;
+        let finished = events.recv().await.unwrap().unwrap();
+        assert_eq!(finished.task.state, "completed");
+        assert!(!finished.task.is_open());
+    }
+
+    #[tokio::test]
+    async fn stop_task_reports_none_for_an_unknown_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (messenger, _bus) = messenger();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+        assert!(tracker.stop_task("nope").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn stop_task_reports_hub_error_when_agent_is_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        hub.register_external(
+            "laptop".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            HashMap::new(),
+            AgentSource::Config,
+        )
+        .await;
+        let (messenger, _bus) = messenger();
+        let tracker = tracker_with_task(dir.path(), hub, messenger).await;
+
+        let err = tracker.stop_task("t1").await.unwrap_err();
+        assert!(matches!(err, HubError::Offline(name, _) if name == "laptop"));
+        assert!(
+            tracker.get("t1").await.unwrap().is_open(),
+            "a failed stop leaves the task open for stop_watching"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_watching_closes_the_task_tells_the_sender_and_ignores_late_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let (messenger, bus) = messenger();
+        let mut to_main = bus
+            .subscribe::<_, crate::bus::MessageEvent>(topics::UserMessage)
+            .await
+            .unwrap();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+
+        let stopped = tracker.stop_watching("t1").await.unwrap();
+        assert_eq!(stopped.state, "canceled");
+        assert!(tracker.open_tasks().await.is_empty());
+
+        let told = to_main.recv().await.unwrap().unwrap();
+        assert!(
+            told.content.contains("stopped watching"),
+            "got: {}",
+            told.content
+        );
+
+        assert!(
+            tracker
+                .update_state("t1", "working", None, false)
+                .await
+                .is_none(),
+            "a late update must not reopen a task the user closed"
+        );
+        assert_eq!(tracker.get("t1").await.unwrap().state, "canceled");
+        assert!(
+            tracker.stop_watching("t1").await.is_none(),
+            "an already-closed task has nothing to stop"
+        );
     }
 }

@@ -201,8 +201,10 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
             post(workspace_bulk::api_workspace_read),
         )
         .route("/api/inbox", get(inbox::api_inbox_list))
+        .route("/api/inbox/archive", get(inbox::api_inbox_archive_list))
         .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
         .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
+        .route("/api/inbox/{id}/restore", post(inbox::api_inbox_restore))
         .route(
             "/api/inbox/{id}/attachments/{index}",
             get(inbox::api_inbox_attachment),

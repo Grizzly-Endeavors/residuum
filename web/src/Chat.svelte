@@ -53,5 +53,9 @@
     reconnecting={ws.transport.status !== "connected"}
     pendingCount={ws.transport.pendingCount}
   />
-  <ChatFooter usage={ws.store.sessionUsage} />
+  <ChatFooter
+    usage={ws.store.sessionUsage}
+    memoryWorking={ws.store.memoryWorking}
+    subconsciousWorking={ws.store.subconsciousWorking}
+  />
 </div>

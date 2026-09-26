@@ -232,7 +232,12 @@ pub(crate) struct GatewayRuntime {
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
     pub agent: Agent,
-    pub observer: Observer,
+    /// `Arc`-shared with the post-turn background worker (see
+    /// `crate::gateway::post_turn`) so an automatic observe cycle's LLM call
+    /// can run off the event loop while a config reload still safely swaps
+    /// the whole instance in place — `Observer`'s own provider/config are
+    /// interior-mutable for exactly this.
+    pub observer: Arc<Observer>,
     /// The single serialized writer for global memory: episode id
     /// allocation, the observation log, the search index, embedding, and
     /// the reflector trigger. Shared with every session run's completion
@@ -240,8 +245,19 @@ pub(crate) struct GatewayRuntime {
     pub merge_writer: Arc<MemoryMergeWriter>,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
     /// In-memory learning-loop state (cooldown + fallback turn counter). Resets
-    /// on restart.
-    pub learning_state: crate::subconscious::LearningState,
+    /// on restart. `Arc<Mutex<_>>` so the post-turn background worker (see
+    /// `crate::gateway::post_turn`) and the main loop's own turn-count
+    /// fallback can both reach it without racing.
+    pub learning_state: Arc<std::sync::Mutex<crate::subconscious::LearningState>>,
+    /// Background worker for the automatic observe cycle (including the
+    /// idle transition's) — see `crate::gateway::post_turn`.
+    pub post_turn_observe: Arc<crate::gateway::post_turn::ObserveWorker>,
+    /// Background worker for the end-of-turn subconscious evaluation.
+    pub post_turn_subconscious: Arc<crate::gateway::post_turn::SubconsciousWorker>,
+    /// Results from both post-turn workers above, applied on the main loop
+    /// (see `run_loop`'s own select branch) — the `Agent`-touching tail
+    /// neither worker can run for itself.
+    pub post_turn_result_rx: mpsc::UnboundedReceiver<crate::gateway::post_turn::PostTurnResult>,
     pub hybrid_searcher: Arc<HybridSearcher>,
     pub session_runtime: Arc<SessionRuntime>,
     pub session_registry: Arc<SessionRegistry>,

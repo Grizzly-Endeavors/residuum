@@ -19,9 +19,10 @@ use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
-    AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
-    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, PulseOverlap, ResultDisposition,
-    SessionAddress, SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
+    AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
+    ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
+    PulseOverlap, ResultDisposition, SessionAddress, SessionEventKind, SessionResponseEvent,
+    SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
 use crate::interfaces::types::InboundMessage;
@@ -1180,6 +1181,36 @@ async fn maybe_output_to_conversation(
     }
 }
 
+/// Tell a conversation session's own interface that its turn started or
+/// ended, so it can show a typing indicator the same way it does for the
+/// main agent's turns — see [`ConversationTypingEvent`]. A no-op for every
+/// other session (`target` is `None`).
+async fn publish_conversation_typing(
+    publisher: &Publisher,
+    target: Option<&crate::bus::ConversationTarget>,
+    active: bool,
+) {
+    let Some(target) = target else {
+        return;
+    };
+    if let Err(e) = publisher
+        .publish(
+            topics::Endpoint(EndpointName::from(target.endpoint.as_str())),
+            ConversationTypingEvent {
+                conversation_id: target.conversation_id.clone(),
+                active,
+            },
+        )
+        .await
+    {
+        tracing::warn!(
+            conversation = %target.conversation_id,
+            error = %e,
+            "failed to publish conversation typing signal"
+        );
+    }
+}
+
 /// What [`relay_result_to_spawner`] needs besides the run and the relay
 /// itself, grouped to keep its argument count down.
 struct RelayEnv<'a> {
@@ -1237,6 +1268,7 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    publish_conversation_typing(ctx.publisher, ctx.info.conversation_target.as_ref(), true).await;
     ctx.checkpoints
         .spawn_turn_start_checkpoint(turn_checkpoint_context(
             ctx,
@@ -1268,6 +1300,7 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    publish_conversation_typing(ctx.publisher, ctx.info.conversation_target.as_ref(), false).await;
     ctx.checkpoints
         .spawn_turn_end_checkpoint(turn_checkpoint_context(
             ctx,
@@ -1481,6 +1514,52 @@ mod tests {
             },
         );
         (runtime, sub)
+    }
+
+    #[tokio::test]
+    async fn publish_conversation_typing_is_a_noop_with_no_target() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut sub = bus_handle
+            .subscribe::<_, ConversationTypingEvent>(topics::Endpoint(EndpointName::from(
+                "discord",
+            )))
+            .await
+            .unwrap();
+        let publisher = bus_handle.publisher();
+
+        publish_conversation_typing(&publisher, None, true).await;
+
+        let got = tokio::time::timeout(Duration::from_millis(100), sub.recv()).await;
+        assert!(
+            got.is_err(),
+            "a session with no conversation target must publish nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_conversation_typing_reaches_the_targets_endpoint() {
+        let bus_handle = crate::bus::spawn_broker();
+        let mut sub = bus_handle
+            .subscribe::<_, ConversationTypingEvent>(topics::Endpoint(EndpointName::from(
+                "discord",
+            )))
+            .await
+            .unwrap();
+        let publisher = bus_handle.publisher();
+        let target = ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "555".to_string(),
+        };
+
+        publish_conversation_typing(&publisher, Some(&target), true).await;
+        let started = sub.recv().await.unwrap().unwrap();
+        assert_eq!(started.conversation_id, "555");
+        assert!(started.active);
+
+        publish_conversation_typing(&publisher, Some(&target), false).await;
+        let ended = sub.recv().await.unwrap().unwrap();
+        assert_eq!(ended.conversation_id, "555");
+        assert!(!ended.active);
     }
 
     struct MockProvider {
@@ -2837,10 +2916,12 @@ mod tests {
     async fn idle_session_releases_its_permit_for_a_new_run() {
         // max_concurrent = 1: if an idle session held its permit, a second
         // session could not start running until the first's idle timeout
-        // elapsed. Give the first session an idle window long enough that
-        // waiting it out would be obviously slow, then prove the second
-        // reaches running/idle almost immediately instead.
-        let idle_window = Duration::from_millis(300);
+        // ended it. The first session's idle window is far longer than the
+        // test waits, so the second starting at all proves it didn't wait on
+        // that timeout — and the check doesn't depend on how fast a loaded
+        // CI runner forks a session.
+        let idle_window = Duration::from_mins(10);
+        let generous = Duration::from_secs(20);
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
@@ -2876,7 +2957,7 @@ mod tests {
         );
 
         // Wait for the first session to go idle (releasing its permit).
-        let idle_at = wait_for(&runtime, &first, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &first, generous, |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -2888,17 +2969,20 @@ mod tests {
             Some(make_resources("second done")),
         );
         // Any state past `Forking` means the permit was acquired and the
-        // turn at least started — must happen well inside the first
-        // session's idle window to prove it didn't wait on that timeout.
-        let second_started = wait_for(&runtime, &second, idle_window, |info| {
+        // turn at least started.
+        let second_started = wait_for(&runtime, &second, generous, |info| {
             info.state != SessionState::Forking
         })
         .await;
-        let elapsed = idle_at.elapsed();
         assert!(
             second_started.is_some(),
-            "second session should start running without waiting for the first's idle timeout \
-             (waited {elapsed:?} against an idle window of {idle_window:?})"
+            "second session should start while the first is idle, not wait out its \
+             {idle_window:?} idle timeout"
+        );
+        assert_eq!(
+            runtime.registry.get(&first).map(|info| info.state),
+            Some(SessionState::Idle),
+            "the first session must still be idle: the second started without it ending"
         );
     }
 

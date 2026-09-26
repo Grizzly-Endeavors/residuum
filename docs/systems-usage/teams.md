@@ -33,7 +33,7 @@ Every message the agent sees records who sent it and where, e.g. `[From: Jane Do
 
 Only the owner's own direct message reaches the main agent. Every other admitted conversation — a group chat, a standard or private channel, and a non-owner's DM when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that conversation, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group chat or channel — those are still shared spaces, so they get a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that conversation — see [Where replies go](#where-replies-go).
 
-`/stop` follows the same routing: typed in the owner's own DM it stops main's current turn; typed in a group chat or channel it stops that conversation's session instead, never main — see [Turn Control](turn-control.md).
+`/stop` follows the same routing: typed in the owner's own DM it stops main's current turn; typed in a group chat or channel it stops that conversation's session instead, never main — see [Turn Control](turn-control.md). `/stop <name>` names any live session explicitly instead of relying on that routing — useful for stopping a session from somewhere other than its own conversation, e.g. the owner's own DM. `/sessions` lists every live session (address, purpose, state, elapsed time).
 
 ## Direct messages, group chats, and channels
 
@@ -60,7 +60,7 @@ The buffer for that conversation is emptied when it is delivered, so each messag
 - System notices and errors go only to the owner's DM, never into a shared conversation.
 - If a turn is already running when another Teams message arrives, the new message joins that turn (main's own turn for the owner's DM, or a session's turn for its own conversation) and the answer goes to the conversation that started it.
 
-Long replies are split into chunks of about 20 KB (Teams rejects larger activities). A typing indicator shows in the target conversation while a turn runs.
+Long replies are split into chunks of about 20 KB (Teams rejects larger activities). A typing indicator shows in the target conversation while a turn runs — for the main agent's own turn, and equally for a group chat or non-owner DM's own conversation session turn (see [Conversation Routing](background-tasks.md#conversation-routing)), each driven by its own lifecycle signal so one doesn't depend on the other.
 
 ## Attachments
 

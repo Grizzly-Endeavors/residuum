@@ -579,7 +579,7 @@ async fn reload_providers(
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
-            rt.observer = components.observer;
+            rt.observer = Arc::new(components.observer);
             rt.merge_writer.swap_reflector(components.reflector).await;
             rt.merge_writer
                 .set_embedding_provider(components.embedding_provider)
@@ -756,6 +756,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             };
             let a2a_agents_state = crate::gateway::web::a2a::A2aAgentsStatusState {
                 hub: std::sync::Arc::clone(&rt.a2a_hub),
+                tracker: std::sync::Arc::clone(&rt.a2a_tracker),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,

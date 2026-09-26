@@ -20,6 +20,10 @@ Fires automatically after enough conversation accumulates (token threshold). The
 
 Extraction (the LLM call that turns messages into observations and a narrative) and persistence (episode id allocation, writing the transcript and observation archives, indexing, embedding, and the reflector check) are separate steps. Persistence always goes through the memory merge writer, the single serialized writer for global memory — the main agent's own observation flow and every agent session's completion both call it, so episode numbering and observation-log appends never race between concurrent writers.
 
+The main agent's own automatic cycle (after a turn ends, on the soft-threshold cooldown, or at an idle transition) runs off the gateway event loop, in a background worker — see `crate::gateway::post_turn` in the source — so the LLM call never delays the next inbound message, a stop request, or a shutdown signal from being handled. At most one cycle runs at a time; a trigger that arrives while one is already running coalesces into a single follow-up rather than stacking. Only reloading the agent's own observations/recent-context views needs to happen back on the main loop, once the cycle's result comes back — everything else (the extraction call, the merge, the file writes) happens entirely in the background. This is why memory can be "one step stale": a turn that starts before a still-in-flight cycle's result is applied sees the pre-cycle context. The web UI shows a quiet "updating memory…" indicator in the chat footer while a cycle is running. An idle transition's own cycle runs the same way — clearing the conversation buffer and switching interfaces waits for it, so an unobserved message is never wiped out by the clear racing ahead of the observe. A manually forced observe (`/observe`) waits for an in-flight background cycle to finish first, so the two never turn the same messages into two episodes. Appending to `recent_messages.json` and removing observed messages from it are serialized, so neither ever loses the other's write. On shutdown or restart, a cycle still waiting on its extraction call is cancelled with nothing written (its messages stay in `recent_messages.json` for the next boot); a cycle already merging gets up to 15 seconds to finish its atomic writes before it is aborted.
+
+An automatic extraction or merge failure (a model call error, a write failure) is never a silent retry loop: it backs off exponentially (1m, 2m, 4m, ... capped at 1h) before the next threshold crossing attempts again, so a broken provider doesn't re-spend an LLM call on every subsequent crossing while unobserved messages keep accumulating — those messages are never discarded on a failed attempt, so they're still there once it recovers. The user is told once when a failure streak starts, in plain language ("the observer couldn't process recent messages; it will keep retrying with a backing-off delay. Recent messages are safe and will be observed once it recovers.", or for a failed save, "the observer extracted new observations but couldn't save them; ..."), and once when it clears ("the observer has recovered"); repeat failures within the same streak stay quiet. A manually forced observe (the `/observe` chat command) always attempts regardless of this backoff, and a working manual retry clears it for the automatic path too.
+
 ### Agent Sessions and Memory
 
 Every agent session — a pulse, a scheduled action, a webhook, or a `subagent_spawn`/learner sub-agent — has its own working memory and merges into this same global memory when it completes. A session's run is checked against the same observer thresholds as the main agent's; crossing the force threshold mid-run extracts and stages observations locally, invisible to any other agent until the run finishes. On completion, a run produces no episode only if it staged nothing and either its final turn ended with `HEARTBEAT_OK` or its transcript is below a configurable token floor (`episode_skip_token_floor` in `[background]`, default ~2000 tokens) — its transcript is still kept in the session store either way. Otherwise a final extraction runs over whatever wasn't staged, and the combined observations merge through the memory merge writer alongside the run's full transcript as one episode.
@@ -39,7 +43,7 @@ If the process exits mid-run, the run's transcript is not lost: it is appended t
 
 **After extraction:**
 - Observations appended to `memory/observations.json`
-- Unobserved messages cleared from `memory/recent_messages.json`
+- The messages the cycle observed removed from `memory/recent_messages.json`; anything appended after the cycle loaded the file (a turn that ended while it ran) stays for the next cycle
 - Narrative context saved to `memory/recent_context.json`
 - If an embedding model is configured, .obs and .idx files are embedded for retrieval
 
@@ -54,6 +58,8 @@ Fires when `memory/observations.json` exceeds a token threshold. Calls the LLM t
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki or `USER.md`. These are completely separate systems.
 
 Original observations are backed up before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
+
+An automatic reflection failure follows the same backoff and once-per-streak notice as the observer's own (see above) — the reflector's tracker is shared globally across the main agent and every session, since the observation log it compresses is itself global. The `/reflect` chat command bypasses the backoff and always attempts, and its outcome updates the same tracker.
 
 ### Prompt Customization
 

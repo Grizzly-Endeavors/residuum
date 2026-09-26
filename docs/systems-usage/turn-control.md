@@ -8,11 +8,14 @@ Every interface can stop a turn currently in progress: the main agent's own turn
 |-----------|-----|---------|
 | Web UI | A square stop button replaces send while a turn is generating and the composer is empty. Typing a message brings send back so a steering message can be sent instead. Pressing Escape while the composer has focus also stops the turn — scoped to the composer rather than a global shortcut, since several other overlays (modals, drawers, the command menu, the shortcuts overlay) already own Escape while they're open with no shared priority between them. | Main, always. |
 | Telegram / Discord / Teams | `/stop` (in Teams, only the owner can run commands) | The same conversation an ordinary message from the same chat would reach: main for the owner's own DM, otherwise that conversation's own session — see [Conversation Routing](background-tasks.md#conversation-routing). Never main for a group chat or channel, even when the owner is the one who typed it. |
+| Telegram / Discord / Teams | `/stop <name>` | Names a live session explicitly by its address instead of relying on conversation routing, and stops it the same way the web UI's sessions sidebar does: a running turn is interrupted and an idle session is ended. Never targets main; use plain `/stop` in main's own conversation for that. |
 | WebSocket clients | Send a `Cancel` message carrying the `reply_to` correlation id of the turn to stop | Main, always. |
 
-Every chat interface restricts commands (including `/stop`) to the owner, so this is about *where* the owner's own `/stop` lands, not about who else could send it.
+Every chat interface restricts commands (including `/stop` and `/sessions`) to the owner, so this is about *where* the owner's own `/stop` lands, not about who else could send it.
 
-If nothing is running in the target — main, or the conversation's session — the request gets a friendly "nothing is running right now" reply rather than an error or silence, and nothing is touched: see [Correlation and Staleness](#correlation-and-staleness).
+`/sessions` lists every live session — address, purpose, state, and elapsed time since it started — the addresses `/stop <name>` takes.
+
+If nothing is running in the target — main, or the conversation's session — the request gets a friendly "nothing is running right now" reply rather than an error or silence, and nothing is touched: see [Correlation and Staleness](#correlation-and-staleness). A named `/stop <name>` for a name that matches no live session, or a session already finishing, says there's nothing to stop; `/stop main` is refused; plain `/stop` in main's own conversation is what stops main's turn.
 
 ## What Happens on Stop
 
@@ -41,6 +44,8 @@ This applies per tool call, not per command in general: a planned feature (track
 Stopping the gateway — `residuum stop`, a SIGTERM, the HTTP `/api/shutdown` request, or a restart triggered by an update — cancels whatever turn is currently running the same way a user stop does, persisting its partial state identically, before the gateway actually shuts down or re-execs. A turn blocks the event loop's own event processing for its whole duration, so this is watched for from inside the turn's own loop rather than the event loop's — otherwise the shutdown trigger would sit unobserved until the turn finished on its own, which is what made `residuum stop` give up with "did not stop" on a long-running turn. `residuum stop` now succeeds promptly regardless of whether a turn is running.
 
 `/api/shutdown` only accepts this request locally — a copy arriving through the cloud tunnel is refused, since a remote shutdown would leave nothing able to bring the gateway back; see [Residuum Cloud Tunnel and Remote Control Safety](cloud-tunnel.md). A restart, including the rollback-capable one an update takes, is unaffected and stays reachable remotely; see [Self-Update, Rollback, and Startup Health](self-update.md) for what "the gateway is healthy again" means and how a bad update rolls itself back.
+
+Shutdown also gives the background post-turn workers (the automatic observer/reflector cycle and the end-of-turn subconscious evaluation — see [memory.md](memory.md) and [subconscious.md](subconscious.md)) up to 15 seconds each to finish whatever cycle is in flight before moving on. Their own writes are already atomic (a temp file plus a rename), so a cycle cut short by the grace period expiring leaves whatever it had already persisted intact and simply discards the rest — never a corrupted partial state. A `/stop` sent while only this background work is running (no turn in progress) is answered "nothing is running": stopping a turn and stopping memory work are different things, and there is no control for the latter.
 
 ## Correlation and Staleness
 

@@ -122,14 +122,27 @@ async fn flush<B: NotificationBridge>(bridge: &B, buffer: &[NotificationEvent]) 
     }
 }
 
+/// Appended to a non-empty summary body so the batch is never a dead end.
+/// Every result that reaches a native channel is also filed to the agent
+/// inbox (`inbox/agent/` in the workspace) by the notification router, so
+/// that is where the full list lives. macOS's "Open" action opens the web
+/// UI's workspace panel (see `MacosBridge`); Windows toasts have no click
+/// action, so the body itself has to say where the rest are.
+const INBOX_POINTER: &str =
+    "\n\nAll of them are in your agent's inbox: inbox/agent in the workspace.";
+
 #[must_use]
 pub fn build_summary_body(buffer: &[NotificationEvent]) -> String {
+    if buffer.is_empty() {
+        return String::new();
+    }
     let joined = buffer
         .iter()
         .map(|n| n.title.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    truncate_body(&joined, 200)
+    let title_budget = 200_usize.saturating_sub(INBOX_POINTER.chars().count());
+    format!("{}{INBOX_POINTER}", truncate_body(&joined, title_budget))
 }
 
 #[must_use]
@@ -215,14 +228,17 @@ mod tests {
     #[test]
     fn build_summary_body_empty() {
         let body = build_summary_body(&[]);
-        assert_eq!(body, "");
+        assert_eq!(body, "", "nothing to point to, so no inbox pointer either");
     }
 
     #[test]
     fn build_summary_body_single_item() {
         let buffer = vec![make_notification("email_check")];
         let body = build_summary_body(&buffer);
-        assert_eq!(body, "email_check");
+        assert_eq!(
+            body,
+            "email_check\n\nAll of them are in your agent's inbox: inbox/agent in the workspace."
+        );
     }
 
     #[test]
@@ -233,6 +249,26 @@ mod tests {
             make_notification("backup"),
         ];
         let body = build_summary_body(&buffer);
-        assert_eq!(body, "email_check\ndeploy_status\nbackup");
+        assert_eq!(
+            body,
+            "email_check\ndeploy_status\nbackup\n\nAll of them are in your agent's inbox: inbox/agent in the workspace."
+        );
+    }
+
+    #[test]
+    fn build_summary_body_stays_within_200_chars_pointer_included() {
+        let buffer: Vec<NotificationEvent> = (0..30)
+            .map(|i| make_notification(&format!("task_{i}_with_a_fairly_long_name")))
+            .collect();
+        let body = build_summary_body(&buffer);
+        assert!(
+            body.chars().count() <= 200,
+            "body including the pointer must not exceed 200 chars: {} chars",
+            body.chars().count()
+        );
+        assert!(
+            body.ends_with("inbox/agent in the workspace."),
+            "pointer must survive truncation of the item list: {body}"
+        );
     }
 }

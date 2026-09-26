@@ -3,6 +3,7 @@
   import { userInbox } from "../lib/inbox.svelte";
   import { clickOutside } from "../lib/actions/clickOutside";
   import { Icon } from "../lib/icons";
+  import type { UserInboxItem } from "../lib/types";
 
   let {
     open,
@@ -12,10 +13,21 @@
     onClose: () => void;
   } = $props();
 
+  let view = $state<"active" | "archived">("active");
+
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && open) {
       onClose();
     }
+  }
+
+  function showActive() {
+    view = "active";
+  }
+
+  function showArchived() {
+    view = "archived";
+    void userInbox.refreshArchive();
   }
 
   function handleItemClick(id: string, read: boolean) {
@@ -26,6 +38,10 @@
 
   function handleArchive(id: string) {
     void userInbox.archive(id);
+  }
+
+  function handleRestore(id: string) {
+    void userInbox.restore(id);
   }
 
   function formatSize(bytes: number): string {
@@ -47,7 +63,7 @@
   >
     <header class="drawer-header">
       <h2 class="drawer-title">Inbox</h2>
-      {#if userInbox.unreadCount > 0}
+      {#if view === "active" && userInbox.unreadCount > 0}
         <span class="drawer-count">{userInbox.unreadCount}</span>
       {/if}
       <button class="drawer-close" onclick={onClose} aria-label="Close">
@@ -55,57 +71,83 @@
       </button>
     </header>
 
+    <div class="drawer-tabs">
+      <button class="drawer-tab" class:active={view === "active"} onclick={showActive}>
+        inbox
+      </button>
+      <button class="drawer-tab" class:active={view === "archived"} onclick={showArchived}>
+        archived
+      </button>
+    </div>
+
     <div class="drawer-content">
-      {#if userInbox.items.length === 0}
+      {#if view === "active"}
+        {#if userInbox.items.length === 0}
+          <div class="empty-state">
+            <p class="empty-state-text">Nothing waiting</p>
+          </div>
+        {:else}
+          <div class="inbox-list">
+            {#each userInbox.items as item, i (item.id)}
+              <div class="inbox-item" class:unread={!item.read} style="--stagger: {i * 120}ms">
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div class="inbox-item-main" onclick={() => handleItemClick(item.id, item.read)}>
+                  <div class="inbox-item-header">
+                    <span class="inbox-item-title">{item.title}</span>
+                    <span class="inbox-item-time">{relativeTime(item.timestamp)}</span>
+                  </div>
+                  <span class="inbox-item-source">{item.source}</span>
+                  {#if item.read}
+                    <div class="inbox-item-body">
+                      {item.body}
+                    </div>
+                    {@render attachments(item)}
+                  {:else}
+                    <span class="inbox-item-hint">tap to read</span>
+                  {/if}
+                </div>
+                <div class="inbox-item-actions">
+                  <button
+                    class="archive-btn"
+                    onclick={() => handleArchive(item.id)}
+                    title="Archive"
+                    aria-label="Archive"
+                  >
+                    <Icon name="check" size={12} />
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {:else if userInbox.archivedItems.length === 0}
         <div class="empty-state">
-          <p class="empty-state-text">Nothing waiting</p>
+          <p class="empty-state-text">Archive is empty</p>
         </div>
       {:else}
         <div class="inbox-list">
-          {#each userInbox.items as item, i (item.id)}
-            <div class="inbox-item" class:unread={!item.read} style="--stagger: {i * 120}ms">
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="inbox-item-main" onclick={() => handleItemClick(item.id, item.read)}>
+          {#each userInbox.archivedItems as item, i (item.id)}
+            <div class="inbox-item archived" style="--stagger: {i * 120}ms">
+              <div class="inbox-item-main">
                 <div class="inbox-item-header">
                   <span class="inbox-item-title">{item.title}</span>
                   <span class="inbox-item-time">{relativeTime(item.timestamp)}</span>
                 </div>
                 <span class="inbox-item-source">{item.source}</span>
-                {#if item.read}
-                  <div class="inbox-item-body">
-                    {item.body}
-                  </div>
-                  {#if item.attachments.length > 0}
-                    <div class="inbox-item-attachments">
-                      {#each item.attachments as attachment (attachment.url)}
-                        <a
-                          class="attachment-chip"
-                          href={attachment.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          download={attachment.filename}
-                          aria-label={`Download attachment ${attachment.filename}, ${formatSize(attachment.size)}`}
-                        >
-                          <Icon name="paperclip" size={11} />
-                          <span class="attachment-chip-name">{attachment.filename}</span>
-                          <span class="attachment-chip-size">{formatSize(attachment.size)}</span>
-                        </a>
-                      {/each}
-                    </div>
-                  {/if}
-                {:else}
-                  <span class="inbox-item-hint">tap to read</span>
-                {/if}
+                <div class="inbox-item-body">
+                  {item.body}
+                </div>
+                {@render attachments(item)}
               </div>
               <div class="inbox-item-actions">
                 <button
-                  class="archive-btn"
-                  onclick={() => handleArchive(item.id)}
-                  title="Archive"
-                  aria-label="Archive"
+                  class="restore-btn"
+                  onclick={() => handleRestore(item.id)}
+                  title="Restore to inbox"
+                  aria-label="Restore to inbox"
                 >
-                  <Icon name="check" size={12} />
+                  <Icon name="restore" size={13} />
                 </button>
               </div>
             </div>
@@ -119,6 +161,27 @@
     </div>
   </div>
 {/if}
+
+{#snippet attachments(item: UserInboxItem)}
+  {#if item.attachments.length > 0}
+    <div class="inbox-item-attachments">
+      {#each item.attachments as attachment (attachment.url)}
+        <a
+          class="attachment-chip"
+          href={attachment.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          download={attachment.filename}
+          aria-label={`Download attachment ${attachment.filename}, ${formatSize(attachment.size)}`}
+        >
+          <Icon name="paperclip" size={11} />
+          <span class="attachment-chip-name">{attachment.filename}</span>
+          <span class="attachment-chip-size">{formatSize(attachment.size)}</span>
+        </a>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
 
 <style>
   .drawer-overlay {
@@ -264,6 +327,43 @@
   }
 
   .drawer-close:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  /* ── Tabs ────────────────────────────────────────────────────────────── */
+
+  .drawer-tabs {
+    display: flex;
+    gap: var(--s-4);
+    padding: 0 var(--s-5) var(--s-3);
+  }
+
+  .drawer-tab {
+    background: transparent;
+    border: none;
+    padding: 0 0 var(--s-1);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-bottom: 1px solid transparent;
+    transition:
+      color var(--dur-quick),
+      border-color var(--dur-quick);
+  }
+
+  .drawer-tab:hover {
+    color: var(--text-muted);
+  }
+
+  .drawer-tab.active {
+    color: var(--vein);
+    border-bottom-color: var(--vein-dim);
+  }
+
+  .drawer-tab:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
   }
@@ -528,6 +628,56 @@
   }
 
   .archive-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+
+  .inbox-item.archived .inbox-item-main {
+    cursor: default;
+  }
+
+  .inbox-item.archived .inbox-item-main:hover {
+    background: none;
+  }
+
+  .inbox-item.archived .inbox-item-title {
+    color: var(--text-muted);
+  }
+
+  .inbox-item.archived .inbox-item-body {
+    color: var(--text-dim);
+  }
+
+  .restore-btn {
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-dim);
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition:
+      color var(--dur-quick),
+      background-color var(--dur-quick),
+      border-color var(--dur-quick),
+      box-shadow var(--dur-default) var(--ease-out-stone);
+  }
+
+  .restore-btn:hover {
+    color: var(--vein);
+    background: var(--vein-faint);
+    border-color: var(--vein-dim);
+    box-shadow: 0 0 10px -4px rgba(59, 139, 219, 0.4);
+  }
+
+  .restore-btn:active {
+    transform: scale(0.96);
+  }
+
+  .restore-btn:focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
   }

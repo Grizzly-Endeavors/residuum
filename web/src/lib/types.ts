@@ -8,7 +8,9 @@ import type {
 export type {
   ClientMessage,
   ServerMessage,
+  PostTurnActivityKind,
   ImageAttachment,
+  OutboundA2aTaskSummary,
   SessionCategory,
   SessionCommandErrorCode,
   SessionDeliveryOutcome,

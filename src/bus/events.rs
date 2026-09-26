@@ -242,6 +242,19 @@ pub struct SessionResponseEvent {
     pub is_final: bool,
 }
 
+/// A conversation session's turn started or finished running, for a typing
+/// indicator on the interface hosting that conversation — the same
+/// signal [`TurnLifecycleEvent`] gives the main agent's own turns, but keyed
+/// by conversation id rather than a message correlation id, since a
+/// session's turn isn't a reply to any one message.
+#[derive(Debug, Clone)]
+pub struct ConversationTypingEvent {
+    /// Which conversation, on whichever interface subscribes to it.
+    pub conversation_id: String,
+    /// Whether the session's turn just started (`true`) or ended (`false`).
+    pub active: bool,
+}
+
 /// Push notification for notify channels.
 #[derive(Debug, Clone)]
 pub struct NotificationEvent {
@@ -586,6 +599,35 @@ impl SpawnRequestEvent {
 pub struct NoticeEvent {
     /// Human-readable notice message.
     pub message: String,
+}
+
+/// Which background post-turn cycle (see `crate::gateway::post_turn`) an
+/// activity signal is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostTurnActivityKind {
+    /// The automatic observer/reflector cycle.
+    Memory,
+    /// The end-of-turn subconscious evaluation.
+    Subconscious,
+}
+
+/// A background post-turn cycle started or finished running, for a quiet
+/// "updating memory…" / "reviewing turn…" indicator in the web UI — see
+/// `crate::gateway::post_turn`'s module docs for why this work no longer
+/// blocks the event loop, and so needs a signal of its own instead of
+/// being implied by the turn indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostTurnActivityEvent {
+    pub kind: PostTurnActivityKind,
+    pub active: bool,
+}
+
+/// An outbound A2A task (one this instance sent to a remote agent with
+/// `message_agent a2a:<name>`) was recorded, changed state, or was stopped
+/// — for the web sessions sidebar's list of tasks sent to other agents.
+#[derive(Debug, Clone)]
+pub struct OutboundA2aTaskEvent {
+    pub task: crate::a2a::TrackedTask,
 }
 
 /// Multi-line command output meant for inline rendering in a chat surface.

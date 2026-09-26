@@ -481,6 +481,67 @@ pub async fn archive_item(
     Ok(())
 }
 
+/// Move an archived inbox item back to the active inbox directory — the
+/// reverse of [`archive_item`]. Archiving is otherwise a one-way soft
+/// delete, so this is the only way to undo it.
+///
+/// Mirrors `archive_item`'s move order and error handling: the attachments
+/// directory (if any) moves first, then the JSON file, so a failure partway
+/// through leaves the item safely retryable either way.
+///
+/// # Errors
+/// Returns an error if the file is not found in the archive, or if either
+/// move fails.
+#[tracing::instrument(skip_all, fields(item = %filename))]
+pub async fn restore_item(
+    archive_dir: &Path,
+    inbox_dir: &Path,
+    filename: &str,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let json_name = ensure_json_ext(filename);
+    let item_id = json_name.trim_end_matches(".json").to_string();
+    let src = archive_dir.join(&json_name);
+
+    tokio::fs::create_dir_all(inbox_dir)
+        .await
+        .with_context(|| format!("failed to create inbox dir {}", inbox_dir.display()))?;
+
+    let src_attachments = archive_dir.join("attachments").join(&item_id);
+    if tokio::fs::try_exists(&src_attachments)
+        .await
+        .unwrap_or(false)
+    {
+        let dst_attachments_root = inbox_dir.join("attachments");
+        tokio::fs::create_dir_all(&dst_attachments_root)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create inbox attachments dir {}",
+                    dst_attachments_root.display()
+                )
+            })?;
+        let dst_attachments = dst_attachments_root.join(&item_id);
+        tokio::fs::rename(&src_attachments, &dst_attachments)
+            .await
+            .with_context(|| format!("failed to restore attachments for inbox item '{item_id}'"))?;
+        tracing::debug!(
+            src = %src_attachments.display(),
+            dst = %dst_attachments.display(),
+            "inbox item attachments restored"
+        );
+    }
+
+    let dst = inbox_dir.join(&json_name);
+    tokio::fs::rename(&src, &dst).await.with_context(|| {
+        format!("inbox item '{json_name}' not found in archive or could not be restored")
+    })?;
+    tracing::debug!(src = %src.display(), dst = %dst.display(), "inbox item restored");
+
+    Ok(())
+}
+
 /// Ensure a filename ends with `.json`.
 fn ensure_json_ext(name: &str) -> String {
     if Path::new(name)
@@ -821,6 +882,85 @@ mod tests {
         let archive = dir.path().join("archive/inbox");
         let result = archive_item(dir.path(), &archive, "nonexistent").await;
         assert!(result.is_err(), "should error on missing file");
+    }
+
+    #[tokio::test]
+    async fn restore_item_moves_file_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let archive = dir.path().join("archive/inbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+
+        save_item(
+            &inbox,
+            "roundtrip.json",
+            &make_item("restore me", 12, false),
+        )
+        .await
+        .unwrap();
+
+        archive_item(&inbox, &archive, "roundtrip").await.unwrap();
+        assert!(!inbox.join("roundtrip.json").exists());
+        assert!(archive.join("roundtrip.json").exists());
+
+        restore_item(&archive, &inbox, "roundtrip").await.unwrap();
+
+        assert!(
+            inbox.join("roundtrip.json").exists(),
+            "should be back in the active inbox"
+        );
+        assert!(
+            !archive.join("roundtrip.json").exists(),
+            "should be gone from the archive"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_item_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let result = restore_item(dir.path(), &inbox, "nonexistent").await;
+        assert!(result.is_err(), "should error when not in the archive");
+    }
+
+    #[tokio::test]
+    async fn restore_item_moves_attachments_dir_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join("inbox");
+        let archive = dir.path().join("archive/inbox");
+        let attachments = inbox.join("attachments").join("with_attachment");
+        tokio::fs::create_dir_all(&attachments).await.unwrap();
+        tokio::fs::write(attachments.join("file.txt"), b"hi")
+            .await
+            .unwrap();
+
+        save_item(
+            &inbox,
+            "with_attachment.json",
+            &make_item("has attachment", 12, false),
+        )
+        .await
+        .unwrap();
+
+        archive_item(&inbox, &archive, "with_attachment")
+            .await
+            .unwrap();
+        restore_item(&archive, &inbox, "with_attachment")
+            .await
+            .unwrap();
+
+        assert!(
+            inbox
+                .join("attachments")
+                .join("with_attachment")
+                .join("file.txt")
+                .exists(),
+            "attachment file should be back under the active inbox"
+        );
+        assert!(
+            !archive.join("attachments").join("with_attachment").exists(),
+            "archive attachments dir should be empty of this item"
+        );
     }
 
     #[tokio::test]

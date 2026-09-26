@@ -8,7 +8,8 @@ use serenity::model::id::ChannelId;
 use serenity::http::Http;
 
 use crate::bus::{
-    ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent, TurnLifecycleEvent,
+    ConversationTypingEvent, ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent,
+    TurnLifecycleEvent,
 };
 use crate::interfaces::chunking::chunk_text;
 use crate::interfaces::notify_main_of_undeliverable_session_output;
@@ -31,6 +32,11 @@ pub(super) async fn run_discord_subscriber(
 ) {
     // One typing loop per in-flight turn, stopped by dropping its sender.
     let mut typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
+    // Same, but for conversation sessions' own turns — keyed by conversation
+    // id rather than correlation id, since a session's turn isn't a reply to
+    // any one message. Kept separate from `typing` above even though the two
+    // id spaces are unlikely to collide in practice.
+    let mut conversation_typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
     let mut clean_exit = true;
 
     loop {
@@ -45,6 +51,21 @@ pub(super) async fn run_discord_subscriber(
                     Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
                         typing.remove(&correlation_id);
                         state.reply_targets.release(&correlation_id);
+                    }
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
+                }
+            }
+            event = subs.conversation_typing.recv() => {
+                match event {
+                    Ok(Some(ConversationTypingEvent { conversation_id, active: true })) => {
+                        if let Some(cid) = parse_channel_id(&conversation_id) {
+                            conversation_typing
+                                .insert(conversation_id, spawn_typing(Arc::clone(&http), cid));
+                        }
+                    }
+                    Ok(Some(ConversationTypingEvent { conversation_id, active: false })) => {
+                        conversation_typing.remove(&conversation_id);
                     }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
@@ -118,6 +139,17 @@ async fn target_or_warn(state: &DiscordState, correlation_id: &str) -> Option<Ch
         );
     }
     target
+}
+
+/// Parse a conversation id into a Discord channel id, or `None` if it isn't
+/// one — silently skipped by the typing indicator, which is purely
+/// cosmetic; unlike a message delivery failure, there's nothing here worth
+/// notifying the owner about.
+fn parse_channel_id(conversation_id: &str) -> Option<ChannelId> {
+    match conversation_id.parse::<u64>() {
+        Ok(n) if n != 0 => Some(ChannelId::new(n)),
+        _ => None,
+    }
 }
 
 fn spawn_typing(
@@ -268,4 +300,24 @@ async fn send_file_attachment(
         "file delivered"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_channel_id_accepts_a_valid_id() {
+        assert_eq!(
+            parse_channel_id("123456789"),
+            Some(ChannelId::new(123_456_789))
+        );
+    }
+
+    #[test]
+    fn parse_channel_id_rejects_zero_and_non_numeric() {
+        assert_eq!(parse_channel_id("0"), None);
+        assert_eq!(parse_channel_id("not-an-id"), None);
+        assert_eq!(parse_channel_id(""), None);
+    }
 }

@@ -15,7 +15,7 @@ Fires after agent turns when accumulated unobserved message tokens exceed a thre
 - **Soft threshold** (`threshold_tokens`): starts a cooldown timer; fires when cooldown expires.
 - **Force threshold** (`force_threshold_tokens`): fires immediately, bypassing cooldown.
 
-The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
+The main agent's own cycle runs off the event loop in a background worker, so it never delays the next message, a stop, or a shutdown — at most one cycle runs at a time, and a trigger arriving mid-cycle coalesces into one follow-up rather than stacking. Memory can be "one step stale" as a result: a turn that starts before a still-running cycle finishes sees the pre-cycle context. The observer calls an LLM to extract a structured `Episode` from recent messages. Each episode produces three files under `memory/episodes/YYYY-MM/DD/`:
 
 | File | Format | Contents |
 |------|--------|----------|
@@ -23,13 +23,15 @@ The observer calls an LLM to extract a structured `Episode` from recent messages
 | `ep-NNN.obs.json` | JSON array of Observation objects | Extracted observations |
 | `ep-NNN.idx.jsonl` | JSONL of IndexChunk objects | Interaction-pair chunks for search indexing |
 
-After extraction, observations are appended to `memory/observations.json` and recent messages are cleared from `memory/recent_messages.json`. The narrative context is saved to `memory/recent_context.json`. If an embedding provider is configured, `.obs` and `.idx` files are embedded for vector retrieval.
+After extraction, observations are appended to `memory/observations.json` and the messages the cycle observed are removed from `memory/recent_messages.json` (messages from a turn that ended while it ran stay for the next cycle). The narrative context is saved to `memory/recent_context.json`. If an embedding provider is configured, `.obs` and `.idx` files are embedded for vector retrieval.
 
 The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/pushback, process preferences, frustration and its cause, praise and what earned it — as declarative facts about what happened, never as instructions. This is the evidence the `learner` skill corroborates against for a `preference` signal.
 
 Customize extraction guidance by editing `memory/OBSERVER.md`.
 
 Extraction (the LLM call) and persistence (episode id allocation, writing files, indexing, embedding, the reflector check) are separate steps. Persistence always goes through the memory merge writer — a single serialized writer shared by the main agent's own observation flow and every agent session's completion, so episode numbering and log appends never race.
+
+An automatic extraction or merge failure backs off exponentially (1m, 2m, 4m, ... capped at 1h) instead of re-attempting — and re-spending an LLM call — on every later threshold crossing while unobserved messages keep piling up; those messages are never discarded on a failed attempt, so they're picked up once it recovers. You're told once when a failure streak starts, in plain language, and once when it clears. The `/observe` chat command always attempts regardless of this backoff, and a working manual retry clears it for the automatic path too.
 
 ## Agent Sessions and Memory
 
@@ -44,6 +46,8 @@ Fires when `memory/observations.json` exceeds its token threshold. Calls an LLM 
 **Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki. These are completely separate systems.
 
 The original observations are backed up to `observations.json.bak` before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
+
+An automatic reflection failure follows the same backoff and once-per-streak notice as the observer's own, above — the reflector's tracker is shared globally across the main agent and every session, since the observation log it compresses is itself global. The `/reflect` chat command bypasses the backoff and always attempts, and its outcome updates the same tracker.
 
 Customize compression guidance by editing `memory/REFLECTOR.md`.
 

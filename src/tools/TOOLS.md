@@ -414,9 +414,10 @@ On error: action not found, or save failure.
 
 ### Input
 
-| Parameter     | Type    | Required | Description                                  |
-|---------------|---------|----------|----------------------------------------------|
-| `unread_only` | boolean | no       | Only show unread items (default false)       |
+| Parameter     | Type    | Required | Description                                                                          |
+|---------------|---------|----------|---------------------------------------------------------------------------------------|
+| `unread_only` | boolean | no       | Only show unread items (default false). Ignored when `archived` is true.             |
+| `archived`    | boolean | no       | List archived items instead of active ones (default false). Pair with `inbox_restore`. |
 
 ### Output
 
@@ -426,7 +427,9 @@ On success: count header followed by one entry per item:
   [{read|unread}] {filename} — {title} ({source}, {timestamp})
 ```
 
-When no items match: `"No inbox items found."`
+With `archived: true`, the header reads `{N} archived item(s):` instead.
+
+When no items match: `"No inbox items found."` (or `"No archived items found."` with `archived: true`)
 
 ---
 
@@ -483,6 +486,31 @@ On partial failure: success message plus `"Failed to archive {N} item(s): {error
 On total failure: error with failure details.
 
 **Side effect:** Moves `.json` files from inbox to `archive/inbox/`.
+
+---
+
+## `inbox_restore`
+
+**Source:** `inbox.rs` · `InboxRestoreTool`
+
+**Description sent to LLM:**
+> Restore one or more archived inbox items by filename stem. Moves them back to the active inbox. Use inbox_list with archived=true to find the filename stem to restore.
+
+### Input
+
+| Parameter | Type            | Required | Description                                  |
+|-----------|-----------------|----------|-----------------------------------------------|
+| `ids`     | array\<string\> | yes      | Filename stems of archived inbox items to restore |
+
+### Output
+
+On success: `"Restored {N} item(s): {list}"`
+
+On partial failure: success message plus `"Failed to restore {N} item(s): {errors}"`
+
+On total failure: error with failure details.
+
+**Side effect:** Moves `.json` files from `archive/inbox/` back to inbox.
 
 ---
 

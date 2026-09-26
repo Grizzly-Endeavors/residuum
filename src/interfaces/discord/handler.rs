@@ -383,7 +383,7 @@ async fn register_commands(ctx: &Context) -> Result<(), Box<serenity::Error>> {
                     "text",
                     "Text argument",
                 )
-                .required(true),
+                .required(info.arg_required),
             );
         }
 

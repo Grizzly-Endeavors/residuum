@@ -18,11 +18,16 @@ pub async fn handle_server_command(
         "observe" => {
             *observe_deadline = None;
             let mem = MemorySubsystems {
-                observer: &rt.observer,
-                merge_writer: &rt.merge_writer,
-                layout: &rt.layout,
+                observer: std::sync::Arc::clone(&rt.observer),
+                merge_writer: std::sync::Arc::clone(&rt.merge_writer),
+                layout: rt.layout.clone(),
                 tz: rt.tz,
+                publisher: rt.publisher.clone(),
             };
+            // Waits out a background cycle already in flight, so the two
+            // never observe the same recent messages.
+            let observe_worker = std::sync::Arc::clone(&rt.post_turn_observe);
+            let _cycle = observe_worker.lock_cycle().await;
             run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
         }
         "reflect" => {

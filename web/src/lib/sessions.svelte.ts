@@ -8,7 +8,14 @@
 // which is handed back to the coordinator to show in the main chat.
 
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
-import { fetchSessionTranscript, fetchSessions } from "./api";
+import {
+  ApiError,
+  fetchOutboundA2aTasks,
+  fetchSessionTranscript,
+  fetchSessions,
+  stopOutboundA2aTask,
+  stopWatchingOutboundA2aTask,
+} from "./api";
 import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
 import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
@@ -18,6 +25,7 @@ import { SESSION_CATEGORIES, deliveryOutcomeText, runOutcomeText } from "./sessi
 import type {
   ClientMessage,
   FeedItem,
+  OutboundA2aTaskSummary,
   ServerMessage,
   SessionCategory,
   SessionRunStatus,
@@ -343,6 +351,17 @@ export class SessionsStore {
    * itself and show "Stopping…" without needing a `SessionView`.
    */
   stopping = new SvelteSet<string>();
+  /** Open tasks the agent sent to remote agents, newest first. */
+  outbound = $state<OutboundA2aTaskSummary[]>([]);
+  /** Why the outbound task list couldn't load, if it couldn't. */
+  outboundError = $state<string | null>(null);
+  /** Outbound task ids with a stop (or stop-watching) request in flight. */
+  outboundStopping = new SvelteSet<string>();
+  /**
+   * Outbound tasks whose stop failed because their agent couldn't be
+   * reached, with the message to show — their row offers stop-watching.
+   */
+  outboundUnreachable = new SvelteMap<string, string>();
   /** The run shown in the main pane, if any. */
   view = $state<SessionView | null>(null);
   /** Clock for elapsed times; ticked by the app while sessions are live. */
@@ -365,6 +384,7 @@ export class SessionsStore {
    * so a refresh doesn't collapse the list the user is reading.
    */
   async refresh(): Promise<void> {
+    void this.refreshOutbound();
     if (this.refreshing) {
       this.refreshAgain = true;
       return;
@@ -392,6 +412,18 @@ export class SessionsStore {
     if (this.refreshAgain) {
       this.refreshAgain = false;
       await this.refresh();
+    }
+  }
+
+  /** Reload the tasks sent to remote agents. Failure only affects that list. */
+  async refreshOutbound(): Promise<void> {
+    try {
+      this.outbound = await fetchOutboundA2aTasks();
+      this.outboundError = null;
+    } catch (err) {
+      this.outboundError = userErrorMessage(err, {
+        action: "Couldn't load the tasks sent to other agents.",
+      });
     }
   }
 
@@ -493,10 +525,56 @@ export class SessionsStore {
     if (view) view.stopRequested = true;
   }
 
+  /** Ask an outbound task's remote agent to cancel it. */
+  async stopOutbound(taskId: string): Promise<void> {
+    if (this.outboundStopping.has(taskId)) return;
+    this.outboundStopping.add(taskId);
+    try {
+      this.upsertOutbound(await stopOutboundA2aTask(taskId));
+      this.outboundUnreachable.delete(taskId);
+    } catch (err) {
+      const unreachable = unreachableAgentMessage(err);
+      if (unreachable) {
+        this.outboundUnreachable.set(taskId, unreachable);
+        return;
+      }
+      notifications.surface(
+        "error",
+        userErrorMessage(err, { action: "Couldn't stop the task.", notFound: "It already ended." }),
+      );
+      if (err instanceof ApiError && err.status === 404) void this.refreshOutbound();
+    } finally {
+      this.outboundStopping.delete(taskId);
+    }
+  }
+
+  /** Close an outbound task locally, for one whose agent can't be reached. */
+  async stopWatchingOutbound(taskId: string): Promise<void> {
+    if (this.outboundStopping.has(taskId)) return;
+    this.outboundStopping.add(taskId);
+    try {
+      this.upsertOutbound(await stopWatchingOutboundA2aTask(taskId));
+    } catch (err) {
+      notifications.surface(
+        "error",
+        userErrorMessage(err, {
+          action: "Couldn't stop watching the task.",
+          notFound: "It already ended.",
+        }),
+      );
+      if (err instanceof ApiError && err.status === 404) void this.refreshOutbound();
+    } finally {
+      this.outboundStopping.delete(taskId);
+    }
+  }
+
   // ── Frames ───────────────────────────────────────────────────────
 
   handleFrame(frame: SessionFrame): void {
     switch (frame.type) {
+      case "session_outbound_a2a_task":
+        this.upsertOutbound(frame.task);
+        return;
       case "session_started":
         this.handleStarted(frame.session);
         return;
@@ -636,6 +714,20 @@ export class SessionsStore {
 
   // ── Private ──────────────────────────────────────────────────────
 
+  /** Put a task's latest state in the list, or take it out once it ended. */
+  private upsertOutbound(task: OutboundA2aTaskSummary): void {
+    const rest = this.outbound.filter((t) => t.task_id !== task.task_id);
+    if (!task.open) {
+      this.outbound = rest;
+      this.outboundUnreachable.delete(task.task_id);
+      return;
+    }
+    if (!task.unreachable_since) this.outboundUnreachable.delete(task.task_id);
+    this.outbound = [task, ...rest].sort(
+      (a, b) => Date.parse(b.started_at) - Date.parse(a.started_at),
+    );
+  }
+
   /** Every completed run loaded so far, across categories. */
   private completedRuns(): SessionSummary[] {
     return SESSION_CATEGORIES.flatMap((category) => this.completed[category].runs);
@@ -669,6 +761,30 @@ export class SessionsStore {
       void this.refresh();
     }, REFRESH_DEBOUNCE_MS);
   }
+}
+
+/**
+ * The server's explanation when an outbound task's stop failed because its
+ * agent couldn't be reached (`502` with code `unreachable`), else `null`.
+ */
+export function unreachableAgentMessage(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 502) return null;
+  try {
+    const body: unknown = JSON.parse(err.body);
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "code" in body &&
+      body.code === "unreachable" &&
+      "error" in body &&
+      typeof body.error === "string"
+    ) {
+      return body.error;
+    }
+  } catch {
+    // Not our JSON error body (a proxy's error page); handled as a plain failure.
+  }
+  return null;
 }
 
 /**

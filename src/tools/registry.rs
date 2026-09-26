@@ -358,7 +358,8 @@ impl ToolRegistry {
         self.register(Box::new(skills::SkillDeactivateTool::new(state)));
     }
 
-    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add`).
+    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_archive`,
+    /// `inbox_restore`, `user_inbox_add`).
     pub fn register_inbox_tools(
         &mut self,
         agent_inbox_dir: PathBuf,
@@ -367,9 +368,16 @@ impl ToolRegistry {
         user_inbox_attachments_dir: PathBuf,
         tz: chrono_tz::Tz,
     ) {
-        self.register(Box::new(inbox::InboxListTool::new(agent_inbox_dir.clone())));
+        self.register(Box::new(inbox::InboxListTool::new(
+            agent_inbox_dir.clone(),
+            agent_archive_dir.clone(),
+        )));
         self.register(Box::new(inbox::InboxReadTool::new(agent_inbox_dir.clone())));
         self.register(Box::new(inbox::InboxArchiveTool::new(
+            agent_inbox_dir.clone(),
+            agent_archive_dir.clone(),
+        )));
+        self.register(Box::new(inbox::InboxRestoreTool::new(
             agent_inbox_dir,
             agent_archive_dir,
         )));

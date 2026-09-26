@@ -78,7 +78,7 @@ The subconscious is deliberately conservative:
 
 Enabling the subconscious adds LLM calls: up to one mid-turn call per `every_n_iterations` tool iterations, plus one end-of-turn call per user turn. Assign a cheap, fast model to the `subconscious` role in `providers.toml`.
 
-The end-of-turn evaluation runs **synchronously on the gateway event loop** (like the observer), so it adds one classifier round-trip before the next inbound message is handled. It does not delay the user-visible reply, which has already been sent by the time it runs. The mid-turn watch, by contrast, runs in detached tasks and never blocks the turn.
+The end-of-turn evaluation runs in the background, off the gateway event loop (like the observer — see [memory.md](memory.md)), so it never delays the next inbound message being handled, on top of already not delaying the user-visible reply (which was sent before it starts). At most one end-of-turn evaluation runs at a time; turns that end while one is still in flight coalesce into a single follow-up that evaluates them together, keeping each turn's mid-turn corrections and queued notes, rather than stacking. On shutdown or restart, an evaluation still waiting on its model is dropped. A `note` finding, or a queued mid-turn note delivered after a failed evaluation, reaches the agent as `[Subconscious note]` context on its next turn — one step later if that next turn already started before the evaluation finished. A correction turn and a `learner` spawn are published directly from the background evaluation, since neither needs to touch the agent's live conversation state the way injecting a note does. The web UI shows a quiet "reviewing turn…" indicator in the chat footer while an evaluation is running.
 
 ## Configuration
 

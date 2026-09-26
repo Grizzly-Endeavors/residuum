@@ -5,10 +5,10 @@
 //! topic, providing compile-time safety at publish/subscribe boundaries.
 
 use super::events::{
-    A2aTaskSignalEvent, AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent,
-    MessageEvent, NoticeEvent, NotificationEvent, ResponseEvent, SessionEvent,
-    SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent,
-    WorkbenchEvent, WorkspaceEvent,
+    A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
+    IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, OutboundA2aTaskEvent,
+    PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
+    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -100,6 +100,11 @@ impl Carries<SessionResponseEvent> for Endpoint {
     // same stakes as `ResponseEvent`.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
+impl Carries<ConversationTypingEvent> for Endpoint {
+    // A dropped `active: false` would leave a conversation's typing
+    // indicator stuck on, same reasoning as `TurnLifecycleEvent`.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
 
 /// Background task orchestration: spawn requests and task results.
 pub struct Background;
@@ -184,6 +189,16 @@ impl Carries<InlineOutputEvent> for Notification {
 impl Carries<ErrorEvent> for Notification {
     // An error tied to a specific turn — silently dropping it is exactly
     // the silent failure `CLAUDE.md` forbids.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<OutboundA2aTaskEvent> for Notification {
+    // A dropped update would leave the sessions sidebar showing a task
+    // that already finished, with a Stop button that no longer applies.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<PostTurnActivityEvent> for Notification {
+    // A dropped `active: false` would leave the web UI's quiet indicator
+    // stuck showing background work that already finished.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 

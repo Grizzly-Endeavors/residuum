@@ -149,6 +149,26 @@ export class FeedStore {
    * `GET /api/usage` fetch on connect).
    */
   sessionUsage = $state<SessionUsageTotals | null>(null);
+  /**
+   * Whether the background post-turn observer/reflector cycle is
+   * currently running (see `crate::gateway::post_turn` on the server) —
+   * drives a quiet "updating memory…" indicator. Never blocks anything;
+   * this work runs off the event loop, so a turn can start while it's
+   * still in flight.
+   */
+  memoryWorking = $state(false);
+  /** Same as `memoryWorking`, for the end-of-turn subconscious evaluation. */
+  subconsciousWorking = $state(false);
+
+  /**
+   * Forget which background cycles are running. Called on disconnect: the
+   * frame saying a cycle finished may never arrive, and an indicator stuck
+   * on would claim work that already ended.
+   */
+  clearPostTurnActivity(): void {
+    this.memoryWorking = false;
+    this.subconsciousWorking = false;
+  }
   oldestEpisodeCursor = $state<string | null>(null);
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
@@ -205,6 +225,11 @@ export class FeedStore {
         this.turnOutputTokens = msg.output_tokens;
         this.turnHasUsage = msg.has_usage;
         if (msg.session_totals) this.sessionUsage = msg.session_totals;
+        break;
+
+      case "post_turn_activity":
+        if (msg.kind === "memory") this.memoryWorking = msg.active;
+        else this.subconsciousWorking = msg.active;
         break;
 
       case "tool_call":
@@ -279,6 +304,7 @@ export class FeedStore {
       case "session_tool_result":
       case "session_broadcast_response":
       case "session_response":
+      case "session_outbound_a2a_task":
       case "session_error":
       case "session_message_to_main":
       case "session_message_delivered":

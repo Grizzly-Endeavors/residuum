@@ -93,6 +93,19 @@ pub enum HubError {
     RequestFailed(String, String),
 }
 
+impl HubError {
+    /// The name of the remote agent the error is about.
+    #[must_use]
+    pub fn agent_name(&self) -> &str {
+        match self {
+            Self::Unknown(name)
+            | Self::Offline(name, _)
+            | Self::ClientBuild(name, _)
+            | Self::RequestFailed(name, _) => name,
+        }
+    }
+}
+
 /// The negotiated A2A client type [`A2AClientFactory::create_from_card`]
 /// returns.
 pub type NegotiatedClient = a2a_client::A2AClient<Box<dyn a2a_client::Transport>>;

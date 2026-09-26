@@ -1,6 +1,7 @@
 //! Shared utilities: fatal errors, filesystem helpers, monitored spawning, tracing setup,
 //! structured log formatting, frontmatter parsing, and XML escaping.
 
+pub mod backoff_tracker;
 mod error;
 pub mod frontmatter;
 pub(crate) mod fs;
@@ -11,6 +12,7 @@ pub mod telemetry;
 pub mod tracing_init;
 mod xml;
 
+pub use backoff_tracker::{BackoffTracker, NoticeAction, RetryGate};
 pub use error::FatalError;
 pub use frontmatter::{parse_frontmatter_md, validate_kebab_name};
 pub use secret_compare::secrets_match;

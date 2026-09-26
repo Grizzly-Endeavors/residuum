@@ -7,8 +7,10 @@ There are **two** inboxes, stored as individual JSON files under the workspace r
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
 | Write tool | *(external — notification router for `scheduled` and webhook-triggered `external` results, WS `/inbox`, `POST /api/agent-inbox`)* | `user_inbox_add` |
-| Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none — consumed via the web UI)* |
+| Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive`, `inbox_restore` | *(none — consumed via the web UI)* |
 | Consumer | The agent itself | The user, via the web UI |
+
+Archiving is a soft delete, not a permanent one, in both inboxes: the item's JSON file (and its attachments directory, if it has one) just moves under `archive/inbox/`, so restoring it is the same move in reverse. You restore your own agent inbox items with `inbox_restore`; the user restores theirs through the web UI's archived view.
 
 The agent inbox is where the notification router files results — every substantive `scheduled` result and every substantive webhook-triggered `external` result — for the agent to triage. A conversation-triggered `external` result (A2A, or a non-owner Discord/Telegram/Teams chat) never lands here: its output already went back to the conversation it came from, and its observations are merged into memory as an episode. `artifact` and `spawned` session results are relayed elsewhere too (see [background-tasks](background-tasks.md#result-routing)). The user inbox is a delivery channel: the agent (most often a sub-agent like `introspection`) writes findings there with `user_inbox_add`, and the user reads/archives them through the web UI, not through agent tools.
 
@@ -31,9 +33,10 @@ Each item is a JSON file. There is **no `id` field in the JSON body** — the it
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `inbox_list` | `unread_only` (bool, optional) | List agent inbox items. Defaults to showing all; set `unread_only: true` to filter. |
+| `inbox_list` | `unread_only` (bool, optional), `archived` (bool, optional) | List agent inbox items. Defaults to showing all active items; set `unread_only: true` to filter. Set `archived: true` to list `archive/inbox/agent/` instead — this ignores `unread_only`, since everything there is already read. |
 | `inbox_read` | `id` (string — the filename stem) | Read a single agent inbox item by ID. **Marks it as read** as a side effect. |
 | `inbox_archive` | `ids` (array of strings — filename stems) | Move one or more items from `inbox/agent/` to `archive/inbox/agent/`. |
+| `inbox_restore` | `ids` (array of strings — filename stems) | Move one or more items from `archive/inbox/agent/` back to `inbox/agent/`. Find the stem to restore with `inbox_list archived: true`. |
 
 There is no tool to read or manage the user inbox from the agent side — it's write-only for the agent (`user_inbox_add`), the user handles read/archive themselves.
 
@@ -61,7 +64,7 @@ A workbench artifact can file an agent-inbox item directly with `POST /api/agent
 ## Gotchas
 
 - `inbox_read` marks the item as read immediately — there is no way to mark it unread again.
-- Archived items are moved (not copied) to the matching `archive/inbox/{agent,user}/` directory. The original file is removed from the source directory.
+- Archived items are moved (not copied) to the matching `archive/inbox/{agent,user}/` directory. The original file is removed from the source directory. `inbox_restore` (agent inbox) or the web UI's archived view (user inbox) moves it back.
 - There is no unread-count surfaced anywhere in the agent's context or status line — check with `inbox_list unread_only: true` if you need to know.
 - `user_inbox_add`'s `attachments` parameter is all-or-nothing: if one file in the batch fails to copy, none of them are attached and no item is created.
-- There is no tool to list, read, or archive the user inbox's attachments from the agent side — same as the rest of the user inbox, they're write-only for you.
+- There is no tool to list, read, or archive the user inbox's attachments from the agent side — same as the rest of the user inbox, they're write-only for you. Restoring the user inbox is web-UI-only too, via `GET /api/inbox/archive` and `POST /api/inbox/{id}/restore`.
