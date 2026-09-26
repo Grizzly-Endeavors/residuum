@@ -75,21 +75,14 @@ function afterLastRun(fresh: (string | null)[], anchor: string[]): number {
 }
 
 /**
- * Whether history `recorded` holds the live turn: the turn's signed items are
- * non-empty and appear in order from the last place its first one does (a
- * turn is recorded whole, after anything older with the same text).
+ * Whether `messages` holds the turn `turnId` (`null` when no turn is live).
+ * The server tags every message a turn produces — including its own user
+ * message — with the turn's correlation id in one atomic write when the
+ * turn completes, so this is true exactly when the turn has finished and
+ * been recorded, never for a turn still in flight.
  */
-function isSignedSubsequence(live: FeedItem[], recorded: FeedItem[]): boolean {
-  const wanted = live.map(feedItemSignature).filter((sig) => sig !== null);
-  if (wanted.length === 0) return false;
-  const sigs = recorded.map(feedItemSignature);
-  const start = sigs.lastIndexOf(wanted[0] ?? null);
-  if (start < 0) return false;
-  let next = 0;
-  for (let i = start; i < sigs.length && next < wanted.length; i++) {
-    if (sigs[i] === wanted[next]) next++;
-  }
-  return next === wanted.length;
+function historyHasTurn(messages: RecentMessage[], turnId: string | null): boolean {
+  return turnId !== null && messages.some((msg) => msg.turn_id === turnId);
 }
 
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
@@ -397,7 +390,7 @@ export class FeedStore {
       appendFrom++;
       trailingToolGroups--;
     }
-    this.placeRecorded(fresh.slice(appendFrom), liveStart);
+    this.placeRecorded(fresh.slice(appendFrom), liveStart, segment.messages);
     this.syncDayKey(segment);
     return true;
   }
@@ -405,16 +398,16 @@ export class FeedStore {
   /**
    * Replace the feed with a freshly fetched Recent segment, keeping the turn
    * in flight: its live items are put back after the history unless history
-   * already records the turn (it ended while disconnected).
+   * already records the turn by id (it ended while disconnected).
    */
   reloadHistory(segment: RecentHistorySegment): void {
     const liveStart = this.turnStart;
     const live = liveStart === null ? [] : this.feed.slice(liveStart);
     const pendingTools = [...this.pendingToolCalls];
+    const turnId = this.activeTurnId;
     this.loadHistory(segment);
     if (liveStart === null) return;
-    const recent = this.feed.slice(this.recentStart);
-    if (isSignedSubsequence(live, recent)) {
+    if (historyHasTurn(segment.messages, turnId)) {
       this.endLiveTurn();
       return;
     }
@@ -541,14 +534,18 @@ export class FeedStore {
   }
 
   /**
-   * Add history items newer than everything settled in the feed. If they
-   * include the turn in flight (it ended while disconnected), they replace
-   * its live items and the turn is closed; otherwise they go before it.
+   * Add history items newer than everything settled in the feed. If
+   * `historyMessages` records the turn in flight by id (it ended while
+   * disconnected), they replace its live items and the turn is closed;
+   * otherwise they go before it.
    */
-  private placeRecorded(recorded: FeedItem[], liveStart: number): void {
-    const live = this.feed.slice(liveStart);
-    if (this.turnStart !== null && isSignedSubsequence(live, recorded)) {
-      this.feed.splice(liveStart, live.length, ...recorded);
+  private placeRecorded(
+    recorded: FeedItem[],
+    liveStart: number,
+    historyMessages: RecentMessage[],
+  ): void {
+    if (this.turnStart !== null && historyHasTurn(historyMessages, this.activeTurnId)) {
+      this.feed.splice(liveStart, this.feed.length - liveStart, ...recorded);
       this.endLiveTurn();
       return;
     }
