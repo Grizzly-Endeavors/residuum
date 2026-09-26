@@ -1048,12 +1048,24 @@ fn run_observation(rt: &GatewayRuntime) {
     rt.post_turn_observe.trigger(mem);
 }
 
-/// Log the cloud tunnel task's unexpected exit and respawn it.
-fn respawn_tunnel(rt: &mut GatewayRuntime, exit: &Result<(), tokio::task::JoinError>) {
-    match exit {
-        Ok(()) => tracing::error!("tunnel task exited unexpectedly, attempting respawn"),
-        Err(e) => tracing::error!(error = %e, "tunnel task failed, attempting respawn"),
-    }
+/// Log the cloud tunnel task's unexpected exit, auto-report it, and respawn it.
+async fn respawn_tunnel(rt: &mut GatewayRuntime, exit: &Result<(), tokio::task::JoinError>) {
+    let described = match exit {
+        Ok(()) => {
+            tracing::error!("tunnel task exited unexpectedly, attempting respawn");
+            "tunnel task exited unexpectedly".to_string()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "tunnel task failed, attempting respawn");
+            format!("tunnel task failed: {e}")
+        }
+    };
+    rt.tracing_service
+        .on_error(
+            &described,
+            crate::tracing_service::client_context::gather_for_bug_report(&rt.cfg),
+        )
+        .await;
     if let Some(ref cloud_cfg) = rt.cloud_config {
         let cloud = cloud_cfg.clone();
         let (a2a_port, a2a) = crate::tunnel::a2a_tunnel_params(&rt.cfg.a2a);
@@ -1117,15 +1129,32 @@ async fn next_log_only_task_exit(
     }
 }
 
-/// Logs an unexpected exit or failure of a background adapter task.
+/// Logs an unexpected exit or failure of a background adapter task, and
+/// auto-reports it.
 ///
 /// Used for the tasks `run_event_loop` only logs on exit (unlike
 /// `tunnel_handle`, which also respawns).
-fn log_adapter_task_exit(task_name: &str, result: &Result<(), tokio::task::JoinError>) {
-    match result {
-        Ok(()) => tracing::error!("{task_name} task exited unexpectedly"),
-        Err(e) => tracing::error!(error = %e, "{task_name} task failed"),
-    }
+async fn log_adapter_task_exit(
+    rt: &GatewayRuntime,
+    task_name: &str,
+    result: &Result<(), tokio::task::JoinError>,
+) {
+    let described = match result {
+        Ok(()) => {
+            tracing::error!("{task_name} task exited unexpectedly");
+            format!("{task_name} task exited unexpectedly")
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "{task_name} task failed");
+            format!("{task_name} task failed: {e}")
+        }
+    };
+    rt.tracing_service
+        .on_error(
+            &described,
+            crate::tracing_service::client_context::gather_for_bug_report(&rt.cfg),
+        )
+        .await;
 }
 
 /// Action from processing a bus event in the event loop.
@@ -1339,7 +1368,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             result = poll_handle(&mut rt.tunnel_handle) => {
-                respawn_tunnel(&mut rt, &result);
+                respawn_tunnel(&mut rt, &result).await;
             }
 
             (task_name, result) = next_log_only_task_exit(
@@ -1351,7 +1380,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 &mut rt.workbench_watcher_handle,
                 &mut rt.change_feed_handle,
             ) => {
-                log_adapter_task_exit(task_name, &result);
+                log_adapter_task_exit(&rt, task_name, &result).await;
             }
         }
     }

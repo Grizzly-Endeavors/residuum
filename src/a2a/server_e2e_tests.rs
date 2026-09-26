@@ -379,6 +379,35 @@ async fn start_a2a_listener(
     (keys, shutdown_tx)
 }
 
+/// Build the `SessionRuntime` a harness drives its scripted sessions
+/// through — split out of `spawn_harness` purely to keep that function's
+/// line count down.
+fn build_harness_runtime(
+    session_registry: &Arc<SessionRegistry>,
+    session_store: &Arc<SessionStore>,
+    messenger: &Arc<AgentMessenger>,
+    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
+    background_config: &crate::config::BackgroundConfig,
+    bus_handle: &BusHandle,
+    workspace_dir: &std::path::Path,
+) -> Arc<SessionRuntime> {
+    let (_, tracing_service, tracing_client_context) = build_support_deps(workspace_dir);
+    Arc::new(SessionRuntime::new(
+        Arc::clone(session_registry),
+        Arc::clone(session_store),
+        8,
+        background_config,
+        crate::background::runtime::SessionRuntimeHandles {
+            publisher: bus_handle.publisher(),
+            tz: chrono_tz::UTC,
+            messenger: Arc::clone(messenger),
+            checkpoints: Arc::clone(checkpoints),
+            tracing_service,
+            tracing_client_context,
+        },
+    ))
+}
+
 async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let (tempdir, workspace_dir, layout, skill_state) = setup_workspace(&opts).await;
 
@@ -416,18 +445,15 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         )
         .unwrap(),
     );
-    let runtime = Arc::new(SessionRuntime::new(
-        Arc::clone(&session_registry),
-        Arc::clone(&session_store),
-        8,
+    let runtime = build_harness_runtime(
+        &session_registry,
+        &session_store,
+        &messenger,
+        &checkpoints,
         &background_config,
-        crate::background::runtime::SessionRuntimeHandles {
-            publisher: bus_handle.publisher(),
-            tz: chrono_tz::UTC,
-            messenger: Arc::clone(&messenger),
-            checkpoints: Arc::clone(&checkpoints),
-        },
-    ));
+        &bus_handle,
+        &workspace_dir,
+    );
 
     let a2a_hub = crate::a2a::A2aClientHub::new_shared();
     let a2a_tracker = crate::a2a::RemoteTaskTracker::load(

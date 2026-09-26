@@ -388,12 +388,13 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
     })
 }
 
-/// Create the session registry, store, messenger, and runtime.
+/// Create the session registry, store, and messenger.
 ///
-/// The messenger is built here (rather than alongside the rest of
-/// `SpawnContext`) because the runtime itself now depends on it too — to
-/// resume a run whose interrupt channel still held messages at teardown —
-/// so it has to exist before `SessionRuntime::new` is called.
+/// The runtime itself is built separately, by [`build_session_runtime`],
+/// once [`init_supporting_infra`] has produced the tracing service the
+/// runtime auto-reports unexpected turn failures through — that in turn
+/// needs this function's `agent_messenger` (for the A2A client), so the two
+/// can't be built in one pass.
 ///
 /// At startup, any run left in the store from a prior process exit goes
 /// through the full completion pipeline (skip check, final observation,
@@ -403,18 +404,16 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
 /// `layout.resume_points_json()`, so a message to a session that completed
 /// before a restart still resumes it with a pointer back to its previous
 /// episode, rather than starting a fresh session with no memory of it.
-async fn init_session_runtime(
+async fn init_session_registry_and_messenger(
     cfg: &Config,
     layout: &WorkspaceLayout,
     publisher: &crate::bus::Publisher,
     session_observer: &Observer,
     merge_writer: &MemoryMergeWriter,
-    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
 ) -> (
     Arc<SessionRegistry>,
     Arc<SessionStore>,
     Arc<AgentMessenger>,
-    Arc<SessionRuntime>,
     Arc<ConversationRouter>,
 ) {
     let registry = Arc::new(SessionRegistry::load(layout.resume_points_json()).await);
@@ -441,21 +440,41 @@ async fn init_session_runtime(
         Arc::clone(&store),
         crate::background::HopLimits::from(&cfg.background),
     ));
-
-    let runtime = Arc::new(SessionRuntime::new(
-        Arc::clone(&registry),
-        Arc::clone(&store),
-        cfg.background.max_concurrent,
-        &cfg.background,
-        crate::background::runtime::SessionRuntimeHandles {
-            publisher: publisher.clone(),
-            tz: cfg.timezone,
-            messenger: Arc::clone(&messenger),
-            checkpoints: Arc::clone(checkpoints),
-        },
-    ));
     let conversation_router = Arc::new(ConversationRouter::new(Arc::clone(&messenger)));
-    (registry, store, messenger, runtime, conversation_router)
+    (registry, store, messenger, conversation_router)
+}
+
+/// Inputs to [`build_session_runtime`], gathered to keep the function under
+/// clippy's argument-count lint.
+struct SessionRuntimeInputs<'a> {
+    cfg: &'a Config,
+    publisher: &'a crate::bus::Publisher,
+    registry: &'a Arc<SessionRegistry>,
+    store: &'a Arc<SessionStore>,
+    messenger: &'a Arc<AgentMessenger>,
+    checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+}
+
+/// Build the session runtime, once the tracing service and its client
+/// context (from [`init_supporting_infra`]) are available — see
+/// [`init_session_registry_and_messenger`] for why this is a separate step.
+fn build_session_runtime(inputs: &SessionRuntimeInputs<'_>) -> Arc<SessionRuntime> {
+    Arc::new(SessionRuntime::new(
+        Arc::clone(inputs.registry),
+        Arc::clone(inputs.store),
+        inputs.cfg.background.max_concurrent,
+        &inputs.cfg.background,
+        crate::background::runtime::SessionRuntimeHandles {
+            publisher: inputs.publisher.clone(),
+            tz: inputs.cfg.timezone,
+            messenger: Arc::clone(inputs.messenger),
+            checkpoints: Arc::clone(inputs.checkpoints),
+            tracing_service: Arc::clone(inputs.tracing_service),
+            tracing_client_context: Arc::clone(inputs.tracing_client_context),
+        },
+    ))
 }
 
 /// Load and connect workspace MCP servers.
@@ -1052,16 +1071,20 @@ struct SessionSubsystemInputs<'a> {
     reflector: crate::memory::reflector::Reflector,
     mem: &'a memory::MemoryComponents,
     embedding_provider: Option<Arc<dyn crate::inference::EmbeddingProvider>>,
-    checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
     degradations: &'a mut Vec<String>,
 }
 
 /// The action store, skill index, session memory (a session's own observer
-/// and the shared merge writer), and session runtime (registry, store,
-/// messenger, runtime, conversation router) — independent subsystems
-/// `initialize` needs before it can build supporting infrastructure and the
-/// agent itself. Bundled into a struct (rather than a tuple) so the call
-/// site stays short enough to keep `initialize`'s line count down.
+/// and the shared merge writer), and session registry/store/messenger
+/// (registry, store, messenger, conversation router) — independent
+/// subsystems `initialize` needs before it can build supporting
+/// infrastructure and the agent itself. Bundled into a struct (rather than a
+/// tuple) so the call site stays short enough to keep `initialize`'s line
+/// count down.
+///
+/// The session runtime itself is not here — see
+/// [`init_session_registry_and_messenger`] for why it's built later, once
+/// supporting infra (including the tracing service) exists.
 struct SessionSubsystems {
     action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     action_notify: Arc<tokio::sync::Notify>,
@@ -1071,7 +1094,6 @@ struct SessionSubsystems {
     session_registry: Arc<SessionRegistry>,
     session_store: Arc<SessionStore>,
     agent_messenger: Arc<AgentMessenger>,
-    session_runtime: Arc<SessionRuntime>,
     conversation_router: Arc<ConversationRouter>,
 }
 
@@ -1091,14 +1113,13 @@ async fn init_session_subsystems(inputs: SessionSubsystemInputs<'_>) -> SessionS
         inputs.mem,
         inputs.embedding_provider,
     );
-    let (session_registry, session_store, agent_messenger, session_runtime, conversation_router) =
-        init_session_runtime(
+    let (session_registry, session_store, agent_messenger, conversation_router) =
+        init_session_registry_and_messenger(
             inputs.cfg,
             inputs.layout,
             inputs.publisher,
             &session_observer,
             &merge_writer,
-            inputs.checkpoints,
         )
         .await;
 
@@ -1111,7 +1132,6 @@ async fn init_session_subsystems(inputs: SessionSubsystemInputs<'_>) -> SessionS
         session_registry,
         session_store,
         agent_messenger,
-        session_runtime,
         conversation_router,
     }
 }
@@ -1154,6 +1174,33 @@ async fn init_supporting_infra(
     }
 }
 
+/// Build supporting infra and, once its tracing service exists, the session
+/// runtime that needs it — split out of `initialize` purely to keep that
+/// function's line count down. See [`init_session_registry_and_messenger`]
+/// for why the session runtime can't be built any earlier.
+async fn init_infra_and_session_runtime(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+    degradations: &mut Vec<String>,
+    publisher: &crate::bus::Publisher,
+    sess: &SessionSubsystems,
+    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
+) -> (SupportingInfra, Arc<SessionRuntime>) {
+    let infra =
+        init_supporting_infra(cfg, layout, degradations, Arc::clone(&sess.agent_messenger)).await;
+    let session_runtime = build_session_runtime(&SessionRuntimeInputs {
+        cfg,
+        publisher,
+        registry: &sess.session_registry,
+        store: &sess.session_store,
+        messenger: &sess.agent_messenger,
+        checkpoints,
+        tracing_service: &infra.tracing_service,
+        tracing_client_context: &infra.tracing_client_context,
+    });
+    (infra, session_runtime)
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -1189,15 +1236,16 @@ pub(crate) async fn initialize(
         reflector: providers.reflector,
         mem: &mem,
         embedding_provider: providers.embedding_provider.clone(),
-        checkpoints: &checkpoints,
         degradations: &mut degradations,
     })
     .await;
-    let infra = init_supporting_infra(
+    let (infra, session_runtime) = init_infra_and_session_runtime(
         cfg,
         &layout,
         &mut degradations,
-        Arc::clone(&sess.agent_messenger),
+        publisher,
+        &sess,
+        &checkpoints,
     )
     .await;
 
@@ -1209,7 +1257,7 @@ pub(crate) async fn initialize(
             http_client: http.clone(),
             mem: &mem,
             net: &infra.net,
-            session_runtime: &sess.session_runtime,
+            session_runtime: &session_runtime,
             session_registry: &sess.session_registry,
             session_observer: &sess.session_observer,
             merge_writer: &sess.merge_writer,
@@ -1252,7 +1300,7 @@ pub(crate) async fn initialize(
         endpoint_registry: infra.net.endpoint_registry,
         channel_configs: infra.net.channel_configs,
         http_client: http.clone(),
-        session_runtime: sess.session_runtime,
+        session_runtime,
         session_registry: sess.session_registry,
         session_store: sess.session_store,
         agent_messenger: sess.agent_messenger,

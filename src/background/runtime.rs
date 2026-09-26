@@ -26,6 +26,7 @@ use crate::bus::{
 };
 use crate::config::BackgroundConfig;
 use crate::interfaces::types::InboundMessage;
+use crate::tracing_service::{ClientContext, TracingService};
 
 use super::events::publish_session_event;
 use super::messaging::{AgentMessenger, DeliveryOutcome, PendingInput};
@@ -118,6 +119,10 @@ pub(crate) struct SessionRuntimeHandles {
     /// Checkpoints the workspace at the start and end of every turn this
     /// runtime drives. See `crate::checkpoints`.
     pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Auto-reports an unexpected turn failure through `TracingService::on_error`
+    /// (a no-op unless the user has enabled auto error reporting).
+    pub(crate) tracing_service: Arc<TracingService>,
+    pub(crate) tracing_client_context: Arc<ClientContext>,
 }
 
 /// Executes session turns with bounded concurrency, tracking each session's
@@ -137,6 +142,8 @@ pub struct SessionRuntime {
     /// Checkpoints the workspace at the start and end of every turn this
     /// runtime drives. See `crate::checkpoints`.
     checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    tracing_service: Arc<TracingService>,
+    tracing_client_context: Arc<ClientContext>,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -149,6 +156,8 @@ struct RunEnv {
     tz: chrono_tz::Tz,
     messenger: Arc<AgentMessenger>,
     checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    tracing_service: Arc<TracingService>,
+    tracing_client_context: Arc<ClientContext>,
 }
 
 impl SessionRuntime {
@@ -170,6 +179,8 @@ impl SessionRuntime {
             tz: handles.tz,
             messenger: handles.messenger,
             checkpoints: handles.checkpoints,
+            tracing_service: handles.tracing_service,
+            tracing_client_context: handles.tracing_client_context,
         }
     }
 
@@ -228,6 +239,8 @@ impl SessionRuntime {
             tz: self.tz,
             messenger: Arc::clone(&self.messenger),
             checkpoints: Arc::clone(&self.checkpoints),
+            tracing_service: Arc::clone(&self.tracing_service),
+            tracing_client_context: Arc::clone(&self.tracing_client_context),
         };
         let config = req.subagent_config;
 
@@ -771,15 +784,7 @@ async fn run_session(
                     Ok(_permit) => {
                         transition_state(&env.registry, &env.publisher, &info, SessionState::Running).await;
                         turn_number += 1;
-                        let ctx = TurnCtx {
-                            info: &info,
-                            resources: resources.as_ref(),
-                            stop_token: &stop_token,
-                            store: &env.store,
-                            publisher: &env.publisher,
-                            registry: env.registry.as_ref(),
-                            checkpoints: &env.checkpoints,
-                        };
+                        let ctx = turn_ctx(&info, resources.as_ref(), &stop_token, &env);
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
                         run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
                     }
@@ -1239,6 +1244,30 @@ struct TurnCtx<'a> {
     /// [`super::registry::SessionUsageSink`].
     registry: &'a SessionRegistry,
     checkpoints: &'a crate::checkpoints::CheckpointEngine,
+    /// Auto-reports an unexpected turn failure — see
+    /// `execute_turn_outcome`'s `Err` arm.
+    tracing_service: &'a TracingService,
+    tracing_client_context: &'a ClientContext,
+}
+
+/// Build a turn's `TurnCtx` from a run's per-turn locals and its shared `RunEnv`.
+fn turn_ctx<'a>(
+    info: &'a SessionInfo,
+    resources: Option<&'a SubAgentResources>,
+    stop_token: &'a CancellationToken,
+    env: &'a RunEnv,
+) -> TurnCtx<'a> {
+    TurnCtx {
+        info,
+        resources,
+        stop_token,
+        store: &env.store,
+        publisher: &env.publisher,
+        registry: env.registry.as_ref(),
+        checkpoints: &env.checkpoints,
+        tracing_service: &env.tracing_service,
+        tracing_client_context: &env.tracing_client_context,
+    }
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -1403,6 +1432,11 @@ async fn execute_turn_outcome(
         Err(e) => {
             let described = crate::inference::describe_turn_failure(&e);
             tracing::warn!(error = %described.details, "session turn failed");
+            let mut client = (*ctx.tracing_client_context).clone();
+            client.active_subagents = ctx.registry.subagent_snapshot();
+            ctx.tracing_service
+                .on_error(&described.details, client)
+                .await;
             (
                 AgentResultStatus::Failed {
                     error: described.message,
@@ -1479,6 +1513,32 @@ mod tests {
         )
     }
 
+    /// A `TracingService` with auto error reporting off, for tests that need
+    /// a `SessionRuntime` but don't exercise auto-reporting behavior
+    /// themselves — `on_error` calls through it are a guaranteed no-op.
+    fn test_tracing_service() -> Arc<TracingService> {
+        let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
+            &crate::util::telemetry::SpanBufferConfig::default(),
+        );
+        Arc::new(TracingService::new(
+            crate::config::TracingConfig::default(),
+            handle,
+        ))
+    }
+
+    fn test_tracing_client_context() -> Arc<ClientContext> {
+        Arc::new(ClientContext {
+            version: "test".to_string(),
+            commit: None,
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            model_provider: None,
+            model_name: None,
+            active_subagents: Vec::new(),
+            config_flags: std::collections::BTreeMap::new(),
+        })
+    }
+
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
     /// subscriber for the `AgentResultEvent`s it publishes on completion.
     async fn test_runtime(
@@ -1511,6 +1571,50 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
+            },
+        );
+        (runtime, sub)
+    }
+
+    /// Like `test_runtime`, but wired to a caller-supplied `TracingService`
+    /// (e.g. one pointed at a mock bug-report endpoint with auto-reporting
+    /// enabled), so a test can assert on `on_error`'s wiring into a real turn
+    /// failure.
+    async fn test_runtime_with_tracing_service(
+        max_concurrent: usize,
+        tracing_service: Arc<TracingService>,
+    ) -> (SessionRuntime, crate::bus::Subscriber<AgentResultEvent>) {
+        let bus_handle = crate::bus::spawn_broker();
+        let sub = bus_handle.subscribe(topics::Background).await.unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let idle_timeouts = IdleTimeouts {
+            scheduled: Duration::from_millis(20),
+            spawned: Duration::from_millis(20),
+            external: Duration::from_millis(20),
+            artifact: Duration::from_millis(20),
+        };
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            max_concurrent,
+            idle_timeouts,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+                tracing_service,
+                tracing_client_context: test_tracing_client_context(),
             },
         );
         (runtime, sub)
@@ -2115,6 +2219,92 @@ mod tests {
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
     }
 
+    /// A real, unexpected turn failure (missing `SubAgentResources` — never
+    /// something a user did) must auto-report through the session's
+    /// `TracingService` when auto error reporting is enabled.
+    #[tokio::test]
+    async fn failed_turn_auto_reports_through_tracing_service_when_enabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SESSION-FAILURE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_, span_handle) = crate::util::telemetry::SpanBufferLayer::new(
+            &crate::util::telemetry::SpanBufferConfig::default(),
+        );
+        let tracing_service = Arc::new(TracingService::new(
+            crate::config::TracingConfig {
+                feedback_endpoint: server.uri(),
+                auto_error_reporting: true,
+                ..crate::config::TracingConfig::default()
+            },
+            span_handle,
+        ));
+
+        let (runtime, mut sub) = test_runtime_with_tracing_service(3, tracing_service).await;
+        runtime.spawn(sample_request("spawned-researcher-report1"), None);
+
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
+    }
+
+    /// A session turn that completes normally is an expected outcome, not an
+    /// error — it must never auto-report even with auto error reporting on.
+    #[tokio::test]
+    async fn completed_turn_never_auto_reports_even_when_enabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SHOULD-NOT-FIRE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let (_, span_handle) = crate::util::telemetry::SpanBufferLayer::new(
+            &crate::util::telemetry::SpanBufferConfig::default(),
+        );
+        let tracing_service = Arc::new(TracingService::new(
+            crate::config::TracingConfig {
+                feedback_endpoint: server.uri(),
+                auto_error_reporting: true,
+                ..crate::config::TracingConfig::default()
+            },
+            span_handle,
+        ));
+
+        let (runtime, mut sub) = test_runtime_with_tracing_service(3, tracing_service).await;
+        runtime.spawn(
+            sample_request("spawned-researcher-report2"),
+            Some(make_resources("all good")),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.status, AgentResultStatus::Completed));
+    }
+
     /// Like `test_runtime`, but also returns the bus handle so a test can
     /// subscribe to additional topics — namely `UserMessage`, to observe a
     /// spawned session's turn-result relay to its spawner (`main`).
@@ -2152,6 +2342,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
         (runtime, sub, bus_handle)
@@ -2521,6 +2713,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
@@ -2947,6 +3141,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
@@ -3255,6 +3451,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
         (runtime, sub)
@@ -3461,6 +3659,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
@@ -3516,6 +3716,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
@@ -3923,6 +4125,8 @@ mod tests {
                 tz: chrono_tz::UTC,
                 messenger,
                 checkpoints: test_checkpoints(dir.path()),
+                tracing_service: test_tracing_service(),
+                tracing_client_context: test_tracing_client_context(),
             },
         );
 
