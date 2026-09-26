@@ -102,6 +102,7 @@ mod background_integration {
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
@@ -109,7 +110,7 @@ mod background_integration {
             }],
         };
 
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:status_check");
         assert!(spawn_event.prompt.contains("status_check"));

@@ -276,7 +276,9 @@ impl WorkspaceLayout {
         self.sessions_dir().join("resume_points.json")
     }
 
-    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).
+    /// Path to `pulse_state.json` -- persisted pulse scheduler state
+    /// (`last_run`, and each pulse's last delivered output for
+    /// `context_from`).
     #[must_use]
     pub fn pulse_state_json(&self) -> PathBuf {
         self.root.join("pulse_state.json")

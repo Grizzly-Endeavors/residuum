@@ -306,6 +306,18 @@ pub(crate) struct GatewayRuntime {
     pub endpoint_registry: EndpointRegistry,
     /// Typed subscriber for error events from the system notification channel.
     pub error_subscriber: Subscriber<crate::bus::ErrorEvent>,
+    /// A second, independent subscription to the `Background` topic (the bus
+    /// fans results out per-subscriber, so this doesn't interfere with
+    /// `background::listener`'s own subscription) used only to record each
+    /// completed pulse's delivered output into `pulse_scheduler` for
+    /// `context_from` — see
+    /// `crate::gateway::event_loop::pulse::handle_pulse_result_event`. Kept
+    /// separate from `pulse_scheduler` mutation elsewhere: results arrive
+    /// asynchronously, while every other `pulse_scheduler` access happens
+    /// synchronously inside the event loop's `select!`, so a second
+    /// subscriber (rather than sharing the scheduler behind a lock) is what
+    /// lets this stay single-owned.
+    pub pulse_result_subscriber: Subscriber<crate::bus::AgentResultEvent>,
     /// Endpoint that last sent a message (for background turn response routing).
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.

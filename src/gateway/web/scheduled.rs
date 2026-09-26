@@ -350,6 +350,7 @@ mod tests {
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![],
         }

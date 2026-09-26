@@ -38,6 +38,15 @@ pulses:
         prompt: "Check deployment status."
 ```
 
+## Output Chaining (`context_from`)
+
+Set `context_from: <pulse_name>` on a pulse to have that named pulse's most recent delivered output injected into this pulse's prompt at fire time, under a `## Context from '<pulse_name>'` section — useful for simple pipelines (a nightly collector feeding a weekly summarizer) without a shared file as a hand-off point.
+
+- "Delivered output" is the source pulse's last **completed** run whose summary wasn't `HEARTBEAT_OK`; a failed or cancelled run never updates it. It's recorded as each pulse's result arrives, so it reflects the source pulse's last successful, non-silent completion, however long ago.
+- If the named pulse doesn't exist, has never fired, or has never produced a non-`HEARTBEAT_OK` result, nothing is injected — the prompt says so explicitly instead of silently omitting the section.
+- Single-hop only: no chain resolution — only the named pulse's own stored output is used, even if that pulse itself sets `context_from`.
+- Persisted alongside `last_run` in `pulse_state.json`, survives restarts, and is pruned when the source pulse is removed from HEARTBEAT.yml.
+
 ## Schedule Parsing
 
 Durations are a number followed by a unit suffix:

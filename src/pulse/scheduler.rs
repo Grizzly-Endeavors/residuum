@@ -18,6 +18,15 @@ use super::types::{
 pub struct PulseScheduler {
     #[serde(default)]
     last_run: HashMap<String, NaiveDateTime>,
+    /// Each pulse's most recently delivered output — a completed run whose
+    /// summary isn't `HEARTBEAT_OK` (a failed or cancelled run never
+    /// updates this) — keyed by pulse name, for `context_from` injection.
+    /// Recorded from the pulse's own `AgentResultEvent` as it completes (see
+    /// `crate::gateway::event_loop::pulse::handle_pulse_result_event`), not
+    /// from `due_pulses`, since the result arrives on the bus well after the
+    /// tick that fired it.
+    #[serde(default)]
+    last_output: HashMap<String, String>,
     #[serde(skip)]
     state_path: Option<PathBuf>,
     /// Most recently logged HEARTBEAT.yml parse-error message, so `due_pulses`
@@ -57,6 +66,7 @@ impl PulseScheduler {
     pub fn new() -> Self {
         Self {
             last_run: HashMap::new(),
+            last_output: HashMap::new(),
             state_path: None,
             last_heartbeat_parse_error: None,
             last_heartbeat_problems: Vec::new(),
@@ -249,23 +259,53 @@ impl PulseScheduler {
         self.last_heartbeat_parse_error.as_deref()
     }
 
-    /// Remove `last_run` entries for pulses no longer present in
-    /// `HEARTBEAT.yml` (deleted or renamed), so `pulse_state.json` doesn't grow
-    /// unboundedly with unexplainable stale keys. Returns whether anything was removed.
+    /// Remove `last_run`/`last_output` entries for pulses no longer present
+    /// in `HEARTBEAT.yml` (deleted or renamed), so `pulse_state.json` doesn't
+    /// grow unboundedly with unexplainable stale keys. Returns whether
+    /// anything was removed.
     fn prune_removed_pulses(&mut self, current_pulse_names: &HashSet<String>) -> bool {
         let last_run_before = self.last_run.len();
+        let last_output_before = self.last_output.len();
 
         self.last_run
             .retain(|name, _| current_pulse_names.contains(name));
+        self.last_output
+            .retain(|name, _| current_pulse_names.contains(name));
 
-        let pruned = self.last_run.len() != last_run_before;
+        let pruned =
+            self.last_run.len() != last_run_before || self.last_output.len() != last_output_before;
         if pruned {
             tracing::debug!(
                 removed_last_run = last_run_before - self.last_run.len(),
+                removed_last_output = last_output_before - self.last_output.len(),
                 "pruned pulse state for pulses no longer in HEARTBEAT.yml"
             );
         }
         pruned
+    }
+
+    /// The named pulse's most recently delivered output, if it has ever
+    /// produced one — for resolving another pulse's `context_from`.
+    #[must_use]
+    pub(crate) fn last_output(&self, pulse_name: &str) -> Option<&str> {
+        self.last_output.get(pulse_name).map(String::as_str)
+    }
+
+    /// Record a pulse's newly delivered output (a completed run whose
+    /// summary isn't `HEARTBEAT_OK`) and persist it immediately — this
+    /// arrives from the bus between scheduler ticks (see
+    /// `crate::gateway::event_loop::pulse::handle_pulse_result_event`), so
+    /// unlike `last_run` it can't simply ride along with `due_pulses`'s own
+    /// save at the next tick.
+    pub(crate) fn record_pulse_output(&mut self, pulse_name: &str, output: String) {
+        self.last_output.insert(pulse_name.to_string(), output);
+        if let Err(e) = self.save_state() {
+            tracing::warn!(
+                pulse = %pulse_name,
+                error = %e,
+                "failed to persist pulse output; context_from may miss it after a restart"
+            );
+        }
     }
 
     /// Persist current state to disk (no-op if no state path is configured).
@@ -594,6 +634,133 @@ pulses:
         assert!(
             last_run.contains_key("test_pulse"),
             "should contain the pulse name"
+        );
+    }
+
+    // ── context_from output persistence ─────────────────────────────────
+
+    #[test]
+    fn last_output_is_none_before_anything_is_recorded() {
+        let scheduler = PulseScheduler::new();
+        assert_eq!(scheduler.last_output("never_ran"), None);
+    }
+
+    #[test]
+    fn record_pulse_output_makes_it_available_via_last_output() {
+        let mut scheduler = PulseScheduler::new();
+        scheduler.record_pulse_output("collector", "found 3 new items".to_string());
+        assert_eq!(
+            scheduler.last_output("collector"),
+            Some("found 3 new items")
+        );
+    }
+
+    #[test]
+    fn record_pulse_output_overwrites_the_previous_value() {
+        let mut scheduler = PulseScheduler::new();
+        scheduler.record_pulse_output("collector", "first run".to_string());
+        scheduler.record_pulse_output("collector", "second run".to_string());
+        assert_eq!(scheduler.last_output("collector"), Some("second run"));
+    }
+
+    #[test]
+    fn recorded_output_survives_a_restart() {
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("pulse_state.json");
+
+        {
+            let mut sched = PulseScheduler::with_state_path(&state_path);
+            sched.record_pulse_output("collector", "nightly digest".to_string());
+        }
+
+        let sched = PulseScheduler::with_state_path(&state_path);
+        assert_eq!(
+            sched.last_output("collector"),
+            Some("nightly digest"),
+            "output recorded before restart should still be there after reloading state"
+        );
+    }
+
+    #[test]
+    fn older_state_file_without_last_output_still_loads() {
+        // A `pulse_state.json` written before this field existed only has
+        // `last_run` — loading it must not fail, and last_output must simply
+        // be empty rather than blocking the rest of the file from loading.
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("pulse_state.json");
+        std::fs::write(
+            &state_path,
+            r#"{"last_run":{"test_pulse":"2026-02-19T12:00:00"}}"#,
+        )
+        .unwrap();
+
+        let sched = PulseScheduler::with_state_path(&state_path);
+        assert_eq!(sched.last_output("test_pulse"), None);
+        assert!(
+            sched.last_run.contains_key("test_pulse"),
+            "last_run from the older file should still load"
+        );
+    }
+
+    #[test]
+    fn due_pulses_prunes_stale_last_output_for_pulses_removed_from_heartbeat() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT); // only "test_pulse"
+        let state_path = dir.path().join("pulse_state.json");
+
+        {
+            let mut sched = PulseScheduler::new();
+            sched.record_pulse_output("removed_pulse", "stale output".to_string());
+            sched.record_pulse_output("test_pulse", "still relevant".to_string());
+            sched.state_path = Some(state_path.clone());
+            sched.save_state().unwrap();
+        }
+
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let tick_time = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let _due = sched.due_pulses(tick_time, &hb_path);
+
+        assert_eq!(
+            sched.last_output("removed_pulse"),
+            None,
+            "output for a pulse no longer in HEARTBEAT.yml should be pruned"
+        );
+        assert_eq!(
+            sched.last_output("test_pulse"),
+            Some("still relevant"),
+            "output for a pulse still in HEARTBEAT.yml should survive pruning"
+        );
+    }
+
+    #[test]
+    fn due_pulses_prunes_stale_last_output_from_disk() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT); // only "test_pulse"
+        let state_path = dir.path().join("pulse_state.json");
+
+        {
+            let mut sched = PulseScheduler::new();
+            sched.record_pulse_output("removed_pulse", "stale output".to_string());
+            sched.state_path = Some(state_path.clone());
+            sched.save_state().unwrap();
+        }
+
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let tick_time = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let _due = sched.due_pulses(tick_time, &hb_path);
+
+        let contents = std::fs::read_to_string(&state_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let last_output = parsed.get("last_output").unwrap().as_object().unwrap();
+        assert!(
+            !last_output.contains_key("removed_pulse"),
+            "stale last_output entry should not survive save/reload"
         );
     }
 
