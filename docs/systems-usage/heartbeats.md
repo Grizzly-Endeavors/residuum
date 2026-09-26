@@ -49,6 +49,7 @@ pulses:
 | `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"`, `"7d"` — any number plus `s`/`m`/`h`/`d` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
+| `context_from` | string | no | Name of another pulse. Injects that pulse's most recent delivered output into this pulse's prompt at fire time. See "Output Chaining (`context_from`)" below. |
 | `tasks` | array of objects | yes | Each task has `name` (string) and `prompt` (string). |
 
 ### Agent Routing
@@ -63,6 +64,31 @@ pulses:
 ### HEARTBEAT_OK Convention
 
 A pulse's session prompt includes an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded before reaching the notification router.
+
+### Output Chaining (`context_from`)
+
+A pulse can set `context_from: <pulse_name>` to receive the named pulse's most recent delivered output in its own prompt, under a `## Context from '<pulse_name>'` section — enabling simple pipelines (a nightly collector, then a weekly summarizer that reads its output) without a shared file or wiki page as a hand-off point.
+
+```yaml
+pulses:
+  - name: nightly_collect
+    schedule: "24h"
+    tasks:
+      - name: collect
+        prompt: "Gather today's deployment notes and errors."
+
+  - name: weekly_summary
+    schedule: "7d"
+    context_from: nightly_collect
+    tasks:
+      - name: summarize
+        prompt: "Summarize the week using the injected context from nightly_collect."
+```
+
+- "Delivered output" means the source pulse's last **completed** run whose summary wasn't `HEARTBEAT_OK` — a failed or cancelled run never updates it. This is recorded as each pulse's result arrives, not read live at fire time, so it always reflects the source pulse's last successful, non-silent completion, however long ago that was.
+- If the named pulse doesn't exist, has never fired, or has never produced a non-`HEARTBEAT_OK` result, nothing is injected — the prompt says so explicitly (`No prior output from '<name>' is available yet`) rather than silently omitting the section.
+- This is single-hop only: only the named pulse's own stored output is used, even if that pulse itself sets `context_from` — there is no chain resolution or cycle handling.
+- Each pulse's last delivered output is persisted alongside `last_run` in `pulse_state.json` and survives restarts. It is pruned when the pulse is removed from HEARTBEAT.yml, the same as `last_run`.
 
 ### Autonomous Framing
 

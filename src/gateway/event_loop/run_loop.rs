@@ -18,7 +18,7 @@ use super::commands::handle_server_command;
 use super::http::{
     A2aListenerDeps, AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server,
 };
-use super::pulse::handle_pulse_tick;
+use super::pulse::{handle_pulse_result_event, handle_pulse_tick};
 use super::turns::handle_inbound_message;
 
 use crate::gateway::{actions, idle, last_known_good, reload, watcher, web};
@@ -517,6 +517,10 @@ struct RuntimeChannels {
 struct BusInfrastructure {
     agent_subscriber: crate::bus::Subscriber<crate::bus::MessageEvent>,
     error_subscriber: crate::bus::Subscriber<crate::bus::ErrorEvent>,
+    /// See `GatewayRuntime::pulse_result_subscriber`'s own doc comment for
+    /// why this is a second, independent subscription rather than sharing
+    /// one with `background::listener`.
+    pulse_result_subscriber: crate::bus::Subscriber<crate::bus::AgentResultEvent>,
     notify_handles: Vec<tokio::task::JoinHandle<()>>,
     bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -543,6 +547,11 @@ async fn spawn_bus_infrastructure(
         .map_err(|e| {
             FatalError::Gateway(format!("failed to subscribe to system notifications: {e}"))
         })?;
+    let pulse_result_subscriber = core
+        .bus_handle
+        .subscribe(crate::bus::topics::Background)
+        .await
+        .map_err(|e| FatalError::Gateway(format!("failed to subscribe to background: {e}")))?;
 
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &core.bus_handle,
@@ -575,6 +584,7 @@ async fn spawn_bus_infrastructure(
     Ok(BusInfrastructure {
         agent_subscriber,
         error_subscriber,
+        pulse_result_subscriber,
         notify_handles,
         bus_infra_handles,
     })
@@ -640,6 +650,7 @@ async fn build_runtime(
         agent_subscriber: infra.agent_subscriber,
         endpoint_registry: parts.endpoint_registry,
         error_subscriber: infra.error_subscriber,
+        pulse_result_subscriber: infra.pulse_result_subscriber,
         last_output_endpoint: None,
         output_topic_override_tx: parts.output_topic_override_tx,
         reload_rx: receivers.reload,
@@ -1273,13 +1284,11 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 handle_pulse_tick(&mut rt).await;
             }
 
-            _ = action_tick.tick() => {
-                check_and_run_due_actions(&mut rt).await;
-            }
+            result = rt.pulse_result_subscriber.recv() => handle_pulse_result_event(result, &mut rt),
 
-            () = rt.action_notify.notified() => {
-                check_and_run_due_actions(&mut rt).await;
-            }
+            _ = action_tick.tick() => check_and_run_due_actions(&mut rt).await,
+
+            () = rt.action_notify.notified() => check_and_run_due_actions(&mut rt).await,
 
             () = wait_for_deadline(observe_deadline) => {
                 observe_deadline = None;

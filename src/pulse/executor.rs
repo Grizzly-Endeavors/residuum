@@ -5,6 +5,21 @@ use crate::bus::{EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, PulseOverlap, Spa
 
 use super::types::PulseDef;
 
+/// A pulse's `context_from` target resolved to its stored output, for
+/// injection into the firing pulse's prompt. Built by the caller (see
+/// `crate::gateway::event_loop::pulse::handle_pulse_tick`) from
+/// `PulseScheduler`'s persisted `last_output` map — single-hop only, so
+/// `output` is always that pulse's own stored output, never resolved
+/// through a `context_from` chain.
+pub struct PulseContext {
+    /// Name of the pulse named by this pulse's `context_from`.
+    pub source_pulse: String,
+    /// The source pulse's last delivered output, or `None` if it has never
+    /// delivered one (never fired, or fired but never completed with
+    /// deliverable output).
+    pub output: Option<String>,
+}
+
 /// Build a `SpawnRequestEvent` from a pulse definition.
 ///
 /// Every pulse runs as a `scheduled` session: `agent: None` runs on the
@@ -18,9 +33,16 @@ use super::types::PulseDef;
 /// live in the session registry — the new run still starts normally, this
 /// only tags it so the overlap is visible in the Scheduled view and the
 /// run's own session view (see `crate::gateway::event_loop::pulse`).
+///
+/// `context` is `Some` when `pulse.context_from` names another pulse — see
+/// [`PulseContext`] — and is folded into the prompt by [`build_pulse_prompt`].
 #[must_use]
-pub fn build_pulse_execution(pulse: &PulseDef, overlap: Option<PulseOverlap>) -> SpawnRequestEvent {
-    let prompt = build_pulse_prompt(pulse);
+pub fn build_pulse_execution(
+    pulse: &PulseDef,
+    overlap: Option<PulseOverlap>,
+    context: Option<&PulseContext>,
+) -> SpawnRequestEvent {
+    let prompt = build_pulse_prompt(pulse, context);
     let skill = pulse.agent.as_deref();
 
     tracing::debug!(
@@ -57,7 +79,14 @@ pub fn build_pulse_execution(pulse: &PulseDef, overlap: Option<PulseOverlap>) ->
 }
 
 /// Build the prompt string for a pulse check.
-fn build_pulse_prompt(pulse: &PulseDef) -> String {
+///
+/// `context` — resolved from `pulse.context_from` by the caller — is folded
+/// in as its own section naming the source pulse, whether or not it had
+/// output to give: a `None` `context.output` (the source pulse doesn't
+/// exist, or has never delivered output) still says so explicitly rather
+/// than silently omitting the section, so the run isn't left guessing
+/// whether context injection is even configured.
+fn build_pulse_prompt(pulse: &PulseDef, context: Option<&PulseContext>) -> String {
     let mut parts = Vec::new();
     parts.push(format!(
         "You are running a scheduled pulse check: {}",
@@ -69,6 +98,10 @@ fn build_pulse_prompt(pulse: &PulseDef) -> String {
          (HEARTBEAT.yml)."
             .to_string(),
     );
+
+    if let Some(context) = context {
+        parts.push(build_context_section(context));
+    }
 
     parts.push("## Tasks".to_string());
 
@@ -89,6 +122,26 @@ fn build_pulse_prompt(pulse: &PulseDef) -> String {
     parts.join("\n\n")
 }
 
+/// Build the `## Context from <pulse>` section for a pulse that sets
+/// `context_from`, framing the injected text as another pulse's own past
+/// output rather than something this run should treat as an instruction.
+fn build_context_section(context: &PulseContext) -> String {
+    match &context.output {
+        Some(output) => format!(
+            "## Context from '{name}'\n\
+             The following is the most recent output pulse '{name}' delivered (not a live \
+             re-run — this is what it reported last time it fired):\n\n{output}",
+            name = context.source_pulse,
+        ),
+        None => format!(
+            "## Context from '{name}'\n\
+             No prior output from '{name}' is available yet (it may not exist, or has never \
+             delivered a non-HEARTBEAT_OK result).",
+            name = context.source_pulse,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +155,7 @@ mod tests {
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![
                 PulseTask {
@@ -121,7 +175,7 @@ mod tests {
     #[test]
     fn execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(spawn_event.prompt.contains("email_check"));
@@ -143,7 +197,7 @@ mod tests {
     fn execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(
             spawn_event.skill.as_ref().map(AsRef::as_ref),
             Some("memory-agent")
@@ -160,7 +214,7 @@ mod tests {
 
     #[test]
     fn prompt_teaches_both_sentinels() {
-        let prompt = build_pulse_prompt(&sample_pulse());
+        let prompt = build_pulse_prompt(&sample_pulse(), None);
         assert!(
             prompt.contains(HEARTBEAT_OK),
             "session must be told how to exit silently"
@@ -174,7 +228,7 @@ mod tests {
     #[test]
     fn prompt_contains_pulse_name_and_tasks() {
         let pulse = sample_pulse();
-        let prompt = build_pulse_prompt(&pulse);
+        let prompt = build_pulse_prompt(&pulse, None);
 
         assert!(
             prompt.contains("email_check"),
@@ -197,7 +251,7 @@ mod tests {
     #[test]
     fn prompt_includes_autonomous_context_framing() {
         let pulse = sample_pulse();
-        let prompt = build_pulse_prompt(&pulse);
+        let prompt = build_pulse_prompt(&pulse, None);
 
         assert!(
             prompt.contains("autonomous"),
@@ -215,7 +269,7 @@ mod tests {
 
     #[test]
     fn prompt_does_not_forbid_further_background_work() {
-        let prompt = build_pulse_prompt(&sample_pulse());
+        let prompt = build_pulse_prompt(&sample_pulse(), None);
         assert!(
             !prompt.contains("schedule further background work"),
             "scheduled sessions may spawn within the depth cap like any other session"
@@ -225,7 +279,7 @@ mod tests {
     #[test]
     fn prompt_ends_with_heartbeat_ok_instruction() {
         let pulse = sample_pulse();
-        let prompt = build_pulse_prompt(&pulse);
+        let prompt = build_pulse_prompt(&pulse, None);
 
         assert!(
             prompt.contains(HEARTBEAT_OK),
@@ -242,14 +296,72 @@ mod tests {
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![],
         };
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(spawn_event.source_label, "pulse:empty");
         assert!(
             spawn_event.prompt.contains(HEARTBEAT_OK),
             "should still have HEARTBEAT_OK instruction"
         );
+    }
+
+    // ── context_from injection ──────────────────────────────────────────
+
+    #[test]
+    fn no_context_means_no_context_section() {
+        let prompt = build_pulse_prompt(&sample_pulse(), None);
+        assert!(
+            !prompt.contains("Context from"),
+            "a pulse with no context_from should get no context section at all"
+        );
+    }
+
+    #[test]
+    fn context_with_output_is_injected_under_a_framing_header() {
+        let context = PulseContext {
+            source_pulse: "collector".to_string(),
+            output: Some("Found 3 overnight alerts.".to_string()),
+        };
+        let prompt = build_pulse_prompt(&sample_pulse(), Some(&context));
+        assert!(
+            prompt.contains("collector"),
+            "prompt should name the source pulse"
+        );
+        assert!(
+            prompt.contains("Found 3 overnight alerts."),
+            "prompt should contain the source pulse's stored output"
+        );
+    }
+
+    #[test]
+    fn missing_context_output_says_so_explicitly() {
+        let context = PulseContext {
+            source_pulse: "never_ran".to_string(),
+            output: None,
+        };
+        let prompt = build_pulse_prompt(&sample_pulse(), Some(&context));
+        assert!(
+            prompt.contains("never_ran"),
+            "prompt should name the missing source pulse"
+        );
+        assert!(
+            prompt.contains("No prior output"),
+            "prompt should say plainly that there is no prior output, not silently omit the section"
+        );
+    }
+
+    #[test]
+    fn build_pulse_execution_injects_context_into_the_spawned_prompt() {
+        let pulse = sample_pulse();
+        let context = PulseContext {
+            source_pulse: "collector".to_string(),
+            output: Some("Found 3 overnight alerts.".to_string()),
+        };
+        let spawn_event = build_pulse_execution(&pulse, None, Some(&context));
+        assert!(spawn_event.prompt.contains("collector"));
+        assert!(spawn_event.prompt.contains("Found 3 overnight alerts."));
     }
 }

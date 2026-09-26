@@ -1,9 +1,14 @@
 //! Pulse execution handling and scheduling in the event loop.
 
 use crate::background::registry::{SessionCategory, SessionRegistry};
-use crate::bus::{PulseOverlap, topics};
+use crate::bus::{
+    AgentResultEvent, AgentResultStatus, BusError, PulseOverlap, ResultDisposition, topics,
+};
 use crate::gateway::helpers::publish_notice;
 use crate::gateway::types::GatewayRuntime;
+use crate::pulse::executor::PulseContext;
+use crate::pulse::scheduler::PulseScheduler;
+use crate::pulse::types::PulseDef;
 
 /// Fork a session for a single due pulse.
 #[tracing::instrument(skip_all)]
@@ -53,6 +58,62 @@ fn heartbeat_reload_outcome(scheduler: &crate::pulse::scheduler::PulseScheduler)
     }
 }
 
+/// Resolve a pulse's `context_from` target to a [`PulseContext`], if it sets
+/// one — looking up the named pulse's last delivered output in `scheduler`.
+/// `output` is `None` when the named pulse has never delivered one (it
+/// doesn't exist, has never fired, or has never completed with anything but
+/// `HEARTBEAT_OK`); `build_pulse_prompt` turns that into an explicit "no
+/// prior output" note rather than silently omitting the section.
+fn resolve_pulse_context(pulse: &PulseDef, scheduler: &PulseScheduler) -> Option<PulseContext> {
+    let source_pulse = pulse.context_from.clone()?;
+    let output = scheduler.last_output(&source_pulse).map(str::to_string);
+    Some(PulseContext {
+        source_pulse,
+        output,
+    })
+}
+
+/// Extract `(pulse_name, summary)` from a pulse result eligible to become
+/// that pulse's `last_output`, or `None` if it isn't. Split out as a pure
+/// function (rather than inlined into [`handle_pulse_result_event`]) so the
+/// eligibility rule is testable without a full `GatewayRuntime`.
+///
+/// Only a `Completed` run with a non-empty summary whose disposition isn't
+/// `Silent` (a `HEARTBEAT_OK` result) counts as "delivered" — a failed or
+/// cancelled run never updates the stored output. A result whose
+/// `source_label` doesn't start with `pulse:` (a spawned session, an action,
+/// a webhook) isn't a pulse result and is ignored.
+fn delivered_pulse_output(event: &AgentResultEvent) -> Option<(&str, &str)> {
+    let pulse_name = event.source_label.strip_prefix("pulse:")?;
+    if !matches!(event.status, AgentResultStatus::Completed) {
+        return None;
+    }
+    if matches!(event.disposition, ResultDisposition::Silent) || event.summary.is_empty() {
+        return None;
+    }
+    Some((pulse_name, event.summary.as_str()))
+}
+
+/// Record a completed pulse run's delivered output into `pulse_scheduler`,
+/// for a later `context_from` pulse to inject at fire time — see
+/// [`delivered_pulse_output`] for which results count as "delivered".
+/// `Ok(None)` (subscriber closed) and `Err` (lagged/mismatched) are dropped
+/// silently, same as the gateway's other best-effort bus subscriptions (see
+/// `error_subscriber` in `run_event_loop`) — this is a secondary enrichment
+/// of pulse state, not something worth failing the loop over.
+pub fn handle_pulse_result_event(
+    event: Result<Option<AgentResultEvent>, BusError>,
+    rt: &mut GatewayRuntime,
+) {
+    let Ok(Some(event)) = event else {
+        return;
+    };
+    if let Some((pulse_name, summary)) = delivered_pulse_output(&event) {
+        rt.pulse_scheduler
+            .record_pulse_output(pulse_name, summary.to_string());
+    }
+}
+
 /// Process all due pulses.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn handle_pulse_tick(rt: &mut GatewayRuntime) {
@@ -96,7 +157,8 @@ pub async fn handle_pulse_tick(rt: &mut GatewayRuntime) {
                  anyway and flagging the overlap"
             );
         }
-        let spawn_event = build_pulse_execution(pulse, overlap);
+        let context = resolve_pulse_context(pulse, &rt.pulse_scheduler);
+        let spawn_event = build_pulse_execution(pulse, overlap, context.as_ref());
         handle_pulse_execution(spawn_event, rt).await;
     }
 }
@@ -155,5 +217,147 @@ mod tests {
             outcome.contains("failed to parse"),
             "outcome should say the file failed to parse: {outcome}"
         );
+    }
+
+    // ── context_from resolution ────────────────────────────────────────
+
+    fn sample_pulse_def(name: &str, context_from: Option<&str>) -> crate::pulse::types::PulseDef {
+        crate::pulse::types::PulseDef {
+            name: name.to_string(),
+            enabled: true,
+            schedule: "1h".to_string(),
+            active_hours: None,
+            agent: None,
+            model_tier: None,
+            context_from: context_from.map(str::to_string),
+            include_identity: None,
+            tasks: vec![],
+        }
+    }
+
+    #[test]
+    fn resolve_pulse_context_none_when_pulse_sets_no_context_from() {
+        let pulse = sample_pulse_def("downstream", None);
+        let scheduler = PulseScheduler::new();
+        assert!(resolve_pulse_context(&pulse, &scheduler).is_none());
+    }
+
+    #[test]
+    fn resolve_pulse_context_finds_recorded_output() {
+        let pulse = sample_pulse_def("downstream", Some("collector"));
+        let mut scheduler = PulseScheduler::new();
+        scheduler.record_pulse_output("collector", "found 3 items".to_string());
+        let context = resolve_pulse_context(&pulse, &scheduler).unwrap();
+        assert_eq!(context.source_pulse, "collector");
+        assert_eq!(context.output.as_deref(), Some("found 3 items"));
+    }
+
+    #[test]
+    fn resolve_pulse_context_missing_source_gives_none_output_not_none_context() {
+        let pulse = sample_pulse_def("downstream", Some("never_ran"));
+        let scheduler = PulseScheduler::new();
+        let context = resolve_pulse_context(&pulse, &scheduler).unwrap();
+        assert_eq!(context.source_pulse, "never_ran");
+        assert_eq!(context.output, None);
+    }
+
+    // ── delivered_pulse_output eligibility ───────────────────────────────
+
+    fn sample_result_event(
+        source_label: &str,
+        status: AgentResultStatus,
+        disposition: ResultDisposition,
+        summary: &str,
+    ) -> AgentResultEvent {
+        AgentResultEvent {
+            session_address: crate::bus::SessionAddress::from("scheduled-test-0001"),
+            run_id: "t1".into(),
+            source_label: source_label.to_string(),
+            agent_skill: None,
+            source: crate::bus::EventTrigger::Pulse,
+            disposition,
+            status,
+            summary: summary.to_string(),
+            transcript_path: None,
+            timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn delivered_pulse_output_accepts_a_normal_completed_pulse_result() {
+        let event = sample_result_event(
+            "pulse:collector",
+            AgentResultStatus::Completed,
+            ResultDisposition::Normal,
+            "found 3 items",
+        );
+        assert_eq!(
+            delivered_pulse_output(&event),
+            Some(("collector", "found 3 items"))
+        );
+    }
+
+    #[test]
+    fn delivered_pulse_output_accepts_urgent_disposition() {
+        let event = sample_result_event(
+            "pulse:collector",
+            AgentResultStatus::Completed,
+            ResultDisposition::Urgent,
+            "urgent finding",
+        );
+        assert_eq!(
+            delivered_pulse_output(&event),
+            Some(("collector", "urgent finding"))
+        );
+    }
+
+    #[test]
+    fn delivered_pulse_output_rejects_silent_heartbeat_ok() {
+        let event = sample_result_event(
+            "pulse:collector",
+            AgentResultStatus::Completed,
+            ResultDisposition::Silent,
+            "HEARTBEAT_OK",
+        );
+        assert_eq!(delivered_pulse_output(&event), None);
+    }
+
+    #[test]
+    fn delivered_pulse_output_rejects_failed_runs() {
+        let event = sample_result_event(
+            "pulse:collector",
+            AgentResultStatus::Failed {
+                error: "boom".to_string(),
+                details: None,
+            },
+            ResultDisposition::Normal,
+            "partial output before failing",
+        );
+        assert_eq!(delivered_pulse_output(&event), None);
+    }
+
+    #[test]
+    fn delivered_pulse_output_rejects_cancelled_runs() {
+        let event = sample_result_event(
+            "pulse:collector",
+            AgentResultStatus::Cancelled,
+            ResultDisposition::Normal,
+            "",
+        );
+        assert_eq!(delivered_pulse_output(&event), None);
+    }
+
+    #[test]
+    fn delivered_pulse_output_ignores_non_pulse_source_labels() {
+        let event = sample_result_event(
+            "action:deploy",
+            AgentResultStatus::Completed,
+            ResultDisposition::Normal,
+            "deployed",
+        );
+        assert_eq!(delivered_pulse_output(&event), None);
     }
 }

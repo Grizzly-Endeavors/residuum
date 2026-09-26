@@ -22,6 +22,7 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
@@ -35,7 +36,7 @@ mod proactivity_integration {
     #[test]
     fn build_pulse_execution_no_agent_has_no_skill() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(spawn_event.skill, None);
         assert_eq!(spawn_event.source_label, "pulse:email_check");
         assert!(matches!(spawn_event.source, EventTrigger::Pulse));
@@ -44,7 +45,7 @@ mod proactivity_integration {
     #[test]
     fn build_pulse_execution_prompt_contains_pulse_name_and_heartbeat_ok() {
         let pulse = sample_pulse();
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert!(
             spawn_event.prompt.contains("email_check"),
             "prompt should contain pulse name"
@@ -72,11 +73,12 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             model_tier: None,
+            context_from: None,
             include_identity: None,
             tasks: vec![],
         };
 
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(spawn_event.source_label, "pulse:empty_test");
         assert!(
             spawn_event.prompt.contains("HEARTBEAT_OK"),
@@ -88,7 +90,7 @@ mod proactivity_integration {
     fn build_pulse_execution_agent_name_activates_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
-        let spawn_event = build_pulse_execution(&pulse, None);
+        let spawn_event = build_pulse_execution(&pulse, None, None);
         assert_eq!(
             spawn_event.skill.as_ref().map(AsRef::as_ref),
             Some("memory-agent")
