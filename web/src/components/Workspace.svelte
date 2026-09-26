@@ -124,10 +124,10 @@
 
   async function handleDeleteFile(path: string): Promise<void> {
     try {
-      await deleteWorkspaceFile(path);
+      const checkpointId = await deleteWorkspaceFile(path);
       clearEditorIfOpen(path);
       await refreshDir(parentDir(path));
-      notifyWithUndo(`Deleted ${fileName(path)}.`, "workspace", path, () =>
+      notifyWithUndo(`Deleted ${fileName(path)}.`, "workspace", path, checkpointId, () =>
         refreshDir(parentDir(path)),
       );
     } catch (e) {

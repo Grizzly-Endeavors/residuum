@@ -84,6 +84,34 @@ fn io_err(e: impl std::fmt::Display) -> CheckpointError {
     CheckpointError::Io(e.to_string())
 }
 
+/// What [`GitRepo::commit_snapshot_outcome`] did with a snapshot.
+pub(super) enum SnapshotCommit {
+    /// A new checkpoint was written.
+    Recorded(String),
+    /// The tree already matched the tip. `tip` is that checkpoint's id, or
+    /// `None` when the repository has no commits yet.
+    Unchanged { tip: Option<String> },
+}
+
+impl SnapshotCommit {
+    /// The id of a checkpoint this call newly wrote, if it wrote one.
+    pub(super) fn recorded_id(&self) -> Option<String> {
+        match self {
+            Self::Recorded(id) => Some(id.clone()),
+            Self::Unchanged { .. } => None,
+        }
+    }
+
+    /// The checkpoint that holds this tree: the one just written, or the
+    /// existing tip when nothing changed.
+    pub(super) fn current_id(&self) -> Option<String> {
+        match self {
+            Self::Recorded(id) => Some(id.clone()),
+            Self::Unchanged { tip } => tip.clone(),
+        }
+    }
+}
+
 impl GitRepo {
     /// Open the checkpoint repository at `git_dir`, initializing a fresh
     /// bare repository there if it doesn't exist yet.
@@ -150,6 +178,21 @@ impl GitRepo {
         author_time: DateTime<Utc>,
         ctx: &super::types::CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
+        Ok(self
+            .commit_snapshot_outcome(files, author_time, ctx)?
+            .recorded_id())
+    }
+
+    /// Same commit as [`Self::commit_snapshot`], but an unchanged tree still
+    /// names the tip that already holds it. Callers that undo a later action
+    /// need that id: skipping the commit doesn't mean there is no snapshot
+    /// of the pre-action state.
+    pub(super) fn commit_snapshot_outcome(
+        &self,
+        files: &[SnapshotFile],
+        author_time: DateTime<Utc>,
+        ctx: &super::types::CheckpointContext,
+    ) -> Result<SnapshotCommit, CheckpointError> {
         let new_tree_id = self.build_tree(files)?;
         let _lock = self.acquire_commit_lock()?;
 
@@ -158,12 +201,16 @@ impl GitRepo {
             let parent = self.tip()?;
             let parent_tree_id = self.tree_id_of(parent)?;
             if new_tree_id == parent_tree_id {
-                return Ok(None);
+                return Ok(SnapshotCommit::Unchanged {
+                    tip: parent.map(|id| id.to_hex().to_string()),
+                });
             }
 
             let message = build_message(ctx);
             match self.write_commit(new_tree_id, parent, author_time, &message) {
-                Ok(commit_id) => return Ok(Some(commit_id.to_hex().to_string())),
+                Ok(commit_id) => {
+                    return Ok(SnapshotCommit::Recorded(commit_id.to_hex().to_string()));
+                }
                 Err(e) => last_err = Some(e),
             }
         }
