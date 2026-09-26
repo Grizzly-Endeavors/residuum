@@ -141,6 +141,7 @@ mod tests {
             message: Message::user(text),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -149,6 +150,7 @@ mod tests {
             message: Message::assistant(text.to_string(), None),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -164,6 +166,7 @@ mod tests {
             ),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -172,6 +175,7 @@ mod tests {
             message: Message::tool("file contents here", "call_1"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -180,6 +184,7 @@ mod tests {
             message: Message::system("you are a helpful assistant"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }
     }
 
@@ -238,6 +243,7 @@ mod tests {
                 message: Message::assistant("   ".to_string(), None),
                 timestamp: chrono::Utc::now().naive_utc(),
                 visibility: Visibility::User,
+                turn_id: None,
             },
         ];
         let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);

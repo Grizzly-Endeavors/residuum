@@ -165,9 +165,15 @@ mod memory_integration {
         );
 
         let messages = make_messages(10);
-        append_recent_messages(&recent_path, &messages, Visibility::User, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &messages,
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         assert!(
@@ -265,6 +271,7 @@ mod memory_integration {
             &more_messages,
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -396,9 +403,15 @@ mod memory_integration {
 
         // "Run 1" — add some messages, exit without hitting threshold
         let run1_msgs = make_messages(3);
-        append_recent_messages(&recent_path, &run1_msgs, Visibility::User, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &run1_msgs,
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
 
         // "Run 2" — load and verify messages survived
         let loaded = load_recent_messages(&recent_path).await.unwrap();
@@ -406,9 +419,15 @@ mod memory_integration {
 
         // Add more messages in run 2
         let run2_msgs = make_messages(3);
-        append_recent_messages(&recent_path, &run2_msgs, Visibility::User, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &run2_msgs,
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
 
         let all = load_recent_messages(&recent_path).await.unwrap();
         assert_eq!(all.len(), 6, "should have messages from both runs");
@@ -480,6 +499,7 @@ mod memory_integration {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }];
 
         assert!(
@@ -504,6 +524,7 @@ mod memory_integration {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }];
 
         assert_eq!(
@@ -520,6 +541,7 @@ mod memory_integration {
                 message: m,
                 timestamp: chrono::Utc::now().naive_utc(),
                 visibility: Visibility::User,
+                turn_id: None,
             })
             .collect();
 
@@ -549,9 +571,15 @@ mod memory_integration {
 
         let messages = make_messages(5);
         let recent_path = layout.recent_messages_json();
-        append_recent_messages(&recent_path, &messages, Visibility::User, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &messages,
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         let result = observer.extract(&recent, &layout).await.unwrap();
@@ -589,9 +617,15 @@ mod memory_integration {
 
         let messages = make_messages(5);
         let recent_path = layout.recent_messages_json();
-        append_recent_messages(&recent_path, &messages, Visibility::User, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &messages,
+            Visibility::User,
+            chrono_tz::UTC,
+            None,
+        )
+        .await
+        .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         let result = observer.extract(&recent, &layout).await.unwrap();

@@ -957,5 +957,6 @@ fn wrap_episode_message(message: Message, timestamp: chrono::NaiveDateTime) -> R
         message,
         timestamp,
         visibility: Visibility::User,
+        turn_id: None,
     }
 }

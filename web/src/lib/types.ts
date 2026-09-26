@@ -84,6 +84,8 @@ export interface RecentMessage {
   sender?: MessageSender;
   /** The agent that sent this message, for one agent's message to another. */
   agent_sender?: AgentSender;
+  /** The correlation id of the turn that produced this message, if any. */
+  turn_id?: string;
 }
 
 /** The agent behind a message one agent sent another. */
