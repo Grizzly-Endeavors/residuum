@@ -21,6 +21,7 @@ import type {
   CreateA2aKeyResponse,
   A2aRemoteAgent,
   OutboundA2aTaskSummary,
+  UserInboxItem,
   WorkspaceEntry,
   WorkspaceWriteResponse,
   WorkspaceValidateResponse,
@@ -490,6 +491,26 @@ export async function revokeA2aKey(name: string): Promise<void> {
  */
 export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
   return apiFetch<A2aRemoteAgent[]>("/api/a2a/agents");
+}
+
+/** Mark a user inbox item read. Throws `ApiError`. */
+export async function markUserInboxItemRead(id: string): Promise<UserInboxItem> {
+  return apiFetch<UserInboxItem>(`/api/inbox/${encodeURIComponent(id)}/read`, { method: "PUT" });
+}
+
+/** Archive a user inbox item. Throws `ApiError`. */
+export async function archiveUserInboxItem(id: string): Promise<void> {
+  await checkOk(await fetch(`/api/inbox/${encodeURIComponent(id)}/archive`, { method: "POST" }));
+}
+
+/** Archived user inbox items, newest first. Throws `ApiError`. */
+export async function fetchArchivedUserInbox(): Promise<UserInboxItem[]> {
+  return apiFetch<UserInboxItem[]>("/api/inbox/archive");
+}
+
+/** Move an archived user inbox item back to the inbox. Throws `ApiError`. */
+export async function restoreUserInboxItem(id: string): Promise<void> {
+  await checkOk(await fetch(`/api/inbox/${encodeURIComponent(id)}/restore`, { method: "POST" }));
 }
 
 /** Open tasks the agent sent to remote agents, newest first. Throws `ApiError`. */
