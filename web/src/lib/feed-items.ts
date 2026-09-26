@@ -32,10 +32,14 @@ export function normalizeToolArgs(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }
 
-const RESULT_SEPARATOR = "─── result ───\n";
+/**
+ * Written ahead of each tool output so repeated results on one call stay
+ * separable. The tool view strips it; it is not part of what the tool returned.
+ */
+export const TOOL_RESULT_MARKER = "─── result ───\n";
 
 function appendResult(call: ToolCallState, output: string): void {
-  call.result = (call.result ? call.result + "\n" : "") + RESULT_SEPARATOR + output;
+  call.result = (call.result ? call.result + "\n" : "") + TOOL_RESULT_MARKER + output;
 }
 
 /**
