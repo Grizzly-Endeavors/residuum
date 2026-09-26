@@ -117,6 +117,7 @@ class WsCoordinator {
     };
 
     this.transport.onDisconnected = () => {
+      this.store.clearPostTurnActivity();
       this.notifyConnection(false);
     };
   }

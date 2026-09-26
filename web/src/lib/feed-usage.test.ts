@@ -74,4 +74,19 @@ describe("FeedStore turn usage", () => {
     store.setInitialUsage(totals(300, 60, 300));
     expect(store.sessionUsage).toEqual(totals(300, 60, 300));
   });
+
+  it("tracks background post-turn activity and clears it on disconnect", () => {
+    const store = new FeedStore();
+    store.handleMessage({ type: "post_turn_activity", kind: "memory", active: true });
+    store.handleMessage({ type: "post_turn_activity", kind: "subconscious", active: true });
+    expect(store.memoryWorking).toBe(true);
+    expect(store.subconsciousWorking).toBe(true);
+
+    store.handleMessage({ type: "post_turn_activity", kind: "subconscious", active: false });
+    expect(store.subconsciousWorking).toBe(false);
+    expect(store.memoryWorking).toBe(true);
+
+    store.clearPostTurnActivity();
+    expect(store.memoryWorking).toBe(false);
+  });
 });

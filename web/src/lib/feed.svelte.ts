@@ -159,6 +159,16 @@ export class FeedStore {
   memoryWorking = $state(false);
   /** Same as `memoryWorking`, for the end-of-turn subconscious evaluation. */
   subconsciousWorking = $state(false);
+
+  /**
+   * Forget which background cycles are running. Called on disconnect: the
+   * frame saying a cycle finished may never arrive, and an indicator stuck
+   * on would claim work that already ended.
+   */
+  clearPostTurnActivity(): void {
+    this.memoryWorking = false;
+    this.subconsciousWorking = false;
+  }
   oldestEpisodeCursor = $state<string | null>(null);
   hasMoreHistory = $state(false);
   isLoadingOlder = $state(false);
