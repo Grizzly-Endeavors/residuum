@@ -121,23 +121,19 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1 (2026-09-25)
         with:
-          # Appended to the action's default prompt, which already tells
-          # Claude to read CLAUDE.md. Names the files that apply here.
-          prompt: |
-            This is the Residuum repository. Follow CLAUDE.md at the repository
-            root. When changing the Svelte app in web/, also follow web/CLAUDE.md.
-            Nested CLAUDE.md files under src/ and docs/ apply to those directories.
-            The git hooks from .githooks/ are installed; do not bypass them.
-            The Rust toolchain pinned in rust-toolchain.toml is already installed.
-            web/node_modules and web/dist are already built, so cargo fmt,
-            cargo clippy --all-targets --all-features -- -D warnings, and
-            cargo test --quiet can run from the repo root, and npm run lint,
-            npm run check, and npm test can run from web/.
+          # Do not set prompt. detectMode in src/modes/detector.ts at this pin
+          # returns agent mode when prompt is set on issue_comment,
+          # pull_request_review_comment, pull_request_review, or issues.
+          # Agent mode uses that string as the entire prompt and does not
+          # read the @claude comment. --append-system-prompt stays in
+          # claude_args, so the mode stays tag and the comment stays the request.
+          #
           # Sonnet unless the issue or PR carries the model:opus label.
-          # IDs from the Claude models overview: claude-sonnet-5, claude-opus-5-5.
+          # Claude Code model IDs: claude-sonnet-5, claude-opus-5-5.
           claude_args: >-
             --model ${{
               contains(toJson(github.event.issue.labels || github.event.pull_request.labels), 'model:opus')
               && 'claude-opus-5-5'
               || 'claude-sonnet-5'
             }}
+            --append-system-prompt "This is the Residuum repository. Follow CLAUDE.md at the repository root. When changing the Svelte app in web/, also follow web/CLAUDE.md. Nested CLAUDE.md files under src/ and docs/ apply to those directories. The git hooks from .githooks/ are installed; do not bypass them. The Rust toolchain pinned in rust-toolchain.toml is already installed. web/node_modules and web/dist are already built, so cargo fmt, cargo clippy --all-targets --all-features -- -D warnings, and cargo test --quiet can run from the repo root, and npm run lint, npm run check, and npm test can run from web/."
