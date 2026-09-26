@@ -1,5 +1,7 @@
 # CLAUDE.md | Residuum - Personal Agent Framework
 
+`AGENTS.md` carries these same rules for Cursor and other non-Claude agents. This paragraph and the title are the only difference. Change them together.
+
 ## Key References
 
 - [Design Philosophy](./docs/design-philosophy.md)
@@ -152,7 +154,7 @@ The failure this section exists to prevent is a guard built around a failure nob
 - `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
 - `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
 - `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
-- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
+- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off). The switch is stored for the running daemon and shows up in `residuum tracing status`. No report is sent: `TracingService::on_error` logs and returns, and nothing calls it ([#101](https://github.com/Grizzly-Endeavors/residuum/issues/101)). `residuum bug-report` is the path that sends one.
 - `residuum bug-report -m "description"` — send a sanitized trace dump to the developer via the feedback-ingest service
 - `RUST_LOG` env var overrides the configured log level when set
 
