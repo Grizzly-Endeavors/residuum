@@ -8,14 +8,14 @@ Every interface can stop a turn currently in progress: the main agent's own turn
 |-----------|-----|---------|
 | Web UI | A square stop button replaces send while a turn is generating and the composer is empty. Typing a message brings send back so a steering message can be sent instead. Pressing Escape while the composer has focus also stops the turn — scoped to the composer rather than a global shortcut, since several other overlays (modals, drawers, the command menu, the shortcuts overlay) already own Escape while they're open with no shared priority between them. | Main, always. |
 | Telegram / Discord / Teams | `/stop` (in Teams, only the owner can run commands) | The same conversation an ordinary message from the same chat would reach: main for the owner's own DM, otherwise that conversation's own session — see [Conversation Routing](background-tasks.md#conversation-routing). Never main for a group chat or channel, even when the owner is the one who typed it. |
-| Telegram / Discord / Teams | `/stop <name>` | Names a live session explicitly by its address instead of relying on conversation routing — the same session-registry stop path as the row above, so it leaves an idle session alone too. Never targets main; use plain `/stop` in main's own conversation for that. |
+| Telegram / Discord / Teams | `/stop <name>` | Names a live session explicitly by its address instead of relying on conversation routing, and stops it the same way the web UI's sessions sidebar does: a running turn is interrupted and an idle session is ended. Never targets main; use plain `/stop` in main's own conversation for that. |
 | WebSocket clients | Send a `Cancel` message carrying the `reply_to` correlation id of the turn to stop | Main, always. |
 
 Every chat interface restricts commands (including `/stop` and `/sessions`) to the owner, so this is about *where* the owner's own `/stop` lands, not about who else could send it.
 
 `/sessions` lists every live session — address, purpose, state, and elapsed time since it started — the addresses `/stop <name>` takes.
 
-If nothing is running in the target — main, or the conversation's session — the request gets a friendly "nothing is running right now" reply rather than an error or silence, and nothing is touched: see [Correlation and Staleness](#correlation-and-staleness). A named `/stop <name>` for a session that exists but isn't currently running a turn gets a similar reply naming that instead of touching it, and a name matching no live session at all says so.
+If nothing is running in the target — main, or the conversation's session — the request gets a friendly "nothing is running right now" reply rather than an error or silence, and nothing is touched: see [Correlation and Staleness](#correlation-and-staleness). A named `/stop <name>` for a name that matches no live session, or a session already finishing, says there's nothing to stop; `/stop main` is refused; plain `/stop` in main's own conversation is what stops main's turn.
 
 ## What Happens on Stop
 

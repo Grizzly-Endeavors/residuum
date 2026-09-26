@@ -172,23 +172,15 @@ pub(crate) async fn run_chat_command(
     }
 }
 
-/// Stop a named session's running turn — `/stop <name>` — through the same
-/// synchronous, atomic check-and-cancel `SessionRegistry::stop_if_running`
-/// the web UI's per-session stop uses, so there's no channel for the
-/// request to sit in. Unlike `SessionRegistry::stop` (which also ends an
-/// idle session outright), this leaves an idle session alone — same
-/// reasoning as plain `/stop`, which uses the same method for the current
-/// conversation's session: "stop" here means "interrupt whatever this
-/// session is doing right now", and an idle session isn't doing anything to
-/// interrupt.
+/// Stop a named session — `/stop <name>` — through the same registry stop
+/// path as the web UI's per-session stop button
+/// ([`crate::gateway::sessions::stop_session`]): a running turn is
+/// interrupted and an idle session is ended, so a session listed by
+/// `/sessions` can always be stopped by name.
 fn dispatch_stop_named_session(session_registry: &SessionRegistry, name: &str) -> String {
-    let address = crate::bus::SessionAddress::from(name);
-    if session_registry.stop_if_running(&address) {
-        format!("stopped session '{name}'.")
-    } else if session_registry.get(&address).is_some() {
-        format!("session '{name}' is not currently running a turn.")
-    } else {
-        format!("no session named '{name}' is running.")
+    match crate::gateway::sessions::stop_session(session_registry, name) {
+        Ok(()) => format!("stopping session '{name}'."),
+        Err(e) => e.message,
     }
 }
 
@@ -581,12 +573,12 @@ mod tests {
 
         let reply = dispatch_stop_named_session(&registry, "pulse-email_check-0001");
 
-        assert_eq!(reply, "stopped session 'pulse-email_check-0001'.");
+        assert_eq!(reply, "stopping session 'pulse-email_check-0001'.");
         assert!(token.is_cancelled());
     }
 
     #[test]
-    fn dispatch_stop_named_session_leaves_an_idle_session_alone() {
+    fn dispatch_stop_named_session_ends_an_idle_session_like_the_web_ui() {
         let registry = SessionRegistry::new();
         let token = CancellationToken::new();
         let _rx = registry
@@ -598,21 +590,28 @@ mod tests {
 
         let reply = dispatch_stop_named_session(&registry, "scheduled-backup-0001");
 
-        assert_eq!(
-            reply,
-            "session 'scheduled-backup-0001' is not currently running a turn."
-        );
+        assert_eq!(reply, "stopping session 'scheduled-backup-0001'.");
         assert!(
-            !token.is_cancelled(),
-            "an idle session must not be ended outright by a chat /stop"
+            token.is_cancelled(),
+            "an idle session is ended, the same as the web UI's stop button"
         );
+    }
+
+    #[test]
+    fn dispatch_stop_named_session_refuses_main() {
+        let registry = SessionRegistry::new();
+        let reply = dispatch_stop_named_session(&registry, "main");
+        assert_eq!(reply, "The main agent can't be stopped as a session.");
     }
 
     #[test]
     fn dispatch_stop_named_session_reports_an_unknown_name() {
         let registry = SessionRegistry::new();
         let reply = dispatch_stop_named_session(&registry, "no-such-session");
-        assert_eq!(reply, "no session named 'no-such-session' is running.");
+        assert_eq!(
+            reply,
+            "no-such-session isn't running, so there's nothing to stop."
+        );
     }
 
     #[test]

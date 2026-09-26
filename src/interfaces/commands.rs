@@ -58,7 +58,7 @@ pub enum CommandSideEffect {
     /// while it's running; `ServerCommand` only gets processed between
     /// turns (see `dispatch_stop_request`).
     Stop,
-    /// Stop a named session's turn, if one is running — `/stop <name>`.
+    /// Stop a named session the way the web UI's stop button does — `/stop <name>`.
     /// Kept separate from `Stop` (plain `/stop`, which targets the current
     /// turn: main, or this conversation's own session) since this always
     /// names its target explicitly rather than resolving one from the
