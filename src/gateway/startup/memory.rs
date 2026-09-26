@@ -3,8 +3,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::bus::Publisher;
 use crate::config::Config;
-use crate::inference::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
+use crate::inference::{
+    EmbeddingProvider, SharedHttpClient, build_provider_chain, build_provider_chain_with_notices,
+};
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
@@ -32,15 +35,33 @@ pub(super) struct MemoryComponents {
 /// chain that can't be built is dropped and logged; only an unusable
 /// primary observer provider is returned as an error here.
 ///
+/// `notices` wires a live fallback/recovery notice into the built chain (see
+/// `FailoverProvider::with_notices`) when `Some`. Only the main agent's own
+/// observer build passes one — the session observer stays quiet so a single
+/// transition doesn't announce itself twice, mirroring how only the main
+/// build's *startup* degradation gets a user-facing notice (see
+/// `build_session_memory_components`'s doc comment).
+///
 /// # Errors
 /// Returns `FatalError::Config` if the primary observer provider cannot be built.
 pub(super) fn build_observer(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
+    notices: Option<Publisher>,
 ) -> Result<Observer, FatalError> {
-    let (observer_provider, dropped) =
-        build_provider_chain(&cfg.observer, cfg.max_tokens, http, cfg.retry.clone())?;
+    let (observer_provider, dropped) = if let Some(publisher) = notices {
+        build_provider_chain_with_notices(
+            &cfg.observer,
+            cfg.max_tokens,
+            http,
+            cfg.retry.clone(),
+            publisher,
+            "the memory observer",
+        )?
+    } else {
+        build_provider_chain(&cfg.observer, cfg.max_tokens, http, cfg.retry.clone())?
+    };
     for fallback in &dropped {
         tracing::warn!(
             provider = %fallback.name,
@@ -69,10 +90,11 @@ pub(super) fn build_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
+    publisher: Publisher,
 ) -> (Observer, Reflector, Vec<String>) {
     let mut notices = Vec::new();
 
-    let observer = match build_observer(cfg, tz, http.clone()) {
+    let observer = match build_observer(cfg, tz, http.clone(), Some(publisher.clone())) {
         Ok(observer) => observer,
         Err(err) => {
             tracing::warn!(error = %err, "observer degraded: memory observation disabled");
@@ -83,11 +105,13 @@ pub(super) fn build_memory_components(
         }
     };
 
-    let reflector = match build_provider_chain(
+    let reflector = match build_provider_chain_with_notices(
         &cfg.reflector,
         cfg.max_tokens,
         http,
         cfg.retry.clone(),
+        publisher,
+        "the memory reflector",
     ) {
         Ok((reflector_provider, dropped)) => {
             for fallback in &dropped {

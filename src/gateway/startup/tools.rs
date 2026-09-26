@@ -43,6 +43,10 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     /// Workspace and config checkpoint repositories.
     pub checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    /// Tracks the agent's own config-file writes so the reload each one
+    /// triggers can report back into its transcript. Wired only into main's
+    /// `write_file`/`edit_file` — see `ConfigWriteWatch`'s doc comment.
+    pub config_reload_tracker: &'a crate::tools::SharedConfigReloadTracker,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -85,10 +89,18 @@ pub(super) fn init_tool_registry(
         config_dir: cfg.config_dir.clone(),
         workspace_dir: cfg.workspace_dir.clone(),
     };
+    let config_watch = crate::tools::ConfigWriteWatch {
+        recognized: crate::tools::config_reload_tracker::RecognizedConfigPaths::new(
+            &cfg.config_dir,
+            layout,
+        ),
+        tracker: deps.config_reload_tracker.clone(),
+    };
     tools.register_defaults(
         file_tracker,
         Arc::clone(deps.path_policy),
         diagnostics_paths,
+        Some(config_watch),
     );
     tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
@@ -171,11 +183,19 @@ pub(super) fn init_tool_registry(
 }
 
 /// Create the agent, load observations, recent context, and restore messages.
+///
+/// Each of the three loads below degrades independently rather than failing
+/// agent construction — a missing or corrupt snapshot means the agent starts
+/// with less context, not that it fails to start — but each is still folded
+/// into `degradations` as a plain-language line for the caller's grouped
+/// startup-degradation notice (see `super::degradation_notice`), so a
+/// silently emptier agent is still visible to the user.
 pub(super) async fn create_agent(
     args: CreateAgentArgs,
     mcp_registry: &SharedMcpRegistry,
     tz: chrono_tz::Tz,
     layout: &WorkspaceLayout,
+    degradations: &mut Vec<String>,
 ) -> Agent {
     let mut agent = Agent::new(
         args.provider,
@@ -193,9 +213,15 @@ pub(super) async fn create_agent(
     agent.set_repeat_call_guard(args.repeat_call_guard);
     if let Err(err) = agent.reload_observations(layout).await {
         tracing::warn!(error = %err, "observation loading degraded");
+        degradations.push(format!(
+            "your past observations couldn't be loaded, so I'm starting this session without them: {err}"
+        ));
     }
     if let Err(err) = agent.reload_recent_context(layout).await {
         tracing::warn!(error = %err, "recent context loading degraded");
+        degradations.push(format!(
+            "your recent context summary couldn't be loaded, so I'm starting this session without it: {err}"
+        ));
     }
 
     match load_messages_for_agent(&layout.recent_messages_json()).await {
@@ -211,6 +237,9 @@ pub(super) async fn create_agent(
         }
         Err(err) => {
             tracing::warn!(error = %err, "message restore degraded: starting with empty history");
+            degradations.push(format!(
+                "your recent messages from before this restart couldn't be restored, so I'm starting with empty history: {err}"
+            ));
         }
     }
 
@@ -331,6 +360,7 @@ mod tests {
         a2a_hub: Arc<crate::a2a::A2aClientHub>,
         a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
         checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+        config_reload_tracker: crate::tools::SharedConfigReloadTracker,
     }
 
     async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -413,6 +443,7 @@ mod tests {
             a2a_hub,
             a2a_tracker,
             checkpoints,
+            config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
         }
     }
 
@@ -502,6 +533,7 @@ mod tests {
             a2a_hub: &h.a2a_hub,
             a2a_tracker: &h.a2a_tracker,
             checkpoints: &h.checkpoints,
+            config_reload_tracker: &h.config_reload_tracker,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
@@ -623,6 +655,64 @@ mod tests {
                 .tool_names()
                 .contains(&"a2a_task_update".to_string()),
             "a conversation session for another endpoint must not get a2a_task_update"
+        );
+    }
+
+    /// A malformed observations/recent-context/recent-messages snapshot each
+    /// degrades `create_agent` independently (the agent still starts) and
+    /// each lands its own plain-language line in the caller's grouped
+    /// startup-degradation notice, rather than only a log line no one sees.
+    #[tokio::test]
+    async fn create_agent_degradations_are_collected_for_the_caller() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layout = WorkspaceLayout::new(dir.path());
+
+        for path in [
+            layout.observations_json(),
+            layout.recent_context_json(),
+            layout.recent_messages_json(),
+        ] {
+            std::fs::create_dir_all(path.parent().expect("snapshot path has a parent"))
+                .expect("failed to create snapshot dir");
+            std::fs::write(&path, "not valid json").expect("failed to write malformed snapshot");
+        }
+
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mut degradations: Vec<String> = Vec::new();
+
+        let _agent = create_agent(
+            CreateAgentArgs {
+                provider: Box::new(crate::inference::providers::null::NullProvider),
+                options: crate::inference::CompletionOptions::default(),
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+                tools: crate::tools::ToolRegistry::new(),
+                identity: IdentityFiles::default(),
+                hop_counter: HopCounter::new(0),
+            },
+            &mcp_registry,
+            chrono_tz::UTC,
+            &layout,
+            &mut degradations,
+        )
+        .await;
+
+        assert_eq!(
+            degradations.len(),
+            3,
+            "each of the three malformed snapshots should degrade independently: {degradations:?}"
+        );
+        assert!(
+            degradations.iter().any(|d| d.contains("observations")),
+            "missing observations degradation: {degradations:?}"
+        );
+        assert!(
+            degradations.iter().any(|d| d.contains("recent context")),
+            "missing recent context degradation: {degradations:?}"
+        );
+        assert!(
+            degradations.iter().any(|d| d.contains("recent messages")),
+            "missing recent messages degradation: {degradations:?}"
         );
     }
 }

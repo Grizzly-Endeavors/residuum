@@ -839,21 +839,39 @@ async fn dispatch_tool_call(
         // ever reaches genuinely MCP-owned names.
         Err(ToolError::NotFound(_)) => {
             tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
-            // The MCP registry has no cancellation awareness of its own
-            // (unlike `execute_cancellable`'s built-in path), so this races
-            // the call directly: on a stop, the call is dropped and a
-            // cancellation result reported instead of waiting for an MCP
-            // server that may never answer.
-            let mcp_guard = resources.mcp_registry.read().await;
-            let call = mcp_guard.call_tool(&tool_call.name, tool_call.arguments.clone());
-            let result = tokio::select! {
-                biased;
-                () = resources.stop_token.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
-                r = call => r,
-            };
-            (result, true)
+            (execute_mcp_tool(tool_call, resources).await, true)
         }
         other => (other, false),
+    }
+}
+
+/// Dispatch a tool call to whichever MCP server owns it.
+///
+/// The MCP registry has no cancellation awareness of its own (unlike
+/// `execute_cancellable`'s built-in path), so this races the call directly:
+/// on a stop, the call is dropped and a cancellation result reported
+/// instead of waiting for an MCP server that may never answer.
+///
+/// The registry's read lock is held only long enough to resolve the tool to
+/// a cheap-to-clone client handle, then dropped before the call is awaited
+/// — otherwise a slow or hung MCP server would hold the lock for the call's
+/// whole duration, blocking a config reload's write lock and every other
+/// agent's next iteration behind it.
+async fn execute_mcp_tool(
+    tool_call: &ToolCall,
+    resources: &TurnResources<'_>,
+) -> Result<ToolResult, ToolError> {
+    let resolved = resources
+        .mcp_registry
+        .read()
+        .await
+        .resolve_tool(&tool_call.name);
+    let handle = resolved?;
+    let call = handle.call_tool(&tool_call.name, tool_call.arguments.clone());
+    tokio::select! {
+        biased;
+        () = resources.stop_token.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
+        r = call => r,
     }
 }
 
@@ -1430,6 +1448,7 @@ mod tests {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
             },
+            None,
         );
 
         let tool_call = ToolCall {

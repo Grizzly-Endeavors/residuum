@@ -7,7 +7,9 @@
 //!   off.
 //!
 //! Both share a single cooldown so the learner never spawns more than once per
-//! window. All state here is in-memory and resets on gateway restart.
+//! window. A signal that arrives while the cooldown is active is queued
+//! rather than dropped, and carried into whichever trigger next clears the
+//! cooldown. All state here is in-memory and resets on gateway restart.
 
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,10 @@ pub struct LearningState {
     last_spawn: Option<Instant>,
     /// Completed foreground turns since the last spawn (fallback trigger).
     turns_since_spawn: u32,
+    /// Learn signals that arrived during an active cooldown. Carried into
+    /// whichever trigger — signals or the turn-count fallback — next clears
+    /// the cooldown, rather than being dropped.
+    pending_signals: Vec<LearnSignal>,
 }
 
 impl LearningState {
@@ -51,8 +57,11 @@ impl LearningState {
     /// Handle `learn` signals from the subconscious end-of-turn triage.
     ///
     /// Returns a spawn request for the `learner` skill when the cooldown
-    /// allows, batching every signal summary into one prompt. Empty input or a
-    /// live cooldown yields `None`. Logs the spawn decision at debug level.
+    /// allows, batching every signal summary into one prompt — including any
+    /// signals queued from an earlier call suppressed by the cooldown. Empty
+    /// input yields `None`. A live cooldown queues the signals for the next
+    /// spawn (from either trigger) instead of dropping them, and yields
+    /// `None`.
     pub fn on_learn_signals(
         &mut self,
         signals: &[LearnSignal],
@@ -63,20 +72,24 @@ impl LearningState {
             return None;
         }
         if !self.cooldown_ok(cooldown, now) {
+            self.pending_signals.extend_from_slice(signals);
             tracing::debug!(
                 signals = signals.len(),
-                decision = "suppressed_by_cooldown",
-                "learner spawn suppressed"
+                queued_total = self.pending_signals.len(),
+                decision = "queued_by_cooldown",
+                "learner spawn suppressed by cooldown; signals queued for the next spawn"
             );
             return None;
         }
         self.mark_spawned(now);
+        let mut batch = std::mem::take(&mut self.pending_signals);
+        batch.extend_from_slice(signals);
         tracing::debug!(
-            signals = signals.len(),
+            signals = batch.len(),
             decision = "fired",
             "learner spawn fired from subconscious signals"
         );
-        Some(build_signal_spawn(signals))
+        Some(build_signal_spawn(&batch))
     }
 
     /// Count a completed foreground turn on the fallback path and spawn the
@@ -85,7 +98,10 @@ impl LearningState {
     /// Used only when the subconscious learning path is inactive.
     /// `nudge_after_turns == 0` disables the fallback. Respects the same
     /// cooldown as the signal path; a suppressed spawn keeps the counter armed
-    /// so it retries on the next turn. Logs the spawn decision at debug level.
+    /// so it retries on the next turn. If signals queued during the cooldown
+    /// are waiting, this fires the batched signal prompt instead of the
+    /// generic nudge, so they aren't dropped just because the fallback
+    /// trigger reached threshold first. Logs the spawn decision at debug level.
     pub fn on_turn_completed(
         &mut self,
         nudge_after_turns: u32,
@@ -108,8 +124,18 @@ impl LearningState {
             return None;
         }
         self.mark_spawned(now);
-        tracing::debug!(decision = "fired", "learner nudge fired from turn count");
-        Some(build_nudge_spawn())
+        if self.pending_signals.is_empty() {
+            tracing::debug!(decision = "fired", "learner nudge fired from turn count");
+            Some(build_nudge_spawn())
+        } else {
+            let batch = std::mem::take(&mut self.pending_signals);
+            tracing::debug!(
+                signals = batch.len(),
+                decision = "fired_with_queued_signals",
+                "learner nudge fired, carrying signals queued during cooldown"
+            );
+            Some(build_signal_spawn(&batch))
+        }
     }
 }
 
@@ -287,5 +313,89 @@ mod tests {
         // Once the window elapses, the still-armed counter fires.
         let later = now.checked_add(COOLDOWN).unwrap();
         assert!(state.on_turn_completed(1, COOLDOWN, later).is_some());
+    }
+
+    #[test]
+    fn signals_suppressed_by_cooldown_are_queued_into_next_spawn() {
+        let mut state = LearningState::default();
+        let now = Instant::now();
+
+        // First call fires and arms the cooldown.
+        state
+            .on_learn_signals(
+                &[signal("first", LearnSignalType::Preference)],
+                COOLDOWN,
+                now,
+            )
+            .unwrap();
+
+        // A second call inside the window is suppressed but must not drop
+        // its signal — it should be queued for the next spawn.
+        assert!(
+            state
+                .on_learn_signals(
+                    &[signal("queued", LearnSignalType::Recovery)],
+                    COOLDOWN,
+                    now
+                )
+                .is_none(),
+            "cooldown should suppress the second spawn"
+        );
+
+        // Once the cooldown elapses, the next spawn carries the queued signal.
+        let later = now.checked_add(COOLDOWN).unwrap();
+        let spawn = state
+            .on_learn_signals(
+                &[signal("new", LearnSignalType::Preference)],
+                COOLDOWN,
+                later,
+            )
+            .unwrap();
+        assert!(
+            spawn.prompt.contains("queued"),
+            "the signal queued during cooldown should not be dropped: {}",
+            spawn.prompt
+        );
+        assert!(
+            spawn.prompt.contains("new"),
+            "the signal that triggered the new spawn should also be included: {}",
+            spawn.prompt
+        );
+    }
+
+    #[test]
+    fn nudge_flushes_signals_queued_during_cooldown() {
+        let mut state = LearningState::default();
+        let now = Instant::now();
+
+        // Fire a spawn via signals to arm the cooldown.
+        state
+            .on_learn_signals(
+                &[signal("armed", LearnSignalType::Preference)],
+                COOLDOWN,
+                now,
+            )
+            .unwrap();
+
+        // A signal arriving during the cooldown is queued, not dropped.
+        assert!(
+            state
+                .on_learn_signals(
+                    &[signal("queued-for-nudge", LearnSignalType::Recovery)],
+                    COOLDOWN,
+                    now
+                )
+                .is_none()
+        );
+
+        // Once the cooldown elapses, the turn-count fallback fires first and
+        // must carry the queued signal instead of the generic nudge prompt.
+        let later = now.checked_add(COOLDOWN).unwrap();
+        let spawn = state.on_turn_completed(1, COOLDOWN, later).unwrap();
+        assert_eq!(
+            spawn.source_label, "learning:subconscious",
+            "a nudge with queued signals should use the signal-batch spawn, not the generic nudge"
+        );
+        assert!(spawn.prompt.contains("queued-for-nudge"));
     }
 }

@@ -281,24 +281,33 @@ impl ToolRegistry {
     /// strictly-parsed files this instance validates (`config.toml`,
     /// `providers.toml`, `config/channels.toml`, `config/mcp.json`,
     /// `config/a2a.json`, `HEARTBEAT.yml`, skill `SKILL.md`) and append
-    /// diagnostics to the tool result after a write.
+    /// diagnostics to the tool result after a write. `config_watch` is
+    /// `Some` only for main's own registry — see `ConfigWriteWatch`'s doc
+    /// comment for why a session's registry never gets one — and lets
+    /// `write_file`/`edit_file` recognize a write to
+    /// `config.toml`/`providers.toml`/`mcp.json`/`channels.toml`/`a2a.json`/
+    /// `HEARTBEAT.yml` so the reload it triggers can report back to the
+    /// agent.
     pub fn register_defaults(
         &mut self,
         tracker: SharedFileTracker,
         policy: SharedPathPolicy,
         diagnostics_paths: crate::diagnostics::DiagnosticsPaths,
+        config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
     ) {
         self.register(Box::new(read::ReadTool::new(Arc::clone(&tracker))));
-        self.register(Box::new(write::WriteTool::new(
+        let mut write_tool = write::WriteTool::new(
             Arc::clone(&tracker),
             Arc::clone(&policy),
             diagnostics_paths.clone(),
-        )));
-        self.register(Box::new(edit::EditTool::new(
-            tracker,
-            policy,
-            diagnostics_paths,
-        )));
+        );
+        let mut edit_tool = edit::EditTool::new(tracker, policy, diagnostics_paths);
+        if let Some(watch) = config_watch {
+            write_tool = write_tool.with_config_watch(watch.clone());
+            edit_tool = edit_tool.with_config_watch(watch);
+        }
+        self.register(Box::new(write_tool));
+        self.register(Box::new(edit_tool));
         let mut exec_tool = exec::ExecTool::new(
             self.tools_path.clone(),
             self.agent_keys.clone(),
@@ -542,12 +551,13 @@ impl ToolRegistry {
         registry.set_checkpoints(Arc::clone(&checkpoints));
         registry.set_publisher(publisher.clone());
 
-        // Core I/O tools
+        // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
+        // — see its doc comment.
         let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
             config_dir,
             workspace_dir: workspace_dir.clone(),
         };
-        registry.register_defaults(tracker, path_policy, diagnostics_paths);
+        registry.register_defaults(tracker, path_policy, diagnostics_paths, None);
         registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
 
         // Skill tools: activate, deactivate
@@ -762,6 +772,7 @@ mod tests {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
             },
+            None,
         );
         let defs = registry.definitions();
         assert!(

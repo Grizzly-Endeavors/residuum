@@ -61,13 +61,17 @@ async fn run_agent_keys_command_at(
                 format!("CLI set agent key '{name}'"),
             )
             .await;
-            keys.set(name, &resolved, description.as_deref(), KeyCreator::User)
+            let warning = keys
+                .set(name, &resolved, description.as_deref(), KeyCreator::User)
                 .await
                 .map_err(|e| FatalError::Config(format!("couldn't store agent key: {e}")))?;
             println!(
                 "agent key '{name}' saved; commands that name it get ${}",
                 residuum::agent_keys::env_var_for(name)
             );
+            if let Some(warning) = warning {
+                println!("warning: {warning}");
+            }
         }
         AgentKeysCommand::List => {
             let snapshot = keys

@@ -218,6 +218,45 @@ pub(crate) fn build_provider_chain_with_notices(
     ))
 }
 
+/// Build a provider chain with a user notice on a fallback/recovery
+/// transition, tracked in a caller-supplied shared counter instead of one
+/// owned by the returned `FailoverProvider`.
+///
+/// For roles whose chain is rebuilt fresh per call site — background-session
+/// tiers are built anew for every session spawn — the caller holds one
+/// `active_index` per role/tier (e.g. on `SpawnContext`) and passes it here
+/// each time, so many short-lived providers for the same role notice on a
+/// transition exactly once rather than each re-announcing a fallback that's
+/// already in effect. Single-spec chains have nothing to fail over to, so
+/// `publisher`/`role`/`active_index` are unused in that case.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the primary provider cannot be built.
+pub(crate) fn build_provider_chain_with_shared_notices(
+    specs: &[ProviderSpec],
+    max_tokens: u32,
+    http: SharedHttpClient,
+    retry: RetryConfig,
+    publisher: crate::bus::Publisher,
+    role: impl Into<String>,
+    active_index: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> Result<(Box<dyn InferenceProvider>, Vec<DroppedFallback>), FatalError> {
+    if let [spec] = specs {
+        return build_provider_from_provider_spec(spec, max_tokens, http, retry)
+            .map(|p| (p, Vec::new()));
+    }
+
+    let (providers, dropped) = build_provider_list(specs, max_tokens, &http, &retry)?;
+    Ok((
+        Box::new(
+            FailoverProvider::new(providers)
+                .with_shared_active_index(active_index)
+                .with_notices(publisher, role),
+        ),
+        dropped,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

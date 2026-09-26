@@ -17,7 +17,15 @@ If a last-known-good config fallback is in play elsewhere in the startup path, i
 
 `update::download_and_install` never leaves only a possibly-broken binary on disk. Before installing the new one, it renames the currently-running binary to `update::previous_binary_path(exe)` — the same path with `.prev` appended (`residuum` → `residuum.prev`, `residuum.exe` → `residuum.exe.prev`) — clearing any stale backup from an earlier update that was never confirmed healthy first. Only after that succeeds does the new binary take the original path. If the final swap fails, the preserved binary is restored immediately so the install failure never leaves nothing executable at all.
 
-GitHub Releases publishes no checksum or signature for these binaries (see `.github/workflows/release.yml`), so there is nothing to verify the download against beyond the HTTPS connection itself.
+## Checking the Download
+
+The release workflow (`.github/workflows/release.yml`) publishes a `SHA256SUMS` asset next to the binaries: one SHA-256 hash per uploaded file, in `sha256sum` form (`hash  filename`, filename the asset's basename). Before the running binary is moved, the updater downloads that manifest and compares it to a hash of the bytes it just downloaded.
+
+- **Hash mismatch.** The install stops. The running binary stays where it is, nothing is renamed to `.prev`, and both `residuum update` and the Settings → Version page say the download was corrupt or incomplete and to try again. The expected and actual hashes are in the log.
+- **No `SHA256SUMS` asset** (HTTP 404 — releases published before checksums). The binary is still installed. `GET /api/update/status` includes `unverified_update` (version and timestamp, from `residuum.update-unverified.json`) until a later update whose checksum matches, and the Version page says this update couldn't be verified. `residuum update` prints the same note.
+- **Checksum couldn't be fetched, or the manifest doesn't list this binary, or it has no usable lines.** The install stops the same way a mismatch does: the running binary is untouched, and the message says the download couldn't be verified and to try again. A 404 is the only "no manifest" case; any other failure still means a checksum may exist for this release.
+
+A verified install clears `unverified_update`. A rollback clears it too, since the version it described is no longer the one running. An unverified install still leaves a `PendingRollback` marker, so the watchdog below restores the previous binary if the new one doesn't become healthy.
 
 A successful install leaves a `PendingRollback` marker (`residuum.update-pending.json`) recording where the previous binary went and which versions are involved. `commands::serve::foreground::relaunch` reads and deletes this marker the next time a restart happens, and that presence is what decides which of the two restart paths below runs.
 
@@ -36,6 +44,6 @@ The watchdog:
 
 ## Surfacing a Rollback
 
-`GET /api/update/status` includes `rollback_notice` whenever one is on disk — read fresh on every call, so it's visible even to someone who opens Settings well after the rollback happened, not just whoever was watching the update in progress. It's cleared automatically at the start of the next successful `download_and_install`, so it only ever describes the most recent attempt.
+`GET /api/update/status` includes `rollback_notice` whenever one is on disk — read fresh on every call, so it's visible even to someone who opens Settings well after the rollback happened, not just whoever was watching the update in progress. It's cleared automatically at the start of the next successful `download_and_install`, so it only ever describes the most recent attempt. The same response includes `unverified_update` when the installed version had no checksum, including for someone who opens Settings later.
 
 The Settings → Version page in the web UI reflects this instead of claiming an update in progress will "reconnect automatically" forever: while restarting, it polls `/api/update/status` and shows elapsed time; once the gateway answers again it shows one of three outcomes — updated to the new version, rolled back with the recorded reason, or (past a 90-second client-side window with no response at all) a prompt to check the logs on the machine running Residuum.

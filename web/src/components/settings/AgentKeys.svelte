@@ -7,7 +7,9 @@
   import { notifyWithUndo } from "../../lib/undo";
 
   const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-  const MIN_VALUE_LENGTH = 8;
+  // Below this length, redaction by substring match becomes unreliable —
+  // shown as a hint, not enforced: a short value is still saved.
+  const SHORT_VALUE_HINT_LENGTH = 8;
 
   let keys = $state<AgentKeyInfo[]>([]);
   let loading = $state(true);
@@ -21,7 +23,7 @@
 
   let trimmedName = $derived(newName.trim());
   let nameValid = $derived(NAME_PATTERN.test(trimmedName));
-  let valueValid = $derived(newValue.length >= MIN_VALUE_LENGTH);
+  let valueShort = $derived(newValue.length > 0 && newValue.length < SHORT_VALUE_HINT_LENGTH);
   let replacing = $derived(keys.some((k) => k.name === trimmedName));
 
   onMount(load);
@@ -46,11 +48,14 @@
   }
 
   async function handleSave() {
-    if (!nameValid || !valueValid || saving) return;
+    if (!nameValid || newValue === "" || saving) return;
     saving = true;
     try {
       const saved = await storeAgentKey(trimmedName, newValue, newDescription.trim());
       toast.success(`Saved ${saved.name}. Commands that use it get $${saved.env_var}.`);
+      if (saved.warning) {
+        toast.info(saved.warning);
+      }
       resetForm();
       await load();
     } catch (err: unknown) {
@@ -146,16 +151,11 @@
         </div>
         <div class="settings-field">
           <label for="agent-key-value">Value</label>
-          <input
-            id="agent-key-value"
-            type="password"
-            autocomplete="off"
-            bind:value={newValue}
-            class:input-error={newValue !== "" && !valueValid}
-          />
+          <input id="agent-key-value" type="password" autocomplete="off" bind:value={newValue} />
           <span class="field-hint">
-            {#if newValue !== "" && !valueValid}
-              Use at least {MIN_VALUE_LENGTH} characters so the value can be hidden reliably.
+            {#if valueShort}
+              Under {SHORT_VALUE_HINT_LENGTH} characters can't be redacted from output reliably — it'll
+              still save.
             {:else}
               Stored encrypted. It can't be viewed after saving.
             {/if}
@@ -175,7 +175,7 @@
           <button
             type="submit"
             class="btn btn-primary btn-sm"
-            disabled={!nameValid || !valueValid || saving}
+            disabled={!nameValid || newValue === "" || saving}
           >
             {saving ? "Saving" : "Save key"}
           </button>

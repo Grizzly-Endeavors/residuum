@@ -77,6 +77,13 @@ outcome: SessionRunStatus | null,
  */
 error: string | null, 
 /**
+ * Full technical cause chain behind `error`, shown behind the same
+ * expandable "details" toggle the web UI uses for a live `SessionError`.
+ * `None` for a failure with nothing richer to show, and `None` for a
+ * record written before this field existed.
+ */
+error_details: string | null, 
+/**
  * Set when this run is a pulse fire that started while its previous run
  * was still live. `None` for every other trigger.
  */

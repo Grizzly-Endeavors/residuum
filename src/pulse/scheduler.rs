@@ -230,6 +230,25 @@ impl PulseScheduler {
         self.pending_problem_notice.take()
     }
 
+    /// Every problem found while loading and evaluating the most recent
+    /// tick's `HEARTBEAT.yml`, regardless of whether it's already been
+    /// notified (unlike [`Self::take_problem_notice`], which only reports a
+    /// change). Used to report a specific tick's full outcome — e.g. to the
+    /// agent whose own edit that tick is reloading — where "nothing new
+    /// since last time" isn't the question being asked.
+    #[must_use]
+    pub(crate) fn current_problems(&self) -> &[HeartbeatProblem] {
+        &self.last_heartbeat_problems
+    }
+
+    /// The most recent whole-document parse failure recorded for
+    /// `HEARTBEAT.yml`, if the file is currently unparseable. `None` once a
+    /// later tick parses successfully.
+    #[must_use]
+    pub(crate) fn last_parse_error(&self) -> Option<&str> {
+        self.last_heartbeat_parse_error.as_deref()
+    }
+
     /// Remove `last_run` entries for pulses no longer present in
     /// `HEARTBEAT.yml` (deleted or renamed), so `pulse_state.json` doesn't grow
     /// unboundedly with unexplainable stale keys. Returns whether anything was removed.

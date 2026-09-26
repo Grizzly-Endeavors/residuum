@@ -95,6 +95,40 @@ export function validationFromApiError(err: unknown): ValidateResponse | null {
   return null;
 }
 
+/** A workspace write conflict: the file changed since it was last read. */
+export interface WorkspaceWriteConflict {
+  error: string;
+  /** The file's version now, or `null` if it no longer exists. */
+  currentVersion: string | null;
+}
+
+/**
+ * The conflict a workspace file `PUT` reports through a `412` when its
+ * `If-Match` no longer matches the file's current version — someone else
+ * (the agent, another tab) saved it first. `apiFetch`/`apiFetchText` throw
+ * on any non-2xx, so callers would otherwise only see a generic failure
+ * instead of the version needed to reload or force an overwrite.
+ */
+export function workspaceConflictFromApiError(err: unknown): WorkspaceWriteConflict | null {
+  if (!(err instanceof ApiError) || err.status !== 412) return null;
+  try {
+    const parsed: unknown = JSON.parse(err.body);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string" &&
+      "current_version" in parsed &&
+      (typeof parsed.current_version === "string" || parsed.current_version === null)
+    ) {
+      return { error: parsed.error, currentVersion: parsed.current_version };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 async function putValidated(
   path: string,
   contentType: string,
@@ -567,17 +601,36 @@ export async function fetchWorkspaceFiles(path?: string): Promise<WorkspaceEntry
   return apiFetch<WorkspaceEntry[]>(`/api/workspace/files${params}`);
 }
 
-export async function fetchWorkspaceFile(path: string): Promise<string> {
-  return apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+/** A workspace file's content plus the version to send back as `If-Match`. */
+export interface WorkspaceFileRead {
+  content: string;
+  version: string;
 }
 
+export async function fetchWorkspaceFile(path: string): Promise<WorkspaceFileRead> {
+  const resp = await checkOk(await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`));
+  return { content: await resp.text(), version: resp.headers.get("etag") ?? "" };
+}
+
+/**
+ * Writes with `If-Match: version` so a concurrent edit (the agent, another
+ * tab) is never silently overwritten: a stale version throws `ApiError`
+ * with status `412` — see `workspaceConflictFromApiError`. Pass `null` only
+ * for a brand-new file that has no version yet. `diagnostics` on the
+ * response names what's wrong with an invalid strictly-parsed file
+ * (HEARTBEAT.yml, say) — the write still succeeds either way.
+ */
 export async function putWorkspaceFile(
   path: string,
   content: string,
+  version: string | null,
 ): Promise<WorkspaceWriteResponse> {
   return apiFetch<WorkspaceWriteResponse>("/api/workspace/file", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(version ? { "If-Match": version } : {}),
+    },
     body: JSON.stringify({ path, content }),
   });
 }

@@ -19,12 +19,16 @@
 use std::path::PathBuf;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
+use tokio_util::io::ReaderStream;
 
-use super::{ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file};
+use super::{
+    ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
+};
 
 /// How many ports after the gateway's are tried before giving up.
 const PORT_SEARCH_ATTEMPTS: u16 = 10;
@@ -178,7 +182,13 @@ async fn serve(dir: &std::path::Path, name: &str, rest: &str) -> Response {
     }
     match read_artifact_file(dir, name, rest).await {
         Ok(served) => {
-            let mut response = served.bytes.into_response();
+            let body = match served.body {
+                ArtifactBody::Bytes(bytes) => Body::from(bytes),
+                // Streamed straight from disk so a large local artifact file
+                // never has to be buffered whole in memory.
+                ArtifactBody::File(file) => Body::from_stream(ReaderStream::new(file)),
+            };
+            let mut response = body.into_response();
             let headers = response.headers_mut();
             if let Ok(value) = HeaderValue::from_str(&served.content_type) {
                 headers.insert(header::CONTENT_TYPE, value);
@@ -196,9 +206,6 @@ async fn serve(dir: &std::path::Path, name: &str, rest: &str) -> Response {
         }
         Err(ArtifactFileError::NotFound { .. }) => {
             not_found(&format!("The artifact \"{name}\" has no file \"{rest}\"."))
-        }
-        Err(e @ ArtifactFileError::TooLarge { .. }) => {
-            page(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string())
         }
         Err(e @ ArtifactFileError::Io { .. }) => {
             tracing::error!(artifact = %name, path = %rest, error = %e, "failed to serve workbench artifact file");

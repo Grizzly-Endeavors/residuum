@@ -39,6 +39,7 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         // the run finishes (see `session_event_to_server_message` below).
         outcome: None,
         error: None,
+        error_details: None,
         overlap: info.overlap.clone(),
     }
 }
@@ -91,6 +92,7 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         usage: record.usage,
         outcome,
         error: record.outcome_error.clone(),
+        error_details: record.outcome_error_details.clone(),
         overlap: record.overlap.clone(),
     })
 }
@@ -114,19 +116,19 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             state,
         },
         SessionEventKind::Completed { status, episode_id } => {
-            let (status, error) = match status {
-                AgentResultStatus::Completed => (SessionRunStatus::Completed, None),
-                AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None),
-                // The persisted run summary keeps only the plain-language
-                // message; the fuller `details` lives on the live
-                // `SessionError` notice, not this after-the-fact record.
-                AgentResultStatus::Failed { error, .. } => (SessionRunStatus::Failed, Some(error)),
+            let (status, error, error_details) = match status {
+                AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
+                AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
+                AgentResultStatus::Failed { error, details } => {
+                    (SessionRunStatus::Failed, Some(error), details)
+                }
             };
             ServerMessage::SessionCompleted {
                 address,
                 run_id,
                 status,
                 error,
+                error_details,
                 episode_id,
             }
         }
@@ -603,6 +605,35 @@ mod tests {
     }
 
     #[test]
+    fn completed_event_carries_the_full_cause_chain_when_there_is_one() {
+        let msg = session_event_to_server_message(SessionEvent {
+            address: SessionAddress::from("spawned-d-0002"),
+            run_id: "run-d2".to_string(),
+            kind: SessionEventKind::Completed {
+                status: AgentResultStatus::Failed {
+                    error: "model down".to_string(),
+                    details: Some("connect timeout after 30s".to_string()),
+                },
+                episode_id: None,
+            },
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "session_completed",
+                "address": "spawned-d-0002",
+                "run_id": "run-d2",
+                "status": "failed",
+                "error": "model down",
+                "error_details": "connect timeout after 30s",
+                "episode_id": null,
+            }),
+            "the full cause chain must reach the client alongside the plain message"
+        );
+    }
+
+    #[test]
     fn started_event_carries_the_full_summary() {
         let info = live_info("spawned-e-0001", SessionState::Forking);
         let msg = session_event_to_server_message(SessionEvent {
@@ -635,6 +666,7 @@ mod tests {
                     },
                     "outcome": null,
                     "error": null,
+                    "error_details": null,
                     "overlap": null,
                 },
             })
@@ -683,6 +715,8 @@ mod tests {
         record.state = "completed".to_string();
         record.outcome = Some("failed".to_string());
         record.outcome_error = Some("the model call timed out".to_string());
+        record.outcome_error_details =
+            Some("connect timeout after 30s: api.example.com:443".to_string());
         let summary = summary_from_record(&record).expect("record should summarize");
         assert_eq!(
             summary.outcome,
@@ -694,6 +728,24 @@ mod tests {
             Some("the model call timed out"),
             "the failure reason must survive into the summary"
         );
+        assert_eq!(
+            summary.error_details.as_deref(),
+            Some("connect timeout after 30s: api.example.com:443"),
+            "the full cause chain must survive into the summary behind the details toggle"
+        );
+    }
+
+    #[test]
+    fn a_record_without_error_details_still_summarizes_with_none() {
+        // Mirrors a record written before `outcome_error_details` existed —
+        // `RunRecord::starting` already defaults it to `None`, so this just
+        // pins that `summary_from_record` doesn't fabricate a value.
+        let info = live_info("spawned-h-0006", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.outcome = Some("failed".to_string());
+        record.outcome_error = Some("the model call timed out".to_string());
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(summary.error_details, None);
     }
 
     #[test]
@@ -739,5 +791,6 @@ mod tests {
         let summary = summary_from_live(&info);
         assert_eq!(summary.outcome, None);
         assert_eq!(summary.error, None);
+        assert_eq!(summary.error_details, None);
     }
 }

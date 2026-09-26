@@ -27,6 +27,10 @@ pub(super) struct SetAgentKeyRequest {
 pub(super) struct SetAgentKeyResponse {
     pub name: String,
     pub env_var: String,
+    /// Present when the value is short enough that redaction by substring
+    /// match becomes unreliable. The key is stored either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// Response from `GET /api/agent-keys`.
@@ -78,7 +82,7 @@ pub(super) async fn api_agent_keys_set(
     state
         .checkpoint_config_before_write(format!("set agent key '{}'", req.name))
         .await;
-    AgentKeys::new(state.config_dir)
+    let warning = AgentKeys::new(state.config_dir)
         .set(
             &req.name,
             &req.value,
@@ -90,6 +94,7 @@ pub(super) async fn api_agent_keys_set(
     Ok(Json(SetAgentKeyResponse {
         env_var: env_var_for(&req.name),
         name: req.name,
+        warning,
     }))
 }
 
@@ -166,6 +171,34 @@ mod tests {
             .await
             .unwrap();
         assert!(after.keys.is_empty(), "key should be gone after delete");
+    }
+
+    #[tokio::test]
+    async fn short_value_is_stored_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let set = api_agent_keys_set(
+            State(test_state(dir.path())),
+            Json(SetAgentKeyRequest {
+                name: "short_key".to_string(),
+                value: "short".to_string(),
+                description: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            set.warning.as_deref().is_some_and(|w| w.contains("redact")),
+            "a short value should warn, not be rejected: {:?}",
+            set.warning
+        );
+
+        let list = api_agent_keys_list(State(test_state(dir.path())))
+            .await
+            .unwrap();
+        assert!(
+            list.keys.iter().any(|k| k.name == "short_key"),
+            "the short-valued key should still be stored"
+        );
     }
 
     #[tokio::test]

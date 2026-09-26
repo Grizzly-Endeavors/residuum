@@ -8,8 +8,11 @@ use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
 
-/// Maximum content length returned to avoid context window blowout.
-const MAX_CONTENT_CHARS: usize = 50_000;
+/// Default page size returned per call, to avoid context window blowout.
+///
+/// Not a hard limit on what can be fetched: `offset` pages through the rest
+/// of a longer page across further calls.
+const DEFAULT_PAGE_BYTES: usize = 50_000;
 
 /// Tool for fetching web page content and extracting readable text.
 pub(crate) struct WebFetchTool {
@@ -42,9 +45,13 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Fetch a web page and extract its main content as readable text. \
-                          Returns the page title and cleaned content, optimized for reading. \
-                          Use this to read articles, documentation, or any web page."
+            description: "Fetch a web page or other textual URL and extract its readable \
+                          content. HTML is cleaned to its main article text; JSON, XML, \
+                          plain text, and other textual bodies are returned as-is with their \
+                          content type noted. Binary content (images, PDFs, archives, etc.) \
+                          is refused. Output is paged: the header reports the total size, and \
+                          a page beyond the first is fetched by passing the next `offset` it \
+                          reports."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -52,6 +59,10 @@ impl Tool for WebFetchTool {
                     "url": {
                         "type": "string",
                         "description": "The URL to fetch"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Byte offset into the fetched content to start the page from (default: 0). Use the offset from a previous response's \"more content\" note to continue reading."
                     }
                 },
                 "required": ["url"]
@@ -66,6 +77,10 @@ impl Tool for WebFetchTool {
             .ok_or_else(|| {
                 ToolError::InvalidArguments("missing required 'url' parameter".into())
             })?;
+        let offset = arguments
+            .get("offset")
+            .and_then(Value::as_u64)
+            .map_or(0, |o| usize::try_from(o).unwrap_or(usize::MAX));
 
         debug!(url = %url, "fetching web page");
 
@@ -88,37 +103,62 @@ impl Tool for WebFetchTool {
             .unwrap_or("")
             .to_string();
 
-        if !content_type.contains("text/html") && !content_type.contains("text/plain") {
+        if !is_textual_content_type(&content_type) {
             return Ok(ToolResult::error(format!(
-                "unsupported content type: {content_type}"
+                "content type '{content_type}' is binary — web_fetch only handles textual \
+                 content (HTML, JSON, XML, plain text, and similar)"
             )));
         }
 
-        let html = response
+        let body = response
             .text()
             .await
             .map_err(|e| ToolError::Execution(format!("failed to read response body: {e}")))?;
 
-        if content_type.contains("text/plain") {
-            let content = truncate_content(&html);
-            return Ok(ToolResult::success(content));
-        }
+        let is_html = content_type.contains("html");
+        let content = if is_html {
+            match extract_content(&body, url) {
+                Ok(text) => text,
+                Err(msg) => {
+                    warn!(url = %url, error = %msg, "content extraction failed, returning raw text");
+                    strip_html_tags(&body)
+                }
+            }
+        } else {
+            body
+        };
 
-        // Extract readable content from HTML
-        match extract_content(&html, url) {
-            Ok(text) => {
-                let content = truncate_content(&text);
-                Ok(ToolResult::success(content))
-            }
-            Err(msg) => {
-                warn!(url = %url, error = %msg, "content extraction failed, returning raw text");
-                // Fall back to basic text extraction
-                let fallback = strip_html_tags(&html);
-                let content = truncate_content(&fallback);
-                Ok(ToolResult::success(content))
-            }
-        }
+        // Note the content type on anything other than HTML/plain text, since
+        // the caller sees only extracted/raw text with no header otherwise.
+        let content_type_note =
+            if is_html || content_type.contains("text/plain") || content_type.is_empty() {
+                None
+            } else {
+                Some(format!("content-type: {content_type}"))
+            };
+
+        Ok(ToolResult::success(page_content(
+            &content,
+            offset,
+            content_type_note.as_deref(),
+        )))
     }
+}
+
+/// Textual content types `web_fetch` will return; everything else (images,
+/// video, audio, PDFs, archives, etc.) is refused with a clear message.
+///
+/// Missing/empty content type is treated as textual rather than refused,
+/// since some servers omit the header for plain responses.
+fn is_textual_content_type(content_type: &str) -> bool {
+    let ct = content_type.to_ascii_lowercase();
+    ct.is_empty()
+        || ct.starts_with("text/")
+        || ct.contains("json")
+        || ct.contains("xml")
+        || ct.contains("yaml")
+        || ct.contains("javascript")
+        || ct.contains("csv")
 }
 
 /// Extract readable content from HTML using readability algorithm.
@@ -163,19 +203,37 @@ fn strip_html_tags(html: &str) -> String {
     result.trim().to_string()
 }
 
-/// Truncate content to a maximum character length with a note.
-fn truncate_content(content: &str) -> String {
-    if content.len() <= MAX_CONTENT_CHARS {
-        return content.to_string();
+/// Page `content` starting at byte `offset`, returning at most
+/// `DEFAULT_PAGE_BYTES` of it with a header reporting the total size and,
+/// when more remains, the `offset` to pass next to continue reading.
+///
+/// `extra_note`, when present (e.g. a non-HTML/plain content type), is
+/// included in the header on every page.
+fn page_content(content: &str, offset: usize, extra_note: Option<&str>) -> String {
+    let total_len = content.len();
+    let start = content.floor_char_boundary(offset.min(total_len));
+    let end = content.floor_char_boundary((start + DEFAULT_PAGE_BYTES).min(total_len));
+    let page = content.get(start..end).unwrap_or_default();
+
+    let mut header = vec![format!("total {total_len} bytes")];
+    if let Some(note) = extra_note {
+        header.push(note.to_string());
     }
-    let mut truncated = String::with_capacity(MAX_CONTENT_CHARS + 50);
-    // Find a safe truncation point (don't split mid-char)
-    let boundary = content.floor_char_boundary(MAX_CONTENT_CHARS);
-    if let Some(slice) = content.get(..boundary) {
-        truncated.push_str(slice);
+    if end < total_len {
+        header.push(format!(
+            "showing bytes {start}-{end}; call again with offset={end} to continue"
+        ));
+    } else if start > 0 {
+        header.push(format!("showing bytes {start}-{end} (end of content)"));
     }
-    truncated.push_str("\n\n[content truncated]");
-    truncated
+
+    if header.len() == 1 && start == 0 && end == total_len {
+        // Whole content fit in one page with nothing extra to note — no
+        // header needed, just the content.
+        return page.to_string();
+    }
+
+    format!("{}\n\n{page}", header.join("\n"))
 }
 
 #[cfg(test)]
@@ -201,26 +259,50 @@ mod tests {
     }
 
     #[test]
-    fn truncate_short_content() {
+    fn page_short_content_is_unadorned() {
         let short = "hello world";
         assert_eq!(
-            truncate_content(short),
+            page_content(short, 0, None),
             "hello world",
-            "short content unchanged"
+            "content that fits in one page with no note needs no header"
         );
     }
 
     #[test]
-    fn truncate_long_content() {
-        let long = "a".repeat(MAX_CONTENT_CHARS + 100);
-        let result = truncate_content(&long);
+    fn page_long_content_reports_total_and_continuation() {
+        let long = "a".repeat(DEFAULT_PAGE_BYTES + 100);
+        let result = page_content(&long, 0, None);
         assert!(
-            result.len() < long.len(),
-            "truncated should be shorter than original"
+            result.contains(&format!("total {} bytes", long.len())),
+            "should report the total size: {result}"
         );
         assert!(
-            result.ends_with("[content truncated]"),
-            "should end with truncation notice"
+            result.contains(&format!("offset={DEFAULT_PAGE_BYTES}")),
+            "should report the offset to continue from: {result}"
+        );
+    }
+
+    #[test]
+    fn page_content_continuation_reaches_the_end() {
+        let long = "a".repeat(DEFAULT_PAGE_BYTES + 100);
+        let result = page_content(&long, DEFAULT_PAGE_BYTES, None);
+        assert!(
+            result.contains("end of content"),
+            "the final page should say there's nothing more: {result}"
+        );
+        assert!(
+            !result.contains("call again"),
+            "the final page should not offer a further offset: {result}"
+        );
+    }
+
+    #[test]
+    fn page_content_includes_extra_note_on_every_page() {
+        let short = "{}";
+        let result = page_content(short, 0, Some("content-type: application/json"));
+        assert!(
+            result.contains("content-type: application/json"),
+            "should surface the extra note even when everything fits in one page: {result}"
         );
     }
 
@@ -229,14 +311,11 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/article"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/html")
-                    .set_body_string(
-                        "<html><head><title>Test</title></head>\
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "<html><head><title>Test</title></head>\
                          <body><article><p>Main content here.</p></article></body></html>",
-                    ),
-            )
+                "text/html",
+            ))
             .mount(&server)
             .await;
 
@@ -274,7 +353,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_non_html_returns_error() {
+    async fn fetch_binary_content_returns_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/image.png"))
@@ -292,10 +371,45 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.is_error, "non-HTML should be an error");
+        assert!(result.is_error, "binary content should be an error");
         assert!(
-            result.output.contains("unsupported content type"),
-            "should mention content type"
+            result.output.contains("image/png") && result.output.contains("binary"),
+            "should name the content type and say it's binary: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_json_body_is_returned_with_content_type_note() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/data.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw("{\"hello\":\"world\"}", "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let tool = WebFetchTool::new();
+        let result = tool
+            .execute(serde_json::json!({"url": format!("{}/data.json", server.uri())}))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "JSON body should be returned, not refused"
+        );
+        assert!(
+            result.output.contains("application/json"),
+            "should note the content type: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("{\"hello\":\"world\"}"),
+            "should return the raw JSON body: {}",
+            result.output
         );
     }
 

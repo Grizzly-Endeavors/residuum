@@ -1,5 +1,6 @@
 //! Failover provider: wraps multiple providers and tries each in order.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -22,7 +23,13 @@ pub(crate) struct FailoverProvider {
     /// Index of the provider that succeeded on the previous call. Used only
     /// to detect a transition; `complete` still tries every call starting
     /// from index 0, the same as before this field existed.
-    active_index: AtomicUsize,
+    ///
+    /// Shared (`Arc`) rather than owned outright so multiple short-lived
+    /// `FailoverProvider`s built for the same role — e.g. one freshly built
+    /// per background-session spawn — can track transitions jointly via
+    /// [`Self::with_shared_active_index`], instead of each instance starting
+    /// from index 0 and re-announcing a fallback that's already in effect.
+    active_index: Arc<AtomicUsize>,
 }
 
 /// What a fallback/recovery notice needs: where to publish it and what to
@@ -41,7 +48,7 @@ impl FailoverProvider {
         Self {
             providers,
             notices: None,
-            active_index: AtomicUsize::new(0),
+            active_index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -54,6 +61,19 @@ impl FailoverProvider {
             publisher,
             role: role.into(),
         });
+        self
+    }
+
+    /// Track transitions in a shared counter instead of this instance's own.
+    ///
+    /// For a role whose `FailoverProvider` is rebuilt fresh per call site
+    /// (background-session tiers are built anew for every spawn), sharing
+    /// one counter across every instance for that role means a transition
+    /// notices exactly once when the tier actually fails over or recovers,
+    /// rather than once per spawn made while it's already degraded.
+    #[must_use]
+    pub(crate) fn with_shared_active_index(mut self, active_index: Arc<AtomicUsize>) -> Self {
+        self.active_index = active_index;
         self
     }
 
@@ -462,6 +482,47 @@ mod tests {
             recovery_message.contains("back online") && recovery_message.contains("primary"),
             "recovery notice should say it's back on the primary: {recovery_message}"
         );
+    }
+
+    #[tokio::test]
+    async fn shared_active_index_suppresses_repeat_notices_across_instances() {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut notices: crate::bus::Subscriber<NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        let shared_index = Arc::new(AtomicUsize::new(0));
+
+        // First short-lived provider: primary fails, notices the fallover.
+        let first = FailoverProvider::new(vec![
+            Box::new(FailProvider { name: "primary" }),
+            Box::new(SuccessProvider { name: "fallback" }),
+        ])
+        .with_shared_active_index(Arc::clone(&shared_index))
+        .with_notices(publisher.clone(), "background sessions (large tier)");
+        first
+            .complete(&[], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        notice_text(&mut notices).await;
+
+        // A second, brand-new provider for the same role/tier, built as if
+        // for another spawn while the tier is still degraded — because it
+        // shares the same active-index counter (already at the fallback),
+        // it must not re-announce the fallover.
+        let second = FailoverProvider::new(vec![
+            Box::new(FailProvider { name: "primary" }),
+            Box::new(SuccessProvider { name: "fallback" }),
+        ])
+        .with_shared_active_index(Arc::clone(&shared_index))
+        .with_notices(publisher, "background sessions (large tier)");
+        second
+            .complete(&[], &[], &CompletionOptions::default())
+            .await
+            .unwrap();
+        assert_no_notice(&mut notices).await;
     }
 
     #[tokio::test]
