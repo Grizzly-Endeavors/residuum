@@ -47,6 +47,16 @@ mod feedback_submit_integration {
         Arc::new(TracingService::new(cfg, handle))
     }
 
+    fn build_service_with_auto_error_reporting(endpoint: &str) -> Arc<TracingService> {
+        let cfg = TracingConfig {
+            feedback_endpoint: endpoint.to_string(),
+            auto_error_reporting: true,
+            ..TracingConfig::default()
+        };
+        let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        Arc::new(TracingService::new(cfg, handle))
+    }
+
     /// Captured request body: shared between the mock responder and the test
     /// assertions. Created fresh per test.
     fn capture_body() -> Arc<std::sync::Mutex<Option<Value>>> {
@@ -316,5 +326,102 @@ mod feedback_submit_integration {
             msg.contains("retry after 120s"),
             "Retry-After must be surfaced in the error: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn on_error_no_ops_when_auto_error_reporting_is_off() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SHOULD-NOT-FIRE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        // build_service defaults auto_error_reporting to false.
+        let service = build_service(&server.uri());
+        service.on_error("something broke", sample_client()).await;
+    }
+
+    #[tokio::test]
+    async fn on_error_submits_a_broken_severity_report_when_enabled() {
+        let server = MockServer::start().await;
+        let captured = capture_body();
+        let captured_for_mock = Arc::clone(&captured);
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(move |req: &Request| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                *captured_for_mock.lock().unwrap() = Some(body);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "public_id": "RR-AUTO",
+                    "submitted_at": "2026-04-16T14:23:00Z"
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let service = build_service_with_auto_error_reporting(&server.uri());
+        service
+            .on_error("panic in tool executor", sample_client())
+            .await;
+
+        let body = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("mock must have captured a body");
+        assert_eq!(body["kind"], "bug");
+        assert_eq!(body["what_happened"], "panic in tool executor");
+        assert_eq!(body["what_expected"], "no error");
+        assert_eq!(body["what_doing"], "auto-reported (no user input)");
+        assert_eq!(body["severity"], "broken");
+    }
+
+    #[tokio::test]
+    async fn on_error_rate_limits_a_tight_loop_of_the_same_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-LOOP",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let service = build_service_with_auto_error_reporting(&server.uri());
+        for _ in 0..20 {
+            service
+                .on_error("same failure repeated", sample_client())
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn on_error_caps_distinct_errors_at_the_hourly_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-CAP",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(5)
+            .mount(&server)
+            .await;
+
+        let service = build_service_with_auto_error_reporting(&server.uri());
+        for i in 0..10 {
+            service
+                .on_error(&format!("distinct failure {i}"), sample_client())
+                .await;
+        }
     }
 }
