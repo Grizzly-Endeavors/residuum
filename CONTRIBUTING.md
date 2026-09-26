@@ -5,7 +5,7 @@ Thanks for your interest in contributing. This document covers the workflow and 
 ## Getting Started
 
 1. Fork the repository and clone your fork
-2. Install [Rust 1.85+](https://rustup.rs/) and [Node.js](https://nodejs.org/) (for the web frontend)
+2. Install [Rust](https://rustup.rs/) (the version pinned in `rust-toolchain.toml`; rustup installs it — see [Rust Toolchain](#rust-toolchain)) and [Node.js](https://nodejs.org/) (for the web frontend)
 3. Build the web frontend first — the Rust binary embeds the built assets, so `cargo build` will fail without them:
    ```bash
    cd web
@@ -65,7 +65,7 @@ Pre-commit hooks run automatically:
 - `cargo clippy` — pedantic linting with strict denials
 - `cargo test` — tests for the modules touched by the commit
 - `cargo deny check` — dependency audit
-- When `web/src/` files are staged: Prettier, ESLint, `svelte-check`, and the web unit tests
+- When `web/src/` files are staged: Prettier, ESLint, `svelte-check`, and the web unit tests (Vitest)
 
 Do not bypass hooks. If a hook fails, fix the issue before committing.
 
@@ -81,13 +81,19 @@ Do not bypass hooks. If a hook fails, fix the issue before committing.
 
 Tests are required for new functionality. Unit tests go in `#[cfg(test)] mod tests` at the bottom of the file. Integration tests go in `tests/`.
 
-Test modules use `#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]`.
+`clippy.toml` exempts `unwrap_used`, `expect_used`, `panic`, and `dbg_macro` inside `#[cfg(test)]` modules and `#[test]` functions, so unit tests use unwrap, expect, panic, and `dbg!` with no suppression. Do not add `#[expect(clippy::unwrap_used)]` (or `expect_used`, `panic`, `dbg_macro`) on that code: the lint is already exempt, the expectation never fires, and `-D warnings` fails the build.
+
+`clippy::tests_outside_test_module` is denied and is not controllable from `clippy.toml`. Integration tests under `tests/` need `#[expect(clippy::tests_outside_test_module, reason = "...")]`. A helper at the top level of a `tests/*.rs` file — not inside `#[cfg(test)]`, and not itself a `#[test]` — still needs its own `#[expect]` when it uses unwrap, expect, panic, or `dbg!`.
 
 ### Lint Denials
 
-These are denied project-wide and will not be relaxed:
-- `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`
+These are denied in `Cargo.toml` and will not be relaxed without explicit approval:
+- `unsafe_code` (`deny`, not `forbid`, so a real FFI boundary can carry `#[expect(unsafe_code, reason = "...")]` on that item)
+- `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`
+- `missing_errors_doc`, `missing_panics_doc`, `must_use_candidate`, `print_stderr`
 - `indexing_slicing`, `string_slice`, `dbg_macro`, `exit`
+
+`unwrap_used`, `expect_used`, `panic`, and `dbg_macro` are exempt inside `#[cfg(test)]` modules and `#[test]` functions via `clippy.toml`; see Testing. Every other denial is under `[lints]` in `Cargo.toml`.
 
 Any `#[allow]` must be `#[expect]` with a reason string.
 
