@@ -26,20 +26,29 @@ use crate::workspace::layout::WorkspaceLayout;
 /// Persist new messages and check whether observation thresholds are met.
 ///
 /// Appends messages to the recent messages file and returns the appropriate
-/// `ObserveAction` based on current token levels.
+/// `ObserveAction` based on current token levels. `turn_id` is the
+/// correlation id of the turn that produced these messages, or `None` for a
+/// non-turn persist (e.g. a message with no matching turn).
 pub(super) async fn persist_and_check_thresholds(
     new_messages: &[crate::inference::Message],
     visibility: Visibility,
     observer: &Observer,
     layout: &WorkspaceLayout,
     tz: chrono_tz::Tz,
+    turn_id: Option<&str>,
 ) -> ObserveAction {
     if new_messages.is_empty() {
         return ObserveAction::None;
     }
 
-    if let Err(e) =
-        append_recent_messages(&layout.recent_messages_json(), new_messages, visibility, tz).await
+    if let Err(e) = append_recent_messages(
+        &layout.recent_messages_json(),
+        new_messages,
+        visibility,
+        tz,
+        turn_id,
+    )
+    .await
     {
         tracing::warn!(error = %e, "failed to persist recent messages");
         return ObserveAction::None;
@@ -435,6 +444,7 @@ mod tests {
             &[crate::inference::Message::user("hello")],
             Visibility::User,
             TEST_TZ,
+            None,
         )
         .await
         .unwrap();
@@ -513,5 +523,63 @@ mod tests {
         let mut agent = test_agent();
 
         apply_observation_reload(&mut agent, &layout).await;
+    }
+
+    #[tokio::test]
+    async fn persist_and_check_thresholds_sets_turn_id_from_the_turn_correlation_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        let observer = always_failing_observer();
+
+        persist_and_check_thresholds(
+            &[crate::inference::Message::user("hello")],
+            Visibility::User,
+            &observer,
+            &layout,
+            TEST_TZ,
+            Some("turn-abc"),
+        )
+        .await;
+
+        let recent = load_recent_messages(&layout.recent_messages_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            recent.first().and_then(|m| m.turn_id.clone()),
+            Some("turn-abc".to_string()),
+            "persisted message should carry the turn's correlation id"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_and_check_thresholds_leaves_turn_id_none_when_not_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+        let observer = always_failing_observer();
+
+        persist_and_check_thresholds(
+            &[crate::inference::Message::user("hello")],
+            Visibility::Background,
+            &observer,
+            &layout,
+            TEST_TZ,
+            None,
+        )
+        .await;
+
+        let recent = load_recent_messages(&layout.recent_messages_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            recent.first().and_then(|m| m.turn_id.clone()),
+            None,
+            "a persist with no turn id should leave the field unset"
+        );
     }
 }

@@ -654,6 +654,7 @@ mod tests {
                 message: Message::user(content),
                 timestamp: chrono::Utc::now().naive_utc(),
                 visibility: Visibility::User,
+                turn_id: None,
             }],
         }
     }

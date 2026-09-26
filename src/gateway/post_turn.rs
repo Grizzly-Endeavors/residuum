@@ -744,6 +744,7 @@ mod tests {
             &[Message::user(content)],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();

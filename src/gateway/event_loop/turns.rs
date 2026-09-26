@@ -129,17 +129,27 @@ fn drain_stale_stop_requests(stop_rx: &mut mpsc::Receiver<StopRequest>) {
 }
 
 /// Persist new messages and run observation if thresholds are exceeded.
+///
+/// `turn_id` is the correlation id of the turn that produced these messages
+/// (the same id sent as `reply_to` on `turn_started`/`turn_ended`).
 pub async fn persist_and_maybe_observe(
     rt: &mut GatewayRuntime,
     new_messages: &[crate::inference::Message],
     visibility: Visibility,
     observe_deadline: &mut Option<tokio::time::Instant>,
+    turn_id: Option<&str>,
 ) {
     use crate::gateway::memory::persist_and_check_thresholds;
 
-    let action =
-        persist_and_check_thresholds(new_messages, visibility, &rt.observer, &rt.layout, rt.tz)
-            .await;
+    let action = persist_and_check_thresholds(
+        new_messages,
+        visibility,
+        &rt.observer,
+        &rt.layout,
+        rt.tz,
+        turn_id,
+    )
+    .await;
     if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
         let mem = MemorySubsystems {
             observer: Arc::clone(&rt.observer),
@@ -744,7 +754,14 @@ pub async fn handle_inbound_message(
         Visibility::User
     };
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
-    persist_and_maybe_observe(rt, &new_messages, visibility, observe_deadline).await;
+    persist_and_maybe_observe(
+        rt,
+        &new_messages,
+        visibility,
+        observe_deadline,
+        Some(&reply_id),
+    )
+    .await;
 
     // Background turns (including subconscious correction turns) are never
     // evaluated — this gate is what bounds the correction feedback loop.
