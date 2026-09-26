@@ -18,7 +18,7 @@ use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
 use crate::memory::recent_messages::{
-    append_recent_messages, clear_recent_messages, load_recent_messages,
+    append_recent_messages, load_recent_messages, remove_observed_recent_messages,
 };
 use crate::memory::types::{SourceTag, Visibility};
 use crate::workspace::layout::WorkspaceLayout;
@@ -86,8 +86,15 @@ pub(crate) struct MemorySubsystems {
 /// on every later crossing while recent messages keep accumulating
 /// unobserved; see [`Observer::automatic_failure_tracker`]. A manually
 /// forced observe ([`run_forced_observe`]) always attempts regardless.
+///
+/// `shutdown` cancelled while the extraction call is in flight drops the
+/// cycle with nothing written; once extraction returns, the merge and the
+/// removal of observed messages run to completion.
 #[tracing::instrument(skip_all)]
-pub(crate) async fn execute_observation(mem: &MemorySubsystems) -> bool {
+pub(crate) async fn execute_observation(
+    mem: &MemorySubsystems,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> bool {
     use crate::util::{NoticeAction, RetryGate};
 
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
@@ -108,7 +115,15 @@ pub(crate) async fn execute_observation(mem: &MemorySubsystems) -> bool {
         return false;
     }
 
-    let extraction = match mem.observer.extract(&recent, &mem.layout).await {
+    let extraction = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => {
+            tracing::debug!("shutting down, dropping in-flight observation before anything was written");
+            return false;
+        }
+        extraction = mem.observer.extract(&recent, &mem.layout) => extraction,
+    };
+    let extraction = match extraction {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!(error = %e, "observer failed");
@@ -140,7 +155,7 @@ pub(crate) async fn execute_observation(mem: &MemorySubsystems) -> bool {
                 )
                 .await;
             }
-            persist_observation_outcome(mem, &outcome).await;
+            persist_observation_outcome(mem, &outcome, recent.len()).await;
             if outcome.reflected {
                 tracing::info!(episode_id = %outcome.id, "reflection triggered");
             }
@@ -192,7 +207,9 @@ async fn publish_reflector_notice(publisher: &Publisher, notice: crate::util::No
 }
 
 /// Persist a successful merge's file-only side effects: save the
-/// recent-context narrative and clear the messages that were just observed.
+/// recent-context narrative and remove the `observed` messages the cycle
+/// loaded (and only those — a turn that ended while the cycle ran appended
+/// messages it never saw, and they wait for the next cycle).
 /// No `Agent` access needed — see [`execute_observation`]'s own doc for why
 /// that matters. Only the main agent's own observations replace the
 /// recent-context narrative — session merges never touch it (see the
@@ -200,6 +217,7 @@ async fn publish_reflector_notice(publisher: &Publisher, notice: crate::util::No
 async fn persist_observation_outcome(
     mem: &MemorySubsystems,
     outcome: &crate::memory::merge_writer::MergeOutcome,
+    observed: usize,
 ) {
     if let Some(narrative) = &outcome.narrative {
         let ctx = RecentContext {
@@ -212,8 +230,10 @@ async fn persist_observation_outcome(
         }
     }
 
-    if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-        tracing::warn!(error = %e, "failed to clear recent messages");
+    if let Err(e) =
+        remove_observed_recent_messages(&mem.layout.recent_messages_json(), observed).await
+    {
+        tracing::warn!(error = %e, observed, "failed to remove observed recent messages");
     }
 }
 
@@ -239,8 +259,8 @@ pub(crate) async fn apply_observation_reload(agent: &mut Agent, layout: &Workspa
 
 /// Force an observation cycle regardless of token threshold.
 ///
-/// Loads recent messages, extracts and merges, clears recent messages, and
-/// publishes a notice.
+/// Loads recent messages, extracts and merges, removes the observed messages,
+/// and publishes a notice.
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_forced_observe(
     mem: &MemorySubsystems,
@@ -295,7 +315,7 @@ pub(super) async fn run_forced_observe(
         }
     };
 
-    persist_observation_outcome(mem, &outcome).await;
+    persist_observation_outcome(mem, &outcome, recent.len()).await;
     apply_observation_reload(agent, &mem.layout).await;
 
     let suffix = if outcome.reflected {
@@ -439,7 +459,7 @@ mod tests {
         // First attempt: extract fails (NullProvider always errors) — a new
         // failure streak, so the user is told once.
         assert!(
-            !execute_observation(&mem).await,
+            !execute_observation(&mem, &tokio_util::sync::CancellationToken::new()).await,
             "a failed cycle must not report a reload"
         );
         let first_notice =
@@ -468,7 +488,7 @@ mod tests {
         // Second attempt, immediately after: backing off, so no repeat
         // attempt and no repeat notice.
         assert!(
-            !execute_observation(&mem).await,
+            !execute_observation(&mem, &tokio_util::sync::CancellationToken::new()).await,
             "backed off, so nothing should have run"
         );
         let second =

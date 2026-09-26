@@ -25,7 +25,7 @@ mod memory_integration {
         RecentContext, load_recent_context, save_recent_context,
     };
     use residuum::memory::recent_messages::{
-        append_recent_messages, clear_recent_messages, load_recent_messages,
+        append_recent_messages, load_recent_messages, remove_observed_recent_messages,
     };
     use residuum::memory::reflector::{Reflector, ReflectorConfig};
     use residuum::memory::search::{MemoryIndex, SearchFilters};
@@ -188,7 +188,9 @@ mod memory_integration {
             outcome.chunks,
             outcome.date,
         );
-        clear_recent_messages(&recent_path).await.unwrap();
+        remove_observed_recent_messages(&recent_path, recent.len())
+            .await
+            .unwrap();
 
         assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
         // observer_response has 3 observation strings
@@ -273,7 +275,9 @@ mod memory_integration {
             .merge(extraction2, SourceTag::main(), chrono_tz::UTC)
             .await
             .unwrap();
-        clear_recent_messages(&recent_path).await.unwrap();
+        remove_observed_recent_messages(&recent_path, recent2.len())
+            .await
+            .unwrap();
 
         assert_eq!(second_ep.id, "ep-002", "second episode should be ep-002");
 

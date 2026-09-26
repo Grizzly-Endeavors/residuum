@@ -1,12 +1,12 @@
 //! Post-turn background work: the automatic observer/reflector cycle and the
-//! end-of-turn subconscious evaluation, both moved off the event loop so a
-//! turn's LLM-calling housekeeping never blocks the next inbound message, a
+//! end-of-turn subconscious evaluation, run off the event loop so a turn's
+//! LLM-calling housekeeping never blocks the next inbound message, a
 //! shutdown signal, or a stop request from being handled.
 //!
 //! Each kind (observe, subconscious) runs through its own worker: at most
 //! one cycle in flight at a time, and any trigger that arrives while one is
 //! running collapses into exactly one follow-up run rather than stacking —
-//! see [`RunState`]. The slow part (the LLM call, plus any file persistence
+//! see [`Coalescer`]. The slow part (the LLM call, plus any file persistence
 //! that doesn't need `Agent`) runs entirely in the background task. Whatever
 //! *does* need `&mut Agent` — reloading observations/recent-context after an
 //! observe, or injecting a subconscious note — can't be touched off the
@@ -22,12 +22,18 @@
 //! call. A coalesced run always uses the *latest* trigger's snapshot, so a
 //! reload that swaps a component in place between two coalesced triggers is
 //! still picked up — nothing here holds a stale clone from before the swap.
+//!
+//! Shutdown cancels both workers: an observation still waiting on its
+//! extraction call, or a subconscious evaluation still waiting on its model,
+//! is dropped with nothing written. An observation already merging its
+//! episode gets a bounded grace period to finish its (atomic) writes.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::bus::{MessageEvent, PostTurnActivityEvent, PostTurnActivityKind, Publisher, topics};
 use crate::gateway::memory::{self, MemorySubsystems};
@@ -68,25 +74,85 @@ pub(crate) enum PostTurnResult {
     SubconsciousNotes(Vec<String>),
 }
 
-/// Coalescing bookkeeping shared by both workers below: whether a cycle is
-/// currently running, and whether a trigger arrived during that run and so
-/// owes exactly one follow-up. The running-or-not decision and the
-/// pending-or-not decision are always read and written together under this
-/// one lock — including at the tail of a cycle, where "is anyone else about
-/// to trigger me" and "should I loop again" must agree, or a trigger that
-/// lands in the gap between them would be silently lost.
+/// Coalescing bookkeeping: whether a cycle is currently running, and
+/// whether a trigger arrived during that run and so owes exactly one
+/// follow-up. The running-or-not decision and the pending-or-not decision
+/// are always read and written together under this one lock — including at
+/// the tail of a cycle, where "is anyone else about to trigger me" and
+/// "should I loop again" must agree, or a trigger that lands in the gap
+/// between them would be silently lost.
 struct RunState {
     running: bool,
     pending: bool,
     handle: Option<JoinHandle<()>>,
 }
 
-impl RunState {
+/// The run/coalesce state machine and shutdown handling both workers share.
+struct Coalescer {
+    state: Mutex<RunState>,
+    shutdown: CancellationToken,
+}
+
+impl Coalescer {
     fn new() -> Self {
         Self {
-            running: false,
-            pending: false,
-            handle: None,
+            state: Mutex::new(RunState {
+                running: false,
+                pending: false,
+                handle: None,
+            }),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// Record a trigger. Spawns a run loop through `spawn` when nothing is
+    /// running; otherwise marks one follow-up as owed. After shutdown has
+    /// begun, triggers are ignored.
+    fn trigger(&self, spawn: impl FnOnce() -> JoinHandle<()>) {
+        let mut state = lock(&self.state);
+        if self.shutdown.is_cancelled() {
+            return;
+        }
+        if state.running {
+            state.pending = true;
+            return;
+        }
+        state.running = true;
+        state.pending = false;
+        state.handle = Some(spawn());
+    }
+
+    /// Called by the run loop after each cycle: whether a trigger arrived
+    /// during it and so owes one more cycle. Returning `false` marks the
+    /// worker idle under the same lock, so a trigger racing this call
+    /// either sees `running` and sets `pending` (answered `true` here) or
+    /// sees idle and spawns a fresh loop — never neither.
+    fn owes_another_cycle(&self) -> bool {
+        let mut state = lock(&self.state);
+        if state.pending && !self.shutdown.is_cancelled() {
+            state.pending = false;
+            return true;
+        }
+        state.pending = false;
+        state.running = false;
+        false
+    }
+
+    /// Cancel the in-flight cycle's cancellable phase, then wait up to
+    /// `grace` for the rest of it; past that, abort it. Every write a cycle
+    /// makes is atomic (temp file + rename), so an aborted cycle leaves what
+    /// it already wrote intact and discards the rest.
+    async fn shutdown(&self, grace: Duration, kind: &'static str) {
+        self.shutdown.cancel();
+        let handle = lock(&self.state).handle.take();
+        let Some(mut handle) = handle else { return };
+        if tokio::time::timeout(grace, &mut handle).await.is_err() {
+            tracing::warn!(
+                kind,
+                grace_secs = grace.as_secs(),
+                "post-turn background cycle still running past the shutdown grace period, aborting it"
+            );
+            handle.abort();
         }
     }
 }
@@ -96,10 +162,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Tell the web UI a background post-turn cycle started or finished, for
-/// the quiet "updating memory…" / "reviewing turn…" indicator. A missing
-/// publisher (no trigger has ever carried one, which shouldn't happen in
-/// practice) is a silent no-op rather than a panic — nothing has run yet
-/// for there to be an indicator about.
+/// the quiet "updating memory…" / "reviewing turn…" indicator.
 async fn publish_activity(publisher: Option<&Publisher>, kind: PostTurnActivityKind, active: bool) {
     let Some(publisher) = publisher else { return };
     if let Err(e) = publisher
@@ -115,7 +178,11 @@ async fn publish_activity(publisher: Option<&Publisher>, kind: PostTurnActivityK
 
 /// Background worker for the automatic observer/reflector cycle.
 pub(crate) struct ObserveWorker {
-    state: Mutex<RunState>,
+    coalescer: Coalescer,
+    /// Held for the whole of every observation cycle — this worker's and a
+    /// manually forced one's (see [`Self::lock_cycle`]) — so two cycles never
+    /// load, observe, and remove the same recent messages twice.
+    cycle_lock: tokio::sync::Mutex<()>,
     /// The snapshot the next cycle should run with — always the most recent
     /// trigger's, overwritten on every call regardless of coalescing.
     latest_mem: Mutex<Option<MemorySubsystems>>,
@@ -130,7 +197,8 @@ impl ObserveWorker {
     #[must_use]
     pub(crate) fn new(result_tx: mpsc::UnboundedSender<PostTurnResult>) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(RunState::new()),
+            coalescer: Coalescer::new(),
+            cycle_lock: tokio::sync::Mutex::new(()),
             latest_mem: Mutex::new(None),
             idle_continuation: Mutex::new(None),
             result_tx,
@@ -155,16 +223,18 @@ impl ObserveWorker {
         self.spawn_or_coalesce();
     }
 
+    /// Wait for any in-flight background cycle to finish and hold off new
+    /// ones while the guard lives — for a manually forced observe, which
+    /// runs on the main loop and must not observe the same messages as a
+    /// concurrent background cycle.
+    pub(crate) async fn lock_cycle(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.cycle_lock.lock().await
+    }
+
     fn spawn_or_coalesce(self: &Arc<Self>) {
-        let mut state = lock(&self.state);
-        if state.running {
-            state.pending = true;
-            return;
-        }
-        state.running = true;
-        state.pending = false;
         let this = Arc::clone(self);
-        state.handle = Some(tokio::spawn(async move { this.run_loop().await }));
+        self.coalescer
+            .trigger(|| tokio::spawn(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
@@ -172,25 +242,22 @@ impl ObserveWorker {
         publish_activity(publisher.as_ref(), PostTurnActivityKind::Memory, true).await;
         loop {
             self.run_one_cycle().await;
-            let mut state = lock(&self.state);
-            if state.pending {
-                state.pending = false;
-                continue;
+            if !self.coalescer.owes_another_cycle() {
+                break;
             }
-            state.running = false;
-            break;
         }
         publish_activity(publisher.as_ref(), PostTurnActivityKind::Memory, false).await;
     }
 
     async fn run_one_cycle(&self) {
+        let _cycle = self.cycle_lock.lock().await;
         let Some(mem) = lock(&self.latest_mem).take() else {
-            // Only reachable if `run_loop` somehow ran without a prior
-            // `trigger`/`trigger_for_idle` call — both always set this
-            // before spawning or marking pending, so this is defensive.
+            // Both trigger paths set this before spawning or marking a
+            // follow-up, and only a cycle takes it, so a run loop always
+            // finds one.
             return;
         };
-        let reload_needed = memory::execute_observation(&mem).await;
+        let reload_needed = memory::execute_observation(&mem, &self.coalescer.shutdown).await;
         let continuation = lock(&self.idle_continuation).take();
         let result = if let Some(continuation) = continuation {
             PostTurnResult::IdleObservationReady {
@@ -209,21 +276,10 @@ impl ObserveWorker {
         }
     }
 
-    /// Give an in-flight cycle up to `grace` to finish, then give up and let
-    /// the process exit cut it short — its own writes are already atomic
-    /// (temp file + rename), so an interrupted cycle leaves whatever it had
-    /// already completed intact and simply discards the rest, never a
-    /// corrupted partial state.
+    /// Cancel an observation still waiting on its extraction call, give one
+    /// already merging up to `grace` to finish, and ignore later triggers.
     pub(crate) async fn shutdown(&self, grace: Duration) {
-        let handle = lock(&self.state).handle.take();
-        if let Some(handle) = handle
-            && tokio::time::timeout(grace, handle).await.is_err()
-        {
-            tracing::warn!(
-                "observer background cycle still running past the shutdown grace period, \
-                 leaving it to end with the process"
-            );
-        }
+        self.coalescer.shutdown(grace, "observe").await;
     }
 }
 
@@ -240,9 +296,34 @@ pub(crate) struct SubconsciousTrigger {
     pub scratch: TurnScratch,
 }
 
+impl SubconsciousTrigger {
+    /// Fold a newer turn's trigger into this still-unevaluated one, so the
+    /// follow-up evaluation covers both turns: their messages in order, and
+    /// both turns' mid-turn corrections and queued notes. The newer
+    /// trigger's runtime snapshot and correlation id win.
+    fn absorb(&mut self, newer: Self) {
+        let mut messages = std::mem::take(&mut self.new_messages);
+        messages.extend(newer.new_messages);
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch
+            .applied_corrections
+            .extend(newer.scratch.applied_corrections);
+        scratch.queued_notes.extend(newer.scratch.queued_notes);
+        *self = Self {
+            new_messages: messages,
+            scratch,
+            ..newer
+        };
+    }
+}
+
 /// Background worker for the end-of-turn subconscious evaluation.
 pub(crate) struct SubconsciousWorker {
-    state: Mutex<RunState>,
+    coalescer: Coalescer,
+    /// The turn(s) the next cycle evaluates. A trigger arriving while an
+    /// earlier one is still waiting here is folded into it (see
+    /// [`SubconsciousTrigger::absorb`]) rather than replacing it, so no
+    /// turn goes unevaluated and no queued mid-turn note is dropped.
     latest: Mutex<Option<SubconsciousTrigger>>,
     result_tx: mpsc::UnboundedSender<PostTurnResult>,
 }
@@ -251,23 +332,23 @@ impl SubconsciousWorker {
     #[must_use]
     pub(crate) fn new(result_tx: mpsc::UnboundedSender<PostTurnResult>) -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(RunState::new()),
+            coalescer: Coalescer::new(),
             latest: Mutex::new(None),
             result_tx,
         })
     }
 
     pub(crate) fn trigger(self: &Arc<Self>, payload: SubconsciousTrigger) {
-        *lock(&self.latest) = Some(payload);
-        let mut state = lock(&self.state);
-        if state.running {
-            state.pending = true;
-            return;
+        {
+            let mut latest = lock(&self.latest);
+            match latest.as_mut() {
+                Some(waiting) => waiting.absorb(payload),
+                None => *latest = Some(payload),
+            }
         }
-        state.running = true;
-        state.pending = false;
         let this = Arc::clone(self);
-        state.handle = Some(tokio::spawn(async move { this.run_loop().await }));
+        self.coalescer
+            .trigger(|| tokio::spawn(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
@@ -275,13 +356,9 @@ impl SubconsciousWorker {
         publish_activity(publisher.as_ref(), PostTurnActivityKind::Subconscious, true).await;
         loop {
             self.run_one_cycle().await;
-            let mut state = lock(&self.state);
-            if state.pending {
-                state.pending = false;
-                continue;
+            if !self.coalescer.owes_another_cycle() {
+                break;
             }
-            state.running = false;
-            break;
         }
         publish_activity(
             publisher.as_ref(),
@@ -301,15 +378,20 @@ impl SubconsciousWorker {
             return;
         }
 
-        let notes = match trigger
-            .subconscious
-            .evaluate(
+        let evaluation = tokio::select! {
+            biased;
+            () = self.coalescer.shutdown.cancelled() => {
+                tracing::debug!("shutting down, dropping in-flight subconscious evaluation");
+                return;
+            }
+            evaluation = trigger.subconscious.evaluate(
                 &trigger.new_messages,
                 EvalPhase::EndOfTurn,
                 Some(&trigger.scratch),
-            )
-            .await
-        {
+            ) => evaluation,
+        };
+
+        let notes = match evaluation {
             Ok(outcome) => {
                 let mut notes = Vec::new();
                 for delivery in plan_delivery(outcome.findings) {
@@ -360,17 +442,10 @@ impl SubconsciousWorker {
         }
     }
 
-    /// Same shutdown contract as [`ObserveWorker::shutdown`].
+    /// Drop an evaluation still waiting on its model, give anything past
+    /// that point up to `grace`, and ignore later triggers.
     pub(crate) async fn shutdown(&self, grace: Duration) {
-        let handle = lock(&self.state).handle.take();
-        if let Some(handle) = handle
-            && tokio::time::timeout(grace, handle).await.is_err()
-        {
-            tracing::warn!(
-                "subconscious background cycle still running past the shutdown grace period, \
-                 leaving it to end with the process"
-            );
-        }
+        self.coalescer.shutdown(grace, "subconscious").await;
     }
 }
 
@@ -563,60 +638,428 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn observe_worker_coalesces_triggers_that_arrive_mid_cycle() {
-        // Two triggers fired back to back should never run the observation
-        // cycle twice in a row for the second one — coalescing means the
-        // worker's own loop notices the pending flag and runs once more, but
-        // a THIRD trigger sent only after the worker is fully idle again
-        // must start a fresh run. This exercises the public trigger/run_loop
-        // path directly against a real (but tiny, disabled) memory stack so
-        // the state machine is proven end to end, not just unit-level.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+
+    use crate::inference::{
+        CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, ToolDefinition,
+    };
+    use crate::memory::recent_messages::{append_recent_messages, load_recent_messages};
+    use crate::memory::types::Visibility;
+    use crate::workspace::layout::WorkspaceLayout;
+
+    const OBSERVER_RESPONSE: &str = r#"{
+        "observations": [
+            {"content": "the user likes short answers", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+        ],
+        "narrative": ""
+    }"#;
+
+    /// Counts calls and holds each one until the test releases a permit, so
+    /// a test can hold a cycle mid-extraction.
+    struct GatedProvider {
+        calls: Arc<AtomicUsize>,
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for GatedProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.gate.acquire().await.unwrap().forget();
+            Ok(InferenceResponse::new(
+                OBSERVER_RESPONSE.to_string(),
+                vec![],
+            ))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "gated"
+        }
+    }
+
+    struct ObserveHarness {
+        _dir: tempfile::TempDir,
+        layout: WorkspaceLayout,
+        mem: MemorySubsystems,
+        calls: Arc<AtomicUsize>,
+        gate: Arc<tokio::sync::Semaphore>,
+        worker: Arc<ObserveWorker>,
+        results: mpsc::UnboundedReceiver<PostTurnResult>,
+    }
+
+    async fn observe_harness() -> ObserveHarness {
         let dir = tempfile::tempdir().unwrap();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
-        let observer = Arc::new(crate::memory::observer::Observer::disabled(chrono_tz::UTC));
+        let layout = WorkspaceLayout::new(dir.path());
+        for d in layout.required_dirs() {
+            tokio::fs::create_dir_all(&d).await.unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let observer = Arc::new(crate::memory::observer::Observer::new(
+            Box::new(GatedProvider {
+                calls: Arc::clone(&calls),
+                gate: Arc::clone(&gate),
+            }),
+            crate::memory::observer::ObserverConfig::default(),
+        ));
         let search_index = Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );
-        let reflector = crate::memory::reflector::Reflector::disabled(chrono_tz::UTC);
         let merge_writer = Arc::new(crate::memory::merge_writer::MemoryMergeWriter::new(
-            reflector,
+            crate::memory::reflector::Reflector::disabled(chrono_tz::UTC),
             layout.clone(),
             search_index,
             None,
             None,
         ));
-        let handle = crate::bus::spawn_broker();
-        let (result_tx, mut result_rx) = mpsc::unbounded_channel();
-        let worker = ObserveWorker::new(result_tx);
-
-        let mem = || MemorySubsystems {
-            observer: Arc::clone(&observer),
-            merge_writer: Arc::clone(&merge_writer),
+        let mem = MemorySubsystems {
+            observer,
+            merge_writer,
             layout: layout.clone(),
             tz: chrono_tz::UTC,
-            publisher: handle.publisher(),
+            publisher: crate::bus::spawn_broker().publisher(),
+        };
+        let (result_tx, results) = mpsc::unbounded_channel();
+        ObserveHarness {
+            _dir: dir,
+            layout,
+            mem,
+            calls,
+            gate,
+            worker: ObserveWorker::new(result_tx),
+            results,
+        }
+    }
+
+    async fn append_message(layout: &WorkspaceLayout, content: &str) {
+        append_recent_messages(
+            &layout.recent_messages_json(),
+            &[Message::user(content)],
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while calls.load(Ordering::SeqCst) < expected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("expected {expected} extraction call(s)"));
+    }
+
+    #[test]
+    fn coalescer_owes_exactly_one_follow_up_for_triggers_mid_cycle() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _enter = rt.enter();
+        let coalescer = Coalescer::new();
+        let spawned = AtomicUsize::new(0);
+        let spawn = || {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async {})
         };
 
-        worker.trigger(mem());
-        worker.trigger(mem());
+        coalescer.trigger(spawn);
+        coalescer.trigger(spawn);
+        coalescer.trigger(spawn);
+        assert_eq!(spawned.load(Ordering::SeqCst), 1, "one run loop at a time");
+        assert!(
+            coalescer.owes_another_cycle(),
+            "two mid-cycle triggers owe one follow-up"
+        );
+        assert!(!coalescer.owes_another_cycle(), "and only one");
 
-        // A disabled observer never has anything to observe (no recent
-        // messages file even exists), so no result is ever sent — this
-        // test only needs to prove the worker doesn't panic or deadlock
-        // running two coalesced triggers back to back, then a third after
-        // going idle again.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        worker.trigger(mem());
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        coalescer.trigger(spawn);
+        assert_eq!(
+            spawned.load(Ordering::SeqCst),
+            2,
+            "a trigger after going idle starts a fresh run loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn coalescer_ignores_triggers_after_shutdown() {
+        let coalescer = Coalescer::new();
+        coalescer.shutdown(Duration::from_secs(1), "test").await;
+        let spawned = AtomicUsize::new(0);
+        coalescer.trigger(|| {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async {})
+        });
+        assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn observe_worker_runs_off_loop_and_coalesces_into_one_follow_up() {
+        let mut h = observe_harness().await;
+        append_message(&h.layout, "first turn").await;
+
+        // The trigger returns immediately while the cycle waits on its
+        // extraction call: the work is off the caller's path.
+        h.worker.trigger(h.mem.clone());
+        wait_for_calls(&h.calls, 1).await;
+
+        // Two more turns end while the first cycle is still extracting.
+        append_message(&h.layout, "second turn").await;
+        h.worker.trigger(h.mem.clone());
+        h.worker.trigger(h.mem.clone());
+
+        h.gate.add_permits(10);
+        for _ in 0..2 {
+            let result = tokio::time::timeout(Duration::from_secs(5), h.results.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(result, PostTurnResult::ObservationReady));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            h.calls.load(Ordering::SeqCst),
+            2,
+            "three triggers make one cycle plus exactly one follow-up"
+        );
+        assert!(
+            load_recent_messages(&h.layout.recent_messages_json())
+                .await
+                .unwrap()
+                .is_empty(),
+            "the follow-up observed the message the first cycle never saw"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_worker_keeps_messages_that_arrive_during_a_cycle() {
+        let mut h = observe_harness().await;
+        append_message(&h.layout, "observed").await;
+        h.worker.trigger(h.mem.clone());
+        wait_for_calls(&h.calls, 1).await;
+
+        // A turn ends mid-cycle but its trigger hasn't fired yet (the
+        // observe threshold wasn't crossed).
+        append_message(&h.layout, "arrived mid-cycle").await;
+        h.gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(5), h.results.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let remaining = load_recent_messages(&h.layout.recent_messages_json())
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining.first().unwrap().message.content,
+            "arrived mid-cycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_an_in_flight_extraction_without_writing() {
+        let mut h = observe_harness().await;
+        append_message(&h.layout, "unobserved").await;
+        h.worker.trigger(h.mem.clone());
+        wait_for_calls(&h.calls, 1).await;
+
+        // The gate is never opened: only cancellation can end this cycle,
+        // well inside the grace period.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            h.worker.shutdown(Duration::from_secs(60)),
+        )
+        .await
+        .expect("shutdown must cancel the extraction rather than wait out the grace period");
 
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), result_rx.recv())
+            h.results.try_recv().is_err(),
+            "a cancelled cycle reports nothing"
+        );
+        assert_eq!(
+            load_recent_messages(&h.layout.recent_messages_json())
                 .await
-                .is_err(),
-            "a disabled observer with nothing to observe should never report a result"
+                .unwrap()
+                .len(),
+            1,
+            "a cancelled cycle leaves the unobserved messages for the next boot"
+        );
+        assert!(
+            tokio::fs::read_dir(h.layout.episodes_dir())
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none(),
+            "no episode was written"
         );
 
-        worker.shutdown(std::time::Duration::from_secs(1)).await;
+        h.worker.trigger(h.mem.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            h.calls.load(Ordering::SeqCst),
+            1,
+            "triggers after shutdown start nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn forced_observe_lock_waits_for_the_background_cycle() {
+        let h = observe_harness().await;
+        append_message(&h.layout, "hello").await;
+        h.worker.trigger(h.mem.clone());
+        wait_for_calls(&h.calls, 1).await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), h.worker.lock_cycle())
+                .await
+                .is_err(),
+            "a forced observe must wait while a background cycle is extracting"
+        );
+        h.gate.add_permits(1);
+        let _guard = tokio::time::timeout(Duration::from_secs(5), h.worker.lock_cycle())
+            .await
+            .expect("the lock frees once the background cycle finishes");
+    }
+
+    fn scratch_with_note(note: &str) -> TurnScratch {
+        TurnScratch {
+            applied_corrections: vec![],
+            queued_notes: vec![finding(Severity::Note, note)],
+        }
+    }
+
+    fn subconscious_trigger(
+        subconscious: Subconscious,
+        messages: Vec<Message>,
+        scratch: TurnScratch,
+    ) -> SubconsciousTrigger {
+        SubconsciousTrigger {
+            subconscious: Arc::new(subconscious),
+            learning_state: Arc::new(Mutex::new(LearningState::default())),
+            publisher: crate::bus::spawn_broker().publisher(),
+            tz: chrono_tz::UTC,
+            learning_cooldown: Duration::from_secs(60),
+            new_messages: messages,
+            correlation_id: "corr-1".to_string(),
+            scratch,
+        }
+    }
+
+    fn turn(user: &str) -> Vec<Message> {
+        vec![
+            Message::user(user),
+            Message::assistant("ok".to_string(), None),
+        ]
+    }
+
+    #[tokio::test]
+    async fn absorbing_a_newer_trigger_keeps_both_turns_and_their_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let mut waiting = subconscious_trigger(
+            Subconscious::disabled(layout.clone()),
+            turn("first"),
+            scratch_with_note("note from turn one"),
+        );
+        let mut newer = subconscious_trigger(
+            Subconscious::disabled(layout),
+            turn("second"),
+            scratch_with_note("note from turn two"),
+        );
+        newer.correlation_id = "corr-2".to_string();
+
+        waiting.absorb(newer);
+
+        let contents: Vec<&str> = waiting
+            .new_messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(contents, ["first", "ok", "second", "ok"]);
+        let notes: Vec<&str> = waiting
+            .scratch
+            .queued_notes
+            .iter()
+            .map(|f| f.instruction.as_str())
+            .collect();
+        assert_eq!(notes, ["note from turn one", "note from turn two"]);
+        assert_eq!(waiting.correlation_id, "corr-2");
+    }
+
+    #[tokio::test]
+    async fn subconscious_notes_reach_the_main_loop_for_the_next_turn() {
+        const NOTE_RESPONSE: &str = r#"{
+            "findings": [
+                {"kind": "omission", "severity": "note", "instruction": "mention the deadline next time"}
+            ]
+        }"#;
+        let dir = tempfile::tempdir().unwrap();
+        let subconscious = Subconscious::new(
+            Box::new(crate::memory::test_helpers::MockMemoryProvider::new(
+                NOTE_RESPONSE,
+            )),
+            crate::subconscious::SubconsciousConfig {
+                enabled: true,
+                ..crate::subconscious::SubconsciousConfig::default()
+            },
+            WorkspaceLayout::new(dir.path()),
+        );
+        let (result_tx, mut results) = mpsc::unbounded_channel();
+        let worker = SubconsciousWorker::new(result_tx);
+
+        worker.trigger(subconscious_trigger(
+            subconscious,
+            turn("when is it due?"),
+            TurnScratch::default(),
+        ));
+
+        let result = tokio::time::timeout(Duration::from_secs(5), results.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let PostTurnResult::SubconsciousNotes(notes) = result else {
+            panic!("expected subconscious notes");
+        };
+        assert_eq!(notes, ["mention the deadline next time"]);
+    }
+
+    #[tokio::test]
+    async fn failed_subconscious_evaluation_still_delivers_queued_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let subconscious = Subconscious::new(
+            Box::new(crate::inference::providers::null::NullProvider),
+            crate::subconscious::SubconsciousConfig {
+                enabled: true,
+                ..crate::subconscious::SubconsciousConfig::default()
+            },
+            WorkspaceLayout::new(dir.path()),
+        );
+        let (result_tx, mut results) = mpsc::unbounded_channel();
+        let worker = SubconsciousWorker::new(result_tx);
+
+        worker.trigger(subconscious_trigger(
+            subconscious,
+            turn("hi"),
+            scratch_with_note("queued mid-turn"),
+        ));
+
+        let result = tokio::time::timeout(Duration::from_secs(5), results.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let PostTurnResult::SubconsciousNotes(notes) = result else {
+            panic!("expected the queued note as a fallback");
+        };
+        assert_eq!(notes, ["queued mid-turn"]);
     }
 }

@@ -24,6 +24,10 @@ pub async fn handle_server_command(
                 tz: rt.tz,
                 publisher: rt.publisher.clone(),
             };
+            // Waits out a background cycle already in flight, so the two
+            // never observe the same recent messages.
+            let observe_worker = std::sync::Arc::clone(&rt.post_turn_observe);
+            let _cycle = observe_worker.lock_cycle().await;
             run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
         }
         "reflect" => {
