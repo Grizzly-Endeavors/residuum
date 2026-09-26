@@ -16,7 +16,7 @@ name: Claude Code
 # set. A composite action's env: block only sees the workflow env context, and
 # the action assigns CLAUDE_CODE_OAUTH_TOKEN from
 # `inputs.claude_code_oauth_token || env.CLAUDE_CODE_OAUTH_TOKEN`, which
-# overwrites the process environment when both are empty. The step below
+# overwrites the process environment when both are empty. The publish step
 # masks the runner value and writes it to $GITHUB_ENV so the action's
 # expression can read it. Do not reference secrets.* — the org is on the
 # Free plan, where org secrets are not available to private repositories,
