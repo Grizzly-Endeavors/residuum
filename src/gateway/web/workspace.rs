@@ -101,6 +101,10 @@ pub(super) struct DeleteFileQuery {
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct DeleteResponse {
     pub deleted: bool,
+    /// Checkpoint holding the workspace as it was before this delete.
+    /// `None` when that checkpoint could not be recorded; the delete still
+    /// succeeded, and the UI should not offer Undo.
+    pub checkpoint_id: Option<String>,
 }
 
 /// Request body for `POST /api/workspace/dir`.
@@ -805,11 +809,15 @@ pub(super) async fn api_workspace_raw_write(
 
 /// Checkpoint the workspace before a destructive workspace API action
 /// (delete, overwrite, move/rename with overwrite). Never blocks or fails
-/// the action — see `crate::checkpoints`.
-async fn checkpoint_before_destructive_action(state: &ConfigApiState, summary: &str) {
+/// the action — see `crate::checkpoints`. Returns the id of the checkpoint
+/// that holds the pre-action tree, or `None` when it could not be recorded.
+async fn checkpoint_before_destructive_action(
+    state: &ConfigApiState,
+    summary: &str,
+) -> Option<String> {
     state
-        .checkpoint_workspace_before_write(summary.to_string())
-        .await;
+        .checkpoint_workspace_id_before_write(summary.to_string())
+        .await
 }
 
 /// `DELETE /api/workspace/file` — delete a workspace file or directory.
@@ -881,6 +889,7 @@ pub(super) async fn api_workspace_delete(
         )
     })?;
 
+    let checkpoint_id;
     if metadata.is_dir() {
         if !query.recursive {
             return Err((
@@ -889,7 +898,8 @@ pub(super) async fn api_workspace_delete(
             ));
         }
         refuse_if_dir_holds_internal_data(&path, relative).await?;
-        checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
+        checkpoint_id =
+            checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
         tokio::fs::remove_dir_all(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -900,7 +910,8 @@ pub(super) async fn api_workspace_delete(
         if let Some(conflict) = check_conditional_write(&path, &headers).await? {
             return Ok(conflict);
         }
-        checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
+        checkpoint_id =
+            checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
         tokio::fs::remove_file(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -911,7 +922,11 @@ pub(super) async fn api_workspace_delete(
 
     signal_identity_reload(relative, &state);
 
-    Ok(Json(DeleteResponse { deleted: true }).into_response())
+    Ok(Json(DeleteResponse {
+        deleted: true,
+        checkpoint_id,
+    })
+    .into_response())
 }
 
 /// `POST /api/workspace/dir` — create a workspace directory and any missing
@@ -1975,6 +1990,58 @@ mod tests {
         .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!ws_dir.join("gone.md").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_returns_the_checkpoint_taken_before_the_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let ws_dir = state.workspace_dir.clone();
+        tokio::fs::write(ws_dir.join("gone.md"), "bye")
+            .await
+            .unwrap();
+
+        let response = api_workspace_delete(
+            Query(DeleteFileQuery {
+                path: "gone.md".to_string(),
+                recursive: false,
+            }),
+            State(state.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "delete should succeed");
+        let body: DeleteResponse = response_json(response).await;
+        let id = body
+            .checkpoint_id
+            .expect("delete should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Workspace,
+                id.clone(),
+                "gone.md".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(b"bye".as_slice()),
+            "the returned checkpoint must still contain the deleted file"
+        );
+
+        tokio::fs::write(ws_dir.join("later.txt"), "after")
+            .await
+            .unwrap();
+        let later = state
+            .checkpoint_workspace_id_before_write("later workspace write")
+            .await
+            .expect("a later checkpoint should be recorded");
+        assert_ne!(
+            later, id,
+            "the id returned for Undo stays the pre-delete checkpoint after a newer one is taken"
+        );
     }
 
     #[tokio::test]

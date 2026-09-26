@@ -50,7 +50,7 @@ The caller gives the token as `Authorization: Bearer <token>`.
 
 **Storage.** `~/.residuum/a2a-keys.toml`, mode 0600 on Unix, holds each key's name, description, a `sha256:<hex>` hash of the token, and its creation time — never the token itself. The store is unencrypted because there is nothing in it worth encrypting at rest: the hash's only job is to reject a stolen credential's replay, which it already does. `~/.residuum/a2a-keys.lock` serializes writes from the CLI, the web UI, and the running listener so none of them lose a concurrent change. Both files are write-blocked for `write_file` and `edit_file`, like the other credential stores.
 
-**Web UI:** `GET /api/a2a/keys` (metadata only), `POST /api/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/a2a/keys/{name}`. Like the rest of the config API, this is unauthenticated and meant to stay on loopback. Settings → A2A in the web UI wraps these three (see [Web UI](#web-ui) below).
+**Web UI:** `GET /api/a2a/keys` (metadata only), `POST /api/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/a2a/keys/{name}` returning `{ "revoked": true, "checkpoint_id" }`. `checkpoint_id` is the config checkpoint taken just before the revoke, or null when that checkpoint could not be recorded. Like the rest of the config API, this is unauthenticated and meant to stay on loopback. Settings → A2A in the web UI wraps these three (see [Web UI](#web-ui) below).
 
 A key name is lowercase letters, digits, and underscores, starting with a letter, at most 64 characters.
 

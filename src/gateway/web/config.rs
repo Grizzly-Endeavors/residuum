@@ -567,7 +567,9 @@ pub(super) async fn api_mcp_patch(
     // allowlist, and this write happens outside any agent turn — without
     // this it would never be checkpointed until the next turn boundary
     // happened to snapshot it as an "outside edit".
-    state.checkpoint_workspace_before_write("patch mcp.json").await;
+    state
+        .checkpoint_workspace_before_write("patch mcp.json")
+        .await;
 
     crate::util::fs::atomic_write(&mcp_path, &patched)
         .await

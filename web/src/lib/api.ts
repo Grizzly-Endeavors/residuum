@@ -410,10 +410,8 @@ export async function storeAgentKey(
   });
 }
 
-export async function deleteAgentKey(name: string): Promise<void> {
-  await apiFetchText(`/api/agent-keys/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function deleteAgentKey(name: string): Promise<string | null> {
+  return readCheckpointId(`/api/agent-keys/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 // ── A2A API wrappers ──────────────────────────────────────────────────
@@ -449,10 +447,8 @@ export async function createA2aKey(
   });
 }
 
-export async function revokeA2aKey(name: string): Promise<void> {
-  await apiFetchText(`/api/a2a/keys/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function revokeA2aKey(name: string): Promise<string | null> {
+  return readCheckpointId(`/api/a2a/keys/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 /**
@@ -556,9 +552,10 @@ export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
-/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkbenchArtifact(name: string): Promise<void> {
-  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
+/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
+export async function deleteWorkbenchArtifact(name: string): Promise<string | null> {
+  return readCheckpointId(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
@@ -602,9 +599,10 @@ export async function validateWorkspaceFile(path: string, content: string): Prom
   }
 }
 
-/** Delete a workspace file. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkspaceFile(path: string): Promise<void> {
-  await apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`, {
+/** Delete a workspace file. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
+export async function deleteWorkspaceFile(path: string): Promise<string | null> {
+  return readCheckpointId(`/api/workspace/file?path=${encodeURIComponent(path)}`, {
     method: "DELETE",
   });
 }
@@ -701,19 +699,25 @@ export async function undoCheckpoint(id: string, repo: RepoKind): Promise<UndoOu
 }
 
 /**
- * Restore `path` from the most recent checkpoint in `repo` — the pre-action
- * snapshot a destructive Settings/workspace action just took (checkpointing
- * happens synchronously before the action's own write, so it's already the
- * repo's tip by the time that action's request resolves). Used to back a
- * single-click destructive action's toast with a direct "Undo" instead of a
- * confirm step. Returns `null` (rather than throwing) if there's no
- * checkpoint to restore from, so callers can degrade to a plain toast.
+ * Restore `path` from `checkpointId`, the checkpoint the action itself
+ * reported. A newer checkpoint may have landed since (a turn ending, another
+ * write); restoring the repo's current tip would bring back the wrong tree.
  */
-export async function undoLastAction(repo: RepoKind, path: string): Promise<RestoreOutcome | null> {
-  const page = await fetchCheckpoints({ repo, limit: 1 });
-  const last = page.items[0];
-  if (!last) return null;
-  return restoreCheckpoint(last.id, repo, path);
+export async function undoLastAction(
+  checkpointId: string,
+  repo: RepoKind,
+  path: string,
+): Promise<RestoreOutcome> {
+  return restoreCheckpoint(checkpointId, repo, path);
+}
+
+/** `checkpoint_id` from a delete/revoke response, or `null` when the server
+ * recorded none (the checkpoint failed, or the field is missing). */
+async function readCheckpointId(path: string, init?: RequestInit): Promise<string | null> {
+  const body = await apiFetch<{ checkpoint_id?: unknown }>(path, init);
+  return typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
+    ? body.checkpoint_id
+    : null;
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────

@@ -13,7 +13,7 @@ use chrono::Utc;
 
 use crate::bus::Publisher;
 
-use super::backend::{GitRepo, SnapshotFile};
+use super::backend::{GitRepo, SnapshotCommit, SnapshotFile};
 use super::types::{
     ChangedPath, CheckpointContext, CheckpointDetail, CheckpointError, CheckpointPage,
     CheckpointSummary, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
@@ -156,14 +156,15 @@ impl CheckpointEngine {
         let publisher = self.publisher.clone();
         tokio::spawn(async move {
             let task_ctx = ctx.clone();
-            let result =
-                tokio::task::spawn_blocking(move || commit_workspace(&repo, &root, &task_ctx))
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(CheckpointError::Git(format!(
-                            "checkpoint task panicked: {e}"
-                        )))
-                    });
+            let result = tokio::task::spawn_blocking(move || {
+                commit_workspace(&repo, &root, &task_ctx).map(|commit| commit.recorded_id())
+            })
+            .await
+            .unwrap_or_else(|e| {
+                Err(CheckpointError::Git(format!(
+                    "checkpoint task panicked: {e}"
+                )))
+            });
             report_outcome(publisher.as_ref(), "workspace", &ctx, &result).await;
         });
     }
@@ -174,17 +175,36 @@ impl CheckpointEngine {
     /// happens-before the action, but never fails or blocks it — any
     /// error is logged and notified, then this returns regardless.
     pub async fn checkpoint_workspace_before_action(&self, ctx: CheckpointContext) {
+        let _checkpoint_id = self.checkpoint_workspace_id_before_action(ctx).await;
+    }
+
+    /// [`Self::checkpoint_workspace_before_action`], plus the id of the
+    /// checkpoint that holds the pre-action tree.
+    ///
+    /// A new checkpoint's id when the tree changed; the existing tip's id
+    /// when it already matched (that tip is the pre-action state). `None`
+    /// when recording failed, or when the repository has no commits and
+    /// nothing to record. Failure is logged and notified; the action must
+    /// still proceed.
+    #[must_use]
+    pub async fn checkpoint_workspace_id_before_action(
+        &self,
+        ctx: CheckpointContext,
+    ) -> Option<String> {
         let repo = Arc::clone(&self.workspace_repo);
         let root = self.workspace_root.clone();
         let task_ctx = ctx.clone();
-        let result = tokio::task::spawn_blocking(move || commit_workspace(&repo, &root, &task_ctx))
-            .await
-            .unwrap_or_else(|e| {
-                Err(CheckpointError::Git(format!(
-                    "checkpoint task panicked: {e}"
-                )))
-            });
-        report_outcome(self.publisher.as_ref(), "workspace", &ctx, &result).await;
+        let outcome =
+            tokio::task::spawn_blocking(move || commit_workspace(&repo, &root, &task_ctx))
+                .await
+                .unwrap_or_else(|e| {
+                    Err(CheckpointError::Git(format!(
+                        "checkpoint task panicked: {e}"
+                    )))
+                });
+        let (report, id) = id_and_report(outcome);
+        report_outcome(self.publisher.as_ref(), "workspace", &ctx, &report).await;
+        id
     }
 
     /// Checkpoint the config repository now (root config files and
@@ -216,8 +236,33 @@ impl CheckpointEngine {
     /// agent-key tools, and the `residuum secret`/`agent-keys`/`a2a keys`
     /// CLI commands (via [`Self::open_for_cli`]) alike.
     pub async fn checkpoint_config_before_write(&self, ctx: CheckpointContext) {
-        let result = self.checkpoint_config_now(&ctx);
-        report_outcome(self.publisher.as_ref(), "config", &ctx, &result).await;
+        let _checkpoint_id = self.checkpoint_config_id_before_write(ctx).await;
+    }
+
+    /// [`Self::checkpoint_config_before_write`], plus the id of the
+    /// checkpoint that holds the pre-write tree.
+    ///
+    /// A new checkpoint's id when the tree changed; the existing tip's id
+    /// when it already matched. `None` when recording failed, or when the
+    /// repository has no commits and nothing to record. Failure is logged
+    /// and notified; the write must still proceed.
+    #[must_use]
+    pub async fn checkpoint_config_id_before_write(
+        &self,
+        ctx: CheckpointContext,
+    ) -> Option<String> {
+        let (report, id) = id_and_report(self.config_snapshot(&ctx));
+        report_outcome(self.publisher.as_ref(), "config", &ctx, &report).await;
+        id
+    }
+
+    fn config_snapshot(&self, ctx: &CheckpointContext) -> Result<SnapshotCommit, CheckpointError> {
+        let files = collect_config_files(&self.config_dir);
+        let guard = self
+            .config_repo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
     }
 
     // ─── Tier 1: visibility ──────────────────────────────────────────
@@ -477,13 +522,15 @@ impl CheckpointEngine {
                 let repo = Arc::clone(&self.workspace_repo);
                 let root = self.workspace_root.clone();
                 let task_ctx = ctx.clone();
-                tokio::task::spawn_blocking(move || commit_workspace(&repo, &root, &task_ctx))
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(CheckpointError::Git(format!(
-                            "checkpoint task panicked: {e}"
-                        )))
-                    })
+                tokio::task::spawn_blocking(move || {
+                    commit_workspace(&repo, &root, &task_ctx).map(|commit| commit.recorded_id())
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    Err(CheckpointError::Git(format!(
+                        "checkpoint task panicked: {e}"
+                    )))
+                })
             }
             RepoKind::Config => self.checkpoint_config_now(&ctx),
         };
@@ -686,10 +733,24 @@ fn commit_workspace(
     repo: &Mutex<GitRepo>,
     root: &Path,
     ctx: &CheckpointContext,
-) -> Result<Option<String>, CheckpointError> {
+) -> Result<SnapshotCommit, CheckpointError> {
     let files = collect_workspace_files(root);
     let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
-    guard.commit_snapshot(&files, Utc::now(), ctx)
+    guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
+}
+
+/// Split a snapshot attempt into the "did we write a new commit" result
+/// `report_outcome` logs, and the id a caller can hand to Undo.
+fn id_and_report(
+    outcome: Result<SnapshotCommit, CheckpointError>,
+) -> (Result<Option<String>, CheckpointError>, Option<String>) {
+    match outcome {
+        Ok(commit) => {
+            let id = commit.current_id();
+            (Ok(commit.recorded_id()), id)
+        }
+        Err(error) => (Err(error), None),
+    }
 }
 
 /// Log and, on failure, publish a notice describing what happened. Called

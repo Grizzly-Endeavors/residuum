@@ -132,11 +132,12 @@
 
   async function handleRevokeKey(name: string) {
     try {
-      await revokeA2aKey(name);
+      const checkpointId = await revokeA2aKey(name);
       notifyWithUndo(
         `Revoked ${name}. It can no longer reach this agent.`,
         "config",
         "a2a-keys.toml",
+        checkpointId,
         loadKeys,
       );
       await loadKeys();

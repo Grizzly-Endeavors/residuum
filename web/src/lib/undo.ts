@@ -14,9 +14,10 @@ import { toast } from "./toast.svelte";
 import type { RepoKind } from "./types";
 
 /**
- * Show a success toast for a destructive action that just completed, with
- * a direct "Undo" that restores `path` from the checkpoint taken just
- * before it. Call this after the action's own API call resolves.
+ * Show a success toast for a destructive action that just completed.
+ * When `checkpointId` is the id the action returned, the toast carries
+ * Undo for that checkpoint. When it is null — the checkpoint failed, so
+ * there is nothing correct to restore — the toast has no Undo.
  *
  * `onRestored` runs after a successful undo, so the caller can refresh
  * whatever list or view showed the now-gone item.
@@ -25,27 +26,29 @@ export function notifyWithUndo(
   message: string,
   repo: RepoKind,
   path: string,
+  checkpointId: string | null,
   onRestored?: () => void | Promise<void>,
 ): void {
+  if (!checkpointId) {
+    toast.success(message);
+    return;
+  }
   toast.success(message, {
     label: "Undo",
     onClick: () => {
-      void runUndo(repo, path, onRestored);
+      void runUndo(checkpointId, repo, path, onRestored);
     },
   });
 }
 
 async function runUndo(
+  checkpointId: string,
   repo: RepoKind,
   path: string,
   onRestored?: () => void | Promise<void>,
 ): Promise<void> {
   try {
-    const outcome = await undoLastAction(repo, path);
-    if (!outcome) {
-      toast.error("Nothing to restore — no checkpoint was found for this.");
-      return;
-    }
+    await undoLastAction(checkpointId, repo, path);
     toast.success("Restored.");
     await onRestored?.();
   } catch (err) {
