@@ -275,6 +275,7 @@ pub(crate) async fn api_session_transcript(
             message,
             timestamp,
             visibility: Visibility::User,
+            turn_id: None,
         })
         .collect();
     Ok(Json(SessionTranscriptResponse { session, messages }))

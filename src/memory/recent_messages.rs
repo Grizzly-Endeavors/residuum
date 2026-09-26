@@ -31,6 +31,13 @@ pub struct RecentMessage {
     /// Whether this message came from a user-visible or background turn.
     #[serde(default)]
     pub visibility: Visibility,
+    /// The correlation id of the turn that produced this message (the same
+    /// id sent as `reply_to` on `turn_started`/`turn_ended`), so the web
+    /// client can associate history entries with a live turn. `None` for
+    /// messages synthesized from an episode or session transcript, where no
+    /// turn id was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 /// Load recent messages from disk.
@@ -108,6 +115,8 @@ static REWRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 ///
 /// Loads existing messages, extends with new wrapped messages, and saves atomically.
 /// The `tz` parameter determines the timezone used for the message timestamp.
+/// `turn_id` is the correlation id of the turn that produced these messages
+/// (see [`RecentMessage::turn_id`]), or `None` if they weren't produced by a turn.
 ///
 /// # Errors
 /// Returns an error if loading or saving fails.
@@ -116,6 +125,7 @@ pub async fn append_recent_messages(
     new_messages: &[Message],
     visibility: Visibility,
     tz: chrono_tz::Tz,
+    turn_id: Option<&str>,
 ) -> anyhow::Result<()> {
     if new_messages.is_empty() {
         return Ok(());
@@ -127,6 +137,7 @@ pub async fn append_recent_messages(
         message: msg.clone(),
         timestamp: now,
         visibility: visibility.clone(),
+        turn_id: turn_id.map(ToString::to_string),
     }));
     save_recent_messages(path, &existing).await
 }
@@ -169,9 +180,15 @@ mod tests {
                 address: "spawned-a".to_string(),
                 category: "spawned".to_string(),
             }));
-        append_recent_messages(&path, &[relayed], Visibility::Background, chrono_tz::UTC)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[relayed],
+            Visibility::Background,
+            chrono_tz::UTC,
+            Some("turn-1"),
+        )
+        .await
+        .unwrap();
         let loaded = load_recent_messages(&path).await.unwrap();
         let sender = loaded
             .first()
@@ -193,12 +210,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turn_id_round_trips_and_is_optional_on_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+
+        append_recent_messages(
+            &path,
+            &[sample_message("hi")],
+            Visibility::User,
+            chrono_tz::UTC,
+            Some("turn-42"),
+        )
+        .await
+        .unwrap();
+        let loaded = load_recent_messages(&path).await.unwrap();
+        assert_eq!(
+            loaded.first().and_then(|m| m.turn_id.clone()),
+            Some("turn-42".to_string()),
+            "turn_id should round-trip through save/load"
+        );
+
+        // History written before the field existed still loads, as None.
+        let legacy = r#"[{"role":"user","content":"hi","timestamp":"2026-09-20T12:00","visibility":"user"}]"#;
+        tokio::fs::write(&path, legacy).await.unwrap();
+        let legacy_loaded = load_recent_messages(&path).await.unwrap();
+        assert_eq!(
+            legacy_loaded.first().and_then(|m| m.turn_id.clone()),
+            None,
+            "a legacy record with no turn_id should deserialize as None"
+        );
+    }
+
+    #[tokio::test]
     async fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
         let msgs = vec![sample_message("hello"), sample_message("world")];
-        append_recent_messages(&path, &msgs, Visibility::User, chrono_tz::UTC)
+        append_recent_messages(&path, &msgs, Visibility::User, chrono_tz::UTC, None)
             .await
             .unwrap();
 
@@ -226,6 +275,7 @@ mod tests {
             &[sample_message("first")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -244,6 +294,7 @@ mod tests {
             &[sample_message("first")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -252,6 +303,7 @@ mod tests {
             &[sample_message("second")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -275,6 +327,7 @@ mod tests {
             &[sample_message("first")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -293,6 +346,7 @@ mod tests {
             &[sample_message("observed-1"), sample_message("observed-2")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -304,6 +358,7 @@ mod tests {
             &[sample_message("arrived-later")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -325,6 +380,7 @@ mod tests {
             &[sample_message("observed")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -337,6 +393,7 @@ mod tests {
                     &[sample_message(&format!("later-{i}"))],
                     Visibility::User,
                     chrono_tz::UTC,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -367,7 +424,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[], Visibility::User, chrono_tz::UTC)
+        append_recent_messages(&path, &[], Visibility::User, chrono_tz::UTC, None)
             .await
             .unwrap();
         assert!(
@@ -396,6 +453,7 @@ mod tests {
             &[sample_message("hello")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -423,6 +481,7 @@ mod tests {
             &[sample_message("system event")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -446,6 +505,7 @@ mod tests {
             &[sample_message("real user msg")],
             Visibility::User,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -456,6 +516,7 @@ mod tests {
             &[sample_message("heartbeat prompt")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();
@@ -482,6 +543,7 @@ mod tests {
             &[sample_message("background event")],
             Visibility::Background,
             chrono_tz::UTC,
+            None,
         )
         .await
         .unwrap();

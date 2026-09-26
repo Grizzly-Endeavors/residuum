@@ -359,6 +359,7 @@ mod tests {
                 )),
                 timestamp: chrono::Utc::now().naive_utc(),
                 visibility: Visibility::User,
+                turn_id: None,
             })
             .collect()
     }
@@ -639,6 +640,7 @@ mod tests {
             message: Message::user("test content"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         }];
 
         let prompt = build_extraction_prompt(&recent_messages, EXTRACTION_CONTENT_PROMPT);
@@ -677,6 +679,7 @@ mod tests {
             ),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         };
 
         let formatted = format_recent_message(&rm);
@@ -697,6 +700,7 @@ mod tests {
             message: Message::tool("file contents", "call_abc"),
             timestamp: chrono::Utc::now().naive_utc(),
             visibility: Visibility::User,
+            turn_id: None,
         };
 
         let formatted = format_recent_message(&rm);
@@ -716,6 +720,7 @@ mod tests {
             message: Message::user("hello"),
             timestamp,
             visibility: Visibility::User,
+            turn_id: None,
         };
 
         let formatted = format_recent_message(&rm);
