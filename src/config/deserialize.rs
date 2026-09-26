@@ -61,6 +61,8 @@ pub(crate) struct ConfigFile {
     pub(super) web_search: Option<WebSearchConfigFile>,
     /// Tracing and observability configuration.
     pub(super) tracing: Option<TracingConfigFile>,
+    /// `Agent2Agent` (A2A) protocol configuration.
+    pub(super) a2a: Option<A2aConfigFile>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).
@@ -245,8 +247,6 @@ pub(super) struct SubconsciousConfigFile {
     pub(super) mid_turn: Option<bool>,
     /// Evaluate every N tool-loop iterations.
     pub(super) every_n_iterations: Option<usize>,
-    /// Maximum mid-turn corrections injected per turn.
-    pub(super) max_interventions_per_turn: Option<usize>,
     /// Token cap for the transcript sent to the classifier.
     pub(super) max_transcript_tokens: Option<usize>,
     /// Whether the activity-triggered learning loop is enabled (opt-in, default false).
@@ -315,6 +315,22 @@ pub(super) struct TeamsConfigFile {
     pub(super) port: Option<u16>,
 }
 
+/// Raw TOML `[a2a]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct A2aConfigFile {
+    /// Whether the A2A listener runs at all.
+    pub(super) enabled: Option<bool>,
+    /// Port for the dedicated A2A protocol listener.
+    pub(super) port: Option<u16>,
+    /// Public URL other agents should use to reach this instance's A2A
+    /// interfaces (own tunnel/reverse proxy). Empty or absent when the relay
+    /// is expected to supply the public origin instead.
+    pub(super) public_url: Option<String>,
+    /// `"public"` (default) or `"private"`.
+    pub(super) visibility: Option<String>,
+}
+
 /// Raw TOML `[webhooks.<name>]` entry.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -367,6 +383,16 @@ pub(super) struct AgentConfigFile {
     pub(super) modify_mcp: Option<bool>,
     /// Whether the agent can modify notification channels.
     pub(super) modify_channels: Option<bool>,
+    /// Maximum tool-call iterations per turn before it stops itself
+    /// gracefully. Unset means unlimited. Must be at least 1 when set.
+    pub(super) max_tool_iterations: Option<usize>,
+    /// Master switch for the repeat-identical-tool-call guard.
+    pub(super) repeat_call_guard_enabled: Option<bool>,
+    /// Consecutive identical calls at which a steering note is appended.
+    pub(super) repeat_call_steer_after: Option<u32>,
+    /// Consecutive identical calls at which the turn ends instead of
+    /// running the call again.
+    pub(super) repeat_call_stop_after: Option<u32>,
 }
 
 /// Raw TOML `[idle]` section.
@@ -393,6 +419,8 @@ pub(super) struct BackgroundConfigFile {
     /// Idle timeout in minutes for non-webhook `external` sessions before
     /// they complete.
     pub(super) idle_timeout_external_minutes: Option<u64>,
+    /// Idle timeout in minutes for `artifact` sessions before they complete.
+    pub(super) idle_timeout_artifact_minutes: Option<u64>,
     /// Token floor below which a completed run with nothing staged produces
     /// no episode.
     pub(super) episode_skip_token_floor: Option<usize>,

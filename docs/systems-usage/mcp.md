@@ -17,13 +17,18 @@ Server definitions live in `config/mcp.json` (workspace-level, via `WorkspaceLay
     "hosted-search": {
       "type": "http",
       "url": "https://example.com/mcp",
-      "headers": { "Authorization": "Bearer ${API_TOKEN}" }
+      "headers": { "Authorization": "Bearer ${API_TOKEN}" },
+      "timeout_secs": 30
     }
   }
 }
 ```
 
 The loader (`crate::workspace::config::load_mcp_servers_map`, in `src/workspace/config.rs`) accepts either the Residuum-native `transport` field (`"stdio"` | `"http"`) or the Claude Code/Desktop `type` field (`"stdio"` | `"streamable-http"` | `"http"` | `"sse"`); `type` takes priority when both are present. `"sse"` is recognized but skipped with a warning (deprecated by the MCP spec), as is any unrecognized transport value. For HTTP servers, `url` is preferred over `command` as the address; a server missing both is skipped with a warning. A stdio server missing `command` is likewise skipped. None of these are hard failures — a bad entry drops that one server, not the whole file.
+
+The web UI's Settings → MCP panel edits `mcp.json` through `PATCH /api/mcp/patch` (`src/gateway/web/config.rs`, applied by `crate::workspace::mcp_patch::apply_mcp_patch`), which merges only the fields the form changed into the file already on disk rather than rewriting it from form state. A server's transport is shown and edited truthfully — HTTP servers expose `url`/`headers`, stdio servers expose `command`/`args`/`env` — and any field the form doesn't model (on a touched server or an untouched one) survives the edit. Removing a server in the form removes just that entry. An `mcp.json` that fails to parse is left untouched and the patch is refused with an error naming the file.
+
+Editing `mcp.json` through the agent's `write_file`/`edit_file` tools, the workspace editor, `POST /api/workspace/validate` (with `path: "config/mcp.json"`), or the Settings page's `PUT /api/mcp/raw` reports the same problems `load_mcp_servers_map` would skip: a JSON syntax error (with `serde_json`'s line/column), an unrecognized or deprecated (`sse`) transport, or a server missing the `url`/`command` its transport needs. The save always goes through on all of these surfaces — a diagnostic names which server won't load instead of the write being rejected. `PATCH /api/mcp/patch` is the one exception: it merges a diff into the file already on disk, so it still refuses outright when that file doesn't parse — there's nothing to patch.
 
 ## Transports
 
@@ -54,7 +59,7 @@ Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` a
 ## Consumption
 
 - **`tool_definitions()`** returns the flat union of `ToolDefinition`s from every `Running` server — this is what gets merged into the agent's available tool set. Names aren't guaranteed unique across servers or against built-ins, so a deterministic collision policy applies before this union is built: a built-in tool always wins, and among MCP servers the first-registered running one wins; the losing tool is shadowed (excluded from the union, never dispatched) and the collision is logged once at `warn`. See [`src/mcp/CLAUDE.md`](../../src/mcp/CLAUDE.md) for the implementation.
-- **`call_tool(name, args)`** finds the first `Running` server whose tool list contains `name` and routes the call to its `McpClient`. Unknown tool names return `ToolError::NotFound`; a found-but-broken client (an internal-consistency bug, not a user error) returns `ToolError::Execution` and is logged at `error`. Each call has a one-minute timeout (`TOOL_CALL_TIMEOUT`); a timeout is reported as an execution error naming the tool, server, and elapsed seconds.
+- **`call_tool(name, args)`** finds the first `Running` server whose tool list contains `name` and routes the call to its `McpClient`. Unknown tool names return `ToolError::NotFound`; a found-but-broken client (an internal-consistency bug, not a user error) returns `ToolError::Execution` and is logged at `error`. A call has no automatic cutoff by default — it runs until it finishes or the user or agent stops the turn, since `stop_agent` already interrupts an in-flight tool call immediately (the turn loop races every MCP call against the turn's stop token; see [background-tasks.md](background-tasks.md) and `agent/turn.rs::execute_tool`). Setting `timeout_secs` on a server entry in `mcp.json` (see above) opts that server's calls back into a fixed timeout: a call that runs past it fails with a plain-language error naming the tool, the server, and the configured number of seconds.
 - Tool results only preserve text content blocks (`extract_text_content` joins them with newlines); non-text blocks (e.g. images) are silently dropped from the MCP path today.
 
 ## Interaction with Other Systems

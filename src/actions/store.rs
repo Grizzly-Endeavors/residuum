@@ -30,27 +30,61 @@ impl ActionStore {
     /// `HEARTBEAT.yml`'s hot-reloaded pulses there's no repeat-tick spam to
     /// guard against here.
     ///
+    /// A file that exists but isn't valid JSON is never overwritten: its raw
+    /// bytes are moved aside to `<path>.corrupt-<unix-timestamp>` and the
+    /// store starts empty at the normal path, so the next save can't clobber
+    /// whatever was in the corrupt file. The third element of the returned
+    /// tuple names that moved-aside file when this happened, so the caller
+    /// can raise an owner-facing notice.
+    ///
     /// # Errors
-    /// Returns an error if the file exists but cannot be read or is not valid JSON.
+    /// Returns an error if the file exists but cannot be read, or is corrupt
+    /// and could not be moved aside (in which case nothing is touched and the
+    /// caller falls back to an empty in-memory store, same as before).
     #[tracing::instrument(skip_all)]
-    pub async fn load(path: impl Into<PathBuf>) -> anyhow::Result<(Self, Vec<RejectedAction>)> {
+    pub async fn load(
+        path: impl Into<PathBuf>,
+    ) -> anyhow::Result<(Self, Vec<RejectedAction>, Option<PathBuf>)> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
-            Ok(contents) => {
-                let mut actions: Vec<ScheduledAction> = serde_json::from_str(&contents)
-                    .with_context(|| {
-                        format!("failed to parse scheduled actions at {}", path.display())
+            Ok(contents) => match serde_json::from_str::<Vec<ScheduledAction>>(&contents) {
+                Ok(mut actions) => {
+                    let rejected = reject_agent_main(&mut actions);
+                    debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
+                    Ok((Self { actions, path }, rejected, None))
+                }
+                Err(parse_err) => {
+                    let moved_to = move_aside_corrupt_file(&path).await.with_context(|| {
+                        format!(
+                            "scheduled actions at {} is corrupt ({parse_err}) and could not be \
+                             moved aside",
+                            path.display()
+                        )
                     })?;
-                let rejected = reject_agent_main(&mut actions);
-                debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
-                Ok((Self { actions, path }, rejected))
-            }
+                    tracing::error!(
+                        path = %path.display(),
+                        moved_to = %moved_to.display(),
+                        error = %parse_err,
+                        "scheduled actions file is corrupt; moved aside and starting empty \
+                         rather than overwriting it"
+                    );
+                    Ok((
+                        Self {
+                            actions: Vec::new(),
+                            path,
+                        },
+                        Vec::new(),
+                        Some(moved_to),
+                    ))
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((
                 Self {
                     actions: Vec::new(),
                     path,
                 },
                 Vec::new(),
+                None,
             )),
             Err(e) => Err(e)
                 .with_context(|| format!("failed to read scheduled actions at {}", path.display())),
@@ -139,6 +173,20 @@ impl ActionStore {
         due
     }
 
+    /// Return every action whose `run_at` is at or before `now`, without
+    /// removing them from the store. The caller removes only the ones whose
+    /// spawn actually started (see [`Self::remove`]), so an action a spawn
+    /// attempt failed to publish stays here and is reconsidered due on the
+    /// next call rather than being lost.
+    #[must_use]
+    pub fn due(&self, now: DateTime<Utc>) -> Vec<ScheduledAction> {
+        self.actions
+            .iter()
+            .filter(|a| a.run_at <= now)
+            .cloned()
+            .collect()
+    }
+
     /// Path to the backing JSON file.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -207,6 +255,43 @@ pub fn rejected_actions_notice(rejected: &[RejectedAction]) -> String {
     )
 }
 
+/// Build an owner-facing notice naming the corrupt `scheduled_actions.json`
+/// file moved aside by [`ActionStore::load`], in plain language — the owner
+/// is non-technical, so this says what happened and what to do, not that
+/// JSON parsing failed.
+#[must_use]
+pub fn corrupt_actions_notice(moved_to: &Path) -> String {
+    format!(
+        "Your scheduled reminders file was damaged and couldn't be read, so I moved it aside to \
+         \"{}\" and started fresh — new scheduled reminders and actions will work normally. \
+         Anything that was scheduled before this happened will not run automatically anymore; \
+         you can look inside that file if you want to recreate any of it by hand.",
+        moved_to.display()
+    )
+}
+
+/// Move a corrupt `scheduled_actions.json` aside to `<path>.corrupt-<unix
+/// timestamp>` in the same directory, preserving its raw bytes rather than
+/// letting the next save silently overwrite them.
+///
+/// # Errors
+/// Returns an error if the rename fails (e.g. the directory isn't
+/// writable).
+async fn move_aside_corrupt_file(path: &Path) -> anyhow::Result<PathBuf> {
+    let timestamp = Utc::now().timestamp();
+    let mut dest = path.as_os_str().to_owned();
+    dest.push(format!(".corrupt-{timestamp}"));
+    let dest = PathBuf::from(dest);
+    tokio::fs::rename(path, &dest).await.with_context(|| {
+        format!(
+            "failed to move {} aside to {}",
+            path.display(),
+            dest.display()
+        )
+    })?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,7 +314,7 @@ mod tests {
     async fn load_missing_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
-        let (store, rejected) = ActionStore::load(path).await.unwrap();
+        let (store, rejected, moved_aside) = ActionStore::load(path).await.unwrap();
         assert!(
             store.list().is_empty(),
             "missing file should give empty store"
@@ -238,6 +323,7 @@ mod tests {
             rejected.is_empty(),
             "missing file should report no rejections"
         );
+        assert!(moved_aside.is_none(), "missing file was never corrupt");
     }
 
     #[tokio::test]
@@ -246,12 +332,12 @@ mod tests {
         let path = dir.path().join("scheduled_actions.json");
 
         let original = make_action("action-00000001", 60);
-        let (mut store, rejected_on_first_load) = ActionStore::load(&path).await.unwrap();
+        let (mut store, rejected_on_first_load, _) = ActionStore::load(&path).await.unwrap();
         assert!(rejected_on_first_load.is_empty());
         store.add(original.clone());
         store.save().await.unwrap();
 
-        let (loaded, rejected_on_reload) = ActionStore::load(&path).await.unwrap();
+        let (loaded, rejected_on_reload, _) = ActionStore::load(&path).await.unwrap();
         assert!(rejected_on_reload.is_empty());
         assert_eq!(loaded.list().len(), 1, "should load one action");
         assert_eq!(
@@ -281,7 +367,7 @@ mod tests {
         store.add(original.clone());
         store.save().await.unwrap();
 
-        let (loaded, _rejected) = ActionStore::load(&path).await.unwrap();
+        let (loaded, _rejected, _moved_aside) = ActionStore::load(&path).await.unwrap();
         assert_eq!(loaded.list().len(), 1);
         assert_eq!(
             loaded.list().first().unwrap(),
@@ -363,7 +449,8 @@ mod tests {
         let json = serde_json::to_string(&vec![legacy, make_action("keep-me", 120)]).unwrap();
         std::fs::write(&path, json).unwrap();
 
-        let (loaded, rejected) = ActionStore::load(&path).await.unwrap();
+        let (loaded, rejected, moved_aside) = ActionStore::load(&path).await.unwrap();
+        assert!(moved_aside.is_none(), "valid JSON was never corrupt");
         assert_eq!(
             loaded.list().len(),
             1,
@@ -398,7 +485,7 @@ mod tests {
         let json = serde_json::to_string(&vec![legacy]).unwrap();
         std::fs::write(&path, json).unwrap();
 
-        let (loaded, rejected) = ActionStore::load(&path).await.unwrap();
+        let (loaded, rejected, _moved_aside) = ActionStore::load(&path).await.unwrap();
         assert!(loaded.list().is_empty());
         assert_eq!(rejected.len(), 1, "the dropped action should be reported");
     }
@@ -441,7 +528,7 @@ mod tests {
     async fn atomic_write_no_tmp_remains() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
-        let (store, _rejected) = ActionStore::load(&path).await.unwrap();
+        let (store, _rejected, _moved_aside) = ActionStore::load(&path).await.unwrap();
         store.save().await.unwrap();
 
         assert!(path.exists(), "saved file should exist");
@@ -457,16 +544,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_json_errors() {
+    async fn malformed_json_is_moved_aside_and_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
         tokio::fs::write(&path, "not json").await.unwrap();
-        let result = ActionStore::load(&path).await;
-        assert!(result.is_err(), "malformed JSON should return error");
-        let err = result.err().unwrap();
+
+        let (store, rejected, moved_aside) = ActionStore::load(&path).await.unwrap();
         assert!(
-            err.to_string().contains(path.to_str().unwrap()),
-            "error should contain the file path"
+            store.list().is_empty(),
+            "a corrupt file should load as an empty store"
+        );
+        assert!(rejected.is_empty());
+        let moved_aside = moved_aside.expect("a corrupt file should be moved aside");
+        assert!(
+            moved_aside
+                .to_string_lossy()
+                .starts_with(&*path.to_string_lossy()),
+            "moved-aside path should be derived from the original path"
+        );
+        assert!(
+            !path.exists(),
+            "the corrupt file must no longer be at the original path"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&moved_aside).await.unwrap(),
+            "not json",
+            "the original corrupt bytes must be preserved, not discarded"
+        );
+
+        // The next save must write a fresh file at the normal path, not
+        // touch the moved-aside file again.
+        store.save().await.unwrap();
+        assert!(path.exists());
+        assert_eq!(
+            tokio::fs::read_to_string(&moved_aside).await.unwrap(),
+            "not json",
+            "a later save must never overwrite the moved-aside corrupt file"
+        );
+    }
+
+    #[test]
+    fn corrupt_actions_notice_names_the_moved_aside_file() {
+        let notice = corrupt_actions_notice(Path::new(
+            "/workspace/scheduled_actions.json.corrupt-1234567890",
+        ));
+        assert!(notice.contains("scheduled_actions.json.corrupt-1234567890"));
+        assert!(
+            !notice.to_lowercase().contains("json") || notice.contains("scheduled_actions.json"),
+            "notice should name the file, not expose raw parser jargon"
+        );
+    }
+
+    #[tokio::test]
+    async fn due_peeks_without_removing() {
+        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
+        store.add(make_action("past", -60));
+        store.add(make_action("future", 3600));
+
+        let due = store.due(Utc::now());
+        assert_eq!(due.len(), 1, "only the past action is due");
+        assert_eq!(
+            store.list().len(),
+            2,
+            "due() must not remove anything from the store"
         );
     }
 }

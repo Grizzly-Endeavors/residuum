@@ -14,7 +14,13 @@ Routing is a match on the disposition the producing agent declared. There is no 
 
 Results from agent-spawned (`spawned`) sessions never reach this router: every turn's outcome — completed, failed, cancelled, or panicked — is relayed directly to the session's **direct spawner** (main, or whichever session spawned it) through the agent-messaging system, tagged with the session's address and carrying the normal hop-count rules — see [background-tasks.md](background-tasks.md#messaging). The agent that asked for the work gets the answer, not necessarily main, and is never left simply not knowing what happened to a turn it's waiting on.
 
+Results from `artifact` sessions (started by a workbench artifact) are discarded by this router whatever their disposition, `HEARTBEAT_URGENT` included, and are never relayed to main either. Their output belongs to the artifact that started them, which reads it from the session's own stream — see [background-tasks.md](background-tasks.md#artifact-sessions). A session like that files an inbox item itself (`user_inbox_add`) when its task calls for one.
+
+Results from conversation-triggered sessions (A2A callers, and non-owner Discord/Telegram/Teams chats) are likewise discarded by this router whatever their disposition, `HEARTBEAT_URGENT` included. The session's output already went back to the conversation it came from, and its observations are merged into memory as an episode, so filing it to the inbox or a channel would duplicate content the user already saw.
+
 An urgent result with no notification channels configured still reaches the inbox. Nothing is ever dropped for want of a push channel.
+
+A failed or stopped run's summary is always empty, so its inbox item's body names what happened directly (the failure reason, or that the run was stopped) instead of being blank. A failed pulse or scheduled action also publishes its own owner-facing notice, separate from the inbox item.
 
 ### Steering it
 
@@ -28,7 +34,13 @@ No routing target injects into the agent's message feed. Two mechanisms do that 
 
 - **Agent-spawned sessions** (`subagent_spawn`, the `learner`) have every turn's outcome relayed automatically to their direct spawner — main, or the session that spawned them.
 
-Everything else reaches the agent through the inbox, which it reads with `inbox_list`.
+Everything else, except an `artifact` session's or a conversation-triggered session's results, reaches the agent through the inbox, which it reads with `inbox_list`.
+
+## Error and Degradation Notices
+
+Turn and session failures are classified into a plain-language message with a next step (bad API key, rate limiting, network problem, timeout, context limit exceeded, model unavailable, provider outage) rather than shown raw. The full technical chain travels alongside as a separate `details` field, shown in the web UI behind an expandable toggle and always in the logs — chat interfaces get the plain message only.
+
+A fallback or recovery on the main model gets one notice per transition (failing over, and coming back), never per call or per retry. A response cut off by the output-token limit gets a notice naming the limit, plus a system note in the turn's own transcript — no automatic continuation. Startup degradations (an MCP server failing, a broken skills directory, channels or the action store failing to load, memory/embedding providers unavailable) are collected and published as one grouped notice once startup finishes, instead of sitting log-only.
 
 ## Endpoints
 
@@ -53,6 +65,8 @@ Output-only channels for push delivery. Configured in `config/channels.toml`.
 | `windows` | Windows Toast notification (when running on Windows). |
 
 On macOS an urgent result posts at the `time_sensitive` interruption level so it breaks through Focus modes. Windows Toasts do not vary by urgency.
+
+Editing `config/channels.toml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports a TOML syntax error, a channel missing a required field, an unrecognized channel type, or a retired option left in place as a diagnostic alongside the save — the write always goes through rather than being rejected.
 
 ### Inbox
 

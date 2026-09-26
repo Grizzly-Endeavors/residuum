@@ -28,16 +28,22 @@ fn record_note(scratch: &Mutex<TurnScratch>, finding: Finding) {
 ///
 /// Evaluations run in detached tasks so the tool loop never waits on the
 /// classifier; a correction lands at the next interrupt drain. At most one
-/// evaluation is in flight at a time and at most
-/// `max_interventions_per_turn` corrections are injected per turn.
+/// evaluation is in flight at a time. Every `act`-severity finding across
+/// the turn is delivered as a correction — there is no per-turn cap — and
+/// each one carries a running count of how many corrections this turn has
+/// delivered so far, so the user can see mid-turn steering piling up rather
+/// than it happening invisibly.
 ///
 /// As it runs it records what it did into `scratch`, which the end-of-turn
 /// pass reads to triage rather than re-classify the same turn.
 pub struct SubconsciousWatch {
     subconscious: Arc<Subconscious>,
-    interrupt_tx: mpsc::Sender<Interrupt>,
+    interrupt_tx: mpsc::UnboundedSender<Interrupt>,
     in_flight: Arc<AtomicBool>,
-    interventions: Arc<AtomicUsize>,
+    /// Count of corrections delivered so far this turn; included in each
+    /// delivered correction's text as the only surface where subconscious
+    /// mid-turn activity is currently shown to the user.
+    corrections_delivered: Arc<AtomicUsize>,
     scratch: Arc<Mutex<TurnScratch>>,
 }
 
@@ -45,12 +51,15 @@ impl SubconsciousWatch {
     /// Create a watch for one turn, holding a sender into that turn's
     /// interrupt channel.
     #[must_use]
-    pub fn new(subconscious: Arc<Subconscious>, interrupt_tx: mpsc::Sender<Interrupt>) -> Self {
+    pub fn new(
+        subconscious: Arc<Subconscious>,
+        interrupt_tx: mpsc::UnboundedSender<Interrupt>,
+    ) -> Self {
         Self {
             subconscious,
             interrupt_tx,
             in_flight: Arc::new(AtomicBool::new(false)),
-            interventions: Arc::new(AtomicUsize::new(0)),
+            corrections_delivered: Arc::new(AtomicUsize::new(0)),
             scratch: Arc::new(Mutex::new(TurnScratch::default())),
         }
     }
@@ -67,7 +76,8 @@ impl SubconsciousWatch {
     /// Spawn a mid-turn evaluation of `transcript` if the gates allow it.
     ///
     /// Gates: mid-turn enabled, cadence (`every_n_iterations`), no evaluation
-    /// already in flight, intervention cap not reached. `transcript` should be
+    /// already in flight. There is no cap on how many corrections a turn may
+    /// receive — every `act` finding is delivered. `transcript` should be
     /// the messages of the current turn so far.
     pub fn maybe_spawn(&self, iteration: usize, transcript: Vec<Message>) {
         if !self.subconscious.mid_turn_enabled() {
@@ -75,11 +85,6 @@ impl SubconsciousWatch {
         }
         let every_n = self.subconscious.every_n_iterations();
         if iteration % every_n != every_n - 1 {
-            return;
-        }
-        if self.interventions.load(Ordering::Relaxed)
-            >= self.subconscious.max_interventions_per_turn()
-        {
             return;
         }
         // Only one evaluation in flight: a slow classifier must not pile up.
@@ -94,9 +99,8 @@ impl SubconsciousWatch {
         let subconscious = Arc::clone(&self.subconscious);
         let interrupt_tx = self.interrupt_tx.clone();
         let in_flight = Arc::clone(&self.in_flight);
-        let interventions = Arc::clone(&self.interventions);
+        let corrections_delivered = Arc::clone(&self.corrections_delivered);
         let scratch = Arc::clone(&self.scratch);
-        let max_interventions = self.subconscious.max_interventions_per_turn();
 
         crate::util::spawn_monitored("subconscious-mid-turn", async move {
             match subconscious
@@ -104,38 +108,34 @@ impl SubconsciousWatch {
                 .await
             {
                 Ok(outcome) => {
-                    // Inject the first `act` finding (subject to the per-turn
-                    // cap); record everything else — including that first
-                    // correction — so the end-of-turn pass can triage against
-                    // what already happened this turn. Learn signals are never
-                    // emitted mid-turn, so `outcome.learnings` is empty here.
-                    let mut act_injected = false;
+                    // Deliver every `act` finding as a live correction; `note`
+                    // findings are recorded for the end-of-turn triage instead.
+                    // Learn signals are never emitted mid-turn, so
+                    // `outcome.learnings` is empty here.
                     for finding in outcome.findings {
-                        let deliver_now = finding.severity == Severity::Act
-                            && !act_injected
-                            && interventions.fetch_add(1, Ordering::AcqRel) < max_interventions;
+                        if finding.severity != Severity::Act {
+                            record_note(&scratch, finding);
+                            continue;
+                        }
 
-                        if deliver_now {
-                            act_injected = true;
-                            let content = format!(
-                                "[Subconscious] Course correction for the work in progress:\n{}",
-                                finding.instruction
+                        let count = corrections_delivered.fetch_add(1, Ordering::AcqRel) + 1;
+                        let content = format!(
+                            "[Subconscious] Course correction #{count} this turn:\n{}",
+                            finding.instruction
+                        );
+                        if interrupt_tx.send(Interrupt::Subconscious(content)).is_ok() {
+                            tracing::debug!(
+                                correction_number = count,
+                                "delivered subconscious mid-turn correction"
                             );
-                            if interrupt_tx
-                                .try_send(Interrupt::Subconscious(content))
-                                .is_ok()
-                            {
-                                record_applied(&scratch, finding.instruction);
-                            } else {
-                                // The turn already ended; the correction never
-                                // reached the agent. Hand it to the end-of-turn
-                                // pass as a queued note instead of losing it.
-                                tracing::debug!(
-                                    "turn ended before subconscious correction could be injected"
-                                );
-                                record_note(&scratch, finding);
-                            }
+                            record_applied(&scratch, finding.instruction);
                         } else {
+                            // The turn already ended; the correction never
+                            // reached the agent. Hand it to the end-of-turn
+                            // pass as a queued note instead of losing it.
+                            tracing::debug!(
+                                "turn ended before subconscious correction could be injected"
+                            );
                             record_note(&scratch, finding);
                         }
                     }
@@ -166,8 +166,8 @@ mod tests {
     fn make_watch(
         response: &str,
         config: SubconsciousConfig,
-    ) -> (SubconsciousWatch, mpsc::Receiver<Interrupt>) {
-        let (tx, rx) = mpsc::channel(8);
+    ) -> (SubconsciousWatch, mpsc::UnboundedReceiver<Interrupt>) {
+        let (tx, rx) = mpsc::unbounded_channel();
         let sub = Arc::new(Subconscious::new(
             Box::new(MockMemoryProvider::new(response)),
             config,
@@ -264,28 +264,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn intervention_cap_limits_corrections() {
-        let (watch, mut rx) = make_watch(
-            ACT_RESPONSE,
-            SubconsciousConfig {
-                max_interventions_per_turn: 1,
-                ..enabled_config()
-            },
-        );
+    async fn every_correction_is_delivered_with_no_cap() {
+        // There is no per-turn cap: a second evaluation's `act` finding is
+        // still delivered live, not demoted to a note.
+        let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
 
         watch.maybe_spawn(0, transcript());
         let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
+            .unwrap()
             .unwrap();
-        assert!(first.is_some(), "first correction should be injected");
+        let Interrupt::Subconscious(first_content) = first else {
+            unreachable!("expected a subconscious interrupt")
+        };
+        assert!(
+            first_content.contains("#1"),
+            "first correction should be numbered #1, got: {first_content}"
+        );
 
-        // Wait for in_flight to clear, then try again — the cap must block it.
+        // Wait for in_flight to clear, then evaluate again.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         watch.maybe_spawn(1, transcript());
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let Interrupt::Subconscious(second_content) = second else {
+            unreachable!("expected a subconscious interrupt")
+        };
         assert!(
-            rx.try_recv().is_err(),
-            "intervention cap should block the second correction"
+            second_content.contains("#2"),
+            "second correction should be delivered and numbered #2, not capped, got: {second_content}"
+        );
+
+        let scratch = watch.scratch();
+        let s = scratch.lock().unwrap();
+        assert_eq!(
+            s.applied_corrections.len(),
+            2,
+            "both corrections should be recorded as applied"
         );
     }
 
@@ -344,7 +361,7 @@ mod tests {
         drop(rx);
         watch.maybe_spawn(0, transcript());
         // Give the spawned task time to run; spawn_monitored would log a panic,
-        // and the test harness would surface an abort if try_send panicked.
+        // and the test harness would surface an abort if send panicked.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }

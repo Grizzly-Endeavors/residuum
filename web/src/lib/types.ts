@@ -15,9 +15,18 @@ export type {
   SessionRunStatus,
   SessionState,
   SessionSummary,
+  SessionUsageTotals,
   WorkbenchInfo,
   WorkbenchRelayOrigins,
-  WorkbenchToolSummary,
+  ArtifactSummary,
+  WorkspaceChange,
+  WorkspaceChangeKind,
+  WorkspaceResyncReason,
+  PulseOverlap,
+  PulseInfo,
+  ActionInfo,
+  ScheduledCurrentRun,
+  ScheduledRunOutcome,
 } from "./generated/protocol";
 
 // Local aliases for use within this file
@@ -67,7 +76,7 @@ export interface RecentMessage {
 export interface AgentSender {
   /** Sender's address (`main` or a session address). */
   address: string;
-  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`). */
+  /** Sender's category label (`main`, `scheduled`, `external`, `spawned`, `artifact`). */
   category: string;
 }
 
@@ -101,6 +110,10 @@ export type ChatHistorySegment = RecentHistorySegment | EpisodeHistorySegment;
 
 export interface StatusResponse {
   mode: "setup" | "running";
+  /** This build's version, the same string the workbench SDK exposes as `residuum.version`. */
+  version: string;
+  /** Feature ids this build supports, the same list the workbench SDK exposes as `residuum.features`. */
+  features: string[];
 }
 
 // ── Setup wizard types ──────────────────────────────────────────────
@@ -131,9 +144,18 @@ export interface BackgroundModelConfig {
 
 export interface McpServerEntry {
   name: string;
+  /** Defaults to `"stdio"` when absent (e.g. entries from the setup wizard). */
+  transport?: "stdio" | "http";
+  /** stdio only: the executable to spawn. */
   command: string;
+  /** stdio only. */
   args: string[];
+  /** stdio only. */
   env: Record<string, string>;
+  /** http only: the server's URL. */
+  url?: string;
+  /** http only. */
+  headers?: Record<string, string>;
 }
 
 export interface McpRequiredInput {
@@ -189,9 +211,34 @@ export interface SecretResponse {
   reference: string;
 }
 
+/** How serious a diagnostic is: `error` means the affected file, entry, or
+ * pulse won't load or run until fixed; `warning` means it still works but is
+ * worth a second look (a deprecated field, say). */
+export type DiagnosticSeverity = "error" | "warning";
+
+/** Where in the file a diagnostic applies. A parser that reports a position
+ * gives `line` or `line_column`; a problem found only after parsing (no
+ * source position to point at) gives `path`, a key path like
+ * `mcpServers.filesystem` or `pulses.morning-check`. */
+export type DiagnosticLocation =
+  | { kind: "line"; line: number }
+  | { kind: "line_column"; line: number; column: number }
+  | { kind: "path"; path: string };
+
+/** One problem found in a strictly-parsed file (config.toml, providers.toml,
+ * config/channels.toml, config/mcp.json, config/a2a.json, HEARTBEAT.yml, a
+ * skill's SKILL.md frontmatter) — see `POST /api/workspace/validate` and the
+ * `diagnostics` field on write/move/save responses. */
+export interface Diagnostic {
+  severity: DiagnosticSeverity;
+  message: string;
+  location?: DiagnosticLocation;
+}
+
 export interface ValidateResponse {
   valid: boolean;
   error?: string;
+  diagnostics?: Diagnostic[];
 }
 
 // ── Settings types ───────────────────────────────────────────────────
@@ -202,9 +249,21 @@ export type SettingsSection =
   | "memory"
   | "integrations"
   | "mcp"
-  | "agent-keys";
+  | "agent-keys"
+  | "a2a";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
+
+export interface RollbackNoticeResponse {
+  attempted_version: string;
+  reason: string;
+  at: string;
+}
+
+export interface UnverifiedUpdateResponse {
+  version: string;
+  at: string;
+}
 
 export interface UpdateStatusResponse {
   current: string;
@@ -212,6 +271,10 @@ export interface UpdateStatusResponse {
   update_available: boolean;
   last_checked: string | null;
   checking: boolean;
+  /** Present when the most recent restart rolled back instead of completing. */
+  rollback_notice: RollbackNoticeResponse | null;
+  /** Present when the installed update had no checksum to check it against. */
+  unverified_update: UnverifiedUpdateResponse | null;
 }
 
 export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
@@ -221,6 +284,8 @@ export interface CloudStatusResponse {
   user_id: string | null;
   has_token: boolean;
   enabled: boolean;
+  /** True when this response was served to a browser viewing the gateway through the tunnel. */
+  viewed_via_tunnel: boolean;
 }
 
 export interface SettingsProviderEntry {
@@ -277,6 +342,8 @@ export interface AgentKeysListResponse {
 export interface SetAgentKeyResponse {
   name: string;
   env_var: string;
+  /** Present when the value is short enough that redaction becomes unreliable; the key is stored either way. */
+  warning?: string;
 }
 
 export interface SecretsListResponse {
@@ -287,12 +354,94 @@ export interface DeleteSecretResponse {
   deleted: boolean;
 }
 
+// ── A2A types ────────────────────────────────────────────────────────
+
+/** How this agent is reachable over A2A, and any live problem with it. */
+export interface A2aStatusResponse {
+  enabled: boolean;
+  port: number;
+  visibility: "public" | "private";
+  /** This agent's own tunnel/reverse proxy origin, or null when none is set. */
+  public_url: string | null;
+  /** Whether something is currently answering on the A2A port. */
+  listener_running: boolean;
+  /** Plain-language problem with the workspace agent card, or null if it's fine. */
+  card_error: string | null;
+}
+
+/** One caller key other agents can present to reach this one. Never carries the token. */
+export interface A2aKeyInfo {
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+export interface A2aKeysListResponse {
+  keys: A2aKeyInfo[];
+}
+
+/** Response from creating a caller key — the token is shown only here, once. */
+export interface CreateA2aKeyResponse {
+  name: string;
+  token: string;
+}
+
+/** One skill this agent (or a remote agent's card) advertises. */
+export interface A2aCardSkill {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+/** The fields of the served Agent Card this settings page shows a preview of. */
+export interface A2aAgentCard {
+  name: string;
+  description: string;
+  skills: A2aCardSkill[];
+}
+
+export type A2aAgentStatus = "pending" | "ok" | "error";
+
+/** A remote agent listed in `config/a2a.json`, or discovered as a sibling instance. */
+export interface A2aRemoteAgent {
+  name: string;
+  url: string;
+  source: "config" | "sibling";
+  status: A2aAgentStatus;
+  error: string | null;
+  card: A2aAgentCard | null;
+}
+
 // ── Workspace types ─────────────────────────────────────────────────
 
 export interface WorkspaceEntry {
   name: string;
   entry_type: "file" | "directory";
   size: number | null;
+  modified: number;
+  version: string;
+}
+
+/** Response from `PUT /api/workspace/file` and `PUT /api/workspace/raw`.
+ * `saved` is always `true` — an invalid strictly-parsed file (HEARTBEAT.yml,
+ * say) is still written; `diagnostics` names what's wrong with it instead of
+ * the save being rejected. */
+export interface WorkspaceWriteResponse {
+  saved: boolean;
+  version: string;
+  diagnostics?: Diagnostic[];
+}
+
+/** Response from `POST /api/workspace/move`. */
+export interface WorkspaceMoveResponse {
+  moved: boolean;
+  version: string | null;
+  diagnostics?: Diagnostic[];
+}
+
+/** Response from `POST /api/workspace/validate`. */
+export interface WorkspaceValidateResponse {
+  diagnostics: Diagnostic[];
 }
 
 // ── Feed items (UI rendering) ────────────────────────────────────────
@@ -383,6 +532,8 @@ export interface StatusFeedItem extends FeedItemBase {
   kind: "status";
   tone: "info" | "error";
   content: string;
+  /** Full technical detail behind an expandable toggle, when there is one. */
+  details?: string;
 }
 
 export type FeedItem =

@@ -2,18 +2,20 @@
 
 use anyhow::Context as _;
 use std::sync::Arc;
+#[cfg(test)]
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::context::{MemoryContext, PromptContext, SkillsContext};
 use crate::agent::hop::HopCounter;
+#[cfg(test)]
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
-use crate::inference::{CompletionOptions, InferenceProvider, Message, MessageSender};
+use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
 use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -45,6 +47,10 @@ pub(crate) enum TurnKickoff {
         /// inbound chat message. `None` for every other trigger, which keeps
         /// the original single-message rendering (no attribution line).
         sender: Option<MessageSender>,
+        /// Images attached to the triggering message, for a
+        /// conversation-triggered spawn or resume. Empty for every other
+        /// trigger.
+        images: Vec<ImageData>,
     },
     /// A later turn, started because another agent's message reached this
     /// session while it was idle.
@@ -75,6 +81,7 @@ impl TurnKickoff {
                 prompt,
                 context,
                 sender: None,
+                images,
                 ..
             } => {
                 // No sender: preserve the original single-message rendering
@@ -85,19 +92,31 @@ impl TurnKickoff {
                     parts.push(ctx);
                 }
                 parts.push(prompt);
-                vec![Message::user(parts.join("\n\n"))]
+                let text = parts.join("\n\n");
+                let user = if images.is_empty() {
+                    Message::user(text)
+                } else {
+                    Message::user_with_images(text, images)
+                };
+                vec![user]
             }
             Self::Initial {
                 prompt,
                 context,
                 sender: Some(sender),
+                images,
                 ..
             } => {
                 let mut msgs = Vec::new();
                 if let Some(ctx) = context {
                     msgs.push(Message::system(ctx));
                 }
-                msgs.push(Message::user(prompt).with_sender(Some(sender)));
+                let user = if images.is_empty() {
+                    Message::user(prompt)
+                } else {
+                    Message::user_with_images(prompt, images)
+                };
+                msgs.push(user.with_sender(Some(sender)));
                 msgs
             }
             Self::AgentMessage(msg) => vec![msg.to_history_message()],
@@ -116,6 +135,13 @@ pub struct SubAgentResources {
     pub(crate) skill_state: SharedSkillState,
     pub(crate) identity: IdentityFiles,
     pub(crate) options: CompletionOptions,
+    /// Maximum tool-call iterations for this session's turns before the turn
+    /// stops itself gracefully. `None` means unlimited — see
+    /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`].
+    pub(crate) max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call — see
+    /// [`crate::config::AgentAbilitiesConfig::repeat_call_guard`].
+    pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
     /// Formatted skill index for the system prompt (built at fork time).
     pub(crate) skills_index: Option<String>,
     /// Snapshot of the global observation log, taken at fork time.
@@ -137,6 +163,44 @@ pub struct SubAgentResources {
     /// `message_agent`/`subagent_spawn` tools (see
     /// [`super::types::SubAgentBuildConfig::hop_counter`]).
     pub(crate) hop_counter: HopCounter,
+}
+
+/// Build an isolated `SkillState` for a new sub-agent, cloned from
+/// `main_skill_state`'s index and dirs, with `skill` (if any) activated up
+/// front so its body renders as the sub-agent's role instructions through
+/// the normal active-skill path. Also returns the formatted skill index for
+/// the system prompt. Split out of [`build_subagent_resources`] to keep that
+/// function's line count down.
+///
+/// # Errors
+/// Returns an error if `skill` names a skill that cannot be resolved or
+/// read — a session without the instructions that define its job is not
+/// worth running, so the spawn fails instead.
+async fn prepare_session_skill_state(
+    main_skill_state: &SharedSkillState,
+    skill: Option<&str>,
+) -> anyhow::Result<(SharedSkillState, Option<String>)> {
+    let (cloned_skill_index, skill_dirs) = {
+        let guard = main_skill_state.lock().await;
+        (guard.index().clone(), guard.dirs().to_vec())
+    };
+    let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
+
+    if let Some(name) = skill {
+        let mut guard = skill_state.lock().await;
+        guard
+            .activate(name)
+            .await
+            .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
+    }
+
+    let skills_index = {
+        let guard = skill_state.lock().await;
+        let idx = guard.format_index_for_prompt();
+        if idx.is_empty() { None } else { Some(idx) }
+    };
+
+    Ok((skill_state, skills_index))
 }
 
 /// Build isolated session resources from the main agent's shared state.
@@ -163,8 +227,11 @@ pub async fn build_subagent_resources(
 ) -> anyhow::Result<SubAgentResources> {
     let SubAgentBuildConfig {
         workspace_layout,
+        config_dir,
         identity,
         options,
+        max_tool_iterations,
+        repeat_call_guard,
         tz,
         skill,
         observations,
@@ -182,6 +249,8 @@ pub async fn build_subagent_resources(
         own_depth,
         subagent_depth_cap,
         session_category,
+        trigger,
+        conversation_target,
         messenger,
         hop_counter,
         tracing_service,
@@ -190,36 +259,16 @@ pub async fn build_subagent_resources(
         tools_path,
         path_policy,
         agent_keys,
+        a2a_hub,
+        a2a_tracker,
+        checkpoints,
     } = config;
 
-    // Clone skill index and dirs for an isolated SkillState (no active skills)
-    let (cloned_skill_index, skill_dirs) = {
-        let guard = main_skill_state.lock().await;
-        (guard.index().clone(), guard.dirs().to_vec())
-    };
-    let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
-
-    // Activate the requested skill up front so its body renders as this
-    // sub-agent's role instructions through the normal active-skill path.
-    // A name that doesn't resolve fails the spawn rather than silently
-    // running a sub-agent without the instructions that define its job.
-    if let Some(name) = &skill {
-        let mut guard = skill_state.lock().await;
-        guard
-            .activate(name)
-            .await
-            .with_context(|| format!("failed to activate skill '{name}' for sub-agent"))?;
-    }
+    let (skill_state, skills_index) =
+        prepare_session_skill_state(main_skill_state, skill.as_deref()).await?;
 
     // Fresh file tracker (tracks reads within this sub-agent turn only)
     let tracker = FileTracker::new_shared();
-
-    // Build the formatted index for the system prompt
-    let skills_index = {
-        let guard = skill_state.lock().await;
-        let idx = guard.format_index_for_prompt();
-        if idx.is_empty() { None } else { Some(idx) }
-    };
 
     let tools = ToolRegistry::build_subagent_registry(SubagentToolDeps {
         tracker,
@@ -229,6 +278,8 @@ pub async fn build_subagent_resources(
         skill_state: Arc::clone(&skill_state),
         tz,
         hybrid_searcher,
+        workspace_dir: workspace_layout.root().to_path_buf(),
+        config_dir,
         episodes_dir: workspace_layout.episodes_dir(),
         sessions_dir: workspace_layout.sessions_dir(),
         agent_inbox_dir: workspace_layout.agent_inbox_dir(),
@@ -244,14 +295,21 @@ pub async fn build_subagent_resources(
         own_depth,
         depth_cap: subagent_depth_cap,
         session_category: session_category.as_str().to_string(),
+        trigger,
+        conversation_target,
         messenger,
         hop_counter: hop_counter.clone(),
         tracing_service,
         tracing_client_context,
         web_search_backend,
+        a2a_hub,
+        a2a_tracker,
+        checkpoints,
     });
 
     Ok(SubAgentResources {
+        max_tool_iterations,
+        repeat_call_guard,
         provider,
         tools,
         mcp_registry,
@@ -303,12 +361,15 @@ pub(crate) struct TurnExecution<'a> {
     /// `execute_turn`) so the run's transcript survives a crash mid-turn in
     /// the session store.
     pub(crate) transcript_sink: Option<&'a dyn crate::agent::turn::TranscriptSink>,
+    /// Where this turn's model-call usage accumulates, for the `SessionView`
+    /// footer. `None` for a turn that doesn't track session-level totals.
+    pub(crate) usage_sink: Option<&'a dyn crate::agent::usage::UsageSink>,
     /// The run's own long-lived interrupt channel: draining it is what
     /// delivers an agent message to a *running* turn at its next tool-call
     /// boundary. Between turns, the caller drains the same channel itself to
     /// decide whether to wake for another turn (see
     /// `crate::background::runtime`).
-    pub(crate) interrupt_rx: &'a mut mpsc::Receiver<Interrupt>,
+    pub(crate) interrupt_rx: &'a mut dyn crate::agent::interrupt::InterruptSource,
 }
 
 /// Execute one turn of a session's run.
@@ -347,6 +408,7 @@ pub(crate) async fn execute_subagent(
     let TurnExecution {
         stop_token,
         transcript_sink,
+        usage_sink,
         interrupt_rx,
     } = turn;
     // Build skills context from this session's isolated skill state
@@ -384,8 +446,11 @@ pub(crate) async fn execute_subagent(
         mcp_registry: &resources.mcp_registry,
         identity: &resources.identity,
         options: &resources.options,
+        max_tool_iterations: resources.max_tool_iterations,
+        repeat_call_guard: resources.repeat_call_guard,
         stop_token,
         transcript_sink,
+        usage_sink,
         hop_counter: &resources.hop_counter,
     };
 
@@ -472,6 +537,7 @@ mod tests {
             context: context.map(str::to_string),
             hop_count: 0,
             sender: None,
+            images: Vec::new(),
         }
     }
 
@@ -500,6 +566,8 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(MockSubAgentProvider {
                 response: response.to_string(),
             }),
@@ -533,6 +601,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -556,6 +625,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -594,6 +664,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -629,6 +700,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -665,12 +737,14 @@ mod tests {
                 context: None,
                 hop_count: 0,
                 sender: Some(sample_sender()),
+                images: Vec::new(),
             },
             &mut recent_messages,
             &resources,
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -699,12 +773,14 @@ mod tests {
                 context: Some("[14:00] Sam: build is red".to_string()),
                 hop_count: 0,
                 sender: Some(sample_sender()),
+                images: Vec::new(),
             },
             &mut recent_messages,
             &resources,
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -720,6 +796,46 @@ mod tests {
         assert_eq!(context.content, "[14:00] Sam: build is red");
         assert_eq!(user.role, crate::inference::Role::User);
         assert_eq!(user.content, "thoughts?");
+    }
+
+    #[tokio::test]
+    async fn initial_kickoff_with_images_attaches_them_to_the_user_message() {
+        // Regression test: a conversation spawn's or resume's first turn
+        // must not silently drop images attached to the triggering message.
+        let resources = make_resources("ack");
+        let mut recent_messages = RecentMessages::new();
+        let mut interrupt_rx = dead_interrupt_rx();
+        let image = ImageData {
+            media_type: "image/png".to_string(),
+            data: "base64-data".to_string(),
+        };
+
+        execute_subagent(
+            &test_identity("run-conv-initial-images"),
+            TurnKickoff::Initial {
+                prompt: "what's in this screenshot?".to_string(),
+                context: None,
+                hop_count: 0,
+                sender: None,
+                images: vec![image.clone()],
+            },
+            &mut recent_messages,
+            &resources,
+            TurnExecution {
+                stop_token: &CancellationToken::new(),
+                transcript_sink: None,
+                usage_sink: None,
+                interrupt_rx: &mut interrupt_rx,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let first = recent_messages.messages().first().unwrap();
+        assert_eq!(first.content, "what's in this screenshot?");
+        assert_eq!(first.images.len(), 1);
+        assert_eq!(first.images.first().unwrap().data, image.data);
     }
 
     #[tokio::test]
@@ -754,6 +870,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -782,8 +899,8 @@ mod tests {
         // run's existing turn.
         let resources = make_resources("wrapping up");
 
-        let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Interrupt::AgentMessage(AgentMessageEvent {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        tx.send(Interrupt::AgentMessage(AgentMessageEvent {
             from: crate::bus::SessionAddress::from("main"),
             from_category: "main".to_string(),
             content: "any updates?".to_string(),
@@ -800,6 +917,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut rx,
             },
             None,
@@ -828,8 +946,8 @@ mod tests {
         // via the shared `execute_turn` interrupt draining.
         let resources = make_resources("wrapping up");
 
-        let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Interrupt::UserMessage(InboundMessage {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
+        tx.send(Interrupt::UserMessage(InboundMessage {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -857,6 +975,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut rx,
             },
             None,
@@ -905,6 +1024,8 @@ mod tests {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(CapturingProvider {
                 response: "done".to_string(),
                 seen: Arc::clone(&seen),
@@ -939,6 +1060,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -1027,6 +1149,8 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(ToolCallThenTextProvider {
                 call_count: std::sync::atomic::AtomicUsize::new(0),
             }),
@@ -1075,6 +1199,7 @@ mod tests {
             TurnExecution {
                 stop_token: &CancellationToken::new(),
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             Some(ConversationOutput {
@@ -1144,6 +1269,8 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1172,6 +1299,7 @@ mod tests {
             TurnExecution {
                 stop_token: &stop_token,
                 transcript_sink: None,
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,
@@ -1216,6 +1344,8 @@ mod tests {
         let mcp_registry = McpRegistry::new_shared();
         let (layout, observer, merge_writer) = test_memory_extras();
         let resources = SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(BlockingProvider),
             tools: ToolRegistry::new(),
             mcp_registry,
@@ -1253,6 +1383,7 @@ mod tests {
             TurnExecution {
                 stop_token: &stop_token,
                 transcript_sink: Some(&sink),
+                usage_sink: None,
                 interrupt_rx: &mut interrupt_rx,
             },
             None,

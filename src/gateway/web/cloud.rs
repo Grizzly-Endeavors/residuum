@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::config::secrets::SecretStore;
 use crate::gateway::types::ReloadSignal;
-use crate::tunnel::TunnelStatus;
+use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
 
 /// Shared state for cloud API endpoints.
 #[derive(Clone)]
@@ -28,11 +28,18 @@ pub(crate) struct CloudStatusResponse {
     user_id: Option<String>,
     has_token: bool,
     enabled: bool,
+    /// Whether this response is being served to a browser that's viewing
+    /// the gateway through the tunnel rather than directly. The web UI uses
+    /// this to hide the disconnect control: disconnecting over the tunnel
+    /// is refused server-side (see `gateway::remote_control_guard`), so a
+    /// remote viewer should never see a button that can't work.
+    viewed_via_tunnel: bool,
 }
 
 /// `GET /api/cloud/status` — return current tunnel status.
 pub(crate) async fn api_cloud_status(
     State(state): State<CloudApiState>,
+    headers: HeaderMap,
 ) -> Json<CloudStatusResponse> {
     let tunnel_status = state.tunnel_status_rx.borrow().clone();
 
@@ -49,11 +56,16 @@ pub(crate) async fn api_cloud_status(
         Err(_) => (false, false),
     };
 
+    let viewed_via_tunnel = headers
+        .get(TUNNEL_NONCE_HEADER)
+        .is_some_and(|v| v.as_bytes() == tunnel_nonce().as_bytes());
+
     Json(CloudStatusResponse {
         status,
         user_id,
         has_token,
         enabled,
+        viewed_via_tunnel,
     })
 }
 
@@ -390,5 +402,61 @@ token = "secret:discord"
         assert!(result.contains("[gateway]"));
         assert!(result.contains("[discord]"));
         assert!(result.contains("enabled = false"));
+    }
+
+    fn test_state() -> CloudApiState {
+        let (reload_tx, _reload_rx) = watch::channel(ReloadSignal::None);
+        let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
+        CloudApiState {
+            config_dir: std::env::temp_dir(),
+            reload_tx,
+            tunnel_status_rx,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    fn status_router() -> axum::Router {
+        axum::Router::new()
+            .route("/api/cloud/status", axum::routing::get(api_cloud_status))
+            .with_state(test_state())
+    }
+
+    #[tokio::test]
+    async fn cloud_status_local_request_is_not_marked_as_tunnel() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let req = axum::http::Request::get("/api/cloud/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = status_router().oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed.get("viewed_via_tunnel"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_status_tunnel_forwarded_request_is_marked_as_tunnel() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let req = axum::http::Request::get("/api/cloud/status")
+            .header(TUNNEL_NONCE_HEADER, tunnel_nonce())
+            .body(Body::empty())
+            .unwrap();
+        let resp = status_router().oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed.get("viewed_via_tunnel"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 }

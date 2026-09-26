@@ -9,14 +9,23 @@
 //!   `AgentMessenger` from the session runtime (see
 //!   `crate::background::runtime::relay_result_to_spawner`), not through this
 //!   router
+//! - artifact-started (`artifact` sessions) → discard; their output reaches
+//!   the artifact that started them through the session stream, and is never
+//!   filed to the inbox or pushed to notification channels on its own
+//! - conversation-started (`external` sessions with `EventTrigger::Conversation`,
+//!   i.e. A2A callers and non-owner Discord/Telegram/Teams chats) → discard;
+//!   the session's output already went back to the conversation it came from,
+//!   and its observations are merged into memory as an episode, so filing it
+//!   to the inbox or a notification channel would be pure noise
 //! - `Normal` → inbox
 //! - `Urgent` → inbox and every configured notification channel
 
 use tokio::task::JoinHandle;
 
 use crate::bus::{
-    AgentResultEvent, BusHandle, EndpointRegistry, EventTrigger, NotificationEvent, Publisher,
-    ResultDisposition, Subscriber, topics,
+    AgentResultEvent, AgentResultStatus, BusHandle, EndpointRegistry, EventTrigger, NoticeEvent,
+    NotificationEvent, NotifyName, Publisher, ResultDisposition, SYSTEM_CHANNEL, Subscriber,
+    topics,
 };
 
 /// Spawn the notification router as a bus subscriber.
@@ -87,6 +96,26 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
         return;
     }
 
+    // An `artifact` session's output belongs to the artifact that started
+    // it, which follows the session's own stream. Filing it to the inbox or
+    // notifying on it would surface work the user started from a page as if
+    // the agent had produced it unprompted.
+    if matches!(event.source, EventTrigger::Artifact(_)) {
+        tracing::trace!("artifact session result: stays with its artifact, nothing to route");
+        return;
+    }
+
+    // A `conversation` session's output already went back to the conversation
+    // it came from, and its observations are merged into memory as an
+    // episode. Filing it to the inbox or notifying on it would surface the
+    // same content twice — once where it belongs, once as manufactured noise.
+    if matches!(event.source, EventTrigger::Conversation) {
+        tracing::trace!(
+            "conversation session result: already delivered to its conversation, nothing to route"
+        );
+        return;
+    }
+
     tracing::info!(
         source = %event.source,
         disposition = ?event.disposition,
@@ -97,6 +126,50 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     let targets = delivery_targets(&router.endpoint_registry, urgent);
     tracing::info!(targets = ?targets, urgent, "delivering result");
     publish_to_targets(event, &targets, urgent, &router.publisher).await;
+
+    // A failed pulse or scheduled action gets its own owner-facing notice —
+    // separate from the inbox item above — since those are easy to miss
+    // amid routine pulse chatter. Scoped to Pulse/Action: a webhook-
+    // triggered `external` run also reaches this point, but has no
+    // "scheduled" framing the owner would recognize the same way.
+    if matches!(event.status, AgentResultStatus::Failed { .. })
+        && matches!(event.source, EventTrigger::Pulse | EventTrigger::Action)
+    {
+        publish_failed_scheduled_run_notice(event, &router.publisher).await;
+    }
+}
+
+/// Publish an owner-facing notice for a pulse or scheduled action run that
+/// failed, naming what failed and why in plain language.
+async fn publish_failed_scheduled_run_notice(event: &AgentResultEvent, publisher: &Publisher) {
+    let AgentResultStatus::Failed { error, .. } = &event.status else {
+        return;
+    };
+    let kind = match event.source {
+        EventTrigger::Pulse => "pulse",
+        EventTrigger::Action => "scheduled action",
+        // The caller only reaches here for Pulse/Action; every other
+        // trigger keeps a generic label rather than a wildcard match, so a
+        // future trigger variant doesn't silently fall through unnoticed.
+        EventTrigger::Agent
+        | EventTrigger::Webhook(_)
+        | EventTrigger::Conversation
+        | EventTrigger::Artifact(_) => "scheduled run",
+    };
+    let name = event
+        .source_label
+        .split_once(':')
+        .map_or(event.source_label.as_str(), |(_, name)| name);
+    let message = format!("Your {kind} \"{name}\" failed and didn't finish its run: {error}");
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message },
+        )
+        .await
+    {
+        tracing::warn!(source_label = %event.source_label, error = %e, "failed to publish failed-scheduled-run notice");
+    }
 }
 
 /// Inbox always; every configured notification channel as well when urgent.
@@ -115,6 +188,37 @@ fn delivery_targets(registry: &EndpointRegistry, urgent: bool) -> Vec<String> {
 
 const INBOX_TARGET: &str = "inbox";
 
+/// Build the body a result's inbox item (and any channel push) carries.
+///
+/// A completed run's own summary is the content, same as always. A failed or
+/// stopped run previously produced an inbox item with only the
+/// "[Originally at ...]" timestamp line and no reason at all, since its
+/// summary is always empty (a failed/cancelled turn never produces text
+/// output — see `execute_turn_outcome`); this appends a plain-language line
+/// naming what happened instead of leaving the body blank.
+fn notification_content(event: &AgentResultEvent) -> String {
+    match &event.status {
+        AgentResultStatus::Completed => event.summary.clone(),
+        AgentResultStatus::Cancelled => append_status_line(
+            &event.summary,
+            "This run was stopped before it finished.".to_string(),
+        ),
+        AgentResultStatus::Failed { error, .. } => {
+            append_status_line(&event.summary, format!("This run failed: {error}"))
+        }
+    }
+}
+
+/// Append a status line to a summary, or use it alone when the summary is
+/// empty (the common case for a failed/cancelled run).
+fn append_status_line(summary: &str, line: String) -> String {
+    if summary.is_empty() {
+        line
+    } else {
+        format!("{summary}\n\n{line}")
+    }
+}
+
 /// Publish notifications to the specified targets.
 async fn publish_to_targets(
     event: &AgentResultEvent,
@@ -124,7 +228,7 @@ async fn publish_to_targets(
 ) {
     let notification = NotificationEvent {
         title: event.source_label.clone(),
-        content: event.summary.clone(),
+        content: notification_content(event),
         source: event.source.clone(),
         urgent,
         timestamp: event.timestamp,
@@ -157,7 +261,7 @@ async fn publish_to_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{AgentResultStatus, EndpointCapabilities, EndpointEntry, NotifyName, TopicId};
+    use crate::bus::{EndpointCapabilities, EndpointEntry, TopicId};
     use chrono::NaiveDate;
 
     fn sample_timestamp() -> chrono::NaiveDateTime {
@@ -340,6 +444,295 @@ mod tests {
                 .await
                 .is_err(),
             "an agent-spawned result must not leak into the inbox either"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let mut ntfy_sub: Subscriber<NotificationEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Urgent);
+        event.source = EventTrigger::Conversation;
+        event.source_label = "discord:#builds".to_string();
+        route_agent_result(&event, &router).await;
+
+        let wait = std::time::Duration::from_millis(100);
+        assert!(
+            tokio::time::timeout(wait, inbox_sub.recv()).await.is_err(),
+            "an urgent conversation session's result must not be filed to the inbox"
+        );
+        assert!(
+            tokio::time::timeout(wait, ntfy_sub.recv()).await.is_err(),
+            "an urgent conversation session's result must not push to notification channels"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_session_result_stays_out_of_the_inbox_when_normal() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Conversation;
+        event.source_label = "a2a:laptop".to_string();
+        route_agent_result(&event, &router).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), inbox_sub.recv())
+                .await
+                .is_err(),
+            "a normal conversation session's result must not be filed to the inbox either"
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_triggered_result_still_reaches_the_inbox() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Webhook("gh".into());
+        event.source_label = "webhook:gh".to_string();
+        route_agent_result(&event, &router).await;
+
+        let inbox_item =
+            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert_eq!(inbox_item.title, "webhook:gh");
+    }
+
+    #[tokio::test]
+    async fn artifact_session_result_reaches_neither_inbox_nor_channels_even_when_urgent() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let mut user_sub = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut ntfy_sub: Subscriber<NotificationEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from("ntfy_phone")))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&["ntfy_phone"]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Urgent);
+        event.source = EventTrigger::Artifact("wiki".into());
+        event.source_label = "artifact:wiki".to_string();
+        route_agent_result(&event, &router).await;
+
+        let wait = std::time::Duration::from_millis(100);
+        assert!(
+            tokio::time::timeout(wait, inbox_sub.recv()).await.is_err(),
+            "an artifact session's result must not be filed to the inbox"
+        );
+        assert!(
+            tokio::time::timeout(wait, ntfy_sub.recv()).await.is_err(),
+            "an artifact session's result must not push to notification channels"
+        );
+        assert!(
+            tokio::time::timeout(wait, user_sub.recv()).await.is_err(),
+            "an artifact session's result must not reach the main conversation"
+        );
+    }
+
+    // ── Failure reason reaches the inbox item ────────────────────────────
+
+    #[tokio::test]
+    async fn failed_pulse_inbox_item_carries_the_failure_reason() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.status = AgentResultStatus::Failed {
+            error: "the model call timed out".to_string(),
+            details: None,
+        };
+        event.summary = String::new();
+        route_agent_result(&event, &router).await;
+
+        let inbox_item =
+            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert!(
+            inbox_item.content.contains("the model call timed out"),
+            "the inbox item body must name why the run failed, not just the timestamp line: {}",
+            inbox_item.content
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_pulse_inbox_item_says_it_was_stopped() {
+        let handle = crate::bus::spawn_broker();
+        let mut inbox_sub = handle.subscribe(topics::Inbox).await.unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.status = AgentResultStatus::Cancelled;
+        event.summary = String::new();
+        route_agent_result(&event, &router).await;
+
+        let inbox_item =
+            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        assert!(
+            inbox_item.content.contains("stopped"),
+            "the inbox item body must say the run was stopped: {}",
+            inbox_item.content
+        );
+    }
+
+    #[test]
+    fn completed_run_content_is_the_summary_verbatim() {
+        let event = sample_event(ResultDisposition::Normal);
+        assert_eq!(notification_content(&event), "3 new emails found");
+    }
+
+    // ── Failed scheduled run gets its own notice ─────────────────────────
+
+    #[tokio::test]
+    async fn failed_pulse_publishes_an_owner_notice() {
+        let handle = crate::bus::spawn_broker();
+        let mut notice_sub: Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Pulse;
+        event.source_label = "pulse:email_check".to_string();
+        event.status = AgentResultStatus::Failed {
+            error: "the model call timed out".to_string(),
+            details: None,
+        };
+        route_agent_result(&event, &router).await;
+
+        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notice_sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(notice.message.contains("email_check"));
+        assert!(notice.message.contains("the model call timed out"));
+    }
+
+    #[tokio::test]
+    async fn failed_action_publishes_an_owner_notice_naming_the_action() {
+        let handle = crate::bus::spawn_broker();
+        let mut notice_sub: Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Action;
+        event.source_label = "action:nightly digest".to_string();
+        event.status = AgentResultStatus::Failed {
+            error: "skill not found".to_string(),
+            details: None,
+        };
+        route_agent_result(&event, &router).await;
+
+        let notice = tokio::time::timeout(std::time::Duration::from_millis(200), notice_sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(notice.message.contains("scheduled action"));
+        assert!(notice.message.contains("nightly digest"));
+        assert!(notice.message.contains("skill not found"));
+    }
+
+    #[tokio::test]
+    async fn completed_pulse_publishes_no_failure_notice() {
+        let handle = crate::bus::spawn_broker();
+        let mut notice_sub: Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        route_agent_result(&sample_event(ResultDisposition::Normal), &router).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), notice_sub.recv())
+                .await
+                .is_err(),
+            "a completed run must never publish a failure notice"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_spawned_session_publishes_no_owner_notice() {
+        // Spawned-session results are relayed per-turn to their spawner
+        // (see `relay_result_to_spawner`), never routed through this
+        // notice — a failure notice here would be redundant with that relay
+        // and, for a deeply nested spawn, attributed to the wrong thing.
+        let handle = crate::bus::spawn_broker();
+        let mut notice_sub: Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let router = NotificationRouter {
+            endpoint_registry: registry_with_channels(&[]),
+            publisher: handle.publisher(),
+        };
+
+        let mut event = sample_event(ResultDisposition::Normal);
+        event.source = EventTrigger::Agent;
+        event.status = AgentResultStatus::Failed {
+            error: "boom".to_string(),
+            details: None,
+        };
+        route_agent_result(&event, &router).await;
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), notice_sub.recv())
+                .await
+                .is_err()
         );
     }
 }

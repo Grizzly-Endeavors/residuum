@@ -1,8 +1,10 @@
 //! Tool system for agent-invoked operations.
 
+pub(crate) mod a2a_task_update;
 pub mod actions;
 mod agent_keys;
 pub mod background;
+pub mod config_reload_tracker;
 mod edit;
 mod exec;
 pub(crate) mod file_bug_report;
@@ -22,8 +24,10 @@ pub mod skills;
 pub(crate) mod submit_feedback;
 pub(crate) mod switch_endpoint;
 pub(crate) mod web_fetch;
+pub mod workspace_checkpoints;
 mod write;
 
+pub use config_reload_tracker::{ConfigWriteWatch, SharedConfigReloadTracker};
 pub use file_tracker::{FileTracker, SharedFileTracker};
 pub use path_policy::{PathPolicy, SharedPathPolicy};
 pub use registry::{SubagentToolDeps, ToolRegistry};
@@ -35,8 +39,19 @@ use async_trait::async_trait;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use crate::inference::{ImageData, ToolDefinition};
+
+/// Reported when a tool call is interrupted mid-execution because the turn
+/// was stopped — a user stop, a session's own stop, or daemon shutdown.
+pub(crate) const CANCELLED_WHILE_RUNNING: &str =
+    "cancelled: the turn was stopped while this tool was running";
+
+/// Reported for a tool call in a batch that never ran because the turn had
+/// already been stopped by the time its turn came up.
+pub(crate) const CANCELLED_BEFORE_START: &str =
+    "cancelled: the turn was stopped before this tool call started";
 
 /// Shared, reloadable effective `PATH` for spawned children.
 ///
@@ -155,6 +170,21 @@ impl ToolResult {
             images: vec![],
         }
     }
+
+    /// A tool call that did not run to completion because the turn was
+    /// stopped — either skipped entirely, or interrupted mid-execution.
+    ///
+    /// Distinct from `error`: this is not a failure, so the transcript
+    /// should read it as an intentional stop rather than something that
+    /// went wrong.
+    #[must_use]
+    pub fn cancelled(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            is_error: false,
+            images: vec![],
+        }
+    }
 }
 
 pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
@@ -177,6 +207,31 @@ pub trait Tool: Send + Sync {
     /// # Errors
     /// Returns `ToolError` if the arguments are invalid or execution fails.
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError>;
+
+    /// Execute the tool, racing it against turn-level cancellation.
+    ///
+    /// `cancel` is cancelled when the turn this tool call belongs to is
+    /// stopped — by the user, by a session's own stop, or by daemon
+    /// shutdown. The default implementation drops `execute()`'s future
+    /// outright the moment that happens and reports a generic cancellation
+    /// result, which is correct for every tool that owns no external
+    /// resource needing cleanup. `ExecTool` overrides this to kill its
+    /// child process tree first and return whatever output it had already
+    /// captured, instead of discarding it.
+    ///
+    /// # Errors
+    /// Returns `ToolError` if the arguments are invalid or execution fails.
+    async fn execute_cancellable(
+        &self,
+        arguments: Value,
+        cancel: &CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Ok(ToolResult::cancelled(CANCELLED_WHILE_RUNNING)),
+            result = self.execute(arguments) => result,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +250,58 @@ mod tests {
         let result = ToolResult::error("failed");
         assert!(result.is_error, "error result should be error");
         assert_eq!(result.output, "failed", "output should match");
+    }
+
+    #[test]
+    fn tool_result_cancelled_is_not_an_error() {
+        let result = ToolResult::cancelled(CANCELLED_WHILE_RUNNING);
+        assert!(
+            !result.is_error,
+            "a cancellation is not a failure and must not be flagged as one"
+        );
+        assert_eq!(result.output, CANCELLED_WHILE_RUNNING);
+    }
+
+    /// A tool whose `execute()` blocks forever, so the default
+    /// `execute_cancellable()` can only ever return via the cancellation
+    /// branch — proving it actually races rather than always awaiting
+    /// `execute()` to completion.
+    struct ForeverTool;
+
+    #[async_trait]
+    impl Tool for ForeverTool {
+        fn name(&self) -> &'static str {
+            "forever"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({}),
+            }
+        }
+
+        async fn execute(&self, _arguments: Value) -> Result<ToolResult, ToolError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn default_execute_cancellable_drops_execute_on_cancellation() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            ForeverTool.execute_cancellable(serde_json::json!({}), &cancel),
+        )
+        .await
+        .expect("an already-cancelled token must not wait for execute() at all")
+        .expect("cancellation reports Ok, not a ToolError");
+
+        assert!(!result.is_error, "cancellation is not a failure");
+        assert_eq!(result.output, CANCELLED_WHILE_RUNNING);
     }
 
     #[test]

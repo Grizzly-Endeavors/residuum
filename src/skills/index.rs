@@ -12,6 +12,17 @@ use super::{
 #[derive(Debug, Clone, Default)]
 pub struct SkillIndex {
     entries: Vec<SkillIndexEntry>,
+    /// Directories that couldn't be read during the scan that built this
+    /// index (permission errors, etc. — a missing directory is not an
+    /// error and isn't recorded here), as `(dir, error message)` pairs. The
+    /// rest of the scan still ran; callers with a publisher in scope
+    /// surface these as a notice.
+    skipped: Vec<(PathBuf, String)>,
+    /// User-facing notices produced by the most recent scan: a skill with an
+    /// oversized description that loaded anyway, or a skill skipped for
+    /// invalid frontmatter. Callers publish these to the bus rather than
+    /// leaving them as debug/warn log lines only.
+    notices: Vec<String>,
 }
 
 impl SkillIndex {
@@ -19,7 +30,10 @@ impl SkillIndex {
     ///
     /// For each subdirectory containing a `SKILL.md`, parses the frontmatter
     /// and builds an index entry. Invalid or missing files are warned and
-    /// skipped. Duplicate names keep the first found.
+    /// skipped. Duplicate names keep the first found. A directory that
+    /// cannot be read (e.g. a permissions error) is skipped with a warning
+    /// — see [`Self::skipped_dirs`] — rather than discarding the rest of
+    /// the scan; a missing directory is skipped silently.
     ///
     /// # Arguments
     /// - `dirs`: Skill directories in priority order. `dirs[0]` is treated as
@@ -29,12 +43,17 @@ impl SkillIndex {
     ///   source tagging.
     ///
     /// # Errors
-    /// Returns an error if a directory cannot be read (except `NotFound`,
-    /// which is silently skipped).
+    /// Never returns `Err` today — every failure a scan can hit (an
+    /// unreadable directory, a bad `SKILL.md`) is degraded internally and
+    /// reported through [`Self::skipped_dirs`] or a warning instead. Kept
+    /// as a `Result` so a future caller-facing failure mode doesn't need
+    /// another signature change.
     #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
     pub async fn scan(dirs: &[PathBuf]) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
+        let mut notices = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
+        let mut skipped = Vec::new();
 
         // Workspace is dirs[0], user-global are the rest
         for (i, dir) in dirs.iter().enumerate() {
@@ -44,11 +63,31 @@ impl SkillIndex {
                 SkillSource::UserGlobal
             };
             tracing::debug!(dir = %dir.display(), source = %source, "scanning skill dir");
-            scan_skill_directory(dir, source, &mut entries, &mut seen_names).await?;
+            if let Err(err) =
+                scan_skill_directory(dir, source, &mut entries, &mut notices, &mut seen_names).await
+            {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %err,
+                    "skipping unreadable skills directory, keeping the rest of the scan"
+                );
+                skipped.push((dir.clone(), err.to_string()));
+            }
         }
 
         tracing::info!(total = entries.len(), "skill index built");
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            skipped,
+            notices,
+        })
+    }
+
+    /// Directories skipped during the scan that built this index because
+    /// they couldn't be read, as `(dir, error message)` pairs.
+    #[must_use]
+    pub fn skipped_dirs(&self) -> &[(PathBuf, String)] {
+        &self.skipped
     }
 
     /// Look up a skill by name (case-insensitive).
@@ -87,6 +126,16 @@ impl SkillIndex {
     pub fn entries(&self) -> &[SkillIndexEntry] {
         &self.entries
     }
+
+    /// User-facing notices produced by the most recent scan.
+    ///
+    /// Covers a skill with an oversized description that loaded anyway, and
+    /// a skill skipped for invalid frontmatter. Callers are expected to
+    /// publish these to the bus so they reach the user, not just the logs.
+    #[must_use]
+    pub fn notices(&self) -> &[String] {
+        &self.notices
+    }
 }
 
 /// Scan a single directory for skill subfolders.
@@ -95,6 +144,7 @@ async fn scan_skill_directory(
     dir: &Path,
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
+    notices: &mut Vec<String>,
     seen_names: &mut HashSet<String>,
 ) -> anyhow::Result<()> {
     let entries_before = entries.len();
@@ -147,60 +197,79 @@ async fn scan_skill_directory(
             continue;
         }
 
-        let skill_md = entry.path().join("SKILL.md");
-        let file_content = match tokio::fs::read_to_string(&skill_md).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(
-                    path = %entry.path().display(),
-                    "skipping directory without SKILL.md"
-                );
-                continue;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    path = %skill_md.display(),
-                    error = %e,
-                    "failed to read SKILL.md"
-                );
-                continue;
-            }
-        };
-
-        match parse_skill_md(&file_content) {
-            Ok((fm, _body)) => {
-                let lower = fm.name.to_lowercase();
-                if seen_names.contains(&lower) {
-                    tracing::warn!(
-                        name = %fm.name,
-                        path = %skill_md.display(),
-                        source = %source,
-                        "duplicate skill name, keeping first found"
-                    );
-                    continue;
-                }
-                seen_names.insert(lower);
-
-                entries.push(SkillIndexEntry {
-                    name: fm.name,
-                    description: fm.description,
-                    skill_dir: entry.path(),
-                    source: source.clone(),
-                });
-            }
-            Err(e) => {
-                tracing::warn!(
-                    path = %skill_md.display(),
-                    error = %e,
-                    source = %source,
-                    "skipping skill with invalid frontmatter"
-                );
-            }
-        }
+        process_skill_folder(&entry, &source, entries, notices, seen_names).await;
     }
 
     tracing::debug!(dir = %dir.display(), source = %source, count = entries.len() - entries_before, "skill directory scanned");
     Ok(())
+}
+
+/// Read and index one candidate skill folder, updating `entries`, `notices`,
+/// and `seen_names` in place.
+async fn process_skill_folder(
+    entry: &tokio::fs::DirEntry,
+    source: &SkillSource,
+    entries: &mut Vec<SkillIndexEntry>,
+    notices: &mut Vec<String>,
+    seen_names: &mut HashSet<String>,
+) {
+    let skill_md = entry.path().join("SKILL.md");
+    let file_content = match tokio::fs::read_to_string(&skill_md).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                path = %entry.path().display(),
+                "skipping directory without SKILL.md"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %skill_md.display(),
+                error = %e,
+                "failed to read SKILL.md"
+            );
+            return;
+        }
+    };
+
+    match parse_skill_md(&file_content) {
+        Ok((fm, _body)) => {
+            let lower = fm.name.to_lowercase();
+            if seen_names.contains(&lower) {
+                tracing::warn!(
+                    name = %fm.name,
+                    path = %skill_md.display(),
+                    source = %source,
+                    "duplicate skill name, keeping first found"
+                );
+                return;
+            }
+            seen_names.insert(lower);
+
+            if let Some(notice) =
+                super::parser::oversized_description_notice(&fm.name, &fm.description)
+            {
+                notices.push(notice);
+            }
+
+            entries.push(SkillIndexEntry {
+                name: fm.name,
+                description: fm.description,
+                skill_dir: entry.path(),
+                source: source.clone(),
+            });
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %skill_md.display(),
+                error = %e,
+                source = %source,
+                "skipping skill with invalid frontmatter"
+            );
+            notices.push(format!("skipped skill at {}: {e}", skill_md.display()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -277,6 +346,45 @@ mod tests {
 
         let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
         assert_eq!(index.entries().len(), 1, "should only find valid skill");
+        assert_eq!(
+            index.notices().len(),
+            1,
+            "the skipped skill should produce a user notice, not just a log line"
+        );
+        let skipped_path = std::path::Path::new("bad-skill")
+            .join("SKILL.md")
+            .display()
+            .to_string();
+        assert!(index.notices().first().unwrap().contains(&skipped_path));
+    }
+
+    #[tokio::test]
+    async fn scan_loads_oversized_description_with_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("verbose-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        let long_description = "a".repeat(300);
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: verbose-skill\ndescription: \"{long_description}\"\n---\n"),
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        assert_eq!(
+            index.entries().len(),
+            1,
+            "an oversized description should not stop the skill from loading"
+        );
+        assert_eq!(
+            index.notices().len(),
+            1,
+            "an oversized description should raise exactly one notice"
+        );
+        let notice = index.notices().first().unwrap();
+        assert!(notice.contains("verbose-skill"));
+        assert!(notice.contains("300"));
     }
 
     #[tokio::test]
@@ -438,12 +546,14 @@ mod tests {
     #[test]
     fn find_by_name_case_insensitive() {
         let index = SkillIndex {
+            skipped: Vec::new(),
             entries: vec![SkillIndexEntry {
                 name: "my-skill".to_string(),
                 description: "A skill".to_string(),
                 skill_dir: PathBuf::from("/tmp/my-skill"),
                 source: SkillSource::Workspace,
             }],
+            notices: Vec::new(),
         };
 
         let entry = index.find_by_name("MY-SKILL").unwrap();
@@ -467,12 +577,14 @@ mod tests {
     #[test]
     fn format_for_prompt_with_entries() {
         let index = SkillIndex {
+            skipped: Vec::new(),
             entries: vec![SkillIndexEntry {
                 name: "pdf-processing".to_string(),
                 description: "Extracts text from PDFs".to_string(),
                 skill_dir: PathBuf::from("/tmp/skills/pdf-processing"),
                 source: SkillSource::Workspace,
             }],
+            notices: Vec::new(),
         };
 
         let output = index.format_for_prompt();
@@ -502,12 +614,14 @@ mod tests {
     #[test]
     fn format_for_prompt_escapes_xml_special_chars() {
         let index = SkillIndex {
+            skipped: Vec::new(),
             entries: vec![SkillIndexEntry {
                 name: "my-skill".to_string(),
                 description: "Handles <tags> & \"quotes\"".to_string(),
                 skill_dir: PathBuf::from("/tmp/my-skill"),
                 source: SkillSource::Workspace,
             }],
+            notices: Vec::new(),
         };
         let output = index.format_for_prompt();
         assert!(output.contains("&lt;tags&gt;"), "< and > should be escaped");

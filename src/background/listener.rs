@@ -5,6 +5,7 @@
 //! Everything the session runs with — model tier, skill, identity — comes
 //! from the request itself; there is no resolution step in between.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,8 +20,8 @@ use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
 use crate::bus::{
-    AgentMessageEvent, BusHandle, EventTrigger, SessionAddress, SpawnRequestEvent, Subscriber,
-    topics,
+    AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
+    SessionAddress, SpawnRequestEvent, Subscriber, topics,
 };
 use crate::interfaces::types::InboundMessage;
 
@@ -50,17 +51,39 @@ pub(crate) async fn spawn_listener(
 }
 
 /// Main loop: reads spawn requests and executes them.
+///
+/// `spawn_failures` dedupes fork failures for pulse/action triggers (see
+/// [`handle_spawn_failure`]) across the whole life of this loop — those are
+/// the triggers that retry automatically (a pulse re-fires on its schedule,
+/// a due action is kept and retried per `spawn_due_actions`), so a
+/// persistently broken one (e.g. naming a skill that doesn't exist) would
+/// otherwise warn-log and notice on every single retry forever.
 async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnRequestEvent>) {
+    let mut spawn_failures: HashMap<String, String> = HashMap::new();
     loop {
         match subscriber.recv().await {
             Ok(Some(event)) => {
                 let source_label = event.source_label.clone();
-                if let Err(e) = handle_spawn_request(&ctx, event).await {
-                    tracing::warn!(
-                        source = %source_label,
-                        error = %e,
-                        "failed to fork session"
-                    );
+                let trigger = event.source.clone();
+                match handle_spawn_request(&ctx, event).await {
+                    Ok(()) => {
+                        if spawn_failures.remove(&source_label).is_some() {
+                            tracing::info!(
+                                source = %source_label,
+                                "session fork recovered after previously failing"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        handle_spawn_failure(
+                            &ctx.publisher,
+                            &mut spawn_failures,
+                            &trigger,
+                            &source_label,
+                            &e,
+                        )
+                        .await;
+                    }
                 }
             }
             Ok(None) => break,
@@ -71,6 +94,65 @@ async fn listener_loop(ctx: Arc<SpawnContext>, mut subscriber: Subscriber<SpawnR
         }
     }
     tracing::info!("spawn listener shutting down");
+}
+
+/// Record a spawn failure, deduplicated for scheduled triggers (pulses and
+/// actions): logs `warn` and publishes an owner-facing notice only the
+/// first time a given source label fails, or when the error text changes
+/// from what was last reported for it; an unchanged, still-failing retry
+/// logs at `debug` instead and publishes nothing. Every other trigger
+/// (spawned/webhook/conversation/artifact) isn't retried automatically the
+/// same way, so it keeps warning on every occurrence, same as before.
+async fn handle_spawn_failure(
+    publisher: &Publisher,
+    spawn_failures: &mut HashMap<String, String>,
+    trigger: &EventTrigger,
+    source_label: &str,
+    error: &anyhow::Error,
+) {
+    let message = error.to_string();
+
+    if !matches!(trigger, EventTrigger::Pulse | EventTrigger::Action) {
+        tracing::warn!(source = %source_label, error = %message, "failed to fork session");
+        return;
+    }
+
+    if spawn_failures.get(source_label) == Some(&message) {
+        tracing::debug!(
+            source = %source_label,
+            error = %message,
+            "session fork still failing with the same error"
+        );
+        return;
+    }
+
+    tracing::warn!(source = %source_label, error = %message, "failed to fork session");
+    spawn_failures.insert(source_label.to_string(), message.clone());
+
+    let kind = match trigger {
+        EventTrigger::Pulse => "pulse",
+        EventTrigger::Action => "scheduled action",
+        // The caller only reaches here for Pulse/Action; every other
+        // trigger keeps a generic label rather than a wildcard match, so a
+        // future trigger variant doesn't silently fall through unnoticed.
+        EventTrigger::Agent
+        | EventTrigger::Webhook(_)
+        | EventTrigger::Conversation
+        | EventTrigger::Artifact(_) => "scheduled run",
+    };
+    let name = source_label
+        .split_once(':')
+        .map_or(source_label, |(_, n)| n);
+    let notice = format!("Your {kind} \"{name}\" couldn't start: {message}");
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message: notice },
+        )
+        .await
+    {
+        tracing::warn!(source = %source_label, error = %e, "failed to publish spawn-failure notice");
+    }
 }
 
 /// Handle a single spawn request: guard against a live or tearing-down
@@ -126,7 +208,10 @@ fn handle_spawn_request<'a>(
                     });
                     return Ok(());
                 }
-                SessionState::Forking | SessionState::Running | SessionState::Idle => {
+                SessionState::Forking
+                | SessionState::Queued
+                | SessionState::Running
+                | SessionState::Idle => {
                     // Two concurrent resume attempts for the same address
                     // (e.g. two messages queued while a session was
                     // completing, each deferred separately — see
@@ -142,7 +227,11 @@ fn handle_spawn_request<'a>(
                         "spawn target is already live; delivering this request's input into it \
                          instead of forking a second run"
                     );
-                    return deliver_race_guard_content(&ctx.session_registry, event);
+                    return deliver_race_guard_content(
+                        &ctx.session_registry,
+                        &ctx.publisher,
+                        event,
+                    );
                 }
                 SessionState::Completed => {}
             }
@@ -155,13 +244,23 @@ fn handle_spawn_request<'a>(
 /// the race for its address, using [`race_guard_interrupt`] to pick the
 /// right interrupt kind.
 ///
+/// A chat user's message (a `Conversation`-triggered request carrying its
+/// original inbound message, which [`race_guard_interrupt`] renders as
+/// [`Interrupt::UserMessage`]) is never dropped here: a saturated or
+/// torn-down channel hands off to a detached retry task (see
+/// [`super::messaging::retry_race_guard_user_message`]) instead of
+/// erroring. An agent-to-agent message in the same situation still errors
+/// as before — an unusual double-spawn race, with a live agent on the
+/// other end able to notice and retry itself.
+///
 /// # Errors
 ///
-/// Returns an error if delivery fails (the winning run's channel is
-/// saturated, its own teardown is underway, or it has already left the
-/// registry) — the content is dropped in that case.
+/// Returns an error if delivering an *agent* message fails (the winning
+/// run's channel is saturated, its own teardown is underway, or it has
+/// already left the registry) — that content is dropped in that case.
 fn deliver_race_guard_content(
-    registry: &SessionRegistry,
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
     let address = event.address.clone();
@@ -169,14 +268,42 @@ fn deliver_race_guard_content(
     let category = SessionCategory::from_trigger(&event.source);
     let interrupt = race_guard_interrupt(
         &event.source,
-        event.inbound,
-        event.spawner,
+        event.inbound.clone(),
+        event.spawner.clone(),
         category,
         content,
         event.hop_count,
     );
+    // `race_guard_interrupt` only ever renders `Interrupt::UserMessage` when
+    // `event.inbound` is `Some` — recovered here rather than moved above so
+    // it's still available both for the retry task's own redelivery
+    // attempts and as part of `event` if a fresh spawn/resume is needed.
+    let retryable_inbound = if matches!(interrupt, Interrupt::UserMessage(_)) {
+        event.inbound.clone()
+    } else {
+        None
+    };
     match registry.deliver(&address, interrupt) {
         DeliverOutcome::Delivered => Ok(()),
+        outcome @ (DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive)
+            if let Some(inbound) = retryable_inbound =>
+        {
+            tracing::warn!(
+                address = %address,
+                ?outcome,
+                "race-guard user message could not be delivered immediately; retrying on a \
+                 detached task rather than dropping it"
+            );
+            let registry = Arc::clone(registry);
+            let publisher = publisher.clone();
+            tokio::spawn(async move {
+                super::messaging::retry_race_guard_user_message(
+                    registry, publisher, address, inbound, event,
+                )
+                .await;
+            });
+            Ok(())
+        }
         other @ (DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive) => {
             anyhow::bail!(
                 "session address {address} is already live and delivering this request's input \
@@ -238,10 +365,14 @@ async fn fork_and_spawn(
         ctx,
         &event.model_tier,
         skill.as_deref(),
-        event.address.clone(),
-        event.depth,
-        category,
-        event.hop_count,
+        crate::background::spawn_context::NewSessionContext {
+            own_address: event.address.clone(),
+            own_depth: event.depth,
+            category,
+            hop_count: event.hop_count,
+            trigger: event.source.clone(),
+            conversation_target: event.conversation.clone(),
+        },
     )
     .await?;
 
@@ -259,8 +390,10 @@ async fn fork_and_spawn(
             hop_count: event.hop_count,
             sender: event.sender,
             inbound: event.inbound,
+            images: event.images,
         },
         conversation_target: event.conversation,
+        overlap: event.overlap,
     };
 
     let log_address = request.address.clone();
@@ -327,7 +460,9 @@ mod tests {
                 endpoint: inbound.origin.endpoint.clone(),
                 conversation_id: "chan-1".to_string(),
             }),
+            images: inbound.images.clone(),
             inbound: Some(inbound),
+            overlap: None,
         }
     }
 
@@ -349,6 +484,8 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -430,7 +567,8 @@ mod tests {
         // reach that run as `Interrupt::UserMessage` carrying the
         // participant's own sender attribution — never "[Agent Message from
         // main]".
-        let registry = SessionRegistry::new();
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
         let address = "external-discord-chan-1";
         let info = sample_live_conversation_info(address);
         let mut rx = registry
@@ -439,7 +577,7 @@ mod tests {
 
         let second_msg = sample_inbound("m2", "any updates?", "Jane");
         let second_event = conversation_spawn_event(second_msg, address);
-        deliver_race_guard_content(&registry, second_event)
+        deliver_race_guard_content(&registry, &publisher, second_event)
             .expect("delivering into the live run must succeed");
 
         let delivered = rx
@@ -466,5 +604,246 @@ mod tests {
             "only one run should ever exist for the address — no second run's spawn ever \
              reaches the interrupt channel"
         );
+    }
+
+    #[tokio::test]
+    async fn a_saturated_race_guard_still_delivers_the_user_message_via_retry() {
+        // Regression: a race-guard user message used to be dropped outright
+        // ("input dropped") when the winning run's channel was saturated —
+        // the same silent-drop bug fixed for the primary conversation path.
+        // There's nobody on the other end of a chat message to hand a
+        // refusal to, so this must retry until the channel drains, exactly
+        // the way a live session's own tool loop drains it continuously.
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
+        let address = "external-discord-chan-2";
+        let info = sample_live_conversation_info(address);
+        let mut rx = registry
+            .register(info, CancellationToken::new())
+            .expect("the winner registers the one live run");
+
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+            assert!(matches!(
+                registry.deliver(
+                    &SessionAddress::from(address),
+                    Interrupt::UserMessage(sample_inbound("filler", "filler", "Jane")),
+                ),
+                DeliverOutcome::Delivered
+            ));
+        }
+
+        let new_msg = sample_inbound("the-new-message", "can anyone see this?", "Jane");
+        let new_event = conversation_spawn_event(new_msg, address);
+        deliver_race_guard_content(&registry, &publisher, new_event)
+            .expect("a saturated channel must hand off to a retry, not error");
+
+        let mut delivered = false;
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
+            let Ok(Some(interrupt)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+            else {
+                break;
+            };
+            if let Interrupt::UserMessage(m) = interrupt
+                && m.id == "the-new-message"
+            {
+                assert_eq!(m.content, "can anyone see this?");
+                delivered = true;
+                break;
+            }
+        }
+        assert!(
+            delivered,
+            "the race-guard user message must eventually be delivered, never dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_race_guard_user_message_republishes_a_spawn_request_once_its_target_finishes() {
+        // The `NotLive` case: the winning run finishes (and is removed from
+        // the registry) before this content can be delivered into it. The
+        // message must still not be dropped — it gets a fresh spawn/resume
+        // attempt through the ordinary listener pipeline instead.
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let registry = Arc::new(SessionRegistry::new());
+        let address = "external-discord-chan-3";
+        let info = sample_live_conversation_info(address);
+        registry
+            .register(info, CancellationToken::new())
+            .expect("the winner registers the one live run");
+        registry.remove(&SessionAddress::from(address), "run-winner");
+
+        let mut spawns: Subscriber<SpawnRequestEvent> =
+            bus_handle.subscribe(topics::Background).await.unwrap();
+
+        let new_msg = sample_inbound("the-new-message", "can anyone see this?", "Jane");
+        let new_event = conversation_spawn_event(new_msg, address);
+        deliver_race_guard_content(&registry, &publisher, new_event)
+            .expect("a target that just finished must hand off to a retry, not error");
+
+        let republished = tokio::time::timeout(std::time::Duration::from_secs(1), spawns.recv())
+            .await
+            .expect("a fresh spawn request should be republished promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(republished.address, SessionAddress::from(address));
+        assert_eq!(
+            republished.inbound.map(|m| m.content),
+            Some("can anyone see this?".to_string()),
+            "the republished request must still carry the original user message"
+        );
+    }
+
+    // ── handle_spawn_failure dedup ───────────────────────────────────────
+
+    async fn recv_notice(sub: &mut Subscriber<NoticeEvent>) -> Option<NoticeEvent> {
+        tokio::time::timeout(std::time::Duration::from_millis(150), sub.recv())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+    }
+
+    #[tokio::test]
+    async fn first_pulse_spawn_failure_publishes_a_notice() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &anyhow::anyhow!("skill 'ghost' not found"),
+        )
+        .await;
+
+        let notice = recv_notice(&mut sub)
+            .await
+            .expect("first failure should notice");
+        assert!(notice.message.contains("email_check"));
+        assert!(notice.message.contains("skill 'ghost' not found"));
+    }
+
+    #[tokio::test]
+    async fn repeated_identical_pulse_failure_does_not_renotice() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+        let err = anyhow::anyhow!("skill 'ghost' not found");
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &err,
+        )
+        .await;
+        assert!(recv_notice(&mut sub).await.is_some(), "first call notices");
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &err,
+        )
+        .await;
+        assert!(
+            recv_notice(&mut sub).await.is_none(),
+            "an unchanged, still-failing retry must not notice again"
+        );
+    }
+
+    #[tokio::test]
+    async fn pulse_failure_renotices_once_the_error_changes() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &anyhow::anyhow!("skill 'ghost' not found"),
+        )
+        .await;
+        assert!(recv_notice(&mut sub).await.is_some());
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Pulse,
+            "pulse:email_check",
+            &anyhow::anyhow!("a different failure now"),
+        )
+        .await;
+        let notice = recv_notice(&mut sub)
+            .await
+            .expect("a genuinely new error should notice again");
+        assert!(notice.message.contains("a different failure now"));
+    }
+
+    #[tokio::test]
+    async fn action_spawn_failure_notice_names_it_a_scheduled_action() {
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        handle_spawn_failure(
+            &bus.publisher(),
+            &mut failures,
+            &EventTrigger::Action,
+            "action:nightly digest",
+            &anyhow::anyhow!("skill not found"),
+        )
+        .await;
+
+        let notice = recv_notice(&mut sub).await.expect("should notice");
+        assert!(notice.message.contains("scheduled action"));
+        assert!(notice.message.contains("nightly digest"));
+    }
+
+    #[tokio::test]
+    async fn non_scheduled_trigger_never_publishes_a_notice() {
+        // Spawned/webhook/conversation/artifact triggers aren't retried
+        // automatically the way a pulse or action is, so this dedup+notice
+        // mechanism is scoped to scheduled triggers only — every other
+        // failure just keeps warning (unchanged from before).
+        let bus = crate::bus::spawn_broker();
+        let mut sub: Subscriber<NoticeEvent> = bus
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut failures = HashMap::new();
+
+        for _ in 0..3 {
+            handle_spawn_failure(
+                &bus.publisher(),
+                &mut failures,
+                &EventTrigger::Agent,
+                "agent:researcher",
+                &anyhow::anyhow!("boom"),
+            )
+            .await;
+        }
+
+        assert!(recv_notice(&mut sub).await.is_none());
     }
 }

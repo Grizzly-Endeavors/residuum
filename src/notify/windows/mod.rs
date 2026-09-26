@@ -22,13 +22,10 @@ pub struct WindowsChannelConfig {
 
 impl WindowsChannelConfig {
     /// # Errors
-    /// Returns an error if `throttle_window_secs` is outside 1-300.
+    /// Returns an error if `throttle_window_secs` is zero.
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.throttle_window_secs == 0 || self.throttle_window_secs > 300 {
-            anyhow::bail!(
-                "throttle_window_secs must be between 1 and 300, got {}",
-                self.throttle_window_secs
-            );
+        if self.throttle_window_secs == 0 {
+            anyhow::bail!("throttle_window_secs must be positive, got 0");
         }
         Ok(())
     }
@@ -125,29 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn config_validate_over_max_throttle() {
-        let cfg = WindowsChannelConfig {
-            throttle_window_secs: 301,
-            ..WindowsChannelConfig::default()
-        };
-        assert!(
-            cfg.validate().is_err(),
-            "throttle 301 should fail validation"
-        );
-    }
-
-    #[test]
-    fn config_validate_boundary_values() {
-        let min = WindowsChannelConfig {
-            throttle_window_secs: 1,
-            ..WindowsChannelConfig::default()
-        };
-        assert!(min.validate().is_ok(), "throttle 1 should be valid");
-
-        let max = WindowsChannelConfig {
-            throttle_window_secs: 300,
-            ..WindowsChannelConfig::default()
-        };
-        assert!(max.validate().is_ok(), "throttle 300 should be valid");
+    fn config_validate_accepts_any_positive_value() {
+        // There is no upper cap: 301 and other large values above the old
+        // 300 ceiling are valid.
+        for secs in [1, 300, 301, 10_000] {
+            let cfg = WindowsChannelConfig {
+                throttle_window_secs: secs,
+                ..WindowsChannelConfig::default()
+            };
+            assert!(cfg.validate().is_ok(), "throttle {secs} should be valid");
+        }
     }
 }

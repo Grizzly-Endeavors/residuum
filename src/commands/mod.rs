@@ -1,5 +1,6 @@
 //! CLI subcommand dispatch using clap.
 
+mod a2a;
 mod agent_keys;
 mod bug_report;
 mod feedback;
@@ -10,10 +11,25 @@ mod setup;
 mod stop;
 mod tracing_cmd;
 mod update;
+mod update_watchdog;
 
 use clap::Parser;
 
+use residuum::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use residuum::util::FatalError;
+
+/// Checkpoint the config repository before a CLI write, if a checkpoint
+/// engine could be opened. Never fails or blocks the command — see
+/// [`CheckpointEngine::open_for_cli`].
+async fn checkpoint_config_before_write(checkpoints: Option<&CheckpointEngine>, summary: String) {
+    let Some(engine) = checkpoints else { return };
+    engine
+        .checkpoint_config_before_write(CheckpointContext::system(
+            CheckpointTrigger::PreConfigWrite,
+            summary,
+        ))
+        .await;
+}
 
 fn resolve_gateway_addr(config_dir: &std::path::Path) -> String {
     use residuum::config::{Config, GatewayConfig};
@@ -43,6 +59,11 @@ enum Command {
         #[command(subcommand)]
         command: agent_keys::AgentKeysCommand,
     },
+    /// Manage the A2A protocol listener
+    A2a {
+        #[command(subcommand)]
+        command: a2a::A2aCommand,
+    },
     /// Manage encrypted secret storage
     Secret {
         #[command(subcommand)]
@@ -61,6 +82,11 @@ enum Command {
     Feedback(feedback::FeedbackArgs),
     /// Check for and install updates
     Update(update::UpdateArgs),
+    /// Internal: supervise a self-update restart and roll back on failure.
+    /// `serve::foreground::relaunch` spawns this itself; not meant to be
+    /// run directly.
+    #[command(hide = true)]
+    UpdateWatchdog(update_watchdog::UpdateWatchdogArgs),
 }
 
 pub async fn run() -> Result<(), FatalError> {
@@ -90,15 +116,16 @@ pub async fn run() -> Result<(), FatalError> {
         .unwrap_or(Command::Serve(serve::ServeArgs::default()));
 
     match command {
-        Command::Secret { command } => secret::run_secret_command(&command),
+        Command::Secret { command } => secret::run_secret_command(&command).await,
         Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
+        Command::A2a { ref command } => a2a::run_a2a_command(command).await,
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
             logs::run_logs_command(args).await
         }
         Command::Setup(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
-            setup::run_setup_command(args)
+            setup::run_setup_command(args).await
         }
         Command::Stop(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
@@ -108,6 +135,7 @@ pub async fn run() -> Result<(), FatalError> {
             residuum::util::tracing_init::init_default_tracing();
             update::run_update_command(args).await
         }
+        Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args),
         Command::Tracing { ref command } => {
             residuum::util::tracing_init::init_default_tracing();
             let config_dir = residuum::config::Config::config_dir()?;

@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use chrono::NaiveDateTime;
+use serde::{Deserialize, Serialize};
 
 use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
@@ -16,7 +17,8 @@ use crate::interfaces::types::{InboundMessage, MessageOrigin};
 // ---------------------------------------------------------------------------
 
 /// What triggered a background event or notification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EventTrigger {
     /// A recurring pulse (cron-style schedule).
     Pulse,
@@ -30,6 +32,9 @@ pub enum EventTrigger {
     /// belong to the main agent's own conversation (a group chat, a channel,
     /// or a non-owner DM) — routed to that conversation's `external` session.
     Conversation,
+    /// A workbench artifact with the given name started the session through
+    /// the sessions HTTP API.
+    Artifact(String),
 }
 
 impl EventTrigger {
@@ -42,6 +47,7 @@ impl EventTrigger {
             Self::Agent => "agent",
             Self::Webhook(_) => "webhook",
             Self::Conversation => "conversation",
+            Self::Artifact(_) => "artifact",
         }
     }
 }
@@ -50,6 +56,7 @@ impl fmt::Display for EventTrigger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Webhook(name) => write!(f, "webhook:{name}"),
+            Self::Artifact(name) => write!(f, "artifact:{name}"),
             other @ (Self::Pulse | Self::Action | Self::Agent | Self::Conversation) => {
                 f.write_str(other.as_str())
             }
@@ -114,8 +121,12 @@ pub enum AgentResultStatus {
     Cancelled,
     /// Task failed with an error.
     Failed {
-        /// Description of what went wrong.
+        /// Plain-language description of what went wrong.
         error: String,
+        /// Full technical cause chain, when the failure was classified from
+        /// a model-call error. `None` for failures with nothing richer to
+        /// show (a panic, a shutdown mid-run).
+        details: Option<String>,
     },
 }
 
@@ -124,7 +135,7 @@ impl fmt::Display for AgentResultStatus {
         match self {
             Self::Completed => write!(f, "completed"),
             Self::Cancelled => write!(f, "cancelled"),
-            Self::Failed { error } => write!(f, "failed: {error}"),
+            Self::Failed { error, .. } => write!(f, "failed: {error}"),
         }
     }
 }
@@ -225,6 +236,10 @@ pub struct SessionResponseEvent {
     pub attachment: Option<FileAttachment>,
     /// Local timestamp.
     pub timestamp: NaiveDateTime,
+    /// Whether this is the run's final output (`true`, from
+    /// `maybe_output_to_conversation`) or intermediate pre-tool-call text
+    /// emitted mid-turn (`false`, from `EventContext::publish_intermediate`).
+    pub is_final: bool,
 }
 
 /// Push notification for notify channels.
@@ -344,9 +359,12 @@ impl AgentResultEvent {
 /// the same interrupt-if-running/new-turn-if-idle behavior.
 #[derive(Debug, Clone)]
 pub struct AgentMessageEvent {
-    /// Address of the sending agent (`"main"` or a session address).
+    /// Address of the sender: `"main"` or a session address for an agent,
+    /// [`crate::background::registry::OWNER_ADDRESS`] for the owner, or
+    /// `artifact:<name>` for a workbench artifact.
     pub from: SessionAddress,
-    /// The sender's category label (`"main"`, `"scheduled"`, `"external"`, or `"spawned"`).
+    /// The sender's category label (`"main"`, `"scheduled"`, `"external"`,
+    /// `"spawned"`, `"artifact"`, or `"owner"`).
     pub from_category: String,
     /// The message body.
     pub content: String,
@@ -364,7 +382,9 @@ impl AgentMessageEvent {
     /// A message the owner typed into the web sessions sidebar (sender
     /// [`crate::background::registry::OWNER_ADDRESS`]) is labelled as coming
     /// from the owner instead: the owner is not an agent and has no address
-    /// to message back, but sees this session's responses directly.
+    /// to message back, but sees this session's responses directly. A message
+    /// a workbench artifact sent (sender `artifact:<name>`) is labelled as
+    /// coming from that artifact, for the same reason.
     ///
     /// History entries carry the sender as a structured field (see
     /// [`Self::to_history_message`]), which is what the web UI trusts. It
@@ -380,22 +400,41 @@ impl AgentMessageEvent {
                 self.content
             );
         }
+        if let Some(artifact) = self.artifact_sender() {
+            return format!(
+                "[Message from the workbench artifact \"{artifact}\" — your response in this \
+                 turn is shown to it directly]\n{}",
+                self.content
+            );
+        }
         format!(
             "[Agent Message from {} ({})]\n{}",
             self.from, self.from_category, self.content
         )
     }
 
+    /// The name of the workbench artifact that sent this message, or `None`
+    /// when an agent or the owner sent it.
+    #[must_use]
+    pub fn artifact_sender(&self) -> Option<&str> {
+        if self.from_category != crate::background::registry::ARTIFACT_SENDER_CATEGORY {
+            return None;
+        }
+        self.from
+            .as_ref()
+            .strip_prefix(crate::background::registry::ARTIFACT_SENDER_PREFIX)
+    }
+
     /// The structured sender for this message's history entry: the sending
     /// agent, or `None` for a message the owner typed into the web sessions
-    /// sidebar (the owner is not an agent).
+    /// sidebar or a workbench artifact sent (neither is an agent).
     #[must_use]
     pub fn agent_sender(&self) -> Option<crate::inference::AgentSender> {
-        (self.from.as_ref() != crate::background::registry::OWNER_ADDRESS).then(|| {
-            crate::inference::AgentSender {
-                address: self.from.to_string(),
-                category: self.from_category.clone(),
-            }
+        let from_an_agent = self.from.as_ref() != crate::background::registry::OWNER_ADDRESS
+            && self.artifact_sender().is_none();
+        from_an_agent.then(|| crate::inference::AgentSender {
+            address: self.from.to_string(),
+            category: self.from_category.clone(),
         })
     }
 
@@ -406,6 +445,34 @@ impl AgentMessageEvent {
         crate::inference::Message::user(self.format_for_agent())
             .with_agent_sender(self.agent_sender())
     }
+}
+
+/// Outcome a session declared through its `a2a_task_update` tool call,
+/// carried to the A2A [`crate::a2a::executor::SessionExecutor`] waiting on
+/// the session's address so it can end the task's execution stream with the
+/// right terminal (or input-required) status.
+#[derive(Debug, Clone)]
+pub struct A2aTaskSignalEvent {
+    /// Address of the session that signaled its task's outcome.
+    pub address: SessionAddress,
+    /// The outcome the session declared.
+    pub state: A2aTaskSignalState,
+    /// The session's final message for this outcome.
+    pub message: String,
+    /// Files the session attached as artifacts, already read into `a2a`
+    /// parts by the `a2a_task_update` tool.
+    pub artifacts: Vec<a2a::Artifact>,
+}
+
+/// The outcome states a session can declare through `a2a_task_update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum A2aTaskSignalState {
+    /// The delegated task is done.
+    Completed,
+    /// The task needs more input from the caller before it can continue.
+    InputRequired,
+    /// The task could not be completed.
+    Failed,
 }
 
 /// Request to spawn an agent session from any source.
@@ -459,11 +526,38 @@ pub struct SpawnRequestEvent {
     /// misattributed as a plain agent message from `main`. `None` for every
     /// other trigger.
     pub inbound: Option<InboundMessage>,
+    /// Images attached to this run's kickoff message, carried into its first
+    /// turn alongside `prompt`/`context`. Populated for a `Conversation`-
+    /// triggered spawn or resume from the triggering inbound message's
+    /// images (or, for a resume combining several buffered messages, every
+    /// buffered message's images); empty for every other trigger, which have
+    /// no images of their own.
+    pub images: Vec<ImageData>,
+    /// Set when this is a pulse fire that started while its previous run was
+    /// still live in the registry. `None` for every other trigger, and for a
+    /// pulse fire that found no live previous run. See [`PulseOverlap`].
+    pub overlap: Option<PulseOverlap>,
+}
+
+/// Marks a pulse run that started while its previous run was still going
+/// (still `forking`/`queued`/`running`/`idle`/`completing` in the registry).
+/// The new run is never skipped, blocked, or cancelled for this — it starts
+/// normally — but this flag makes the overlap visible in the Scheduled view
+/// and the run's own session view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PulseOverlap {
+    /// Run id of the still-live previous run this one overlapped with.
+    pub previous_run_id: String,
+    /// When that previous run started, so the overlap can be described as
+    /// "still going after N minutes" without a second lookup.
+    #[ts(type = "string")]
+    pub previous_started_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// The conversation an `external` conversation session replies to: which
 /// interface endpoint, and which conversation on it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationTarget {
     /// Endpoint name the conversation lives on (e.g. `"discord"`).
     pub endpoint: String,
@@ -509,8 +603,12 @@ pub struct InlineOutputEvent {
 pub struct ErrorEvent {
     /// Links back to the originating message.
     pub correlation_id: String,
-    /// Error description.
+    /// Plain-language error description, safe to show as-is.
     pub message: String,
+    /// Full technical cause chain, for a web UI details toggle or a
+    /// developer's own logs. Chat interfaces (Discord, Telegram, Teams)
+    /// never show this — they destructure only `message`.
+    pub details: Option<String>,
 }
 
 /// Something observable happened in a live agent session: a lifecycle
@@ -566,6 +664,17 @@ pub enum SessionEventKind {
         /// The intermediate content.
         content: String,
     },
+    /// Token usage progress for a turn still running — see
+    /// [`TurnUsageEvent`], which the main agent's own turns publish
+    /// instead of this variant.
+    TurnUsage {
+        /// Output tokens generated by every model call so far this turn.
+        output_tokens: u32,
+        /// Whether any model call so far this turn reported usage.
+        has_usage: bool,
+        /// Updated cumulative session totals, when the caller tracks them.
+        session_totals: Option<crate::agent::usage::SessionUsageTotals>,
+    },
     /// A turn's final text response.
     Response {
         /// Identifies the turn that produced it.
@@ -577,8 +686,11 @@ pub enum SessionEventKind {
     /// refused message (hop limit), or a result relay that could not be
     /// delivered.
     Error {
-        /// Human-readable description.
+        /// Plain-language description.
         message: String,
+        /// Full technical cause chain, when there is one richer than
+        /// `message` (e.g. classified from a failed model call).
+        details: Option<String>,
     },
     /// The session's message reached the main agent: a turn-result relay to
     /// its spawner or a `message_agent` call addressed to `main`. Lets the
@@ -618,27 +730,56 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Token usage progress for a turn still running: this turn's own output
+/// tokens so far (for the running-turn indicator) and, when the caller
+/// tracks cumulative session totals, the updated totals (for the chat
+/// footer). Published after every model call; never delivered to the
+/// agent itself. See `docs/systems-usage/turn-control.md`.
+#[derive(Debug, Clone)]
+pub struct TurnUsageEvent {
+    /// Links back to the originating message.
+    pub correlation_id: String,
+    /// Output tokens generated by every model call so far this turn.
+    pub output_tokens: u32,
+    /// Whether any model call so far this turn reported usage.
+    pub has_usage: bool,
+    /// Updated cumulative session totals, when the caller tracks them.
+    pub session_totals: Option<crate::agent::usage::SessionUsageTotals>,
+}
 
-/// A workbench tool file (`workbench/<name>.html`) appeared, changed, or was
-/// deleted.
+/// A workbench artifact appeared, changed, or was deleted: its page, or any
+/// file in its folder.
 ///
 /// Carried on [`super::topics::Workbench`] so open workbench views can reload
-/// the tool live while the agent edits it.
+/// the artifact live while the agent edits it. Derived from the workspace
+/// change feed ([`WorkspaceEvent`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkbenchEvent {
-    /// The tool's page was created or modified.
+    /// The artifact was created or modified.
     Updated {
-        /// Tool name (the file stem).
+        /// Artifact name.
         name: String,
     },
-    /// The tool's page was deleted.
+    /// The artifact was deleted.
     Removed {
-        /// Tool name (the file stem).
+        /// Artifact name.
         name: String,
     },
+}
+
+/// One debounced batch from the workspace change feed.
+///
+/// Carried on [`super::topics::Workspace`]. Each WebSocket connection filters
+/// batches by the prefixes it watches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceEvent {
+    /// The changes of one batch, sorted by path. Shared so every subscriber
+    /// gets the batch without copying it.
+    Changed(std::sync::Arc<[crate::workspace::watch::WorkspaceChange]>),
+    /// Changes may have been missed; watchers must reload what they show.
+    Resync(crate::workspace::watch::WorkspaceResyncReason),
+    /// The watcher stopped: live updates are off.
+    Unavailable,
 }
 
 #[cfg(test)]
@@ -709,6 +850,7 @@ mod tests {
         assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
         // Webhook name does not affect the label.
         assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
+        assert_eq!(EventTrigger::Artifact("wiki".into()).as_str(), "artifact");
     }
 
     #[test]
@@ -720,6 +862,10 @@ mod tests {
         assert_eq!(EventTrigger::Pulse.to_string(), "pulse");
         assert_eq!(EventTrigger::Action.to_string(), "action");
         assert_eq!(EventTrigger::Agent.to_string(), "agent");
+        assert_eq!(
+            EventTrigger::Artifact("wiki".into()).to_string(),
+            "artifact:wiki"
+        );
     }
 
     #[test]
@@ -728,7 +874,8 @@ mod tests {
         assert_eq!(AgentResultStatus::Cancelled.to_string(), "cancelled");
         assert_eq!(
             AgentResultStatus::Failed {
-                error: "timeout".into()
+                error: "timeout".into(),
+                details: None,
             }
             .to_string(),
             "failed: timeout"
@@ -820,6 +967,36 @@ mod tests {
             hop_count: 0,
         };
         assert_eq!(msg.to_history_message().agent_sender, None);
+    }
+
+    #[test]
+    fn artifact_message_is_labelled_as_the_artifact_not_the_owner_or_an_agent() {
+        let msg = AgentMessageEvent {
+            from: crate::background::registry::artifact_sender_address("wiki-graph"),
+            from_category: crate::background::registry::ARTIFACT_SENDER_CATEGORY.to_string(),
+            content: "refresh the index".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.artifact_sender(), Some("wiki-graph"));
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with("[Message from the workbench artifact \"wiki-graph\""),
+            "got {text}"
+        );
+        assert!(!text.contains("owner"), "got {text}");
+        assert!(text.ends_with("\nrefresh the index"));
+        assert_eq!(msg.to_history_message().agent_sender, None);
+    }
+
+    #[test]
+    fn artifact_prefix_without_the_artifact_category_is_not_an_artifact_sender() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("artifact:wiki"),
+            from_category: "spawned".to_string(),
+            content: "hi".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.artifact_sender(), None);
     }
 
     #[test]

@@ -14,6 +14,7 @@ use super::hop::HopCounter;
 use super::interrupt;
 use super::recent_messages::RecentMessages;
 use super::turn::{EventContext, EventTarget, TurnResources, execute_turn};
+use super::usage::{MainUsageSink, SessionUsageTotals};
 
 /// Configuration for creating a new `Agent`.
 pub struct AgentConfig {
@@ -37,6 +38,17 @@ pub struct Agent {
     identity: IdentityFiles,
     recent_messages: RecentMessages,
     options: CompletionOptions,
+    /// Maximum tool-call iterations before a turn stops itself gracefully.
+    /// `None` (the default) means unlimited — set from
+    /// [`crate::config::AgentAbilitiesConfig::max_tool_iterations`] at
+    /// startup and kept current on every config reload (see
+    /// [`Agent::set_max_tool_iterations`]).
+    max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call. Set from
+    /// [`crate::config::AgentAbilitiesConfig::repeat_call_guard`] at startup
+    /// and kept current on every config reload (see
+    /// [`Agent::set_repeat_call_guard`]).
+    repeat_call_guard: crate::config::RepeatCallGuardConfig,
     observations: Option<String>,
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
@@ -52,6 +64,16 @@ pub struct Agent {
     /// so they can compute the hop count an outgoing message or spawn
     /// carries without a separate side channel.
     hop_counter: HopCounter,
+    /// Cumulative token usage totals for the main chat, shared with every
+    /// turn's [`MainUsageSink`] so they all accumulate onto the same
+    /// running total. Restored from disk at startup (see
+    /// [`Self::restore_usage_totals`]); never read by the agent itself —
+    /// see `docs/systems-usage/turn-control.md`.
+    usage_totals: std::sync::Arc<tokio::sync::Mutex<SessionUsageTotals>>,
+    /// Where `usage_totals` is persisted after every model call. `None`
+    /// for an agent with no workspace layout (test constructors) — totals
+    /// then live only in memory for the process's lifetime.
+    usage_totals_path: Option<std::path::PathBuf>,
 }
 
 impl Agent {
@@ -65,6 +87,10 @@ impl Agent {
         config: AgentConfig,
         hop_counter: HopCounter,
     ) -> Self {
+        let usage_totals_path = config
+            .layout
+            .as_ref()
+            .map(crate::workspace::layout::WorkspaceLayout::usage_totals_json);
         Self {
             provider,
             tools,
@@ -72,13 +98,32 @@ impl Agent {
             identity,
             recent_messages: RecentMessages::new(),
             options: config.options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             observations: None,
             recent_context: None,
             tz: config.tz,
             layout: config.layout,
             last_user_message_at: None,
             hop_counter,
+            usage_totals: std::sync::Arc::new(tokio::sync::Mutex::new(
+                SessionUsageTotals::default(),
+            )),
+            usage_totals_path,
         }
+    }
+
+    /// Restore persisted usage totals at startup, so the chat footer shows
+    /// correct totals across a restart instead of resetting to zero.
+    pub async fn restore_usage_totals(&mut self, totals: SessionUsageTotals) {
+        *self.usage_totals.lock().await = totals;
+    }
+
+    /// Current cumulative usage totals.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) async fn usage_totals_snapshot(&self) -> SessionUsageTotals {
+        *self.usage_totals.lock().await
     }
 
     /// Load a fresh identity snapshot from disk. On read failure, logs an
@@ -126,6 +171,18 @@ impl Agent {
         );
         self.provider = provider;
         self.options = options;
+    }
+
+    /// Set the maximum tool-call iterations for future turns (e.g. at
+    /// startup, or after a config reload). `None` means unlimited.
+    pub fn set_max_tool_iterations(&mut self, limit: Option<usize>) {
+        self.max_tool_iterations = limit;
+    }
+
+    /// Set the repeat-call guard config for future turns (e.g. at startup,
+    /// or after a config reload).
+    pub fn set_repeat_call_guard(&mut self, config: crate::config::RepeatCallGuardConfig) {
+        self.repeat_call_guard = config;
     }
 
     /// Reload the `ollama_web_search` tool in place from the current
@@ -249,33 +306,6 @@ impl Agent {
         }
     }
 
-    /// Build a [`TurnResources`] from borrowed component fields.
-    ///
-    /// Takes explicit field references rather than `&self` for the same
-    /// reason as [`Agent::memory_ctx`].
-    fn turn_resources<'a>(
-        provider: &'a dyn InferenceProvider,
-        tools: &'a ToolRegistry,
-        mcp_registry: &'a SharedMcpRegistry,
-        identity: &'a IdentityFiles,
-        options: &'a CompletionOptions,
-        stop_token: &'a CancellationToken,
-        hop_counter: &'a HopCounter,
-    ) -> TurnResources<'a> {
-        TurnResources {
-            provider,
-            tools,
-            mcp_registry,
-            identity,
-            options,
-            stop_token,
-            // The main agent persists its transcript separately
-            // (`recent_messages.json`, written after the whole turn).
-            transcript_sink: None,
-            hop_counter,
-        }
-    }
-
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
@@ -299,7 +329,7 @@ impl Agent {
         correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
-        interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
+        interrupt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<interrupt::Interrupt>,
         images: &[crate::inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
@@ -325,15 +355,25 @@ impl Agent {
 
         let memory_ctx =
             Self::memory_ctx(self.observations.as_deref(), self.recent_context.as_deref());
-        let resources = Self::turn_resources(
-            &*self.provider,
-            &self.tools,
-            &self.mcp_registry,
-            &self.identity,
-            &self.options,
-            stop_token,
-            &self.hop_counter,
+        let usage_sink = MainUsageSink::new(
+            std::sync::Arc::clone(&self.usage_totals),
+            self.usage_totals_path.clone(),
         );
+        let resources = TurnResources {
+            provider: &*self.provider,
+            tools: &self.tools,
+            mcp_registry: &self.mcp_registry,
+            identity: &self.identity,
+            options: &self.options,
+            max_tool_iterations: self.max_tool_iterations,
+            repeat_call_guard: self.repeat_call_guard,
+            stop_token,
+            // The main agent persists its transcript separately
+            // (`recent_messages.json`, written after the whole turn).
+            transcript_sink: None,
+            usage_sink: Some(&usage_sink),
+            hop_counter: &self.hop_counter,
+        };
         let events = EventContext {
             publisher,
             target: EventTarget::Endpoint {
@@ -409,7 +449,6 @@ impl Agent {
     reason = "test code uses indexing for clarity"
 )]
 mod tests {
-    use super::super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
     use crate::bus;
     use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
@@ -421,6 +460,15 @@ mod tests {
 
     fn empty_mcp() -> SharedMcpRegistry {
         McpRegistry::new_shared()
+    }
+
+    /// Directories that don't correspond to any real strictly-parsed file,
+    /// so `register_defaults` in these tests gets no diagnostics behavior.
+    fn test_diagnostics_paths() -> crate::diagnostics::DiagnosticsPaths {
+        crate::diagnostics::DiagnosticsPaths {
+            config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
+            workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+        }
     }
 
     /// Create a test publisher and endpoint for bus-based tests.
@@ -511,9 +559,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn process_message_accumulates_usage_totals_across_turns() {
+        let provider = MockProvider::new(vec![
+            InferenceResponse {
+                content: "first".to_string(),
+                tool_calls: vec![],
+                usage: Some(crate::inference::Usage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    cache_creation_tokens: None,
+                    cache_read_tokens: None,
+                }),
+                thinking: None,
+                stop_reason: None,
+            },
+            InferenceResponse {
+                content: "second".to_string(),
+                tool_calls: vec![],
+                usage: Some(crate::inference::Usage {
+                    input_tokens: 150,
+                    output_tokens: 30,
+                    cache_creation_tokens: None,
+                    cache_read_tokens: None,
+                }),
+                thinking: None,
+                stop_reason: None,
+            },
+        ]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        );
+
+        let (publisher, ep) = test_bus();
+
+        for msg in ["hi", "again"] {
+            let mut irx = interrupt::dead_interrupt_rx();
+            agent
+                .process_message(
+                    msg,
+                    &publisher,
+                    Some(&ep),
+                    None,
+                    "",
+                    None,
+                    &PromptContext::default(),
+                    &mut irx,
+                    &[],
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let totals = agent.usage_totals_snapshot().await;
+        assert_eq!(
+            totals.input_tokens, 250,
+            "totals should accumulate across separate turns"
+        );
+        assert_eq!(totals.output_tokens, 50);
+        assert_eq!(
+            totals.context_tokens,
+            Some(150),
+            "context size should reflect only the latest call"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_usage_totals_seeds_the_shared_running_total() {
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        );
+
+        let mut restored = SessionUsageTotals::default();
+        restored.accumulate(Some(crate::inference::Usage {
+            input_tokens: 500,
+            output_tokens: 90,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+        agent.restore_usage_totals(restored).await;
+
+        assert_eq!(agent.usage_totals_snapshot().await, restored);
+    }
+
+    #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
 
         let provider = MockProvider::new(vec![
             InferenceResponse::new(
@@ -568,7 +725,12 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -622,22 +784,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_iterations_guard() {
-        let responses: Vec<InferenceResponse> = (0..=MAX_TOOL_ITERATIONS)
+    async fn unlimited_by_default_allows_more_than_fifty_tool_iterations() {
+        // Deliberately well past the old hardcoded 50-iteration cap, proving
+        // an unconfigured agent no longer bails out at any fixed count.
+        let extra_iterations = 60;
+        // Arguments vary per call (the loop index) so this exercises only
+        // the max_tool_iterations gate, not the unrelated repeat-call guard,
+        // which would otherwise end the turn on an identical call streak.
+        let mut responses: Vec<InferenceResponse> = (0..extra_iterations)
             .map(|i| {
                 InferenceResponse::new(
                     String::new(),
                     vec![ToolCall {
                         id: format!("call_{i}"),
                         name: "exec".to_string(),
-                        arguments: serde_json::json!({"command": "echo loop"}),
+                        arguments: serde_json::json!({"command": format!("echo loop {i}")}),
                     }],
                 )
             })
             .collect();
+        responses.push(InferenceResponse::new("done".to_string(), vec![]));
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
@@ -652,6 +826,71 @@ mod tests {
             },
             crate::agent::HopCounter::new(0),
         );
+        // max_tool_iterations left unset: unlimited by default.
+
+        let (publisher, ep) = test_bus();
+        let mut irx = interrupt::dead_interrupt_rx();
+        let result = agent
+            .process_message(
+                "loop past the old cap",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut irx,
+                &[],
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec!["done"],
+            "should complete normally well past the old 50-iteration cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_tool_iteration_limit_stops_the_turn_gracefully() {
+        let limit = 3;
+        let responses: Vec<InferenceResponse> = (0..limit + 5)
+            .map(|i| {
+                InferenceResponse::new(
+                    String::new(),
+                    vec![ToolCall {
+                        id: format!("call_{i}"),
+                        name: "exec".to_string(),
+                        arguments: serde_json::json!({"command": "echo loop"}),
+                    }],
+                )
+            })
+            .collect();
+
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
+
+        let provider = MockProvider::new(responses);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: None,
+            },
+            crate::agent::HopCounter::new(0),
+        );
+        agent.set_max_tool_iterations(Some(limit));
 
         let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
@@ -669,8 +908,18 @@ mod tests {
                 None,
                 &CancellationToken::new(),
             )
-            .await;
-        assert!(result.is_err(), "should error after max iterations");
+            .await
+            .unwrap();
+        assert_eq!(
+            result.len(),
+            1,
+            "should end gracefully with one notice, not an error"
+        );
+        assert!(
+            result[0].contains("stopped after 3 tool calls"),
+            "message should mention the configured limit: {}",
+            result[0]
+        );
     }
 
     #[test]
@@ -853,13 +1102,13 @@ mod tests {
         captured: Arc<tokio::sync::Mutex<Vec<Vec<Message>>>>,
         /// Interrupts to send after a given call index: `(call_index, interrupts)`.
         inject_after: Arc<tokio::sync::Mutex<Vec<InjectEntry>>>,
-        interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
+        interrupt_tx: tokio::sync::mpsc::UnboundedSender<interrupt::Interrupt>,
     }
 
     impl CapturingProvider {
         fn new(
             responses: Vec<InferenceResponse>,
-            interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
+            interrupt_tx: tokio::sync::mpsc::UnboundedSender<interrupt::Interrupt>,
         ) -> Self {
             Self {
                 responses,
@@ -906,7 +1155,7 @@ mod tests {
                     .collect()
             };
             for intr in scheduled {
-                drop(self.interrupt_tx.try_send(intr));
+                drop(self.interrupt_tx.send(intr));
             }
 
             Ok(response)
@@ -936,9 +1185,14 @@ mod tests {
     #[tokio::test]
     async fn interrupt_injects_user_message_mid_turn() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
 
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let provider = CapturingProvider::new(
             vec![
@@ -1012,9 +1266,14 @@ mod tests {
     #[tokio::test]
     async fn multiple_interrupts_drained_at_checkpoint() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
 
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let provider = CapturingProvider::new(
             vec![
@@ -1086,7 +1345,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_during_final_response_not_consumed() {
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let provider = CapturingProvider::new(
             vec![
@@ -1218,9 +1477,14 @@ mod tests {
         // stop mid-tool-execution doesn't sever the tool, only stops the
         // loop at its next checkpoint.
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
 
-        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
             vec![
                 InferenceResponse::new(
@@ -1502,7 +1766,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
             vec![
                 InferenceResponse::new("turn one".to_string(), vec![]),
@@ -1590,7 +1854,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let provider = CapturingProvider::new(
             vec![
                 InferenceResponse::new("turn one".to_string(), vec![]),
@@ -1672,7 +1936,7 @@ mod tests {
         // error, so IdentityFiles::load fails and the reload falls back.
         tokio::fs::create_dir(layout.soul_md()).await.unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let provider =
             CapturingProvider::new(vec![InferenceResponse::new("ok".to_string(), vec![])], tx);
         let captured = Arc::clone(&provider.captured);
@@ -1792,7 +2056,12 @@ mod tests {
     #[test]
     fn reload_ollama_web_search_tool_leaves_other_tools_alone() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            test_diagnostics_paths(),
+            None,
+        );
         let mut agent = test_agent(registry);
 
         let backend = crate::config::StandaloneBackendConfig {

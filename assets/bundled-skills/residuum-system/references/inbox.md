@@ -6,11 +6,11 @@ There are **two** inboxes, stored as individual JSON files under the workspace r
 |---|---|---|
 | Path | `inbox/agent/` | `inbox/user/` |
 | Archive path | `archive/inbox/agent/` | `archive/inbox/user/` |
-| Write tool | *(external — background tasks, notification router)* | `user_inbox_add` |
+| Write tool | *(external — notification router for `scheduled` and webhook-triggered `external` results, WS `/inbox`, `POST /api/agent-inbox`)* | `user_inbox_add` |
 | Read/manage tools | `inbox_list`, `inbox_read`, `inbox_archive` | *(none — consumed via the web UI)* |
 | Consumer | The agent itself | The user, via the web UI |
 
-The agent inbox is where background results land when the notification router's `inbox` channel target is used — it's a queue for the agent to triage. The user inbox is a delivery channel: the agent (most often a sub-agent like `introspection`) writes findings there with `user_inbox_add`, and the user reads/archives them through the web UI, not through agent tools.
+The agent inbox is where the notification router files results — every substantive `scheduled` result and every substantive webhook-triggered `external` result — for the agent to triage. A conversation-triggered `external` result (A2A, or a non-owner Discord/Telegram/Teams chat) never lands here: its output already went back to the conversation it came from, and its observations are merged into memory as an episode. `artifact` and `spawned` session results are relayed elsewhere too (see [background-tasks](background-tasks.md#result-routing)). The user inbox is a delivery channel: the agent (most often a sub-agent like `introspection`) writes findings there with `user_inbox_add`, and the user reads/archives them through the web UI, not through agent tools.
 
 ## InboxItem Format
 
@@ -52,7 +52,11 @@ Pass `attachments` — an array of paths to files you've already written to disk
 
 ## Integration with Notifications
 
-When a task's `channels` configuration includes `inbox`, the notification router creates an item in the **agent inbox** (`inbox/agent/`) with the task result as the body and the task name as the source. See [notifications](notifications.md). This is a separate path from `user_inbox_add`.
+The notification router creates an item in the **agent inbox** (`inbox/agent/`) for every `Normal` or `Urgent` result from a `scheduled` session, and from a webhook-triggered `external` session, with the result's summary as the body and its source label as the source. See [notifications](notifications.md). This is a separate path from `user_inbox_add`.
+
+## Workbench Artifacts
+
+A workbench artifact can file an agent-inbox item directly with `POST /api/agent-inbox` (`{ title?, body }`), the same queue `inbox_list`/`inbox_read`/`inbox_archive` work from. Its title defaults to the body's first line, in full, and a blank body is refused. The item's source records which artifact sent it (`artifact:<name>`) or `web` for a direct web UI call. There is no equivalent for the user inbox — an artifact still has no way to write there.
 
 ## Gotchas
 

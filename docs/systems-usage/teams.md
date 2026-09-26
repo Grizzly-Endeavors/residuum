@@ -33,6 +33,8 @@ Every message the agent sees records who sent it and where, e.g. `[From: Jane Do
 
 Only the owner's own direct message reaches the main agent. Every other admitted conversation — a group chat, a standard or private channel, and a non-owner's DM when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that conversation, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group chat or channel — those are still shared spaces, so they get a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that conversation — see [Where replies go](#where-replies-go).
 
+`/stop` follows the same routing: typed in the owner's own DM it stops main's current turn; typed in a group chat or channel it stops that conversation's session instead, never main — see [Turn Control](turn-control.md).
+
 ## Direct messages, group chats, and channels
 
 In a direct message every message goes to the agent.
@@ -78,11 +80,13 @@ context_messages = 20
 port = 7701
 ```
 
-`app_id`, `tenant_id`, and `app_password` are required whenever the section is present; a missing one fails config load with a message naming it rather than leaving a bot that silently never answers. Changing any `[teams]` value, or the gateway `bind` it shares, restarts the Teams listener on reload. Replies are sent with a client-credentials token from `login.microsoftonline.com/{tenant_id}`, cached until shortly before it expires.
+`app_id`, `tenant_id`, and `app_password` are required whenever the section is present; a missing one disables Teams — with a notice naming the missing field — rather than leaving a bot that silently never answers, or failing the rest of `config.toml`. Changing any `[teams]` value, or the gateway `bind` it shares, restarts the Teams listener on reload. Replies are sent with a client-credentials token from `login.microsoftonline.com/{tenant_id}`, cached until shortly before it expires.
 
 ## State
 
 `teams_state.json` in the workspace root holds the owner and a reference (conversation ID, service URL, kind, label) for every conversation the bot has seen or been added to. References are what make proactive messages possible — Teams gives a bot no way to open or list a conversation it has never heard from. Removing the bot from a conversation, or uninstalling the app there, drops its reference. These references are what `list_conversations` shows for Teams; DMs are labelled with the person (`direct message with Jane Doe`).
+
+A corrupt `teams_state.json` is moved aside (to `teams_state.json.corrupt`) and the interface starts fresh with a notice, rather than staying down until someone fixes the file by hand — the owner and every conversation reference are lost, so the owner will need to message the bot again to be recognized.
 
 ## Code
 

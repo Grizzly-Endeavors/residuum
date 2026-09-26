@@ -1,9 +1,10 @@
 //! Model providers and memory pipeline initialization.
 
+use crate::bus::Publisher;
 use crate::config::Config;
 use crate::inference::{
     CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
-    build_embedding_provider, build_provider_chain,
+    build_embedding_provider, build_provider_chain_with_notices,
 };
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -22,24 +23,46 @@ pub struct ProviderComponents {
 
 /// Build model providers, observer, reflector, and embedding provider.
 ///
+/// Only an unusable primary main-model provider is fatal here. Every other
+/// degradation — a dropped fallback, a disabled observer or reflector, the
+/// embedding provider below — is collected into `degradations` for the
+/// caller to report as one grouped notice; the main model's own chain
+/// additionally gets a live notice on a fallback/recovery transition at
+/// runtime (see `crate::inference::FailoverProvider`).
+///
 /// # Errors
-/// Returns `FatalError` if the main model provider fails to build.
+/// Returns `FatalError` if the primary main model provider fails to build.
 pub fn init_providers(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
+    publisher: &Publisher,
+    degradations: &mut Vec<String>,
 ) -> Result<ProviderComponents, FatalError> {
-    let provider =
-        build_provider_chain(&cfg.main, cfg.max_tokens, http.clone(), cfg.retry.clone())?;
+    let (provider, dropped_main) = build_provider_chain_with_notices(
+        &cfg.main,
+        cfg.max_tokens,
+        http.clone(),
+        cfg.retry.clone(),
+        publisher.clone(),
+        "main model",
+    )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
+    for fallback in &dropped_main {
+        tracing::warn!(
+            provider = %fallback.name,
+            error = %fallback.error,
+            "dropped an unbuildable fallback provider from the main chain"
+        );
+        degradations.push(format!(
+            "the fallback model \"{}\" in your main provider chain couldn't be started and was skipped: {}",
+            fallback.name, fallback.error
+        ));
+    }
 
-    let (observer, reflector) = match build_memory_components(cfg, tz, http.clone()) {
-        Ok(pair) => pair,
-        Err(err) => {
-            tracing::warn!(error = %err, "memory subsystem degraded: observer and reflector disabled");
-            (Observer::disabled(tz), Reflector::disabled(tz))
-        }
-    };
+    let (observer, reflector, memory_notices) =
+        build_memory_components(cfg, tz, http.clone(), publisher.clone());
+    degradations.extend(memory_notices);
 
     let embedding_provider: Option<std::sync::Arc<dyn EmbeddingProvider>> = match cfg
         .embedding
@@ -55,6 +78,9 @@ pub fn init_providers(
         }
         Err(err) => {
             tracing::warn!(error = %err, "embedding provider degraded");
+            degradations.push(format!(
+                "the embedding provider is unavailable, so semantic search is disabled: {err}"
+            ));
             None
         }
     };

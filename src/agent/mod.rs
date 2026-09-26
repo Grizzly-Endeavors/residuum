@@ -7,6 +7,7 @@ pub mod interrupt;
 pub mod recent_messages;
 mod think_tags;
 pub(crate) mod turn;
+pub mod usage;
 
 pub use core::{Agent, AgentConfig};
 pub use hop::HopCounter;

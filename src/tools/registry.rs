@@ -3,22 +3,24 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
+use tokio_util::sync::CancellationToken;
 
+use crate::a2a::{A2aClientHub, RemoteTaskTracker};
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
 use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::{EndpointRegistry, SessionAddress};
+use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, SessionAddress};
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult, actions,
-    agent_keys, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
-    message_agent, ollama_web_search, read, send_message, skills, submit_feedback, web_fetch,
-    write,
+    SharedFileTracker, SharedPathPolicy, SharedToolsPath, Tool, ToolError, ToolResult,
+    a2a_task_update, actions, agent_keys, background, edit, exec, file_bug_report, inbox,
+    memory_get, memory_search, message_agent, ollama_web_search, read, send_message, skills,
+    submit_feedback, web_fetch, workspace_checkpoints, write,
 };
 
 /// Registry of available tools.
@@ -29,6 +31,10 @@ pub struct ToolRegistry {
     /// Agent key store injected into the `exec` tool at registration, and
     /// the source of the redactor applied to every tool result.
     agent_keys: Option<SharedAgentKeys>,
+    /// Checkpoint engine injected into `exec` (for `store_output_as`) at
+    /// registration. `None` means minting a key through `exec` isn't
+    /// checkpointed (matches `agent_keys: None`'s "not available" story).
+    checkpoints: Option<Arc<crate::checkpoints::CheckpointEngine>>,
 }
 
 impl Default for ToolRegistry {
@@ -54,7 +60,13 @@ impl Default for ToolRegistry {
 /// main's. `web_search_backend` mirrors main's
 /// `cfg.web_search.standalone_backend`: `ollama_web_search` is registered
 /// only when it names the `"ollama"` backend, exactly like
-/// `gateway::startup::tools::init_tool_registry`.
+/// `gateway::startup::tools::init_tool_registry`. `trigger` and
+/// `conversation_target` describe what started this session (and, for a
+/// conversation-triggered one, which endpoint/conversation it replies to);
+/// `conversation_target` gates `a2a_task_update`, registered only when its
+/// endpoint is `"a2a"` (see `SESSION_ONLY_TOOLS` in
+/// `gateway::startup::tools`) — `trigger` itself isn't read by any tool yet,
+/// but is carried through for one that needs it later.
 pub struct SubagentToolDeps {
     pub tracker: SharedFileTracker,
     /// The main agent's write policy, shared so a session is blocked from
@@ -68,6 +80,16 @@ pub struct SubagentToolDeps {
     pub skill_state: SharedSkillState,
     pub tz: chrono_tz::Tz,
     pub hybrid_searcher: Arc<HybridSearcher>,
+    /// The workspace root, for tools that need to validate a caller-supplied
+    /// relative path against it (currently just `a2a_task_update`'s
+    /// artifacts), and for `write_file`/`edit_file` to recognize
+    /// `config/channels.toml`, `config/mcp.json`, `config/a2a.json`,
+    /// `HEARTBEAT.yml`, and skill `SKILL.md` files for diagnostics.
+    pub workspace_dir: PathBuf,
+    /// The app config directory (`~/.residuum/`), for `write_file`/
+    /// `edit_file` to recognize `config.toml`/`providers.toml` for
+    /// diagnostics.
+    pub config_dir: PathBuf,
     pub episodes_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub agent_inbox_dir: PathBuf,
@@ -89,6 +111,14 @@ pub struct SubagentToolDeps {
     /// This session's category, for `message_agent` to report alongside
     /// `own_address`.
     pub session_category: String,
+    /// What triggered this session. Not consumed by any tool yet — carried
+    /// through so a future session-only tool can tell what started it.
+    pub trigger: EventTrigger,
+    /// The conversation this session replies to, for a conversation-triggered
+    /// session. `None` for every other trigger. Not consumed by any tool
+    /// yet — carried through so a future session-only tool can tell which
+    /// endpoint and conversation it runs against.
+    pub conversation_target: Option<ConversationTarget>,
     pub messenger: Arc<AgentMessenger>,
     pub hop_counter: HopCounter,
     pub tracing_service: Arc<crate::tracing_service::TracingService>,
@@ -96,6 +126,14 @@ pub struct SubagentToolDeps {
     /// Standalone web search backend config, if one is configured — mirrors
     /// `cfg.web_search.standalone_backend`.
     pub web_search_backend: Option<crate::config::StandaloneBackendConfig>,
+    /// Remote A2A agents this instance's client can reach, shared with main.
+    pub a2a_hub: Arc<A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents, shared with
+    /// main.
+    pub a2a_tracker: Arc<RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs `workspace_history`/`workspace_restore`.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 impl ToolRegistry {
@@ -106,6 +144,7 @@ impl ToolRegistry {
             tools: Vec::new(),
             tools_path: None,
             agent_keys: None,
+            checkpoints: None,
         }
     }
 
@@ -124,6 +163,14 @@ impl ToolRegistry {
     /// tool can expose and mint keys.
     pub fn set_agent_keys(&mut self, agent_keys: SharedAgentKeys) {
         self.agent_keys = Some(agent_keys);
+    }
+
+    /// Set the checkpoint engine injected into the `exec` tool, so minting a
+    /// key through `store_output_as` checkpoints the config repo first.
+    ///
+    /// Call before [`register_defaults`](Self::register_defaults).
+    pub fn set_checkpoints(&mut self, checkpoints: Arc<crate::checkpoints::CheckpointEngine>) {
+        self.checkpoints = Some(checkpoints);
     }
 
     /// The redactor for every current agent-key value; empty when no key
@@ -186,26 +233,90 @@ impl ToolRegistry {
         Ok(result)
     }
 
+    /// Execute a tool by name, racing it against turn-level cancellation.
+    ///
+    /// See [`Tool::execute_cancellable`] for what happens when `cancel`
+    /// fires while the tool is running.
+    ///
+    /// # Errors
+    /// Returns `ToolError::NotFound` if no tool with the given name exists,
+    /// or propagates execution errors from the tool.
+    #[tracing::instrument(skip_all, fields(tool.name = %name))]
+    pub async fn execute_cancellable(
+        &self,
+        name: &str,
+        arguments: Value,
+        cancel: &CancellationToken,
+    ) -> Result<ToolResult, ToolError> {
+        let tool = self
+            .tools
+            .iter()
+            .find(|t| t.name() == name)
+            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+        tracing::debug!("tool invocation");
+        let result = tool.execute_cancellable(arguments, cancel).await?;
+        tracing::debug!(is_error = result.is_error, "tool result");
+        Ok(result)
+    }
+
     /// Register the default set of tools (read, write, edit, exec).
-    pub fn register_defaults(&mut self, tracker: SharedFileTracker, policy: SharedPathPolicy) {
+    ///
+    /// `diagnostics_paths` lets `write_file`/`edit_file` recognize the
+    /// strictly-parsed files this instance validates (`config.toml`,
+    /// `providers.toml`, `config/channels.toml`, `config/mcp.json`,
+    /// `config/a2a.json`, `HEARTBEAT.yml`, skill `SKILL.md`) and append
+    /// diagnostics to the tool result after a write. `config_watch` is
+    /// `Some` only for main's own registry — see `ConfigWriteWatch`'s doc
+    /// comment for why a session's registry never gets one — and lets
+    /// `write_file`/`edit_file` recognize a write to
+    /// `config.toml`/`providers.toml`/`mcp.json`/`channels.toml`/`a2a.json`/
+    /// `HEARTBEAT.yml` so the reload it triggers can report back to the
+    /// agent.
+    pub fn register_defaults(
+        &mut self,
+        tracker: SharedFileTracker,
+        policy: SharedPathPolicy,
+        diagnostics_paths: crate::diagnostics::DiagnosticsPaths,
+        config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
+    ) {
         self.register(Box::new(read::ReadTool::new(Arc::clone(&tracker))));
-        self.register(Box::new(write::WriteTool::new(
+        let mut write_tool = write::WriteTool::new(
             Arc::clone(&tracker),
             Arc::clone(&policy),
-        )));
-        self.register(Box::new(edit::EditTool::new(tracker, policy)));
+            diagnostics_paths.clone(),
+        );
+        let mut edit_tool = edit::EditTool::new(tracker, policy, diagnostics_paths);
+        if let Some(watch) = config_watch {
+            write_tool = write_tool.with_config_watch(watch.clone());
+            edit_tool = edit_tool.with_config_watch(watch);
+        }
+        self.register(Box::new(write_tool));
+        self.register(Box::new(edit_tool));
         self.register(Box::new(exec::ExecTool::new(
             self.tools_path.clone(),
             self.agent_keys.clone(),
+            self.checkpoints.clone(),
         )));
     }
 
     /// Register agent key tools (`agent_keys_list`, `agent_key_delete`).
-    pub fn register_agent_key_tools(&mut self, keys: SharedAgentKeys) {
+    ///
+    /// `checkpoints` is checkpointed before a delete, so a user-visible
+    /// key deletion (including one a future change lets the agent make on
+    /// the user's own keys) can be undone.
+    pub fn register_agent_key_tools(
+        &mut self,
+        keys: SharedAgentKeys,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
         self.register(Box::new(agent_keys::AgentKeysListTool::new(Arc::clone(
             &keys,
         ))));
-        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(keys)));
+        self.register(Box::new(agent_keys::AgentKeyDeleteTool::new(
+            keys,
+            checkpoints,
+        )));
     }
 
     /// Register the `memory_search` tool with a shared hybrid searcher.
@@ -293,12 +404,28 @@ impl ToolRegistry {
         )));
     }
 
-    /// Register session management tools (`stop_agent`, `list_agents`).
-    pub fn register_background_tools(&mut self, registry: Arc<SessionRegistry>) {
-        self.register(Box::new(background::StopAgentTool::new(Arc::clone(
-            &registry,
-        ))));
-        self.register(Box::new(background::ListAgentsTool::new(registry)));
+    /// Register session management tools (`stop_agent`, `list_agents`),
+    /// identifying this registry's owner as `self_address` for the remote
+    /// A2A task lookups both tools do (a caller's own open tasks).
+    pub fn register_background_tools(
+        &mut self,
+        registry: Arc<SessionRegistry>,
+        self_address: SessionAddress,
+        a2a_hub: Arc<A2aClientHub>,
+        a2a_tracker: Arc<RemoteTaskTracker>,
+    ) {
+        self.register(Box::new(background::StopAgentTool::new(
+            Arc::clone(&registry),
+            self_address.clone(),
+            Arc::clone(&a2a_hub),
+            Arc::clone(&a2a_tracker),
+        )));
+        self.register(Box::new(background::ListAgentsTool::new(
+            registry,
+            self_address,
+            a2a_hub,
+            a2a_tracker,
+        )));
     }
 
     /// Register the `message_agent` tool, identifying this registry's owner
@@ -309,12 +436,16 @@ impl ToolRegistry {
         self_category: String,
         messenger: Arc<AgentMessenger>,
         hop_counter: HopCounter,
+        a2a_hub: Arc<A2aClientHub>,
+        a2a_tracker: Arc<RemoteTaskTracker>,
     ) {
         self.register(Box::new(message_agent::MessageAgentTool::new(
             self_address,
             self_category,
             messenger,
             hop_counter,
+            a2a_hub,
+            a2a_tracker,
         )));
     }
 
@@ -364,6 +495,8 @@ impl ToolRegistry {
             skill_state,
             tz,
             hybrid_searcher,
+            workspace_dir,
+            config_dir,
             episodes_dir,
             sessions_dir,
             agent_inbox_dir,
@@ -379,20 +512,33 @@ impl ToolRegistry {
             own_depth,
             depth_cap,
             session_category,
+            // Not read by any tool yet — reserved for one that needs it later
+            // (see `SubagentToolDeps::trigger`).
+            trigger: _trigger,
+            conversation_target,
             messenger,
             hop_counter,
             tracing_service,
             tracing_client_context,
             web_search_backend,
+            a2a_hub,
+            a2a_tracker,
+            checkpoints,
         } = deps;
 
         let mut registry = Self::new();
         registry.set_tools_path(tools_path);
         registry.set_agent_keys(Arc::clone(&agent_keys));
+        registry.set_checkpoints(Arc::clone(&checkpoints));
 
-        // Core I/O tools
-        registry.register_defaults(tracker, path_policy);
-        registry.register_agent_key_tools(agent_keys);
+        // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
+        // — see its doc comment.
+        let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+            config_dir,
+            workspace_dir: workspace_dir.clone(),
+        };
+        registry.register_defaults(tracker, path_policy, diagnostics_paths, None);
+        registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
 
         // Skill tools: activate, deactivate
         registry.register_skill_tools(Arc::clone(&skill_state));
@@ -418,7 +564,12 @@ impl ToolRegistry {
         );
 
         // Session management (stop_agent, list_agents, subagent_spawn)
-        registry.register_background_tools(session_registry);
+        registry.register_background_tools(
+            session_registry,
+            own_address.clone(),
+            Arc::clone(&a2a_hub),
+            Arc::clone(&a2a_tracker),
+        );
         registry.register_spawn_tool(
             publisher.clone(),
             skill_state,
@@ -428,36 +579,94 @@ impl ToolRegistry {
             hop_counter.clone(),
         );
 
+        registry.register_a2a_task_update_tool(
+            conversation_target.as_ref(),
+            own_address.clone(),
+            publisher.clone(),
+            workspace_dir,
+        );
+
         // Messaging tools
         registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
         registry.register_list_endpoints_tool(endpoint_registry);
-        registry.register_message_agent_tool(own_address, session_category, messenger, hop_counter);
+        registry.register_message_agent_tool(
+            own_address,
+            session_category,
+            messenger,
+            hop_counter,
+            a2a_hub,
+            a2a_tracker,
+        );
 
         // Web fetch
         registry.register_web_fetch_tool();
 
+        // Workspace checkpoint history (workspace repository only)
+        registry.register_workspace_checkpoint_tools(checkpoints);
+
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
 
-        // Ollama Cloud web search tool, gated the same way as main's
-        // (see `gateway::startup::tools::init_tool_registry`).
-        if let Some(backend) = &web_search_backend
-            && backend.name == "ollama"
-        {
-            let base_url = backend
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.ollama.com".to_string());
-            registry.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
-            tracing::info!("registered ollama_web_search tool for session");
-        }
+        registry.register_ollama_web_search_tool_if_configured(web_search_backend.as_ref());
 
         registry
+    }
+
+    /// Register `a2a_task_update` when `conversation_target` names the
+    /// `a2a` endpoint — session-only (see `SESSION_ONLY_TOOLS` in
+    /// `gateway::startup::tools`).
+    fn register_a2a_task_update_tool(
+        &mut self,
+        conversation_target: Option<&ConversationTarget>,
+        own_address: SessionAddress,
+        publisher: crate::bus::Publisher,
+        workspace_dir: PathBuf,
+    ) {
+        if conversation_target.is_some_and(|target| target.endpoint == "a2a") {
+            self.register(Box::new(a2a_task_update::A2aTaskUpdateTool::new(
+                own_address,
+                publisher,
+                workspace_dir,
+            )));
+        }
+    }
+
+    /// Register `ollama_web_search`, gated the same way as main's (see
+    /// `gateway::startup::tools::init_tool_registry`): only when
+    /// `backend` names the `"ollama"` standalone web search backend.
+    fn register_ollama_web_search_tool_if_configured(
+        &mut self,
+        backend: Option<&crate::config::StandaloneBackendConfig>,
+    ) {
+        let Some(backend) = backend else { return };
+        if backend.name != "ollama" {
+            return;
+        }
+        let base_url = backend
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.ollama.com".to_string());
+        self.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+        tracing::info!("registered ollama_web_search tool for session");
     }
 
     /// Register the `web_fetch` tool for fetching web page content.
     pub fn register_web_fetch_tool(&mut self) {
         self.register(Box::new(web_fetch::WebFetchTool::new()));
+    }
+
+    /// Register the `workspace_history` and `workspace_restore` tools,
+    /// scoped to the workspace checkpoint repository only.
+    pub fn register_workspace_checkpoint_tools(
+        &mut self,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    ) {
+        self.register(Box::new(workspace_checkpoints::WorkspaceHistoryTool::new(
+            Arc::clone(&checkpoints),
+        )));
+        self.register(Box::new(workspace_checkpoints::WorkspaceRestoreTool::new(
+            checkpoints,
+        )));
     }
 
     /// Register the `file_bug_report` and `submit_feedback` tools.
@@ -536,7 +745,15 @@ mod tests {
     fn registry_with_defaults() {
         let mut registry = ToolRegistry::new();
         let policy = PathPolicy::new_shared();
-        registry.register_defaults(FileTracker::new_shared(), policy);
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            policy,
+            crate::diagnostics::DiagnosticsPaths {
+                config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
+                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
+            },
+            None,
+        );
         let defs = registry.definitions();
         assert!(
             defs.iter().any(|d| d.name == "read_file"),

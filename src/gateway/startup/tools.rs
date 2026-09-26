@@ -37,12 +37,28 @@ pub(super) struct ToolRegistryDeps<'a> {
     /// Main's current-turn hop counter, shared with the `Agent` these tools
     /// end up registered against (see `CreateAgentArgs::hop_counter`).
     pub hop_counter: &'a crate::agent::HopCounter,
+    /// Remote A2A agents this instance's client can reach.
+    pub a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents.
+    pub a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    /// Tracks the agent's own config-file writes so the reload each one
+    /// triggers can report back into its transcript. Wired only into main's
+    /// `write_file`/`edit_file` — see `ConfigWriteWatch`'s doc comment.
+    pub config_reload_tracker: &'a crate::tools::SharedConfigReloadTracker,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
 pub(super) struct CreateAgentArgs {
     pub provider: Box<dyn crate::inference::InferenceProvider>,
     pub options: crate::inference::CompletionOptions,
+    /// Maximum tool-call iterations for the agent's turns, from
+    /// `cfg.agent.max_tool_iterations`. `None` means unlimited.
+    pub max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call, from
+    /// `cfg.agent.repeat_call_guard`.
+    pub repeat_call_guard: crate::config::RepeatCallGuardConfig,
     pub tools: ToolRegistry,
     pub identity: IdentityFiles,
     /// Main's current-turn hop counter — the same instance already handed to
@@ -66,9 +82,26 @@ pub(super) fn init_tool_registry(
     let mut tools = ToolRegistry::new();
     tools.set_tools_path(Arc::clone(deps.tools_path));
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
+    tools.set_checkpoints(Arc::clone(deps.checkpoints));
     let file_tracker = crate::tools::FileTracker::new_shared();
-    tools.register_defaults(file_tracker, Arc::clone(deps.path_policy));
-    tools.register_agent_key_tools(Arc::clone(deps.agent_keys));
+    let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
+        config_dir: cfg.config_dir.clone(),
+        workspace_dir: cfg.workspace_dir.clone(),
+    };
+    let config_watch = crate::tools::ConfigWriteWatch {
+        recognized: crate::tools::config_reload_tracker::RecognizedConfigPaths::new(
+            &cfg.config_dir,
+            layout,
+        ),
+        tracker: deps.config_reload_tracker.clone(),
+    };
+    tools.register_defaults(
+        file_tracker,
+        Arc::clone(deps.path_policy),
+        diagnostics_paths,
+        Some(config_watch),
+    );
+    tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
     tools.register_action_tools(
@@ -84,7 +117,12 @@ pub(super) fn init_tool_registry(
         layout.user_inbox_attachments_dir(),
         tz,
     );
-    tools.register_background_tools(Arc::clone(deps.session_registry));
+    tools.register_background_tools(
+        Arc::clone(deps.session_registry),
+        SessionAddress::from(MAIN_ADDRESS),
+        Arc::clone(deps.a2a_hub),
+        Arc::clone(deps.a2a_tracker),
+    );
     tools.register_spawn_tool(
         deps.publisher.clone(),
         Arc::clone(deps.skill_state),
@@ -105,6 +143,8 @@ pub(super) fn init_tool_registry(
         MAIN_ADDRESS.to_string(),
         Arc::clone(deps.agent_messenger),
         deps.hop_counter.clone(),
+        Arc::clone(deps.a2a_hub),
+        Arc::clone(deps.a2a_tracker),
     );
 
     let override_tx = tokio::sync::watch::Sender::new(None);
@@ -123,6 +163,9 @@ pub(super) fn init_tool_registry(
         Arc::clone(deps.session_registry),
     );
 
+    // Workspace checkpoint history (workspace repository only)
+    tools.register_workspace_checkpoint_tools(Arc::clone(deps.checkpoints));
+
     // Register Ollama Cloud web search tool if configured
     if let Some(backend) = &cfg.web_search.standalone_backend
         && backend.name == "ollama"
@@ -139,11 +182,19 @@ pub(super) fn init_tool_registry(
 }
 
 /// Create the agent, load observations, recent context, and restore messages.
+///
+/// Each of the three loads below degrades independently rather than failing
+/// agent construction — a missing or corrupt snapshot means the agent starts
+/// with less context, not that it fails to start — but each is still folded
+/// into `degradations` as a plain-language line for the caller's grouped
+/// startup-degradation notice (see `super::degradation_notice`), so a
+/// silently emptier agent is still visible to the user.
 pub(super) async fn create_agent(
     args: CreateAgentArgs,
     mcp_registry: &SharedMcpRegistry,
     tz: chrono_tz::Tz,
     layout: &WorkspaceLayout,
+    degradations: &mut Vec<String>,
 ) -> Agent {
     let mut agent = Agent::new(
         args.provider,
@@ -157,11 +208,19 @@ pub(super) async fn create_agent(
         },
         args.hop_counter,
     );
+    agent.set_max_tool_iterations(args.max_tool_iterations);
+    agent.set_repeat_call_guard(args.repeat_call_guard);
     if let Err(err) = agent.reload_observations(layout).await {
         tracing::warn!(error = %err, "observation loading degraded");
+        degradations.push(format!(
+            "your past observations couldn't be loaded, so I'm starting this session without them: {err}"
+        ));
     }
     if let Err(err) = agent.reload_recent_context(layout).await {
         tracing::warn!(error = %err, "recent context loading degraded");
+        degradations.push(format!(
+            "your recent context summary couldn't be loaded, so I'm starting this session without it: {err}"
+        ));
     }
 
     match load_messages_for_agent(&layout.recent_messages_json()).await {
@@ -177,8 +236,15 @@ pub(super) async fn create_agent(
         }
         Err(err) => {
             tracing::warn!(error = %err, "message restore degraded: starting with empty history");
+            degradations.push(format!(
+                "your recent messages from before this restart couldn't be restored, so I'm starting with empty history: {err}"
+            ));
         }
     }
+
+    let usage_totals =
+        crate::agent::usage::load_session_usage_totals(&layout.usage_totals_json()).await;
+    agent.restore_usage_totals(usage_totals).await;
 
     agent
 }
@@ -211,6 +277,13 @@ mod tests {
     /// (see its doc comment) — keep the two lists in sync.
     const MAIN_ONLY_TOOLS: &[&str] = &["switch_endpoint"];
 
+    /// Tools registered only for a session, never for main — the reverse of
+    /// [`MAIN_ONLY_TOOLS`]. `a2a_task_update` is session-only because it
+    /// reports a delegated A2A task's outcome, which only makes sense for a
+    /// session started from the `a2a` endpoint — main never handles A2A
+    /// callers directly (see `docs/systems-usage/a2a.md`).
+    const SESSION_ONLY_TOOLS: &[&str] = &["a2a_task_update"];
+
     /// A minimal but fully populated `Config`, with every optional
     /// tool-gating switch turned on (here: an Ollama standalone web search
     /// backend), so `session_registry_matches_main_minus_documented_allowlist`
@@ -237,6 +310,7 @@ mod tests {
             discord: None,
             telegram: None,
             teams: None,
+            a2a: crate::config::A2aConfig::default(),
             webhooks: HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },
@@ -257,6 +331,7 @@ mod tests {
             tracing: TracingConfig::default(),
             role_overrides: HashMap::new(),
             config_dir: dir.to_path_buf(),
+            load_notices: vec![],
         }
     }
 
@@ -281,9 +356,13 @@ mod tests {
         tracing_client_context: Arc<crate::tracing_service::ClientContext>,
         agent_messenger: Arc<AgentMessenger>,
         hop_counter: HopCounter,
+        a2a_hub: Arc<crate::a2a::A2aClientHub>,
+        a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+        checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+        config_reload_tracker: crate::tools::SharedConfigReloadTracker,
     }
 
-    fn build_harness(dir: &std::path::Path) -> Harness {
+    async fn build_harness(dir: &std::path::Path) -> Harness {
         let cfg = test_config(dir);
         let layout = WorkspaceLayout::new(dir);
 
@@ -325,6 +404,23 @@ mod tests {
             HopLimits::from(&cfg.background),
         ));
         let hop_counter = HopCounter::new(0);
+        let a2a_hub = crate::a2a::A2aClientHub::new_shared();
+        let a2a_tracker = crate::a2a::RemoteTaskTracker::load(
+            layout.a2a_outbound_json(),
+            Arc::clone(&a2a_hub),
+            Arc::clone(&agent_messenger),
+            layout.agent_inbox_dir(),
+        )
+        .await;
+        let checkpoints = Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                layout.root().to_path_buf(),
+                dir.to_path_buf(),
+                &dir.join("checkpoints"),
+                None,
+            )
+            .expect("checkpoint repos should open in a fresh tempdir"),
+        );
 
         Harness {
             cfg,
@@ -343,6 +439,67 @@ mod tests {
             tracing_client_context,
             agent_messenger,
             hop_counter,
+            a2a_hub,
+            a2a_tracker,
+            checkpoints,
+            config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
+        }
+    }
+
+    /// Build a session's tool registry from the harness, as the fork path
+    /// does for a session at `address` in `category`. `conversation_target`
+    /// mirrors what a conversation-triggered session carries (`None` for
+    /// every other trigger) — gates `a2a_task_update`.
+    fn session_registry_for(
+        h: &Harness,
+        address: &str,
+        category: &str,
+        conversation_target: Option<crate::bus::ConversationTarget>,
+    ) -> crate::tools::ToolRegistry {
+        crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
+            tracker: FileTracker::new_shared(),
+            path_policy: Arc::clone(&h.path_policy),
+            tools_path: Arc::clone(&h.tools_path),
+            agent_keys: Arc::clone(&h.agent_keys),
+            skill_state: Arc::clone(&h.skill_state),
+            tz: chrono_tz::UTC,
+            hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
+            workspace_dir: h.layout.root().to_path_buf(),
+            config_dir: h.cfg.config_dir.clone(),
+            episodes_dir: h.layout.episodes_dir(),
+            sessions_dir: h.layout.sessions_dir(),
+            agent_inbox_dir: h.layout.agent_inbox_dir(),
+            agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
+            user_inbox_dir: h.layout.user_inbox_dir(),
+            user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
+            session_registry: Arc::clone(&h.session_registry),
+            endpoint_registry: h.endpoint_registry.clone(),
+            publisher: h.publisher.clone(),
+            action_store: Arc::clone(&h.action_store),
+            action_notify: Arc::clone(&h.action_notify),
+            own_address: SessionAddress::from(address),
+            own_depth: 1,
+            depth_cap: h.cfg.background.subagent_depth_cap,
+            session_category: category.to_string(),
+            trigger: crate::bus::EventTrigger::Agent,
+            conversation_target,
+            messenger: Arc::clone(&h.agent_messenger),
+            hop_counter: h.hop_counter.clone(),
+            tracing_service: Arc::clone(&h.tracing_service),
+            tracing_client_context: Arc::clone(&h.tracing_client_context),
+            web_search_backend: h.cfg.web_search.standalone_backend.clone(),
+            a2a_hub: Arc::clone(&h.a2a_hub),
+            a2a_tracker: Arc::clone(&h.a2a_tracker),
+            checkpoints: Arc::clone(&h.checkpoints),
+        })
+    }
+
+    /// A `ConversationTarget` naming the `a2a` endpoint, as an a2a
+    /// conversation session's `SubagentToolDeps` carries.
+    fn a2a_conversation_target() -> crate::bus::ConversationTarget {
+        crate::bus::ConversationTarget {
+            endpoint: "a2a".to_string(),
+            conversation_id: "key:tester/ctx-1".to_string(),
         }
     }
 
@@ -353,10 +510,10 @@ mod tests {
     /// to one registry but not the other fails this test instead of drifting
     /// silently — see the "Past gap" history this replaced in
     /// `src/tools/CLAUDE.md`.
-    #[test]
-    fn session_registry_matches_main_minus_documented_allowlist() {
+    #[tokio::test]
+    async fn session_registry_matches_main_minus_documented_allowlist() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let h = build_harness(dir.path());
+        let h = build_harness(dir.path()).await;
 
         let deps = ToolRegistryDeps {
             action_store: &h.action_store,
@@ -372,41 +529,21 @@ mod tests {
             tracing_client_context: &h.tracing_client_context,
             agent_messenger: &h.agent_messenger,
             hop_counter: &h.hop_counter,
+            a2a_hub: &h.a2a_hub,
+            a2a_tracker: &h.a2a_tracker,
+            checkpoints: &h.checkpoints,
+            config_reload_tracker: &h.config_reload_tracker,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
         main_names.sort();
 
-        let session_tools =
-            crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
-                tracker: FileTracker::new_shared(),
-                path_policy: Arc::clone(&h.path_policy),
-                tools_path: Arc::clone(&h.tools_path),
-                agent_keys: Arc::clone(&h.agent_keys),
-                skill_state: Arc::clone(&h.skill_state),
-                tz: chrono_tz::UTC,
-                hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
-                episodes_dir: h.layout.episodes_dir(),
-                sessions_dir: h.layout.sessions_dir(),
-                agent_inbox_dir: h.layout.agent_inbox_dir(),
-                agent_inbox_archive_dir: h.layout.agent_inbox_archive_dir(),
-                user_inbox_dir: h.layout.user_inbox_dir(),
-                user_inbox_attachments_dir: h.layout.user_inbox_attachments_dir(),
-                session_registry: Arc::clone(&h.session_registry),
-                endpoint_registry: h.endpoint_registry.clone(),
-                publisher: h.publisher.clone(),
-                action_store: Arc::clone(&h.action_store),
-                action_notify: Arc::clone(&h.action_notify),
-                own_address: SessionAddress::from("spawned-test-0001"),
-                own_depth: 1,
-                depth_cap: h.cfg.background.subagent_depth_cap,
-                session_category: "spawned".to_string(),
-                messenger: Arc::clone(&h.agent_messenger),
-                hop_counter: h.hop_counter.clone(),
-                tracing_service: Arc::clone(&h.tracing_service),
-                tracing_client_context: Arc::clone(&h.tracing_client_context),
-                web_search_backend: h.cfg.web_search.standalone_backend.clone(),
-            });
+        let session_tools = session_registry_for(
+            &h,
+            "spawned-test-0001",
+            "spawned",
+            Some(a2a_conversation_target()),
+        );
         let mut session_names = session_tools.tool_names();
         session_names.sort();
 
@@ -414,13 +551,167 @@ mod tests {
             .iter()
             .filter(|name| !MAIN_ONLY_TOOLS.contains(&name.as_str()))
             .cloned()
+            .chain(SESSION_ONLY_TOOLS.iter().map(ToString::to_string))
             .collect();
         expected.sort();
 
         assert_eq!(
             session_names, expected,
-            "session registry must carry every main tool except the documented \
-             main-only allowlist ({MAIN_ONLY_TOOLS:?})"
+            "session registry must equal main minus the main-only allowlist \
+             ({MAIN_ONLY_TOOLS:?}) plus the session-only allowlist ({SESSION_ONLY_TOOLS:?})"
+        );
+    }
+
+    /// An `artifact` session gets the same tools as a spawned one; only its
+    /// `message_agent` to `main` is refused, while its user-inbox tool still
+    /// files items.
+    #[tokio::test]
+    async fn artifact_session_keeps_every_session_tool_but_cannot_message_main() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = build_harness(dir.path()).await;
+
+        let mut spawned_names =
+            session_registry_for(&h, "spawned-test-0001", "spawned", None).tool_names();
+        spawned_names.sort();
+        let artifact_tools = session_registry_for(&h, "artifact-wiki-0001", "artifact", None);
+        let mut artifact_names = artifact_tools.tool_names();
+        artifact_names.sort();
+        assert_eq!(artifact_names, spawned_names);
+
+        let to_main = artifact_tools
+            .execute(
+                "message_agent",
+                serde_json::json!({ "to": "main", "message": "done" }),
+            )
+            .await
+            .expect("message_agent returns a tool error, not a failure");
+        assert!(to_main.is_error);
+        assert!(
+            to_main.output.contains("can't reach the main conversation"),
+            "got: {}",
+            to_main.output
+        );
+
+        // Workspace bootstrap creates the inbox folders in a real install.
+        std::fs::create_dir_all(h.layout.user_inbox_dir()).unwrap();
+        let inbox = artifact_tools
+            .execute(
+                "user_inbox_add",
+                serde_json::json!({ "title": "Wiki refreshed", "body": "3 pages updated" }),
+            )
+            .await
+            .expect("user_inbox_add runs");
+        assert!(!inbox.is_error, "got: {}", inbox.output);
+        let filed = std::fs::read_dir(h.layout.user_inbox_dir())
+            .expect("user inbox dir exists after an add")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .count();
+        assert_eq!(filed, 1, "the item lands in the user's inbox");
+    }
+
+    /// Only a session started from the `a2a` endpoint gets `a2a_task_update`
+    /// — an ordinary session (any other `conversation_target`, including
+    /// none at all) never does.
+    #[tokio::test]
+    async fn only_an_a2a_conversation_session_gets_the_a2a_task_update_tool() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = build_harness(dir.path()).await;
+
+        let a2a_tools = session_registry_for(
+            &h,
+            "external-a2a-0001",
+            "external",
+            Some(a2a_conversation_target()),
+        );
+        assert!(
+            a2a_tools
+                .tool_names()
+                .contains(&"a2a_task_update".to_string()),
+            "an a2a conversation session must get a2a_task_update"
+        );
+
+        let plain_session = session_registry_for(&h, "spawned-test-0002", "spawned", None);
+        assert!(
+            !plain_session
+                .tool_names()
+                .contains(&"a2a_task_update".to_string()),
+            "a non-a2a session must not get a2a_task_update"
+        );
+
+        let discord_target = crate::bus::ConversationTarget {
+            endpoint: "discord".to_string(),
+            conversation_id: "chan-1".to_string(),
+        };
+        let discord_session = session_registry_for(
+            &h,
+            "external-discord-0001",
+            "external",
+            Some(discord_target),
+        );
+        assert!(
+            !discord_session
+                .tool_names()
+                .contains(&"a2a_task_update".to_string()),
+            "a conversation session for another endpoint must not get a2a_task_update"
+        );
+    }
+
+    /// A malformed observations/recent-context/recent-messages snapshot each
+    /// degrades `create_agent` independently (the agent still starts) and
+    /// each lands its own plain-language line in the caller's grouped
+    /// startup-degradation notice, rather than only a log line no one sees.
+    #[tokio::test]
+    async fn create_agent_degradations_are_collected_for_the_caller() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let layout = WorkspaceLayout::new(dir.path());
+
+        for path in [
+            layout.observations_json(),
+            layout.recent_context_json(),
+            layout.recent_messages_json(),
+        ] {
+            std::fs::create_dir_all(path.parent().expect("snapshot path has a parent"))
+                .expect("failed to create snapshot dir");
+            std::fs::write(&path, "not valid json").expect("failed to write malformed snapshot");
+        }
+
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let mut degradations: Vec<String> = Vec::new();
+
+        let _agent = create_agent(
+            CreateAgentArgs {
+                provider: Box::new(crate::inference::providers::null::NullProvider),
+                options: crate::inference::CompletionOptions::default(),
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+                tools: crate::tools::ToolRegistry::new(),
+                identity: IdentityFiles::default(),
+                hop_counter: HopCounter::new(0),
+            },
+            &mcp_registry,
+            chrono_tz::UTC,
+            &layout,
+            &mut degradations,
+        )
+        .await;
+
+        assert_eq!(
+            degradations.len(),
+            3,
+            "each of the three malformed snapshots should degrade independently: {degradations:?}"
+        );
+        assert!(
+            degradations.iter().any(|d| d.contains("observations")),
+            "missing observations degradation: {degradations:?}"
+        );
+        assert!(
+            degradations.iter().any(|d| d.contains("recent context")),
+            "missing recent context degradation: {degradations:?}"
+        );
+        assert!(
+            degradations.iter().any(|d| d.contains("recent messages")),
+            "missing recent messages degradation: {degradations:?}"
         );
     }
 }

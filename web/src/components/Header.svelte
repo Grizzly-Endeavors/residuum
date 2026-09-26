@@ -11,16 +11,18 @@
     onOpenWorkspace,
     onOpenSettings,
     onOpenWorkbench,
+    onOpenScheduled,
     onOpenFeedback,
     onOpenInbox,
     sessionsToggle,
   }: {
     status: ConnectionStatus;
-    activeView: "chat" | "workspace" | "settings" | "workbench";
+    activeView: "chat" | "workspace" | "settings" | "workbench" | "scheduled";
     onOpenChat: () => void;
     onOpenWorkspace: () => void;
     onOpenSettings: () => void;
     onOpenWorkbench: () => void;
+    onOpenScheduled: () => void;
     onOpenFeedback: () => void;
     onOpenInbox: () => void;
     /** The sessions sidebar toggle; omitted where the sidebar isn't shown. */
@@ -76,6 +78,11 @@
           class="hamburger-menu-item"
           class:active={activeView === "workbench"}
           onclick={() => select(onOpenWorkbench)}>Workbench</button
+        >
+        <button
+          class="hamburger-menu-item"
+          class:active={activeView === "scheduled"}
+          onclick={() => select(onOpenScheduled)}>Scheduled</button
         >
         <button
           class="hamburger-menu-item"

@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::future::Future;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -23,13 +24,19 @@ use crate::inference::ToolDefinition;
 use crate::mcp::types::{McpServerEntry, McpTransport};
 use crate::tools::{ToolError, ToolResult};
 
-/// Default timeout for MCP tool calls (seconds).
-const TOOL_CALL_TIMEOUT: Duration = Duration::from_mins(1);
-
 /// A live connection to a single MCP server process.
 pub struct McpClient {
     service: RunningService<RoleClient, ()>,
     server_name: String,
+    /// Optional per-server timeout for tool calls, from `McpServerEntry::timeout_secs`.
+    ///
+    /// `None` means a call runs until it finishes or the turn is stopped —
+    /// there is no automatic cutoff. Stop now interrupts an in-flight tool
+    /// call immediately (the turn loop races every MCP call against the
+    /// stop token), so a fixed timeout no longer serves that purpose; it
+    /// only cuts off calls the user hasn't asked to stop, which is why it
+    /// defaults off and is opt-in per server.
+    timeout: Option<Duration>,
 }
 
 impl McpClient {
@@ -83,6 +90,7 @@ impl McpClient {
         Ok(Self {
             service,
             server_name: entry.name.clone(),
+            timeout: entry.timeout_secs.map(Duration::from_secs),
         })
     }
 
@@ -108,6 +116,7 @@ impl McpClient {
         Ok(Self {
             service,
             server_name: entry.name.clone(),
+            timeout: entry.timeout_secs.map(Duration::from_secs),
         })
     }
 
@@ -142,6 +151,54 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns `ToolError::Execution` if the RPC call fails.
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+        self.handle().call_tool(name, args).await
+    }
+
+    /// A cheap-to-clone handle to this connection's peer, so a caller (the
+    /// registry) can drop whatever lock it holds before awaiting a
+    /// potentially slow tool call, rather than holding it for the call's
+    /// whole duration.
+    #[must_use]
+    pub fn handle(&self) -> McpClientHandle {
+        McpClientHandle {
+            peer: self.service.peer().clone(),
+            server_name: self.server_name.clone(),
+            timeout: self.timeout,
+        }
+    }
+
+    /// Gracefully shut down the MCP server connection.
+    pub async fn shutdown(self) {
+        if let Err(e) = self.service.cancel().await {
+            tracing::warn!(
+                server = %self.server_name,
+                error = %e,
+                "mcp server shutdown returned error"
+            );
+        } else {
+            tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
+        }
+    }
+}
+
+/// A cheap-to-clone handle for calling tools on one MCP server, independent
+/// of the [`McpClient`] (and whatever registry lock guards it) that
+/// produced it — see [`McpClient::handle`].
+#[derive(Debug, Clone)]
+pub struct McpClientHandle {
+    peer: rmcp::service::Peer<RoleClient>,
+    server_name: String,
+    /// Optional per-server timeout for tool calls, carried over from
+    /// [`McpClient`] (see its own field doc for why it defaults off).
+    timeout: Option<Duration>,
+}
+
+impl McpClientHandle {
+    /// Call a tool on this MCP server.
+    ///
+    /// # Errors
+    /// Returns `ToolError::Execution` if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.tool = %name, mcp.server = %self.server_name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
@@ -154,22 +211,24 @@ impl McpClient {
             task: None,
         };
 
-        let result: CallToolResult =
-            tokio::time::timeout(TOOL_CALL_TIMEOUT, self.service.peer().call_tool(params))
-                .await
-                .map_err(|_elapsed| {
-                    ToolError::Execution(format!(
-                        "mcp tool call '{name}' on server '{}' timed out after {}s",
-                        self.server_name,
-                        TOOL_CALL_TIMEOUT.as_secs()
-                    ))
-                })?
-                .map_err(|e| {
-                    ToolError::Execution(format!(
-                        "mcp tool call '{name}' on server '{}' failed: {e}",
-                        self.server_name
-                    ))
-                })?;
+        let call = self.peer.call_tool(params);
+        let outcome = run_with_optional_timeout(self.timeout, call).await;
+        let result: CallToolResult = match outcome {
+            Ok(inner) => inner.map_err(|e| {
+                ToolError::Execution(format!(
+                    "mcp tool call '{name}' on server '{}' failed: {e}",
+                    self.server_name
+                ))
+            })?,
+            Err(elapsed) => {
+                return Err(ToolError::Execution(format!(
+                    "the '{name}' tool timed out after {}s on mcp server '{}' — this server's \
+                     configured timeout_secs in mcp.json was reached before it finished",
+                    elapsed.as_secs(),
+                    self.server_name
+                )));
+            }
+        };
 
         let is_error = result.is_error.unwrap_or(false);
         let output = extract_text_content(&result.content);
@@ -186,18 +245,25 @@ impl McpClient {
             images: vec![],
         })
     }
+}
 
-    /// Gracefully shut down the MCP server connection.
-    pub async fn shutdown(self) {
-        if let Err(e) = self.service.cancel().await {
-            tracing::warn!(
-                server = %self.server_name,
-                error = %e,
-                "mcp server shutdown returned error"
-            );
-        } else {
-            tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
-        }
+/// Await `fut` under `timeout` when one is configured, otherwise await it
+/// unconditionally.
+///
+/// `Err(d)` reports the configured duration `d` that elapsed before `fut`
+/// finished; the caller turns that into a plain-language timeout error. This
+/// is split out from [`McpClient::call_tool`] so the timeout/no-timeout
+/// behavior itself is testable against a plain future, without a live MCP
+/// connection.
+async fn run_with_optional_timeout<T>(
+    timeout: Option<Duration>,
+    fut: impl Future<Output = T>,
+) -> Result<T, Duration> {
+    match timeout {
+        Some(duration) => tokio::time::timeout(duration, fut)
+            .await
+            .map_err(|_elapsed| duration),
+        None => Ok(fut.await),
     }
 }
 
@@ -286,6 +352,41 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    #[tokio::test]
+    async fn with_a_configured_timeout_a_slow_call_is_cut_off() {
+        // A short "60s-equivalent" timeout standing in for a real server
+        // that never answers: with a call configured to time out, a future
+        // slower than that timeout is cut off and reports how long it ran.
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            "unreachable"
+        };
+        let result = run_with_optional_timeout(Some(Duration::from_millis(20)), slow).await;
+        assert_eq!(
+            result,
+            Err(Duration::from_millis(20)),
+            "should report the configured duration that elapsed"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_no_timeout_configured_a_slow_call_still_completes() {
+        // No `timeout_secs` set (the default): the same slow future that
+        // would have been cut off above now runs to completion, proving
+        // there is no hidden fixed cutoff standing in for the removed
+        // default 60s timeout.
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            "done"
+        };
+        let result = run_with_optional_timeout(None, slow).await;
+        assert_eq!(
+            result,
+            Ok("done"),
+            "should run to completion with no cutoff"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_stdio_resolves_binary_from_tools_path() {
@@ -315,6 +416,7 @@ mod tests {
             env: HashMap::new(),
             transport: McpTransport::Stdio,
             headers: HashMap::new(),
+            timeout_secs: None,
         };
 
         // Without the tools PATH the binary is not resolvable → spawn fails.
@@ -353,6 +455,7 @@ mod tests {
             env: HashMap::new(),
             transport: McpTransport::Http,
             headers: HashMap::new(),
+            timeout_secs: None,
         };
 
         let result = McpClient::connect(&entry, None).await;
@@ -373,6 +476,7 @@ mod tests {
             env: HashMap::new(),
             transport: McpTransport::Stdio,
             headers: HashMap::new(),
+            timeout_secs: None,
         };
 
         let result = McpClient::connect(&entry, None).await;

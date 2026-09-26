@@ -7,8 +7,8 @@
 // call `toast.show()` directly — those are single-action confirmations and
 // don't belong in history.
 //
-// History is in-memory only. Add localStorage persistence when the broader
-// browser-caching pass lands.
+// History is in-memory only and holds every notification for the session; it
+// does not persist across a page reload.
 
 import { toast } from "./toast.svelte";
 
@@ -18,17 +18,21 @@ export interface Notification {
   id: number;
   kind: NotificationKind;
   message: string;
+  /** Full technical detail behind an expandable toggle in the recall list. */
+  details?: string;
   timestamp: Date;
 }
-
-const HISTORY_CAP = 50;
 
 class NotificationStore {
   history = $state<Notification[]>([]);
   private nextId = 1;
 
-  /** Show as a transient toast AND record in history. */
-  surface(kind: NotificationKind, message: string): void {
+  /**
+   * Show as a transient toast AND record in history. `details`, when
+   * given, is never shown in the toast itself — only behind the recall
+   * list's expandable toggle.
+   */
+  surface(kind: NotificationKind, message: string, details?: string): void {
     if (kind === "error") {
       toast.error(message);
     } else {
@@ -38,12 +42,10 @@ class NotificationStore {
       id: this.nextId++,
       kind,
       message,
+      details,
       timestamp: new Date(),
     };
     this.history.unshift(entry);
-    if (this.history.length > HISTORY_CAP) {
-      this.history.length = HISTORY_CAP;
-    }
   }
 
   clear(): void {

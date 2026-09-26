@@ -1,7 +1,7 @@
 /* ── Workbench ────────────────────────────────────────────────────────── */
-/* Tools sit on the bench as stone slabs, each with a vein seam down its    */
-/* left edge. The seam flares once when the agent writes to the tool: the   */
-/* only motion here, and it means "this just changed".                      */
+/* Artifacts sit on the bench as stone slabs, each with a vein seam down    */
+/* its left edge. The seam flares once when the agent writes to the        */
+/* artifact: the only motion here, and it means "this just changed".        */
 
 .workbench-view {
   display: flex;
@@ -18,7 +18,7 @@
 /* Headings take focus only programmatically, to announce where the user */
 /* landed; they are not controls, so they get no focus ring. */
 .workbench-title:focus-visible,
-.workbench-tool-title:focus-visible {
+.workbench-artifact-title:focus-visible {
   box-shadow: none;
 }
 
@@ -199,16 +199,16 @@
   color: var(--text-muted);
 }
 
-/* ── Tool view ────────────────────────────────────────────────────────── */
+/* ── Artifact view ────────────────────────────────────────────────────── */
 
-.workbench-tool {
+.workbench-artifact {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-.workbench-tool-bar {
+.workbench-artifact-bar {
   display: flex;
   align-items: center;
   gap: var(--s-3);
@@ -218,7 +218,7 @@
   flex-shrink: 0;
 }
 
-.workbench-tool-heading {
+.workbench-artifact-heading {
   display: flex;
   align-items: baseline;
   gap: var(--s-3);
@@ -226,7 +226,7 @@
   min-width: 0;
 }
 
-.workbench-tool-title {
+.workbench-artifact-title {
   margin: 0;
   font-family: var(--font-body);
   font-size: var(--fs-lg);
@@ -236,8 +236,201 @@
   text-overflow: ellipsis;
 }
 
-.workbench-tool-heading .workbench-slab-path {
+.workbench-artifact-heading .workbench-slab-path {
   white-space: nowrap;
+}
+
+/* ── Activity indicator and panel ─────────────────────────────────────── */
+/* What the artifact is doing right now — sessions it started, model calls
+   in flight — always visible as a count, with a panel that opens onto the
+   detail: each session with its own stop, and a Cancel calls action. */
+
+.workbench-activity-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.workbench-activity-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.workbench-activity-toggle:hover,
+.workbench-activity-toggle.active {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--border);
+}
+
+.workbench-activity-toggle.has-activity {
+  color: var(--vein-bright);
+  border-color: var(--vein-dim);
+}
+
+.workbench-activity-sep {
+  opacity: 0.6;
+}
+
+.workbench-activity-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 50;
+  width: 320px;
+  max-width: calc(100vw - var(--s-4) * 2);
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.workbench-activity-section {
+  padding: var(--s-3) var(--s-4);
+}
+
+.workbench-activity-section + .workbench-activity-section {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.workbench-activity-heading {
+  margin: 0 0 var(--s-2);
+  font-family: var(--font-body);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.workbench-activity-empty {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.workbench-activity-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workbench-activity-session {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  border-radius: var(--radius-sm);
+}
+
+.workbench-activity-session-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: 6px var(--s-2);
+  text-align: left;
+  font-family: var(--font-body);
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-quick);
+}
+
+.workbench-activity-session-open:hover {
+  background: var(--bg-raised);
+}
+
+.workbench-activity-session-open:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.workbench-activity-session-purpose {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+
+.workbench-activity-session-state {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.workbench-activity-session-state.state-running {
+  color: var(--vein-bright);
+}
+
+.workbench-activity-session-stop {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-quick),
+    background-color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.workbench-activity-session-stop:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--error-bg);
+  border-color: rgba(192, 57, 43, 0.35);
+}
+
+.workbench-activity-session-stop:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.workbench-activity-session-stop:disabled {
+  color: var(--disabled-text);
+  cursor: not-allowed;
+}
+
+.workbench-activity-calls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
 .workbench-stage {
@@ -286,8 +479,16 @@
     padding: var(--s-3) var(--s-4);
   }
 
-  .workbench-tool-heading .workbench-slab-path {
+  .workbench-artifact-heading .workbench-slab-path {
     display: none;
+  }
+
+  .workbench-activity-toggle {
+    padding: 0 var(--s-2);
+  }
+
+  .workbench-activity-panel {
+    right: -8px;
   }
 }
 
@@ -303,10 +504,10 @@
 }
 
 /* ── Full view ────────────────────────────────────────────────────────── */
-/* The tool fills the window. The one way back stays in the corner, faint  */
-/* until reached for, so it never covers much of the tool.                  */
+/* The artifact fills the window. The one way back stays in the corner,    */
+/* faint until reached for, so it never covers much of the artifact.        */
 
-.workbench-tool.full .workbench-stage {
+.workbench-artifact.full .workbench-stage {
   background: var(--bg-deep);
 }
 

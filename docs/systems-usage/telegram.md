@@ -2,6 +2,10 @@
 
 The Telegram interface lets the agent chat in Telegram private chats and in groups the bot has been added to. Residuum long-polls the Bot API with the bot token, so no public endpoint is needed.
 
+## Startup and recovery
+
+Verifying the bot token (`getMe`) at startup talks to the Bot API. A transient failure there (network not up yet, a momentary API error) retries with exponential backoff instead of leaving the adapter dead until a config reload — a notice is published once when retries start, once on recovery, and once if it gives up after 10 attempts. A corrupt `telegram_state.json` is moved aside (to `telegram_state.json.corrupt`) and the interface starts fresh with a notice, rather than staying down until someone fixes the file by hand — the owner will need to message the bot again to be recognized.
+
 ## Who the agent answers
 
 The **owner** is whoever first sends the bot a private message. Their Telegram user ID and chat are saved in `telegram_state.json` in the workspace, so ownership survives restarts. To hand the bot to someone else, stop Residuum, remove the `owner` entry from that file, and have the new owner message the bot.
@@ -18,6 +22,8 @@ Every message the agent sees records who sent it and where, e.g. `[From: Bear Fl
 ## Conversation routing
 
 Only the owner's own private chat reaches the main agent. Every other admitted conversation — a group or supergroup, and a non-owner's private chat when `respond_to_others` is on — is handled by an [agent session](background-tasks.md) of its own instead: a temporary fork of the main agent, addressed deterministically by that chat, that keeps its own memory and idle timeout rather than sharing the owner's private conversation. This holds even when the owner is the one talking in a group — a group is still a shared space, so it gets a session, not main. The session sees the same sender attribution and buffered chatter described below, and replies into that chat — see [Where replies go](#where-replies-go).
+
+`/stop` follows the same routing: typed in the owner's own private chat it stops main's current turn; typed in a group or supergroup it stops that chat's session instead, never main — see [Turn Control](turn-control.md).
 
 ## Private chats and groups
 

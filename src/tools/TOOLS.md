@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
+> Read the contents of a file. Each output line is prefixed with its line number and a tab (e.g. `   1\thello`); the prefix is not part of the file, so leave it out of edit_file's old_string. By default returns the first 2000 lines; use offset/limit to page through the rest — there is no file size limit, the output header reports the file's total size and line count either way. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes, capped by the model API's inline image size limit.
 
 ### Input
 
@@ -21,17 +21,13 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 ### Output
 
-**Text files:** lines formatted as `{line_num:>4}\t{content}` joined by newlines, optionally preceded by warning lines.
+**Text files:** a header line reporting the file's total size and line count, then lines formatted as `{line_num:>4}\t{content}` joined by newlines. The header adds a range note (`showing lines X-Y of N; ...`) when the output doesn't cover the whole file, and a line-truncation note when any line exceeds 2000 characters (`... (truncated)`). There is no file size limit — a large file is paged by `offset`/`limit`, not refused, and is streamed rather than loaded whole into memory.
 
-Warnings prepended when:
-- File exceeds 2000 lines and no explicit `limit`/`offset` was given
-- Any lines exceed 2000 characters (they are truncated with `... (truncated)`)
-
-**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images.
+**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images. Capped at the model API's inline image size limit (20 MB); over that, the error names the limit as a model API fact, not a residuum one.
 
 On error (returned as `is_error = true`):
 - File does not exist or cannot be read
-- File exceeds 10 MB size cap
+- Image exceeds the model API's inline size limit
 
 **Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
 
@@ -53,7 +49,7 @@ On error (returned as `is_error = true`):
 
 ### Output
 
-On success: `"wrote {N} bytes to {path}"`
+On success: `"wrote {N} bytes to {path}"`, followed by one line per diagnostic if `path` is one of the strictly-parsed files `crate::diagnostics` checks (`config.toml`, `providers.toml`, `config/channels.toml`, `config/mcp.json`, `config/a2a.json`, `HEARTBEAT.yml`, a skill's `SKILL.md`): `"\n{file name} {location}: {message}"` (e.g. `"HEARTBEAT.yml line 14: schedule must be a duration like \"30m\""`). The write always happens even when content is invalid — diagnostics report the problem rather than blocking the write, so the agent can fix it on its next turn. A clean file, or a path this module doesn't understand, leaves the result unchanged.
 
 On error:
 - `PathPolicy` rejects the write path (targets a protected config or credential-store file)
@@ -62,6 +58,8 @@ On error:
 - Write fails
 
 **Side effect:** Records the path in the `FileTracker` after a successful write.
+
+**Note:** `config.toml` and `providers.toml` are writable (the agent may edit them on the user's behalf); `config.example.toml`/`providers.example.toml` are always blocked — Residuum regenerates them from its own defaults on every startup. See the `residuum-system` skill's [config reference](../../assets/bundled-skills/residuum-system/references/config.md) for which file holds what and how to edit them.
 
 ---
 
@@ -96,7 +94,7 @@ Each `edits` entry:
 
 ### Output
 
-On success: `"edited {path} ({N} replacement(s))"`, then one `note:` line per edit that matched only after ignoring whitespace, a blank line, and a preview of the changed regions in the final file. The preview uses `read_file`'s `{line_num:>4}\t{content}` format with 2 lines of context, separates regions with `   …`, and is capped at 60 lines.
+On success: `"edited {path} ({N} replacement(s))"`, then one `note:` line per edit that matched only after ignoring whitespace, a blank line, and a preview of the changed regions in the final file. The preview uses `read_file`'s `{line_num:>4}\t{content}` format with 2 lines of context, separates regions with `   …`, and is capped at 60 lines. If `path` is one of the strictly-parsed files `crate::diagnostics` checks, one line per diagnostic follows — see `write_file`'s output for the exact shape. The edit always applies even when the result is invalid.
 
 On error (returned as `is_error = true`; nothing is written):
 - `PathPolicy` rejects the path (targets a protected config or credential-store file)
@@ -135,18 +133,21 @@ On success (exit code 0): stdout, followed by `STDERR:\n{stderr}` if stderr is n
 
 On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`.
 
-On timeout: `"command timed out after {N} seconds"`.
+On timeout: the command's whole process tree is killed (not just the immediate shell), and the result is an error carrying whatever stdout/stderr it had already produced: `"command timed out after {N} seconds; its process tree was killed"`, followed by `STDOUT so far:\n{stdout}` and/or `STDERR so far:\n{stderr}` for whichever are non-empty.
+
+On cancellation (the turn was stopped while the command was running): same process-tree kill and same partial-output shape, reported as a cancellation rather than a failure — `"the turn was stopped while this command was running; its process tree was killed"` plus whatever `STDOUT so far` / `STDERR so far` it had produced. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
 
 Output is capped at 100 KB; larger output is truncated with `\n... (output truncated)`.
 
 With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
 
 With `store_output_as`:
-- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.**
+- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.** There is no minimum length; a value under 8 characters is still stored, with `" Warning: {reason}."` appended naming that it can't be redacted from output reliably.
 - Non-zero exit: `"command exited with code {N}; nothing was stored and stdout was discarded"` plus stderr.
 - Empty stdout: `"command produced no stdout; nothing was stored"`.
 - A name that is invalid or belongs to a user-created key is refused before the command runs (`"... Nothing was run."`).
-- A value that fails storage rules (shorter than 8 characters): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+- A value that fails storage rules (contains a NUL byte, or the name conflicts): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+- Timeout or cancellation: nothing is stored and stdout is discarded from the message too, the same as a non-zero exit — `"{reason}; nothing was stored and stdout was discarded"` plus stderr.
 
 stderr in a `store_output_as` result is redacted against the new value as well as every existing key.
 
@@ -158,6 +159,8 @@ Commands are resolved against the configured tool `PATH`: the directories in
 [Tool PATH](../../docs/systems-usage/tools.md).
 
 Named keys are set only in the spawned child's environment. `store_output_as` writes to the agent key store. Every agent-key value in the result — this tool's or any other — is replaced with `[agent-key:<name>]` by the turn loop before the result is recorded or sent anywhere. See [Agent keys](../../docs/systems-usage/agent-keys.md).
+
+The spawned command runs in its own process group (Unix) so a timeout or cancellation can kill the whole tree it started, not just the immediate shell — killed via `killpg` on Unix, `taskkill /T /F` on Windows. A stop or timeout races against the running command rather than waiting for the tool call to return; the call's own child process is what gets killed, not any process a future background-command feature hands off elsewhere. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
 
 ---
 
@@ -218,11 +221,12 @@ On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created b
 | Parameter         | Type            | Required | Description                                                  |
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
-| `limit`           | integer         | no       | Maximum results to return (default: 5, max: 20)              |
+| `limit`           | integer         | no       | Maximum results to return (default: 5, no upper cap)         |
 | `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"wiki"`. Omit to search all three. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
 | `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs (excludes wiki pages) |
+| `min_score`       | number          | no       | Override the configured relevance threshold for this search only (0.0-1.0) |
 
 ### Output
 
@@ -233,8 +237,11 @@ Found {N} result(s):
 1. [{source_type}] {id} | {date} | lines {s}-{e} (score: {score})
    {snippet}
 ```
+If any candidate scored below the relevance threshold, a trailing note is appended: `"({N} additional weaker match(es) fell below the relevance threshold; pass a lower min_score to see them)"`.
 
-On success with no results: `"no results found"`
+On success with no results above the threshold but some below it: `"no strong matches; {N} weaker match(es) fell below the relevance threshold — pass a lower min_score to see them"`
+
+On success with no results at all: `"no results found"`
 
 On error: `"search failed: {reason}"`
 
@@ -245,24 +252,27 @@ On error: `"search failed: {reason}"`
 **Source:** `memory_get.rs` · `MemoryGetTool`
 
 **Description sent to LLM:**
-> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers.
+> Retrieve a raw transcript by episode ID or session run ID — provide exactly one of the two. Use episode_id after memory_search to drill into a merged episode's full conversation. Use run_id to read a session run's transcript directly from the session store — e.g. to follow a resume pointer to a run that produced no episode, or to check on a run that's still in progress. Returns formatted message lines with role labels and line numbers. A tool result line over 500 chars is shown truncated with its original length; pass expand_line with that line number to retrieve it in full.
 
 ### Input
 
-| Parameter    | Type    | Required | Description                                              |
-|--------------|---------|----------|----------------------------------------------------------|
-| `episode_id` | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
-| `run_id`     | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
-| `from_line`  | integer | no       | Start reading from this line offset (1-indexed, default: start) |
-| `lines`      | integer | no       | Number of message lines to return (default: 50, max: 200) |
+| Parameter     | Type    | Required | Description                                              |
+|---------------|---------|----------|----------------------------------------------------------|
+| `episode_id`  | string  | one of `episode_id`/`run_id` | The episode ID to retrieve (e.g., `"ep-001"`) |
+| `run_id`      | string  | one of `episode_id`/`run_id` | The session run ID to retrieve (e.g., `"run-1234567890-abcd1234"`) |
+| `from_line`   | integer | no       | Start reading from this line offset (1-indexed, default: start) |
+| `lines`       | integer | no       | Number of message lines to return (default: 50, max: 200) |
+| `expand_line` | integer | no       | Return this one line number in full, uncut by the 500-char tool result truncation. Overrides from_line/lines. |
 
 **Security:** `episode_id`/`run_id` containing `/`, `\`, or `..` is rejected with a path-traversal error.
 
 ### Output
 
-On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used.
+On success (episode mode): formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used. A `Tool:` line over 500 chars is truncated with `(showing 500 of {N} chars; use memory_get with expand_line={N} to see the full result)`.
 
-On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
+On success (run mode): formatted transcript with header (`Run: {run_id} | address: {address} | category: {category} | state: {state}`, plus `| episode: {id}` once merged), the same `[line {N}] {Role}: {text}` message lines and truncation notice, and the same range footer. A run that hasn't completed yet is read from its live incremental transcript.
+
+On success with `expand_line`: the same header, followed by just that one line's message with its full content (no 500-char truncation). `from_line`/`lines` are ignored when `expand_line` is given.
 
 On error:
 - Both `episode_id` and `run_id` given → `"provide exactly one of 'episode_id' or 'run_id', not both"`
@@ -495,14 +505,13 @@ On total failure: error with failure details.
 
 On success, no `attachments` given: `"Added item to user inbox with ID: {filename stem}"`
 
-On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`
+On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`. If any attachment in the batch failed (e.g. a missing source path), the same success output continues with a `"Some attachments could not be copied (the item was still added):"` section naming each one.
 
 On error:
 - Missing `title` or `body`
-- An attachment path doesn't exist, isn't readable, or exceeds the 25 MB size cap — the whole add fails and no item is created (see side effects below)
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated, copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. If any attachment in the batch fails, every file already copied for that item is removed and no item is saved — a partial attachment set is never left behind. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated (must exist and be readable — there is no size cap on a local file) and copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. A file that fails to copy is skipped, not fatal to the item — the item is saved with whichever attachments did succeed, and the tool result names what failed. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
 
 ---
 
@@ -553,7 +562,7 @@ On error:
 - Notify endpoints: publishes `NotificationEvent` to the endpoint's topic
 - Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic (with optional `FileAttachment` and the validated `conversation` target). If delivery to a named conversation fails later, the owner gets an error message on that interface.
 - **Cannot send to inbox** — the agent has no write path to inbox
-- **File attachments require interactive endpoints** — Telegram allows up to 50MB, others 25MB
+- **File attachments require interactive endpoints** — the size cap is per platform, matching that platform's own upload limit: 50MB on Telegram, 20MB on Discord. Every other endpoint (the web UI, Teams, A2A) has no size cap here.
 
 ---
 
@@ -652,23 +661,33 @@ On error:
 **Source:** `background.rs` · `StopAgentTool`
 
 **Description sent to LLM:**
-> Stop a live session by address. Cancels any in-flight turn and moves the session to completing; its transcript is kept, not discarded. The main agent cannot be stopped this way. Use list_agents to find live addresses.
+> Stop a live session by address, or cancel your open task with a remote agent (address "a2a:<name>"). Stopping a session cancels any in-flight turn and moves it to completing; its transcript is kept, not discarded. The main agent cannot be stopped this way. Use list_agents to find live addresses and remote agents.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                  |
 |-----------|--------|----------|----------------------------------------------|
-| `address` | string | yes      | The address of the session to stop           |
+| `address` | string | yes      | The address of the session to stop, or `"a2a:<name>"` to cancel the caller's open task with that remote agent |
 
 ### Output
 
-On success: `"Stopping session {address}."`
+On success (session): `"Stopping session {address}."`
+
+On success (remote agent): `"Canceling task {task_id} with remote agent a2a:{name}."`
 
 On error (`address` is `"main"`): `InvalidArguments` — the main agent cannot be stopped this way.
 
 On error (address not live): `"No live session with address {address}."` (returned as `is_error = true`)
 
-**Side effect:** Cancels the session's stop token. A running turn ends at its next checkpoint (model-call boundary or tool-loop iteration); an idle session skips straight to completing. Either way the run's transcript so far is kept and merged like any other completed run.
+On error (unknown remote agent, `is_error = true`): `"no remote agent named 'a2a:{name}'. Check config/a2a.json or list_agents."`
+
+On error (no open task with that remote agent, `is_error = true`): `"no open task with remote agent a2a:{name}."`
+
+On error (the remote agent can't be reached to cancel, `is_error = true`): the hub's plain-language reachability error.
+
+**Side effect (session):** Cancels the session's stop token. A running turn ends at its next checkpoint (model-call boundary or tool-loop iteration); an idle session skips straight to completing. Either way the run's transcript so far is kept and merged like any other completed run.
+
+**Side effect (remote agent):** Calls `CancelTask` on the caller's open task with that agent via the `A2aClientHub`/`RemoteTaskTracker` (`crate::a2a::client`). The task's outcome (typically `canceled`) is delivered back to the caller the same way any other outbound-task update is — see `message_agent` below and `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -677,7 +696,7 @@ On error (address not live): `"No live session with address {address}."` (return
 **Source:** `background.rs` · `ListAgentsTool`
 
 **Description sent to LLM:**
-> List the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, and purpose. Completed sessions are not listed, but their addresses remain valid.
+> List the main agent, every live (running or idle) session, and every remote agent reachable over A2A (address "a2a:<name>"): for sessions, address, category, source, state, depth, spawner, elapsed time, and purpose; for remote agents, online status, description, skills, and your own open tasks with them. Completed sessions are not listed, but their addresses remain valid.
 
 ### Input
 
@@ -689,9 +708,13 @@ No parameters required (empty object accepted).
 main — always live
 {N} live session(s):
   [{address}] {source_label} — category: {scheduled|external|spawned} — state: {forking|running|idle|completing} — depth: {N} — spawner: {address|-} — running {elapsed}s — purpose: {prompt/task preview, up to 120 chars}
+
+{N} remote agent(s):
+  [a2a:{name}]{ (your instance)} {resolving its agent card|online — {description}|error — {reachability message}} — skills: {name} ({id}), ...
+    task {task_id} — {state} — {last_status_text|(no status yet)}
 ```
 
-`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one.
+`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -724,7 +747,7 @@ The session runs in the background via the session runtime. Every turn's outcome
 
 ### Nesting and the depth cap
 
-`subagent_spawn` is registered both for the main agent and for every session, so sessions can spawn sessions. The tool instance carries the caller's own address and depth (main is `MAIN_ADDRESS`/`MAIN_DEPTH`; a session's own registry carries its own address/depth): a new spawn is refused once `depth + 1` would exceed the configured `subagent_depth_cap` (default 2, `[background]` config). The spawned session's `spawner` field records the calling agent's address, and its `depth` is the caller's depth plus one.
+`subagent_spawn` is registered both for the main agent and for every session, so sessions can spawn sessions. The tool instance carries the caller's own address and depth (main is `MAIN_ADDRESS`/`MAIN_DEPTH`; a session's own registry carries its own address/depth): a new spawn is refused once `depth + 1` would exceed the configured `subagent_depth_cap` (default 3, `[background]` config); the refusal names that setting. The spawned session's `spawner` field records the calling agent's address, and its `depth` is the caller's depth plus one.
 
 ### Errors
 
@@ -732,7 +755,7 @@ The session runs in the background via the session runtime. Every turn's outcome
 - `skill` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
 - Invalid `model` value → `InvalidArguments`
 - Unknown `skill` (not in the skill index) → `is_error = true` with the available skill list
-- Spawning past the depth cap → `is_error = true`, e.g. `"cannot spawn: nesting depth cap (2) reached at depth 2 — handle this task directly instead of spawning further, or have a shallower agent spawn it"`
+- Spawning past the depth cap → `is_error = true`, e.g. `"cannot spawn: nesting depth cap (3) reached at depth 3 — handle this task directly instead of spawning further, or have a shallower agent spawn it. Raise the \`subagent_depth_cap\` setting under \`[background]\` in config.toml to allow deeper nesting"`
 - Bus publish failure → `Execution` error
 
 **Side effects:** Publishes a `SpawnRequestEvent` (carrying the pre-generated address, the caller's address as `spawner`, the computed `depth`, and a `hop_count` one more than the calling turn's current hop count) to the bus. The spawn listener picks it up, builds the session's fork resources, and hands it to the session runtime (visible via `list_agents`, cancellable via `stop_agent`). Every turn's outcome is relayed directly to the spawner via `AgentMessenger` (see `message_agent` below), not through the bus notification router.
@@ -744,14 +767,15 @@ The session runs in the background via the session runtime. Every turn's outcome
 **Source:** `message_agent.rs` · `MessageAgentTool`
 
 **Description sent to LLM:**
-> Send a text message to another agent by address — main, or any session (running, idle, or previously completed). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses.
+> Send a text message to another agent by address — main, any session (running, idle, or previously completed), or a remote agent reachable over A2A (address "a2a:<name>"). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. A remote agent's reply does not arrive immediately — it comes back later as an agent message from "a2a:<name>", once its task reaches a state that needs your attention. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses and remote agents.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                                  |
 |-----------|--------|----------|----------------------------------------------------------------|
-| `to`      | string | yes      | Address to message: `"main"`, or a session address from `list_agents`. |
+| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, or `"a2a:<name>"` for a remote agent. |
 | `message` | string | yes      | The message body.                                             |
+| `skill`   | string | no       | Only meaningful when `to` is a remote agent: the id of one of its advertised skills, sent as `message.metadata.skill`. |
 
 ### Output
 
@@ -759,8 +783,13 @@ The session runs in the background via the session runtime. Every turn's outcome
 - Delivered to a live session: `"Message delivered to {address}."`
 - The target session is completing: `"Session {address} is completing; your message will be delivered once it finishes, resuming it as a new run."` (`is_error = false`) — the call returns immediately; delivery itself happens on a detached task once the run clears (see Side effects).
 - Delivered to a completed session: `"Session {address} had completed; message delivered by resuming it as a new run."` (`is_error = false` — the resume itself is not a failure)
+- Sent to a remote agent: `"Sent to remote agent a2a:{name} (task {task_id}). Its reply will arrive as an agent message."` (`is_error = false`) — the call returns as soon as the remote agent accepts the task; it does not wait for the task to progress.
 - Unknown address (`is_error = true`): `"no such agent '{to}'. Use list_agents to see live sessions; a completed session's address only works again once it has run at least once."`
+- Unknown remote agent (`is_error = true`): `"no remote agent named 'a2a:{name}'. Check config/a2a.json or list_agents for known remote agents."`
+- Remote agent not currently reachable (`is_error = true`): the hub's plain-language reachability error (e.g. its card hasn't resolved, or the last attempt failed).
+- Remote agent rejected the request (`is_error = true`): `"remote agent a2a:{name} couldn't complete the request: {error}"`
 - Messaging yourself (`is_error = true`): `"cannot message yourself"`
+- An `artifact` session messaging `main` (`is_error = true`): `"artifact sessions can't reach the main conversation: your responses are shown to the artifact that started you. To bring something to the user's attention, file an inbox item with user_inbox_add instead."` Nothing is delivered. Every other target works as usual for an artifact session.
 - Target's interrupt channel is saturated (`is_error = true`, vanishingly unlikely): `"agent {address} is busy, try again shortly"` — never falls back to a resume, which would double-register the address.
 - Hop count at or above the configured hard limit (`is_error = true`): a message explaining the loop limit was reached and delivery was refused. The message never reaches `to`; logged at `warn` with both addresses and the hop count, and a best-effort note is recorded in the transcript of whichever side is a live, addressable session.
 - A publish (to main, or as a resume spawn request) failed at the bus (`is_error = true`): a message naming what failed. The tool never reports success when delivery didn't actually happen.
@@ -769,7 +798,11 @@ The session runs in the background via the session runtime. Every turn's outcome
 
 - Missing or empty `to`/`message` → `InvalidArguments`
 
-**Hop counts:** every delivered message carries a hop count — one more than the highest hop count among the inputs driving the sender's current turn (its kickoff input, plus any agent messages drained mid-turn). A message that arrives mid-turn but isn't consumed before the turn ends carries its hop count forward into whichever turn picks it up next rather than losing it, so a loop can't reset the count to zero just by arriving at the wrong moment. At or above `hop_soft_limit` (`[background]`, default 8) the delivered content carries an added note asking the receiver to reply only if a reply is actually needed. At or above `hop_hard_limit` (default 32) delivery is refused outright (see Output above).
+### Remote agents (`to: "a2a:<name>"`)
+
+Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card and builds a protocol client) and `RemoteTaskTracker` (persists the outbound task and starts watching it). If the caller has an open task with that agent waiting on a reply (`INPUT_REQUIRED`/`AUTH_REQUIRED`), the message is sent as a follow-up on that task; otherwise a new task starts in the persisted (caller, agent) conversation context, if one exists. The send uses `configuration.return_immediately = true`, so the tool returns as soon as the remote agent accepts the task. The task's later outcome — it asks a question, needs auth, completes, fails, or is canceled — is delivered back to the caller via `AgentMessenger::send`, from address `a2a:{name}`, category `"remote"`. See `docs/systems-usage/a2a.md` for the delivery format and artifact handling.
+
+**Hop counts:** every delivered message carries a hop count — one more than the highest hop count among the inputs driving the sender's current turn (its kickoff input, plus any agent messages drained mid-turn). A message that arrives mid-turn but isn't consumed before the turn ends carries its hop count forward into whichever turn picks it up next rather than losing it, so a loop can't reset the count to zero just by arriving at the wrong moment. At or above `hop_soft_limit` (`[background]`, default 8) the delivered content carries an added note asking the receiver to reply only if a reply is actually needed. At or above `hop_hard_limit` (default 32) delivery is refused outright, and the error names the `hop_hard_limit` setting (see Output above).
 
 **Side effects:** Routes through the shared `AgentMessenger` (`crate::background::messaging`):
 - **main** — publishes a `MessageEvent` on the `UserMessage` bus topic, formatted with the sender's address and category, reusing the main event loop's existing interrupt-if-running/new-turn-if-idle handling. The hop count is recorded under the published event's id, since `MessageEvent` itself carries no hop-count field.
@@ -786,23 +819,22 @@ The session runs in the background via the session runtime. Every turn's outcome
 **Source:** `web_fetch.rs` · `WebFetchTool`
 
 **Description sent to LLM:**
-> Fetch a web page and extract its main content as readable text. Returns the page title and cleaned content, optimized for reading. Use this to read articles, documentation, or any web page.
+> Fetch a web page or other textual URL and extract its readable content. HTML is cleaned to its main article text; JSON, XML, plain text, and other textual bodies are returned as-is with their content type noted. Binary content (images, PDFs, archives, etc.) is refused. Output is paged: the header reports the total size, and a page beyond the first is fetched by passing the next `offset` it reports.
 
 ### Input
 
-| Parameter | Type   | Required | Description          |
-|-----------|--------|----------|----------------------|
-| `url`     | string | yes      | The URL to fetch     |
+| Parameter | Type    | Required | Description                                                                                          |
+|-----------|---------|----------|-------------------------------------------------------------------------------------------------------|
+| `url`     | string  | yes      | The URL to fetch                                                                                     |
+| `offset`  | integer | no       | Byte offset into the fetched content to start the page from (default: 0); continue from a previous response's offset |
 
 ### Output
 
-On success: extracted readable text from the page, with the title as a markdown heading if available. Content is truncated at 50,000 characters with a `[content truncated]` notice if exceeded.
-
-For `text/plain` responses: returns the raw text content (truncated if needed).
+On success: a header (`total {n} bytes`, plus a `content-type: ...` note for anything other than HTML/plain text, plus `showing bytes X-Y; call again with offset=Y to continue` when more remains) followed by the page's content. HTML is extracted to readable text; any other textual body (JSON, XML, YAML, CSV, plain text, etc.) is returned as-is. There is no total-size limit — a longer page is read in full by paging through `offset`, not truncated.
 
 On error (`is_error = true`):
 - HTTP error status: `"HTTP {status} fetching {url}"`
-- Unsupported content type (not `text/html` or `text/plain`): `"unsupported content type: {type}"`
+- Binary content type: `"content type '{type}' is binary — web_fetch only handles textual content (HTML, JSON, XML, plain text, and similar)"`
 
 On execution error:
 - Network/connection failure: `"failed to fetch {url}: {details}"`
@@ -902,3 +934,85 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 **Side effects:** Submits the message + version-only client context to `agent-residuum.com/api/v1/feedback`. No trace dump is attached.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, against the same shared `TracingService`.
+
+---
+
+## `a2a_task_update`
+
+**Source:** `a2a_task_update.rs` · `A2aTaskUpdateTool`
+
+**Description sent to LLM:**
+> Report this A2A task's outcome to the caller that delegated it. Call this when the delegated task is done, when you need more input from the caller before you can continue, or when the task cannot be completed. Your final answer for the caller goes in `message` — the caller only ever sees what you put there, not the rest of your turn output.
+
+### Input
+
+| Parameter   | Type          | Required | Description                                                                                                   |
+|-------------|---------------|----------|-----------------------------------------------------------------------------------------------------------------|
+| `state`     | string (enum) | yes      | `"completed"` when the work is done, `"input_required"` when you need more information before continuing, `"failed"` when the task cannot be completed. |
+| `message`   | string        | yes      | The message the caller sees: your final answer for `"completed"`, the question for `"input_required"`, or an explanation for `"failed"`. |
+| `artifacts` | array<string> | no       | Workspace-relative paths of files to attach as artifacts.                                                       |
+
+### Output
+
+On success: `"Task marked {completed|marked as needing more input|marked failed}; the caller has been notified."`
+
+---
+
+## `workspace_history`
+
+**Source:** `workspace_checkpoints.rs` · `WorkspaceHistoryTool`
+
+**Description sent to LLM:**
+> List workspace checkpoints (recovery snapshots of workspace files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.
+
+### Input
+
+| Parameter       | Type   | Required | Description                                                                 |
+|-----------------|--------|----------|-------------------------------------------------------------------------------|
+| `action`        | string (enum) | yes | `"list"` to list checkpoints, `"show"` to see what one checkpoint changed. |
+| `path`          | string | no (list only) | Restrict to checkpoints that changed this workspace-relative file or directory. |
+| `limit`         | integer | no (list only) | Maximum checkpoints to return (default 50). |
+| `checkpoint_id` | string | no (show only) | The checkpoint id to describe, from a previous `list` call. |
+
+Scoped to the workspace checkpoint repository only — the config repository (root `config.toml`/`providers.toml` and the encrypted key stores) is never reachable from this tool.
+
+### Output
+
+`list`: `"{N} checkpoint(s):"` followed by one line per checkpoint (`short id [trigger] address — summary (N path(s) changed)`), or `"No checkpoints yet."`.
+
+`show`: a header line naming the checkpoint's trigger, address, and summary, followed by one line per changed path (`Added|Modified|Deleted <path>`), or `"(no changes)"`.
+
+On error (returned as `is_error = true`): `action` is missing or unrecognized, `checkpoint_id` is missing for `show`, `path` contains `..` or is absolute, or the checkpoint id doesn't resolve.
+
+---
+
+## `workspace_restore`
+
+**Source:** `workspace_checkpoints.rs` · `WorkspaceRestoreTool`
+
+**Description sent to LLM:**
+> Restore a workspace file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.
+
+### Input
+
+| Parameter       | Type   | Required | Description |
+|-----------------|--------|----------|--------------|
+| `action`        | string (enum) | yes | `"restore_path"` to restore one file/directory, `"undo_turn"` to revert everything a checkpoint changed. |
+| `checkpoint_id` | string | yes | The checkpoint id, from `workspace_history`. |
+| `path`          | string | yes (restore_path only) | The workspace-relative file or directory to restore. |
+
+Scoped to the workspace checkpoint repository only, like `workspace_history`.
+
+### Output
+
+`restore_path`: `"Restored {N} path(s) from checkpoint {short id}: {paths}"`.
+
+`undo_turn`: `"Reverted {N} path(s) from checkpoint {short id}: {paths}."`, plus `" Skipped {N} path(s) changed again since: {paths}."` when any were skipped to avoid clobbering a later edit.
+
+On error (returned as `is_error = true`): `action` or `checkpoint_id` is missing or unrecognized, `path` contains `..` or is absolute, the checkpoint id doesn't resolve, or (`restore_path` only) `path` isn't present at that checkpoint.
+
+On error: an unknown `state`, an empty `message`, or an artifact path that's empty, escapes the workspace, doesn't exist, or exceeds 20 MB — reported as `is_error = true` naming the specific artifact and reason.
+
+**Side effect:** Publishes an `A2aTaskSignalEvent` on the bus, which the session's A2A task executor is waiting on to end the task's execution stream with the matching status. Each requested artifact is read into an A2A part first (UTF-8 text becomes a text part; anything else becomes a raw part with a detected media type) — a read failure fails the whole call before anything is published, so a caller never sees a partial update.
+
+**Available to sessions:** registered only in a session whose `SubagentToolDeps.conversation_target` names the `a2a` endpoint — never in the main agent's registry, and never in a session started any other way. See `docs/systems-usage/a2a.md`.

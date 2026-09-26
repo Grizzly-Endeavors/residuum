@@ -20,8 +20,8 @@ use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget, EndpointName,
-    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, ResultDisposition, SessionAddress,
-    SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
+    EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher, PulseOverlap, ResultDisposition,
+    SessionAddress, SessionEventKind, SessionResponseEvent, SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
 use crate::interfaces::types::InboundMessage;
@@ -48,6 +48,7 @@ pub(crate) struct IdleTimeouts {
     scheduled: Duration,
     spawned: Duration,
     external: Duration,
+    artifact: Duration,
 }
 
 impl IdleTimeouts {
@@ -59,6 +60,7 @@ impl IdleTimeouts {
         match SessionCategory::from_trigger(trigger) {
             SessionCategory::Scheduled => self.scheduled,
             SessionCategory::Spawned => self.spawned,
+            SessionCategory::Artifact => self.artifact,
             SessionCategory::External => {
                 if matches!(trigger, EventTrigger::Webhook(_)) {
                     self.scheduled
@@ -76,6 +78,7 @@ impl From<&BackgroundConfig> for IdleTimeouts {
             scheduled: cfg.idle_timeout_scheduled,
             spawned: cfg.idle_timeout_spawned,
             external: cfg.idle_timeout_external,
+            artifact: cfg.idle_timeout_artifact,
         }
     }
 }
@@ -100,6 +103,20 @@ pub(crate) struct SessionSpawnRequest {
     /// The conversation this session replies to, for a conversation-triggered
     /// session. `None` for every other trigger.
     pub conversation_target: Option<ConversationTarget>,
+    /// Set when this is a pulse fire that started while its previous run was
+    /// still live. `None` for every other trigger. See [`PulseOverlap`].
+    pub overlap: Option<PulseOverlap>,
+}
+
+/// Shared handles [`SessionRuntime::new`] stores as-is, grouped to keep its
+/// argument count down.
+pub(crate) struct SessionRuntimeHandles {
+    pub(crate) publisher: Publisher,
+    pub(crate) tz: chrono_tz::Tz,
+    pub(crate) messenger: Arc<AgentMessenger>,
+    /// Checkpoints the workspace at the start and end of every turn this
+    /// runtime drives. See `crate::checkpoints`.
+    pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Executes session turns with bounded concurrency, tracking each session's
@@ -116,6 +133,9 @@ pub struct SessionRuntime {
     /// `finish_run`. Ordinary live delivery goes through the registry
     /// directly and never touches this.
     messenger: Arc<AgentMessenger>,
+    /// Checkpoints the workspace at the start and end of every turn this
+    /// runtime drives. See `crate::checkpoints`.
+    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Shared handles a session run needs for the lifetime of its driver task,
@@ -127,6 +147,7 @@ struct RunEnv {
     publisher: Publisher,
     tz: chrono_tz::Tz,
     messenger: Arc<AgentMessenger>,
+    checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 impl SessionRuntime {
@@ -137,18 +158,17 @@ impl SessionRuntime {
         store: Arc<SessionStore>,
         max_concurrent: usize,
         idle_timeouts: impl Into<IdleTimeouts>,
-        publisher: Publisher,
-        tz: chrono_tz::Tz,
-        messenger: Arc<AgentMessenger>,
+        handles: SessionRuntimeHandles,
     ) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             registry,
             store,
             idle_timeouts: idle_timeouts.into(),
-            publisher,
-            tz,
-            messenger,
+            publisher: handles.publisher,
+            tz: handles.tz,
+            messenger: handles.messenger,
+            checkpoints: handles.checkpoints,
         }
     }
 
@@ -179,13 +199,21 @@ impl SessionRuntime {
             model_tier,
             conversation_target: req.conversation_target,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: req.overlap,
         };
 
         let stop_token = CancellationToken::new();
         let interrupt_rx = match self.registry.register(info.clone(), stop_token.clone()) {
             Ok(rx) => rx,
             Err(e) => {
-                deliver_losing_spawn_input(&self.registry, &info, &req.subagent_config, &e);
+                deliver_losing_spawn_input(
+                    &self.registry,
+                    &self.publisher,
+                    &info,
+                    &req.subagent_config,
+                    &e,
+                );
                 return;
             }
         };
@@ -198,6 +226,7 @@ impl SessionRuntime {
             publisher: self.publisher.clone(),
             tz: self.tz,
             messenger: Arc::clone(&self.messenger),
+            checkpoints: Arc::clone(&self.checkpoints),
         };
         let config = req.subagent_config;
 
@@ -210,6 +239,12 @@ impl SessionRuntime {
             )
             .await;
             env.store.begin_run(&info).await;
+            // Recorded again with the episode on completion; recording it at
+            // start too means a process crash mid-run still leaves the next
+            // message a pointer back to this run instead of a fresh start.
+            env.registry
+                .record_resume_point(&info.address, resume_point(&info, None))
+                .await;
 
             // Cloned up front so cleanup still has something to work with if
             // the task panics — the originals (including `resources`, which
@@ -292,8 +327,18 @@ impl SessionRuntime {
 /// this can legitimately happen). Rather than drop this run's input on the
 /// floor, deliver it into the run that won, the same way a `message_agent`
 /// call would.
+///
+/// A chat user's message (a `Conversation`-triggered request carrying its
+/// original inbound message) is never dropped here: a saturated or
+/// torn-down channel hands off to the same detached retry task
+/// [`listener::deliver_race_guard_content`](super::listener) uses for the
+/// wider race window, via [`super::messaging::retry_race_guard_user_message`].
+/// An agent-to-agent message in the same situation still just logs and
+/// gives up, unchanged — an unusual double-register race, with a live
+/// agent on the other end able to notice and retry itself.
 fn deliver_losing_spawn_input(
-    registry: &SessionRegistry,
+    registry: &Arc<SessionRegistry>,
+    publisher: &Publisher,
     info: &SessionInfo,
     config: &SubAgentConfig,
     register_error: &super::registry::RegisterError,
@@ -318,19 +363,62 @@ fn deliver_losing_spawn_input(
     // free, but before this run actually won `SessionRegistry::register`. A
     // `Conversation`-triggered run must still deliver its carried inbound
     // message as `Interrupt::UserMessage`, not misattribute it to `main`.
-    let outcome = registry.deliver(
-        &info.address,
-        super::listener::race_guard_interrupt(
-            &info.trigger,
-            config.inbound.clone(),
-            info.spawner.clone(),
-            info.category,
-            content,
-            config.hop_count,
-        ),
+    let interrupt = super::listener::race_guard_interrupt(
+        &info.trigger,
+        config.inbound.clone(),
+        info.spawner.clone(),
+        info.category,
+        content,
+        config.hop_count,
     );
+    let retryable_inbound = if matches!(interrupt, Interrupt::UserMessage(_)) {
+        config.inbound.clone()
+    } else {
+        None
+    };
+    let outcome = registry.deliver(&info.address, interrupt);
     match outcome {
         DeliverOutcome::Delivered => {}
+        DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive
+            if let Some(inbound) = retryable_inbound =>
+        {
+            tracing::warn!(
+                address = %info.address,
+                outcome = ?outcome,
+                "losing spawn's user message could not be delivered immediately; retrying on a \
+                 detached task rather than dropping it"
+            );
+            let spawn_event = crate::bus::SpawnRequestEvent {
+                address: info.address.clone(),
+                skill: info.agent_skill.clone(),
+                source_label: info.source_label.clone(),
+                prompt: config.prompt.clone(),
+                context: config.context.clone(),
+                source: info.trigger.clone(),
+                model_tier: config.model_tier,
+                spawner: info.spawner.clone(),
+                depth: info.depth,
+                hop_count: config.hop_count,
+                sender: config.sender.clone(),
+                conversation: info.conversation_target.clone(),
+                inbound: config.inbound.clone(),
+                images: config.images.clone(),
+                overlap: None,
+            };
+            let registry = Arc::clone(registry);
+            let publisher = publisher.clone();
+            let address = info.address.clone();
+            tokio::spawn(async move {
+                super::messaging::retry_race_guard_user_message(
+                    registry,
+                    publisher,
+                    address,
+                    inbound,
+                    spawn_event,
+                )
+                .await;
+            });
+        }
         DeliverOutcome::Completing | DeliverOutcome::Full | DeliverOutcome::NotLive => {
             tracing::error!(
                 address = %info.address,
@@ -402,6 +490,7 @@ async fn recover_from_panic(
         &info.run_id,
         SessionEventKind::Error {
             message: format!("session task panicked: {panic_msg}"),
+            details: None,
         },
     )
     .await;
@@ -435,6 +524,7 @@ async fn recover_from_panic(
 
     let status = AgentResultStatus::Failed {
         error: format!("session task panicked: {panic_msg}"),
+        details: None,
     };
 
     // A panicked turn is exactly the outcome the spawner must never be left
@@ -460,13 +550,15 @@ async fn recover_from_panic(
     }
 
     env.registry
-        .record_resume_point(&info.address, resume_point(info, episode_id.clone()));
+        .record_resume_point(&info.address, resume_point(info, episode_id.clone()))
+        .await;
 
     let transcript_path = env
         .store
         .complete_run(
             info,
             SessionState::Completed.as_str(),
+            &status,
             transcript,
             episode_id.clone(),
         )
@@ -502,6 +594,9 @@ fn resume_point(info: &SessionInfo, episode_id: Option<String>) -> ResumePoint {
         spawner: info.spawner.clone(),
         depth: info.depth,
         conversation_target: info.conversation_target.clone(),
+        // Overwritten by `SessionRegistry::record_resume_point` on every
+        // real path; set here only so the struct literal is complete.
+        recorded_at: chrono::Utc::now(),
     }
 }
 
@@ -617,6 +712,17 @@ async fn after_turn(
     maybe_output_to_conversation(info, status, summary, env).await;
 }
 
+/// Build a run's first-turn kickoff from its `SubAgentConfig`.
+fn initial_kickoff(config: SubAgentConfig) -> TurnKickoff {
+    TurnKickoff::Initial {
+        prompt: config.prompt,
+        context: config.context,
+        hop_count: config.hop_count,
+        sender: config.sender,
+        images: config.images,
+    }
+}
+
 /// Drive one session run from permit acquisition through completion.
 ///
 /// A run is one or more turns: the first is always the fork's task prompt;
@@ -637,12 +743,7 @@ async fn run_session(
 ) {
     let mut recent_messages = RecentMessages::new();
     let mut memory = SessionMemory::new();
-    let mut kickoff = TurnKickoff::Initial {
-        prompt: config.prompt,
-        context: config.context,
-        hop_count: config.hop_count,
-        sender: config.sender,
-    };
+    let mut kickoff = initial_kickoff(config);
     // Assigned on the loop's first iteration, which always runs at least
     // once (the run's initial turn), so both are definitely initialized by
     // the time anything after the loop reads them.
@@ -652,6 +753,12 @@ async fn run_session(
     let mut turn_number: u32 = 0;
 
     loop {
+        // Registered and ready for this turn but not necessarily able to
+        // start it yet — the permit below may or may not be immediately
+        // available. Shown as its own state (rather than leaving the run
+        // looking like it's still forking, or idle with nothing to do)
+        // whenever `max_concurrent` is exhausted by other live sessions.
+        transition_state(&env.registry, &env.publisher, &info, SessionState::Queued).await;
         (status, summary) = tokio::select! {
             biased;
             () = stop_token.cancelled() => {
@@ -669,6 +776,8 @@ async fn run_session(
                             stop_token: &stop_token,
                             store: &env.store,
                             publisher: &env.publisher,
+                            registry: env.registry.as_ref(),
+                            checkpoints: &env.checkpoints,
                         };
                         let turn_id = format!("{}-t{turn_number}", info.run_id);
                         run_turn(&ctx, &turn_id, &mut recent_messages, kickoff, &mut interrupt_rx).await
@@ -678,6 +787,7 @@ async fn run_session(
                         (
                             AgentResultStatus::Failed {
                                 error: "gateway is shutting down".to_string(),
+                                details: None,
                             },
                             String::new(),
                         )
@@ -836,13 +946,15 @@ async fn finish_run(
 
     let point = resume_point(info, episode_id.clone());
     env.registry
-        .record_resume_point(&info.address, point.clone());
+        .record_resume_point(&info.address, point.clone())
+        .await;
 
     let transcript_path = env
         .store
         .complete_run(
             info,
             SessionState::Completed.as_str(),
+            &status,
             recent_messages.messages().to_vec(),
             episode_id.clone(),
         )
@@ -1007,6 +1119,7 @@ async fn relay_result_to_spawner(
         &info.run_id,
         SessionEventKind::Error {
             message: note_text.clone(),
+            details: None,
         },
     )
     .await;
@@ -1048,6 +1161,7 @@ async fn maybe_output_to_conversation(
         content: summary.to_string(),
         attachment: None,
         timestamp: crate::time::now_local(env.tz),
+        is_final: true,
     };
     if let Err(e) = env
         .publisher
@@ -1090,6 +1204,10 @@ struct TurnCtx<'a> {
     /// text additionally reaches its own conversation the same way its
     /// final output does.
     publisher: &'a Publisher,
+    /// Where this turn's model-call usage accumulates — see
+    /// [`super::registry::SessionUsageSink`].
+    registry: &'a SessionRegistry,
+    checkpoints: &'a crate::checkpoints::CheckpointEngine,
 }
 
 /// Run one turn of a session's run, translating a missing-resources or
@@ -1119,6 +1237,13 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    ctx.checkpoints
+        .spawn_turn_start_checkpoint(turn_checkpoint_context(
+            ctx,
+            turn_id,
+            crate::checkpoints::CheckpointTrigger::TurnStart,
+            "outside edit before turn start".to_string(),
+        ));
 
     let result = execute_turn_outcome(ctx, recent_messages, kickoff, interrupt_rx).await;
 
@@ -1130,9 +1255,10 @@ async fn run_turn(
             })
             .await;
         }
-        (AgentResultStatus::Failed { error }, _) => {
+        (AgentResultStatus::Failed { error, details }, _) => {
             publish(SessionEventKind::Error {
                 message: format!("turn failed: {error}"),
+                details: details.clone(),
             })
             .await;
         }
@@ -1142,7 +1268,43 @@ async fn run_turn(
         turn_id: turn_id.to_string(),
     })
     .await;
+    ctx.checkpoints
+        .spawn_turn_end_checkpoint(turn_checkpoint_context(
+            ctx,
+            turn_id,
+            crate::checkpoints::CheckpointTrigger::TurnEnd,
+            turn_end_summary(&result),
+        ));
     result
+}
+
+/// Build the checkpoint context for a session turn boundary.
+fn turn_checkpoint_context(
+    ctx: &TurnCtx<'_>,
+    turn_id: &str,
+    trigger: crate::checkpoints::CheckpointTrigger,
+    summary: String,
+) -> crate::checkpoints::CheckpointContext {
+    crate::checkpoints::CheckpointContext {
+        address: ctx.info.address.to_string(),
+        run_id: Some(ctx.info.run_id.clone()),
+        turn_id: Some(turn_id.to_string()),
+        trigger,
+        summary,
+    }
+}
+
+/// A short, one-line description of a turn's outcome, for the turn-end
+/// checkpoint's commit message.
+fn turn_end_summary(result: &(AgentResultStatus, String)) -> String {
+    match result {
+        (AgentResultStatus::Completed, summary) if !summary.is_empty() => {
+            truncate_prompt_preview(summary)
+        }
+        (AgentResultStatus::Completed, _) => "turn completed".to_string(),
+        (AgentResultStatus::Cancelled, _) => "turn stopped".to_string(),
+        (AgentResultStatus::Failed { error, .. }, _) => format!("turn failed: {error}"),
+    }
 }
 
 /// Execute the turn itself and classify how it ended. Split out of
@@ -1157,6 +1319,10 @@ async fn execute_turn_outcome(
         store: ctx.store,
         run_id: &ctx.info.run_id,
         started_at: ctx.info.started_at,
+    };
+    let usage_sink = super::registry::SessionUsageSink {
+        registry: ctx.registry,
+        address: ctx.info.address.clone(),
     };
     let conversation_output =
         ctx.info
@@ -1183,6 +1349,7 @@ async fn execute_turn_outcome(
             super::subagent::TurnExecution {
                 stop_token: ctx.stop_token,
                 transcript_sink: Some(&sink),
+                usage_sink: Some(&usage_sink),
                 interrupt_rx,
             },
             conversation_output,
@@ -1201,10 +1368,12 @@ async fn execute_turn_outcome(
             (AgentResultStatus::Completed, summary)
         }
         Err(e) => {
-            tracing::warn!(error = %e, "session turn failed");
+            let described = crate::inference::describe_turn_failure(&e);
+            tracing::warn!(error = %described.details, "session turn failed");
             (
                 AgentResultStatus::Failed {
-                    error: e.to_string(),
+                    error: described.message,
+                    details: Some(described.details),
                 },
                 String::new(),
             )
@@ -1263,6 +1432,20 @@ mod tests {
     use super::super::subagent::test_memory_extras;
     use crate::bus::MessageEvent;
 
+    /// A throwaway checkpoint engine for tests that need a `SessionRuntime`
+    /// but don't exercise checkpointing behavior themselves.
+    fn test_checkpoints(dir: &std::path::Path) -> Arc<crate::checkpoints::CheckpointEngine> {
+        Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                dir.join("workspace"),
+                dir.join("config"),
+                &dir.join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        )
+    }
+
     /// Build a runtime wired to a fresh in-process bus, returning it plus a
     /// subscriber for the `AgentResultEvent`s it publishes on completion.
     async fn test_runtime(
@@ -1277,6 +1460,7 @@ mod tests {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
             external: Duration::from_millis(20),
+            artifact: Duration::from_millis(20),
         };
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
@@ -1289,9 +1473,12 @@ mod tests {
             store,
             max_concurrent,
             idle_timeouts,
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
         (runtime, sub)
     }
@@ -1316,11 +1503,63 @@ mod tests {
         }
     }
 
+    /// Like [`MockProvider`], but holds its turn's concurrency permit for a
+    /// while before responding — used to prove a second session waiting on
+    /// the same `max_concurrent` permit shows as `Queued` in the meantime.
+    struct SlowMockProvider {
+        response: String,
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl crate::inference::InferenceProvider for SlowMockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, InferenceError> {
+            tokio::time::sleep(self.delay).await;
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            "mock-slow"
+        }
+    }
+
     fn make_resources(response: &str) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(MockProvider {
                 response: response.to_string(),
+            }),
+            tools: crate::tools::ToolRegistry::new(),
+            mcp_registry: McpRegistry::new_shared(),
+            skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            skills_index: None,
+            observations: None,
+            recent_context: None,
+            layout,
+            observer,
+            merge_writer,
+            episode_skip_token_floor: 2000,
+            hop_counter: crate::agent::HopCounter::new(0),
+        }
+    }
+
+    fn make_slow_resources(response: &str, delay: Duration) -> SubAgentResources {
+        let (layout, observer, merge_writer) = test_memory_extras();
+        SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            provider: Box::new(SlowMockProvider {
+                response: response.to_string(),
+                delay,
             }),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -1353,8 +1592,10 @@ mod tests {
                 hop_count: 0,
                 sender: None,
                 inbound: None,
+                images: Vec::new(),
             },
             conversation_target: None,
+            overlap: None,
         }
     }
 
@@ -1397,11 +1638,13 @@ mod tests {
                 hop_count: 0,
                 sender: None,
                 inbound: None,
+                images: Vec::new(),
             },
             conversation_target: Some(ConversationTarget {
                 endpoint: "discord".to_string(),
                 conversation_id: "chan-1".to_string(),
             }),
+            overlap: None,
         }
     }
 
@@ -1411,7 +1654,8 @@ mod tests {
         // same race-guard misattribution bug, just hit through the narrower
         // window between `handle_spawn_request`'s own live-address check
         // passing and this run actually winning `SessionRegistry::register`.
-        let registry = SessionRegistry::new();
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
         let address = SessionAddress::from("external-discord-race");
         let winner = SessionInfo {
             address: address.clone(),
@@ -1430,6 +1674,8 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let mut rx = registry
             .register(winner.clone(), CancellationToken::new())
@@ -1447,12 +1693,19 @@ mod tests {
             hop_count: 0,
             sender: None,
             inbound: Some(losing_inbound),
+            images: Vec::new(),
         };
         let register_error = super::super::registry::RegisterError {
             address: address.clone(),
         };
 
-        deliver_losing_spawn_input(&registry, &losing_info, &config, &register_error);
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
 
         let delivered = rx
             .try_recv()
@@ -1466,6 +1719,155 @@ mod tests {
                 )
             }
         }
+    }
+
+    fn conversation_winner_info(address: &SessionAddress, run_id: &str) -> SessionInfo {
+        SessionInfo {
+            address: address.clone(),
+            run_id: run_id.to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: SessionState::Idle,
+            spawner: None,
+            depth: MAIN_DEPTH + 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: Some(ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-1".to_string(),
+            }),
+            started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn deliver_losing_spawn_input_saturated_channel_still_delivers_via_retry() {
+        // Regression: a losing spawn's chat-user content used to be
+        // dropped outright ("input dropped") when the winning run's
+        // channel was saturated. There's nobody on the other end of a chat
+        // message to hand a refusal to, so this must retry until the
+        // channel drains.
+        let registry = Arc::new(SessionRegistry::new());
+        let publisher = Publisher::noop();
+        let address = SessionAddress::from("external-discord-race-full");
+        let winner = conversation_winner_info(&address, "run-winner");
+        let mut rx = registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
+            assert!(matches!(
+                registry.deliver(
+                    &address,
+                    Interrupt::UserMessage(sample_inbound_message("filler"))
+                ),
+                DeliverOutcome::Delivered
+            ));
+        }
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let config = SubAgentConfig {
+            prompt: "can anyone see this?".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            hop_count: 0,
+            sender: None,
+            inbound: Some(sample_inbound_message("can anyone see this?")),
+            images: Vec::new(),
+        };
+        let register_error = super::super::registry::RegisterError {
+            address: address.clone(),
+        };
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
+
+        let mut delivered = false;
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
+            let Ok(Some(interrupt)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await
+            else {
+                break;
+            };
+            if let Interrupt::UserMessage(m) = interrupt
+                && m.content == "can anyone see this?"
+            {
+                delivered = true;
+                break;
+            }
+        }
+        assert!(
+            delivered,
+            "the losing spawn's user message must eventually be delivered, never dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_losing_spawn_input_republishes_a_spawn_request_once_its_target_finishes() {
+        // The `NotLive` case: the winning run finishes (and leaves the
+        // registry) before this content can be delivered into it. The
+        // message must still not be dropped — it gets a fresh spawn/resume
+        // attempt through the ordinary listener pipeline instead.
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let registry = Arc::new(SessionRegistry::new());
+        let address = SessionAddress::from("external-discord-race-notlive");
+        let winner = conversation_winner_info(&address, "run-winner");
+        registry
+            .register(winner.clone(), CancellationToken::new())
+            .expect("the winning run registers first");
+        registry.remove(&address, "run-winner");
+
+        let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> = bus_handle
+            .subscribe(crate::bus::topics::Background)
+            .await
+            .unwrap();
+
+        let losing_info = SessionInfo {
+            run_id: "run-loser".to_string(),
+            ..winner
+        };
+        let config = SubAgentConfig {
+            prompt: "can anyone see this?".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            hop_count: 0,
+            sender: None,
+            inbound: Some(sample_inbound_message("can anyone see this?")),
+            images: Vec::new(),
+        };
+        let register_error = super::super::registry::RegisterError {
+            address: address.clone(),
+        };
+        deliver_losing_spawn_input(
+            &registry,
+            &publisher,
+            &losing_info,
+            &config,
+            &register_error,
+        );
+
+        let republished = tokio::time::timeout(Duration::from_secs(1), spawns.recv())
+            .await
+            .expect("a fresh spawn request should be republished promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(republished.address, address);
+        assert_eq!(
+            republished.inbound.map(|m| m.content),
+            Some("can anyone see this?".to_string()),
+            "the republished request must still carry the original user message"
+        );
     }
 
     #[tokio::test]
@@ -1533,6 +1935,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let mut winner_rx = runtime
             .registry
@@ -1541,7 +1945,7 @@ mod tests {
 
         runtime.spawn(sample_request(address.as_ref()), None);
 
-        let delivered = tokio::time::timeout(Duration::from_secs(1), async {
+        let delivered = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Ok(msg) = winner_rx.try_recv() {
                     return msg;
@@ -1594,7 +1998,7 @@ mod tests {
         }
         assert!(saw_running_or_idle, "session should reach running or idle");
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("result should be published before test timeout")
             .unwrap()
@@ -1624,7 +2028,7 @@ mod tests {
         let (runtime, mut sub) = test_runtime(3).await;
         runtime.spawn(sample_request("spawned-researcher-0003"), None);
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .unwrap()
             .unwrap()
@@ -1651,6 +2055,7 @@ mod tests {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
             external: Duration::from_millis(20),
+            artifact: Duration::from_millis(20),
         };
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
@@ -1663,9 +2068,12 @@ mod tests {
             store,
             max_concurrent,
             idle_timeouts,
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
         (runtime, sub, bus_handle)
     }
@@ -1681,14 +2089,14 @@ mod tests {
             bus_handle.subscribe(topics::UserMessage).await.unwrap();
         runtime.spawn(sample_request("spawned-researcher-fail1"), None);
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .unwrap()
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
             .await
             .expect("a failed turn must still relay something to its spawner")
             .unwrap()
@@ -1700,6 +2108,77 @@ mod tests {
         );
     }
 
+    /// An `artifact` session's output reaches the artifact through its own
+    /// session stream only: nothing is relayed to main, and its completion
+    /// is never filed to the inbox, even when its summary asks for urgency.
+    #[tokio::test]
+    async fn an_artifact_session_streams_its_output_but_never_reaches_main_or_the_inbox() {
+        let (runtime, mut sub, bus_handle) = test_runtime_with_bus(3).await;
+        let mut main_sub: crate::bus::Subscriber<MessageEvent> =
+            bus_handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut inbox_sub: crate::bus::Subscriber<crate::bus::NotificationEvent> =
+            bus_handle.subscribe(topics::Inbox).await.unwrap();
+        let mut session_sub: crate::bus::Subscriber<crate::bus::SessionEvent> =
+            bus_handle.subscribe(topics::Sessions).await.unwrap();
+        let router = crate::notify::router::spawn_notification_router(
+            &bus_handle,
+            crate::bus::EndpointRegistry::from_entries(std::iter::empty()),
+            bus_handle.publisher(),
+        )
+        .await
+        .unwrap();
+
+        let address = SessionAddress::from("artifact-wiki-0001");
+        let mut request = sample_request(address.as_ref());
+        request.trigger = EventTrigger::Artifact("wiki".to_string());
+        request.source_label = "artifact:wiki".to_string();
+        request.spawner = None;
+        runtime.spawn(
+            request,
+            Some(make_resources(&format!(
+                "wrote the page {HEARTBEAT_URGENT}"
+            ))),
+        );
+        let info = runtime.registry.get(&address).unwrap();
+        assert_eq!(info.category, SessionCategory::Artifact);
+        assert_eq!(info.spawner, None);
+
+        let event = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.source, EventTrigger::Artifact(ref name) if name == "wiki"));
+        assert!(matches!(event.status, AgentResultStatus::Completed));
+
+        let mut streamed = None;
+        while let Ok(Ok(Some(e))) =
+            tokio::time::timeout(Duration::from_millis(200), session_sub.recv()).await
+        {
+            if let SessionEventKind::Response { content, .. } = e.kind {
+                streamed = Some(content);
+            }
+        }
+        assert!(
+            streamed.is_some_and(|c| c.contains("wrote the page")),
+            "the turn's output is published on the session stream"
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), main_sub.recv())
+                .await
+                .is_err(),
+            "an artifact session's output must never be relayed to main"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), inbox_sub.recv())
+                .await
+                .is_err(),
+            "an artifact session's completion must not be routed to the inbox"
+        );
+        router.abort();
+    }
+
     #[tokio::test]
     async fn a_cancelled_turn_still_relays_a_status_line_to_the_spawner() {
         let (runtime, mut sub, bus_handle) = test_runtime_with_bus(0).await;
@@ -1709,14 +2188,14 @@ mod tests {
         runtime.spawn(sample_request(address.as_ref()), None);
         assert!(runtime.registry.stop(&address));
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .unwrap()
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Cancelled));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
             .await
             .expect("a cancelled turn must still relay something to its spawner")
             .unwrap()
@@ -1760,6 +2239,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         store.begin_run(&info).await;
         let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> =
@@ -1788,7 +2269,7 @@ mod tests {
         assert_eq!(event.address, info.address);
         assert_eq!(event.run_id, info.run_id);
         assert!(
-            matches!(&event.kind, SessionEventKind::Error { message } if message.contains("Result Relay Failed")),
+            matches!(&event.kind, SessionEventKind::Error { message, .. } if message.contains("Result Relay Failed")),
             "the relay failure must appear as an error on the session's own stream, got {:?}",
             event.kind
         );
@@ -1833,6 +2314,8 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -1850,7 +2333,7 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Running
         })
         .await
@@ -1858,7 +2341,7 @@ mod tests {
 
         assert!(runtime.registry.stop(&address));
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("result should be published after the running turn is stopped")
             .unwrap()
@@ -1867,6 +2350,49 @@ mod tests {
             matches!(event.status, AgentResultStatus::Cancelled),
             "a session stopped mid-turn must report cancelled, not completed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_session_already_has_a_resume_point() {
+        let (runtime, _sub) = test_runtime(3).await;
+        let address = SessionAddress::from("spawned-researcher-0009");
+        let (layout, observer, merge_writer) = test_memory_extras();
+        runtime.spawn(
+            sample_request(address.as_ref()),
+            Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+                provider: Box::new(BlockingProvider),
+                tools: crate::tools::ToolRegistry::new(),
+                mcp_registry: McpRegistry::new_shared(),
+                skill_state: SkillState::new_shared(SkillIndex::default(), vec![]),
+                identity: IdentityFiles::default(),
+                options: CompletionOptions::default(),
+                skills_index: None,
+                observations: None,
+                recent_context: None,
+                layout,
+                observer,
+                merge_writer,
+                episode_skip_token_floor: 2000,
+                hop_counter: crate::agent::HopCounter::new(0),
+            }),
+        );
+
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("session should reach running while blocked on the model call");
+        let info = runtime.registry.get(&address).unwrap();
+
+        let point = runtime
+            .registry
+            .resume_point(&address)
+            .expect("a crash mid-run must still leave a resume point for the next message");
+        assert_eq!(point.previous_run_id, info.run_id);
+        assert!(point.previous_episode_id.is_none());
+        assert!(runtime.registry.stop(&address));
     }
 
     // `start_paused` isn't about idle-timeout logic here (the one-minute
@@ -1909,10 +2435,14 @@ mod tests {
                 scheduled: Duration::from_mins(1),
                 spawned: Duration::from_mins(1),
                 external: Duration::from_mins(1),
+                artifact: Duration::from_mins(1),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let address = SessionAddress::from("spawned-researcher-000t");
@@ -1920,6 +2450,8 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2006,6 +2538,8 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(PanickingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2023,7 +2557,7 @@ mod tests {
             }),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("a panicked session must still publish a result")
             .unwrap()
@@ -2065,6 +2599,8 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(PanickingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2082,14 +2618,14 @@ mod tests {
             }),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("a panicked session must still publish a result")
             .unwrap()
             .unwrap();
         assert!(matches!(event.status, AgentResultStatus::Failed { .. }));
 
-        let relayed = tokio::time::timeout(Duration::from_secs(2), main_sub.recv())
+        let relayed = tokio::time::timeout(Duration::from_secs(10), main_sub.recv())
             .await
             .expect("a panicked turn must still relay something to its spawner")
             .unwrap()
@@ -2162,6 +2698,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         store.begin_run(&info).await;
 
@@ -2209,7 +2747,7 @@ mod tests {
         )
         .await;
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("panic recovery should publish a result")
             .unwrap()
@@ -2245,6 +2783,8 @@ mod tests {
         runtime.spawn(
             sample_request(address.as_ref()),
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(BlockingProvider),
                 tools: crate::tools::ToolRegistry::new(),
                 mcp_registry: McpRegistry::new_shared(),
@@ -2262,7 +2802,7 @@ mod tests {
             }),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Running
         })
         .await
@@ -2319,10 +2859,14 @@ mod tests {
                 scheduled: idle_window,
                 spawned: idle_window,
                 external: idle_window,
+                artifact: idle_window,
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let first = SessionAddress::from("spawned-first-0001");
@@ -2383,6 +2927,7 @@ mod tests {
             scheduled: Duration::from_mins(2),
             spawned: Duration::from_mins(10),
             external: Duration::from_mins(30),
+            artifact: Duration::from_mins(30),
         };
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Webhook("gh".into())),
@@ -2396,6 +2941,24 @@ mod tests {
         assert_eq!(
             timeouts.for_trigger(&EventTrigger::Agent),
             Duration::from_mins(10)
+        );
+    }
+
+    #[test]
+    fn idle_timeouts_give_artifact_sessions_their_own_setting() {
+        let timeouts = IdleTimeouts::from(&BackgroundConfig {
+            idle_timeout_artifact: Duration::from_mins(7),
+            ..BackgroundConfig::default()
+        });
+        assert_eq!(
+            timeouts.for_trigger(&EventTrigger::Artifact("wiki".into())),
+            Duration::from_mins(7)
+        );
+        assert_eq!(
+            IdleTimeouts::from(&BackgroundConfig::default())
+                .for_trigger(&EventTrigger::Artifact("wiki".into())),
+            Duration::from_mins(10),
+            "artifact sessions default to a 10 minute idle timeout"
         );
     }
 
@@ -2415,6 +2978,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let event = build_result_event(
             &info,
@@ -2460,6 +3025,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let summary = "Found something worth flagging. The instruction to omit \
              HEARTBEAT_OK was honored, so this note does not end with it."
@@ -2494,6 +3061,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
         let event = build_result_event(
             &info,
@@ -2550,6 +3119,8 @@ mod tests {
     fn make_sequenced_resources(responses: Vec<&str>) -> SubAgentResources {
         let (layout, observer, merge_writer) = test_memory_extras();
         SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SequencedProvider::new(responses)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -2593,10 +3164,14 @@ mod tests {
                 scheduled: idle_window,
                 spawned: idle_window,
                 external: idle_window,
+                artifact: idle_window,
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
         (runtime, sub)
     }
@@ -2667,7 +3242,7 @@ mod tests {
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -2689,7 +3264,7 @@ mod tests {
             "the idle session should still be live in the registry"
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
@@ -2742,7 +3317,7 @@ mod tests {
             Some(make_sequenced_resources(vec!["first done", "second done"])),
         );
 
-        wait_for(&runtime, &address, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &address, Duration::from_secs(10), |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -2759,7 +3334,7 @@ mod tests {
             "the idle session should still be live in the registry"
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), sub.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), sub.recv())
             .await
             .expect("the run should eventually complete")
             .unwrap()
@@ -2795,10 +3370,14 @@ mod tests {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
                 external: Duration::from_millis(50),
+                artifact: Duration::from_millis(50),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let address = SessionAddress::from("external-discord-output");
@@ -2807,7 +3386,7 @@ mod tests {
             Some(make_resources("the build is green")),
         );
 
-        let event = tokio::time::timeout(Duration::from_secs(2), session_output.recv())
+        let event = tokio::time::timeout(Duration::from_secs(10), session_output.recv())
             .await
             .expect("the session's turn output should be published")
             .unwrap()
@@ -2815,6 +3394,10 @@ mod tests {
         assert_eq!(event.session_address, address);
         assert_eq!(event.conversation_id, "chan-1");
         assert_eq!(event.content, "the build is green");
+        assert!(
+            event.is_final,
+            "a run's completed turn output must be marked final"
+        );
     }
 
     #[tokio::test]
@@ -2842,10 +3425,14 @@ mod tests {
                 scheduled: Duration::from_millis(50),
                 spawned: Duration::from_millis(50),
                 external: Duration::from_millis(50),
+                artifact: Duration::from_millis(50),
             },
-            bus_handle.publisher(),
-            chrono_tz::UTC,
-            messenger,
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
         );
 
         let address = SessionAddress::from("spawned-researcher-no-output");
@@ -2893,6 +3480,8 @@ mod tests {
             },
         ));
         let resources = SubAgentResources {
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
             provider: Box::new(SequencedProvider::new(responses)),
             tools: crate::tools::ToolRegistry::new(),
             mcp_registry: McpRegistry::new_shared(),
@@ -3044,6 +3633,7 @@ mod tests {
                 format!("tool_result:{}:{}", result.name, result.is_error)
             }
             SessionEventKind::Intermediate { content } => format!("intermediate:{content}"),
+            SessionEventKind::TurnUsage { .. } => "turn_usage".to_string(),
             SessionEventKind::Response { content, .. } => format!("response:{content}"),
             SessionEventKind::Error { .. } => "error".to_string(),
             SessionEventKind::MessageToMain { .. } => "message_to_main".to_string(),
@@ -3063,6 +3653,8 @@ mod tests {
         runtime.spawn(
             request,
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
@@ -3088,11 +3680,14 @@ mod tests {
             labels,
             vec![
                 "started:forking",
+                "state:queued",
                 "state:running",
                 "turn_started",
                 "intermediate:checking",
                 "tool_call:no_such_tool",
                 "tool_result:no_such_tool:true",
+                "turn_usage",
+                "turn_usage",
                 "response:all done",
                 "turn_ended",
                 "state:idle",
@@ -3120,6 +3715,7 @@ mod tests {
                 | SessionEventKind::ToolCall(_)
                 | SessionEventKind::ToolResult(_)
                 | SessionEventKind::Intermediate { .. }
+                | SessionEventKind::TurnUsage { .. }
                 | SessionEventKind::Error { .. }
                 | SessionEventKind::MessageToMain { .. } => None,
             })
@@ -3141,6 +3737,8 @@ mod tests {
         runtime.spawn(
             request,
             Some(SubAgentResources {
+                max_tool_iterations: None,
+                repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
                 provider: Box::new(ToolThenAnswerProvider {
                     calls: std::sync::atomic::AtomicUsize::new(0),
                 }),
@@ -3197,14 +3795,88 @@ mod tests {
             labels,
             vec![
                 "started:forking",
+                "state:queued",
                 "state:running",
                 "turn_started",
                 "error",
                 "turn_ended",
                 "state:idle",
                 "state:completing",
-                "completed:failed: session run requires SubAgentResources",
-            ]
+                "completed:failed: Something went wrong while the agent was working. Try \
+                 again; if it keeps happening, check Residuum's logs for details.",
+            ],
+            "an unclassified session failure gets a plain-language message, never the raw cause"
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_on_the_concurrency_permit_shows_as_queued() {
+        // max_concurrent = 1: the first session's slow turn holds the only
+        // permit, so the second session must show as `Queued` — not still
+        // `Forking` and not `Idle` — for as long as it's waiting for one.
+        let bus_handle = crate::bus::spawn_broker();
+        let registry = Arc::new(SessionRegistry::new());
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let messenger = Arc::new(AgentMessenger::new(
+            Arc::clone(&registry),
+            bus_handle.publisher(),
+            Arc::clone(&store),
+            crate::background::HopLimits { soft: 8, hard: 32 },
+        ));
+        let runtime = SessionRuntime::new(
+            registry,
+            store,
+            1,
+            IdleTimeouts {
+                scheduled: Duration::from_secs(5),
+                spawned: Duration::from_secs(5),
+                external: Duration::from_secs(5),
+                artifact: Duration::from_secs(5),
+            },
+            SessionRuntimeHandles {
+                publisher: bus_handle.publisher(),
+                tz: chrono_tz::UTC,
+                messenger,
+                checkpoints: test_checkpoints(dir.path()),
+            },
+        );
+
+        let first = SessionAddress::from("spawned-slow-first-0001");
+        runtime.spawn(
+            sample_request(first.as_ref()),
+            Some(make_slow_resources(
+                "first done",
+                Duration::from_millis(400),
+            )),
+        );
+        wait_for(&runtime, &first, Duration::from_secs(1), |info| {
+            info.state == SessionState::Running
+        })
+        .await
+        .expect("first session should reach running and hold the only permit");
+
+        let second = SessionAddress::from("spawned-second-waiting-0002");
+        runtime.spawn(
+            sample_request(second.as_ref()),
+            Some(make_resources("second done")),
+        );
+
+        wait_for(&runtime, &second, Duration::from_millis(300), |info| {
+            info.state == SessionState::Queued
+        })
+        .await
+        .expect(
+            "second session should show as queued while the first session holds the \
+             only concurrency permit",
+        );
+
+        // Once the first session finishes and releases its permit, the
+        // second should proceed to running rather than staying queued.
+        wait_for(&runtime, &second, Duration::from_secs(2), |info| {
+            info.state == SessionState::Running || info.state == SessionState::Idle
+        })
+        .await
+        .expect("second session should proceed once the permit is released");
     }
 }

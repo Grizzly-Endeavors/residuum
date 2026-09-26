@@ -3,13 +3,14 @@
 // chat side exactly as it was (same session, workspace open or not).
 //
 // Paths:
-//   /                         main chat
-//   /sessions/:runId          a session's run in the main pane
-//   ?workspace                workspace panel open beside either of the above
-//   /settings/:section        settings (bare /settings opens the first section)
-//   /workbench                the workbench's tool list
-//   /workbench/:tool          one workbench tool
-//   /workbench/:tool?full     the tool filling the window, no Residuum chrome
+//   /                              main chat
+//   /sessions/:runId               a session's run in the main pane
+//   ?workspace                     workspace panel open beside either of the above
+//   /settings/:section             settings (bare /settings opens the first section)
+//   /workbench                     the workbench's artifact list
+//   /workbench/:artifact           one workbench artifact
+//   /workbench/:artifact?full      the artifact filling the window, no Residuum chrome
+//   /scheduled                     pulses and scheduled actions
 
 import type { SettingsSection } from "./types";
 
@@ -22,6 +23,7 @@ const SETTINGS_SECTIONS: Record<SettingsSection, true> = {
   integrations: true,
   mcp: true,
   "agent-keys": true,
+  a2a: true,
 };
 
 const DEFAULT_SECTION: SettingsSection = "runtime";
@@ -35,9 +37,9 @@ export interface ChatLocation {
 
 /** What the workbench shows. */
 export interface WorkbenchLocation {
-  /** The tool shown, or null for the tool list. */
-  tool: string | null;
-  /** The tool fills the window with the Residuum UI hidden. Only with a tool. */
+  /** The artifact shown, or null for the artifact list. */
+  artifact: string | null;
+  /** The artifact fills the window with the Residuum UI hidden. Only with an artifact. */
   full: boolean;
 }
 
@@ -47,6 +49,8 @@ export interface AppLocation {
   settings: SettingsSection | null;
   /** The workbench place shown, or null when not on the workbench. */
   workbench: WorkbenchLocation | null;
+  /** Whether the Scheduled view (pulses and scheduled actions) is shown. */
+  scheduled: boolean;
 }
 
 export interface ParsedLocation {
@@ -60,11 +64,11 @@ export interface ParsedLocation {
 
 export const MAIN_CHAT: ChatLocation = { runId: null, workspace: false };
 
-/** Mirrors the gateway's tool-name rule, so a bad URL corrects to the list. */
-const TOOL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** Mirrors the gateway's artifact-name rule, so a bad URL corrects to the list. */
+const ARTIFACT_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-export function isToolName(value: string): boolean {
-  return value.length <= 64 && TOOL_NAME.test(value);
+export function isArtifactName(value: string): boolean {
+  return value.length <= 64 && ARTIFACT_NAME.test(value);
 }
 
 function isSettingsSection(value: string): value is SettingsSection {
@@ -94,7 +98,12 @@ export function parseLocation(
 
   if (first === undefined) {
     return {
-      location: { chat: { runId: null, workspace }, settings: null, workbench: null },
+      location: {
+        chat: { runId: null, workspace },
+        settings: null,
+        workbench: null,
+        scheduled: false,
+      },
       corrected: false,
     };
   }
@@ -103,25 +112,42 @@ export function parseLocation(
     const section = second === undefined ? null : decodeSegment(second);
     if (section !== null && isSettingsSection(section)) {
       return {
-        location: { chat: currentChat, settings: section, workbench: null },
+        location: { chat: currentChat, settings: section, workbench: null, scheduled: false },
         corrected: false,
       };
     }
     return {
-      location: { chat: currentChat, settings: DEFAULT_SECTION, workbench: null },
+      location: {
+        chat: currentChat,
+        settings: DEFAULT_SECTION,
+        workbench: null,
+        scheduled: false,
+      },
       corrected: true,
     };
   }
 
   if (first === "workbench" && rest.length === 0) {
-    const tool = second === undefined ? null : decodeSegment(second);
-    const valid = second === undefined || (tool !== null && isToolName(tool));
-    const shown = valid ? tool : null;
+    const artifact = second === undefined ? null : decodeSegment(second);
+    const valid = second === undefined || (artifact !== null && isArtifactName(artifact));
+    const shown = valid ? artifact : null;
     const wantsFull = new URLSearchParams(search).has("full");
     const full = wantsFull && shown !== null;
     return {
-      location: { chat: currentChat, settings: null, workbench: { tool: shown, full } },
+      location: {
+        chat: currentChat,
+        settings: null,
+        workbench: { artifact: shown, full },
+        scheduled: false,
+      },
       corrected: !valid || wantsFull !== full,
+    };
+  }
+
+  if (first === "scheduled" && rest.length === 0 && second === undefined) {
+    return {
+      location: { chat: currentChat, settings: null, workbench: null, scheduled: true },
+      corrected: false,
     };
   }
 
@@ -129,14 +155,19 @@ export function parseLocation(
     const runId = decodeSegment(second);
     if (runId !== null && runId !== "") {
       return {
-        location: { chat: { runId, workspace }, settings: null, workbench: null },
+        location: { chat: { runId, workspace }, settings: null, workbench: null, scheduled: false },
         corrected: false,
       };
     }
   }
 
   return {
-    location: { chat: { runId: null, workspace }, settings: null, workbench: null },
+    location: {
+      chat: { runId: null, workspace },
+      settings: null,
+      workbench: null,
+      scheduled: false,
+    },
     corrected: true,
   };
 }
@@ -144,10 +175,11 @@ export function parseLocation(
 /** The URL (path and query) for a location. */
 export function formatLocation(location: AppLocation): string {
   if (location.settings !== null) return `/settings/${location.settings}`;
+  if (location.scheduled) return "/scheduled";
   if (location.workbench !== null) {
-    const { tool, full } = location.workbench;
-    if (tool === null) return "/workbench";
-    return full ? `/workbench/${tool}?full` : `/workbench/${tool}`;
+    const { artifact, full } = location.workbench;
+    if (artifact === null) return "/workbench";
+    return full ? `/workbench/${artifact}?full` : `/workbench/${artifact}`;
   }
   const { runId, workspace } = location.chat;
   const path = runId === null ? "/" : `/sessions/${encodeURIComponent(runId)}`;

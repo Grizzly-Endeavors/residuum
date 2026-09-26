@@ -128,12 +128,18 @@ impl DiscordInterface {
     /// Start the Discord gateway connection.
     ///
     /// This blocks until the connection is closed, a shutdown signal is
-    /// received, or an error occurs.
+    /// received, or an error occurs. A corrupt saved Discord state file is
+    /// moved aside and started fresh rather than treated as an error (see
+    /// [`ChatStateStore::load`]). Building the client retries with backoff
+    /// on a transient failure (network not up yet, a momentary API error)
+    /// instead of failing immediately — see
+    /// [`crate::interfaces::boot_retry`].
     ///
     /// # Errors
-    /// Returns an error if the saved Discord state cannot be loaded, the bus
-    /// subscription fails, the serenity client cannot be built, or the
-    /// connection fails.
+    /// Returns an error if the saved Discord state cannot be read (a
+    /// permissions problem, not corrupt content), the bus subscription
+    /// fails, the serenity client still can't be built after retrying, or
+    /// the connection fails.
     pub(crate) async fn start(self) -> anyhow::Result<()> {
         let intents = GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::GUILDS
@@ -141,9 +147,14 @@ impl DiscordInterface {
             | GatewayIntents::MESSAGE_CONTENT;
         let layout = crate::workspace::layout::WorkspaceLayout::new(&self.workspace_dir);
 
+        let (chat_store, chat_state_notice) =
+            ChatStateStore::load(layout.discord_state_json()).await?;
+        if let Some(notice) = chat_state_notice {
+            crate::gateway::helpers::publish_notice(&self.senders.publisher, notice).await;
+        }
         let state = Arc::new(DiscordState {
             respond_to_others: self.cfg.respond_to_others,
-            store: ChatStateStore::load(layout.discord_state_json()).await?,
+            store: chat_store,
             reply_targets: ReplyTargets::default(),
             bot_id: OnceLock::new(),
             channel_labels: Mutex::new(HashMap::new()),
@@ -159,18 +170,36 @@ impl DiscordInterface {
 
         let handler = DiscordHandler {
             state: Arc::clone(&state),
-            publisher: self.senders.publisher,
+            publisher: self.senders.publisher.clone(),
             inbox_dir: layout.agent_inbox_dir(),
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             stop_tx: self.senders.stop,
+            session_registry: self.senders.session_registry,
             tz: self.tz,
         };
 
-        let mut client = Client::builder(&self.cfg.token, intents)
-            .event_handler(handler)
-            .await
-            .context("failed to build the discord client")?;
+        // Building the client talks to the Discord API to validate the
+        // token. A network blip or a momentary API error here used to
+        // leave the adapter dead until a config reload; retry with backoff
+        // instead, and let a shutdown signal cut retries short.
+        let mut connect_shutdown_rx = self.shutdown_rx.clone();
+        let mut client = tokio::select! {
+            result = crate::interfaces::boot_retry::retry_connect(&self.senders.publisher, "Discord", || {
+                Client::builder(&self.cfg.token, intents).event_handler(handler.clone())
+            }) => {
+                match result {
+                    Some(client) => client,
+                    None => {
+                        anyhow::bail!("discord client could not be built after repeated retries")
+                    }
+                }
+            }
+            _ = connect_shutdown_rx.changed() => {
+                tracing::info!("discord adapter received shutdown signal while connecting");
+                return Ok(());
+            }
+        };
 
         let _registration = self.senders.conversations.register(
             ENDPOINT,

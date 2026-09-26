@@ -4,8 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::agent::usage::SessionUsageTotals;
 use crate::background::registry::{SessionCategory, SessionState};
 use crate::inference::ImageData;
+use crate::workspace::watch::{WorkspaceChange, WorkspaceResyncReason};
 
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -73,6 +75,13 @@ pub enum ClientMessage {
         /// Address of the session to stop.
         address: String,
     },
+    /// Replace this connection's watched workspace prefixes. `[]` stops
+    /// watching; `""` watches the whole workspace. An invalid prefix is
+    /// answered with an `Error` frame and leaves the set unchanged.
+    WatchWorkspace {
+        /// Workspace-relative paths, matched by whole segments.
+        prefixes: Vec<String>,
+    },
 }
 
 /// One run of an agent session, as listed in the web UI's sessions sidebar
@@ -107,6 +116,26 @@ pub struct SessionSummary {
     /// `true` when the run was completed at startup because the process
     /// exited before it finished on its own.
     pub interrupted: bool,
+    /// This run's cumulative token usage, for the `SessionView` footer —
+    /// live for a run still going, final for a completed one. See
+    /// `docs/systems-usage/turn-control.md`.
+    pub usage: SessionUsageTotals,
+    /// How the run ended — completed, cancelled, or failed. `None` while the
+    /// run is still live, and `None` for a completed run recorded before
+    /// this field existed (it shows as plain "finished" rather than a
+    /// guessed outcome).
+    pub outcome: Option<SessionRunStatus>,
+    /// The failure reason, when `outcome` is `Failed`. `None` otherwise.
+    pub error: Option<String>,
+    /// Full technical cause chain behind `error`, shown behind the same
+    /// expandable "details" toggle the web UI uses for a live `SessionError`.
+    /// `None` for a failure with nothing richer to show, and `None` for a
+    /// record written before this field existed.
+    #[serde(default)]
+    pub error_details: Option<String>,
+    /// Set when this run is a pulse fire that started while its previous run
+    /// was still live. `None` for every other trigger.
+    pub overlap: Option<crate::bus::PulseOverlap>,
 }
 
 /// `GET /api/sessions` response: live sessions plus one page of completed
@@ -135,6 +164,89 @@ pub enum SessionRunStatus {
     Cancelled,
     /// The last turn failed.
     Failed,
+}
+
+impl SessionRunStatus {
+    /// Lowercase label used in the session store (see `RunRecord::outcome`).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Parse the label [`Self::as_str`] produces, as recorded in the session
+    /// store. `None` for anything else.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "completed" => Some(Self::Completed),
+            "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// One run's outcome, for a pulse's or action's "last outcome" in the
+/// Scheduled view.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduledRunOutcome {
+    pub status: SessionRunStatus,
+    #[ts(type = "string")]
+    pub at: DateTime<Utc>,
+    pub error: Option<String>,
+}
+
+/// A pulse's or action's currently live run, if it has one, in the
+/// Scheduled view.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduledCurrentRun {
+    pub address: String,
+    pub run_id: String,
+    /// Set when this run started while its previous run was still going.
+    pub overlap: Option<crate::bus::PulseOverlap>,
+}
+
+/// One pulse, as listed by `GET /api/scheduled/pulses`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PulseInfo {
+    pub name: String,
+    /// `false` for a pulse that failed to load at all (see `problems`) —
+    /// there is no real `enabled` value to report for it.
+    pub enabled: bool,
+    pub schedule: Option<String>,
+    pub active_hours: Option<String>,
+    pub agent: Option<String>,
+    /// Estimated from the schedule and `pulse_state.json`'s last run time;
+    /// does not account for an `active_hours` window that would delay the
+    /// actual fire.
+    #[ts(type = "string | null")]
+    pub next_fire_at: Option<DateTime<Utc>>,
+    pub last_outcome: Option<ScheduledRunOutcome>,
+    pub current_run: Option<ScheduledCurrentRun>,
+    /// Loading problems naming this pulse (a removed option, a duplicate
+    /// name, a bad `schedule`/`active_hours` string, or a per-entry
+    /// deserialize failure). Plain-language messages, ready to show as-is.
+    pub problems: Vec<String>,
+}
+
+/// One pending scheduled action, as listed by `GET /api/scheduled/actions`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActionInfo {
+    pub id: String,
+    pub name: String,
+    #[ts(type = "string")]
+    pub run_at: DateTime<Utc>,
+    pub agent: Option<String>,
+    pub model_tier: Option<String>,
+    pub current_run: Option<ScheduledCurrentRun>,
 }
 
 /// Where a `SessionSendMessage` landed.
@@ -171,11 +283,11 @@ pub enum SessionCommandErrorCode {
     DeliveryFailed,
 }
 
-/// One tool in `GET /api/workbench/tools`.
+/// One artifact in `GET /api/workbench/artifacts`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct WorkbenchToolSummary {
-    /// Tool name, as used in `/workbench/{name}`.
+pub struct ArtifactSummary {
+    /// Artifact name, as used in `/workbench/{name}`.
     pub name: String,
     /// The page's `<title>`, or the name when it has none.
     pub title: String,
@@ -187,27 +299,28 @@ pub struct WorkbenchToolSummary {
     pub size: u64,
 }
 
-/// `GET /api/workbench/info`: where workbench tools are served.
+/// `GET /api/workbench/info`: where workbench artifacts are served.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchInfo {
-    /// Port of the local tools listener, or `null` when it isn't running.
+    /// Port of the local artifacts listener, or `null` when it isn't running.
     pub port: Option<u16>,
-    /// Plain-language reason the tools listener isn't running, when it isn't.
+    /// Plain-language reason the artifacts listener isn't running, when it
+    /// isn't.
     pub unavailable_reason: Option<String>,
     /// Public origins through the cloud relay, when connected to a relay that
     /// announces them.
     pub relay: Option<WorkbenchRelayOrigins>,
 }
 
-/// The web UI's and the tools' public origins through the cloud relay.
+/// The web UI's and the artifacts' public origins through the cloud relay.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkbenchRelayOrigins {
     /// Origin the web UI is served from through the relay.
     pub ui_origin: String,
-    /// Origin the tools are served from through the relay.
-    pub tools_origin: String,
+    /// Origin the artifacts are served from through the relay.
+    pub artifacts_origin: String,
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -227,6 +340,22 @@ pub enum ServerMessage {
     TurnEnded {
         /// Correlation ID of the message whose turn just completed.
         reply_to: String,
+    },
+    /// Token usage progress for the main agent's turn still running: this
+    /// turn's own output tokens so far (for the running-turn indicator)
+    /// and, once at least one call has reported usage, the updated
+    /// cumulative session totals (for the chat footer). Never delivered
+    /// to the agent itself. See `docs/systems-usage/turn-control.md`.
+    TurnUsage {
+        /// Correlation ID of the message being processed.
+        reply_to: String,
+        /// Output tokens generated by every model call so far this turn.
+        output_tokens: u32,
+        /// Whether any model call so far this turn reported usage.
+        has_usage: bool,
+        /// Updated cumulative session totals, once known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_totals: Option<SessionUsageTotals>,
     },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
@@ -266,7 +395,9 @@ pub enum ServerMessage {
         /// File size in bytes.
         #[ts(type = "number")]
         size: u64,
-        /// URL to fetch the file (e.g. "/api/files/{id}").
+        /// URL to fetch the file: a durable workspace-relative link (e.g.
+        /// "/api/files/workspace?path=...") for a file inside the
+        /// workspace, else an expiring token link (e.g. "/api/files/{id}").
         url: String,
         /// Optional caption text.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,8 +412,11 @@ pub enum ServerMessage {
     Error {
         /// Correlation ID of the original message, if applicable.
         reply_to: Option<String>,
-        /// Error description.
+        /// Plain-language error description.
         message: String,
+        /// Full technical cause chain, shown behind a details toggle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
     },
     /// Keepalive pong.
     Pong,
@@ -327,6 +461,11 @@ pub enum ServerMessage {
         status: SessionRunStatus,
         /// The failure, when `status` is `failed`.
         error: Option<String>,
+        /// Full technical cause chain behind `error`, shown behind the same
+        /// expandable "details" toggle as a live `SessionError`. `None` when
+        /// there's nothing richer to show.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_details: Option<String>,
         /// Episode the run was merged into, if it produced one.
         episode_id: Option<String>,
     },
@@ -376,6 +515,21 @@ pub enum ServerMessage {
         /// Whether the tool returned an error.
         is_error: bool,
     },
+    /// Token usage progress for a session's turn still running — the
+    /// session counterpart of `TurnUsage`.
+    SessionTurnUsage {
+        /// Session address.
+        address: String,
+        /// Run id.
+        run_id: String,
+        /// Output tokens generated by every model call so far this turn.
+        output_tokens: u32,
+        /// Whether any model call so far this turn reported usage.
+        has_usage: bool,
+        /// Updated cumulative session totals, once known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_totals: Option<SessionUsageTotals>,
+    },
     /// Intermediate text a session emitted alongside tool calls.
     SessionBroadcastResponse {
         /// Session address.
@@ -404,8 +558,11 @@ pub enum ServerMessage {
         address: String,
         /// Run id.
         run_id: String,
-        /// Error description.
+        /// Plain-language error description.
         message: String,
+        /// Full technical cause chain, shown behind a details toggle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
     },
     /// A session's message reached the main agent (a turn-result relay or a
     /// `message_agent` call to `main`). The main chat shows it as a compact
@@ -446,15 +603,32 @@ pub enum ServerMessage {
         /// Human-readable explanation, suitable to show the user.
         message: String,
     },
-    /// A workbench tool's page was created or modified.
-    WorkbenchToolUpdated {
-        /// Tool name, as used in `/workbench/{name}`.
+    /// A workbench artifact's page was created or modified.
+    ArtifactUpdated {
+        /// Artifact name, as used in `/workbench/{name}`.
         name: String,
     },
-    /// A workbench tool's page was deleted.
-    WorkbenchToolRemoved {
-        /// Tool name, as used in `/workbench/{name}`.
+    /// A workbench artifact's page was deleted.
+    ArtifactRemoved {
+        /// Artifact name, as used in `/workbench/{name}`.
         name: String,
+    },
+    /// Workspace files under this connection's watched prefixes changed.
+    WorkspaceChanged {
+        /// The matching changes of one debounced batch, sorted by path.
+        changes: Vec<WorkspaceChange>,
+    },
+    /// This connection's view of its watched prefixes may be stale; reload
+    /// what they show. Sent instead of `WorkspaceChanged`.
+    WorkspaceResync {
+        /// Why changes may have been missed.
+        reason: WorkspaceResyncReason,
+    },
+    /// The workspace watcher isn't running, so no workspace frames will
+    /// arrive. Sent to watching connections.
+    WorkspaceWatchUnavailable {
+        /// Plain-language explanation for the user.
+        message: String,
     },
 }
 
@@ -525,9 +699,14 @@ mod tests {
         let msg = ServerMessage::Error {
             reply_to: Some("id-1".to_string()),
             message: "something failed".to_string(),
+            details: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"error\""), "should have type tag");
+        assert!(
+            !json.contains("\"details\""),
+            "a None details must not appear in the JSON at all"
+        );
         assert!(
             json.contains("\"reply_to\":\"id-1\""),
             "should have reply_to field"
@@ -864,6 +1043,105 @@ mod tests {
                 "address": "scheduled-pulse-0001",
                 "run_id": "run-1",
                 "state": "idle",
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_watch_frames_round_trip_the_documented_shapes() {
+        let watch: ClientMessage =
+            serde_json::from_str(r#"{"type":"watch_workspace","prefixes":["wiki",""]}"#).unwrap();
+        assert!(
+            matches!(&watch, ClientMessage::WatchWorkspace { prefixes } if prefixes == &["wiki", ""])
+        );
+
+        let changed = ServerMessage::WorkspaceChanged {
+            changes: vec![WorkspaceChange {
+                path: "wiki/a.md".into(),
+                kind: crate::workspace::watch::WorkspaceChangeKind::Created,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&changed).unwrap(),
+            serde_json::json!({
+                "type": "workspace_changed",
+                "changes": [{ "path": "wiki/a.md", "kind": "created" }],
+            })
+        );
+        let resync = ServerMessage::WorkspaceResync {
+            reason: WorkspaceResyncReason::WatcherRestarted,
+        };
+        assert_eq!(
+            serde_json::to_value(&resync).unwrap(),
+            serde_json::json!({ "type": "workspace_resync", "reason": "watcher_restarted" })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_turn_usage_without_session_totals() {
+        let msg = ServerMessage::TurnUsage {
+            reply_to: "id-1".to_string(),
+            output_tokens: 42,
+            has_usage: true,
+            session_totals: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "turn_usage",
+                "reply_to": "id-1",
+                "output_tokens": 42,
+                "has_usage": true,
+            }),
+            "session_totals should be omitted, not serialized as null"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_turn_usage_with_session_totals() {
+        let msg = ServerMessage::TurnUsage {
+            reply_to: "id-1".to_string(),
+            output_tokens: 42,
+            has_usage: true,
+            session_totals: Some(SessionUsageTotals {
+                input_tokens: 100,
+                output_tokens: 42,
+                context_tokens: Some(100),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "turn_usage",
+                "reply_to": "id-1",
+                "output_tokens": 42,
+                "has_usage": true,
+                "session_totals": {
+                    "input_tokens": 100,
+                    "output_tokens": 42,
+                    "context_tokens": 100,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_session_turn_usage() {
+        let msg = ServerMessage::SessionTurnUsage {
+            address: "spawned-x-0001".into(),
+            run_id: "run-1".into(),
+            output_tokens: 7,
+            has_usage: true,
+            session_totals: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "session_turn_usage",
+                "address": "spawned-x-0001",
+                "run_id": "run-1",
+                "output_tokens": 7,
+                "has_usage": true,
             })
         );
     }

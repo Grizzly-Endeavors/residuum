@@ -8,6 +8,25 @@ import type {
   SessionSummary,
 } from "./types";
 
+/** Every session category, in the order the sidebar groups them. */
+export const SESSION_CATEGORIES: readonly SessionCategory[] = [
+  "external",
+  "scheduled",
+  "spawned",
+  "artifact",
+];
+
+/** Sessions split into their categories' sidebar groups, each keeping the list's order. */
+export function groupByCategory(
+  sessions: readonly SessionSummary[],
+): Record<SessionCategory, SessionSummary[]> {
+  const groups = Object.fromEntries(
+    SESSION_CATEGORIES.map((category) => [category, [] as SessionSummary[]]),
+  ) as Record<SessionCategory, SessionSummary[]>;
+  for (const session of sessions) groups[session.category].push(session);
+  return groups;
+}
+
 /** States in which a run is still live (listed from the registry). */
 export function isLiveState(state: SessionState): boolean {
   return state !== "completed";
@@ -15,13 +34,15 @@ export function isLiveState(state: SessionState): boolean {
 
 /** States in which a stop request can still take effect. */
 export function isStoppableState(state: SessionState): boolean {
-  return state === "forking" || state === "running" || state === "idle";
+  return state === "forking" || state === "queued" || state === "running" || state === "idle";
 }
 
 export function stateLabel(state: SessionState): string {
   switch (state) {
     case "forking":
       return "starting";
+    case "queued":
+      return "queued";
     case "running":
       return "working";
     case "idle":
@@ -41,6 +62,8 @@ export function categoryDescription(category: SessionCategory): string {
       return "Started by someone else or another system (a chat conversation or webhook)";
     case "spawned":
       return "Started by an agent";
+    case "artifact":
+      return "Started by a workbench artifact";
   }
 }
 
@@ -53,6 +76,8 @@ export function categoryHeading(category: SessionCategory): string {
       return "External";
     case "spawned":
       return "Spawned";
+    case "artifact":
+      return "Artifacts";
   }
 }
 
@@ -65,7 +90,39 @@ export function categoryIdleText(category: SessionCategory): string {
       return "Nothing running. Conversations with other people and webhook calls show up here while they run.";
     case "spawned":
       return "Nothing running. Work your agent hands off shows up here while it runs.";
+    case "artifact":
+      return "Nothing running. Work a workbench artifact starts shows up here while it runs.";
   }
+}
+
+/** Prefix of an artifact session's source label (`artifact:<name>`). */
+const ARTIFACT_SOURCE_PREFIX = "artifact:";
+
+/**
+ * The workbench artifact that started a session, from its source label, or
+ * `null` for a session no artifact started.
+ */
+export function sessionArtifact(session: SessionSummary): string | null {
+  if (session.category !== "artifact") return null;
+  if (!session.source_label.startsWith(ARTIFACT_SOURCE_PREFIX)) return null;
+  return session.source_label.slice(ARTIFACT_SOURCE_PREFIX.length) || null;
+}
+
+/** What started a session, for a row or header: the artifact's name, or the source label. */
+export function sessionSourceText(session: SessionSummary): string {
+  return sessionArtifact(session) ?? session.source_label;
+}
+
+/**
+ * The sessions an artifact started, in the order they appear in `sessions`,
+ * for its activity panel. Kept current by whatever keeps `sessions` current
+ * (session frames), so the panel needs no fetch of its own.
+ */
+export function sessionsStartedByArtifact(
+  sessions: readonly SessionSummary[],
+  artifact: string,
+): SessionSummary[] {
+  return sessions.filter((s) => sessionArtifact(s) === artifact);
 }
 
 /** How a run ended, for a status line. */
@@ -119,8 +176,13 @@ const STARTED_FORMATTER = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
+/** An RFC 3339 timestamp as a short local date and time. */
+export function formatLocalDateTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : STARTED_FORMATTER.format(date);
+}
+
 /** When a run started, as a short local date and time. */
 export function formatStarted(session: SessionSummary): string {
-  const start = new Date(session.started_at);
-  return Number.isNaN(start.getTime()) ? session.started_at : STARTED_FORMATTER.format(start);
+  return formatLocalDateTime(session.started_at);
 }

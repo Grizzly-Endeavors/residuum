@@ -32,7 +32,8 @@ pub enum ReloadSignal {
     None,
     /// Full root config reload (config.toml changed).
     Root,
-    /// Workspace-level reload (mcp.json or channels.toml changed).
+    /// Workspace-level reload (`mcp.json`, `channels.toml`, or
+    /// `agent-card.json` changed).
     Workspace,
 }
 
@@ -40,6 +41,24 @@ pub enum ReloadSignal {
 pub enum GatewayExit {
     /// Clean shutdown (inbound channel closed).
     Shutdown,
+    /// Restart requested (binary updated, re-exec needed).
+    Restart,
+}
+
+/// Which shutdown trigger interrupted a running turn.
+///
+/// A turn blocks the event loop's own `select!` for its whole duration, so
+/// the trigger is observed and reacted to (stopping the turn) from inside
+/// the turn's own select loop instead — see `run_agent_turn_with_interrupts`
+/// in `gateway/event_loop/turns.rs`. That already consumes the underlying
+/// signal, so this is bubbled back up to the event loop instead of it
+/// re-observing the same signal a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShutdownReason {
+    /// SIGTERM (Unix) or the platform termination signal.
+    Sigterm,
+    /// Shutdown requested via the HTTP `/api/shutdown` endpoint.
+    GatewayShutdown,
     /// Restart requested (binary updated, re-exec needed).
     Restart,
 }
@@ -190,8 +209,19 @@ pub(crate) struct GatewayState {
     pub session_registry: Arc<SessionRegistry>,
     /// Durable record of every session run, for the listing and transcripts.
     pub session_store: Arc<SessionStore>,
-    /// Delivers the sidebar's messages to sessions.
+    /// Delivers the sidebar's and artifacts' messages to sessions.
     pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
+    /// The skill index, for checking the skill an artifact's session names.
+    pub skill_state: SharedSkillState,
+    /// Whether the workspace change feed is running, so a connection that
+    /// starts watching can be told when live updates are off.
+    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// Pending one-off scheduled actions, for the Scheduled view's listing
+    /// and cancel button.
+    pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
+    /// Workspace layout, for the Scheduled view's reads of HEARTBEAT.yml,
+    /// `pulse_state.json`, and its in-place edits to HEARTBEAT.yml.
+    pub layout: WorkspaceLayout,
 }
 
 /// All state needed by the main event loop.
@@ -243,6 +273,12 @@ pub(crate) struct GatewayRuntime {
     pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,
     pub spawn_context: Arc<SpawnContext>,
+    /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
+    /// every config reload, alongside `spawn_context`, so `POST
+    /// /api/model/complete` resolves providers from the current config
+    /// without the HTTP router being rebuilt.
+    pub model_call_resources_tx:
+        tokio::sync::watch::Sender<Arc<crate::gateway::web::model::ModelCallResources>>,
     // Runtime channels + handles
     /// Bus handle for creating publishers/subscribers.
     pub bus_handle: BusHandle,
@@ -288,11 +324,39 @@ pub(crate) struct GatewayRuntime {
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub teams_handle: Option<tokio::task::JoinHandle<()>>,
     pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
+    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// The live agent card, so a workspace-file reload can update it without
+    /// restarting the listener. `None` when A2A is disabled.
+    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
+    /// Remote A2A agents this instance's client can reach, loaded from
+    /// `config/a2a.json` and reloaded on every workspace config change.
+    pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents.
+    pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Tracks the agent's own config-file writes so the reload each one
+    /// triggers can report back into its transcript instead of only
+    /// reaching the user's interfaces.
+    pub config_reload_tracker: crate::tools::SharedConfigReloadTracker,
+    /// This instance's current A2A public URL, read by the web settings API. `None` when A2A is disabled.
+    pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Polls `config.toml`/`providers.toml` for changes made outside the web
+    /// config API (the agent's own `write_file`/`edit_file`, or a manual
+    /// edit) and signals a root reload.
+    pub root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The workspace change feed (one recursive watcher over the workspace).
+    pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Whether the change feed is running; handed to the HTTP server's state
+    /// again on a gateway rebind.
+    pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+    /// Derives artifact reloads from the change feed.
     pub workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Whether the workbench tools listener is running, and on which port.
+    /// Whether the workbench artifacts listener is running, and on which port.
     pub workbench_serving: crate::workbench::server::WorkbenchServing,
-    /// Stops the workbench tools listener, when it is running.
+    /// Stops the workbench artifacts listener, when it is running.
     pub workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// Cloned core senders for rebuilding adapters on reload.
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,

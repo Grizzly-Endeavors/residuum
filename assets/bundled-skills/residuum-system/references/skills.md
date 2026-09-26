@@ -16,6 +16,8 @@ Detailed instructions, workflows, and reference material.
 The entire body below the frontmatter is injected into the system prompt when activated.
 ```
 
+Editing a `SKILL.md` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid frontmatter YAML, a malformed `name`, or an empty/over-280-character `description` as a diagnostic alongside the save — the write always goes through rather than being rejected.
+
 ## Skill Sources
 
 Skills are discovered from multiple locations, scanned in priority order:
@@ -26,6 +28,8 @@ Skills are discovered from multiple locations, scanned in priority order:
 | User Global | Extra directories from config (`[skills]` section) | Middle |
 
 **Deduplication**: If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
+
+A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories.
 
 ## Tools
 

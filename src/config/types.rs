@@ -6,21 +6,24 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::inference::retry::RetryConfig;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
     DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_HOP_HARD_LIMIT,
-    DEFAULT_HOP_SOFT_LIMIT, DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES, DEFAULT_IDLE_TIMEOUT_MINUTES,
+    DEFAULT_HOP_SOFT_LIMIT, DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES,
+    DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES, DEFAULT_IDLE_TIMEOUT_MINUTES,
     DEFAULT_IDLE_TIMEOUT_SCHEDULED_MINUTES, DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES,
     DEFAULT_LEARNING_COOLDOWN_MINUTES, DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
     DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    DEFAULT_REPEAT_CALL_STEER_AFTER, DEFAULT_REPEAT_CALL_STOP_AFTER,
     DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
     DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBAGENT_DEPTH_CAP,
-    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
-    DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
 use super::provider::ProviderSpec;
 
@@ -195,6 +198,63 @@ impl std::fmt::Debug for TeamsConfig {
     }
 }
 
+/// Who can reach an A2A-enabled agent without presenting a caller key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum A2aVisibility {
+    /// The Agent Card and every route answer unauthenticated requests
+    /// (still subject to the auth layer's per-request caller checks for
+    /// anything beyond the card).
+    #[default]
+    Public,
+    /// Every route, including the Agent Card, answers a plain 404 to a
+    /// caller without a valid key or sibling attestation — indistinguishable
+    /// from an agent that doesn't exist.
+    Private,
+}
+
+impl A2aVisibility {
+    /// Lowercase label, as stored in config and shown in status output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+        }
+    }
+}
+
+impl std::fmt::Display for A2aVisibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Validated `Agent2Agent` (A2A) protocol configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A2aConfig {
+    /// Whether the A2A listener runs at all.
+    pub enabled: bool,
+    /// Port for the dedicated A2A protocol listener (bound on the gateway's address).
+    pub port: u16,
+    /// Public URL other agents should use to reach this instance's A2A
+    /// interfaces, when this instance runs its own tunnel/reverse proxy
+    /// rather than relying on the relay's origin.
+    pub public_url: Option<String>,
+    /// Who may reach this agent without a caller key.
+    pub visibility: A2aVisibility,
+}
+
+impl Default for A2aConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: super::constants::DEFAULT_A2A_PORT,
+            public_url: None,
+            visibility: A2aVisibility::default(),
+        }
+    }
+}
+
 /// Routing target for a named webhook.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WebhookRouting {
@@ -319,15 +379,23 @@ impl ToolsConfig {
     }
 }
 
-/// Validated agent ability gates.
+/// Validated agent ability gates and turn limits.
 ///
-/// Controls what the agent is allowed to modify at runtime.
+/// Controls what the agent is allowed to modify at runtime, and bounds how
+/// long a single turn's tool loop may run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentAbilitiesConfig {
     /// Whether the agent can add/remove MCP servers.
     pub modify_mcp: bool,
     /// Whether the agent can add/remove notification channels.
     pub modify_channels: bool,
+    /// Maximum tool-call iterations a turn may run before it stops itself
+    /// gracefully. `None` means unlimited — the user's own Cancel /
+    /// `stop_agent` is the intended safety valve for a runaway turn.
+    pub max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call over and
+    /// over (see [`RepeatCallGuardConfig`]).
+    pub repeat_call_guard: RepeatCallGuardConfig,
 }
 
 impl Default for AgentAbilitiesConfig {
@@ -335,6 +403,40 @@ impl Default for AgentAbilitiesConfig {
         Self {
             modify_mcp: DEFAULT_AGENT_MODIFY_MCP,
             modify_channels: DEFAULT_AGENT_MODIFY_CHANNELS,
+            max_tool_iterations: None,
+            repeat_call_guard: RepeatCallGuardConfig::default(),
+        }
+    }
+}
+
+/// Thresholds for the consecutive-identical-tool-call guard in the turn loop.
+///
+/// Observed failure this guards against: GLM 5.3 Flash has been seen calling
+/// a tool with byte-identical arguments hundreds of times in a row, spinning
+/// instead of making progress — the result cannot change, so repeating the
+/// call again never helps. `steer_after` consecutive identical calls appends
+/// a steering note to the call's own result nudging the model to try
+/// something else; the call still runs. `stop_after` ends the turn instead
+/// of running the call again, with a cancelled-style result for that call
+/// and a notice naming the repeated tool. Set `enabled = false` to turn the
+/// guard off entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepeatCallGuardConfig {
+    /// Master switch.
+    pub enabled: bool,
+    /// Consecutive identical calls at which a steering note is appended.
+    pub steer_after: u32,
+    /// Consecutive identical calls at which the turn ends instead of
+    /// running the call again.
+    pub stop_after: u32,
+}
+
+impl Default for RepeatCallGuardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            steer_after: DEFAULT_REPEAT_CALL_STEER_AFTER,
+            stop_after: DEFAULT_REPEAT_CALL_STOP_AFTER,
         }
     }
 }
@@ -369,8 +471,6 @@ pub struct SubconsciousSettings {
     pub mid_turn: bool,
     /// Evaluate every N tool-loop iterations.
     pub every_n_iterations: usize,
-    /// Maximum mid-turn corrections injected per turn.
-    pub max_interventions_per_turn: usize,
     /// Token cap for the transcript sent to the classifier.
     pub max_transcript_tokens: usize,
     /// Whether the activity-triggered learning loop is enabled (surfaces `learn`
@@ -387,7 +487,6 @@ impl Default for SubconsciousSettings {
             enabled: false,
             mid_turn: true,
             every_n_iterations: DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
-            max_interventions_per_turn: DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
             max_transcript_tokens: DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
             learning: false,
             learning_cooldown_minutes: DEFAULT_LEARNING_COOLDOWN_MINUTES,
@@ -439,6 +538,9 @@ pub struct BackgroundConfig {
     /// How long a non-webhook `external` session lingers idle before
     /// completing.
     pub idle_timeout_external: Duration,
+    /// How long an `artifact` session (started by a workbench artifact)
+    /// lingers idle before completing.
+    pub idle_timeout_artifact: Duration,
     /// Token floor below which a completed run with nothing staged produces
     /// no episode (its transcript is still kept in the session store).
     pub episode_skip_token_floor: usize,
@@ -465,6 +567,7 @@ impl Default for BackgroundConfig {
             ),
             idle_timeout_spawned: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES * 60),
             idle_timeout_external: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES * 60),
+            idle_timeout_artifact: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES * 60),
             episode_skip_token_floor: DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
             subagent_depth_cap: DEFAULT_SUBAGENT_DEPTH_CAP,
             hop_soft_limit: DEFAULT_HOP_SOFT_LIMIT,
@@ -517,7 +620,8 @@ impl BackgroundModelsConfig {
 }
 
 /// Which model tier a background task requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BackgroundModelTier {
     /// Small/fast model for simple tasks.
     Small,
@@ -734,6 +838,8 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
     /// Microsoft Teams bot configuration (None if `[teams]` section absent).
     pub teams: Option<TeamsConfig>,
+    /// `Agent2Agent` (A2A) protocol configuration.
+    pub a2a: A2aConfig,
     /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEntry>,
     /// Skills subsystem configuration.
@@ -760,6 +866,12 @@ pub struct Config {
     pub role_overrides: HashMap<String, RoleOverrides>,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
+    /// User-facing notices describing what was skipped or degraded while
+    /// loading this config — an unknown key, a dropped fallback provider,
+    /// a disabled optional feature, and so on. Populated by
+    /// `resolve::from_file_and_env` and `Config::load_at`; empty for a
+    /// config that loaded with nothing to report.
+    pub load_notices: Vec<String>,
 }
 
 impl fmt::Debug for Config {
@@ -785,6 +897,7 @@ impl fmt::Debug for Config {
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
             .field("teams", &self.teams)
+            .field("a2a", &self.a2a)
             .field(
                 "webhooks",
                 &format_args!("{} configured", self.webhooks.len()),
@@ -801,6 +914,7 @@ impl fmt::Debug for Config {
             .field("tracing", &self.tracing)
             .field("role_overrides", &self.role_overrides)
             .field("config_dir", &self.config_dir)
+            .field("load_notices", &self.load_notices)
             .finish()
     }
 }

@@ -1,35 +1,39 @@
-//! The workbench tools listener: serves tools on their own origin.
+//! The workbench artifacts listener: serves artifacts on their own origin.
 //!
-//! Tools are agent-written pages that load third-party scripts, so they must
+//! Artifacts are agent-written pages that load third-party scripts, so they must
 //! never share the web UI's origin, where they could call the whole API
 //! directly. They get a separate listener instead, on the first free port
 //! after the gateway's. Locally that is a different origin
 //! (`localhost:7702` beside the UI on `localhost:7700`); through the relay,
 //! requests for `{user}.workbench.<relay>` are tagged by the relay and routed
-//! here by the tunnel client. Being a real origin, tools can be folders with
+//! here by the tunnel client. Being a real origin, artifacts can be folders with
 //! relative scripts, modules, and workers, and can use browser storage.
 //!
-//! The listener is read-only: `GET`/`HEAD` of tool files, nothing else. Tools
+//! The listener is read-only: `GET`/`HEAD` of artifact files, nothing else. Artifacts
 //! reach Residuum's API only through the web UI's bridge.
 //!
-//! URL layout: `/{tool}/` is the tool's page, `/{tool}/{path}` a file in a
-//! folder tool, and `/{tool}` redirects to `/{tool}/` so relative URLs resolve
-//! inside the tool.
+//! URL layout: `/{artifact}/` is the artifact's page, `/{artifact}/{path}` a file in a
+//! folder artifact, and `/{artifact}` redirects to `/{artifact}/` so relative URLs resolve
+//! inside the artifact.
 
 use std::path::PathBuf;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
+use tokio_util::io::ReaderStream;
 
-use super::{ToolFileError, discover_tools, is_valid_tool_name, read_tool_file};
+use super::{
+    ArtifactBody, ArtifactFileError, discover_artifacts, is_valid_artifact_name, read_artifact_file,
+};
 
 /// How many ports after the gateway's are tried before giving up.
 const PORT_SEARCH_ATTEMPTS: u16 = 10;
 
-/// Whether the tools listener is running.
+/// Whether the artifacts listener is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkbenchServing {
     /// Serving on this port, beside the gateway.
@@ -49,7 +53,7 @@ impl WorkbenchServing {
     }
 }
 
-/// Start the tools listener for `dir` beside the gateway on `bind`. Returns
+/// Start the artifacts listener for `dir` beside the gateway on `bind`. Returns
 /// whether it is serving and, when it is, the switch that stops it.
 ///
 /// Failing to bind is not fatal: Residuum runs without the workbench and the
@@ -64,18 +68,18 @@ pub(crate) async fn start(
     let (listener, port) = match bind_listener(bind, gateway_port, reserved).await {
         Ok(bound) => bound,
         Err(reason) => {
-            tracing::error!(%reason, gateway_port, "workbench tools listener could not start; workbench tools are unavailable");
+            tracing::error!(%reason, gateway_port, "workbench artifacts listener could not start; workbench artifacts are unavailable");
             return (
                 WorkbenchServing::Unavailable {
                     reason: format!(
-                        "Residuum couldn't start the workbench tools listener: {reason}."
+                        "Residuum couldn't start the workbench artifacts listener: {reason}."
                     ),
                 },
                 None,
             );
         }
     };
-    tracing::info!(addr = %format!("{bind}:{port}"), "workbench tools listening");
+    tracing::info!(addr = %format!("{bind}:{port}"), "workbench artifacts listening");
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     let app = router(dir);
@@ -86,17 +90,17 @@ pub(crate) async fn start(
             })
             .await
         {
-            tracing::error!(error = %e, "workbench tools listener failed");
+            tracing::error!(error = %e, "workbench artifacts listener failed");
         }
     });
     (WorkbenchServing::Running { port }, Some(shutdown_tx))
 }
 
-/// Bind the tools listener on the first free port after `gateway_port`,
+/// Bind the artifacts listener on the first free port after `gateway_port`,
 /// skipping every port in `reserved` (another listener's configured port,
 /// such as Teams', even when that listener isn't running yet). The choice is
 /// stable across restarts while the machine's ports don't change, which keeps
-/// the tools' origin, and so their browser storage, stable too.
+/// the artifacts' origin, and so their browser storage, stable too.
 ///
 /// # Errors
 /// Returns a plain-language reason when no port could be bound.
@@ -127,13 +131,13 @@ pub(crate) async fn bind_listener(
     ))
 }
 
-/// Router for the tools listener, serving tools from `dir`.
+/// Router for the artifacts listener, serving artifacts from `dir`.
 pub(crate) fn router(dir: PathBuf) -> Router {
     Router::new()
         .route("/", get(home))
-        .route("/{name}", get(tool_root))
-        .route("/{name}/", get(tool_index))
-        .route("/{name}/{*rest}", get(tool_file))
+        .route("/{name}", get(artifact_root))
+        .route("/{name}/", get(artifact_index))
+        .route("/{name}/{*rest}", get(artifact_file))
         .fallback(|| async { not_found("Nothing here.") })
         .layer(axum::middleware::from_fn(
             crate::gateway::cross_site::reject_cross_site_requests,
@@ -144,28 +148,28 @@ pub(crate) fn router(dir: PathBuf) -> Router {
 async fn home() -> Response {
     page(
         StatusCode::OK,
-        "Workbench tools open from the Workbench page in Residuum.",
+        "Workbench artifacts open from the Workbench page in Residuum.",
     )
 }
 
-/// `/{tool}` → `/{tool}/`, so relative URLs in the tool resolve inside it.
-async fn tool_root(State(dir): State<PathBuf>, Path(name): Path<String>, uri: Uri) -> Response {
-    let exists = is_valid_tool_name(&name)
-        && discover_tools(&dir)
+/// `/{artifact}` → `/{artifact}/`, so relative URLs in the artifact resolve inside it.
+async fn artifact_root(State(dir): State<PathBuf>, Path(name): Path<String>, uri: Uri) -> Response {
+    let exists = is_valid_artifact_name(&name)
+        && discover_artifacts(&dir)
             .await
-            .is_ok_and(|tools| tools.iter().any(|t| t.name == name));
+            .is_ok_and(|artifacts| artifacts.iter().any(|t| t.name == name));
     if !exists {
-        return not_found(&format!("There's no workbench tool named \"{name}\"."));
+        return not_found(&format!("There's no workbench artifact named \"{name}\"."));
     }
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     Redirect::permanent(&format!("/{name}/{query}")).into_response()
 }
 
-async fn tool_index(State(dir): State<PathBuf>, Path(name): Path<String>) -> Response {
+async fn artifact_index(State(dir): State<PathBuf>, Path(name): Path<String>) -> Response {
     serve(&dir, &name, "").await
 }
 
-async fn tool_file(
+async fn artifact_file(
     State(dir): State<PathBuf>,
     Path((name, rest)): Path<(String, String)>,
 ) -> Response {
@@ -173,17 +177,23 @@ async fn tool_file(
 }
 
 async fn serve(dir: &std::path::Path, name: &str, rest: &str) -> Response {
-    if !is_valid_tool_name(name) {
-        return not_found(&format!("There's no workbench tool named \"{name}\"."));
+    if !is_valid_artifact_name(name) {
+        return not_found(&format!("There's no workbench artifact named \"{name}\"."));
     }
-    match read_tool_file(dir, name, rest).await {
+    match read_artifact_file(dir, name, rest).await {
         Ok(served) => {
-            let mut response = served.bytes.into_response();
+            let body = match served.body {
+                ArtifactBody::Bytes(bytes) => Body::from(bytes),
+                // Streamed straight from disk so a large local artifact file
+                // never has to be buffered whole in memory.
+                ArtifactBody::File(file) => Body::from_stream(ReaderStream::new(file)),
+            };
+            let mut response = body.into_response();
             let headers = response.headers_mut();
             if let Ok(value) = HeaderValue::from_str(&served.content_type) {
                 headers.insert(header::CONTENT_TYPE, value);
             }
-            // Tools reload live while the agent edits them.
+            // Artifacts reload live while the agent edits them.
             headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             headers.insert(
                 header::X_CONTENT_TYPE_OPTIONS,
@@ -191,20 +201,17 @@ async fn serve(dir: &std::path::Path, name: &str, rest: &str) -> Response {
             );
             response
         }
-        Err(ToolFileError::NoSuchTool(_)) => {
-            not_found(&format!("There's no workbench tool named \"{name}\"."))
+        Err(ArtifactFileError::NoSuchArtifact(_)) => {
+            not_found(&format!("There's no workbench artifact named \"{name}\"."))
         }
-        Err(ToolFileError::NotFound { .. }) => {
-            not_found(&format!("The tool \"{name}\" has no file \"{rest}\"."))
+        Err(ArtifactFileError::NotFound { .. }) => {
+            not_found(&format!("The artifact \"{name}\" has no file \"{rest}\"."))
         }
-        Err(e @ ToolFileError::TooLarge { .. }) => {
-            page(StatusCode::PAYLOAD_TOO_LARGE, &e.to_string())
-        }
-        Err(e @ ToolFileError::Io { .. }) => {
-            tracing::error!(tool = %name, path = %rest, error = %e, "failed to serve workbench tool file");
+        Err(e @ ArtifactFileError::Io { .. }) => {
+            tracing::error!(artifact = %name, path = %rest, error = %e, "failed to serve workbench artifact file");
             page(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Couldn't read this tool's files. Residuum's logs have the details.",
+                "Couldn't read this artifact's files. Residuum's logs have the details.",
             )
         }
     }
@@ -214,7 +221,7 @@ fn not_found(message: &str) -> Response {
     page(StatusCode::NOT_FOUND, message)
 }
 
-/// A minimal HTML page, since these responses land in the tool frame.
+/// A minimal HTML page, since these responses land in the artifact frame.
 fn page(status: StatusCode, message: &str) -> Response {
     let escaped = message
         .replace('&', "&amp;")
@@ -261,7 +268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_folder_tools_with_relative_files() {
+    async fn serves_folder_artifacts_with_relative_files() {
         let dir = tempfile::tempdir().unwrap();
         write(
             &dir.path().join("graph/index.html"),
@@ -283,7 +290,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bare_tool_path_redirects_to_its_folder() {
+    async fn bare_artifact_path_redirects_to_its_folder() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("chart.html"), "<head></head>");
         let resp = get_path(dir.path(), "/chart?x=1").await;

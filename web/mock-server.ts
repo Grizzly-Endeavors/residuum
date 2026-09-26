@@ -11,6 +11,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+
+/** Stand-in for `update::CURRENT_VERSION`, embedded the way the real artifacts listener does. */
+const MOCK_RESIDUUM_VERSION = "0.0.0-mock";
+
+/** The detectable capabilities the mock implements (a subset of `src/features.rs`). */
+const MOCK_FEATURES: readonly string[] = ["model-complete", "artifact-sessions", "artifact-state"];
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 
@@ -18,6 +25,8 @@ interface MockState {
   mode: "setup" | "running";
   secrets: Map<string, string>;
   agentKeys: Map<string, { value: string; description: string; created_by: "user" | "agent" }>;
+  a2aKeys: Map<string, { description: string; created_at: string }>;
+  a2aAgentsJson: string;
   configToml: string;
   providersToml: string;
   mcpJson: string;
@@ -33,14 +42,21 @@ interface MockState {
     attachments: string[];
   }>;
   sessions: MockSessions;
-  /** Workbench tools: name → page HTML and modification time. */
-  workbenchTools: Map<string, { html: string; modifiedAt: string }>;
-  /** Port of the mock tools listener, once it is listening. */
+  /** Workbench artifacts: name → page HTML and modification time. */
+  workbenchArtifacts: Map<string, { html: string; modifiedAt: string }>;
+  /** Port of the mock artifacts listener, once it is listening. */
   workbenchPort: number | null;
   /** Main-agent messages recorded after the sample history (see `/api/mock/missed-relay`). */
   extraRecent: Array<Record<string, unknown>>;
   /** Close every WebSocket, as if the connection dropped. Set by `setupWebSocket`. */
   dropSockets: () => void;
+  /**
+   * Send a frame to every connected WebSocket client, the way a session
+   * frame reaches the sidebar. Set by `setupWebSocket`; the REST handlers
+   * for the artifact session endpoints use it to announce sessions they
+   * start, stop, or message the same way the WebSocket command handlers do.
+   */
+  broadcast: (frame: Record<string, unknown>) => void;
   /**
    * Set once a "drop compress" chat message has simulated the observer
    * compressing history into `ep-004`: how many `extraRecent` entries went
@@ -56,12 +72,19 @@ interface MockState {
  */
 const TRANSCRIPT_DELAY_MS = 700;
 
+/**
+ * Model calls are slowed down so they're visibly "in flight" in an
+ * artifact's activity panel for a moment, long enough to exercise Cancel
+ * calls and Stop page by hand.
+ */
+const MODEL_CALL_DELAY_MS = 3000;
+
 // ─── Agent sessions ────────────────────────────────────────────────────────────
 
 interface MockSession {
   address: string;
   run_id: string;
-  category: "scheduled" | "external" | "spawned";
+  category: "scheduled" | "external" | "spawned" | "artifact";
   source_label: string;
   state: "forking" | "running" | "idle" | "completing" | "completed";
   spawner: string | null;
@@ -96,6 +119,20 @@ function createSessions(): MockSessions {
       depth: 1,
       purpose: "Compare fallback strategies for notification delivery",
       started_at: minutesAgo(4),
+      completed_at: null,
+      episode_id: null,
+      interrupted: false,
+    },
+    {
+      address: "artifact-wiki-graph-7c20",
+      run_id: "run-live-wiki-graph",
+      category: "artifact",
+      source_label: "artifact:wiki-graph",
+      state: "running",
+      spawner: null,
+      depth: 1,
+      purpose: "Write a wiki page summarizing this week's notes on otters",
+      started_at: minutesAgo(2),
       completed_at: null,
       episode_id: null,
       interrupted: false,
@@ -137,6 +174,7 @@ function createSessions(): MockSessions {
     ["scheduled", "action:weekly_digest", "Write the weekly digest"],
     ["external", "webhook:github", "Triage a new GitHub issue"],
     ["spawned", "learner", "Review recent corrections for lasting lessons"],
+    ["artifact", "artifact:wiki-graph", "Link orphaned wiki pages into the graph"],
   ];
   for (let i = 0; i < 32; i++) {
     const [category, source, purpose] = labels[i % labels.length];
@@ -249,6 +287,133 @@ function createSessions(): MockSessions {
   return { live, completed, transcripts, runCounter: 0 };
 }
 
+// Session lifecycle helpers shared by the WebSocket command handlers and the
+// REST endpoints that start, stop, and message sessions on an artifact's
+// behalf (`POST /api/sessions` and friends) — both need to mutate the same
+// in-memory sessions and announce it over the same broadcast channel.
+
+function recordMessage(
+  sessions: MockSessions,
+  session: MockSession,
+  message: Record<string, unknown>,
+) {
+  const list = sessions.transcripts.get(session.run_id) ?? [];
+  list.push({ timestamp: session.started_at, visibility: "user", ...message });
+  sessions.transcripts.set(session.run_id, list);
+}
+
+function setSessionState(
+  broadcast: (frame: Record<string, unknown>) => void,
+  session: MockSession,
+  next: MockSession["state"],
+) {
+  session.state = next;
+  broadcast({
+    type: "session_state_changed",
+    address: session.address,
+    run_id: session.run_id,
+    state: next,
+  });
+}
+
+function completeSession(
+  sessions: MockSessions,
+  broadcast: (frame: Record<string, unknown>) => void,
+  session: MockSession,
+  status: "completed" | "cancelled" | "failed",
+  error: string | null,
+  errorDetails: string | null = null,
+) {
+  setSessionState(broadcast, session, "completing");
+  setTimeout(() => {
+    sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
+    session.state = "completed";
+    session.completed_at = new Date().toISOString();
+    session.episode_id = status === "completed" ? "ep-301" : null;
+    sessions.completed.unshift(session);
+    broadcast({
+      type: "session_completed",
+      address: session.address,
+      run_id: session.run_id,
+      status,
+      error,
+      error_details: errorDetails,
+      episode_id: session.episode_id,
+    });
+  }, 800);
+}
+
+// One turn: running → tool → reply → idle, relaying to main when spawned by it.
+function runSessionTurn(
+  sessions: MockSessions,
+  broadcast: (frame: Record<string, unknown>) => void,
+  session: MockSession,
+  reply: string,
+) {
+  const turnId = `${session.run_id}-t${Date.now()}`;
+  const toolId = `tc_s_${Date.now()}`;
+  setSessionState(broadcast, session, "running");
+  broadcast({
+    type: "session_turn_started",
+    address: session.address,
+    run_id: session.run_id,
+    turn_id: turnId,
+  });
+  setTimeout(() => {
+    broadcast({
+      type: "session_broadcast_response",
+      address: session.address,
+      run_id: session.run_id,
+      content: "Checking the notes first.",
+    });
+    broadcast({
+      type: "session_tool_call",
+      address: session.address,
+      run_id: session.run_id,
+      id: toolId,
+      name: "memory_search",
+      arguments: { query: "fallback" },
+    });
+  }, 500);
+  setTimeout(() => {
+    broadcast({
+      type: "session_tool_result",
+      address: session.address,
+      run_id: session.run_id,
+      tool_call_id: toolId,
+      name: "memory_search",
+      output: "1 result: notification-routing.md",
+      is_error: false,
+    });
+  }, 1200);
+  setTimeout(() => {
+    if (!sessions.live.includes(session) || session.state !== "running") return;
+    recordMessage(sessions, session, { role: "assistant", content: reply });
+    broadcast({
+      type: "session_response",
+      address: session.address,
+      run_id: session.run_id,
+      turn_id: turnId,
+      content: reply,
+    });
+    broadcast({
+      type: "session_turn_ended",
+      address: session.address,
+      run_id: session.run_id,
+      turn_id: turnId,
+    });
+    setSessionState(broadcast, session, "idle");
+    if (session.spawner === "main") {
+      broadcast({
+        type: "session_message_to_main",
+        address: session.address,
+        run_id: session.run_id,
+        content: reply,
+      });
+    }
+  }, 2400);
+}
+
 function loadAsset(filename: string): string {
   try {
     return readFileSync(resolve(__dirname, "..", "assets", filename), "utf-8");
@@ -257,7 +422,7 @@ function loadAsset(filename: string): string {
   }
 }
 
-const MOCK_WORKBENCH_TOOL = `<!doctype html>
+const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
 <html><head><title>Tip Splitter</title>
 <style>
   body { margin: 0; padding: 32px; background: #14181f; color: #e6e8ec; font: 16px system-ui; }
@@ -272,6 +437,8 @@ const MOCK_WORKBENCH_TOOL = `<!doctype html>
   <label for="people">People</label><input id="people" type="number" value="3">
   <output id="each"></output>
   <button id="ask">Ask Residuum about this split</button>
+  <button id="burst">Fire 3 calls at once</button>
+  <button id="spawn">Start a background session</button>
   <script>
     const each = document.getElementById("each");
     const update = () => {
@@ -282,37 +449,63 @@ const MOCK_WORKBENCH_TOOL = `<!doctype html>
     document.querySelectorAll("input").forEach((i) => i.addEventListener("input", update));
     update();
     document.getElementById("ask").addEventListener("click", () =>
-      residuum.send("Is " + each.textContent + " right?").catch((e) => alert(e.message)),
+      residuum
+        .ask("Is " + each.textContent + " right? Answer in one short sentence.")
+        .then((r) => alert(r.content))
+        .catch((e) => alert(e.message)),
+    );
+    // For exercising the activity panel's "Cancel calls": three calls in
+    // flight at once, long enough to see and cancel before they resolve.
+    document.getElementById("burst").addEventListener("click", () => {
+      for (let i = 0; i < 3; i++) {
+        residuum.ask("Sanity check #" + (i + 1) + " on " + each.textContent).catch(() => {});
+      }
+    });
+    // For exercising the activity panel's session list and stop buttons.
+    document.getElementById("spawn").addEventListener("click", () =>
+      residuum.sessions
+        .start({ prompt: "Double check this tip split against last month's dinner out." })
+        .catch((e) => alert(e.message)),
     );
   </script>
 </body></html>`;
 
-/** Serve a tool page the way the tools listener does: SDK injected. */
-function workbenchPage(html: string): string {
+/**
+ * Serve an artifact page the way the artifacts listener does: SDK injected,
+ * with the artifact's name, the mock version, and the mock feature list
+ * embedded for `residuum.artifact`, `residuum.version`, and `residuum.features`.
+ */
+function workbenchPage(html: string, artifactName: string): string {
   const sdk = readFileSync(resolve(__dirname, "..", "assets", "workbench", "sdk.js"), "utf-8");
-  return html.replace("<head>", `<head><script>${sdk}</script>`);
+  const context =
+    `const __RESIDUUM_ARTIFACT__=${JSON.stringify(artifactName)};` +
+    `const __RESIDUUM_VERSION__=${JSON.stringify(MOCK_RESIDUUM_VERSION)};` +
+    `const __RESIDUUM_FEATURES__=${JSON.stringify(MOCK_FEATURES)};`;
+  return html.replace("<head>", `<head><script>${context}${sdk}</script>`);
 }
 
 /**
- * A second origin for tools, like the gateway's tools listener: `/{tool}/`
- * serves the tool's page. Listens on any free port and records it.
+ * A second origin for artifacts, like the gateway's artifacts listener:
+ * `/{artifact}/` serves the artifact's page. Listens on any free port and
+ * records it.
  */
-function startMockToolsListener(state: MockState) {
+function startMockArtifactsListener(state: MockState) {
   const server = createServer((req, res) => {
     const match = /^\/([a-z0-9-]+)\/(\?.*)?$/.exec(req.url ?? "");
-    const tool = match ? state.workbenchTools.get(match[1] ?? "") : undefined;
-    if (!tool) {
+    const name = match?.[1] ?? "";
+    const artifact = match ? state.workbenchArtifacts.get(name) : undefined;
+    if (!artifact) {
       res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("There's no workbench tool here.");
+      res.end("There's no workbench artifact here.");
       return;
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-    res.end(workbenchPage(tool.html));
+    res.end(workbenchPage(artifact.html, name));
   });
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     state.workbenchPort = typeof address === "object" && address !== null ? address.port : null;
-    console.log(`  [mock] Workbench tools on http://localhost:${state.workbenchPort}`);
+    console.log(`  [mock] Workbench artifacts on http://localhost:${state.workbenchPort}`);
   });
 }
 
@@ -320,8 +513,8 @@ function createState(): MockState {
   return {
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
     workbenchPort: null,
-    workbenchTools: new Map([
-      ["tip-splitter", { html: MOCK_WORKBENCH_TOOL, modifiedAt: new Date().toISOString() }],
+    workbenchArtifacts: new Map([
+      ["tip-splitter", { html: MOCK_WORKBENCH_ARTIFACT, modifiedAt: new Date().toISOString() }],
     ]),
     secrets: new Map([
       ["anthropic_key", "sk-ant-mock-xxxx"],
@@ -345,6 +538,21 @@ function createState(): MockState {
         },
       ],
     ]),
+    a2aKeys: new Map([
+      [
+        "laptop",
+        {
+          description: "My other instance, before siblings exist",
+          created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+        },
+      ],
+    ]),
+    a2aAgentsJson:
+      JSON.stringify(
+        { agents: { "research-buddy": { url: "https://example.com/a2a/research-buddy" } } },
+        null,
+        2,
+      ) + "\n",
     configToml: loadAsset("config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
     mcpJson: loadAsset("mcp.example.json"),
@@ -376,6 +584,7 @@ function createState(): MockState {
       config: [
         { name: "mcp.json", entry_type: "file", size: 1567 },
         { name: "channels.toml", entry_type: "file", size: 834 },
+        { name: "agent-card.json", entry_type: "file", size: 356 },
       ],
       wiki: [
         { name: "index.md", entry_type: "file", size: 512 },
@@ -417,6 +626,22 @@ function createState(): MockState {
         '{\n  "servers": {\n    "filesystem": {\n      "command": "mcp-filesystem",\n      "args": ["--root", "/home/user/projects"]\n    }\n  }\n}',
       "config/channels.toml":
         '[web]\nenabled = true\nport = 3001\n\n[discord]\nenabled = false\ntoken_ref = "secret:discord_token"\n\n[telegram]\nenabled = true\ntoken_ref = "secret:telegram_token"\nchat_id = "123456789"\n',
+      "config/agent-card.json": JSON.stringify(
+        {
+          name: "Residuum agent",
+          description: "A personal AI agent, reachable over the Agent2Agent (A2A) protocol.",
+          skills: [
+            {
+              id: "research",
+              name: "Research",
+              description: "Look into a topic across the web and memory, then report back.",
+              tags: ["research"],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
       "wiki/index.md":
         '---\nokf_version: "0.1"\n---\n\n# Wiki Index\n\n- [projects](projects/index.md) — active projects and their status\n',
       "wiki/log.md":
@@ -433,6 +658,7 @@ function createState(): MockState {
     sessions: createSessions(),
     extraRecent: [],
     dropSockets: () => {},
+    broadcast: () => {},
     compressedAt: null,
     inboxItems: [
       {
@@ -853,6 +1079,47 @@ function text(res: ServerResponse, status: number, body: string) {
   res.end(body);
 }
 
+/**
+ * Merge a JSON diff (the shape the Settings form's diff builders in
+ * `lib/settings-toml.ts` send) into a plain object in place — the mock's
+ * stand-in for the real backend's `toml_edit`/JSON-merge patching
+ * (`src/config/patch.rs`, `src/workspace/mcp_patch.rs`). Comment
+ * preservation doesn't apply here (mock state is never a real file with
+ * comments), but the merge semantics match: `null` removes a key, a nested
+ * object recurses, and `{"$inline": {...}}` sets the key to that inner
+ * object directly.
+ */
+function applyJsonPatch(target: Record<string, unknown>, diff: Record<string, unknown>): void {
+  for (const [key, val] of Object.entries(diff)) {
+    if (val === null) {
+      delete target[key];
+    } else if (typeof val === "object" && !Array.isArray(val)) {
+      const obj = val as Record<string, unknown>;
+      if ("$inline" in obj) {
+        target[key] = obj.$inline;
+        continue;
+      }
+      const existing = target[key];
+      const sub =
+        typeof existing === "object" && existing !== null && !Array.isArray(existing)
+          ? (existing as Record<string, unknown>)
+          : {};
+      target[key] = sub;
+      applyJsonPatch(sub, obj);
+      if (Object.keys(sub).length === 0) delete target[key];
+    } else {
+      target[key] = val;
+    }
+  }
+}
+
+/** The name-shaped `X-Residuum-Artifact` header, or `null` when it's absent or malformed. */
+function artifactIdentity(req: IncomingMessage): string | null {
+  const raw = req.headers["x-residuum-artifact"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value) ? value : null;
+}
+
 // ─── REST middleware ───────────────────────────────────────────────────────────
 
 function setupRestMiddleware(server: ViteDevServer, state: MockState) {
@@ -873,7 +1140,11 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
     try {
       // ── Status & system ────────────────────────────────────────────────
       if (path === "/api/status" && method === "GET") {
-        json(res, 200, { mode: state.mode });
+        json(res, 200, {
+          mode: state.mode,
+          version: MOCK_RESIDUUM_VERSION,
+          features: MOCK_FEATURES,
+        });
         return;
       }
 
@@ -924,10 +1195,13 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       if (path === "/api/sessions" && method === "GET") {
         const address = query.get("address");
         const category = query.get("category");
+        const artifact = query.get("artifact");
         const limit = Number(query.get("limit") ?? "50");
         const before = query.get("before");
         const match = (s: MockSession) =>
-          (!address || s.address === address) && (!category || s.category === category);
+          (!address || s.address === address) &&
+          (!category || s.category === category) &&
+          (!artifact || (s.category === "artifact" && s.source_label === `artifact:${artifact}`));
         const done = state.sessions.completed.filter(match);
         const startIdx = before ? done.findIndex((s) => s.run_id === before) + 1 : 0;
         const page = done.slice(startIdx, startIdx + limit);
@@ -955,6 +1229,136 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      // POST /api/sessions — start an artifact session, the endpoint
+      // `residuum.sessions.start` calls through the bridge.
+      if (path === "/api/sessions" && method === "POST") {
+        const artifactName = artifactIdentity(req);
+        if (!artifactName) {
+          json(res, 400, {
+            error:
+              "starting a session needs the X-Residuum-Artifact header: sessions are started by workbench artifacts, through residuum.sessions.start",
+          });
+          return;
+        }
+        const body = JSON.parse((await readBody(req)) || "{}");
+        const prompt: string = typeof body.prompt === "string" ? body.prompt : "";
+        if (!prompt.trim()) {
+          json(res, 400, { error: "prompt must not be empty" });
+          return;
+        }
+        const sessions = state.sessions;
+        sessions.runCounter++;
+        const session: MockSession = {
+          address: `artifact-${artifactName}-${(0x1000 + sessions.runCounter).toString(16)}`,
+          run_id: `run-artifact-${sessions.runCounter}`,
+          category: "artifact",
+          source_label: `artifact:${artifactName}`,
+          state: "forking",
+          spawner: null,
+          depth: 1,
+          purpose: prompt.slice(0, 140),
+          started_at: new Date().toISOString(),
+          completed_at: null,
+          episode_id: null,
+          interrupted: false,
+        };
+        sessions.live.unshift(session);
+        recordMessage(sessions, session, {
+          role: "user",
+          content: `[This session was started by the workbench artifact "${artifactName}". Your responses are shown to that artifact, not to the main conversation.]\n\n${prompt}`,
+        });
+        state.broadcast({ type: "session_started", session });
+        setTimeout(
+          () =>
+            runSessionTurn(
+              sessions,
+              state.broadcast,
+              session,
+              `Working on it: ${prompt.slice(0, 80)}.`,
+            ),
+          400,
+        );
+        json(res, 202, { address: session.address });
+        return;
+      }
+
+      // POST /api/sessions/:address/stop — stop any live session.
+      const sessionStopMatch = /^\/api\/sessions\/([^/]+)\/stop$/.exec(path);
+      if (sessionStopMatch && method === "POST") {
+        const address = decodeURIComponent(sessionStopMatch[1]);
+        const sessions = state.sessions;
+        if (address === "main") {
+          json(res, 400, { error: "main can't be stopped this way", code: "invalid_request" });
+          return;
+        }
+        const live = sessions.live.find((s) => s.address === address);
+        if (!live || live.state === "completing") {
+          json(res, 404, {
+            error: `${address} isn't running, so there's nothing to stop.`,
+            code: "not_live",
+          });
+          return;
+        }
+        completeSession(sessions, state.broadcast, live, "cancelled", null);
+        json(res, 202, { address });
+        return;
+      }
+
+      // POST /api/sessions/:address/messages — message any session, attributed
+      // to the artifact naming itself with the identity header, or the owner.
+      const sessionMessageMatch = /^\/api\/sessions\/([^/]+)\/messages$/.exec(path);
+      if (sessionMessageMatch && method === "POST") {
+        const address = decodeURIComponent(sessionMessageMatch[1]);
+        const body = JSON.parse((await readBody(req)) || "{}");
+        const content: string = typeof body.content === "string" ? body.content : "";
+        if (!content.trim() || address === "main") {
+          json(res, 400, {
+            error: content.trim() ? "main can't be messaged this way" : "content must not be empty",
+            code: "invalid_request",
+          });
+          return;
+        }
+        const artifactName = artifactIdentity(req);
+        const label = artifactName
+          ? `[Message from the workbench artifact "${artifactName}" — your response in this turn is shown to it directly]`
+          : "[Message from the owner via the web UI — your response in this turn is shown to them directly]";
+        const sessions = state.sessions;
+        const live = sessions.live.find((s) => s.address === address);
+        if (live) {
+          recordMessage(sessions, live, { role: "user", content: `${label}\n${content}` });
+          runSessionTurn(sessions, state.broadcast, live, `Understood: "${content.slice(0, 60)}".`);
+          json(res, 200, { outcome: "live" });
+          return;
+        }
+        const prev = sessions.completed.find((s) => s.address === address);
+        if (!prev) {
+          json(res, 404, {
+            error: `There's no session called ${address}. It may have been from before a restart.`,
+            code: "unknown_address",
+          });
+          return;
+        }
+        sessions.runCounter++;
+        const resumed: MockSession = {
+          ...prev,
+          run_id: `run-resumed-http-${sessions.runCounter}`,
+          state: "forking",
+          started_at: new Date().toISOString(),
+          completed_at: null,
+          episode_id: null,
+          interrupted: false,
+        };
+        sessions.live.unshift(resumed);
+        recordMessage(sessions, resumed, { role: "user", content: `${label}\n${content}` });
+        state.broadcast({ type: "session_started", session: resumed });
+        setTimeout(
+          () => runSessionTurn(sessions, state.broadcast, resumed, "Picking this back up."),
+          400,
+        );
+        json(res, 200, { outcome: "resumed" });
+        return;
+      }
+
       // ── Config ─────────────────────────────────────────────────────────
       if (path === "/api/config/raw" && method === "GET") {
         text(res, 200, state.configToml);
@@ -963,6 +1367,17 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/config/raw" && method === "PUT") {
         state.configToml = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/config/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.configToml.trim()
+          ? (parseToml(state.configToml) as Record<string, unknown>)
+          : {};
+        applyJsonPatch(doc, diff);
+        state.configToml = stringifyToml(doc);
         json(res, 200, { valid: true });
         return;
       }
@@ -992,6 +1407,17 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/providers/raw" && method === "PUT") {
         state.providersToml = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/providers/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.providersToml.trim()
+          ? (parseToml(state.providersToml) as Record<string, unknown>)
+          : {};
+        applyJsonPatch(doc, diff);
+        state.providersToml = stringifyToml(doc);
         json(res, 200, { valid: true });
         return;
       }
@@ -1029,6 +1455,18 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       if (path === "/api/mcp/raw" && method === "PUT") {
         state.mcpJson = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/mcp/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.mcpJson.trim()
+          ? (JSON.parse(state.mcpJson) as Record<string, unknown>)
+          : { mcpServers: {} };
+        applyJsonPatch(doc, diff);
+        doc.mcpServers ??= {};
+        state.mcpJson = JSON.stringify(doc, null, 2);
         json(res, 200, { valid: true });
         return;
       }
@@ -1086,6 +1524,106 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      // ── A2A ────────────────────────────────────────────────────────────
+      if (path === "/api/a2a/status" && method === "GET") {
+        json(res, 200, {
+          enabled: true,
+          port: 7702,
+          visibility: "public",
+          public_url: null,
+          listener_running: true,
+          card_error: null,
+        });
+        return;
+      }
+
+      if (path === "/api/a2a/card" && method === "GET") {
+        const card = JSON.parse(state.workspaceFileContents["config/agent-card.json"] ?? "{}");
+        json(res, 200, {
+          name: card.name ?? "Residuum agent",
+          description: card.description ?? "",
+          skills: card.skills ?? [],
+        });
+        return;
+      }
+
+      if (path === "/api/a2a/keys" && method === "GET") {
+        const keys = [...state.a2aKeys.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, k]) => ({ name, description: k.description, created_at: k.created_at }));
+        json(res, 200, { keys });
+        return;
+      }
+
+      if (path === "/api/a2a/keys" && method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        if (!/^[a-z][a-z0-9_]{0,63}$/.test(body.name)) {
+          json(res, 400, { error: `caller key name '${body.name}' is invalid` });
+          return;
+        }
+        if (state.a2aKeys.has(body.name)) {
+          json(res, 409, { error: `an A2A caller key named '${body.name}' already exists` });
+          return;
+        }
+        state.a2aKeys.set(body.name, {
+          description: body.description ?? "",
+          created_at: new Date().toISOString(),
+        });
+        json(res, 200, {
+          name: body.name,
+          token: `rsdm_a2a_mock${Math.random().toString(36).slice(2, 10)}`,
+        });
+        return;
+      }
+
+      const a2aKeyDelete = path.match(/^\/api\/a2a\/keys\/(.+)$/);
+      if (a2aKeyDelete && method === "DELETE") {
+        const name = decodeURIComponent(a2aKeyDelete[1]);
+        if (!state.a2aKeys.delete(name)) {
+          json(res, 404, { error: `no A2A caller key named '${name}'` });
+          return;
+        }
+        json(res, 200, { revoked: true });
+        return;
+      }
+
+      if (path === "/api/a2a/agents" && method === "GET") {
+        json(res, 200, [
+          {
+            name: "research-buddy",
+            url: "https://example.com/a2a/research-buddy",
+            source: "config",
+            status: "ok",
+            error: null,
+            card: {
+              name: "Research Buddy",
+              description: "Digs through papers and reports back with sources.",
+              skills: [{ id: "lit-review", name: "Literature review" }],
+            },
+          },
+          {
+            name: "laptop",
+            url: "https://example.com/a2a/laptop",
+            source: "sibling",
+            status: "pending",
+            error: null,
+            card: null,
+          },
+        ]);
+        return;
+      }
+
+      if (path === "/api/a2a/agents/raw" && method === "GET") {
+        text(res, 200, state.a2aAgentsJson);
+        return;
+      }
+
+      if (path === "/api/a2a/agents/raw" && method === "PUT") {
+        state.a2aAgentsJson = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
       // ── Secrets ────────────────────────────────────────────────────────
       if (path === "/api/secrets" && method === "GET") {
         json(res, 200, { names: [...state.secrets.keys()] });
@@ -1109,15 +1647,15 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       }
 
       // ── Workbench ─────────────────────────────────────────────────────
-      if (path === "/api/workbench/tools" && method === "GET") {
+      if (path === "/api/workbench/artifacts" && method === "GET") {
         json(
           res,
           200,
-          [...state.workbenchTools].map(([name, tool]) => ({
+          [...state.workbenchArtifacts].map(([name, artifact]) => ({
             name,
-            title: /<title>([^<]*)<\/title>/i.exec(tool.html)?.[1]?.trim() || name,
-            modified_at: tool.modifiedAt,
-            size: tool.html.length,
+            title: /<title>([^<]*)<\/title>/i.exec(artifact.html)?.[1]?.trim() || name,
+            modified_at: artifact.modifiedAt,
+            size: artifact.html.length,
           })),
         );
         return;
@@ -1127,23 +1665,43 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         json(res, 200, {
           port: state.workbenchPort,
           unavailable_reason:
-            state.workbenchPort === null ? "The mock tools listener isn't up yet." : null,
+            state.workbenchPort === null ? "The mock artifacts listener isn't up yet." : null,
           relay: null,
         });
         return;
       }
 
-      const toolMatch = path.match(/^\/api\/workbench\/tools\/([^/]+)$/);
-      if (toolMatch) {
-        const name = decodeURIComponent(toolMatch[1] ?? "");
+      const artifactMatch = path.match(/^\/api\/workbench\/artifacts\/([^/]+)$/);
+      if (artifactMatch) {
+        const name = decodeURIComponent(artifactMatch[1] ?? "");
         if (method === "DELETE") {
-          if (!state.workbenchTools.delete(name)) {
-            text(res, 404, "That tool no longer exists. It may already have been deleted.");
+          if (!state.workbenchArtifacts.delete(name)) {
+            text(res, 404, "That artifact no longer exists. It may already have been deleted.");
             return;
           }
           json(res, 200, { removed: [`${name}.html`] });
           return;
         }
+      }
+
+      // ── Model calls ──────────────────────────────────────────────────
+      if (path === "/api/model/complete" && method === "POST") {
+        const body = JSON.parse(await readBody(req));
+        const prompt: string = body.prompt ?? body.messages?.at(-1)?.content ?? "";
+        if (!prompt.trim() && !body.messages?.length) {
+          json(res, 400, { error: 'A model call needs a "prompt" or "messages".' });
+          return;
+        }
+        const content = `Mock model reply to: ${prompt.slice(0, 200)}`;
+        // A brief artificial delay, so a call is visibly "in flight" in the
+        // artifact activity panel long enough to see and, if wanted, cancel.
+        await new Promise((done) => setTimeout(done, MODEL_CALL_DELAY_MS));
+        json(res, 200, {
+          content,
+          model: "mock/small",
+          usage: { input_tokens: prompt.length, output_tokens: content.length },
+        });
+        return;
       }
 
       // ── Inbox ─────────────────────────────────────────────────────────
@@ -1264,111 +1822,19 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
   state.dropSockets = () => {
     for (const client of wss.clients) client.terminate();
   };
+  state.broadcast = broadcast;
 
-  function setState(session: MockSession, next: MockSession["state"]) {
-    session.state = next;
-    broadcast({
-      type: "session_state_changed",
-      address: session.address,
-      run_id: session.run_id,
-      state: next,
-    });
-  }
-
-  function record(session: MockSession, message: Record<string, unknown>) {
-    const list = sessions.transcripts.get(session.run_id) ?? [];
-    list.push({ timestamp: session.started_at, visibility: "user", ...message });
-    sessions.transcripts.set(session.run_id, list);
-  }
-
-  function complete(
+  const setState = (session: MockSession, next: MockSession["state"]) =>
+    setSessionState(broadcast, session, next);
+  const record = (session: MockSession, message: Record<string, unknown>) =>
+    recordMessage(sessions, session, message);
+  const complete = (
     session: MockSession,
     status: "completed" | "cancelled" | "failed",
     error: string | null,
-  ) {
-    setState(session, "completing");
-    setTimeout(() => {
-      sessions.live = sessions.live.filter((s) => s.run_id !== session.run_id);
-      session.state = "completed";
-      session.completed_at = new Date().toISOString();
-      session.episode_id = status === "completed" ? "ep-301" : null;
-      sessions.completed.unshift(session);
-      broadcast({
-        type: "session_completed",
-        address: session.address,
-        run_id: session.run_id,
-        status,
-        error,
-        episode_id: session.episode_id,
-      });
-    }, 800);
-  }
-
-  // One turn: running → tool → reply → idle, relaying to main when spawned by it.
-  function runTurn(session: MockSession, reply: string) {
-    const turnId = `${session.run_id}-t${Date.now()}`;
-    const toolId = `tc_s_${Date.now()}`;
-    setState(session, "running");
-    broadcast({
-      type: "session_turn_started",
-      address: session.address,
-      run_id: session.run_id,
-      turn_id: turnId,
-    });
-    setTimeout(() => {
-      broadcast({
-        type: "session_broadcast_response",
-        address: session.address,
-        run_id: session.run_id,
-        content: "Checking the notes first.",
-      });
-      broadcast({
-        type: "session_tool_call",
-        address: session.address,
-        run_id: session.run_id,
-        id: toolId,
-        name: "memory_search",
-        arguments: { query: "fallback" },
-      });
-    }, 500);
-    setTimeout(() => {
-      broadcast({
-        type: "session_tool_result",
-        address: session.address,
-        run_id: session.run_id,
-        tool_call_id: toolId,
-        name: "memory_search",
-        output: "1 result: notification-routing.md",
-        is_error: false,
-      });
-    }, 1200);
-    setTimeout(() => {
-      if (!sessions.live.includes(session) || session.state !== "running") return;
-      record(session, { role: "assistant", content: reply });
-      broadcast({
-        type: "session_response",
-        address: session.address,
-        run_id: session.run_id,
-        turn_id: turnId,
-        content: reply,
-      });
-      broadcast({
-        type: "session_turn_ended",
-        address: session.address,
-        run_id: session.run_id,
-        turn_id: turnId,
-      });
-      setState(session, "idle");
-      if (session.spawner === "main") {
-        broadcast({
-          type: "session_message_to_main",
-          address: session.address,
-          run_id: session.run_id,
-          content: reply,
-        });
-      }
-    }, 2400);
-  }
+  ) => completeSession(sessions, broadcast, session, status, error);
+  const runTurn = (session: MockSession, reply: string) =>
+    runSessionTurn(sessions, broadcast, session, reply);
 
   function spawnSession(purpose: string): MockSession {
     sessions.runCounter++;
@@ -1445,6 +1911,10 @@ function setupWebSocket(server: ViteDevServer, state: MockState) {
 
         case "set_verbose":
           // Silent acknowledge — no response needed
+          break;
+
+        case "watch_workspace":
+          // The mock has no workspace to watch, so no change frames follow.
           break;
 
         case "session_send_message": {
@@ -1662,7 +2132,7 @@ export function mockServerPlugin(): Plugin {
 
       setupRestMiddleware(server, state);
       setupWebSocket(server, state);
-      startMockToolsListener(state);
+      startMockArtifactsListener(state);
 
       const modeLabel = state.mode === "setup" ? "setup" : "running";
       console.log("");

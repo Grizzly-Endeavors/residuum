@@ -72,7 +72,7 @@ subconscious = "ollama/llama3-mini"
         let cfg = Config::load_at(dir.path()).unwrap();
 
         let layout = WorkspaceLayout::new(dir.path());
-        let sub = Subconscious::build(&cfg, &layout, http());
+        let sub = Subconscious::build(&cfg, &layout, http(), residuum::bus::Publisher::noop());
 
         assert!(
             sub.enabled(),
@@ -93,7 +93,7 @@ subconscious = "ollama/llama3-mini"
         let cfg = Config::load_at(dir.path()).unwrap();
 
         let layout = WorkspaceLayout::new(dir.path());
-        let sub = Subconscious::build(&cfg, &layout, http());
+        let sub = Subconscious::build(&cfg, &layout, http(), residuum::bus::Publisher::noop());
 
         assert!(
             !sub.enabled(),

@@ -21,12 +21,24 @@ const SERVER_FAULT =
   "Residuum ran into a problem on its end. Try again; if it keeps happening, Residuum's logs have the details.";
 const UNEXPECTED = "Something unexpected went wrong. Try again, or reload the page.";
 
-/** Longest server-supplied message shown verbatim; anything longer is likely a dump. */
-const MAX_SERVER_MESSAGE = 240;
+/**
+ * Whether `text` is an HTML error page (a proxy's 502 page, a framework's
+ * default error page) rather than a message written for a person — the
+ * only kind of server body worth hiding. Checked on a prefix so a message
+ * that merely mentions or contains a `<tag>` still gets through: only an
+ * actual HTML *document* is filtered.
+ */
+function looksLikeHtmlPage(text: string): boolean {
+  const head = text.slice(0, 200).toLowerCase();
+  return head.includes("<!doctype") || head.includes("<html");
+}
 
 /**
  * The message a server put in an error body (plain text, or `{"error": …}`
- * JSON), if it's short, human-readable text rather than a page or a dump.
+ * JSON), if it's human-readable text rather than an HTML error page. Long
+ * messages and ones with newlines are returned as-is — callers that render
+ * them inline show them behind an expandable toggle rather than the
+ * message being silently swapped for a generic one.
  */
 function serverMessage(body: string): string | null {
   let text = body.trim();
@@ -42,7 +54,7 @@ function serverMessage(body: string): string | null {
       return null;
     }
   }
-  if (!text || text.length > MAX_SERVER_MESSAGE || text.includes("<") || text.includes("\n")) {
+  if (!text || looksLikeHtmlPage(text)) {
     return null;
   }
   const sentence = text.charAt(0).toUpperCase() + text.slice(1);

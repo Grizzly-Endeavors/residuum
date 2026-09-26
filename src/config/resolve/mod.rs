@@ -12,23 +12,26 @@ use crate::util::FatalError;
 use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{
-    DEFAULT_CLOUD_RELAY_URL, DEFAULT_DISCORD_CONTEXT_MESSAGES, DEFAULT_FEEDBACK_ENDPOINT,
-    DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TEAMS_CONTEXT_MESSAGES,
-    DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES, DEFAULT_TIMEOUT_SECS,
+    DEFAULT_A2A_PORT, DEFAULT_CLOUD_RELAY_URL, DEFAULT_DISCORD_CONTEXT_MESSAGES,
+    DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS,
+    DEFAULT_TEAMS_CONTEXT_MESSAGES, DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
+    DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
-    AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
-    DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile, ProviderEntryFile,
-    ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TeamsConfigFile,
-    TelegramConfigFile, ToolsConfigFile, TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
+    A2aConfigFile, AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile,
+    ConfigFile, DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile,
+    ProviderEntryFile, ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile,
+    TeamsConfigFile, TelegramConfigFile, ToolsConfigFile, TracingConfigFile, WebSearchConfigFile,
+    WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
-    AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
-    LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig,
-    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TeamsConfig, TelegramConfig,
-    ToolsConfig, TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    A2aConfig, A2aVisibility, AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig,
+    GatewayConfig, IdleConfig, LearningConfig, LogLevel, MemoryConfig, OtelEndpoint,
+    ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
+    SubconsciousSettings, TeamsConfig, TelegramConfig, ToolsConfig, TracingConfig, WebSearchConfig,
+    WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -36,6 +39,94 @@ use super::types::{
 /// # Errors
 /// Returns `FatalError::Config` if the model spec cannot be parsed or
 /// the workspace directory cannot be determined.
+/// Load the secret store, degrading to an empty one (with a notice) if it
+/// can't be read or decrypted.
+///
+/// A missing or corrupt secret store only matters to entries that actually
+/// resolve a `secret:` reference — those already treat an unresolvable
+/// reference as "missing" via `resolve_secret_value`'s `None`, and degrade
+/// (or are skipped) through the same paths as any other missing required
+/// value. Everything else in config.toml and providers.toml never touches
+/// the store, so it must not fail the whole config load here.
+fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> SecretStore {
+    match SecretStore::load(config_dir) {
+        Ok(store) => store,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "secret store degraded: secret: references will resolve as missing"
+            );
+            notices.push(format!(
+                "Your secret store couldn't be loaded ({err}). Any setting using secret:<name> will be treated as missing until you fix or recreate it."
+            ));
+            SecretStore::empty()
+        }
+    }
+}
+
+/// Teams, A2A, webhooks, and idle — grouped only because they're the
+/// config sections whose validation can push a degrade notice, and
+/// resolving them together keeps `from_file_and_env`'s body from growing
+/// past the project's function-length lint.
+struct ChatInterfacesAndIdle {
+    teams: Option<TeamsConfig>,
+    a2a: A2aConfig,
+    webhooks: HashMap<String, WebhookEntry>,
+    idle: IdleConfig,
+}
+
+fn resolve_chat_interfaces_and_idle(
+    file: Option<&ConfigFile>,
+    secrets: &SecretStore,
+    discord: Option<&DiscordConfig>,
+    telegram: Option<&TelegramConfig>,
+    notices: &mut Vec<String>,
+) -> ChatInterfacesAndIdle {
+    let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), secrets, notices);
+    let a2a = resolve_a2a_config(file.and_then(|f| f.a2a.as_ref()), notices);
+    let webhooks =
+        resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), secrets, notices);
+    let idle = resolve_idle_config(file, telegram, discord, teams.as_ref(), notices);
+    ChatInterfacesAndIdle {
+        teams,
+        a2a,
+        webhooks,
+        idle,
+    }
+}
+
+/// A handful of independent scalar/struct settings with straightforward
+/// defaults, grouped only to keep `from_file_and_env`'s body from growing
+/// past the project's function-length lint.
+struct SimpleSettings {
+    timeout_secs: u64,
+    max_tokens: u32,
+    memory: MemoryConfig,
+    pulse_enabled: bool,
+    subconscious_settings: SubconsciousSettings,
+    learning: LearningConfig,
+}
+
+fn resolve_simple_settings(file: Option<&ConfigFile>) -> SimpleSettings {
+    SimpleSettings {
+        timeout_secs: file
+            .and_then(|f| f.timeout_secs)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS),
+        max_tokens: file
+            .and_then(|f| f.max_tokens)
+            .unwrap_or(DEFAULT_MAX_TOKENS),
+        memory: resolve_memory_config(file.and_then(|f| f.memory.as_ref())),
+        pulse_enabled: file
+            .and_then(|f| f.pulse.as_ref())
+            .and_then(|p| p.enabled)
+            .unwrap_or(true),
+        subconscious_settings: resolve_subconscious_settings(
+            file.and_then(|f| f.subconscious.as_ref()),
+        ),
+        learning: resolve_learning_config(file.and_then(|f| f.learning.as_ref())),
+    }
+}
+
 #[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
 pub(crate) fn from_file_and_env(
     file: Option<&ConfigFile>,
@@ -44,55 +135,44 @@ pub(crate) fn from_file_and_env(
 ) -> Result<Config, FatalError> {
     warn_deprecated_env_vars();
 
-    let secrets = SecretStore::load(config_dir)?;
+    let mut notices: Vec<String> = Vec::new();
+    let secrets = load_secrets_degraded(config_dir, &mut notices);
     let providers_map = providers_file.and_then(|f| f.providers.as_ref());
     let models_section = providers_file.and_then(|f| f.models.as_ref());
 
     let mut resolved_models =
         models::resolve_all_model_specs(models_section, providers_map, &secrets)?;
 
-    // Workspace dir: env > file > default
-    let workspace_dir = std::env::var("RESIDUUM_WORKSPACE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
-        .map(|s| {
-            let expanded = shellexpand::tilde(&s);
-            PathBuf::from(expanded.as_ref())
-        })
-        .map_or_else(default_workspace_dir, Ok)?;
-
-    let timeout_secs = file
-        .and_then(|f| f.timeout_secs)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS);
-
-    let max_tokens = file
-        .and_then(|f| f.max_tokens)
-        .unwrap_or(DEFAULT_MAX_TOKENS);
-
-    let memory = resolve_memory_config(file.and_then(|f| f.memory.as_ref()));
-
-    let pulse_enabled = file
-        .and_then(|f| f.pulse.as_ref())
-        .and_then(|p| p.enabled)
-        .unwrap_or(true);
-
-    let subconscious_settings =
-        resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
-
-    let learning = resolve_learning_config(file.and_then(|f| f.learning.as_ref()));
+    let workspace_dir = resolve_workspace_dir_setting(file)?;
+    let SimpleSettings {
+        timeout_secs,
+        max_tokens,
+        memory,
+        pulse_enabled,
+        subconscious_settings,
+        learning,
+    } = resolve_simple_settings(file);
 
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
     let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
-    let teams = resolve_teams_config(file.and_then(|f| f.teams.as_ref()), &secrets)?;
-    let webhooks = resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), &secrets)?;
+    let ChatInterfacesAndIdle {
+        teams,
+        a2a,
+        webhooks,
+        idle,
+    } = resolve_chat_interfaces_and_idle(
+        file,
+        &secrets,
+        discord.as_ref(),
+        telegram.as_ref(),
+        &mut notices,
+    );
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let tools = resolve_tools_config(file.and_then(|f| f.tools.as_ref()), config_dir);
 
-    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
-
-    let idle = resolve_idle_config(file, telegram.as_ref(), discord.as_ref(), teams.as_ref())?;
+    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()))?;
 
     let mut background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
@@ -150,6 +230,7 @@ pub(crate) fn from_file_and_env(
         discord,
         telegram,
         teams,
+        a2a,
         webhooks,
         skills,
         tools,
@@ -163,7 +244,25 @@ pub(crate) fn from_file_and_env(
         tracing,
         role_overrides: resolved_models.role_overrides,
         config_dir: config_dir.to_path_buf(),
+        load_notices: notices,
     })
+}
+
+/// Resolve the workspace root directory: env var, then config file, then the
+/// platform default. `~` in an explicit value is expanded.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the default workspace directory can't be
+/// determined (no config value was given to fall back from).
+fn resolve_workspace_dir_setting(file: Option<&ConfigFile>) -> Result<PathBuf, FatalError> {
+    std::env::var("RESIDUUM_WORKSPACE")
+        .ok()
+        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
+        .map(|s| {
+            let expanded = shellexpand::tilde(&s);
+            PathBuf::from(expanded.as_ref())
+        })
+        .map_or_else(default_workspace_dir, Ok)
 }
 
 /// Resolve the timezone from env var or config file.
@@ -356,43 +455,47 @@ fn resolve_telegram_config(
 /// The client secret comes from `RESIDUUM_TEAMS_APP_PASSWORD` or the
 /// `app_password` field (with `${ENV_VAR}` / `secret:name` expansion).
 ///
-/// # Errors
-/// Returns `FatalError::Config` if the section is present but `app_id`,
-/// `tenant_id`, or the client secret is missing — a half-configured bot would
-/// otherwise silently never answer.
+/// Teams is an optional, independent feature: a half-configured `[teams]`
+/// section (missing `app_id`, `tenant_id`, or the app password) disables
+/// Teams with a notice explaining why, rather than failing the whole
+/// config — the rest of the gateway has nothing to do with Teams.
 fn resolve_teams_config(
     section: Option<&TeamsConfigFile>,
     secrets: &SecretStore,
-) -> Result<Option<TeamsConfig>, FatalError> {
-    let Some(section) = section else {
-        return Ok(None);
-    };
-    let required = |value: Option<&str>, field: &str| {
+    notices: &mut Vec<String>,
+) -> Option<TeamsConfig> {
+    let section = section?;
+    let required = |value: Option<&str>| {
         value
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| {
-                FatalError::Config(format!(
-                    "[teams] is present but {field} is missing; set it or remove the section"
-                ))
-            })
     };
-    let app_id = required(section.app_id.as_deref(), "app_id")?;
-    let tenant_id = required(section.tenant_id.as_deref(), "tenant_id")?;
-    let app_password = resolve_bot_token(
+    let mut disable = |field: &str| {
+        tracing::warn!(field, "[teams] is present but incomplete; disabling teams");
+        notices.push(format!(
+            "Teams is disabled: [teams] is present but {field} is missing. Set it, or remove the [teams] section, and reload to re-enable Teams."
+        ));
+    };
+
+    let Some(app_id) = required(section.app_id.as_deref()) else {
+        disable("app_id");
+        return None;
+    };
+    let Some(tenant_id) = required(section.tenant_id.as_deref()) else {
+        disable("tenant_id");
+        return None;
+    };
+    let Some(app_password) = resolve_bot_token(
         "RESIDUUM_TEAMS_APP_PASSWORD",
         section.app_password.as_deref(),
         secrets,
-    )
-    .ok_or_else(|| {
-        FatalError::Config(
-            "[teams] is present but app_password is missing; set RESIDUUM_TEAMS_APP_PASSWORD or app_password in config"
-                .to_string(),
-        )
-    })?;
+    ) else {
+        disable("app_password (set RESIDUUM_TEAMS_APP_PASSWORD or app_password)");
+        return None;
+    };
 
-    Ok(Some(TeamsConfig {
+    Some(TeamsConfig {
         app_id,
         app_password,
         tenant_id,
@@ -401,7 +504,53 @@ fn resolve_teams_config(
             .context_messages
             .unwrap_or(DEFAULT_TEAMS_CONTEXT_MESSAGES),
         port: section.port.unwrap_or(DEFAULT_TEAMS_PORT),
-    }))
+    })
+}
+
+/// Resolve `Agent2Agent` (A2A) protocol configuration from the TOML section.
+///
+/// Enabled by default: every request the listener answers still goes
+/// through the auth layer, so turning it on by default costs nothing until
+/// a caller key or sibling instance actually exists to use it.
+///
+/// An invalid `visibility` value falls back to the default visibility with
+/// a notice rather than failing the whole config — a2a itself still comes
+/// up, just not with the visibility the user intended until they fix it.
+fn resolve_a2a_config(section: Option<&A2aConfigFile>, notices: &mut Vec<String>) -> A2aConfig {
+    let default = A2aConfig::default();
+    let Some(section) = section else {
+        return default;
+    };
+
+    let visibility = match section.visibility.as_deref().map(str::trim) {
+        None | Some("") => A2aVisibility::default(),
+        Some("public") => A2aVisibility::Public,
+        Some("private") => A2aVisibility::Private,
+        Some(other) => {
+            tracing::warn!(
+                value = other,
+                "[a2a] visibility is invalid, falling back to the default"
+            );
+            notices.push(format!(
+                "[a2a] visibility must be \"public\" or \"private\", got \"{other}\" — using the default visibility until you fix it."
+            ));
+            A2aVisibility::default()
+        }
+    };
+
+    let public_url = section
+        .public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    A2aConfig {
+        enabled: section.enabled.unwrap_or(default.enabled),
+        port: section.port.unwrap_or(DEFAULT_A2A_PORT),
+        public_url,
+        visibility,
+    }
 }
 
 /// Expand `${ENV_VAR}` references in a token string.
@@ -428,61 +577,86 @@ pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<S
 
 /// Resolve named webhook configurations from TOML `[webhooks.<name>]` sections.
 ///
-/// # Errors
-/// Returns `FatalError::Config` if a routing or format string is invalid,
-/// or if `content_fields` entries are empty.
+/// Each webhook entry is independent, so a bad `routing`/`format` string or
+/// an empty `content_fields` entry drops just that one entry (with a
+/// notice) rather than failing every configured webhook.
 fn resolve_webhooks_config(
     section: Option<&HashMap<String, WebhookEntryFile>>,
     secrets: &SecretStore,
-) -> Result<HashMap<String, WebhookEntry>, FatalError> {
+    notices: &mut Vec<String>,
+) -> HashMap<String, WebhookEntry> {
     let Some(entries) = section else {
-        return Ok(HashMap::new());
+        return HashMap::new();
     };
 
     let mut result = HashMap::with_capacity(entries.len());
 
     for (name, entry) in entries {
-        let secret = entry
-            .secret
-            .as_deref()
-            .and_then(|raw| resolve_secret_value(raw, secrets));
-
-        let routing: WebhookRouting = match entry.routing.as_deref() {
-            Some(s) => s
-                .parse()
-                .map_err(|e: String| FatalError::Config(format!("webhooks.{name}: {e}")))?,
-            None => WebhookRouting::default(),
-        };
-
-        let format: WebhookFormat = match entry.format.as_deref() {
-            Some(s) => s
-                .parse()
-                .map_err(|e: String| FatalError::Config(format!("webhooks.{name}: {e}")))?,
-            None => WebhookFormat::default(),
-        };
-
-        if let Some(ref fields) = entry.content_fields {
-            for (i, field) in fields.iter().enumerate() {
-                if field.trim().is_empty() {
-                    return Err(FatalError::Config(format!(
-                        "webhooks.{name}: content_fields[{i}] is empty"
-                    )));
-                }
-            }
+        if let Some(webhook) = resolve_webhook_entry(name, entry, secrets, notices) {
+            result.insert(name.clone(), webhook);
         }
-
-        result.insert(
-            name.clone(),
-            WebhookEntry {
-                secret,
-                routing,
-                format,
-                content_fields: entry.content_fields.clone(),
-            },
-        );
     }
 
-    Ok(result)
+    result
+}
+
+/// Resolve one `[webhooks.<name>]` entry, or `None` (with a notice) if its
+/// `routing`, `format`, or `content_fields` is invalid.
+fn resolve_webhook_entry(
+    name: &str,
+    entry: &WebhookEntryFile,
+    secrets: &SecretStore,
+    notices: &mut Vec<String>,
+) -> Option<WebhookEntry> {
+    let mut skip = |problem: &str| {
+        tracing::warn!(webhook = name, problem, "skipping invalid webhook entry");
+        notices.push(format!(
+            "Skipped webhook \"{name}\": {problem}. Fix it in [webhooks.{name}] and reload to re-enable it."
+        ));
+    };
+
+    let secret = entry
+        .secret
+        .as_deref()
+        .and_then(|raw| resolve_secret_value(raw, secrets));
+
+    let routing: WebhookRouting = match entry.routing.as_deref() {
+        Some(s) => match s.parse() {
+            Ok(routing) => routing,
+            Err(e) => {
+                skip(&e);
+                return None;
+            }
+        },
+        None => WebhookRouting::default(),
+    };
+
+    let format: WebhookFormat = match entry.format.as_deref() {
+        Some(s) => match s.parse() {
+            Ok(format) => format,
+            Err(e) => {
+                skip(&e);
+                return None;
+            }
+        },
+        None => WebhookFormat::default(),
+    };
+
+    if let Some(ref fields) = entry.content_fields {
+        for (i, field) in fields.iter().enumerate() {
+            if field.trim().is_empty() {
+                skip(&format!("content_fields[{i}] is empty"));
+                return None;
+            }
+        }
+    }
+
+    Some(WebhookEntry {
+        secret,
+        routing,
+        format,
+        content_fields: entry.content_fields.clone(),
+    })
 }
 
 /// Resolve skills configuration from TOML section.
@@ -559,9 +733,6 @@ fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> Su
         if let Some(v) = s.every_n_iterations {
             settings.every_n_iterations = v;
         }
-        if let Some(v) = s.max_interventions_per_turn {
-            settings.max_interventions_per_turn = v;
-        }
         if let Some(v) = s.max_transcript_tokens {
             settings.max_transcript_tokens = v;
         }
@@ -632,15 +803,16 @@ fn resolve_tracing_config(
 /// Resolve idle configuration from TOML section, validating the idle channel
 /// against configured interfaces.
 ///
-/// # Errors
-/// Returns `FatalError::Config` if the idle channel references an unknown
-/// or unconfigured interface.
+/// An `idle_channel` naming an unknown or unconfigured interface falls back
+/// to no idle channel (idle switching stays disabled) with a notice, rather
+/// than failing the whole config over one bad setting.
 fn resolve_idle_config(
     file: Option<&ConfigFile>,
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
     teams: Option<&TeamsConfig>,
-) -> Result<IdleConfig, FatalError> {
+    notices: &mut Vec<String>,
+) -> IdleConfig {
     let section = file.and_then(|f| f.idle.as_ref());
     let timeout_minutes = section
         .and_then(|s| s.timeout_minutes)
@@ -654,29 +826,28 @@ fn resolve_idle_config(
                 other => other.to_string(),
             });
 
-    if let Some(ref channel) = idle_channel {
-        let valid = match channel.as_str() {
-            "telegram" => telegram.is_some(),
-            "discord" => discord.is_some(),
-            "teams" => teams.is_some(),
-            "ws" => true,
-            other => {
-                return Err(FatalError::Config(format!(
-                    "idle_channel \"{other}\" is not a recognized interface"
-                )));
+    let idle_channel = idle_channel.and_then(|channel| {
+        let problem = match channel.as_str() {
+            "telegram" if telegram.is_some() => return Some(channel),
+            "discord" if discord.is_some() => return Some(channel),
+            "teams" if teams.is_some() => return Some(channel),
+            "ws" => return Some(channel),
+            "telegram" | "discord" | "teams" => {
+                format!("idle_channel \"{channel}\" configured but [{channel}] section is missing")
             }
+            other => format!("idle_channel \"{other}\" is not a recognized interface"),
         };
-        if !valid {
-            return Err(FatalError::Config(format!(
-                "idle_channel \"{channel}\" configured but [{channel}] section is missing"
-            )));
-        }
-    }
+        tracing::warn!(channel, "invalid idle_channel, idle switching disabled");
+        notices.push(format!(
+            "{problem}. Idle switching is disabled until you fix idle_channel and reload."
+        ));
+        None
+    });
 
-    Ok(IdleConfig {
+    IdleConfig {
         timeout: std::time::Duration::from_secs(timeout_minutes * 60),
         idle_channel,
-    })
+    }
 }
 
 /// Resolve retry configuration from TOML section with defaults.
@@ -906,8 +1077,15 @@ fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     }
 }
 
-/// Resolve agent ability gates from TOML section.
-fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConfig {
+/// Resolve agent ability gates and turn limits from the TOML section.
+///
+/// # Errors
+/// Returns `FatalError::Config` if `max_tool_iterations` is set to `0` — a
+/// turn that stops before ever calling a tool isn't a usable limit, so this
+/// is rejected rather than silently accepted.
+fn resolve_agent_config(
+    section: Option<&AgentConfigFile>,
+) -> Result<AgentAbilitiesConfig, FatalError> {
     let mut cfg = AgentAbilitiesConfig::default();
     if let Some(s) = section {
         if let Some(v) = s.modify_mcp {
@@ -916,8 +1094,26 @@ fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConf
         if let Some(v) = s.modify_channels {
             cfg.modify_channels = v;
         }
+        if let Some(limit) = s.max_tool_iterations {
+            if limit == 0 {
+                return Err(FatalError::Config(
+                    "agent.max_tool_iterations must be at least 1 (leave it unset for unlimited)"
+                        .to_string(),
+                ));
+            }
+            cfg.max_tool_iterations = Some(limit);
+        }
+        if let Some(v) = s.repeat_call_guard_enabled {
+            cfg.repeat_call_guard.enabled = v;
+        }
+        if let Some(v) = s.repeat_call_steer_after {
+            cfg.repeat_call_guard.steer_after = v;
+        }
+        if let Some(v) = s.repeat_call_stop_after {
+            cfg.repeat_call_guard.stop_after = v;
+        }
     }
-    cfg
+    Ok(cfg)
 }
 
 /// Resolve background task configuration.
@@ -948,6 +1144,9 @@ fn resolve_background_config(
         }
         if let Some(v) = section.idle_timeout_external_minutes {
             cfg.idle_timeout_external = std::time::Duration::from_secs(v.saturating_mul(60));
+        }
+        if let Some(v) = section.idle_timeout_artifact_minutes {
+            cfg.idle_timeout_artifact = std::time::Duration::from_secs(v.saturating_mul(60));
         }
         if let Some(v) = section.episode_skip_token_floor {
             cfg.episode_skip_token_floor = v;
@@ -1161,6 +1360,41 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
+    fn artifact_idle_timeout_defaults_to_ten_minutes_and_parses_from_background() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let default_file = parse_config("timezone = \"UTC\"\n");
+        let defaults =
+            from_file_and_env(Some(&default_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            defaults.background.idle_timeout_artifact,
+            std::time::Duration::from_mins(10)
+        );
+
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[background]
+idle_timeout_artifact_minutes = 25
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.background.idle_timeout_artifact,
+            std::time::Duration::from_mins(25)
+        );
+        assert_eq!(
+            cfg.background.idle_timeout_spawned, defaults.background.idle_timeout_spawned,
+            "the artifact setting must not bleed into another category's timeout"
+        );
+    }
+
+    #[test]
     fn subconscious_knobs_parse() {
         let cfg_file = parse_config(
             r#"
@@ -1170,7 +1404,6 @@ timezone = "UTC"
 enabled = true
 mid_turn = false
 every_n_iterations = 5
-max_interventions_per_turn = 2
 max_transcript_tokens = 8000
 learning = true
 learning_cooldown_minutes = 60
@@ -1186,7 +1419,6 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(cfg.subconscious_settings.enabled);
         assert!(!cfg.subconscious_settings.mid_turn);
         assert_eq!(cfg.subconscious_settings.every_n_iterations, 5);
-        assert_eq!(cfg.subconscious_settings.max_interventions_per_turn, 2);
         assert_eq!(cfg.subconscious_settings.max_transcript_tokens, 8000);
         assert!(cfg.subconscious_settings.learning, "learning parses");
         assert_eq!(cfg.subconscious_settings.learning_cooldown_minutes, 60);
@@ -1583,13 +1815,16 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
-    fn webhooks_invalid_routing_rejected() {
+    fn webhooks_invalid_routing_is_skipped_with_notice() {
         let cfg_file = parse_config(
             r#"
 timezone = "UTC"
 
 [webhooks.bad]
 routing = "nowhere"
+
+[webhooks.good]
+routing = "inbox"
 "#,
         );
         let prov_file = parse_providers(
@@ -1598,17 +1833,25 @@ routing = "nowhere"
 main = "anthropic/claude-sonnet-4-6"
 "#,
         );
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
-            err.contains("webhooks.bad"),
-            "error should mention webhook name: {err}"
+            !cfg.webhooks.contains_key("bad"),
+            "invalid webhook should be dropped, not fail the whole config"
+        );
+        assert!(
+            cfg.webhooks.contains_key("good"),
+            "other webhooks should still load"
+        );
+        assert_eq!(cfg.load_notices.len(), 1);
+        let notice = cfg.load_notices.first().unwrap();
+        assert!(
+            notice.contains("bad"),
+            "notice should name the webhook: {notice}"
         );
     }
 
     #[test]
-    fn webhooks_empty_content_field_rejected() {
+    fn webhooks_empty_content_field_is_skipped_with_notice() {
         let cfg_file = parse_config(
             r#"
 timezone = "UTC"
@@ -1623,12 +1866,13 @@ content_fields = ["valid", ""]
 main = "anthropic/claude-sonnet-4-6"
 "#,
         );
-        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(!cfg.webhooks.contains_key("bad"));
+        assert_eq!(cfg.load_notices.len(), 1);
+        let notice = cfg.load_notices.first().unwrap();
         assert!(
-            err.contains("content_fields"),
-            "error should mention content_fields: {err}"
+            notice.contains("content_fields"),
+            "notice should mention content_fields: {notice}"
         );
     }
 
@@ -1741,6 +1985,125 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(
             !cfg.agent.modify_channels,
             "modify_channels should be false"
+        );
+    }
+
+    #[test]
+    fn max_tool_iterations_defaults_to_unlimited() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.agent.max_tool_iterations, None,
+            "an unset limit should mean unlimited"
+        );
+    }
+
+    #[test]
+    fn max_tool_iterations_round_trips_a_configured_value() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+max_tool_iterations = 25
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.agent.max_tool_iterations, Some(25));
+    }
+
+    #[test]
+    fn max_tool_iterations_of_zero_is_rejected() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+max_tool_iterations = 0
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let err = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir())
+            .expect_err("a zero limit should be rejected at load");
+        assert!(
+            err.to_string().contains("max_tool_iterations"),
+            "error should name the offending setting: {err}"
+        );
+    }
+
+    #[test]
+    fn repeat_call_guard_defaults_to_three_and_six_enabled() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.agent.repeat_call_guard.enabled,
+            "guard is on by default"
+        );
+        assert_eq!(cfg.agent.repeat_call_guard.steer_after, 3);
+        assert_eq!(cfg.agent.repeat_call_guard.stop_after, 6);
+    }
+
+    #[test]
+    fn repeat_call_guard_thresholds_and_disabling_are_configurable() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+repeat_call_steer_after = 2
+repeat_call_stop_after = 4
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.agent.repeat_call_guard.steer_after, 2);
+        assert_eq!(cfg.agent.repeat_call_guard.stop_after, 4);
+        assert!(
+            cfg.agent.repeat_call_guard.enabled,
+            "still enabled by default"
+        );
+
+        let disabled_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[agent]
+repeat_call_guard_enabled = false
+"#,
+        );
+        let disabled_cfg =
+            from_file_and_env(Some(&disabled_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            !disabled_cfg.agent.repeat_call_guard.enabled,
+            "should be disableable"
         );
     }
 
@@ -2127,7 +2490,7 @@ port = 8801
     }
 
     #[test]
-    fn teams_section_missing_required_field_is_an_error() {
+    fn teams_section_missing_required_field_disables_teams_with_notice() {
         for (missing, toml) in [
             (
                 "app_id",
@@ -2142,10 +2505,16 @@ port = 8801
                 "[teams]\napp_id = \"a\"\ntenant_id = \"t\"\n",
             ),
         ] {
-            let err = resolve_with(&format!("timezone = \"UTC\"\n\n{toml}")).unwrap_err();
+            let cfg = resolve_with(&format!("timezone = \"UTC\"\n\n{toml}")).unwrap();
             assert!(
-                err.to_string().contains(missing),
-                "error should name {missing}: {err}"
+                cfg.teams.is_none(),
+                "teams should be disabled, not fail the config, when {missing} is missing"
+            );
+            assert_eq!(cfg.load_notices.len(), 1);
+            let notice = cfg.load_notices.first().unwrap();
+            assert!(
+                notice.contains(missing),
+                "notice should name {missing}: {notice}"
             );
         }
     }
@@ -2174,6 +2543,78 @@ app_password = "s"
         )
         .unwrap();
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("teams"));
+    }
+
+    // ── A2A config ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn a2a_absent_resolves_to_open_defaults() {
+        let cfg = resolve_with("timezone = \"UTC\"\n").unwrap();
+        assert!(cfg.a2a.enabled, "enabled by default");
+        assert_eq!(cfg.a2a.port, DEFAULT_A2A_PORT);
+        assert_eq!(cfg.a2a.public_url, None);
+        assert_eq!(cfg.a2a.visibility, A2aVisibility::Public);
+    }
+
+    #[test]
+    fn a2a_section_honours_overrides() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[a2a]
+enabled = false
+port = 9999
+public_url = "https://example.com/a2a/laptop"
+visibility = "private"
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.a2a.enabled);
+        assert_eq!(cfg.a2a.port, 9999);
+        assert_eq!(
+            cfg.a2a.public_url.as_deref(),
+            Some("https://example.com/a2a/laptop")
+        );
+        assert_eq!(cfg.a2a.visibility, A2aVisibility::Private);
+    }
+
+    #[test]
+    fn a2a_empty_public_url_resolves_to_none() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[a2a]
+public_url = "   "
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.a2a.public_url, None);
+    }
+
+    #[test]
+    fn a2a_invalid_visibility_falls_back_to_default_with_notice() {
+        let cfg = resolve_with(
+            r#"
+timezone = "UTC"
+
+[a2a]
+visibility = "hidden"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.a2a.visibility,
+            A2aVisibility::default(),
+            "a2a should still come up on the default visibility"
+        );
+        assert_eq!(cfg.load_notices.len(), 1);
+        let notice = cfg.load_notices.first().unwrap();
+        assert!(
+            notice.contains("visibility"),
+            "notice should mention visibility: {notice}"
+        );
     }
 
     // ── Cloud config ───────────────────────────────────────────────────────

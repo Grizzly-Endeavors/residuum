@@ -7,7 +7,7 @@ use tokio::time::Duration;
 use super::helpers::publish_notice;
 use crate::background::spawn_context::SpawnContext;
 use crate::config::Config;
-use crate::gateway::startup;
+use crate::gateway::{last_known_good, startup};
 use crate::inference::CompletionOptions;
 use crate::inference::InferenceError;
 use crate::inference::SharedHttpClient;
@@ -68,6 +68,8 @@ pub(super) struct ConfigDiff {
     pub telegram_changed: bool,
     /// Teams config (or the gateway bind it listens on) changed — restarts its listener.
     pub teams_changed: bool,
+    /// A2A config (or the gateway bind it listens on) changed — restarts its listener.
+    pub a2a_changed: bool,
     /// Cloud tunnel config changed — restarting the tunnel is disruptive.
     pub cloud_changed: bool,
     /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
@@ -94,77 +96,12 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     let telegram_changed = old.telegram != new.telegram;
     let teams_changed =
         old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind);
+    let a2a_changed =
+        old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind);
     let cloud_changed = old.cloud != new.cloud;
     let idle_changed = old.idle != new.idle;
 
-    let mut parts = Vec::new();
-    if old.main != new.main
-        || old.observer != new.observer
-        || old.reflector != new.reflector
-        || old.pulse != new.pulse
-        || old.embedding != new.embedding
-        || old.retry != new.retry
-        || old.max_tokens != new.max_tokens
-        || old.temperature != new.temperature
-        || old.thinking != new.thinking
-        || old.role_overrides != new.role_overrides
-    {
-        parts.push("providers");
-    }
-    if old.memory != new.memory {
-        parts.push("memory thresholds");
-    }
-    if gateway_changed {
-        parts.push("gateway bind/port");
-    }
-    if discord_changed {
-        parts.push("discord");
-    }
-    if telegram_changed {
-        parts.push("telegram");
-    }
-    if teams_changed {
-        parts.push("teams");
-    }
-    if old.pulse_enabled != new.pulse_enabled {
-        parts.push("pulse");
-    }
-    if old.subconscious != new.subconscious
-        || old.subconscious_settings != new.subconscious_settings
-    {
-        parts.push("subconscious");
-    }
-    if old.background != new.background {
-        parts.push("background");
-    }
-    if old.agent != new.agent {
-        parts.push("agent abilities");
-    }
-    if old.skills != new.skills {
-        parts.push("skills");
-    }
-    if old.tools != new.tools {
-        parts.push("tool path");
-    }
-    if idle_changed {
-        parts.push("idle");
-    }
-    if cloud_changed {
-        parts.push("cloud");
-    }
-    if old.tracing != new.tracing {
-        parts.push("tracing");
-    }
-    if old.timeout_secs != new.timeout_secs {
-        parts.push("http timeout");
-    }
-    if old.webhooks != new.webhooks {
-        parts.push("webhooks");
-    }
-    if old.web_search != new.web_search {
-        parts.push("web search");
-    }
-
+    let parts = summary_parts(old, new);
     let changed = !parts.is_empty();
     let mut summary = if changed {
         parts.join(", ")
@@ -186,10 +123,90 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         discord_changed,
         telegram_changed,
         teams_changed,
+        a2a_changed,
         cloud_changed,
         idle_changed,
         summary,
     }
+}
+
+/// Human-readable labels for every subsystem that differs between `old` and
+/// `new`, in the order shown in the reload log line. Split out of
+/// `diff_config` purely to keep that function's line count bounded; each
+/// check here is independent and re-derives its own condition rather than
+/// taking `ConfigDiff`'s flags as parameters.
+fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
+    let mut parts = Vec::new();
+    if old.main != new.main
+        || old.observer != new.observer
+        || old.reflector != new.reflector
+        || old.pulse != new.pulse
+        || old.embedding != new.embedding
+        || old.retry != new.retry
+        || old.max_tokens != new.max_tokens
+        || old.temperature != new.temperature
+        || old.thinking != new.thinking
+        || old.role_overrides != new.role_overrides
+    {
+        parts.push("providers");
+    }
+    if old.memory != new.memory {
+        parts.push("memory thresholds");
+    }
+    if old.gateway != new.gateway {
+        parts.push("gateway bind/port");
+    }
+    if old.discord != new.discord {
+        parts.push("discord");
+    }
+    if old.telegram != new.telegram {
+        parts.push("telegram");
+    }
+    if old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind) {
+        parts.push("teams");
+    }
+    if old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind) {
+        parts.push("a2a");
+    }
+    if old.pulse_enabled != new.pulse_enabled {
+        parts.push("pulse");
+    }
+    if old.subconscious != new.subconscious
+        || old.subconscious_settings != new.subconscious_settings
+    {
+        parts.push("subconscious");
+    }
+    if old.background != new.background {
+        parts.push("background");
+    }
+    if old.agent != new.agent {
+        parts.push("agent abilities");
+    }
+    if old.skills != new.skills {
+        parts.push("skills");
+    }
+    if old.tools != new.tools {
+        parts.push("tool path");
+    }
+    if old.idle != new.idle {
+        parts.push("idle");
+    }
+    if old.cloud != new.cloud {
+        parts.push("cloud");
+    }
+    if old.tracing != new.tracing {
+        parts.push("tracing");
+    }
+    if old.timeout_secs != new.timeout_secs {
+        parts.push("http timeout");
+    }
+    if old.webhooks != new.webhooks {
+        parts.push("webhooks");
+    }
+    if old.web_search != new.web_search {
+        parts.push("web search");
+    }
+    parts
 }
 
 /// Provider names (each tagged with its role) whose resolved credential
@@ -265,24 +282,6 @@ fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpe
         .collect()
 }
 
-/// Copy `config.toml` and `providers.toml` to `.bak` files after they load
-/// successfully, keeping a copy of the last config that worked.
-///
-/// Best-effort: logs a warning on failure but never panics.
-pub fn backup_config(config_dir: &std::path::Path) {
-    for name in &["config.toml", "providers.toml"] {
-        let src = config_dir.join(name);
-        let dst = config_dir.join(format!("{name}.bak"));
-        if src.exists() {
-            if let Err(err) = std::fs::copy(&src, &dst) {
-                tracing::warn!(file = %name, error = %err, "failed to back up config");
-            } else {
-                tracing::debug!(file = %name, "backed up to .bak");
-            }
-        }
-    }
-}
-
 /// Shut down an adapter task and wait up to 5 seconds for it to stop.
 async fn shutdown_adapter(
     shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
@@ -312,32 +311,46 @@ async fn shutdown_adapter(
 pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
 
+    // Consumed once, up front: whether this specific reload is the one the
+    // agent's own `write_file`/`edit_file` call to config.toml/providers.toml
+    // caused — see `ConfigWriteWatch`. Every exit path below delivers the
+    // same text it already publishes as a user notice into the agent's own
+    // transcript too, when this is `true`.
+    let deliver_to_agent = rt
+        .config_reload_tracker
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Root);
+
     let new_cfg = match Config::load_at(&rt.config_dir) {
-        Ok(cfg) => {
-            // Only a config that loaded replaces the backup, so the backup is
-            // always the last one that worked.
-            backup_config(&rt.config_dir);
-            cfg
-        }
+        Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
-            publish_notice(
-                &rt.publisher,
-                format!("config reload failed (keeping current config): {err}"),
-            )
-            .await;
+            let message = format!("config reload failed (keeping current config): {err}");
+            publish_notice(&rt.publisher, message.clone()).await;
+            if deliver_to_agent {
+                rt.agent.inject_system_message(message);
+            }
             return IdleAction::None;
         }
     };
+    // Each is already a complete, standalone sentence describing one
+    // config.toml/providers.toml entry the new load skipped or degraded
+    // (see `config::resolve` and `config::tolerant`).
+    for notice in &new_cfg.load_notices {
+        publish_notice(&rt.publisher, notice.clone()).await;
+    }
 
     let diff = diff_config(&rt.cfg, &new_cfg);
 
     if !diff.changed {
-        publish_notice(
-            &rt.publisher,
-            "configuration reloaded: no changes detected".to_string(),
-        )
-        .await;
+        // The live files still load and resolve fine even though nothing
+        // changed — worth saving as last-known-good too, in case the
+        // previous save predates a since-reverted edit.
+        last_known_good::save(&rt.config_dir);
+        let message = "configuration reloaded: no changes detected".to_string();
+        publish_notice(&rt.publisher, message.clone()).await;
+        if deliver_to_agent {
+            rt.agent.inject_system_message(message);
+        }
         tracing::info!("config reload: no changes detected");
         return IdleAction::None;
     }
@@ -362,14 +375,30 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     if diff.teams_changed {
         reload_teams_adapter(rt, &new_cfg).await;
     }
-    if diff.cloud_changed {
+    if diff.a2a_changed {
+        reload_a2a_adapter(rt, &new_cfg).await;
+    }
+    // An `[a2a]` change also respawns the tunnel: its capabilities (whether
+    // `a2a`/`a2a-private` are advertised) are only sent on the tunnel's
+    // upgrade, so the relay never sees a visibility flip or an enable/disable
+    // without a fresh connection.
+    if diff.cloud_changed || diff.a2a_changed {
         reload_tunnel(rt, &new_cfg).await;
     }
 
     // ── Store new config ────────────────────────────────────────────────
     rt.cfg = new_cfg;
 
-    publish_notice(&rt.publisher, format!("configuration reloaded: {summary}")).await;
+    // Every subsystem above degrades independently and never fails this
+    // function outright, so reaching here means the reload fully applied —
+    // exactly what "last-known-good" means.
+    last_known_good::save(&rt.config_dir);
+
+    let message = format!("configuration reloaded: {summary}");
+    publish_notice(&rt.publisher, message.clone()).await;
+    if deliver_to_agent {
+        rt.agent.inject_system_message(message);
+    }
     tracing::info!(changes = %summary, "configuration reloaded successfully");
 
     if diff.idle_changed {
@@ -426,10 +455,24 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     reload_providers(rt, new_cfg, http_client.clone()).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
+    // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
+    // /api/model/complete` resolves providers from this reload without the
+    // HTTP router being rebuilt. `.ok()`: the only way this fails is no
+    // receiver remaining, which can't happen while the server is running.
+    rt.model_call_resources_tx
+        .send(Arc::new(
+            crate::gateway::web::model::ModelCallResources::from_spawn_context(&rt.spawn_context),
+        ))
+        .ok();
     reload_web_search(rt, new_cfg).await;
     reload_memory_thresholds(rt, new_cfg).await;
     rt.pulse_enabled = new_cfg.pulse_enabled;
-    rt.subconscious = crate::subconscious::Subconscious::build(new_cfg, &rt.layout, http_client);
+    rt.subconscious = crate::subconscious::Subconscious::build(
+        new_cfg,
+        &rt.layout,
+        http_client,
+        rt.publisher.clone(),
+    );
     tracing::debug!(
         enabled = rt.subconscious.enabled(),
         "subconscious rebuilt from new config"
@@ -475,7 +518,10 @@ fn build_spawn_context(
             thinking: new_cfg.thinking.clone(),
             ..CompletionOptions::default()
         },
+        max_tool_iterations: new_cfg.agent.max_tool_iterations,
+        repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
+        config_dir: new_cfg.config_dir.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
         session_runtime: Arc::clone(&rt.session_runtime),
@@ -504,6 +550,11 @@ fn build_spawn_context(
         tools_path: Arc::clone(&rt.tools_path),
         path_policy: Arc::clone(&rt.path_policy),
         agent_keys: Arc::clone(&rt.agent_keys),
+        a2a_hub: Arc::clone(&rt.a2a_hub),
+        a2a_tracker: Arc::clone(&rt.a2a_tracker),
+        checkpoints: Arc::clone(&rt.checkpoints),
+        bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
+        ),
     })
 }
 
@@ -517,7 +568,14 @@ async fn reload_providers(
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) {
-    match startup::init_providers(new_cfg, rt.tz, http_client) {
+    let mut degradations: Vec<String> = Vec::new();
+    match startup::init_providers(
+        new_cfg,
+        rt.tz,
+        http_client,
+        &rt.publisher,
+        &mut degradations,
+    ) {
         Ok(components) => {
             rt.agent
                 .swap_provider(components.provider, components.options);
@@ -527,6 +585,17 @@ async fn reload_providers(
                 .set_embedding_provider(components.embedding_provider)
                 .await;
             tracing::debug!("providers swapped successfully");
+            if !degradations.is_empty() {
+                publish_notice(
+                    &rt.publisher,
+                    format!(
+                        "providers reloaded, but {} degraded: {}.",
+                        degradations.len(),
+                        degradations.join("; ")
+                    ),
+                )
+                .await;
+            }
         }
         Err(err) => {
             tracing::warn!(error = %err, "provider rebuild failed, keeping current providers");
@@ -652,6 +721,10 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 session_registry: std::sync::Arc::clone(&rt.session_registry),
                 session_store: std::sync::Arc::clone(&rt.session_store),
                 agent_messenger: std::sync::Arc::clone(&rt.agent_messenger),
+                skill_state: std::sync::Arc::clone(&rt.skill_state),
+                workspace_watch_health: rt.workspace_watch_health.clone(),
+                action_store: std::sync::Arc::clone(&rt.action_store),
+                layout: rt.layout.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
                 config_dir: rt.config_dir.clone(),
@@ -660,11 +733,13 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 reload_tx: Some(rt.reload_tx.clone()),
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                checkpoints: std::sync::Arc::clone(&rt.checkpoints),
             };
             let update_api_state = crate::gateway::web::update::UpdateApiState {
                 update_status: std::sync::Arc::clone(&rt.update_status),
                 restart_tx: rt.restart_tx.clone(),
                 gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
+                config_dir: rt.config_dir.clone(),
             };
             let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
                 service: std::sync::Arc::clone(&rt.tracing_service),
@@ -673,12 +748,26 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 ),
                 session_registry: std::sync::Arc::clone(&rt.session_registry),
             };
+            let memory_api_state = crate::gateway::web::memory::MemoryApiState {
+                hybrid_searcher: std::sync::Arc::clone(&rt.hybrid_searcher),
+            };
+            let model_api_state = crate::gateway::web::model::ModelApiState {
+                resources: rt.model_call_resources_tx.subscribe(),
+            };
+            let a2a_agents_state = crate::gateway::web::a2a::A2aAgentsStatusState {
+                hub: std::sync::Arc::clone(&rt.a2a_hub),
+            };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 config_api_state,
                 update_api_state,
                 tracing_api_state,
                 rt.workbench_serving.clone(),
+                crate::gateway::event_loop::ExtraApiStates {
+                    memory: memory_api_state,
+                    model: model_api_state,
+                    a2a_agents: a2a_agents_state,
+                },
             );
 
             let new_handle = crate::gateway::event_loop::spawn_server_with_listener(
@@ -707,12 +796,35 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
 }
 
 /// Rescan skill directories.
+///
+/// A directory the rescan couldn't read is already skipped rather than
+/// failing the whole rescan (see `SkillIndex::scan`); this surfaces each
+/// skip as a notice. Separately, publishes any notice the rescan produced
+/// (a skill with an oversized description that loaded anyway, or a skill
+/// skipped for invalid frontmatter) so it reaches the user, not just the
+/// logs.
 async fn reload_skills(rt: &mut GatewayRuntime) {
     let mut skill_guard = rt.skill_state.lock().await;
     if let Err(err) = skill_guard.rescan().await {
         tracing::warn!(error = %err, "skill rescan failed during reload");
-    } else {
-        tracing::debug!("skills rescanned");
+        return;
+    }
+    tracing::debug!("skills rescanned");
+    let skipped: Vec<(std::path::PathBuf, String)> = skill_guard.index().skipped_dirs().to_vec();
+    let notices: Vec<String> = skill_guard.index().notices().to_vec();
+    drop(skill_guard);
+    for (dir, err) in skipped {
+        publish_notice(
+            &rt.publisher,
+            format!(
+                "Skipped your skills directory \"{}\" — it couldn't be read ({err}). Skills in your other directories were still rescanned.",
+                dir.display()
+            ),
+        )
+        .await;
+    }
+    for notice in notices {
+        publish_notice(&rt.publisher, notice).await;
     }
 }
 
@@ -727,7 +839,8 @@ async fn reload_tools_path(rt: &GatewayRuntime, new_cfg: &Config) {
     tracing::debug!("tool PATH updated from new config");
 }
 
-/// Update path policy with new agent ability gates.
+/// Update path policy and the main agent's tool-iteration limit from new
+/// agent ability gates.
 async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
     rt.path_policy
         .write()
@@ -735,9 +848,15 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .set_blocked_paths(crate::tools::path_policy::blocked_write_paths(
             new_cfg, &rt.layout,
         ));
+    rt.agent
+        .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
+    rt.agent
+        .set_repeat_call_guard(new_cfg.agent.repeat_call_guard);
     tracing::debug!(
         modify_mcp = new_cfg.agent.modify_mcp,
         modify_channels = new_cfg.agent.modify_channels,
+        max_tool_iterations = ?new_cfg.agent.max_tool_iterations,
+        repeat_call_guard = ?new_cfg.agent.repeat_call_guard,
         "agent ability gates updated"
     );
 }
@@ -790,6 +909,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
         stop: rt.stop_tx.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
     };
     reload_adapter(
@@ -826,11 +946,20 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     if let Some(ref cloud_cfg) = new_cfg.cloud {
         let cloud = cloud_cfg.clone();
+        let (a2a_port, a2a) = crate::tunnel::a2a_tunnel_params(&new_cfg.a2a);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
         let workbench_port = rt.workbench_serving.port();
         rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(cloud, workbench_port, shutdown_rx, status_tx).await;
+            crate::tunnel::start_tunnel(
+                cloud,
+                workbench_port,
+                a2a_port,
+                a2a,
+                shutdown_rx,
+                status_tx,
+            )
+            .await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         rt.cloud_config.clone_from(&new_cfg.cloud);
@@ -849,6 +978,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
         stop: rt.stop_tx.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
     };
     reload_adapter(
@@ -884,6 +1014,7 @@ async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
         stop: rt.stop_tx.clone(),
+        session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
     };
     reload_adapter(
@@ -911,6 +1042,47 @@ async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         }),
     )
     .await;
+}
+
+/// Stop the existing A2A listener (if running) and start a new one if
+/// enabled. Unlike the other adapters, a config change also needs a fresh
+/// agent card (the base URL or visibility may have changed), so this
+/// doesn't go through the generic `reload_adapter` helper.
+async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    shutdown_adapter(&mut rt.a2a_shutdown_tx, &mut rt.a2a_handle, "a2a").await;
+    rt.a2a_card_state = None;
+    rt.a2a_public_url = None;
+
+    if new_cfg.a2a.enabled {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let deps = crate::gateway::event_loop::A2aListenerDeps {
+            session_registry: Arc::clone(&rt.session_registry),
+            agent_messenger: Arc::clone(&rt.agent_messenger),
+            skill_state: Arc::clone(&rt.skill_state),
+            bus_handle: rt.bus_handle.clone(),
+            tunnel_status_rx: rt.tunnel_status_rx.clone(),
+            // The session spawner has been running since startup.
+            sessions_ready: tokio::sync::watch::channel(true).1,
+        };
+        match crate::gateway::event_loop::build_a2a_listener(new_cfg, deps, rx).await {
+            Ok((handle, card_state, public_url)) => {
+                tracing::info!(
+                    visibility = %new_cfg.a2a.visibility,
+                    public_url = %public_url.current(),
+                    "a2a interface restarted with new config"
+                );
+                rt.a2a_handle = Some(handle);
+                rt.a2a_shutdown_tx = Some(tx);
+                rt.a2a_card_state = Some(card_state);
+                rt.a2a_public_url = Some(public_url);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to restart the a2a interface; it will not run until the next successful reload");
+            }
+        }
+    } else {
+        tracing::info!("a2a interface removed from config");
+    }
 }
 
 #[cfg(test)]
@@ -945,6 +1117,7 @@ mod tests {
             discord: None,
             telegram: None,
             teams: None,
+            a2a: crate::config::A2aConfig::default(),
             webhooks: std::collections::HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             tools: ToolsConfig { dirs: vec![] },
@@ -958,6 +1131,7 @@ mod tests {
             tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
+            load_notices: vec![],
         }
     }
 
@@ -1133,6 +1307,32 @@ mod tests {
         old.teams = None;
         new.teams = None;
         assert!(!diff_config(&old, &new).teams_changed);
+    }
+
+    #[test]
+    fn diff_config_restarts_a2a_on_its_own_changes() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.a2a.visibility = crate::config::A2aVisibility::Private;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.a2a_changed);
+        assert!(diff.summary().contains("a2a"));
+        assert!(!diff.teams_changed);
+    }
+
+    #[test]
+    fn diff_config_restarts_a2a_when_the_bind_it_shares_changes() {
+        let mut old = test_config();
+        old.a2a.enabled = true;
+        let mut new = old.clone();
+        new.gateway.bind = "0.0.0.0".to_string();
+        assert!(diff_config(&old, &new).a2a_changed);
+
+        // Disabled, a bind change is only a gateway change.
+        old.a2a.enabled = false;
+        new.a2a.enabled = false;
+        assert!(!diff_config(&old, &new).a2a_changed);
     }
 
     #[test]
@@ -1315,47 +1515,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn backup_config_creates_bak_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config.toml");
-        let providers = dir.path().join("providers.toml");
-        std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
-        std::fs::write(&providers, "# providers\n").unwrap();
-
-        backup_config(dir.path());
-
-        let config_bak = dir.path().join("config.toml.bak");
-        assert!(config_bak.exists(), "backup should create config.toml.bak");
-        assert_eq!(
-            std::fs::read_to_string(&config_bak).unwrap(),
-            "timezone = \"UTC\"\n",
-            "config.toml backup content should match original"
-        );
-
-        let providers_bak = dir.path().join("providers.toml.bak");
-        assert!(
-            providers_bak.exists(),
-            "backup should create providers.toml.bak"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&providers_bak).unwrap(),
-            "# providers\n",
-            "providers.toml backup content should match original"
-        );
-    }
-
-    #[test]
-    fn backup_config_missing_source_does_not_panic() {
-        let dir = tempfile::tempdir().unwrap();
-        // No config.toml exists — backup should warn but not panic
-        backup_config(dir.path());
-        assert!(
-            !dir.path().join("config.toml.bak").exists(),
-            "no backup should be created when source is missing"
-        );
-    }
-
     fn fireworks_spec(api_key: &str) -> ProviderSpec {
         ProviderSpec {
             name: "fireworks".to_string(),
@@ -1428,20 +1587,5 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(!diff.changed);
         assert!(!diff.summary().contains("credential changed for"));
-    }
-
-    #[test]
-    fn backup_config_overwrites_stale_backup() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml.bak"), "old content").unwrap();
-        std::fs::write(dir.path().join("config.toml"), "new content").unwrap();
-
-        backup_config(dir.path());
-
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(),
-            "new content",
-            "backup should overwrite previous backup"
-        );
     }
 }

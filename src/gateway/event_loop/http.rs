@@ -4,8 +4,13 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::background::messaging::AgentMessenger;
+use crate::background::registry::SessionRegistry;
+use crate::bus::BusHandle;
 use crate::config::Config;
 use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand, StopRequest};
+use crate::skills::SharedSkillState;
+use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
 
 use crate::gateway::web;
@@ -19,6 +24,9 @@ pub struct AdapterSenders {
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
     pub stop: mpsc::Sender<StopRequest>,
+    /// Looked up when a `/stop` command targets a conversation session
+    /// rather than main — see [`crate::interfaces::dispatch_stop_request`].
+    pub session_registry: Arc<SessionRegistry>,
     /// Where the adapter registers the conversations it can reach.
     pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
 }
@@ -31,21 +39,124 @@ pub struct AdapterHandles {
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub teams_handle: Option<tokio::task::JoinHandle<()>>,
     pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
+    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// The live agent card, so a workspace-file reload can update it without
+    /// restarting the listener. `None` when A2A is disabled.
+    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
+    /// This instance's current A2A public URL, for the web settings API to
+    /// read later. `None` when A2A is disabled.
+    pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
 }
 
-/// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
-pub fn build_gateway_app(
-    state: GatewayState,
-    config_api_state: web::ConfigApiState,
+/// What [`build_a2a_listener`] needs beyond `Config`: live runtime state
+/// (sessions, messaging, skills, the bus, and the tunnel's status) rather
+/// than anything derivable from config alone.
+pub(crate) struct A2aListenerDeps {
+    pub session_registry: Arc<SessionRegistry>,
+    pub agent_messenger: Arc<AgentMessenger>,
+    pub skill_state: SharedSkillState,
+    pub bus_handle: BusHandle,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    /// Turns `true` once the session spawn listener is subscribed. Restart
+    /// continuations wait on it: a session spawn published before then has
+    /// no listener and would be lost.
+    pub sessions_ready: tokio::sync::watch::Receiver<bool>,
+}
+
+/// State bundle for the smaller, cross-cutting API routers, grouped so
+/// [`build_gateway_app`] doesn't grow another positional parameter for each
+/// one (and trip `clippy::too_many_arguments`).
+pub struct ExtraApiStates {
+    pub memory: web::memory::MemoryApiState,
+    pub model: web::model::ModelApiState,
+    pub a2a_agents: web::a2a::A2aAgentsStatusState,
+}
+
+/// Cloud connection routes. Disconnect is refused over the tunnel, since a
+/// remote disconnect leaves no way to reconnect.
+fn cloud_api_router(state: &GatewayState, config_api_state: &web::ConfigApiState) -> axum::Router {
+    use axum::routing::{get, post};
+
+    let cloud_state = web::cloud::CloudApiState {
+        config_dir: config_api_state.config_dir.clone(),
+        reload_tx: state.reload_tx.clone(),
+        tunnel_status_rx: state.tunnel_status_rx.clone(),
+        secret_lock: Arc::clone(&config_api_state.secret_lock),
+    };
+    axum::Router::new()
+        .route("/api/cloud/status", get(web::cloud::api_cloud_status))
+        .route("/cloud/callback", get(web::cloud::cloud_callback))
+        .with_state(cloud_state.clone())
+        .merge(
+            axum::Router::new()
+                .route(
+                    "/api/cloud/disconnect",
+                    post(web::cloud::api_cloud_disconnect),
+                )
+                .route_layer(axum::middleware::from_fn(
+                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+                ))
+                .with_state(cloud_state),
+        )
+}
+
+/// Update and shutdown routes. Shutdown is refused over the tunnel, since a
+/// remote shutdown leaves no way to bring the gateway back.
+fn update_api_router(update_api_state: web::update::UpdateApiState) -> axum::Router {
+    use axum::routing::{get, post};
+
+    axum::Router::new()
+        .route("/api/update/status", get(web::update::api_update_status))
+        .route("/api/update/check", post(web::update::api_update_check))
+        .route("/api/update/apply", post(web::update::api_update_apply))
+        .route("/api/update/restart", post(web::update::api_update_restart))
+        .with_state(update_api_state.clone())
+        .merge(
+            axum::Router::new()
+                .route("/api/shutdown", post(web::update::api_shutdown))
+                .route_layer(axum::middleware::from_fn(
+                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
+                ))
+                .with_state(update_api_state),
+        )
+}
+
+/// The smaller, cross-cutting API routers [`build_gateway_app`] merges in,
+/// built once by [`build_feature_routers`] so the top-level function stays
+/// under the line-count lint.
+struct FeatureRouters {
+    webhook: axum::Router,
+    cloud: axum::Router,
+    update: axum::Router,
+    tracing: axum::Router,
+    file: axum::Router,
+    sessions: axum::Router,
+    scheduled: axum::Router,
+    workbench: axum::Router,
+    checkpoints: axum::Router,
+    agent_inbox: axum::Router,
+    memory: axum::Router,
+    model: axum::Router,
+    a2a_agents: axum::Router,
+}
+
+/// Build every feature router [`build_gateway_app`] merges onto the base
+/// `/ws` router. Split out purely to keep that function's line count under
+/// the lint threshold — each router here is independent and self-contained.
+fn build_feature_routers(
+    state: &GatewayState,
+    config_api_state: &web::ConfigApiState,
     update_api_state: web::update::UpdateApiState,
     tracing_api_state: web::tracing_api::TracingApiState,
     workbench_serving: crate::workbench::server::WorkbenchServing,
-) -> axum::Router {
-    use axum::routing::{get, post};
+    extra: ExtraApiStates,
+) -> FeatureRouters {
+    use axum::routing::get;
 
     // Always mounted: the table is swapped on reload, so webhooks added later
     // work without rebinding the server. Unknown names get a 404.
-    let webhook_router = axum::Router::new()
+    let webhook = axum::Router::new()
         .route(
             "/webhook/{name}",
             axum::routing::post(crate::interfaces::webhook::webhook_handler),
@@ -56,64 +167,110 @@ pub fn build_gateway_app(
             tz: state.tz,
         });
 
-    let cloud_router = {
-        let cloud_state = web::cloud::CloudApiState {
-            config_dir: config_api_state.config_dir.clone(),
-            reload_tx: state.reload_tx.clone(),
-            tunnel_status_rx: state.tunnel_status_rx.clone(),
-            secret_lock: Arc::clone(&config_api_state.secret_lock),
-        };
-        axum::Router::new()
-            .route("/api/cloud/status", get(web::cloud::api_cloud_status))
-            .route("/cloud/callback", get(web::cloud::cloud_callback))
-            .route(
-                "/api/cloud/disconnect",
-                post(web::cloud::api_cloud_disconnect),
-            )
-            .with_state(cloud_state)
-    };
+    let cloud = cloud_api_router(state, config_api_state);
+    let update = update_api_router(update_api_state);
 
-    let update_router = axum::Router::new()
-        .route("/api/update/status", get(web::update::api_update_status))
-        .route("/api/update/check", post(web::update::api_update_check))
-        .route("/api/update/apply", post(web::update::api_update_apply))
-        .route("/api/update/restart", post(web::update::api_update_restart))
-        .route("/api/shutdown", post(web::update::api_shutdown))
-        .with_state(update_api_state);
+    let tracing = tracing_api_router(tracing_api_state);
 
-    let tracing_router = tracing_api_router(tracing_api_state);
-
-    let file_router = axum::Router::new()
+    let file = axum::Router::new()
         .route(
             "/api/files/{id}",
             get(crate::gateway::file_server::serve_file),
         )
+        .route(
+            "/api/files/workspace",
+            get(crate::gateway::file_server::serve_workspace_file),
+        )
         .with_state(state.file_registry.clone());
 
-    let sessions_router = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
+    let sessions = web::sessions::sessions_api_router(web::sessions::SessionsApiState {
         registry: Arc::clone(&state.session_registry),
         store: Arc::clone(&state.session_store),
         tz: state.tz,
+        messenger: Arc::clone(&state.agent_messenger),
+        publisher: state.publisher.clone(),
+        skill_state: Arc::clone(&state.skill_state),
     });
 
-    let workbench_router =
-        web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
-            dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
-                .workbench_dir(),
-            serving: workbench_serving,
-            tunnel_status_rx: state.tunnel_status_rx.clone(),
+    let scheduled = web::scheduled::scheduled_api_router(web::scheduled::ScheduledApiState {
+        registry: Arc::clone(&state.session_registry),
+        store: Arc::clone(&state.session_store),
+        action_store: Arc::clone(&state.action_store),
+        layout: state.layout.clone(),
+        tz: state.tz,
+    });
+
+    let workbench = web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
+        dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
+            .workbench_dir(),
+        serving: workbench_serving,
+        tunnel_status_rx: state.tunnel_status_rx.clone(),
+        checkpoints: Arc::clone(&config_api_state.checkpoints),
+    });
+
+    let checkpoints =
+        web::checkpoints::checkpoints_api_router(web::checkpoints::CheckpointApiState {
+            checkpoints: Arc::clone(&config_api_state.checkpoints),
         });
+
+    FeatureRouters {
+        webhook,
+        cloud,
+        update,
+        tracing,
+        file,
+        sessions,
+        scheduled,
+        workbench,
+        checkpoints,
+        agent_inbox: web::inbox::agent_inbox_api_router(state.clone()),
+        memory: web::memory::memory_api_router(extra.memory),
+        model: web::model::model_api_router(extra.model),
+        a2a_agents: web::a2a::a2a_agents_status_router(extra.a2a_agents),
+    }
+}
+
+/// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
+pub fn build_gateway_app(
+    state: GatewayState,
+    config_api_state: web::ConfigApiState,
+    update_api_state: web::update::UpdateApiState,
+    tracing_api_state: web::tracing_api::TracingApiState,
+    workbench_serving: crate::workbench::server::WorkbenchServing,
+    extra: ExtraApiStates,
+) -> axum::Router {
+    use axum::routing::get;
+
+    let a2a_tunnel_status_rx = state.tunnel_status_rx.clone();
+    let routers = build_feature_routers(
+        &state,
+        &config_api_state,
+        update_api_state,
+        tracing_api_state,
+        workbench_serving,
+        extra,
+    );
 
     axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state)
-        .merge(webhook_router)
-        .merge(file_router)
-        .merge(sessions_router)
-        .merge(cloud_router)
-        .merge(update_router)
-        .merge(tracing_router)
-        .merge(workbench_router)
+        .merge(routers.webhook)
+        .merge(routers.file)
+        .merge(routers.sessions)
+        .merge(routers.scheduled)
+        .merge(routers.cloud)
+        .merge(routers.update)
+        .merge(routers.tracing)
+        .merge(routers.workbench)
+        .merge(routers.checkpoints)
+        .merge(routers.agent_inbox)
+        .merge(routers.memory)
+        .merge(routers.model)
+        .merge(routers.a2a_agents)
+        .merge(web::a2a::a2a_status_router(web::a2a::A2aStatusApiState {
+            config: config_api_state.clone(),
+            tunnel_status_rx: a2a_tunnel_status_rx,
+        }))
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
         .layer(axum::middleware::from_fn(
@@ -212,8 +369,13 @@ pub async fn spawn_http_server(
     Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
 }
 
-/// Spawn the Discord, Telegram, and Teams adapters that are configured.
-pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz) -> AdapterHandles {
+/// Spawn the Discord, Telegram, Teams, and A2A adapters that are configured.
+pub async fn spawn_adapters(
+    cfg: &Config,
+    senders: &AdapterSenders,
+    tz: chrono_tz::Tz,
+    a2a_deps: A2aListenerDeps,
+) -> AdapterHandles {
     let (mut discord_handle, mut discord_shutdown_tx) = (None, None);
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -271,6 +433,28 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
         teams_shutdown_tx = Some(tx);
     }
 
+    let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state, mut a2a_public_url) =
+        (None, None, None, None);
+    if cfg.a2a.enabled {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        match build_a2a_listener(cfg, a2a_deps, rx).await {
+            Ok((handle, card_state, public_url)) => {
+                tracing::info!(
+                    visibility = %cfg.a2a.visibility,
+                    public_url = %public_url.current(),
+                    "a2a interface started"
+                );
+                a2a_handle = Some(handle);
+                a2a_shutdown_tx = Some(tx);
+                a2a_card_state = Some(card_state);
+                a2a_public_url = Some(public_url);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to start the a2a interface; it will not run this session");
+            }
+        }
+    }
+
     AdapterHandles {
         discord_handle,
         discord_shutdown_tx,
@@ -278,5 +462,149 @@ pub fn spawn_adapters(cfg: &Config, senders: &AdapterSenders, tz: chrono_tz::Tz)
         telegram_shutdown_tx,
         teams_handle,
         teams_shutdown_tx,
+        a2a_handle,
+        a2a_shutdown_tx,
+        a2a_card_state,
+        a2a_public_url,
     }
+}
+
+/// Build the live agent card, task store, session executor, and spawn the
+/// A2A listener task. Shared between initial startup and reload: both
+/// rebuild the listener from scratch when `[a2a]` changes, since a
+/// visibility flip and a new base URL both need a fresh card as well as a
+/// fresh listener.
+///
+/// Also spawns a background task that reloads the card whenever the tunnel's
+/// status changes (so the card's public URL reflects it as soon as it
+/// connects), and starts the restart-continuation sweep for tasks left
+/// `Submitted`/`Working` from a previous run of this process.
+///
+/// # Errors
+/// Returns an error if the persistent task store's directory can't be
+/// created or read.
+pub(crate) async fn build_a2a_listener(
+    cfg: &Config,
+    deps: A2aListenerDeps,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<(
+    tokio::task::JoinHandle<()>,
+    crate::a2a::SharedCardState,
+    crate::a2a::SharedA2aPublicUrl,
+)> {
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
+    let tunnel_status = deps.tunnel_status_rx.borrow().clone();
+    let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
+        &cfg.a2a,
+        &cfg.gateway.bind,
+        &tunnel_status,
+    );
+    let card_state =
+        crate::a2a::CardState::load_or_default(&layout.agent_card_json(), &card_runtime);
+    let keys = crate::a2a::A2aKeys::new_shared(&cfg.config_dir);
+    let public_url = crate::a2a::A2aPublicUrl::new(
+        cfg.a2a.clone(),
+        cfg.gateway.bind.clone(),
+        deps.tunnel_status_rx.clone(),
+    );
+
+    let task_store = crate::a2a::FileTaskStore::load(&layout.a2a_tasks_dir()).await?;
+
+    let executor = crate::a2a::SessionExecutor::new(
+        deps.agent_messenger,
+        deps.session_registry,
+        deps.bus_handle,
+        deps.skill_state,
+        Arc::clone(&card_state),
+        layout.agent_inbox_dir(),
+        cfg.timezone,
+    );
+    let inner = a2a_server::DefaultRequestHandler::new(
+        executor,
+        crate::a2a::DelegatingTaskStore(Arc::clone(&task_store)),
+    )
+    .with_capabilities(a2a::AgentCapabilities {
+        streaming: Some(true),
+        push_notifications: Some(false),
+        extensions: None,
+        extended_agent_card: None,
+    });
+    let handler = Arc::new(crate::a2a::ResiduumA2aHandler::new(
+        inner,
+        Arc::clone(&task_store),
+    ));
+
+    let resume_handler = Arc::clone(&handler);
+    let resume_store = Arc::clone(&task_store);
+    let mut sessions_ready = deps.sessions_ready.clone();
+    tokio::spawn(async move {
+        if sessions_ready.wait_for(|ready| *ready).await.is_err() {
+            tracing::error!(
+                "session spawner never became ready; a2a tasks left in progress were not resumed"
+            );
+            return;
+        }
+        crate::a2a::resume_in_progress_tasks(resume_handler, resume_store).await;
+    });
+
+    let listener = crate::a2a::A2aListener::new(
+        cfg.a2a.clone(),
+        cfg.gateway.bind.clone(),
+        handler,
+        Arc::clone(&card_state),
+        keys,
+        Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
+        shutdown_rx.clone(),
+    );
+    let handle = crate::util::spawn_monitored("a2a", async move {
+        if let Err(e) = listener.start().await {
+            tracing::error!(error = %e, "a2a interface failed");
+        }
+    });
+
+    spawn_a2a_card_tunnel_watcher(
+        Arc::clone(&card_state),
+        layout.agent_card_json(),
+        cfg.a2a.clone(),
+        cfg.gateway.bind.clone(),
+        deps.tunnel_status_rx,
+        shutdown_rx,
+    );
+
+    Ok((handle, card_state, public_url))
+}
+
+/// Reload the agent card whenever the tunnel's status changes, so its public
+/// URL picks up a newly connected (or disconnected) tunnel without waiting
+/// for a workspace or config reload. Stops when `shutdown_rx` fires, the
+/// same signal that stops the listener this watcher was spawned alongside.
+fn spawn_a2a_card_tunnel_watcher(
+    card_state: crate::a2a::SharedCardState,
+    card_path: std::path::PathBuf,
+    a2a_cfg: crate::config::A2aConfig,
+    gateway_bind: String,
+    mut tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    crate::util::spawn_monitored("a2a-card-tunnel-watch", async move {
+        loop {
+            tokio::select! {
+                changed = tunnel_status_rx.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let status = tunnel_status_rx.borrow().clone();
+                    let runtime = crate::a2a::CardRuntime::from_config_and_tunnel(&a2a_cfg, &gateway_bind, &status);
+                    if let Err(e) = card_state.reload(&card_path, &runtime) {
+                        tracing::warn!(error = %e, "failed to refresh the a2a agent card after a tunnel status change");
+                    }
+                }
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
 }

@@ -9,10 +9,13 @@ use std::ops::Range;
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::read::format_numbered_line;
+use super::write::append_diagnostics;
 use super::{Tool, ToolError, ToolResult};
+use crate::diagnostics::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
 
 /// Lines of unchanged context shown around each changed region in the result preview.
@@ -28,13 +31,36 @@ const MAX_LISTED_MATCHES: usize = 10;
 pub struct EditTool {
     tracker: SharedFileTracker,
     policy: SharedPathPolicy,
+    diagnostics_paths: DiagnosticsPaths,
+    /// Set only for main's own tool registry — see `ConfigWriteWatch`'s doc
+    /// comment for why a session's registry never gets one.
+    config_watch: Option<ConfigWriteWatch>,
 }
 
 impl EditTool {
-    /// Create a new `EditTool` with shared file tracker and path policy.
+    /// Create a new `EditTool` with shared file tracker, path policy, and
+    /// the directories needed to recognize a strictly-parsed file for
+    /// post-edit diagnostics.
     #[must_use]
-    pub fn new(tracker: SharedFileTracker, policy: SharedPathPolicy) -> Self {
-        Self { tracker, policy }
+    pub fn new(
+        tracker: SharedFileTracker,
+        policy: SharedPathPolicy,
+        diagnostics_paths: DiagnosticsPaths,
+    ) -> Self {
+        Self {
+            tracker,
+            policy,
+            diagnostics_paths,
+            config_watch: None,
+        }
+    }
+
+    /// Attach a config-write watch so an edit to a recognized config path
+    /// marks the reload it triggers for later delivery back to the agent.
+    #[must_use]
+    pub fn with_config_watch(mut self, config_watch: ConfigWriteWatch) -> Self {
+        self.config_watch = Some(config_watch);
+        self
     }
 }
 
@@ -513,8 +539,18 @@ impl Tool for EditTool {
         if let Err(e) = tokio::fs::write(path, &outcome.text).await {
             return Ok(ToolResult::error(format!("failed to write {path}: {e}")));
         }
+        if let Some(watch) = &self.config_watch {
+            watch.note_write(std::path::Path::new(path));
+        }
 
-        Ok(ToolResult::success(format_success(path, &outcome)))
+        let mut output = format_success(path, &outcome);
+        append_diagnostics(
+            &mut output,
+            std::path::Path::new(path),
+            &outcome.text,
+            &self.diagnostics_paths,
+        );
+        Ok(ToolResult::success(output))
     }
 }
 
@@ -524,16 +560,29 @@ mod tests {
     use crate::tools::file_tracker::FileTracker;
     use crate::tools::path_policy::PathPolicy;
 
+    /// Directories that don't correspond to any real strictly-parsed file,
+    /// so ordinary edit tests get no diagnostics.
+    fn no_diagnostics_paths() -> DiagnosticsPaths {
+        DiagnosticsPaths {
+            config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
+            workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+        }
+    }
+
     /// Create an `EditTool` with a pre-registered path in the tracker.
     async fn make_tool_with_file(path: &str) -> EditTool {
         let tracker = FileTracker::new_shared();
         tracker.lock().await.record_read(path);
-        EditTool::new(tracker, PathPolicy::new_shared())
+        EditTool::new(tracker, PathPolicy::new_shared(), no_diagnostics_paths())
     }
 
     /// Create an `EditTool` with an empty tracker (nothing read).
     fn make_tool_no_reads() -> EditTool {
-        EditTool::new(FileTracker::new_shared(), PathPolicy::new_shared())
+        EditTool::new(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(),
+            no_diagnostics_paths(),
+        )
     }
 
     /// Write a test file and return the tool with the path already read.
@@ -929,5 +978,38 @@ mod tests {
             Some(&serde_json::json!(["path", "edits"])),
             "path and edits should be required"
         );
+    }
+
+    #[tokio::test]
+    async fn edit_into_invalid_heartbeat_yml_still_writes_and_appends_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("HEARTBEAT.yml");
+        tokio::fs::write(&file_path, "pulses: []\n").await.unwrap();
+        let path_str = file_path.to_str().unwrap().to_string();
+
+        let tracker = FileTracker::new_shared();
+        tracker.lock().await.record_read(&path_str);
+        let diagnostics_paths = DiagnosticsPaths {
+            config_dir: dir.path().join("config-unused"),
+            workspace_dir: dir.path().to_path_buf(),
+        };
+        let tool = EditTool::new(tracker, PathPolicy::new_shared(), diagnostics_paths);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "path": path_str,
+                "edits": [{ "old_string": "pulses: []", "new_string": ": not valid yaml [[" }]
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "edit should still succeed");
+        assert!(
+            result.output.contains("HEARTBEAT.yml"),
+            "result should mention the file: {}",
+            result.output
+        );
+        let contents = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(contents, ": not valid yaml [[\n");
     }
 }

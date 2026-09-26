@@ -44,16 +44,21 @@ impl WatchedFile {
 
 /// Spawn a polling watcher for workspace config files.
 ///
-/// Polls `mcp_path` and `channels_path` every 2 seconds. When either file's
-/// mtime changes, debounces 500ms then sends `ReloadSignal::Workspace`.
+/// Polls `mcp_path`, `channels_path`, `agent_card_path`, and `a2a_agents_path`
+/// every 2 seconds. When any file's mtime changes, debounces 500ms then sends
+/// `ReloadSignal::Workspace`.
 pub(super) fn spawn_workspace_watcher(
     mcp_path: PathBuf,
     channels_path: PathBuf,
+    agent_card_path: PathBuf,
+    a2a_agents_path: PathBuf,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut mcp_file = WatchedFile::new(mcp_path);
         let mut channels_file = WatchedFile::new(channels_path);
+        let mut agent_card_file = WatchedFile::new(agent_card_path);
+        let mut a2a_agents_file = WatchedFile::new(a2a_agents_path);
         let mut interval = tokio::time::interval(Duration::from_secs(2));
 
         // Skip the first immediate tick (files were just loaded at startup)
@@ -64,11 +69,15 @@ pub(super) fn spawn_workspace_watcher(
 
             let mcp_changed = mcp_file.check();
             let channels_changed = channels_file.check();
+            let agent_card_changed = agent_card_file.check();
+            let a2a_agents_changed = a2a_agents_file.check();
 
-            if mcp_changed || channels_changed {
+            if mcp_changed || channels_changed || agent_card_changed || a2a_agents_changed {
                 tracing::debug!(
                     mcp_changed,
                     channels_changed,
+                    agent_card_changed,
+                    a2a_agents_changed,
                     "workspace config file change detected, debouncing"
                 );
 
@@ -78,10 +87,62 @@ pub(super) fn spawn_workspace_watcher(
                 // Re-check to get the settled state
                 mcp_file.sync_mtime();
                 channels_file.sync_mtime();
+                agent_card_file.sync_mtime();
+                a2a_agents_file.sync_mtime();
 
                 tracing::info!("sending workspace reload signal");
                 if reload_tx.send(ReloadSignal::Workspace).is_err() {
                     tracing::debug!("reload receiver dropped, stopping workspace watcher");
+                    break;
+                }
+            }
+        }
+    })
+}
+
+/// Spawn a polling watcher for `config.toml`/`providers.toml`.
+///
+/// Polls both files every 2 seconds; on either's mtime changing, debounces
+/// 500ms then sends `ReloadSignal::Root` — the same signal the web UI's
+/// Settings form and Raw tab already send explicitly after their own
+/// writes, so a direct edit (the agent's `write_file`/`edit_file`, or a
+/// manual edit outside Residuum entirely) picks up the change the same way.
+pub(super) fn spawn_root_config_watcher(
+    config_toml_path: PathBuf,
+    providers_toml_path: PathBuf,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut config_file = WatchedFile::new(config_toml_path);
+        let mut providers_file = WatchedFile::new(providers_toml_path);
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+
+        // Skip the first immediate tick (files were just loaded at startup)
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+
+            let config_changed = config_file.check();
+            let providers_changed = providers_file.check();
+
+            if config_changed || providers_changed {
+                tracing::debug!(
+                    config_changed,
+                    providers_changed,
+                    "root config file change detected, debouncing"
+                );
+
+                // Debounce: wait 500ms for any rapid edits to settle
+                sleep(Duration::from_millis(500)).await;
+
+                // Re-check to get the settled state
+                config_file.sync_mtime();
+                providers_file.sync_mtime();
+
+                tracing::info!("sending root config reload signal");
+                if reload_tx.send(ReloadSignal::Root).is_err() {
+                    tracing::debug!("reload receiver dropped, stopping root config watcher");
                     break;
                 }
             }

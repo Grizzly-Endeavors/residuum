@@ -1,10 +1,12 @@
 //! Web-facing view of agent sessions: turning registry entries, store
 //! records, and bus events into protocol types, and carrying out the
-//! sessions sidebar's send-message and stop commands.
+//! send-message and stop commands the sessions sidebar (over the WebSocket)
+//! and workbench artifacts (over HTTP) share.
 
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome, SendError};
 use crate::background::registry::{
-    MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo, SessionRegistry, SessionState,
+    ARTIFACT_SENDER_CATEGORY, MAIN_ADDRESS, OWNER_ADDRESS, SessionCategory, SessionInfo,
+    SessionRegistry, SessionState, artifact_sender_address,
 };
 use crate::background::store::RunRecord;
 use crate::bus::{AgentResultStatus, SessionAddress, SessionEvent, SessionEventKind};
@@ -32,6 +34,13 @@ pub(crate) fn summary_from_live(info: &SessionInfo) -> SessionSummary {
         completed_at: None,
         episode_id: None,
         interrupted: false,
+        usage: info.usage,
+        // A live run has no outcome yet; `session_completed` carries it when
+        // the run finishes (see `session_event_to_server_message` below).
+        outcome: None,
+        error: None,
+        error_details: None,
+        overlap: info.overlap.clone(),
     }
 }
 
@@ -56,6 +65,17 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         );
         return None;
     };
+    let outcome = record.outcome.as_deref().and_then(|label| {
+        let parsed = SessionRunStatus::from_label(label);
+        if parsed.is_none() {
+            tracing::warn!(
+                run_id = %record.run_id,
+                outcome = %label,
+                "session run record has an unrecognized outcome, showing it as plain 'finished'"
+            );
+        }
+        parsed
+    });
     Some(SessionSummary {
         address: record.address.clone(),
         run_id: record.run_id.clone(),
@@ -69,6 +89,11 @@ pub(crate) fn summary_from_record(record: &RunRecord) -> Option<SessionSummary> 
         completed_at: record.completed_at,
         episode_id: record.episode_id.clone(),
         interrupted: record.interrupted,
+        usage: record.usage,
+        outcome,
+        error: record.outcome_error.clone(),
+        error_details: record.outcome_error_details.clone(),
+        overlap: record.overlap.clone(),
     })
 }
 
@@ -91,16 +116,19 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             state,
         },
         SessionEventKind::Completed { status, episode_id } => {
-            let (status, error) = match status {
-                AgentResultStatus::Completed => (SessionRunStatus::Completed, None),
-                AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None),
-                AgentResultStatus::Failed { error } => (SessionRunStatus::Failed, Some(error)),
+            let (status, error, error_details) = match status {
+                AgentResultStatus::Completed => (SessionRunStatus::Completed, None, None),
+                AgentResultStatus::Cancelled => (SessionRunStatus::Cancelled, None, None),
+                AgentResultStatus::Failed { error, details } => {
+                    (SessionRunStatus::Failed, Some(error), details)
+                }
             };
             ServerMessage::SessionCompleted {
                 address,
                 run_id,
                 status,
                 error,
+                error_details,
                 episode_id,
             }
         }
@@ -134,16 +162,28 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
             run_id,
             content,
         },
+        SessionEventKind::TurnUsage {
+            output_tokens,
+            has_usage,
+            session_totals,
+        } => ServerMessage::SessionTurnUsage {
+            address,
+            run_id,
+            output_tokens,
+            has_usage,
+            session_totals,
+        },
         SessionEventKind::Response { turn_id, content } => ServerMessage::SessionResponse {
             address,
             run_id,
             turn_id,
             content,
         },
-        SessionEventKind::Error { message } => ServerMessage::SessionError {
+        SessionEventKind::Error { message, details } => ServerMessage::SessionError {
             address,
             run_id,
             message,
+            details,
         },
         SessionEventKind::MessageToMain { content } => ServerMessage::SessionMessageToMain {
             address,
@@ -171,22 +211,50 @@ impl SessionCommandError {
     }
 }
 
-/// Deliver the owner's sidebar message to the session at `address`.
+/// Who a message sent to a session from outside the agent system comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionMessageAuthor {
+    /// The owner, typing into the web UI (the sessions sidebar, or an HTTP
+    /// request without an artifact identity).
+    Owner,
+    /// The workbench artifact with this name, through the bridge.
+    Artifact(String),
+}
+
+impl SessionMessageAuthor {
+    /// The sender address and category label the message carries.
+    fn sender(&self) -> (SessionAddress, String) {
+        match self {
+            Self::Owner => (
+                SessionAddress::from(OWNER_ADDRESS),
+                OWNER_CATEGORY.to_string(),
+            ),
+            Self::Artifact(name) => (
+                artifact_sender_address(name),
+                ARTIFACT_SENDER_CATEGORY.to_string(),
+            ),
+        }
+    }
+}
+
+/// Deliver a message from the owner or a workbench artifact to the session
+/// at `address`.
 ///
 /// Goes through the same messenger every agent message does, as hop count 0
-/// (the owner's input originates outside the agent system), so the normal
-/// delivery rules apply: an interrupt while running, a new turn while idle,
-/// a new run once completed.
+/// (the input originates outside the agent system), so the normal delivery
+/// rules apply: an interrupt while running, a new turn while idle, a new run
+/// once completed. The session sees the message attributed to `author`.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when the request is unusable (empty
 /// content, or `main`, which is messaged through the normal chat), when no
 /// session has ever run at `address`, when the session is too busy to take
 /// another message, or when delivery fails.
-pub(crate) async fn send_owner_message(
+pub(crate) async fn send_session_message(
     messenger: &AgentMessenger,
     address: &str,
     content: String,
+    author: &SessionMessageAuthor,
 ) -> Result<SessionDeliveryOutcome, SessionCommandError> {
     if content.trim().is_empty() {
         return Err(SessionCommandError::new(
@@ -197,18 +265,13 @@ pub(crate) async fn send_owner_message(
     if address == MAIN_ADDRESS {
         return Err(SessionCommandError::new(
             SessionCommandErrorCode::InvalidRequest,
-            "The main agent is messaged from the main chat, not the sessions sidebar.",
+            "The main agent is messaged from the main chat, not as a session.",
         ));
     }
 
+    let (from, from_category) = author.sender();
     let outcome = messenger
-        .send(
-            address,
-            SessionAddress::from(OWNER_ADDRESS),
-            OWNER_CATEGORY.to_string(),
-            content,
-            0,
-        )
+        .send(address, from, from_category, content, 0)
         .await;
 
     match outcome {
@@ -222,7 +285,7 @@ pub(crate) async fn send_owner_message(
         Ok(DeliveryOutcome::Main) => {
             // Unreachable: `main` is rejected above. Reported rather than
             // assumed, so a routing change can't silently misdeliver.
-            tracing::error!(address, "sidebar message to a session was routed to main");
+            tracing::error!(address, "message to a session was routed to main");
             Err(SessionCommandError::new(
                 SessionCommandErrorCode::DeliveryFailed,
                 "The message went to the main agent instead of the session.",
@@ -233,7 +296,7 @@ pub(crate) async fn send_owner_message(
             format!("{address} is busy and can't take another message yet. Try again shortly."),
         )),
         Err(e @ (SendError::PublishFailed(_) | SendError::HopLimitExceeded { .. })) => {
-            tracing::warn!(error = %e, address, "failed to deliver sidebar message to session");
+            tracing::warn!(error = %e, address, author = ?author, "failed to deliver message to session");
             Err(SessionCommandError::new(
                 SessionCommandErrorCode::DeliveryFailed,
                 format!("Couldn't deliver the message to {address}. Try again."),
@@ -242,7 +305,8 @@ pub(crate) async fn send_owner_message(
     }
 }
 
-/// Stop the live session at `address`, as the sidebar's stop button does.
+/// Stop the live session at `address`, as the sidebar's stop button and the
+/// `POST /api/sessions/{address}/stop` endpoint do.
 ///
 /// # Errors
 /// Returns a [`SessionCommandError`] when `address` is `main` or doesn't name
@@ -254,11 +318,11 @@ pub(crate) fn stop_session(
     if address == MAIN_ADDRESS {
         return Err(SessionCommandError::new(
             SessionCommandErrorCode::InvalidRequest,
-            "The main agent can't be stopped from the sessions sidebar.",
+            "The main agent can't be stopped as a session.",
         ));
     }
     if registry.stop(&SessionAddress::from(address)) {
-        tracing::info!(address, "session stop requested from the web UI");
+        tracing::info!(address, "session stop requested");
         Ok(())
     } else {
         Err(SessionCommandError::new(
@@ -296,6 +360,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -324,9 +390,14 @@ mod tests {
             .unwrap();
         let (messenger, _bus, _dir) = messenger(&registry);
 
-        let outcome = send_owner_message(&messenger, "spawned-a-0001", "status?".to_string())
-            .await
-            .unwrap();
+        let outcome = send_session_message(
+            &messenger,
+            "spawned-a-0001",
+            "status?".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, SessionDeliveryOutcome::Live);
 
         let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
@@ -342,29 +413,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_message_reaches_the_session_attributed_to_the_artifact() {
+        let registry = Arc::new(SessionRegistry::new());
+        let mut rx = registry
+            .register(
+                live_info("artifact-wiki-0001", SessionState::Idle),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let (messenger, _bus, _dir) = messenger(&registry);
+
+        let outcome = send_session_message(
+            &messenger,
+            "artifact-wiki-0001",
+            "refresh".to_string(),
+            &SessionMessageAuthor::Artifact("wiki".to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, SessionDeliveryOutcome::Live);
+
+        let Some(Interrupt::AgentMessage(msg)) = rx.try_recv().ok() else {
+            panic!("the session should have received a message");
+        };
+        assert_eq!(msg.hop_count, 0, "artifact input is hop count 0");
+        assert_eq!(msg.from.as_ref(), "artifact:wiki");
+        assert_eq!(msg.from_category, "artifact");
+        assert_eq!(msg.artifact_sender(), Some("wiki"));
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with("[Message from the workbench artifact \"wiki\""),
+            "the session should see the message as the artifact's, got {text}"
+        );
+    }
+
+    #[tokio::test]
     async fn owner_message_to_a_completed_session_resumes_it() {
         let registry = Arc::new(SessionRegistry::new());
-        registry.record_resume_point(
-            &SessionAddress::from("spawned-b-0001"),
-            ResumePoint {
-                previous_run_id: "run-old".to_string(),
-                previous_episode_id: None,
-                trigger: EventTrigger::Agent,
-                source_label: "agent:researcher".to_string(),
-                agent_skill: None,
-                model_tier: crate::config::BackgroundModelTier::Medium,
-                spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
-                depth: 1,
-                conversation_target: None,
-            },
-        );
+        registry
+            .record_resume_point(
+                &SessionAddress::from("spawned-b-0001"),
+                ResumePoint {
+                    previous_run_id: "run-old".to_string(),
+                    previous_episode_id: None,
+                    trigger: EventTrigger::Agent,
+                    source_label: "agent:researcher".to_string(),
+                    agent_skill: None,
+                    model_tier: crate::config::BackgroundModelTier::Medium,
+                    spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+                    depth: 1,
+                    conversation_target: None,
+                    recorded_at: chrono::Utc::now(),
+                },
+            )
+            .await;
         let (messenger, bus, _dir) = messenger(&registry);
         let mut spawns: crate::bus::Subscriber<crate::bus::SpawnRequestEvent> =
             bus.subscribe(crate::bus::topics::Background).await.unwrap();
 
-        let outcome = send_owner_message(&messenger, "spawned-b-0001", "one more".to_string())
-            .await
-            .unwrap();
+        let outcome = send_session_message(
+            &messenger,
+            "spawned-b-0001",
+            "one more".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, SessionDeliveryOutcome::Resumed);
         let spawn = spawns.recv().await.unwrap().unwrap();
         assert_eq!(spawn.address.as_ref(), "spawned-b-0001");
@@ -376,19 +490,34 @@ mod tests {
         let registry = Arc::new(SessionRegistry::new());
         let (messenger, _bus, _dir) = messenger(&registry);
 
-        let unknown = send_owner_message(&messenger, "spawned-nope-0000", "hi".to_string())
-            .await
-            .unwrap_err();
+        let unknown = send_session_message(
+            &messenger,
+            "spawned-nope-0000",
+            "hi".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(unknown.code, SessionCommandErrorCode::UnknownAddress);
 
-        let empty = send_owner_message(&messenger, "spawned-nope-0000", "   ".to_string())
-            .await
-            .unwrap_err();
+        let empty = send_session_message(
+            &messenger,
+            "spawned-nope-0000",
+            "   ".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(empty.code, SessionCommandErrorCode::InvalidRequest);
 
-        let main = send_owner_message(&messenger, MAIN_ADDRESS, "hi".to_string())
-            .await
-            .unwrap_err();
+        let main = send_session_message(
+            &messenger,
+            MAIN_ADDRESS,
+            "hi".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(main.code, SessionCommandErrorCode::InvalidRequest);
     }
 
@@ -403,14 +532,24 @@ mod tests {
             .unwrap();
         let (messenger, _bus, _dir) = messenger(&registry);
         for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
-            send_owner_message(&messenger, "spawned-full-0001", "fill".to_string())
-                .await
-                .unwrap();
+            send_session_message(
+                &messenger,
+                "spawned-full-0001",
+                "fill".to_string(),
+                &SessionMessageAuthor::Owner,
+            )
+            .await
+            .unwrap();
         }
 
-        let busy = send_owner_message(&messenger, "spawned-full-0001", "one too many".to_string())
-            .await
-            .unwrap_err();
+        let busy = send_session_message(
+            &messenger,
+            "spawned-full-0001",
+            "one too many".to_string(),
+            &SessionMessageAuthor::Owner,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(busy.code, SessionCommandErrorCode::Busy);
     }
 
@@ -446,6 +585,7 @@ mod tests {
             kind: SessionEventKind::Completed {
                 status: AgentResultStatus::Failed {
                     error: "model down".to_string(),
+                    details: None,
                 },
                 episode_id: Some("ep-007".to_string()),
             },
@@ -461,6 +601,35 @@ mod tests {
                 "error": "model down",
                 "episode_id": "ep-007",
             })
+        );
+    }
+
+    #[test]
+    fn completed_event_carries_the_full_cause_chain_when_there_is_one() {
+        let msg = session_event_to_server_message(SessionEvent {
+            address: SessionAddress::from("spawned-d-0002"),
+            run_id: "run-d2".to_string(),
+            kind: SessionEventKind::Completed {
+                status: AgentResultStatus::Failed {
+                    error: "model down".to_string(),
+                    details: Some("connect timeout after 30s".to_string()),
+                },
+                episode_id: None,
+            },
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "session_completed",
+                "address": "spawned-d-0002",
+                "run_id": "run-d2",
+                "status": "failed",
+                "error": "model down",
+                "error_details": "connect timeout after 30s",
+                "episode_id": null,
+            }),
+            "the full cause chain must reach the client alongside the plain message"
         );
     }
 
@@ -490,6 +659,15 @@ mod tests {
                     "completed_at": null,
                     "episode_id": null,
                     "interrupted": false,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "context_tokens": null,
+                    },
+                    "outcome": null,
+                    "error": null,
+                    "error_details": null,
+                    "overlap": null,
                 },
             })
         );
@@ -528,5 +706,91 @@ mod tests {
         assert!(summary_from_record(&record).is_some());
         record.category = "mystery".to_string();
         assert!(summary_from_record(&record).is_none());
+    }
+
+    #[test]
+    fn failed_run_outcome_and_error_survive_into_the_summary() {
+        let info = live_info("spawned-h-0001", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.state = "completed".to_string();
+        record.outcome = Some("failed".to_string());
+        record.outcome_error = Some("the model call timed out".to_string());
+        record.outcome_error_details =
+            Some("connect timeout after 30s: api.example.com:443".to_string());
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(
+            summary.outcome,
+            Some(crate::gateway::protocol::SessionRunStatus::Failed),
+            "a reloaded record must show its real outcome, not just 'completed' state"
+        );
+        assert_eq!(
+            summary.error.as_deref(),
+            Some("the model call timed out"),
+            "the failure reason must survive into the summary"
+        );
+        assert_eq!(
+            summary.error_details.as_deref(),
+            Some("connect timeout after 30s: api.example.com:443"),
+            "the full cause chain must survive into the summary behind the details toggle"
+        );
+    }
+
+    #[test]
+    fn a_record_without_error_details_still_summarizes_with_none() {
+        // Mirrors a record written before `outcome_error_details` existed —
+        // `RunRecord::starting` already defaults it to `None`, so this just
+        // pins that `summary_from_record` doesn't fabricate a value.
+        let info = live_info("spawned-h-0006", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.outcome = Some("failed".to_string());
+        record.outcome_error = Some("the model call timed out".to_string());
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(summary.error_details, None);
+    }
+
+    #[test]
+    fn stopped_run_outcome_survives_into_the_summary() {
+        let info = live_info("spawned-h-0002", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.state = "completed".to_string();
+        record.outcome = Some("cancelled".to_string());
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(
+            summary.outcome,
+            Some(crate::gateway::protocol::SessionRunStatus::Cancelled)
+        );
+        assert_eq!(summary.error, None);
+    }
+
+    #[test]
+    fn record_with_no_recorded_outcome_summarizes_with_none() {
+        // A record written before this field existed: must not fail to
+        // summarize, and must not fabricate an outcome it never recorded.
+        let info = live_info("spawned-h-0003", SessionState::Running);
+        let record = RunRecord::starting(&info);
+        let summary = summary_from_record(&record).expect("record should summarize");
+        assert_eq!(summary.outcome, None);
+        assert_eq!(summary.error, None);
+    }
+
+    #[test]
+    fn record_with_unrecognized_outcome_falls_back_to_none_rather_than_dropping_the_record() {
+        let info = live_info("spawned-h-0004", SessionState::Running);
+        let mut record = RunRecord::starting(&info);
+        record.outcome = Some("mystery".to_string());
+        let summary = summary_from_record(&record).expect(
+            "an unrecognized outcome must not \
+             drop the whole record, unlike an unrecognized category or state",
+        );
+        assert_eq!(summary.outcome, None);
+    }
+
+    #[test]
+    fn live_summary_has_no_outcome_yet() {
+        let info = live_info("spawned-h-0005", SessionState::Running);
+        let summary = summary_from_live(&info);
+        assert_eq!(summary.outcome, None);
+        assert_eq!(summary.error, None);
+        assert_eq!(summary.error_details, None);
     }
 }

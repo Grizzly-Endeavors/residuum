@@ -2,6 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// The workbench directory's name inside the workspace, which is also its
+/// workspace-relative path.
+pub const WORKBENCH_DIR: &str = "workbench";
+
 /// Workspace directory layout with path helpers for identity files and storage.
 #[derive(Debug, Clone)]
 pub struct WorkspaceLayout {
@@ -94,6 +98,14 @@ impl WorkspaceLayout {
         self.root.join("memory/recent_context.json")
     }
 
+    /// Path to the main agent's persisted cumulative token usage totals, so
+    /// the web UI's chat footer shows correct totals across a restart
+    /// instead of resetting to zero.
+    #[must_use]
+    pub fn usage_totals_json(&self) -> PathBuf {
+        self.root.join("memory/usage_totals.json")
+    }
+
     /// Path to the tantivy search index directory.
     #[must_use]
     pub fn search_index_dir(&self) -> PathBuf {
@@ -118,11 +130,11 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
-    /// Path to the workbench directory: single-file HTML tools the agent builds
-    /// for the user, served in the web UI at `/workbench/{name}`.
+    /// Path to the workbench directory: the artifacts the agent builds for the
+    /// user (single pages or folders), served in the web UI at `/workbench/{name}`.
     #[must_use]
     pub fn workbench_dir(&self) -> PathBuf {
-        self.root.join("workbench")
+        self.root.join(WORKBENCH_DIR)
     }
 
     /// Path to BOOTSTRAP.md -- first-run guidance, deleted after first conversation.
@@ -211,6 +223,42 @@ impl WorkspaceLayout {
         self.root.join("config/channels.toml")
     }
 
+    /// Path to `config/agent-card.json` — the A2A agent card: what this
+    /// agent advertises to other agents that reach it over A2A.
+    #[must_use]
+    pub fn agent_card_json(&self) -> PathBuf {
+        self.root.join("config/agent-card.json")
+    }
+
+    /// Path to `config/a2a.json` — the remote A2A agents this instance's
+    /// client can reach, keyed by name.
+    #[must_use]
+    pub fn a2a_agents_json(&self) -> PathBuf {
+        self.root.join("config/a2a.json")
+    }
+
+    /// Path to the A2A client state directory (`root/a2a/`): the outbound
+    /// task tracker's persisted state.
+    #[must_use]
+    pub fn a2a_dir(&self) -> PathBuf {
+        self.root.join("a2a")
+    }
+
+    /// Path to `a2a/outbound.json` — persisted state for tasks this
+    /// instance started on other agents, so the remote task tracker resumes
+    /// watching them across a restart.
+    #[must_use]
+    pub fn a2a_outbound_json(&self) -> PathBuf {
+        self.a2a_dir().join("outbound.json")
+    }
+
+    /// Path to the directory holding persisted A2A task records, one JSON
+    /// file per task id.
+    #[must_use]
+    pub fn a2a_tasks_dir(&self) -> PathBuf {
+        self.a2a_dir().join("tasks")
+    }
+
     /// Path to the session store directory: per-run metadata and transcripts,
     /// organized by date.
     ///
@@ -218,6 +266,14 @@ impl WorkspaceLayout {
     #[must_use]
     pub fn sessions_dir(&self) -> PathBuf {
         self.root.join("memory/sessions")
+    }
+
+    /// Path to `memory/sessions/resume_points.json` -- persisted resume
+    /// points, keyed by session address, loaded when the session registry is
+    /// constructed at startup.
+    #[must_use]
+    pub fn resume_points_json(&self) -> PathBuf {
+        self.sessions_dir().join("resume_points.json")
     }
 
     /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).
@@ -267,6 +323,7 @@ impl WorkspaceLayout {
             self.user_inbox_archive_dir(),
             self.user_inbox_attachments_dir(),
             self.config_dir(),
+            self.a2a_dir(),
         ]
     }
 }
@@ -364,9 +421,38 @@ mod tests {
             "channels_toml path"
         );
         assert_eq!(
+            layout.agent_card_json(),
+            PathBuf::from("/tmp/ws/config/agent-card.json"),
+            "agent_card_json path"
+        );
+        assert_eq!(
             layout.subconscious_md(),
             PathBuf::from("/tmp/ws/SUBCONSCIOUS.md"),
             "subconscious_md path"
+        );
+    }
+
+    #[test]
+    fn layout_a2a_client_paths() {
+        let layout = WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            layout.a2a_agents_json(),
+            PathBuf::from("/tmp/ws/config/a2a.json"),
+            "a2a_agents_json path"
+        );
+        assert_eq!(
+            layout.a2a_dir(),
+            PathBuf::from("/tmp/ws/a2a"),
+            "a2a_dir path"
+        );
+        assert_eq!(
+            layout.a2a_outbound_json(),
+            PathBuf::from("/tmp/ws/a2a/outbound.json"),
+            "a2a_outbound_json path"
+        );
+        assert!(
+            layout.required_dirs().contains(&layout.a2a_dir()),
+            "a2a dir should be a required dir"
         );
     }
 
@@ -411,6 +497,21 @@ mod tests {
             layout.scheduled_actions_json(),
             PathBuf::from("/tmp/ws/scheduled_actions.json"),
             "scheduled_actions_json path"
+        );
+        assert_eq!(
+            layout.resume_points_json(),
+            PathBuf::from("/tmp/ws/memory/sessions/resume_points.json"),
+            "resume_points_json path"
+        );
+    }
+
+    #[test]
+    fn layout_usage_totals_path() {
+        let layout = WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            layout.usage_totals_json(),
+            PathBuf::from("/tmp/ws/memory/usage_totals.json"),
+            "usage_totals_json path"
         );
     }
 

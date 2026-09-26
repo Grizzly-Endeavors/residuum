@@ -1,5 +1,7 @@
 # CLAUDE.md | Residuum - Personal Agent Framework
 
+`AGENTS.md` carries these same rules for Cursor and other non-Claude agents. This paragraph and the title are the only difference. Change them together.
+
 ## Key References
 
 - [Design Philosophy](./docs/design-philosophy.md)
@@ -89,6 +91,29 @@ Testing is a first-class operation — NEVER skip test implementation.
 - Prefer `new()` with required args + `Default` trait for optional configuration
 - Avoid builder pattern unless struct has many optional fields
 
+## Designing Behavior: Make Failure Safe
+
+Residuum does long-running, autonomous work, so things will go wrong mid-run. Design every behavior, agent-facing or not, so that when something goes wrong it is seen, contained, and recoverable. Build the capability first, and build its safety in this order:
+
+1. **Visibility.** The user and the agent can see what is happening and what went wrong: how long a run has been going, how many tool calls it has made, how many tokens it has spent, which input is unreasonable and why. Flag unreasonable input instead of refusing it, judging "unreasonable" by cost and benefit to the user rather than by what seems typical: a skill with an oversized description still loads, and raises a notice that it costs tokens on every turn. The mechanics are in "No Silent Failures" below.
+2. **Degradation, recovery, and intervention.** When something breaks, the system degrades instead of halting. Destructive actions come with checkpoints, rollback, or undo. The user can step in: any long-running or open-ended behavior ships with a way to see it *and* a way to stop it.
+3. **Prevention, last.** A hard limit, block, or rejection is reserved for a failure that has been observed and can be described concretely: a model repeating byte-identical tool calls hundreds of times, or a remote shutdown of the gateway that leaves no way to bring it back. Scope the guard as narrowly as that failure, and describe the observed failure in the guard's comment. Approval gates, blocklists, fail-closed checks, and hold-for-review flows are prevention too, so the agent and the user are trusted to act by default. Users who want more oversight get opt-in guards they choose, not defaults Residuum decides for them.
+
+**Tiers 1 and 2 are part of the feature, and they are gated twice:**
+
+- **Before implementation**, state them explicitly, to the user or in the plan or design doc: what the user and the agent will see, how the feature degrades, and how it is stopped, rolled back, or undone.
+- **Before the feature ships**, review the completed implementation for gaps in both tiers that weren't anticipated by the plan. A feature missing either tier is not done.
+
+### Chesterton's Ghosts
+
+The failure this section exists to prevent is a guard built around a failure nobody has observed: a phantom risk, or behavior someone assumed was unwanted. Coding agents add these by instinct, often with an authoritative comment explaining why the code must be written this way. They ripple into product decisions. A hard cap on tool calls per turn works directly against long-running work, where a visible turn, tool-call, and token count plus a stop control addresses the same concern without blocking anything.
+
+- The urge to add a guard usually means a higher tier is missing. Ask what the user would need to see the problem and to stop it, and build that.
+- A comment justifying a guard records what an agent believed when it wrote it; it is not an authority. If it names no observed failure, it is a ghost: replace it with visibility and intervention rather than preserving it.
+- A gap is missing visibility or intervention, not behavior you would have designed differently. If a behavior is visible and the user can stop or undo it, how it behaves is a product decision: leave it, and raise it only when it carries genuine risk or cost.
+- Document product behavior in `docs/systems-usage/` as a plain description of how the system works. Only the user decides what is intentional; agents describe what is. Skip "by design", "intentional", and "do not change": the doc records current behavior, not a case for keeping it.
+- This governs product behavior, not code correctness. Lints, pre-commit hooks, and `deny` rules guard against an observed, recurring failure (agents taking shortcuts) and stay as the floor.
+
 ## Error Handling & Observability
 
 ### No Silent Failures
@@ -131,7 +156,7 @@ Testing is a first-class operation — NEVER skip test implementation.
 - `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
 - `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
 - `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
-- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
+- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off). The switch is stored for the running daemon and shows up in `residuum tracing status`. No report is sent: `TracingService::on_error` logs and returns, and nothing calls it ([#101](https://github.com/Grizzly-Endeavors/residuum/issues/101)). `residuum bug-report` is the path that sends one.
 - `residuum bug-report -m "description"` — send a sanitized trace dump to the developer via the feedback-ingest service
 - `RUST_LOG` env var overrides the configured log level when set
 

@@ -46,9 +46,6 @@ pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
 /// Default subconscious mid-turn evaluation cadence (every N tool iterations).
 pub(crate) const DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS: usize = 3;
 
-/// Default maximum subconscious mid-turn interventions per turn.
-pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS: usize = 1;
-
 /// Default token cap for the transcript sent to the subconscious classifier.
 pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
 
@@ -99,13 +96,17 @@ pub(super) const DEFAULT_IDLE_TIMEOUT_SPAWNED_MINUTES: u64 = 10;
 /// complete, in minutes.
 pub(super) const DEFAULT_IDLE_TIMEOUT_EXTERNAL_MINUTES: u64 = 30;
 
+/// Default idle timeout for `artifact` sessions (started by a workbench
+/// artifact) before they complete, in minutes.
+pub(super) const DEFAULT_IDLE_TIMEOUT_ARTIFACT_MINUTES: u64 = 10;
+
 /// Default token floor below which a completed run with nothing staged
 /// produces no episode.
 pub(super) const DEFAULT_EPISODE_SKIP_TOKEN_FLOOR: usize = 2_000;
 
 /// Default maximum depth a `subagent_spawn`-created session may have (main is
 /// depth 0; a `scheduled`/`external` session is depth 1).
-pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 2;
+pub(super) const DEFAULT_SUBAGENT_DEPTH_CAP: u32 = 3;
 
 /// Default hop count at or above which a delivered agent message carries a
 /// note asking the receiver to reply only if a reply is actually needed.
@@ -127,5 +128,16 @@ pub(super) const DEFAULT_TELEGRAM_CONTEXT_MESSAGES: usize = 20;
 /// Default port for the dedicated Teams messaging listener.
 pub(crate) const DEFAULT_TEAMS_PORT: u16 = 7701;
 
+/// Default port for the dedicated A2A protocol listener.
+pub(crate) const DEFAULT_A2A_PORT: u16 = 7702;
+
 /// Default relay WebSocket URL.
 pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
+
+/// Default consecutive identical tool-call count at which the repeat-call
+/// guard appends a steering note to the tool's result.
+pub(super) const DEFAULT_REPEAT_CALL_STEER_AFTER: u32 = 3;
+
+/// Default consecutive identical tool-call count at which the repeat-call
+/// guard ends the turn instead of running the call again.
+pub(super) const DEFAULT_REPEAT_CALL_STOP_AFTER: u32 = 6;

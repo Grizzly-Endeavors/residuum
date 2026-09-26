@@ -561,6 +561,58 @@
     0 0 8px rgba(59, 139, 219, 0.06);
 }
 
+.raw-diagnostics {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.raw-diagnostic {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.raw-diagnostic:last-child {
+  border-bottom: none;
+}
+
+.raw-diagnostic-severity {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.raw-diagnostic-error .raw-diagnostic-severity {
+  color: #e8a0a0;
+}
+
+.raw-diagnostic-warning .raw-diagnostic-severity {
+  color: var(--moss-hover);
+}
+
+.raw-diagnostic-location {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.raw-diagnostic-message {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* ── Review summary ───────────────────────────────────────────────────── */
 
 .review-summary {

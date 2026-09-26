@@ -9,9 +9,11 @@ import { SessionsStore, isSessionFrame } from "./sessions.svelte";
 import { notifications } from "./notifications.svelte";
 import { invalidate } from "./cache";
 import { userErrorMessage } from "./errors";
+import { WorkspaceWatchSync } from "./workspace-watch";
 import {
   fetchChatHistory,
   fetchChatSegment,
+  fetchUsageTotals,
   CACHE_KEY_STATUS,
   CACHE_KEY_TIMEZONE,
   CACHE_KEY_MCP_CATALOG,
@@ -35,6 +37,13 @@ class WsCoordinator {
   private msgCounter = 0;
   private hasConnected = false;
   private frameListeners = new Set<(msg: ServerMessage) => void>();
+  private connectionListeners = new Set<(connected: boolean) => void>();
+  /** The open artifact's watched workspace prefixes, re-sent on reconnect. */
+  private workspaceWatch = new WorkspaceWatchSync((msg) => {
+    this.transport.send(msg);
+  });
+  /** Whether this connection already told the user live updates are off. */
+  private liveUpdatesOffShown = false;
 
   verbose = $state(false);
 
@@ -64,7 +73,10 @@ class WsCoordinator {
         return;
       }
       if (msg.type === "error") {
-        notifications.surface("error", msg.message);
+        notifications.surface("error", msg.message, msg.details ?? undefined);
+      } else if (msg.type === "workspace_watch_unavailable") {
+        if (!this.liveUpdatesOffShown) notifications.surface("error", msg.message);
+        this.liveUpdatesOffShown = true;
       } else if (msg.type === "notice") {
         notifications.surface("notice", msg.message);
       } else if (msg.type === "reloading") {
@@ -93,6 +105,19 @@ class WsCoordinator {
       // session's relayed result, main's reply).
       if (this.hasConnected) void this.reconcileMainHistory();
       this.hasConnected = true;
+      // Seed the chat footer so it renders correctly before the next model
+      // call, rather than starting blank on every connect.
+      void this.loadUsageTotals();
+      // A new connection watches nothing until told. The watch set goes out
+      // before listeners hear of the reconnect, so an artifact that reloads
+      // on it can't miss changes made in between.
+      this.liveUpdatesOffShown = false;
+      this.workspaceWatch.connected();
+      this.notifyConnection(true);
+    };
+
+    this.transport.onDisconnected = () => {
+      this.notifyConnection(false);
     };
   }
 
@@ -166,12 +191,47 @@ class WsCoordinator {
   }
 
   /**
+   * Seed the chat footer's cumulative totals on connect/reconnect. Fails
+   * quietly — this is a quiet, non-critical status line, not something
+   * worth a toast over; the footer just stays blank until the next
+   * `turn_usage` frame arrives.
+   */
+  private async loadUsageTotals(): Promise<void> {
+    try {
+      this.store.setInitialUsage(await fetchUsageTotals());
+    } catch {
+      // quiet degradation, by design — see doc comment above
+    }
+  }
+
+  /**
    * Observe every frame the server sends, alongside the stores that handle
    * them. Returns a function that stops observing.
    */
   onFrame(listener: (msg: ServerMessage) => void): () => void {
     this.frameListeners.add(listener);
     return () => this.frameListeners.delete(listener);
+  }
+
+  /**
+   * Observe the socket connecting and disconnecting. Returns a function that
+   * stops observing.
+   */
+  onConnectionChange(listener: (connected: boolean) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => this.connectionListeners.delete(listener);
+  }
+
+  private notifyConnection(connected: boolean): void {
+    for (const listener of this.connectionListeners) listener(connected);
+  }
+
+  /**
+   * Watch these workspace path prefixes on this connection (the open
+   * artifact's), replacing any before. `[]` stops watching.
+   */
+  watchWorkspace(prefixes: readonly string[]): void {
+    this.workspaceWatch.set(prefixes);
   }
 
   // ── Delegated methods ─────────────────────────────────────────────

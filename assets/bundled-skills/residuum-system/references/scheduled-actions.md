@@ -36,13 +36,17 @@ Results are filed to the inbox by the notification router, and pushed to every c
 
 Actions are checked on a 30-second tick. When `run_at` has passed:
 
-1. The action is removed from `scheduled_actions.json` (fire-once semantics).
-2. A `scheduled` session is forked with the action's prompt and routing.
-3. Results flow through the notification router to the inbox, and to notification channels when marked urgent.
+1. A spawn request for a `scheduled` session is published with the action's prompt and routing.
+2. The action is removed from `scheduled_actions.json` only once that publish has actually succeeded — never before. A failed publish leaves the action exactly as it was, to be picked up again on the next tick, rather than losing it.
+3. Results flow through the notification router to the inbox, and to notification channels when marked urgent. A failed run's inbox item names the failure reason directly, and also publishes its own owner-facing notice separate from the inbox item.
 
 ## Persistence
 
-`scheduled_actions.json` is written atomically (temp file + rename). The `ActionStore` handles concurrent access safely.
+`scheduled_actions.json` is written atomically (temp file + rename). The `ActionStore` handles concurrent access safely. A file that exists but isn't valid JSON is never overwritten: it's moved aside to `scheduled_actions.json.corrupt-<unix-timestamp>`, preserving its bytes, and the store starts empty at the normal path — the owner is notified naming the moved-aside file.
+
+## Scheduled View
+
+The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/scheduled/actions` and `DELETE /api/scheduled/actions/{id}`.
 
 ## Gotchas
 
@@ -51,3 +55,4 @@ Actions are checked on a 30-second tick. When `run_at` has passed:
 - IDs are generated as `action-{8 hex chars}`.
 - If the agent is offline when an action comes due, it fires on the next startup when the tick evaluates it.
 - A stored action left over from before `agent: "main"` was removed is dropped at startup load, logged as an error naming it, and raised once as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every dropped action and linking to `migrating-to-agent-sessions.md`. Unlike heartbeat pulses, this only ever happens once at startup — actions aren't re-validated on a running tick.
+- Fork/spawn failures (e.g. naming a skill that doesn't exist) are deduped per action name: warned and noticed once, not on every retry of an unchanged failure.

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::agent::turn::TranscriptSink;
+use crate::bus::{AgentResultStatus, PulseOverlap};
 use crate::inference::Message;
 
 use super::registry::SessionInfo;
@@ -34,7 +35,7 @@ pub struct RunRecord {
     pub address: String,
     /// Unique run identifier.
     pub run_id: String,
-    /// `"scheduled"`, `"external"`, or `"spawned"`.
+    /// `"scheduled"`, `"external"`, `"spawned"`, or `"artifact"`.
     pub category: String,
     /// Human-readable source label (e.g. `"pulse:email_check"`).
     pub source_label: String,
@@ -69,6 +70,33 @@ pub struct RunRecord {
     /// [`SessionStore::append_transcript`]).
     #[serde(default)]
     pub transcript: Vec<Message>,
+    /// This run's cumulative token usage, for the `SessionView` footer.
+    /// Copied from the registry entry's own running total (see
+    /// [`super::registry::SessionRegistry::accumulate_usage`]) each time
+    /// this record is written, so a completed run's footer keeps its
+    /// final totals.
+    #[serde(default)]
+    pub usage: crate::agent::usage::SessionUsageTotals,
+    /// How the run ended — `"completed"`, `"cancelled"`, or `"failed"` —
+    /// filled in by [`SessionStore::complete_run`]. `None` while the run is
+    /// still live (`state` says so already), and `None` for a record written
+    /// before this field existed.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// The failure reason, when `outcome` is `"failed"`. `None` otherwise.
+    #[serde(default)]
+    pub outcome_error: Option<String>,
+    /// Full technical cause chain behind `outcome_error`, when the failure
+    /// was classified from a model-call error. `None` for a failure with
+    /// nothing richer to show (a panic, a shutdown mid-run), and `None` for
+    /// a record written before this field existed — old records stay
+    /// loadable, they just show no details toggle.
+    #[serde(default)]
+    pub outcome_error_details: Option<String>,
+    /// Set when this run is a pulse fire that started while its previous run
+    /// was still live. See [`PulseOverlap`].
+    #[serde(default)]
+    pub overlap: Option<PulseOverlap>,
 }
 
 impl RunRecord {
@@ -90,6 +118,11 @@ impl RunRecord {
             interrupted: false,
             episode_id: None,
             transcript: Vec::new(),
+            usage: info.usage,
+            outcome: None,
+            outcome_error: None,
+            outcome_error_details: None,
+            overlap: info.overlap.clone(),
         }
     }
 }
@@ -102,6 +135,9 @@ pub struct RunFilter<'a> {
     pub category: Option<&'a str>,
     /// Only runs at this session address.
     pub address: Option<&'a str>,
+    /// Only runs with exactly this source label (an artifact session's
+    /// `artifact:<name>`, for example).
+    pub source_label: Option<&'a str>,
 }
 
 /// A run record as the listing reads it: every [`RunRecord`] field except
@@ -125,6 +161,16 @@ struct RunRecordHeader {
     interrupted: bool,
     #[serde(default)]
     episode_id: Option<String>,
+    #[serde(default)]
+    usage: crate::agent::usage::SessionUsageTotals,
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    outcome_error: Option<String>,
+    #[serde(default)]
+    outcome_error_details: Option<String>,
+    #[serde(default)]
+    overlap: Option<PulseOverlap>,
 }
 
 impl From<RunRecordHeader> for RunRecord {
@@ -144,6 +190,11 @@ impl From<RunRecordHeader> for RunRecord {
             interrupted: header.interrupted,
             episode_id: header.episode_id,
             transcript: Vec::new(),
+            usage: header.usage,
+            outcome: header.outcome,
+            outcome_error: header.outcome_error,
+            outcome_error_details: header.outcome_error_details,
+            overlap: header.overlap,
         }
     }
 }
@@ -556,6 +607,12 @@ impl SessionStore {
             if filter.address.is_some_and(|a| header.address != a) {
                 continue;
             }
+            if filter
+                .source_label
+                .is_some_and(|l| header.source_label != l)
+            {
+                continue;
+            }
             if before.is_some_and(|c| (header.started_at, header.run_id.as_str()) >= c.sort_key()) {
                 continue;
             }
@@ -565,7 +622,10 @@ impl SessionStore {
     }
 
     /// Finalize a run's record: set its terminal state, completion time,
-    /// full transcript, and the episode it was merged into (if any).
+    /// full transcript, the episode it was merged into (if any), and its
+    /// outcome (`status`) — completed, cancelled, or failed with a reason —
+    /// so a listing or reload can show what actually happened instead of
+    /// just "finished".
     ///
     /// Returns the path the record was written to, or `None` if the write
     /// failed — callers must not report a transcript to exist when it
@@ -574,6 +634,7 @@ impl SessionStore {
         &self,
         info: &SessionInfo,
         state: &str,
+        status: &AgentResultStatus,
         transcript: Vec<Message>,
         episode_id: Option<String>,
     ) -> Option<PathBuf> {
@@ -583,6 +644,16 @@ impl SessionStore {
         record.completed_at = Some(Utc::now());
         record.transcript = transcript;
         record.episode_id = episode_id;
+        let (outcome, outcome_error, outcome_error_details) = match status {
+            AgentResultStatus::Completed => ("completed", None, None),
+            AgentResultStatus::Cancelled => ("cancelled", None, None),
+            AgentResultStatus::Failed { error, details } => {
+                ("failed", Some(error.clone()), details.clone())
+            }
+        };
+        record.outcome = Some(outcome.to_string());
+        record.outcome_error = outcome_error;
+        record.outcome_error_details = outcome_error_details;
         match write_record(&path, &record).await {
             Ok(()) => Some(path),
             Err(e) => {
@@ -842,6 +913,8 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
             conversation_target: None,
             started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         }
     }
 
@@ -870,7 +943,13 @@ mod tests {
 
         let transcript = vec![Message::user("hello"), Message::assistant("hi", None)];
         let path = store
-            .complete_run(&info, "completed", transcript, None)
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                transcript,
+                None,
+            )
             .await
             .expect("write should succeed");
 
@@ -882,6 +961,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_run_carries_the_infos_final_usage_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let mut info = sample_info();
+        store.begin_run(&info).await;
+
+        // The registry accumulates usage onto `info.usage` as the run's
+        // turns complete; the caller refreshes its own copy from the
+        // registry before finalizing (see `background::runtime::finish_run`).
+        info.usage.accumulate(Some(crate::inference::Usage {
+            input_tokens: 200,
+            output_tokens: 40,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                Vec::new(),
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.usage.input_tokens, 200);
+        assert_eq!(record.usage.output_tokens, 40);
+    }
+
+    #[test]
+    fn run_record_header_without_a_usage_field_deserializes_to_default() {
+        // A record written before this field existed has no `usage` key at
+        // all; loading it must not fail.
+        let json = r#"{
+            "address": "spawned-x-0001",
+            "run_id": "run-1",
+            "category": "spawned",
+            "source_label": "agent:researcher",
+            "spawner": null,
+            "depth": 1,
+            "purpose": "research",
+            "agent_skill": null,
+            "started_at": "2026-03-13T12:00:00Z",
+            "completed_at": null,
+            "state": "completed"
+        }"#;
+        let header: RunRecordHeader = serde_json::from_str(json).unwrap();
+        let record = RunRecord::from(header);
+        assert_eq!(
+            record.usage,
+            crate::agent::usage::SessionUsageTotals::default()
+        );
+    }
+
+    #[tokio::test]
     async fn stopped_run_keeps_its_transcript() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().to_path_buf());
@@ -890,13 +1028,138 @@ mod tests {
 
         let transcript = vec![Message::user("hello")];
         store
-            .complete_run(&info, "completed", transcript.clone(), None)
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                transcript.clone(),
+                None,
+            )
             .await;
 
         let path = store.run_path(&info.run_id, info.started_at);
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         let record: RunRecord = serde_json::from_str(&contents).unwrap();
         assert_eq!(record.transcript.len(), transcript.len());
+    }
+
+    #[tokio::test]
+    async fn complete_run_records_the_failure_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Failed {
+                    error: "the model call timed out".to_string(),
+                    details: None,
+                },
+                vec![],
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("failed"));
+        assert_eq!(
+            record.outcome_error.as_deref(),
+            Some("the model call timed out")
+        );
+        assert_eq!(
+            record.outcome_error_details, None,
+            "no details to show should persist as None, not a guessed value"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_run_persists_the_full_cause_chain_alongside_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Failed {
+                    error: "the model call timed out".to_string(),
+                    details: Some("connect timeout after 30s: api.example.com:443".to_string()),
+                },
+                vec![],
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(
+            record.outcome_error_details.as_deref(),
+            Some("connect timeout after 30s: api.example.com:443"),
+            "the full cause chain must survive alongside the plain-language message"
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_error_details_existed_still_loads() {
+        // No `outcome_error_details` key at all — as a pre-upgrade record on
+        // disk would look.
+        let json = serde_json::json!({
+            "address": "main",
+            "run_id": "20260101-000000-abcdef",
+            "category": "spawned",
+            "source_label": "test",
+            "spawner": null,
+            "depth": 0,
+            "purpose": "test",
+            "agent_skill": null,
+            "started_at": "2026-01-01T00:00:00Z",
+            "completed_at": "2026-01-01T00:01:00Z",
+            "state": "completed",
+            "outcome": "failed",
+            "outcome_error": "the model call timed out",
+        });
+        let record: RunRecord =
+            serde_json::from_value(json).expect("old record should deserialize");
+        assert_eq!(
+            record.outcome_error.as_deref(),
+            Some("the model call timed out")
+        );
+        assert_eq!(
+            record.outcome_error_details, None,
+            "a field missing from an old record must default to None, not fail to load"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_run_records_a_cancelled_outcome_with_no_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let info = sample_info();
+        store.begin_run(&info).await;
+
+        let path = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Cancelled,
+                vec![],
+                None,
+            )
+            .await
+            .expect("write should succeed");
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        let record: RunRecord = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("cancelled"));
+        assert!(record.outcome_error.is_none());
     }
 
     #[tokio::test]
@@ -934,7 +1197,15 @@ mod tests {
         let store = SessionStore::new(dir.path().to_path_buf());
         let info = sample_info();
         store.begin_run(&info).await;
-        store.complete_run(&info, "completed", vec![], None).await;
+        store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                vec![],
+                None,
+            )
+            .await;
 
         let (layout, observer, merge_writer) = test_env();
         let env = SessionMemoryEnv {
@@ -1247,6 +1518,7 @@ mod tests {
             .complete_run(
                 &info,
                 "completed",
+                &AgentResultStatus::Completed,
                 transcript.clone(),
                 Some("ep-001".to_string()),
             )
@@ -1303,7 +1575,15 @@ mod tests {
         let store = SessionStore::new(blocked_path);
         let info = sample_info();
 
-        let result = store.complete_run(&info, "completed", vec![], None).await;
+        let result = store
+            .complete_run(
+                &info,
+                "completed",
+                &AgentResultStatus::Completed,
+                vec![],
+                None,
+            )
+            .await;
         assert!(
             result.is_none(),
             "a failed write must not report a transcript path"

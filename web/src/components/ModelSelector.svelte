@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { ws } from "../lib/ws.svelte";
-  import { fetchProvidersRaw, putProvidersRaw } from "../lib/api";
-  import { parseProvidersToml, serializeProvidersToml } from "../lib/settings-toml";
+  import { fetchProvidersRaw, patchProviders } from "../lib/api";
+  import { parseProvidersToml, modelRoleJson } from "../lib/settings-toml";
   import { fetchModels, type ModelEntry } from "../lib/models";
   import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
@@ -64,9 +64,10 @@
       try {
         const raw = await fetchProvidersRaw();
         const parsed = parseProvidersToml(raw);
-        parsed.models.main = currentProvider + "/" + modelId;
-        const toml = serializeProvidersToml(parsed.providers, parsed.models);
-        await putProvidersRaw(toml);
+        const newMain = currentProvider + "/" + modelId;
+        const value = modelRoleJson(newMain, parsed.models.overrides.main);
+        const result = await patchProviders({ models: { main: value } });
+        if (!result.valid) throw new Error(result.error ?? "unknown error");
         ws.send({ type: "reload" });
         currentModel = modelId;
       } catch (err: unknown) {

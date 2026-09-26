@@ -1,6 +1,7 @@
 //! Communication interfaces between the user and the agent.
 
 pub mod attachment;
+pub(crate) mod boot_retry;
 pub(crate) mod chat_state;
 pub mod chunking;
 pub mod commands;
@@ -16,10 +17,12 @@ pub mod websocket;
 
 use std::path::Path;
 
+use crate::background::registry::{SessionRegistry, conversation_session_address};
 use crate::bus::{
     BusError, BusHandle, EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName,
     ResponseEvent, SessionResponseEvent, Subscriber, TurnLifecycleEvent, topics,
 };
+use crate::interfaces::types::{ConversationContext, ConversationKind};
 
 /// Common subscriber fields shared by Discord, Telegram, and similar interfaces.
 pub(crate) struct BaseSubscribers {
@@ -78,45 +81,14 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
     }
 }
 
-/// Tell `main` that a participant's inbound message could not be delivered
-/// to its conversation session.
-///
-/// Mirrors [`notify_main_of_undeliverable_session_output`] for the opposite
-/// direction: an inbound message a session's interrupt channel refused
-/// (saturated) rather than an outbound reply the interface couldn't post.
-/// Without this, a busy session drops the message with nothing but a log
-/// line — the participant sees no reply and nothing in the agent system ever
-/// learns their message went nowhere. Logged at `error` regardless of
-/// whether the notice itself reaches main.
-pub(crate) async fn notify_main_of_undeliverable_conversation_message(
-    publisher: &crate::bus::Publisher,
-    session_address: &crate::bus::SessionAddress,
-    conversation_id: &str,
-    reason: &str,
-) {
-    tracing::error!(
-        session = %session_address,
-        conversation = %conversation_id,
-        reason,
-        "a participant's message could not be delivered to its conversation session"
-    );
-    let event = crate::bus::MessageEvent::from_background(format!(
-        "[Delivery Failed] a participant's message to conversation {conversation_id} \
-         (session {session_address}) could not be delivered: {reason}"
-    ));
-    if let Err(e) = publisher.publish(topics::UserMessage, event).await {
-        tracing::warn!(
-            error = %e,
-            "failed to notify main about an undeliverable conversation message"
-        );
-    }
-}
-
 /// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
     pub(crate) reload_tx: &'a tokio::sync::watch::Sender<crate::gateway::types::ReloadSignal>,
     pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
     pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    /// Looked up to stop a conversation session's turn — see
+    /// [`dispatch_stop_request`] — never touched by any other command.
+    pub(crate) session_registry: &'a SessionRegistry,
     pub(crate) inbox_dir: &'a Path,
     pub(crate) tz: chrono_tz::Tz,
 }
@@ -124,13 +96,17 @@ pub(crate) struct CommandDispatch<'a> {
 /// Run a slash command typed into a chat interface and return the reply text.
 ///
 /// `interface` (e.g. `"telegram"`) labels logs and the inbox source;
-/// `sender_name` is who typed it.
+/// `sender_name` is who typed it. `conversation` is the conversation the
+/// command was typed in, exactly as it would appear on an ordinary message
+/// from the same sender — `None` only for an interface with no conversation
+/// concept. It decides `/stop`'s target; every other command ignores it.
 pub(crate) async fn run_chat_command(
     name: &str,
     args: Option<&str>,
     dispatch: &CommandDispatch<'_>,
     interface: &str,
     sender_name: &str,
+    conversation: Option<&ConversationContext>,
 ) -> String {
     let result = commands::execute_command(name, args, &commands::CommandContext::default());
     let source = format!("{interface} command");
@@ -170,9 +146,43 @@ pub(crate) async fn run_chat_command(
             .await
         }
         Some(commands::CommandSideEffect::Stop) => {
-            dispatch_stop_request(dispatch.stop_tx, &source).await
+            dispatch_stop_request(
+                dispatch.stop_tx,
+                dispatch.session_registry,
+                interface,
+                conversation,
+                &source,
+            )
+            .await
         }
         None => result.response,
+    }
+}
+
+/// Where a `/stop` command should be aimed, resolved from the conversation
+/// it was typed in — the same routing rule as an ordinary message (see
+/// [`crate::interfaces::types::MessageOrigin::belongs_to_main`]): the
+/// owner's own DM (or an interface with no conversation concept, i.e. the
+/// web UI) targets main, every other admitted conversation — a group chat,
+/// a channel, or a non-owner DM — targets that conversation's own session
+/// instead. Every chat interface already restricts commands to the owner,
+/// so `conversation.is_owner` is always true by the time a command reaches
+/// this; it's still checked so the rule reads the same as the one for
+/// ordinary messages rather than silently relying on that.
+enum StopTarget {
+    /// Stop the main agent's current turn.
+    Main,
+    /// Stop this conversation's own session, addressed the same way
+    /// [`crate::background::ConversationRouter`] addresses it.
+    Conversation(crate::bus::SessionAddress),
+}
+
+fn resolve_stop_target(endpoint: &str, conversation: Option<&ConversationContext>) -> StopTarget {
+    match conversation {
+        Some(ctx) if !(ctx.kind == ConversationKind::Personal && ctx.is_owner) => {
+            StopTarget::Conversation(conversation_session_address(endpoint, &ctx.id))
+        }
+        _ => StopTarget::Main,
     }
 }
 
@@ -184,13 +194,7 @@ pub(crate) async fn inbox_add_from_command(
     tz: chrono_tz::Tz,
     ok_response: String,
 ) -> String {
-    let title: String = body
-        .lines()
-        .next()
-        .unwrap_or("Inbox message")
-        .chars()
-        .take(60)
-        .collect();
+    let title = crate::inbox::derive_title(body);
     match crate::inbox::quick_add(inbox_dir, &title, body, source, tz).await {
         Ok(_) => ok_response,
         Err(e) => format!("failed to add inbox item: {e}"),
@@ -233,18 +237,55 @@ pub(crate) async fn dispatch_server_command(
     }
 }
 
-/// Dispatch a stop request for the currently running turn and wait for the outcome.
+/// Dispatch a `/stop` command to whichever turn it targets and wait for the
+/// outcome: the main agent's, or the session behind the conversation it was
+/// typed in — see [`resolve_stop_target`] and [`StopTarget`].
 ///
-/// Unlike `dispatch_server_command`, this doesn't go through `command_tx` —
-/// that pipeline only drains between turns, too late to stop one in
-/// progress. `stop_tx` reaches the active turn's own select loop directly.
+/// A conversation session is stopped through the session registry
+/// directly (the same synchronous, atomic check-and-cancel the web UI's
+/// per-session stop uses via
+/// [`crate::background::registry::SessionRegistry::stop_if_running`]), so
+/// there is no channel for a stale request to sit in — the reply always
+/// reflects the session's actual state at the moment this call happens.
+///
+/// Main is stopped through `stop_tx` instead: unlike `dispatch_server_command`,
+/// this doesn't go through `command_tx` — that pipeline only drains between
+/// turns, too late to stop one in progress. `stop_tx` reaches the active
+/// turn's own select loop directly, which answers every request it reads
+/// (including one that arrives with nothing running); a request that
+/// arrives in the window between two turns is drained and answered by
+/// `handle_idle_stop_request` or `drain_stale_stop_requests`, so it can
+/// never be held and applied to a turn other than the one running when it
+/// was handled.
 #[tracing::instrument(skip_all, fields(source = %source))]
 pub(crate) async fn dispatch_stop_request(
+    stop_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
+    session_registry: &SessionRegistry,
+    endpoint: &str,
+    conversation: Option<&ConversationContext>,
+    source: &str,
+) -> String {
+    match resolve_stop_target(endpoint, conversation) {
+        StopTarget::Conversation(address) => {
+            tracing::info!(source = %source, %address, "stop requested for conversation session");
+            if session_registry.stop_if_running(&address) {
+                tracing::info!(%address, "stopped the conversation session's running turn");
+                "stopped the current turn.".to_string()
+            } else {
+                "nothing is running right now.".to_string()
+            }
+        }
+        StopTarget::Main => dispatch_main_stop_request(stop_tx, source).await,
+    }
+}
+
+/// Stop the main agent's currently running turn and wait for the outcome.
+async fn dispatch_main_stop_request(
     stop_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
     source: &str,
 ) -> String {
     use std::time::Duration;
-    tracing::info!(source = %source, "stop requested");
+    tracing::info!(source = %source, "stop requested for main");
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     if let Err(e) = stop_tx.try_send(crate::gateway::types::StopRequest {
         reply_to: None,
@@ -270,7 +311,166 @@ pub(crate) async fn dispatch_stop_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{MessageEvent, SessionAddress, Subscriber};
+    use crate::background::registry::{
+        SessionCategory, SessionInfo, SessionRegistry, SessionState,
+    };
+    use crate::bus::{EventTrigger, MessageEvent, SessionAddress, Subscriber};
+    use crate::config::BackgroundModelTier;
+    use crate::gateway::types::StopRequest;
+    use tokio_util::sync::CancellationToken;
+
+    fn session_info(address: &str, state: SessionState) -> SessionInfo {
+        SessionInfo {
+            address: SessionAddress::from(address),
+            run_id: "run-1".to_string(),
+            category: SessionCategory::External,
+            trigger: EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state,
+            spawner: None,
+            depth: 1,
+            purpose: "chat-1".to_string(),
+            agent_skill: None,
+            model_tier: BackgroundModelTier::Medium,
+            conversation_target: None,
+            started_at: chrono::Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
+        }
+    }
+
+    fn group_chat(id: &str) -> ConversationContext {
+        ConversationContext {
+            id: id.to_string(),
+            kind: ConversationKind::GroupChat,
+            is_owner: true,
+        }
+    }
+
+    fn owner_dm(id: &str) -> ConversationContext {
+        ConversationContext {
+            id: id.to_string(),
+            kind: ConversationKind::Personal,
+            is_owner: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn group_chat_stop_reaches_the_conversation_session_and_not_main() {
+        let registry = SessionRegistry::new();
+        let address = conversation_session_address("discord", "chan-1");
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info(address.as_ref(), SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+
+        let reply = dispatch_stop_request(
+            &stop_tx,
+            &registry,
+            "discord",
+            Some(&group_chat("chan-1")),
+            "test",
+        )
+        .await;
+
+        assert_eq!(reply, "stopped the current turn.");
+        assert!(
+            token.is_cancelled(),
+            "the conversation session's turn must be the one stopped"
+        );
+        assert!(
+            stop_rx.try_recv().is_err(),
+            "main's stop channel must never be touched by a conversation's /stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_dm_stop_reaches_main_and_never_touches_a_session() {
+        let registry = SessionRegistry::new();
+        // Registered at the address a (wrongly) session-targeted stop would
+        // hit, so a regression that ignores `belongs_to_main` shows up here.
+        let address = conversation_session_address("discord", "dm-1");
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info(address.as_ref(), SessionState::Running),
+                token.clone(),
+            )
+            .unwrap();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+        tokio::spawn(async move {
+            let req = stop_rx.recv().await.unwrap();
+            req.result_tx.unwrap().send(true).ok();
+        });
+
+        let reply = dispatch_stop_request(
+            &stop_tx,
+            &registry,
+            "discord",
+            Some(&owner_dm("dm-1")),
+            "test",
+        )
+        .await;
+
+        assert_eq!(reply, "stopped the current turn.");
+        assert!(
+            !token.is_cancelled(),
+            "the owner's own DM must stop main, never a conversation session"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_ui_stop_with_no_conversation_reaches_main() {
+        let registry = SessionRegistry::new();
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+        tokio::spawn(async move {
+            let req = stop_rx.recv().await.unwrap();
+            req.result_tx.unwrap().send(true).ok();
+        });
+
+        let reply = dispatch_stop_request(&stop_tx, &registry, "ws", None, "test").await;
+
+        assert_eq!(reply, "stopped the current turn.");
+    }
+
+    #[tokio::test]
+    async fn stop_with_nothing_running_in_the_conversation_reports_that_and_is_discarded() {
+        let registry = SessionRegistry::new();
+        let address = conversation_session_address("discord", "chan-2");
+        let token = CancellationToken::new();
+        let _rx = registry
+            .register(
+                session_info(address.as_ref(), SessionState::Idle),
+                token.clone(),
+            )
+            .unwrap();
+        let (stop_tx, _stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
+
+        let reply = dispatch_stop_request(
+            &stop_tx,
+            &registry,
+            "discord",
+            Some(&group_chat("chan-2")),
+            "test",
+        )
+        .await;
+
+        assert_eq!(reply, "nothing is running right now.");
+        assert!(
+            !token.is_cancelled(),
+            "a stop request with nothing running must not be held and applied to whatever \
+             the session runs next"
+        );
+        assert_eq!(
+            registry.get(&address).unwrap().state,
+            SessionState::Idle,
+            "the idle session must be left exactly as it was"
+        );
+    }
 
     #[tokio::test]
     async fn undeliverable_session_output_reaches_main_as_background_input() {
@@ -294,6 +494,30 @@ mod tests {
         assert!(
             event.origin.belongs_to_main(),
             "the notice must reach main, never a conversation session"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_add_from_command_keeps_the_full_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let long_line = "a".repeat(100);
+        let body = format!("{long_line}\nmore body text");
+
+        inbox_add_from_command(
+            dir.path(),
+            &body,
+            "discord:someone",
+            chrono_tz::UTC,
+            "added".to_string(),
+        )
+        .await;
+
+        let mut entries = std::fs::read_dir(dir.path()).unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        let contents = std::fs::read_to_string(entry.path()).unwrap();
+        assert!(
+            contents.contains(&long_line),
+            "the title should keep the full first line, not truncate to 60 chars: {contents}"
         );
     }
 }

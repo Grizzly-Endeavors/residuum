@@ -68,15 +68,26 @@ The `agent` field controls how the pulse executes:
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
+## Diagnostics
+
+Editing `HEARTBEAT.yml` via `write_file`/`edit_file`, the workspace editor, or `POST /api/workspace/validate` reports invalid YAML, a non-list `pulses` key, a pulse entry that fails to deserialize on its own, a removed option, or a duplicate pulse name as a diagnostic alongside the save — one per problem, so one bad pulse doesn't hide problems in the others — and the write always goes through rather than being rejected.
+
 ## Behavior
 
-- The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. It's also fully re-validated on every tick — a rejected pulse, a duplicate pulse name, or an unparseable `schedule`/`active_hours` string — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged file. A removed-option rejection links `migrating-to-agent-sessions.md`; a duplicate name or bad schedule/active_hours links this doc instead.
+- If you (the agent) just wrote `HEARTBEAT.yml` yourself, its outcome on the very next scheduler tick arrives as a system note in your own transcript — "reloaded cleanly", the current problem list, or a parse-failure message — so you don't need to ask the user to check for you. A tick that isn't the result of your own write never sends you this note.
+- The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart. The file is parsed generically first, then each pulse entry is deserialized on its own: one bad pulse (a rejected option, a bad field type) is dropped individually and reported as a per-pulse problem, while every other pulse in the file still loads. It's also fully re-validated on every tick — a rejected pulse, a duplicate pulse name, an unparseable `schedule`/`active_hours` string, or a pulse that fails to deserialize — but each is only logged and notified about when the problem set actually changes, not on every tick of an unchanged file. A removed-option rejection links `migrating-to-agent-sessions.md`; every other kind of problem links this doc instead. A whole-document YAML syntax error (as opposed to one bad pulse in an otherwise-valid file) keeps the last pulse set that loaded successfully running, rather than firing nothing until it's fixed, and notifies the owner with the parse error (deduped the same way).
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
 - Last-run timestamps are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
+- A pulse that comes due while its own previous run is still going starts anyway — never skipped, blocked, or cancelled — but is flagged as overlapping: visible on the pulse in the web UI's Scheduled view and on the run itself, and logged at `info!` with the pulse name, the previous run's id, and how long it had been going. No separate notice for this; the UI flag is the signal.
 - Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the session's prompt.
 - Pulse sessions include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
 - Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
+- A failed pulse run's inbox item names the failure reason directly (never just a blank body), and also publishes its own owner-facing notice separate from the inbox item.
+
+## Scheduled View
+
+The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pulse — schedule, active hours, agent/skill, enabled flag, next fire estimate, last outcome (with error if failed), current run (with any overlap flag), and per-pulse loading problems — and every pending scheduled action with a cancel button. Toggling a pulse's enabled switch edits just that value in HEARTBEAT.yml, leaving the rest of the file untouched. Backed by `GET/PUT /api/scheduled/pulses...` and `GET/DELETE /api/scheduled/actions...`.
 
 ## Gotchas
 

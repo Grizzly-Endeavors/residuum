@@ -8,7 +8,7 @@ use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
-use crate::inference::MessageSender;
+use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::types::InboundMessage;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -46,6 +46,11 @@ pub struct SubAgentConfig {
     /// with correct sender attribution, instead of a plain agent message
     /// misattributed to `main`. `None` for every other trigger.
     pub inbound: Option<InboundMessage>,
+    /// Images attached to this run's kickoff message, carried into its
+    /// first turn's opening message. Populated for a conversation-triggered
+    /// spawn or resume; empty for every other trigger, which have no images
+    /// of their own.
+    pub images: Vec<ImageData>,
 }
 
 /// Extract a truncated (120-char) preview from a prompt string, for display
@@ -60,10 +65,20 @@ pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
 pub struct SubAgentBuildConfig {
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
+    /// The app config directory (`~/.residuum/`), for the session's
+    /// `write_file`/`edit_file` tools to recognize and diagnose
+    /// `config.toml`/`providers.toml` the same way main's do.
+    pub config_dir: std::path::PathBuf,
     /// Identity files for the system prompt.
     pub identity: IdentityFiles,
     /// LLM completion options for the session turn.
     pub options: crate::inference::CompletionOptions,
+    /// Maximum tool-call iterations for this session's turns before a turn
+    /// stops itself gracefully. `None` means unlimited.
+    pub max_tool_iterations: Option<usize>,
+    /// Guards against a model repeating the exact same tool call in this
+    /// session's turns.
+    pub repeat_call_guard: crate::config::RepeatCallGuardConfig,
     /// Timezone used by inbox and action-scheduling tools.
     pub tz: chrono_tz::Tz,
     /// Skill to activate for this session, if any. Its body becomes the
@@ -107,6 +122,13 @@ pub struct SubAgentBuildConfig {
     /// This session's category, for `message_agent` to report alongside
     /// `own_address`.
     pub session_category: SessionCategory,
+    /// What triggered this session, carried into `SubagentToolDeps` so a
+    /// tool running in it can tell what started it.
+    pub trigger: crate::bus::EventTrigger,
+    /// The conversation this session replies to, for a conversation-triggered
+    /// session, carried into `SubagentToolDeps`. `None` for every other
+    /// trigger.
+    pub conversation_target: Option<crate::bus::ConversationTarget>,
     /// Shared agent-messaging service, for the session's `message_agent` tool.
     pub messenger: std::sync::Arc<AgentMessenger>,
     /// This session's current-turn hop counter, seeded from the input hop
@@ -132,6 +154,14 @@ pub struct SubAgentBuildConfig {
     pub path_policy: crate::tools::SharedPathPolicy,
     /// The shared agent key store.
     pub agent_keys: crate::agent_keys::SharedAgentKeys,
+    /// Remote A2A agents this instance's client can reach, shared with main.
+    pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
+    /// Outbound A2A tasks this instance started on other agents, shared with
+    /// main.
+    pub a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
+    /// Workspace and config checkpoint repositories, shared with main —
+    /// backs `workspace_history`/`workspace_restore`.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 #[cfg(test)]

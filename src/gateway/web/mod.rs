@@ -9,22 +9,29 @@ use std::sync::Arc;
 
 use axum::http::Uri;
 use axum::response::Response;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
 use super::ReloadSignal;
 
+pub(crate) mod a2a;
 mod agent_keys;
+pub(crate) mod artifact_identity;
+pub mod checkpoints;
 pub mod cloud;
 pub mod config;
 pub mod inbox;
+pub(crate) mod memory;
+pub(crate) mod model;
 pub mod providers;
+pub(crate) mod scheduled;
 pub mod secrets;
 pub(crate) mod sessions;
 pub mod tracing_api;
 pub mod update;
 pub(crate) mod workbench;
 pub mod workspace;
+pub(crate) mod workspace_bulk;
 
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
@@ -57,14 +64,64 @@ pub(crate) struct ConfigApiState {
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
     /// Serializes secret store writes to prevent lost-update races.
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Workspace and config checkpoint repositories.
+    pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+}
+
+impl ConfigApiState {
+    /// Checkpoint the config repository (root `config.toml`/`providers.toml`
+    /// and the encrypted key stores) before a write to one of them. Never
+    /// fails or blocks the write — see `crate::checkpoints`.
+    pub(super) async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
+        self.checkpoints
+            .checkpoint_config_before_write(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                summary,
+            ))
+            .await;
+    }
+
+    /// Checkpoint the workspace repository before a destructive workspace
+    /// API action (delete, overwrite, move/rename with overwrite) or a raw
+    /// write to a workspace-owned strictly-parsed file (`mcp.json`,
+    /// `config/a2a.json`). Never fails or blocks the action — see
+    /// `crate::checkpoints`.
+    pub(super) async fn checkpoint_workspace_before_write(&self, summary: impl Into<String>) {
+        self.checkpoints
+            .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                summary,
+            ))
+            .await;
+    }
 }
 
 /// Build the config API router.
 pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
+    // Scoped to just this route via `route_layer` (which wraps every route
+    // already registered on *this* router value): axum's default 2 MiB body
+    // limit stays in place for every other endpoint, while text writes get
+    // the 8 MiB the workspace file API promises.
+    let workspace_file_router = axum::Router::new()
+        .route(
+            "/api/workspace/file",
+            get(workspace::api_workspace_file_read)
+                .put(workspace::api_workspace_file_write)
+                .delete(workspace::api_workspace_delete),
+        )
+        .route(
+            "/api/workspace/raw",
+            get(workspace::api_workspace_raw_read).put(workspace::api_workspace_raw_write),
+        )
+        .route_layer(axum::extract::DefaultBodyLimit::max(
+            workspace::TEXT_FILE_LIMIT_BYTES,
+        ));
+
     axum::Router::new()
         .route("/api/status", get(config::api_status))
         .route("/api/config/raw", get(config::api_config_raw_get))
         .route("/api/config/raw", put(config::api_config_raw_put))
+        .route("/api/config/patch", patch(config::api_config_patch))
         .route("/api/config/validate", post(config::api_config_validate))
         .route(
             "/api/config/complete-setup",
@@ -73,6 +130,7 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/system/timezone", get(config::api_system_timezone))
         .route("/api/mcp-catalog", get(config::api_mcp_catalog))
         .route("/api/chat/history", get(config::api_chat_history))
+        .route("/api/usage", get(config::api_usage))
         .route(
             "/api/providers/models",
             post(providers::api_provider_models),
@@ -80,24 +138,45 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/providers/raw", get(providers::api_providers_raw_get))
         .route("/api/providers/raw", put(providers::api_providers_raw_put))
         .route(
+            "/api/providers/patch",
+            patch(providers::api_providers_patch),
+        )
+        .route(
             "/api/providers/validate",
             post(providers::api_providers_validate),
         )
         .route("/api/mcp/raw", get(config::api_mcp_raw_get))
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))
+        .route("/api/mcp/patch", patch(config::api_mcp_patch))
         .route("/api/agent-keys", get(agent_keys::api_agent_keys_list))
         .route("/api/agent-keys", post(agent_keys::api_agent_keys_set))
         .route(
             "/api/agent-keys/{name}",
             delete(agent_keys::api_agent_keys_delete),
         )
+        .route("/api/a2a/keys", get(a2a::api_a2a_keys_list))
+        .route("/api/a2a/keys", post(a2a::api_a2a_keys_create))
+        .route("/api/a2a/keys/{name}", delete(a2a::api_a2a_keys_revoke))
+        .route("/api/a2a/agents/raw", get(a2a::api_a2a_agents_raw_get))
+        .route("/api/a2a/agents/raw", put(a2a::api_a2a_agents_raw_put))
         .route("/api/secrets", post(secrets::api_secrets_set))
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
         .route("/api/workspace/files", get(workspace::api_workspace_files))
+        .route("/api/workspace/dir", post(workspace::api_workspace_mkdir))
+        .route("/api/workspace/move", post(workspace::api_workspace_move))
         .route(
-            "/api/workspace/file",
-            get(workspace::api_workspace_file_read).put(workspace::api_workspace_file_write),
+            "/api/workspace/validate",
+            post(workspace::api_workspace_validate),
+        )
+        .merge(workspace_file_router)
+        .route(
+            "/api/workspace/tree",
+            get(workspace_bulk::api_workspace_tree),
+        )
+        .route(
+            "/api/workspace/read",
+            post(workspace_bulk::api_workspace_read),
         )
         .route("/api/inbox", get(inbox::api_inbox_list))
         .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
@@ -267,6 +346,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(segment) = config::api_chat_history(
             State(state),
@@ -289,6 +369,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_usage_returns_zero_default_when_no_memory_dir() {
+        use axum::Json;
+        use axum::extract::State;
+
+        let state = ConfigApiState {
+            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
+        };
+        let Json(totals) = config::api_usage(State(state)).await;
+        assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
+    }
+
+    #[tokio::test]
+    async fn api_usage_reads_the_persisted_totals_file() {
+        use axum::Json;
+        use axum::extract::State;
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let mut totals = crate::agent::usage::SessionUsageTotals::default();
+        totals.accumulate(Some(crate::inference::Usage {
+            input_tokens: 300,
+            output_tokens: 60,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }));
+        crate::agent::usage::save_session_usage_totals(
+            &memory_dir.join("usage_totals.json"),
+            &totals,
+        )
+        .await;
+
+        let state = ConfigApiState {
+            config_dir: dir.path().to_path_buf(),
+            workspace_dir: dir.path().to_path_buf(),
+            memory_dir: Some(memory_dir),
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
+        };
+        let Json(loaded) = config::api_usage(State(state)).await;
+        assert_eq!(loaded, totals);
+    }
+
+    #[tokio::test]
     async fn chat_history_returns_empty_when_file_missing() {
         use axum::Json;
         use axum::extract::{Query, State};
@@ -300,6 +432,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(segment) = config::api_chat_history(
             State(state),
@@ -367,6 +500,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
         let Json(segment) = config::api_chat_history(
             State(state),
@@ -433,6 +567,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         let Json(segment) = config::api_chat_history(
@@ -480,6 +615,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         let err = config::api_chat_history(
@@ -521,6 +657,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         let err = config::api_chat_history(
@@ -549,6 +686,7 @@ mod tests {
             reload_tx: None,
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         };
 
         // Set a secret

@@ -2,15 +2,16 @@
 import type { WorkbenchRelayOrigins } from "./WorkbenchRelayOrigins";
 
 /**
- * `GET /api/workbench/info`: where workbench tools are served.
+ * `GET /api/workbench/info`: where workbench artifacts are served.
  */
 export type WorkbenchInfo = { 
 /**
- * Port of the local tools listener, or `null` when it isn't running.
+ * Port of the local artifacts listener, or `null` when it isn't running.
  */
 port: number | null, 
 /**
- * Plain-language reason the tools listener isn't running, when it isn't.
+ * Plain-language reason the artifacts listener isn't running, when it
+ * isn't.
  */
 unavailable_reason: string | null, 
 /**

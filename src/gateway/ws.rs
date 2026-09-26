@@ -15,6 +15,7 @@ use crate::gateway::types::GatewayState;
 use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
+use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
@@ -39,11 +40,16 @@ pub(super) async fn ws_handler(
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
+    // The workspace prefixes this connection watches: replaced by the read
+    // loop, read by the forwarding task to filter change-feed batches.
+    let (watch_set_tx, watch_set_rx) = tokio::sync::watch::channel(WatchSet::default());
+
     // Subscribe to typed bus topics for this connection
     let mut subs = match WsSubscribers::new(
         &state.bus_handle,
         EndpointName::from("ws"),
         state.file_registry.clone(),
+        watch_set_rx,
     )
     .await
     {
@@ -116,6 +122,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 let err_msg = ServerMessage::Error {
                     reply_to: None,
                     message: format!("malformed message: {e}"),
+                    details: None,
                 };
                 tracing::warn!(error = %e, "malformed WebSocket message from client");
                 local_tx.send(err_msg).ok();
@@ -123,7 +130,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             }
         };
 
-        if !handle_client_message(client_msg, &state, &local_tx, &verbose).await {
+        if !handle_client_message(client_msg, &state, &local_tx, &verbose, &watch_set_tx).await {
             break;
         }
     }
@@ -143,6 +150,7 @@ async fn handle_client_message(
     state: &GatewayState,
     local_tx: &mpsc::UnboundedSender<ServerMessage>,
     verbose: &AtomicBool,
+    watch_set: &tokio::sync::watch::Sender<WatchSet>,
 ) -> bool {
     match msg {
         ClientMessage::SendMessage {
@@ -157,6 +165,7 @@ async fn handle_client_message(
                     .send(ServerMessage::Error {
                         reply_to: Some(id),
                         message: reason,
+                        details: None,
                     })
                     .ok();
                 return true;
@@ -187,6 +196,14 @@ async fn handle_client_message(
         }
         ClientMessage::SetVerbose { enabled } => {
             verbose.store(enabled, Ordering::Relaxed);
+        }
+        ClientMessage::WatchWorkspace { prefixes } => {
+            replace_watch_set(
+                prefixes,
+                *state.workspace_watch_health.borrow(),
+                watch_set,
+                local_tx,
+            );
         }
         ClientMessage::Ping => {
             local_tx.send(ServerMessage::Pong).ok();
@@ -222,6 +239,7 @@ async fn handle_client_message(
                         .send(ServerMessage::Error {
                             reply_to: None,
                             message: reason,
+                            details: None,
                         })
                         .ok();
                 }
@@ -266,13 +284,7 @@ async fn handle_client_message(
             let tz = state.tz;
             let tx = local_tx.clone();
             tokio::spawn(async move {
-                let title: String = body
-                    .lines()
-                    .next()
-                    .unwrap_or("Inbox message")
-                    .chars()
-                    .take(60)
-                    .collect();
+                let title = crate::inbox::derive_title(&body);
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
                         tx.send(ServerMessage::Notice {
@@ -284,6 +296,7 @@ async fn handle_client_message(
                         tx.send(ServerMessage::Error {
                             reply_to: None,
                             message: format!("inbox add failed: {e}"),
+                            details: None,
                         })
                         .ok();
                     }
@@ -292,6 +305,41 @@ async fn handle_client_message(
         }
     }
     true
+}
+
+/// Apply a `watch_workspace` request: replace the connection's watch set, or
+/// refuse the request with an `Error` frame and keep the current set. A
+/// connection that starts watching while no watcher runs is told live
+/// updates are off.
+fn replace_watch_set(
+    prefixes: Vec<String>,
+    health: WatchHealth,
+    watch_set: &tokio::sync::watch::Sender<WatchSet>,
+    local_tx: &mpsc::UnboundedSender<ServerMessage>,
+) {
+    match WatchSet::parse(prefixes) {
+        Ok(set) => {
+            let watching = !set.is_empty();
+            watch_set.send_replace(set);
+            if watching && health == WatchHealth::Off {
+                local_tx
+                    .send(ServerMessage::WorkspaceWatchUnavailable {
+                        message: LIVE_UPDATES_OFF_MESSAGE.to_string(),
+                    })
+                    .ok();
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "refused a workspace watch request");
+            local_tx
+                .send(ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("Couldn't watch the workspace: {e}."),
+                    details: None,
+                })
+                .ok();
+        }
+    }
 }
 
 /// Whether `msg` is only sent to clients that turned verbose mode on: tool
@@ -318,10 +366,11 @@ async fn handle_session_command(
             address,
             content,
         } => {
-            match crate::gateway::sessions::send_owner_message(
+            match crate::gateway::sessions::send_session_message(
                 &state.agent_messenger,
                 &address,
                 content,
+                &crate::gateway::sessions::SessionMessageAuthor::Owner,
             )
             .await
             {
@@ -369,31 +418,22 @@ enum SessionCommand {
     },
 }
 
-/// Maximum number of images per message.
-const MAX_IMAGES: usize = 5;
-
-/// Maximum raw image size in bytes (5 MB).
+/// Maximum raw image size in bytes, per the model API's per-image limit (5 MB).
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
-/// Allowed MIME types for image uploads.
+/// MIME types the model API accepts for image input.
 const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 /// Validate image attachments before publishing to the bus.
 ///
-/// Enforces the same limits as the client: max 5 images, 5 MB each,
-/// and only JPEG/PNG/GIF/WebP MIME types.
+/// Enforces the model API's own per-image limits — 5 MB and JPEG/PNG/GIF/WebP
+/// only — since those are provider facts, not a residuum-imposed cap. There
+/// is no limit on how many images a message can carry.
 ///
 /// # Errors
 ///
 /// Returns a human-readable error describing the first violation found.
 fn validate_images(images: &[ImageData]) -> Result<(), String> {
-    if images.len() > MAX_IMAGES {
-        return Err(format!(
-            "too many images: {} (max {MAX_IMAGES})",
-            images.len()
-        ));
-    }
-
     for img in images {
         if !ALLOWED_MIME_TYPES.contains(&img.media_type.as_str()) {
             return Err(format!(
@@ -461,16 +501,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_images_rejects_too_many() {
-        let images: Vec<_> = (0..6).map(|_| make_image("image/png", 100)).collect();
-        let result = validate_images(&images);
-        assert!(result.is_err(), "should reject more than 5 images");
+    fn validate_images_accepts_many_images() {
+        // There is no cap on how many images a message can carry.
+        let images: Vec<_> = (0..50).map(|_| make_image("image/png", 100)).collect();
         assert!(
-            result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.contains("too many")),
-            "error should mention 'too many'"
+            validate_images(&images).is_ok(),
+            "any number of images should be accepted"
         );
     }
 
@@ -513,17 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_images_accepts_exactly_max_count() {
-        let images: Vec<_> = (0..MAX_IMAGES)
-            .map(|_| make_image("image/png", 100))
-            .collect();
-        assert!(
-            validate_images(&images).is_ok(),
-            "exactly {MAX_IMAGES} images should be accepted"
-        );
-    }
-
-    #[test]
     fn validate_images_accepts_max_bytes() {
         // Compute base64 length such that estimated_bytes == MAX_IMAGE_BYTES exactly.
         // estimated_bytes = data.len() * 3 / 4; we want this == MAX_IMAGE_BYTES (not greater).
@@ -547,6 +572,66 @@ mod tests {
                 .is_some_and(|e| e.contains("unsupported")),
             "error should mention 'unsupported'"
         );
+    }
+
+    #[test]
+    fn a_valid_watch_request_replaces_the_set() {
+        let (watch_tx, watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        replace_watch_set(
+            vec!["wiki".into()],
+            WatchHealth::Native,
+            &watch_tx,
+            &local_tx,
+        );
+        assert!(watch_rx.borrow().matches("wiki/a.md"));
+        assert!(
+            local_rx.try_recv().is_err(),
+            "a valid request needs no reply"
+        );
+
+        replace_watch_set(Vec::new(), WatchHealth::Native, &watch_tx, &local_tx);
+        assert!(watch_rx.borrow().is_empty(), "[] turns watching off");
+    }
+
+    #[test]
+    fn an_invalid_watch_prefix_yields_an_error_and_keeps_the_set() {
+        let (watch_tx, watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        replace_watch_set(
+            vec!["wiki".into()],
+            WatchHealth::Native,
+            &watch_tx,
+            &local_tx,
+        );
+        replace_watch_set(
+            vec!["notes".into(), "../secrets".into()],
+            WatchHealth::Native,
+            &watch_tx,
+            &local_tx,
+        );
+        assert!(matches!(
+            local_rx.try_recv(),
+            Ok(ServerMessage::Error { reply_to: None, message, .. }) if message.contains("../secrets")
+        ));
+        assert!(watch_rx.borrow().matches("wiki/a.md"));
+        assert!(!watch_rx.borrow().matches("notes/a.md"));
+    }
+
+    #[test]
+    fn watching_while_the_watcher_is_off_says_live_updates_are_off() {
+        let (watch_tx, _watch_rx) = tokio::sync::watch::channel(WatchSet::default());
+        let (local_tx, mut local_rx) = mpsc::unbounded_channel();
+        replace_watch_set(Vec::new(), WatchHealth::Off, &watch_tx, &local_tx);
+        assert!(
+            local_rx.try_recv().is_err(),
+            "not watching, nothing to report"
+        );
+        replace_watch_set(vec![String::new()], WatchHealth::Off, &watch_tx, &local_tx);
+        assert!(matches!(
+            local_rx.try_recv(),
+            Ok(ServerMessage::WorkspaceWatchUnavailable { .. })
+        ));
     }
 
     #[test]
@@ -585,6 +670,7 @@ mod tests {
             address: "spawned-a-0001".into(),
             run_id: "run-a".into(),
             message: "loop limit".into(),
+            details: None,
         };
         assert!(!is_verbose_only(&response));
         assert!(!is_verbose_only(&error));

@@ -324,7 +324,7 @@ impl Tool for UserInboxAddTool {
             })
             .unwrap_or_default();
 
-        let filename = inbox::quick_add_with_attachments(
+        let (filename, failures) = inbox::quick_add_with_attachments(
             &self.user_inbox_dir,
             &self.user_inbox_attachments_dir,
             title,
@@ -340,14 +340,20 @@ impl Tool for UserInboxAddTool {
         })?;
 
         let id = filename.trim_end_matches(".json");
-        let message = if attachment_paths.is_empty() {
+        let succeeded = attachment_paths.len() - failures.len();
+        let mut message = if attachment_paths.is_empty() {
             format!("Added item to user inbox with ID: {id}")
         } else {
-            format!(
-                "Added item to user inbox with ID: {id} ({} attachment(s) copied)",
-                attachment_paths.len()
-            )
+            format!("Added item to user inbox with ID: {id} ({succeeded} attachment(s) copied)")
         };
+        if !failures.is_empty() {
+            message
+                .push_str("\n\nSome attachments could not be copied (the item was still added):");
+            for failure in &failures {
+                message.push_str("\n- ");
+                message.push_str(failure);
+            }
+        }
         Ok(ToolResult::success(message))
     }
 }
@@ -612,7 +618,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_inbox_add_missing_attachment_source_fails_visibly() {
+    async fn user_inbox_add_missing_attachment_source_still_saves_the_item() {
         let dir = tempfile::tempdir().unwrap();
         let user_inbox_dir = dir.path().join("inbox/user");
         let attachments_dir = dir.path().join("inbox/user/attachments");
@@ -622,12 +628,20 @@ mod tests {
         let result = tool
             .execute(serde_json::json!({
                 "title": "broken",
-                "body": "won't be saved",
+                "body": "still saved",
                 "attachments": ["/tmp/residuum_test_does_not_exist.bin"],
             }))
-            .await;
+            .await
+            .unwrap();
 
-        assert!(result.is_err(), "missing attachment source should error");
+        // A file that can't be attached is reported, but never fails the
+        // whole item — the item itself is still saved.
+        assert!(!result.is_error, "{}", result.output);
+        assert!(
+            result.output.contains("could not be copied"),
+            "the failure should be reported: {}",
+            result.output
+        );
 
         let mut entries = tokio::fs::read_dir(&user_inbox_dir).await.unwrap();
         let mut json_files = Vec::new();
@@ -636,9 +650,10 @@ mod tests {
                 json_files.push(entry.path());
             }
         }
-        assert!(
-            json_files.is_empty(),
-            "no item should be saved when an attachment can't be copied: {json_files:?}"
+        assert_eq!(
+            json_files.len(),
+            1,
+            "the item should be saved even though its attachment failed: {json_files:?}"
         );
     }
 }

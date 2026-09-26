@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Well-known notification channel name for system-level notices and errors.
 pub const SYSTEM_CHANNEL: &str = "system";
 
@@ -12,7 +14,8 @@ pub const SYSTEM_CHANNEL: &str = "system";
 macro_rules! newtype_string {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
         pub struct $name(String);
 
         impl fmt::Display for $name {
@@ -72,8 +75,12 @@ pub enum TopicId {
     Notification(NotifyName),
     /// The user inbox for incoming notifications.
     Inbox,
-    /// Workbench tool file changes.
+    /// Workbench artifact file changes.
     Workbench,
+    /// Debounced workspace file changes (the change feed).
+    Workspace,
+    /// Explicit A2A task-outcome signals from `a2a_task_update`.
+    A2aTaskSignal,
 }
 
 impl fmt::Display for TopicId {
@@ -86,6 +93,8 @@ impl fmt::Display for TopicId {
             Self::Notification(name) => write!(f, "notification:{name}"),
             Self::Inbox => f.write_str("inbox"),
             Self::Workbench => f.write_str("workbench"),
+            Self::Workspace => f.write_str("workspace"),
+            Self::A2aTaskSignal => f.write_str("a2a:task-signal"),
         }
     }
 }

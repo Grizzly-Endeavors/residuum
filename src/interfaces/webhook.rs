@@ -80,14 +80,6 @@ impl From<HashMap<String, WebhookEndpointState>> for WebhookTable {
     }
 }
 
-/// Compare a presented secret with the configured one without leaking, through
-/// response timing, how much of it was right: only fixed-length digests are
-/// compared, so an early mismatch reveals nothing about the secret itself.
-fn secrets_match(provided: &str, expected: &str) -> bool {
-    use ring::digest::{SHA256, digest};
-    digest(&SHA256, provided.as_bytes()).as_ref() == digest(&SHA256, expected.as_bytes()).as_ref()
-}
-
 /// Shared state for the webhook handler — holds all named webhook configs.
 #[derive(Clone)]
 pub struct WebhookState {
@@ -132,7 +124,7 @@ pub async fn webhook_handler(
             .unwrap_or("");
 
         let provided = auth.strip_prefix("Bearer ").unwrap_or("");
-        if !secrets_match(provided, expected) {
+        if !crate::util::secrets_match(provided, expected) {
             tracing::warn!(webhook = %name, "webhook authentication failed");
             return (
                 StatusCode::UNAUTHORIZED,
@@ -226,6 +218,8 @@ async fn route_webhook_content(
                 sender: None,
                 conversation: None,
                 inbound: None,
+                images: Vec::new(),
+                overlap: None,
             };
             if let Err(e) = state
                 .publisher
@@ -406,14 +400,6 @@ mod tests {
 
         let after = app.oneshot(request()).await.unwrap();
         assert_eq!(after.status(), StatusCode::ACCEPTED);
-    }
-
-    #[test]
-    fn secrets_match_only_on_exact_equality() {
-        assert!(secrets_match("s3cret", "s3cret"));
-        assert!(!secrets_match("s3cre", "s3cret"));
-        assert!(!secrets_match("", "s3cret"));
-        assert!(!secrets_match("S3CRET", "s3cret"));
     }
 
     #[tokio::test]

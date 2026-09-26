@@ -12,6 +12,15 @@ export class WsTransport {
   /** Called after the socket connects (before any messages). */
   onConnected: (() => void) | null = null;
 
+  /** Called when an open socket closes, before a reconnect is scheduled. */
+  onDisconnected: (() => void) | null = null;
+
+  /** Messages queued while disconnected, flushed in order once reconnected. */
+  private pending: ClientMessage[] = [];
+
+  /** How many messages are queued waiting for reconnect (reactive). */
+  pendingCount = $state(0);
+
   private ws: WebSocket | null = null;
   private reconnectDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -29,6 +38,7 @@ export class WsTransport {
       this.reconnectDelay = 1000;
       this.onConnected?.();
       this.startPing();
+      this.flushPending();
     };
 
     this.ws.onmessage = (e) => {
@@ -42,8 +52,10 @@ export class WsTransport {
     };
 
     this.ws.onclose = () => {
+      const wasConnected = this.status === "connected";
       this.status = "disconnected";
       this.stopPing();
+      if (wasConnected) this.onDisconnected?.();
       this.scheduleReconnect();
     };
   }
@@ -62,13 +74,32 @@ export class WsTransport {
     this.status = "disconnected";
   }
 
+  /**
+   * Send a message, or queue it while disconnected/reconnecting so it isn't
+   * silently dropped — flushed in order once the socket reopens. A `ping`
+   * is never worth queuing (the next real reconnect makes it moot).
+   */
   send(msg: ClientMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+      return;
+    }
+    if (msg.type !== "ping") {
+      this.pending.push(msg);
+      this.pendingCount = this.pending.length;
     }
   }
 
   // ── Private ──────────────────────────────────────────────────────────
+
+  private flushPending(): void {
+    const queued = this.pending;
+    this.pending = [];
+    this.pendingCount = 0;
+    for (const msg of queued) {
+      this.send(msg);
+    }
+  }
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;

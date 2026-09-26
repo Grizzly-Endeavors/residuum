@@ -14,14 +14,26 @@ import type {
   AgentKeyInfo,
   AgentKeysListResponse,
   SetAgentKeyResponse,
+  A2aStatusResponse,
+  A2aAgentCard,
+  A2aKeyInfo,
+  A2aKeysListResponse,
+  CreateA2aKeyResponse,
+  A2aRemoteAgent,
   WorkspaceEntry,
+  WorkspaceWriteResponse,
+  WorkspaceValidateResponse,
+  Diagnostic,
   CloudStatusResponse,
   UpdateStatusResponse,
   SessionCategory,
   SessionListResponse,
   SessionTranscriptResponse,
+  SessionUsageTotals,
   WorkbenchInfo,
-  WorkbenchToolSummary,
+  ArtifactSummary,
+  PulseInfo,
+  ActionInfo,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -37,6 +49,7 @@ export const CACHE_KEY_MCP_CATALOG = "GET /api/mcp-catalog";
 export const CACHE_KEY_CONFIG_RAW = "GET /api/config/raw";
 export const CACHE_KEY_PROVIDERS_RAW = "GET /api/providers/raw";
 export const CACHE_KEY_MCP_RAW = "GET /api/mcp/raw";
+export const CACHE_KEY_A2A_AGENTS_RAW = "GET /api/a2a/agents/raw";
 
 // ── Error class + fetch helpers ─────────────────────────────────────
 
@@ -49,6 +62,114 @@ export class ApiError extends Error {
   ) {
     super(`${status} ${statusText}: ${body}`);
     this.name = "ApiError";
+  }
+}
+
+/**
+ * The validation result a raw-file PUT reports through a 400. Those
+ * endpoints answer invalid input with `400 {valid: false, error}`, and
+ * `apiFetch` throws on any non-2xx, so callers would otherwise only ever see
+ * a generic failure instead of the validation message.
+ */
+export function validationFromApiError(err: unknown): ValidateResponse | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  try {
+    const parsed: unknown = JSON.parse(err.body);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string"
+    ) {
+      return { valid: false, error: parsed.error };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** A workspace write conflict: the file changed since it was last read. */
+export interface WorkspaceWriteConflict {
+  error: string;
+  /** The file's version now, or `null` if it no longer exists. */
+  currentVersion: string | null;
+}
+
+/**
+ * The conflict a workspace file `PUT` reports through a `412` when its
+ * `If-Match` no longer matches the file's current version — someone else
+ * (the agent, another tab) saved it first. `apiFetch`/`apiFetchText` throw
+ * on any non-2xx, so callers would otherwise only see a generic failure
+ * instead of the version needed to reload or force an overwrite.
+ */
+export function workspaceConflictFromApiError(err: unknown): WorkspaceWriteConflict | null {
+  if (!(err instanceof ApiError) || err.status !== 412) return null;
+  try {
+    const parsed: unknown = JSON.parse(err.body);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof parsed.error === "string" &&
+      "current_version" in parsed &&
+      (typeof parsed.current_version === "string" || parsed.current_version === null)
+    ) {
+      return { error: parsed.error, currentVersion: parsed.current_version };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function putValidated(
+  path: string,
+  contentType: string,
+  body: string,
+  cacheKey: string,
+): Promise<ValidateResponse> {
+  try {
+    return await apiFetch<ValidateResponse>(path, {
+      method: "PUT",
+      headers: { "Content-Type": contentType },
+      body,
+    });
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(cacheKey);
+  }
+}
+
+/**
+ * `PATCH` a JSON diff (see `lib/settings-toml.ts`'s diff builders) and
+ * report the same `{valid, error}` shape a raw-file PUT would. Skips the
+ * request entirely when `diff` has no keys — an empty patch is a no-op, not
+ * a network call.
+ */
+async function patchValidated(
+  path: string,
+  diff: Record<string, unknown>,
+  cacheKey: string,
+): Promise<ValidateResponse> {
+  if (Object.keys(diff).length === 0) {
+    return { valid: true, error: undefined };
+  }
+  try {
+    return await apiFetch<ValidateResponse>(path, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(diff),
+    });
+  } catch (err: unknown) {
+    const validation = validationFromApiError(err);
+    if (validation) return validation;
+    throw err;
+  } finally {
+    invalidate(cacheKey);
   }
 }
 
@@ -90,6 +211,18 @@ export async function fetchChatHistory(): Promise<RecentHistorySegment> {
   throw new Error(
     `unexpected chat history kind "${segment.kind}" — server must return Recent for the base call`,
   );
+}
+
+/**
+ * Fetch the main agent's cumulative token usage totals, for the chat
+ * footer to render correctly on connect/reconnect before the next model
+ * call. Not cached — the WebSocket carries live updates from here on, this
+ * is only the connect-time seed. Callers should degrade quietly on
+ * failure (the footer simply starts blank) rather than surfacing an error
+ * for this quiet, non-critical feature.
+ */
+export async function fetchUsageTotals(): Promise<SessionUsageTotals> {
+  return apiFetch<SessionUsageTotals>("/api/usage");
 }
 
 /**
@@ -219,13 +352,12 @@ export async function fetchConfigRaw(): Promise<string> {
 }
 
 export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/config/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
-  });
-  invalidate(CACHE_KEY_CONFIG_RAW);
-  return result;
+  return putValidated("/api/config/raw", "text/plain", toml, CACHE_KEY_CONFIG_RAW);
+}
+
+/** Merge a diff (from `diffConfigFields`) into `config.toml` on the server. */
+export async function patchConfig(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/config/patch", diff, CACHE_KEY_CONFIG_RAW);
 }
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
@@ -241,13 +373,12 @@ export async function fetchProvidersRaw(): Promise<string> {
 }
 
 export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/providers/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
-  });
-  invalidate(CACHE_KEY_PROVIDERS_RAW);
-  return result;
+  return putValidated("/api/providers/raw", "text/plain", toml, CACHE_KEY_PROVIDERS_RAW);
+}
+
+/** Merge a diff (from `diffProviders`/`modelRoleJson`) into `providers.toml` on the server. */
+export async function patchProviders(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/providers/patch", diff, CACHE_KEY_PROVIDERS_RAW);
 }
 
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
@@ -263,13 +394,12 @@ export async function fetchMcpRaw(): Promise<string> {
 }
 
 export async function putMcpRaw(json: string): Promise<ValidateResponse> {
-  const result = await apiFetch<ValidateResponse>("/api/mcp/raw", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: json,
-  });
-  invalidate(CACHE_KEY_MCP_RAW);
-  return result;
+  return putValidated("/api/mcp/raw", "application/json", json, CACHE_KEY_MCP_RAW);
+}
+
+/** Merge a diff (from `diffMcpServers`) into `mcp.json` on the server. */
+export async function patchMcp(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/mcp/patch", diff, CACHE_KEY_MCP_RAW);
 }
 
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */
@@ -314,6 +444,67 @@ export async function deleteAgentKey(name: string): Promise<void> {
   });
 }
 
+// ── A2A API wrappers ──────────────────────────────────────────────────
+
+/** Live A2A status. Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchA2aStatus(): Promise<A2aStatusResponse> {
+  return apiFetch<A2aStatusResponse>("/api/a2a/status");
+}
+
+/**
+ * The Agent Card as currently served. Throws `ApiError` — including a `503`
+ * (`status` on the error) when the workspace agent card file is invalid,
+ * whose body is the plain-language reason.
+ */
+export async function fetchA2aCard(): Promise<A2aAgentCard> {
+  return apiFetch<A2aAgentCard>("/api/a2a/card");
+}
+
+/** Throws `ApiError` on failure; the caller surfaces it. */
+export async function fetchA2aKeys(): Promise<A2aKeyInfo[]> {
+  const data = await apiFetch<A2aKeysListResponse>("/api/a2a/keys");
+  return data.keys;
+}
+
+export async function createA2aKey(
+  name: string,
+  description: string,
+): Promise<CreateA2aKeyResponse> {
+  return apiFetch<CreateA2aKeyResponse>("/api/a2a/keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description: description || undefined }),
+  });
+}
+
+export async function revokeA2aKey(name: string): Promise<void> {
+  await apiFetchText(`/api/a2a/keys/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
+ * Remote agents from `config/a2a.json` plus any discovered siblings.
+ * Throws `ApiError` on failure; the caller surfaces it.
+ */
+export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
+  return apiFetch<A2aRemoteAgent[]>("/api/a2a/agents");
+}
+
+export async function fetchA2aAgentsRaw(): Promise<string> {
+  return cachedFetch(CACHE_KEY_A2A_AGENTS_RAW, () => apiFetchText("/api/a2a/agents/raw"));
+}
+
+/**
+ * Save `config/a2a.json`. Always saves, even when invalid — the loader
+ * skips an unusable agent entry with a warning and keeps every other agent
+ * running, so the response reports a diagnostic instead of the write being
+ * rejected. Same shape as `putConfigRaw`/`putProvidersRaw`/`putMcpRaw`.
+ */
+export async function putA2aAgentsRaw(content: string): Promise<ValidateResponse> {
+  return putValidated("/api/a2a/agents/raw", "application/json", content, CACHE_KEY_A2A_AGENTS_RAW);
+}
+
 // ── Agent sessions API wrappers ─────────────────────────────────────
 
 /**
@@ -328,12 +519,15 @@ export async function fetchSessions(query: {
   before?: string;
   limit?: number;
   address?: string;
+  /** Only sessions that workbench artifact started, not sessions those spawned in turn. */
+  artifact?: string;
 }): Promise<SessionListResponse> {
   const params = new URLSearchParams();
   if (query.category) params.set("category", query.category);
   if (query.before) params.set("before", query.before);
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.address) params.set("address", query.address);
+  if (query.artifact) params.set("artifact", query.artifact);
   const qs = params.toString();
   return apiFetch<SessionListResponse>(`/api/sessions${qs ? `?${qs}` : ""}`);
 }
@@ -350,21 +544,49 @@ export async function fetchSessionTranscript(runId: string): Promise<SessionTran
   );
 }
 
-// ── Workbench API wrappers ──────────────────────────────────────────
+// ── Scheduled view API wrappers ──────────────────────────────────────
 
-/** Every workbench tool, most recently modified first. Not cached: tools change live. */
-export async function fetchWorkbenchTools(): Promise<WorkbenchToolSummary[]> {
-  return apiFetch<WorkbenchToolSummary[]>("/api/workbench/tools");
+/** Every pulse in HEARTBEAT.yml. Not cached: run state changes live. */
+export async function fetchScheduledPulses(): Promise<PulseInfo[]> {
+  return apiFetch<PulseInfo[]>("/api/scheduled/pulses");
 }
 
-/** Where tools are served, locally and through the relay. Not cached: the relay connection changes. */
+/** Flip a pulse's `enabled` field in HEARTBEAT.yml. Throws `ApiError` (404 if the pulse is gone). */
+export async function setPulseEnabled(name: string, enabled: boolean): Promise<void> {
+  await apiFetch<unknown>(`/api/scheduled/pulses/${encodeURIComponent(name)}/enabled`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+/** Every pending scheduled action. Not cached: it changes as actions fire. */
+export async function fetchScheduledActions(): Promise<ActionInfo[]> {
+  return apiFetch<ActionInfo[]>("/api/scheduled/actions");
+}
+
+/** Cancel a pending scheduled action. Throws `ApiError` (404 if already gone). */
+export async function cancelScheduledAction(id: string): Promise<void> {
+  await apiFetch<unknown>(`/api/scheduled/actions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+// ── Workbench API wrappers ──────────────────────────────────────────
+
+/** Every workbench artifact, most recently modified first. Not cached: artifacts change live. */
+export async function fetchWorkbenchArtifacts(): Promise<ArtifactSummary[]> {
+  return apiFetch<ArtifactSummary[]>("/api/workbench/artifacts");
+}
+
+/** Where artifacts are served, locally and through the relay. Not cached: the relay connection changes. */
 export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
-/** Delete a tool and its data files. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkbenchTool(name: string): Promise<void> {
-  await apiFetch<unknown>(`/api/workbench/tools/${encodeURIComponent(name)}`, {
+/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
+export async function deleteWorkbenchArtifact(name: string): Promise<void> {
+  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
@@ -376,16 +598,55 @@ export async function fetchWorkspaceFiles(path?: string): Promise<WorkspaceEntry
   return apiFetch<WorkspaceEntry[]>(`/api/workspace/files${params}`);
 }
 
-export async function fetchWorkspaceFile(path: string): Promise<string> {
-  return apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+/** A workspace file's content plus the version to send back as `If-Match`. */
+export interface WorkspaceFileRead {
+  content: string;
+  version: string;
 }
 
-export async function putWorkspaceFile(path: string, content: string): Promise<void> {
-  await apiFetch<unknown>("/api/workspace/file", {
+export async function fetchWorkspaceFile(path: string): Promise<WorkspaceFileRead> {
+  const resp = await checkOk(await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`));
+  return { content: await resp.text(), version: resp.headers.get("etag") ?? "" };
+}
+
+/**
+ * Writes with `If-Match: version` so a concurrent edit (the agent, another
+ * tab) is never silently overwritten: a stale version throws `ApiError`
+ * with status `412` — see `workspaceConflictFromApiError`. Pass `null` only
+ * for a brand-new file that has no version yet. `diagnostics` on the
+ * response names what's wrong with an invalid strictly-parsed file
+ * (HEARTBEAT.yml, say) — the write still succeeds either way.
+ */
+export async function putWorkspaceFile(
+  path: string,
+  content: string,
+  version: string | null,
+): Promise<WorkspaceWriteResponse> {
+  return apiFetch<WorkspaceWriteResponse>("/api/workspace/file", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(version ? { "If-Match": version } : {}),
+    },
     body: JSON.stringify({ path, content }),
   });
+}
+
+/** Diagnostics for `content` as if it were saved to `path`, without writing
+ * anything. Empty means either the content is clean or `path` isn't one of
+ * the strictly-parsed files the server checks. Graceful fallback: a network
+ * or server error returns no diagnostics rather than interrupting typing. */
+export async function validateWorkspaceFile(path: string, content: string): Promise<Diagnostic[]> {
+  try {
+    const result = await apiFetch<WorkspaceValidateResponse>("/api/workspace/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, content }),
+    });
+    return result.diagnostics;
+  } catch {
+    return [];
+  }
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────

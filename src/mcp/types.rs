@@ -49,4 +49,9 @@ pub struct McpServerEntry {
     /// time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
+    /// Optional per-server timeout (seconds) for tool calls to this server.
+    /// `None` (the default) means a call runs until it finishes or the user
+    /// or agent stops the turn — there is no automatic cutoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }

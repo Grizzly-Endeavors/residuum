@@ -15,6 +15,7 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = "0.25"
 
 # Error handling
 anyhow = "1"
@@ -44,10 +45,20 @@ sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 http = "1"
 regex = "1"
+globset = "0.4.20"
 rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde_yaml_ng = "0.10"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 fd-lock = "4"
+
+# A2A protocol (server-side foundation: types, JSON-RPC/REST routers, task store;
+# client: agent card resolution, protocol client factory, auth interceptors)
+a2a = { package = "a2a-lf", version = "0.3.1", default-features = false }
+a2a-server = { package = "a2a-server-lf", version = "0.4.4", default-features = false }
+a2a-client = { package = "a2a-client-lf", version = "0.2.5", default-features = false }
+
+# Workspace change feed (OS file notifications)
+notify = "8.2"
 
 # Logging
 tracing = "0.1"
@@ -86,6 +97,12 @@ teloxide = { version = "0.17", default-features = false, features = ["rustls"] }
 
 # TypeScript type generation (zero-cost at runtime, derive-only)
 ts-rs = { version = "12.0", features = ["serde-json-impl"] }
+
+# Workspace checkpoints: pure-Rust git object database and refs (no system
+# git binary, no C toolchain to cross-compile), plus unified-diff rendering
+# for checkpoint diffs (gix has no diff-formatting of its own).
+gix = "0.87.1"
+similar = "3.2.0"
 
 # macOS native notifications (Apple Silicon only)
 [target.'cfg(target_os = "macos")'.dependencies]

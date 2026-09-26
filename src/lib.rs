@@ -1,10 +1,14 @@
+pub mod a2a;
 pub mod actions;
 pub mod agent;
 pub mod agent_keys;
 pub mod background;
 pub mod bus;
+pub mod checkpoints;
 pub mod config;
 pub mod daemon;
+pub mod diagnostics;
+pub(crate) mod features;
 pub mod gateway;
 pub mod inbox;
 pub mod inference;

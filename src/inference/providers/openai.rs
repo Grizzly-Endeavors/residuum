@@ -15,7 +15,7 @@ use crate::inference::http::{
 use crate::inference::retry::{RetryConfig, with_retry};
 use crate::inference::{
     CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
-    ResponseFormat, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    ResponseFormat, StopReason, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// Fireworks response header carrying the prompt tokens served from cache.
@@ -206,6 +206,8 @@ impl OpenAiClient {
             )
         })?;
 
+        let finish_reason = choice.finish_reason;
+
         // OpenAI uses null for content when tool_calls are present
         let content = choice.message.content.unwrap_or_default();
 
@@ -233,6 +235,7 @@ impl OpenAiClient {
 
         let mut resp = InferenceResponse::new(content, tool_calls);
         resp.usage = usage;
+        resp.stop_reason = finish_reason.as_deref().map(map_stop_reason);
         info!(
             model = %request.model,
             content_len = resp.content.len(),
@@ -520,6 +523,18 @@ struct OpenAiPromptTokensDetails {
 #[derive(Deserialize)]
 struct ChatCompletionChoice {
     message: OpenAiResponseMessage,
+    finish_reason: Option<String>,
+}
+
+/// Map `OpenAI`'s `finish_reason` to the provider-agnostic [`StopReason`].
+fn map_stop_reason(raw: &str) -> StopReason {
+    match raw {
+        "stop" => StopReason::EndTurn,
+        "length" => StopReason::MaxTokens,
+        "tool_calls" | "function_call" => StopReason::ToolUse,
+        "content_filter" => StopReason::ContentFilter,
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -862,6 +877,77 @@ mod tests {
         );
         assert!(response.tool_calls.is_empty(), "should have no tool calls");
         assert!(response.is_complete(), "text-only response is complete");
+        assert_eq!(
+            response.stop_reason, None,
+            "a response with no finish_reason field must parse, not error"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_length_maps_to_truncation() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "cut off mid-sen"
+                    },
+                    "finish_reason": "length"
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "gpt-4");
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.stop_reason, Some(StopReason::MaxTokens));
+        assert!(
+            response.was_truncated(),
+            "length must be reported as a truncation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reason_stop_maps_to_end_turn() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "done"
+                    },
+                    "finish_reason": "stop"
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "gpt-4");
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
+        assert!(!response.was_truncated());
     }
 
     #[tokio::test]

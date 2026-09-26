@@ -11,12 +11,6 @@ use mime_guess;
 
 use crate::inference::ImageData;
 
-/// Maximum attachment size in bytes (25 MB — Discord's own limit).
-///
-/// Shared with the user inbox's attachment cap (`crate::inbox::copy_attachments`)
-/// so the two features enforce one number, not two.
-pub(crate) const MAX_ATTACHMENT_SIZE: u32 = 25 * 1024 * 1024;
-
 /// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
 
@@ -119,8 +113,10 @@ pub struct SavedAttachment {
 
 /// Download an attachment to the inbox directory.
 ///
-/// Files are saved as `{timestamp}_{filename}` to prevent collisions.
-/// Attachments larger than 25 MB are skipped.
+/// Files are saved as `{timestamp}_{filename}` to prevent collisions. There
+/// is no size cap here: the file already exists on the sending platform
+/// (which enforced its own upload limit, if any, when it was sent), so
+/// downloading it is just an HTTP fetch with no platform limit of its own.
 ///
 /// # Errors
 ///
@@ -130,13 +126,6 @@ pub async fn download_attachment(
     url: &str,
     inbox_dir: &Path,
 ) -> Result<SavedAttachment, String> {
-    if info.size > MAX_ATTACHMENT_SIZE {
-        return Err(format!(
-            "attachment '{}' exceeds 25 MB limit ({} bytes)",
-            info.filename, info.size,
-        ));
-    }
-
     let response = reqwest::get(url)
         .await
         .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename))?
@@ -154,25 +143,17 @@ pub async fn download_attachment(
 /// Save already-downloaded attachment bytes to the inbox directory.
 ///
 /// For interfaces whose files need an authenticated fetch the caller performs.
-/// Enforces the same 25 MB limit and `{timestamp}_{filename}` naming as
-/// [`download_attachment`].
+/// Uses the same `{timestamp}_{filename}` naming as [`download_attachment`],
+/// and likewise has no size cap of its own.
 ///
 /// # Errors
 ///
-/// Returns an error if the attachment is too large or the file write fails.
+/// Returns an error if the file write fails.
 pub async fn save_attachment_bytes(
     info: &AttachmentInfo,
     bytes: &[u8],
     inbox_dir: &Path,
 ) -> Result<SavedAttachment, String> {
-    if bytes.len() > MAX_ATTACHMENT_SIZE as usize {
-        return Err(format!(
-            "attachment '{}' exceeds 25 MB limit ({} bytes)",
-            info.filename,
-            bytes.len(),
-        ));
-    }
-
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let saved_name = format!("{timestamp}_{}", info.filename);
     let local_path = inbox_dir.join(&saved_name);
@@ -355,20 +336,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skip_oversized_attachment() {
+    async fn large_attachment_is_not_rejected_for_its_size() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Downloading an attachment is just an HTTP fetch — the sending
+        // platform already enforced its own upload limit, if any. There is
+        // no size cap here, unlike the old 25 MB blanket refusal.
+        let mock_server = MockServer::start().await;
+        let body = vec![0_u8; 30 * 1024 * 1024];
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&mock_server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{}/file", mock_server.uri());
         let info = AttachmentInfo {
             filename: "huge.bin".to_string(),
-            size: MAX_ATTACHMENT_SIZE + 1,
+            size: 30 * 1024 * 1024,
             content_type: None,
         };
-        let dir = tempfile::tempdir().unwrap();
-        let result = download_attachment(&info, "", dir.path()).await;
-        assert!(result.is_err(), "should reject oversized attachment");
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("exceeds 25 MB"),
-            "error should mention size limit: {err}"
-        );
+        let saved = download_attachment(&info, &url, dir.path())
+            .await
+            .expect("a large attachment should be accepted");
+        let saved_len = tokio::fs::metadata(&saved.local_path).await.unwrap().len();
+        assert_eq!(saved_len, body.len() as u64);
     }
 
     #[test]

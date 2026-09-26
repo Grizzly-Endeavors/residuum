@@ -297,6 +297,60 @@
   border-top: 1px solid rgba(192, 57, 43, 0.3);
 }
 
+/* ── Diagnostics (strictly-parsed file problems) ─────────────────────── */
+
+.workspace-diagnostics {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+
+.workspace-diagnostic {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.workspace-diagnostic:last-child {
+  border-bottom: none;
+}
+
+.workspace-diagnostic-severity {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.workspace-diagnostic-error .workspace-diagnostic-severity {
+  color: #e8a0a0;
+}
+
+.workspace-diagnostic-warning .workspace-diagnostic-severity {
+  color: var(--moss-hover);
+}
+
+.workspace-diagnostic-location {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.workspace-diagnostic-message {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* ── File tree ────────────────────────────────────────────────────────── */
 
 .workspace-tree {

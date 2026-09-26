@@ -10,7 +10,7 @@ use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     AttachmentInfo, finalize_attachment, format_failed_attachment_line, save_attachment_bytes,
 };
-use crate::interfaces::types::MessageOrigin;
+use crate::interfaces::types::{ConversationContext, MessageOrigin};
 
 use super::TeamsRuntime;
 use super::activity::{Activity, Attachment, ChannelAccount, ConversationKind};
@@ -213,7 +213,15 @@ async fn handle_message(rt: &TeamsRuntime, activity: Activity) {
         return;
     };
     if let Some(command) = incoming.text.strip_prefix('/') {
-        let reply = run_command(rt, command, &standing, &incoming.sender_name).await;
+        let reply = run_command(
+            rt,
+            command,
+            &standing,
+            &incoming.sender_name,
+            incoming.reference.kind,
+            &incoming.base_id,
+        )
+        .await;
         rt.send_text(&incoming.reference, &reply).await;
         return;
     }
@@ -270,6 +278,8 @@ async fn run_command(
     command: &str,
     standing: &Standing,
     sender_name: &str,
+    kind: ConversationKind,
+    conversation_id: &str,
 ) -> String {
     if !matches!(standing, Standing::Owner) {
         return "Only my owner can run commands.".to_string();
@@ -282,10 +292,24 @@ async fn run_command(
         reload_tx: &rt.reload_tx,
         command_tx: &rt.command_tx,
         stop_tx: &rt.stop_tx,
+        session_registry: &rt.session_registry,
         inbox_dir: &rt.inbox_dir,
         tz: rt.tz,
     };
-    crate::interfaces::run_chat_command(name, args, &dispatch, super::ENDPOINT, sender_name).await
+    let conversation = ConversationContext {
+        id: conversation_id.to_string(),
+        kind,
+        is_owner: true,
+    };
+    crate::interfaces::run_chat_command(
+        name,
+        args,
+        &dispatch,
+        super::ENDPOINT,
+        sender_name,
+        Some(&conversation),
+    )
+    .await
 }
 
 async fn publish_to_agent(rt: &TeamsRuntime, incoming: Incoming, is_owner: bool) {
@@ -568,7 +592,8 @@ mod tests {
             http,
             store: TeamsStore::load(dir.path().join("teams_state.json"))
                 .await
-                .unwrap(),
+                .unwrap()
+                .0,
             buffer: ContextBuffer::new(10),
             reply_targets: crate::interfaces::reply_targets::ReplyTargets::default(),
             inbound_tx,
@@ -576,6 +601,7 @@ mod tests {
             reload_tx: tokio::sync::watch::channel(crate::gateway::types::ReloadSignal::Root).0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
+            session_registry: Arc::new(crate::background::registry::SessionRegistry::new()),
             inbox_dir: dir.path().to_path_buf(),
             tz: chrono_tz::UTC,
         });

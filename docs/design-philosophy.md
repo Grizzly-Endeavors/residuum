@@ -30,11 +30,15 @@ OpenClaw's memory cliff — where context from two days ago becomes invisible un
 
 OM fixes this by keeping compressed history in the context window at all times. The Projects system fixes this by giving the agent a scannable index of active and archived work — what projects exist, what's in each, and what capabilities they carry — without bulk-loading contents. The principle is the same: don't make the agent guess that it should look for something. Make relevant context visible by default and let the agent manage scope.
 
-## Autonomy with transparency
+## Make failure safe, not impossible
 
-The agent should act on its own — activating contexts, archiving completed projects, adjusting alert behavior, creating new PARA entries. Requiring user permission for routine organizational decisions defeats the purpose of having an agent.
+Good engineers try to anticipate and prevent every failure. Great engineers assume it will fail and make failure safe.
 
-But every autonomous action should be visible. Files the user can read and edit. Mentions when something gets archived. Alert behavior documented in a markdown file, not buried in code. The agent has broad autonomy; the user has full visibility.
+The agent should act on its own: activating contexts, archiving completed projects, adjusting alert behavior, creating new PARA entries, and working through long-running tasks without checking in. Requiring user permission for routine decisions defeats the purpose of having an agent, and agents are trusted with more every year. Residuum's default is open.
+
+An agent that does long-running work on its own will hit problems mid-run. The goal isn't a system that can't fail; it's one where failure is visible, contained, and recoverable. Every autonomous action should be visible: files the user can read and edit, a mention when something gets archived, a running view of how long the agent has been working and what it has spent. The user should be able to stop the agent mid-run and undo what it did. The agent has broad autonomy; the user has full visibility and the final say.
+
+Hard limits are reserved for failures that have actually happened. A limit built around an imagined risk blocks legitimate work, and it fails in ways that are harder to see than the problem it was meant to prevent. Users who want more oversight can opt into the guards they care about; Residuum doesn't impose them.
 
 ## File-first, always
 

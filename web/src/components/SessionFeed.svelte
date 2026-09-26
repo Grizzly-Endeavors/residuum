@@ -9,6 +9,9 @@
     items,
     verbose,
     working,
+    turnStartedAt = null,
+    turnOutputTokens = 0,
+    turnHasUsage = false,
     loading,
     loadError,
     onRetry,
@@ -16,6 +19,9 @@
     items: FeedItem[];
     verbose: boolean;
     working: boolean;
+    turnStartedAt?: number | null;
+    turnOutputTokens?: number;
+    turnHasUsage?: boolean;
     loading: boolean;
     loadError: string | null;
     onRetry: () => void;
@@ -72,7 +78,11 @@
           <p class="chat-feed-empty">No messages in this run yet.</p>
         {/each}
         {#if working}
-          <ThinkingIndicator />
+          <ThinkingIndicator
+            since={turnStartedAt}
+            outputTokens={turnOutputTokens}
+            hasUsage={turnHasUsage}
+          />
         {/if}
       {/if}
     </div>

@@ -1,6 +1,6 @@
 ---
 name: residuum-system
-description: Reference documentation for all Residuum workspace systems — memory, heartbeats, inbox, actions, skills, MCP, notifications, background tasks, and subconscious.
+description: Reference documentation for all Residuum workspace systems — config, memory, heartbeats, inbox, actions, skills, MCP, notifications, background tasks, and subconscious.
 ---
 
 # Residuum System Reference
@@ -11,7 +11,9 @@ This skill provides reference documentation for every major workspace system. Ac
 
 | System | Tools | Config File | Reference |
 |--------|-------|-------------|-----------|
+| Config | `write_file`, `edit_file` | `config.toml`, `providers.toml` | [config](references/config.md) |
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
+| Checkpoints | `workspace_history`, `workspace_restore` | `~/.residuum/checkpoints/` (outside the workspace) | [checkpoints](references/checkpoints.md) |
 | Wiki | `read_file`, `write_file`, `edit_file` | `wiki/` | the `wiki` skill |
 | Workbench | `read_file`, `write_file`, `edit_file` | `workbench/` | the `workbench` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
@@ -24,6 +26,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
 | Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
+| A2A | `list_agents`, `message_agent`, `stop_agent` (address `a2a:<name>`); `a2a_task_update` (session-only, in `a2a` conversation sessions) | `config/agent-card.json`, `config/a2a.json`, `[a2a]` in config.toml | [a2a](references/a2a.md) |
 
 ## Workspace Directory Layout
 
@@ -50,7 +53,7 @@ workspace/
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run
 ├── skills/                  # Workspace-level skills (also sub-agent roles)
-├── workbench/               # Interactive HTML tools shown in the web UI's Workbench
+├── workbench/               # Interactive HTML artifacts shown in the web UI's Workbench
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
 └── inbox/                   # Active inbox items

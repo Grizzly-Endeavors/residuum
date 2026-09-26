@@ -68,9 +68,9 @@ impl ConversationRouter {
         let spawn = ConversationSpawn {
             source_label: format!("{}:{label}", message.origin.endpoint),
             model_tier: self.model_tier,
+            skill: None,
         };
 
-        let conversation_id = conversation.id.clone();
         match self
             .messenger
             .deliver_conversation(&address, message, spawn)
@@ -86,22 +86,11 @@ impl ConversationRouter {
                 tracing::info!(address = %addr, "resumed a completed conversation session");
             }
             Ok(super::messaging::ConversationDeliveryOutcome::Queued(addr)) => {
-                tracing::debug!(address = %addr, "queued conversation message for a completing session");
-            }
-            Err(super::messaging::SendError::Busy(addr)) => {
-                // Unlike every other outcome above, a busy target drops this
-                // participant's message on the floor with nothing else to
-                // show for it — the interface already delivered it, and
-                // there's no resume path to fall back to (the target is
-                // live, just saturated). Without a notice, main never learns
-                // it happened.
-                crate::interfaces::notify_main_of_undeliverable_conversation_message(
-                    &self.messenger.publisher(),
-                    &addr,
-                    &conversation_id,
-                    "the session's interrupt channel is saturated",
-                )
-                .await;
+                // Covers both a saturated channel and a completing run: a
+                // detached task retries delivery until it succeeds (see
+                // `AgentMessenger::deliver_conversation`) — this participant's
+                // message is never dropped for either reason.
+                tracing::debug!(address = %addr, "conversation message queued for retried delivery");
             }
             Err(e) => {
                 tracing::error!(address = %address, error = %e, "failed to route conversation message to its session");
@@ -228,8 +217,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_busy_session_notifies_main_instead_of_silently_dropping_the_message() {
-        let (router, bus_handle, registry) = router();
+    async fn a_busy_session_still_delivers_the_user_message_via_retry() {
+        // Regression: a saturated channel used to make the router drop this
+        // participant's message on the floor (notifying main it happened,
+        // but never actually delivering it). A chat user's message must
+        // never be dropped for capacity, unlike an agent-to-agent message
+        // (which does get a visible, and acceptable, Busy refusal) — there
+        // is nobody on the other end of a chat message to hand a refusal
+        // to, so this must keep retrying until the channel drains, exactly
+        // the way a live session's own tool loop drains it continuously.
+        let (router, _bus_handle, registry) = router();
         let address = conversation_session_address("discord", "chan-1");
         let info = crate::background::registry::SessionInfo {
             address: address.clone(),
@@ -248,50 +245,100 @@ mod tests {
                 conversation_id: "chan-1".to_string(),
             }),
             started_at: chrono::Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
         };
-        registry
+        // The receiver must stay alive and be drained below like a live
+        // session's own tool loop would — dropping it here would close the
+        // channel instead of merely saturating it, a different condition
+        // (`DeliverOutcome::NotLive`, not `Full`) that this test isn't
+        // exercising.
+        let mut rx = registry
             .register(info, tokio_util::sync::CancellationToken::new())
             .unwrap();
         // Saturate the session's interrupt channel directly so the router's
         // own delivery attempt below finds it full.
         for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY {
-            registry.deliver(
-                &address,
-                crate::agent::interrupt::Interrupt::UserMessage(inbound(
-                    "discord",
-                    "chan-1",
-                    Some("#builds"),
-                )),
-            );
+            assert!(matches!(
+                registry.deliver(
+                    &address,
+                    crate::agent::interrupt::Interrupt::UserMessage(inbound(
+                        "discord",
+                        "chan-1",
+                        Some("#builds"),
+                    )),
+                ),
+                crate::background::registry::DeliverOutcome::Delivered
+            ));
         }
 
-        let mut main_sub: crate::bus::Subscriber<crate::bus::MessageEvent> = bus_handle
-            .subscribe(crate::bus::topics::UserMessage)
-            .await
+        let mut new_message = inbound("discord", "chan-1", Some("#builds"));
+        new_message.id = "the-new-message".to_string();
+        new_message.content = "can anyone see this?".to_string();
+        router.route(new_message).await;
+
+        // Drain the channel the way a live turn's own tool loop would, one
+        // interrupt at a time, freeing capacity for the router's detached
+        // retry task to land the new message.
+        let mut delivered = false;
+        for _ in 0..crate::background::registry::INTERRUPT_CHANNEL_CAPACITY + 5 {
+            let Ok(Some(interrupt)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await
+            else {
+                break;
+            };
+            if let crate::agent::interrupt::Interrupt::UserMessage(m) = interrupt
+                && m.id == "the-new-message"
+            {
+                assert_eq!(m.content, "can anyone see this?");
+                delivered = true;
+                break;
+            }
+        }
+        assert!(
+            delivered,
+            "the new user message must eventually be delivered, never dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_completing_session_queues_the_message_without_blocking_the_router() {
+        // The `Completing` branch (a run whose teardown is in progress)
+        // must keep working exactly as before this fix — only the `Full`
+        // handling changed. The run never actually clears in this test, so
+        // this only asserts `route()` itself returns promptly rather than
+        // blocking on however long that teardown takes.
+        let (router, _bus_handle, registry) = router();
+        let address = conversation_session_address("discord", "chan-2");
+        let info = crate::background::registry::SessionInfo {
+            address: address.clone(),
+            run_id: "run-1".to_string(),
+            category: crate::background::registry::SessionCategory::External,
+            trigger: crate::bus::EventTrigger::Conversation,
+            source_label: "discord:#builds".to_string(),
+            state: crate::background::registry::SessionState::Completing,
+            spawner: None,
+            depth: 1,
+            purpose: "chat".to_string(),
+            agent_skill: None,
+            model_tier: crate::config::BackgroundModelTier::Medium,
+            conversation_target: Some(crate::bus::ConversationTarget {
+                endpoint: "discord".to_string(),
+                conversation_id: "chan-2".to_string(),
+            }),
+            started_at: chrono::Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals::default(),
+            overlap: None,
+        };
+        registry
+            .register(info, tokio_util::sync::CancellationToken::new())
             .unwrap();
 
-        router
-            .route(inbound("discord", "chan-1", Some("#builds")))
-            .await;
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), main_sub.recv())
-            .await
-            .expect("main should be notified promptly, not left to find out never")
-            .unwrap()
-            .unwrap();
-        assert!(
-            event.content.contains(&address.to_string()),
-            "notice should name the busy session, got: {}",
-            event.content
-        );
-        assert!(
-            event.content.contains("chan-1"),
-            "notice should name the conversation, got: {}",
-            event.content
-        );
-        assert!(
-            event.origin.belongs_to_main(),
-            "the notice must reach main, never a conversation session"
-        );
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            router.route(inbound("discord", "chan-2", Some("#builds"))),
+        )
+        .await
+        .expect("route() must hand off to a detached task, never block on a completing run");
     }
 }
