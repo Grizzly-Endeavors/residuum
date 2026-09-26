@@ -11,12 +11,16 @@ mod submit;
 
 pub use sanitize::{redact_agent_key_values, sanitize_spans};
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use opentelemetry_sdk::trace::SpanExporter;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::config::{OtelEndpoint, TracingConfig};
 use crate::util::telemetry::{CompletedSpan, SpanBufferHandle};
@@ -174,12 +178,72 @@ pub struct SubmissionReceipt {
     pub submitted_at: String,
 }
 
+/// In-memory rate limiter for [`TracingService::on_error`], so a tight
+/// error loop can't burn through the relay's 5-per-hour-per-IP submission
+/// budget. Admits at most one report per minute for a given error context,
+/// and at most five reports total in any rolling hour.
+struct ErrorReportLimiter {
+    /// Last admitted time per hash of `error_context`.
+    last_admitted: HashMap<u64, Instant>,
+    /// Timestamps of reports admitted within the rolling hourly window.
+    hourly: VecDeque<Instant>,
+}
+
+impl ErrorReportLimiter {
+    /// Minimum gap between admitted reports for the same error context.
+    const PER_KEY_INTERVAL: Duration = Duration::from_secs(60);
+    /// Maximum admitted reports in any rolling hour, across all contexts.
+    const HOURLY_CAP: usize = 5;
+    const HOURLY_WINDOW: Duration = Duration::from_secs(3600);
+
+    fn new() -> Self {
+        Self {
+            last_admitted: HashMap::new(),
+            hourly: VecDeque::new(),
+        }
+    }
+
+    /// Returns `true` if a report for `error_context` may be submitted now,
+    /// and records the admission. `now` is threaded through explicitly so
+    /// tests can exercise the boundary without a real 60-minute wait.
+    fn admit(&mut self, error_context: &str, now: Instant) -> bool {
+        while let Some(&oldest) = self.hourly.front() {
+            if now.duration_since(oldest) > Self::HOURLY_WINDOW {
+                self.hourly.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.hourly.len() >= Self::HOURLY_CAP {
+            return false;
+        }
+
+        // Bounds map growth under a loop that varies the error context.
+        self.last_admitted
+            .retain(|_, last| now.duration_since(*last) < Self::PER_KEY_INTERVAL);
+
+        let mut hasher = DefaultHasher::new();
+        error_context.hash(&mut hasher);
+        let key = hasher.finish();
+
+        if self.last_admitted.contains_key(&key) {
+            return false;
+        }
+
+        self.last_admitted.insert(key, now);
+        self.hourly.push_back(now);
+        true
+    }
+}
+
 /// The tracing service — owns runtime state and the span buffer handle.
 pub struct TracingService {
     state: Arc<RwLock<TracingState>>,
     span_buffer: SpanBufferHandle,
     /// Source of the agent-key redactor applied to every export.
     agent_keys: Option<crate::agent_keys::SharedAgentKeys>,
+    /// Rate limiter guarding [`Self::on_error`] submissions.
+    error_report_limiter: Mutex<ErrorReportLimiter>,
 }
 
 /// Replace agent-key values in `spans` using `agent_keys`' current redactor.
@@ -204,6 +268,7 @@ impl TracingService {
             })),
             span_buffer,
             agent_keys: None,
+            error_report_limiter: Mutex::new(ErrorReportLimiter::new()),
         }
     }
 
@@ -477,16 +542,54 @@ impl TracingService {
 
     /// Called from error paths to auto-report if enabled.
     ///
-    /// This is a fire-and-forget operation — errors are logged, not propagated.
-    pub async fn on_error(&self, error_context: &str) {
+    /// Builds a synthetic [`BugReport`] (severity `broken`) from
+    /// `error_context` and submits it through the same path as a manual
+    /// report, attaching the current span buffer. Submissions are rate
+    /// limited (see [`ErrorReportLimiter`]) so a tight error loop can't
+    /// exhaust the relay's per-IP submission budget; suppressed reports are
+    /// logged at debug level.
+    ///
+    /// This is fire-and-forget: failures are logged, never propagated, and
+    /// never block the caller's error path.
+    pub async fn on_error(&self, error_context: &str, client: ClientContext) {
         let state = self.state.read().await;
         if !state.config.auto_error_reporting {
             return;
         }
         drop(state);
-        // Logs the trigger and returns without submitting anything. Manual
-        // submission (`send_bug_report`/`send_feedback`) is the live path.
-        tracing::debug!(context = error_context, "auto error reporting triggered");
+
+        let admitted = self
+            .error_report_limiter
+            .lock()
+            .await
+            .admit(error_context, Instant::now());
+        if !admitted {
+            tracing::debug!(
+                context = error_context,
+                "auto error report suppressed by rate limit"
+            );
+            return;
+        }
+
+        let report = BugReport {
+            what_happened: error_context.to_string(),
+            what_expected: "no error".to_string(),
+            what_doing: "auto-reported (no user input)".to_string(),
+            severity: Severity::Broken,
+            client,
+        };
+
+        match self.send_bug_report(report).await {
+            Ok(receipt) => {
+                tracing::info!(
+                    public_id = %receipt.public_id,
+                    "auto error report submitted"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, context = error_context, "auto error report submission failed");
+            }
+        }
     }
 }
 
@@ -523,5 +626,70 @@ async fn export_to_endpoint(
                 error: Some(format!("failed to build exporter: {e}")),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limiter_admits_first_report_for_a_context() {
+        let mut limiter = ErrorReportLimiter::new();
+        assert!(limiter.admit("boom", Instant::now()));
+    }
+
+    #[test]
+    fn limiter_blocks_repeat_of_same_context_within_a_minute() {
+        let mut limiter = ErrorReportLimiter::new();
+        let t0 = Instant::now();
+        assert!(limiter.admit("boom", t0));
+        assert!(!limiter.admit("boom", t0 + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn limiter_readmits_same_context_after_the_per_key_interval() {
+        let mut limiter = ErrorReportLimiter::new();
+        let t0 = Instant::now();
+        assert!(limiter.admit("boom", t0));
+        assert!(limiter.admit("boom", t0 + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn limiter_treats_distinct_contexts_independently() {
+        let mut limiter = ErrorReportLimiter::new();
+        let t0 = Instant::now();
+        assert!(limiter.admit("boom", t0));
+        assert!(limiter.admit("crash", t0));
+    }
+
+    #[test]
+    fn limiter_caps_total_admissions_per_hour_across_contexts() {
+        let mut limiter = ErrorReportLimiter::new();
+        let t0 = Instant::now();
+        for i in 0..ErrorReportLimiter::HOURLY_CAP {
+            assert!(
+                limiter.admit(&format!("err-{i}"), t0),
+                "admission {i} should succeed"
+            );
+        }
+        assert!(
+            !limiter.admit("one-too-many", t0),
+            "6th distinct context within the hour must be suppressed by the hourly cap"
+        );
+    }
+
+    #[test]
+    fn limiter_hourly_cap_resets_after_the_window_elapses() {
+        let mut limiter = ErrorReportLimiter::new();
+        let t0 = Instant::now();
+        for i in 0..ErrorReportLimiter::HOURLY_CAP {
+            assert!(limiter.admit(&format!("err-{i}"), t0));
+        }
+        assert!(!limiter.admit("still-blocked", t0));
+        assert!(limiter.admit(
+            "after-window",
+            t0 + ErrorReportLimiter::HOURLY_WINDOW + Duration::from_secs(1)
+        ));
     }
 }
