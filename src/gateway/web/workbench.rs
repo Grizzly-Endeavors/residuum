@@ -34,6 +34,10 @@ pub(crate) struct WorkbenchApiState {
 struct DeleteArtifactResponse {
     /// Entries removed: the page or folder (`name/`) and any `<name>.*` data files.
     removed: Vec<String>,
+    /// Checkpoint holding the workspace as it was before this delete.
+    /// `None` when that checkpoint could not be recorded; the delete still
+    /// succeeded, and the UI should not offer Undo.
+    checkpoint_id: Option<String>,
 }
 
 pub(crate) fn workbench_api_router(state: WorkbenchApiState) -> axum::Router {
@@ -97,9 +101,9 @@ async fn api_workbench_artifact_delete(
     State(state): State<WorkbenchApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteArtifactResponse>, (StatusCode, String)> {
-    state
+    let checkpoint_id = state
         .checkpoints
-        .checkpoint_workspace_before_action(crate::checkpoints::CheckpointContext::system(
+        .checkpoint_workspace_id_before_action(crate::checkpoints::CheckpointContext::system(
             crate::checkpoints::CheckpointTrigger::PreAction,
             format!("delete workbench artifact {name}"),
         ))
@@ -107,7 +111,10 @@ async fn api_workbench_artifact_delete(
     match workbench::delete_artifact(&state.dir, &name).await {
         Ok(removed) => {
             tracing::info!(artifact = %name, files = ?removed, "deleted workbench artifact");
-            Ok(Json(DeleteArtifactResponse { removed }))
+            Ok(Json(DeleteArtifactResponse {
+                removed,
+                checkpoint_id,
+            }))
         }
         Err(e @ ArtifactDeleteError::InvalidName(_)) => {
             Err((StatusCode::BAD_REQUEST, e.to_string()))
@@ -280,5 +287,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted_again.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_returns_the_checkpoint_taken_before_the_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let workbench = state.workspace_dir.join("workbench");
+        std::fs::create_dir_all(&workbench).unwrap();
+        std::fs::write(workbench.join("chart.html"), "<title>My Chart</title>").unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
+        let router = workbench_api_router(WorkbenchApiState {
+            dir: workbench,
+            serving: WorkbenchServing::Running { port: 7702 },
+            tunnel_status_rx: rx,
+            checkpoints: std::sync::Arc::clone(&state.checkpoints),
+        });
+
+        let deleted = router
+            .oneshot(
+                Request::delete("/api/workbench/artifacts/chart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK, "delete should succeed");
+        let body = body_json(deleted).await;
+        let id = body
+            .get("checkpoint_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("delete should name the checkpoint taken before it")
+            .to_string();
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Workspace,
+                id.clone(),
+                "workbench/chart.html".to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "the returned checkpoint must still contain the artifact"
+        );
+
+        std::fs::write(state.workspace_dir.join("later.txt"), "after").unwrap();
+        let later = state
+            .checkpoints
+            .checkpoint_workspace_id_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                "later workspace write",
+            ))
+            .await
+            .expect("a later checkpoint should be recorded");
+        assert_ne!(
+            later, id,
+            "the id returned for Undo stays the pre-delete checkpoint after a newer one is taken"
+        );
     }
 }

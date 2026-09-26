@@ -10,7 +10,7 @@
   import { relativeTime } from "../lib/time";
   import { Icon } from "../lib/icons";
   import type { ArtifactSummary } from "../lib/types";
-  import ConfirmButton from "./ConfirmButton.svelte";
+  import { notifyWithUndo } from "../lib/undo";
   import WorkbenchArtifact from "./WorkbenchArtifact.svelte";
 
   let { artifact, full, onClose }: { artifact: string | null; full: boolean; onClose: () => void } =
@@ -90,9 +90,15 @@
   async function remove(item: ArtifactSummary) {
     deleting.add(item.name);
     try {
-      await deleteWorkbenchArtifact(item.name);
+      const checkpointId = await deleteWorkbenchArtifact(item.name);
       artifacts = artifacts.filter((a) => a.name !== item.name);
-      notifications.surface("notice", `Deleted "${item.title}".`);
+      notifyWithUndo(
+        `Deleted "${item.title}".`,
+        "workspace",
+        `workbench/${item.name}`,
+        checkpointId,
+        load,
+      );
     } catch (err) {
       notifications.surface(
         "error",
@@ -179,14 +185,15 @@
                   </span>
                 </a>
                 <div class="workbench-slab-actions">
-                  <ConfirmButton
-                    label="Delete"
-                    armedLabel="Delete artifact?"
+                  <button
+                    type="button"
                     title="Delete this artifact and its saved data"
                     class="btn btn-sm btn-danger workbench-delete"
                     disabled={deleting.has(item.name)}
-                    onConfirm={() => void remove(item)}
-                  />
+                    onclick={() => void remove(item)}
+                  >
+                    Delete
+                  </button>
                 </div>
               </li>
             {/each}

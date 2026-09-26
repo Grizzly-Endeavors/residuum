@@ -34,6 +34,12 @@ import type {
   ArtifactSummary,
   PulseInfo,
   ActionInfo,
+  CheckpointPage,
+  CheckpointDetail,
+  RepoStats,
+  RestoreOutcome,
+  UndoOutcome,
+  RepoKind,
 } from "./types";
 import { cachedFetch, invalidate } from "./cache";
 
@@ -438,10 +444,8 @@ export async function storeAgentKey(
   });
 }
 
-export async function deleteAgentKey(name: string): Promise<void> {
-  await apiFetchText(`/api/agent-keys/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function deleteAgentKey(name: string): Promise<string | null> {
+  return readCheckpointId(`/api/agent-keys/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 // ── A2A API wrappers ──────────────────────────────────────────────────
@@ -477,10 +481,8 @@ export async function createA2aKey(
   });
 }
 
-export async function revokeA2aKey(name: string): Promise<void> {
-  await apiFetchText(`/api/a2a/keys/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function revokeA2aKey(name: string): Promise<string | null> {
+  return readCheckpointId(`/api/a2a/keys/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 /**
@@ -584,9 +586,10 @@ export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
-/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkbenchArtifact(name: string): Promise<void> {
-  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
+/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
+export async function deleteWorkbenchArtifact(name: string): Promise<string | null> {
+  return readCheckpointId(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
@@ -647,6 +650,127 @@ export async function validateWorkspaceFile(path: string, content: string): Prom
   } catch {
     return [];
   }
+}
+
+/** Delete a workspace file. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
+export async function deleteWorkspaceFile(path: string): Promise<string | null> {
+  return readCheckpointId(`/api/workspace/file?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Move or rename a workspace file. Throws `ApiError` (409 if `to` exists and `overwrite` isn't set). */
+export async function moveWorkspaceFile(
+  from: string,
+  to: string,
+  overwrite = false,
+): Promise<void> {
+  await apiFetch<unknown>("/api/workspace/move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to, overwrite }),
+  });
+}
+
+// ── Checkpoints API wrappers ─────────────────────────────────────────
+
+/**
+ * One page of checkpoints, newest first. `path` restricts to checkpoints
+ * that changed it; `turnId` restricts to a single turn's checkpoints (its
+ * turn-start/turn-end pair); `before`/`limit` page. Never cached — the
+ * list changes on every turn and action.
+ */
+export async function fetchCheckpoints(query: {
+  repo: RepoKind;
+  path?: string;
+  turnId?: string;
+  before?: string;
+  limit?: number;
+}): Promise<CheckpointPage> {
+  const params = new URLSearchParams({ repo: query.repo });
+  if (query.path) params.set("path", query.path);
+  if (query.turnId) params.set("turn_id", query.turnId);
+  if (query.before) params.set("before", query.before);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  return apiFetch<CheckpointPage>(`/api/checkpoints?${params}`);
+}
+
+/** On-disk size, checkpoint count, and oldest checkpoint for a repository. */
+export async function fetchCheckpointStats(repo: RepoKind): Promise<RepoStats> {
+  return apiFetch<RepoStats>(`/api/checkpoints/stats?repo=${repo}`);
+}
+
+/** A checkpoint's metadata plus the paths it changed. */
+export async function fetchCheckpointDetail(id: string, repo: RepoKind): Promise<CheckpointDetail> {
+  return apiFetch<CheckpointDetail>(`/api/checkpoints/${encodeURIComponent(id)}?repo=${repo}`);
+}
+
+/** Unified diff for one file at a checkpoint, `null` if it didn't change there. */
+export async function fetchCheckpointDiff(
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<string | null> {
+  const data = await apiFetch<{ diff: string | null }>(
+    `/api/checkpoints/${encodeURIComponent(id)}/diff?repo=${repo}&path=${encodeURIComponent(path)}`,
+  );
+  return data.diff;
+}
+
+/** A file's raw text content at a checkpoint. Throws `ApiError` (404 if it's a directory or absent there). */
+export async function fetchCheckpointFile(
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<string> {
+  return apiFetchText(
+    `/api/checkpoints/${encodeURIComponent(id)}/file?repo=${repo}&path=${encodeURIComponent(path)}`,
+  );
+}
+
+/** Restore `path` to its content at checkpoint `id`. Checkpoints the result, so it can itself be undone. */
+export async function restoreCheckpoint(
+  id: string,
+  repo: RepoKind,
+  path: string,
+): Promise<RestoreOutcome> {
+  return apiFetch<RestoreOutcome>(`/api/checkpoints/${encodeURIComponent(id)}/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo, path }),
+  });
+}
+
+/** Undo everything checkpoint `id` changed, skipping any path changed again since. */
+export async function undoCheckpoint(id: string, repo: RepoKind): Promise<UndoOutcome> {
+  return apiFetch<UndoOutcome>(`/api/checkpoints/${encodeURIComponent(id)}/undo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo }),
+  });
+}
+
+/**
+ * Restore `path` from `checkpointId`, the checkpoint the action itself
+ * reported. A newer checkpoint may have landed since (a turn ending, another
+ * write); restoring the repo's current tip would bring back the wrong tree.
+ */
+export async function undoLastAction(
+  checkpointId: string,
+  repo: RepoKind,
+  path: string,
+): Promise<RestoreOutcome> {
+  return restoreCheckpoint(checkpointId, repo, path);
+}
+
+/** `checkpoint_id` from a delete/revoke response, or `null` when the server
+ * recorded none (the checkpoint failed, or the field is missing). */
+async function readCheckpointId(path: string, init?: RequestInit): Promise<string | null> {
+  const body = await apiFetch<{ checkpoint_id?: unknown }>(path, init);
+  return typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
+    ? body.checkpoint_id
+    : null;
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────

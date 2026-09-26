@@ -83,6 +83,7 @@ pub(super) fn init_tool_registry(
     tools.set_tools_path(Arc::clone(deps.tools_path));
     tools.set_agent_keys(Arc::clone(deps.agent_keys));
     tools.set_checkpoints(Arc::clone(deps.checkpoints));
+    tools.set_publisher(deps.publisher.clone());
     let file_tracker = crate::tools::FileTracker::new_shared();
     let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),

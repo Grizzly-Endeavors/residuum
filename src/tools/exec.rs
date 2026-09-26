@@ -12,10 +12,11 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-use super::{SharedToolsPath, Tool, ToolError, ToolResult};
+use super::{SharedToolsPath, Tool, ToolError, ToolResult, publish_notice};
 use crate::agent_keys::{
     AgentKeysSnapshot, KeyCreator, Redactor, SharedAgentKeys, env_var_for, validate_name,
 };
+use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
 
@@ -37,6 +38,10 @@ pub struct ExecTool {
     /// Checkpoint engine, checkpointed before `store_output_as` mints a new
     /// agent key. `None` means minting isn't checkpointed.
     checkpoints: Option<Arc<CheckpointEngine>>,
+    /// Publishes a notice when `store_output_as` overwrites a key the user
+    /// created. `None` (e.g. in tests) means the overwrite still happens but
+    /// goes unannounced.
+    publisher: Option<Publisher>,
 }
 
 /// Where a minted key goes: the `store_output_as` parameter.
@@ -62,7 +67,16 @@ impl ExecTool {
             tools_path,
             agent_keys,
             checkpoints,
+            publisher: None,
         }
+    }
+
+    /// Publish a notice naming the key whenever `store_output_as` overwrites
+    /// a key the user created.
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     async fn agent_key_snapshot(&self) -> Result<Arc<AgentKeysSnapshot>, ToolResult> {
@@ -120,18 +134,14 @@ impl ExecTool {
     }
 
     /// Refuse a `store_output_as` target before running anything, so a
-    /// minting command isn't run only to have its output discarded.
+    /// minting command isn't run only to have its output discarded — a bad
+    /// name is the only thing that still fails here. The agent may
+    /// overwrite a key the user created (checkpointed and reported to the
+    /// user; see [`Self::store_output`]).
     async fn check_store_target(&self, target: &StoreTarget) -> Result<(), ToolResult> {
         validate_name(&target.name)
             .map_err(|e| ToolResult::error(format!("{e}. Nothing was run.")))?;
-        let snapshot = self.agent_key_snapshot().await?;
-        if snapshot.store.creator(&target.name) == Some(KeyCreator::User) {
-            return Err(ToolResult::error(format!(
-                "agent key '{}' was created by the user and can't be replaced; choose another \
-                 name. Nothing was run.",
-                target.name
-            )));
-        }
+        self.agent_key_snapshot().await?;
         Ok(())
     }
 
@@ -167,6 +177,15 @@ impl ExecTool {
             return ToolResult::error("agent keys are not available in this context");
         };
 
+        // Read before the write to know whether this overwrites a key the
+        // user created — that's the only case worth telling the user
+        // about; a failed snapshot just means the notice is skipped, not
+        // that the mint itself fails.
+        let overwrites_user_key = keys
+            .snapshot()
+            .await
+            .is_ok_and(|s| s.store.creator(&target.name) == Some(KeyCreator::User));
+
         if let Some(checkpoints) = &self.checkpoints {
             checkpoints
                 .checkpoint_config_before_write(CheckpointContext::system(
@@ -186,6 +205,17 @@ impl ExecTool {
             .await
         {
             Ok(warning) => {
+                if overwrites_user_key {
+                    publish_notice(
+                        self.publisher.as_ref(),
+                        format!(
+                            "The agent replaced agent key '{}', which you created. Restore it \
+                             from Settings → History if this wasn't intended.",
+                            target.name
+                        ),
+                    )
+                    .await;
+                }
                 let mut message = format!(
                     "stored agent key '{name}' ({len} bytes). Use it with keys: [\"{name}\"] as ${var}.",
                     name = target.name,
@@ -1162,7 +1192,7 @@ mod tests {
             assert!(!result.is_error, "store should succeed: {}", result.output);
 
             let page = engine
-                .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None)
+                .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None, None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1225,7 +1255,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn store_over_user_key_is_refused_before_running() {
+        async fn store_over_user_key_replaces_it() {
             let dir = tempfile::tempdir().unwrap();
             let (tool, keys) = tool_with_key(dir.path()).await;
             let marker = dir.path().join("ran");
@@ -1236,12 +1266,61 @@ mod tests {
                 }))
                 .await
                 .unwrap();
-            assert!(result.is_error, "overwriting a user key should fail");
-            assert!(!marker.exists(), "command must not run");
+            assert!(
+                !result.is_error,
+                "the agent may overwrite a key the user created: {}",
+                result.output
+            );
+            assert!(marker.exists(), "command should run");
             assert_eq!(
                 keys.snapshot().await.unwrap().store.value("api_key"),
-                Some("sk-test-abcdef123"),
-                "user key must be untouched"
+                Some("replacement-value"),
+                "user key should be replaced"
+            );
+            assert_eq!(
+                keys.snapshot().await.unwrap().store.creator("api_key"),
+                Some(KeyCreator::Agent)
+            );
+        }
+
+        #[tokio::test]
+        async fn store_over_user_key_publishes_a_notice() {
+            use crate::bus::{self, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+
+            let dir = tempfile::tempdir().unwrap();
+            let keys = AgentKeys::new_shared(dir.path());
+            keys.set("api_key", "sk-test-abcdef123", None, KeyCreator::User)
+                .await
+                .unwrap();
+            let bus_handle = bus::spawn_broker();
+            let mut notices: bus::Subscriber<NoticeEvent> = bus_handle
+                .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+                .await
+                .unwrap();
+            let tool = ExecTool::new(None, Some(keys), None).with_publisher(bus_handle.publisher());
+
+            let result = tool
+                .execute(serde_json::json!({
+                    "command": "echo replacement-value",
+                    "store_output_as": { "name": "api_key" }
+                }))
+                .await
+                .unwrap();
+            assert!(
+                !result.is_error,
+                "overwrite should succeed: {}",
+                result.output
+            );
+
+            let notice = notices
+                .recv()
+                .await
+                .unwrap()
+                .expect("a notice was published");
+            assert!(
+                notice.message.contains("api_key") && notice.message.contains("created"),
+                "notice should name the key and that the user created it: {}",
+                notice.message
             );
         }
     }

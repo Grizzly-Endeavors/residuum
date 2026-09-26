@@ -16,14 +16,19 @@
     type ModelEntry,
   } from "../../lib/models";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
-  import ConfirmButton from "../ConfirmButton.svelte";
+  import { notifyFormUndo } from "../../lib/form-undo";
+  import type { PendingSaveTracker } from "../../lib/pending-save";
 
   let {
     providers = $bindable(),
     models = $bindable(),
+    pendingSave,
+    onReload,
   }: {
     providers: SettingsProviderEntry[];
     models: SettingsModelAssignments;
+    pendingSave: PendingSaveTracker;
+    onReload: () => Promise<void>;
   } = $props();
 
   const providerTypes: Record<string, string> = {
@@ -158,7 +163,18 @@
   }
 
   function removeProvider(idx: number) {
-    providers.splice(idx, 1);
+    const [removed] = providers.splice(idx, 1);
+    if (!removed) return;
+    notifyFormUndo(
+      `Removed ${removed.name || "provider"}.`,
+      pendingSave,
+      () => {
+        providers.splice(idx, 0, removed);
+      },
+      "config",
+      "providers.toml",
+      onReload,
+    );
   }
 
   function providerNameOptions(): string[] {
@@ -279,13 +295,14 @@
             </div>
           {/if}
         </div>
-        <ConfirmButton
+        <button
+          type="button"
           class="provider-remove-btn"
-          label="✕"
-          armedLabel="Remove?"
           title="Remove provider"
-          onConfirm={() => removeProvider(i)}
-        />
+          onclick={() => removeProvider(i)}
+        >
+          ✕
+        </button>
       </div>
     {/each}
 

@@ -6,7 +6,6 @@
   import { Icon } from "../lib/icons";
 
   let open = $state(false);
-  let confirmingClear = $state(false);
   let now = $state(Date.now());
 
   // Tick relative timestamps once a minute, but only while the dropdown
@@ -22,12 +21,10 @@
 
   function toggle(): void {
     open = !open;
-    confirmingClear = false;
   }
 
   function close(): void {
     open = false;
-    confirmingClear = false;
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -37,12 +34,14 @@
   }
 
   function clearClicked(): void {
-    if (confirmingClear) {
-      notifications.clear();
-      confirmingClear = false;
-    } else {
-      confirmingClear = true;
-    }
+    const cleared = notifications.clear();
+    if (cleared.length === 0) return;
+    toast.success(`Cleared ${cleared.length} notification(s).`, {
+      label: "Undo",
+      onClick: () => {
+        notifications.restore(cleared);
+      },
+    });
   }
 </script>
 
@@ -51,14 +50,21 @@
 <div class="notif-corner">
   <div class="notif-toast-stack" role="status" aria-live="polite">
     {#each [...toast.toasts.values()] as t (t.id)}
-      <button
-        type="button"
-        class="notif-toast notif-toast-{t.kind}"
-        onclick={() => toast.dismiss(t.id)}
-        title="Click to dismiss"
-      >
-        {t.message}
-      </button>
+      <div class="notif-toast notif-toast-{t.kind}">
+        <button
+          type="button"
+          class="notif-toast-message"
+          onclick={() => toast.dismiss(t.id)}
+          title="Click to dismiss"
+        >
+          {t.message}
+        </button>
+        {#if t.action}
+          <button type="button" class="notif-toast-action" onclick={() => toast.runAction(t.id)}>
+            {t.action.label}
+          </button>
+        {/if}
+      </div>
     {/each}
   </div>
 
@@ -106,13 +112,8 @@
         </div>
         {#if notifications.history.length > 0}
           <div class="notif-dropdown-footer">
-            <button
-              type="button"
-              class="notif-dropdown-clear"
-              class:confirm={confirmingClear}
-              onclick={clearClicked}
-            >
-              {confirmingClear ? "click again to clear" : "clear all"}
+            <button type="button" class="notif-dropdown-clear" onclick={clearClicked}>
+              clear all
             </button>
           </div>
         {/if}

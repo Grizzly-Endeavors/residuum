@@ -6,8 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use super::{Tool, ToolError, ToolResult, require_str};
+use super::{Tool, ToolError, ToolResult, publish_notice, require_str};
 use crate::agent_keys::{AgentKeyError, KeyCreator, SharedAgentKeys};
+use crate::bus::Publisher;
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger};
 use crate::inference::ToolDefinition;
 
@@ -86,16 +87,33 @@ impl Tool for AgentKeysListTool {
     }
 }
 
-/// Deletes an agent key the agent itself created.
+/// Deletes an agent key, whoever created it — including one the user
+/// created; see `docs/systems-usage/agent-keys.md`.
 pub struct AgentKeyDeleteTool {
     keys: SharedAgentKeys,
     checkpoints: Arc<CheckpointEngine>,
+    /// Publishes a notice when a key the user created is deleted. `None`
+    /// (e.g. in tests) means the deletion still happens but goes unannounced.
+    publisher: Option<Publisher>,
 }
 
 impl AgentKeyDeleteTool {
     #[must_use]
     pub fn new(keys: SharedAgentKeys, checkpoints: Arc<CheckpointEngine>) -> Self {
-        Self { keys, checkpoints }
+        Self {
+            keys,
+            checkpoints,
+            publisher: None,
+        }
+    }
+
+    /// Publish a notice naming the key and that it can be restored from
+    /// checkpoint history whenever this tool deletes a key the user
+    /// created.
+    #[must_use]
+    pub fn with_publisher(mut self, publisher: Publisher) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 }
 
@@ -108,8 +126,9 @@ impl Tool for AgentKeyDeleteTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Delete an agent key you created (e.g. a minted token that is no \
-                          longer needed). Keys the user created can't be deleted this way."
+            description: "Delete an agent key, including one the user created. Deleting a \
+                          key the user created is checkpointed and reported to the user, who \
+                          can restore it from checkpoint history."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -126,17 +145,31 @@ impl Tool for AgentKeyDeleteTool {
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let name = require_str(&arguments, "name")?;
+        let was_user_created = match self.keys.snapshot().await {
+            Ok(snapshot) => snapshot.store.creator(name) == Some(KeyCreator::User),
+            Err(_) => false,
+        };
         self.checkpoints
             .checkpoint_config_before_write(CheckpointContext::system(
                 CheckpointTrigger::PreConfigWrite,
                 format!("agent deleted agent key '{name}'"),
             ))
             .await;
-        match self.keys.delete(name, KeyCreator::Agent).await {
-            Ok(()) => Ok(ToolResult::success(format!("deleted agent key '{name}'"))),
-            Err(e @ (AgentKeyError::NotFound(_) | AgentKeyError::OwnedByUser(_))) => {
-                Ok(ToolResult::error(e.to_string()))
+        match self.keys.delete(name).await {
+            Ok(()) => {
+                if was_user_created {
+                    publish_notice(
+                        self.publisher.as_ref(),
+                        format!(
+                            "The agent deleted agent key '{name}', which you created. Restore \
+                             it from Settings → History if this wasn't intended."
+                        ),
+                    )
+                    .await;
+                }
+                Ok(ToolResult::success(format!("deleted agent key '{name}'")))
             }
+            Err(e @ AgentKeyError::NotFound(_)) => Ok(ToolResult::error(e.to_string())),
             Err(e) => {
                 tracing::warn!(error = %e, key = %name, "failed to delete agent key");
                 Ok(ToolResult::error(e.to_string()))
@@ -196,7 +229,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_refuses_user_keys_and_removes_agent_keys() {
+    async fn delete_removes_both_user_and_agent_keys() {
         let dir = tempfile::tempdir().unwrap();
         let keys = AgentKeys::new_shared(dir.path());
         keys.set("users", "user-value-123", None, KeyCreator::User)
@@ -210,25 +243,91 @@ mod tests {
             crate::checkpoints::test_engine(),
         );
 
-        let refused = tool
+        let deleted_user_key = tool
             .execute(serde_json::json!({ "name": "users" }))
             .await
             .unwrap();
-        assert!(refused.is_error, "user key delete should be refused");
         assert!(
-            refused.output.contains("created by the user"),
-            "refusal should explain why: {}",
-            refused.output
+            !deleted_user_key.is_error,
+            "the agent may delete a key the user created: {}",
+            deleted_user_key.output
         );
 
-        let deleted = tool
+        let deleted_agent_key = tool
             .execute(serde_json::json!({ "name": "minted" }))
             .await
             .unwrap();
-        assert!(!deleted.is_error, "agent key delete should succeed");
+        assert!(
+            !deleted_agent_key.is_error,
+            "agent key delete should succeed"
+        );
         let snap = keys.snapshot().await.unwrap();
         assert!(snap.store.value("minted").is_none(), "minted key gone");
-        assert!(snap.store.value("users").is_some(), "user key kept");
+        assert!(snap.store.value("users").is_none(), "user key gone too");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_user_created_key_publishes_a_notice() {
+        use crate::bus::{self, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = AgentKeys::new_shared(dir.path());
+        keys.set("users", "user-value-123", None, KeyCreator::User)
+            .await
+            .unwrap();
+        let bus_handle = bus::spawn_broker();
+        let mut notices: bus::Subscriber<NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::test_engine())
+            .with_publisher(bus_handle.publisher());
+
+        let result = tool
+            .execute(serde_json::json!({ "name": "users" }))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "delete should succeed: {}", result.output);
+
+        let notice = notices
+            .recv()
+            .await
+            .unwrap()
+            .expect("a notice was published");
+        assert!(
+            notice.message.contains("users") && notice.message.contains("created"),
+            "notice should name the key and that the user created it: {}",
+            notice.message
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_an_agent_created_key_publishes_no_notice() {
+        use crate::bus::{self, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = AgentKeys::new_shared(dir.path());
+        keys.set("minted", "agent-value-123", None, KeyCreator::Agent)
+            .await
+            .unwrap();
+        let bus_handle = bus::spawn_broker();
+        let mut notices: bus::Subscriber<NoticeEvent> = bus_handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let tool = AgentKeyDeleteTool::new(keys, crate::checkpoints::test_engine())
+            .with_publisher(bus_handle.publisher());
+
+        let result = tool
+            .execute(serde_json::json!({ "name": "minted" }))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "delete should succeed: {}", result.output);
+
+        let timed_out = tokio::time::timeout(std::time::Duration::from_millis(100), notices.recv())
+            .await
+            .is_err();
+        assert!(timed_out, "deleting the agent's own key should not notify");
     }
 
     #[tokio::test]
@@ -256,7 +355,7 @@ mod tests {
         assert!(!result.is_error, "delete should succeed: {}", result.output);
 
         let page = engine
-            .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None)
+            .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(

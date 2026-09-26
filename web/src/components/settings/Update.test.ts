@@ -24,6 +24,7 @@ function updateStatus(overrides: Partial<UpdateStatusResponse> = {}): UpdateStat
     last_checked: "2026-09-26T14:00:00.000Z",
     checking: false,
     rollback_notice: null,
+    unverified_update: null,
     ...overrides,
   };
 }

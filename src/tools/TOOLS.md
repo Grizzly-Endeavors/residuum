@@ -142,11 +142,11 @@ Output is capped at 100 KB; larger output is truncated with `\n... (output trunc
 With `keys`: an unknown name returns `"unknown agent key(s): {names}. Available: {names}. Nothing was run."` without spawning anything. Without an agent key store: `"agent keys are not available in this context. Nothing was run."`
 
 With `store_output_as`:
-- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.** There is no minimum length; a value under 8 characters is still stored, with `" Warning: {reason}."` appended naming that it can't be redacted from output reliably.
+- Exit 0 with non-empty stdout: stdout (trailing newline trimmed) is stored as an agent-created key, and the result is `"stored agent key '{name}' ({N} bytes). Use it with keys: [\"{name}\"] as ${NAME}."` plus any stderr. **Stdout is never returned.** There is no minimum length; a value under 8 characters is still stored, with `" Warning: {reason}."` appended naming that it can't be redacted from output reliably. Naming an existing key — the agent's own or one the user created — replaces it; replacing a key the user created also publishes a notice naming it (see [Agent keys](../../docs/systems-usage/agent-keys.md)).
 - Non-zero exit: `"command exited with code {N}; nothing was stored and stdout was discarded"` plus stderr.
 - Empty stdout: `"command produced no stdout; nothing was stored"`.
-- A name that is invalid or belongs to a user-created key is refused before the command runs (`"... Nothing was run."`).
-- A value that fails storage rules (contains a NUL byte, or the name conflicts): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
+- An invalid name is refused before the command runs (`"... Nothing was run."`).
+- A value that fails storage rules (contains a NUL byte): `"command succeeded but its output was not stored: {reason}. stdout was discarded."`
 - Timeout or cancellation: nothing is stored and stdout is discarded from the message too, the same as a non-zero exit — `"{reason}; nothing was stored and stdout was discarded"` plus stderr.
 
 stderr in a `store_output_as` result is redacted against the new value as well as every existing key.
@@ -190,7 +190,7 @@ On error: `"couldn't read the agent key store: {reason}"`.
 **Source:** `agent_keys.rs` · `AgentKeyDeleteTool`
 
 **Description sent to LLM:**
-> Delete an agent key you created (e.g. a minted token that is no longer needed). Keys the user created can't be deleted this way.
+> Delete an agent key, including one the user created. Deleting a key the user created is checkpointed and reported to the user, who can restore it from checkpoint history.
 
 ### Input
 
@@ -200,9 +200,9 @@ On error: `"couldn't read the agent key store: {reason}"`.
 
 ### Output
 
-On success: `"deleted agent key '{name}'"`.
+On success: `"deleted agent key '{name}'"`. Deleting a key the user created also publishes a notice naming it (see [Agent keys](../../docs/systems-usage/agent-keys.md)).
 
-On error: `"no agent key named '{name}'"`, or `"agent key '{name}' was created by the user; only keys the agent created can be replaced or deleted by the agent"`, or a store read/write failure.
+On error: `"no agent key named '{name}'"`, or a store read/write failure.
 
 ---
 
