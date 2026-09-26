@@ -23,7 +23,7 @@ The main agent's own cycle runs off the event loop in a background worker, so it
 | `ep-NNN.obs.json` | JSON array of Observation objects | Extracted observations |
 | `ep-NNN.idx.jsonl` | JSONL of IndexChunk objects | Interaction-pair chunks for search indexing |
 
-After extraction, observations are appended to `memory/observations.json` and recent messages are cleared from `memory/recent_messages.json`. The narrative context is saved to `memory/recent_context.json`. If an embedding provider is configured, `.obs` and `.idx` files are embedded for vector retrieval.
+After extraction, observations are appended to `memory/observations.json` and the messages the cycle observed are removed from `memory/recent_messages.json` (messages from a turn that ended while it ran stay for the next cycle). The narrative context is saved to `memory/recent_context.json`. If an embedding provider is configured, `.obs` and `.idx` files are embedded for vector retrieval.
 
 The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/pushback, process preferences, frustration and its cause, praise and what earned it — as declarative facts about what happened, never as instructions. This is the evidence the `learner` skill corroborates against for a `preference` signal.
 

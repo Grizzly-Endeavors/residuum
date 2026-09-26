@@ -25,11 +25,12 @@
 
   let mode = $state<"loading" | "setup" | "running">("loading");
 
-  // A native OS notification's "Open" action (see the macOS/Windows bridges
-  // in src/notify/) points here for a batch summary, since there's no
-  // single item to deep-link to — read before `router.start()` replaces an
-  // unrecognized path, and open the inbox to the full list once running.
-  const openedFromNotificationSummary = window.location.pathname.startsWith("/notification");
+  // A native OS notification's "Open" action (see the macOS bridge in
+  // src/notify/) points here. Every result it shows was filed to the agent
+  // inbox, whose files are under inbox/agent in the workspace, so open the
+  // workspace panel. Read before `router.start()` replaces the unrecognized
+  // path.
+  const openedFromNotification = window.location.pathname.startsWith("/notification");
 
   router.start();
 
@@ -136,8 +137,8 @@
     } catch {
       mode = "running";
     }
-    if (openedFromNotificationSummary) {
-      inboxOpen = true;
+    if (openedFromNotification) {
+      router.setWorkspace(true);
     }
   });
 

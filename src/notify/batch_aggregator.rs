@@ -122,11 +122,14 @@ async fn flush<B: NotificationBridge>(bridge: &B, buffer: &[NotificationEvent]) 
     }
 }
 
-/// Appended to a non-empty summary body so the batch is never a dead end:
-/// macOS's "Open" action deep-links to the full list (see `MacosBridge`),
-/// but Windows toasts have no equivalent action at all, so the body itself
-/// has to say where the rest of the results actually live.
-const INBOX_POINTER: &str = "\n\nSee all in your inbox.";
+/// Appended to a non-empty summary body so the batch is never a dead end.
+/// Every result that reaches a native channel is also filed to the agent
+/// inbox (`inbox/agent/` in the workspace) by the notification router, so
+/// that is where the full list lives. macOS's "Open" action opens the web
+/// UI's workspace panel (see `MacosBridge`); Windows toasts have no click
+/// action, so the body itself has to say where the rest are.
+const INBOX_POINTER: &str =
+    "\n\nAll of them are in your agent's inbox: inbox/agent in the workspace.";
 
 #[must_use]
 pub fn build_summary_body(buffer: &[NotificationEvent]) -> String {
@@ -232,7 +235,10 @@ mod tests {
     fn build_summary_body_single_item() {
         let buffer = vec![make_notification("email_check")];
         let body = build_summary_body(&buffer);
-        assert_eq!(body, "email_check\n\nSee all in your inbox.");
+        assert_eq!(
+            body,
+            "email_check\n\nAll of them are in your agent's inbox: inbox/agent in the workspace."
+        );
     }
 
     #[test]
@@ -245,7 +251,7 @@ mod tests {
         let body = build_summary_body(&buffer);
         assert_eq!(
             body,
-            "email_check\ndeploy_status\nbackup\n\nSee all in your inbox."
+            "email_check\ndeploy_status\nbackup\n\nAll of them are in your agent's inbox: inbox/agent in the workspace."
         );
     }
 
@@ -261,7 +267,7 @@ mod tests {
             body.chars().count()
         );
         assert!(
-            body.ends_with("See all in your inbox."),
+            body.ends_with("inbox/agent in the workspace."),
             "pointer must survive truncation of the item list: {body}"
         );
     }
