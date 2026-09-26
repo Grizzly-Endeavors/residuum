@@ -2916,10 +2916,12 @@ mod tests {
     async fn idle_session_releases_its_permit_for_a_new_run() {
         // max_concurrent = 1: if an idle session held its permit, a second
         // session could not start running until the first's idle timeout
-        // elapsed. Give the first session an idle window long enough that
-        // waiting it out would be obviously slow, then prove the second
-        // reaches running/idle almost immediately instead.
-        let idle_window = Duration::from_millis(300);
+        // ended it. The first session's idle window is far longer than the
+        // test waits, so the second starting at all proves it didn't wait on
+        // that timeout — and the check doesn't depend on how fast a loaded
+        // CI runner forks a session.
+        let idle_window = Duration::from_mins(10);
+        let generous = Duration::from_secs(20);
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
@@ -2955,7 +2957,7 @@ mod tests {
         );
 
         // Wait for the first session to go idle (releasing its permit).
-        let idle_at = wait_for(&runtime, &first, Duration::from_secs(1), |info| {
+        wait_for(&runtime, &first, generous, |info| {
             info.state == SessionState::Idle
         })
         .await
@@ -2967,17 +2969,20 @@ mod tests {
             Some(make_resources("second done")),
         );
         // Any state past `Forking` means the permit was acquired and the
-        // turn at least started — must happen well inside the first
-        // session's idle window to prove it didn't wait on that timeout.
-        let second_started = wait_for(&runtime, &second, idle_window, |info| {
+        // turn at least started.
+        let second_started = wait_for(&runtime, &second, generous, |info| {
             info.state != SessionState::Forking
         })
         .await;
-        let elapsed = idle_at.elapsed();
         assert!(
             second_started.is_some(),
-            "second session should start running without waiting for the first's idle timeout \
-             (waited {elapsed:?} against an idle window of {idle_window:?})"
+            "second session should start while the first is idle, not wait out its \
+             {idle_window:?} idle timeout"
+        );
+        assert_eq!(
+            runtime.registry.get(&first).map(|info| info.state),
+            Some(SessionState::Idle),
+            "the first session must still be idle: the second started without it ending"
         );
     }
 
