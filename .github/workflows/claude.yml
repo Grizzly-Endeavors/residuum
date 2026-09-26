@@ -1,0 +1,139 @@
+name: Claude Code
+
+# @claude on this repo, on the claude-runners scale set.
+#
+# The scale set and the OAuth token injection live in grizzly-platform
+# (PR #256). This workflow does not start until that scale set is registered.
+#
+# GitHub auth is the Claude GitHub App (https://github.com/apps/claude), not
+# the workflow GITHUB_TOKEN. With github_token left unset, the action requests
+# an OIDC token and exchanges it for an installation token. That exchange
+# fails if the app is not installed on this repository. Passing github.token
+# would skip the app, and pushes from github-actions[bot] do not trigger
+# other workflows, so Claude's commits would not run CI.
+#
+# CLAUDE_CODE_OAUTH_TOKEN is injected into the runner process by the scale
+# set. A composite action's env: block only sees the workflow env context, and
+# the action assigns CLAUDE_CODE_OAUTH_TOKEN from
+# `inputs.claude_code_oauth_token || env.CLAUDE_CODE_OAUTH_TOKEN`, which
+# overwrites the process environment when both are empty. The publish step
+# masks the runner value and writes it to $GITHUB_ENV so the action's
+# expression can read it. Do not reference secrets.* — the org is on the
+# Free plan, where org secrets are not available to private repositories,
+# and the token is delivered by the runner instead.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened]
+
+jobs:
+  claude:
+    if: >-
+      (
+        github.actor == 'BearFlinn'
+        || (
+          (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment')
+          && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER')
+        )
+        || (
+          github.event_name == 'pull_request_review'
+          && (github.event.review.author_association == 'OWNER' || github.event.review.author_association == 'MEMBER')
+        )
+        || (
+          github.event_name == 'issues'
+          && (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'MEMBER')
+        )
+      )
+      && (
+        (github.event_name == 'issue_comment' && github.event.comment.body && contains(github.event.comment.body, '@claude'))
+        || (github.event_name == 'pull_request_review_comment' && github.event.comment.body && contains(github.event.comment.body, '@claude'))
+        || (github.event_name == 'pull_request_review' && github.event.review.body && contains(github.event.review.body, '@claude'))
+        || (
+          github.event_name == 'issues'
+          && (
+            (github.event.issue.body && contains(github.event.issue.body, '@claude'))
+            || contains(github.event.issue.title, '@claude')
+          )
+        )
+      )
+    runs-on: claude-runners
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 1
+
+      # The runner image (grizzly-platform docker/github-runner/Dockerfile)
+      # already has rustup, clippy, rustfmt, and cargo-deny, but its default
+      # toolchain is whatever stable was current when the image was built.
+      # rust-toolchain.toml is the version pre-commit and CI lint with, and
+      # the baked-in toolchain cannot be updated in place.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" --profile minimal --component clippy,rustfmt
+
+      # Node.js 24 and npm are already in that image and satisfy web/'s
+      # engines, so this does not use actions/setup-node. node_modules is
+      # not in the image. build.rs refuses to compile without web/dist, so
+      # cargo clippy and cargo test need the production build first.
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build web assets
+        working-directory: web
+        run: npm run build
+
+      # Claude commits with git, which runs these hooks. Without them the
+      # pre-commit gate in .githooks/ never sees the commit.
+      - name: Install git hooks
+        run: ./.githooks/install.sh
+
+      - name: Publish runner OAuth token to the workflow env
+        run: |
+          set -euo pipefail
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN is not set in the runner process environment" >&2
+            exit 1
+          fi
+          case "${CLAUDE_CODE_OAUTH_TOKEN}" in
+            *$'\n'*|*$'\r'*)
+              echo "CLAUDE_CODE_OAUTH_TOKEN must be a single line" >&2
+              exit 1
+              ;;
+          esac
+          echo "::add-mask::${CLAUDE_CODE_OAUTH_TOKEN}"
+          echo "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}" >> "${GITHUB_ENV}"
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@756cc22e19660d20e8cc9496b4f242475a7f7790 # v1 (2026-09-25)
+        with:
+          # Do not set prompt. detectMode in src/modes/detector.ts at this pin
+          # returns agent mode when prompt is set on issue_comment,
+          # pull_request_review_comment, pull_request_review, or issues.
+          # Agent mode uses that string as the entire prompt and does not
+          # read the @claude comment. --append-system-prompt stays in
+          # claude_args, so the mode stays tag and the comment stays the request.
+          #
+          # Sonnet unless the issue or PR carries the model:opus label.
+          # Claude Code model IDs: claude-sonnet-5, claude-opus-5-5.
+          claude_args: >-
+            --model ${{
+              contains(toJson(github.event.issue.labels || github.event.pull_request.labels), 'model:opus')
+              && 'claude-opus-5-5'
+              || 'claude-sonnet-5'
+            }}
+            --append-system-prompt "This is the Residuum repository. Follow CLAUDE.md at the repository root. When changing the Svelte app in web/, also follow web/CLAUDE.md. Nested CLAUDE.md files under src/ and docs/ apply to those directories. The git hooks from .githooks/ are installed; do not bypass them. The Rust toolchain pinned in rust-toolchain.toml is already installed. web/node_modules and web/dist are already built, so cargo fmt, cargo clippy --all-targets --all-features -- -D warnings, and cargo test --quiet can run from the repo root, and npm run lint, npm run check, and npm test can run from web/."
