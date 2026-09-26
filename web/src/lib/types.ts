@@ -260,6 +260,11 @@ export interface RollbackNoticeResponse {
   at: string;
 }
 
+export interface UnverifiedUpdateResponse {
+  version: string;
+  at: string;
+}
+
 export interface UpdateStatusResponse {
   current: string;
   latest: string | null;
@@ -268,6 +273,8 @@ export interface UpdateStatusResponse {
   checking: boolean;
   /** Present when the most recent restart rolled back instead of completing. */
   rollback_notice: RollbackNoticeResponse | null;
+  /** Present when the installed update had no checksum to check it against. */
+  unverified_update: UnverifiedUpdateResponse | null;
 }
 
 export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
