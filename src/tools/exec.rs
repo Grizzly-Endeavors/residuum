@@ -1,5 +1,6 @@
 //! Shell command execution tool for the agent.
 
+use std::fmt::Write as _;
 use std::io;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::Arc;
@@ -184,15 +185,18 @@ impl ExecTool {
             )
             .await
         {
-            Ok(()) => ToolResult::success(with_stderr(
-                format!(
+            Ok(warning) => {
+                let mut message = format!(
                     "stored agent key '{name}' ({len} bytes). Use it with keys: [\"{name}\"] as ${var}.",
                     name = target.name,
                     len = value.len(),
                     var = env_var_for(&target.name)
-                ),
-                &stderr,
-            )),
+                );
+                if let Some(warning) = warning {
+                    _ = write!(message, " Warning: {warning}.");
+                }
+                ToolResult::success(with_stderr(message, &stderr))
+            }
             Err(e) => {
                 tracing::warn!(error = %e, key = %target.name, "failed to store minted agent key");
                 ToolResult::error(with_stderr(
@@ -1208,6 +1212,31 @@ mod tests {
                 Some(KeyCreator::Agent),
                 "minted keys are agent-owned"
             );
+        }
+
+        #[tokio::test]
+        async fn store_output_as_short_value_is_stored_with_a_warning() {
+            let dir = tempfile::tempdir().unwrap();
+            let (tool, keys) = tool_with_key(dir.path()).await;
+            let result = tool
+                .execute(serde_json::json!({
+                    "command": "echo -n short",
+                    "store_output_as": { "name": "minted" }
+                }))
+                .await
+                .unwrap();
+            assert!(
+                !result.is_error,
+                "a short value should still be stored: {}",
+                result.output
+            );
+            assert!(
+                result.output.contains("Warning:") && result.output.contains("redact"),
+                "should warn that a short value can't be redacted reliably: {}",
+                result.output
+            );
+            let snap = keys.snapshot().await.unwrap();
+            assert_eq!(snap.store.value("minted"), Some("short"));
         }
 
         #[tokio::test]

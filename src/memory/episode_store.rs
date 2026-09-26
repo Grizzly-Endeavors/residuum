@@ -340,12 +340,17 @@ fn walk_for_file(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
 /// Always includes the meta header. When `from_line` is provided, only message
 /// lines from that offset onward are included.
 ///
+/// `expand_line`, when given, overrides `from_line`/`request_limit`: it returns
+/// just that one line's message in full, uncut by `MAX_TOOL_RESULT_CHARS` — the
+/// way to retrieve a tool result that a windowed read reported as truncated.
+///
 /// # Errors
 /// Returns an error if the file cannot be read or the meta line cannot be parsed.
 pub(crate) async fn read_episode_lines(
     path: &Path,
     from_line: Option<usize>,
     request_limit: Option<usize>,
+    expand_line: Option<usize>,
 ) -> anyhow::Result<String> {
     let file_content = tokio::fs::read_to_string(path)
         .await
@@ -361,6 +366,36 @@ pub(crate) async fn read_episode_lines(
     let meta: EpisodeMeta = serde_json::from_str(meta_line)
         .with_context(|| format!("failed to parse episode meta at {}", path.display()))?;
 
+    let mut parts: Vec<String> = Vec::new();
+
+    // Header
+    parts.push(format!("Episode: {} | {}", meta.id, meta.date));
+    parts.push(String::new());
+
+    if let Some(target) = expand_line {
+        // Line 1 is the meta header (index 0); messages start at line 2 (index 1).
+        let idx = target.saturating_sub(1);
+        match all_lines.get(idx).filter(|_| target >= 2) {
+            None => {
+                parts.push(format!(
+                    "line {target} does not exist; the episode has {total} line(s) total \
+                     (line 1 is the meta header, message lines start at 2)"
+                ));
+            }
+            Some(raw) if raw.trim().is_empty() => {
+                parts.push(format!("[line {target}] (blank line)"));
+            }
+            Some(raw) => match serde_json::from_str::<Message>(raw) {
+                Ok(msg) => format_message_line(&mut parts, target, &msg, true),
+                Err(e) => {
+                    tracing::warn!(line = target, path = %path.display(), error = %e, "unparseable message line");
+                    parts.push(format!("[line {target}] (unparseable)"));
+                }
+            },
+        }
+        return Ok(parts.join("\n"));
+    }
+
     let limit = request_limit.map_or(DEFAULT_LINES, |l| l.clamp(1, MAX_LINES));
 
     // from_line is 1-indexed; message lines start at index 1 (line 2)
@@ -368,12 +403,6 @@ pub(crate) async fn read_episode_lines(
     let start_idx = from_line.map_or(1, |f| f.max(1));
 
     let end_idx = total.min(start_idx + limit);
-
-    let mut parts: Vec<String> = Vec::new();
-
-    // Header
-    parts.push(format!("Episode: {} | {}", meta.id, meta.date));
-    parts.push(String::new());
 
     // Message lines
     for idx in start_idx..end_idx {
@@ -384,7 +413,7 @@ pub(crate) async fn read_episode_lines(
             // 1-indexed line number
             let line_num = idx + 1;
             match serde_json::from_str::<Message>(raw) {
-                Ok(msg) => format_message_line(&mut parts, line_num, &msg),
+                Ok(msg) => format_message_line(&mut parts, line_num, &msg, false),
                 Err(e) => {
                     tracing::warn!(line = line_num, path = %path.display(), error = %e, "unparseable message line");
                     parts.push(format!("[line {line_num}] (unparseable)"));
@@ -503,7 +532,18 @@ fn walk_for_max(dir: &Path, max: &mut u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
+/// Format one message as a line-numbered entry for LLM-facing transcript output.
+///
+/// `full`, when true, returns a tool result line's content uncut regardless
+/// of `MAX_TOOL_RESULT_CHARS` — used for a single-line `expand_line` request.
+/// When false and the content is over the limit, the truncated line reports
+/// the original length and how to retrieve it in full.
+pub(crate) fn format_message_line(
+    parts: &mut Vec<String>,
+    line_num: usize,
+    msg: &Message,
+    full: bool,
+) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
             let calls = msg.tool_calls.as_deref().unwrap_or(&[]);
@@ -516,10 +556,18 @@ pub(crate) fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg:
                 parts.push(format!("  [calls: {calls_str}]"));
             }
         }
+        Role::Tool if full || msg.content.len() <= MAX_TOOL_RESULT_CHARS => {
+            parts.push(format!("[line {line_num}] Tool: {}", msg.content));
+        }
         Role::Tool => {
             let display_content =
                 crate::memory::truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
-            parts.push(format!("[line {line_num}] Tool: {display_content}"));
+            let original_chars = msg.content.chars().count();
+            parts.push(format!(
+                "[line {line_num}] Tool: {display_content} (showing {MAX_TOOL_RESULT_CHARS} of \
+                 {original_chars} chars; use memory_get with expand_line={line_num} to see the \
+                 full result)"
+            ));
         }
         Role::System | Role::User | Role::Assistant => {
             let label = match msg.role {
@@ -729,7 +777,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_transcript(dir.path()).await;
 
-        let output = read_episode_lines(&path, None, None).await.unwrap();
+        let output = read_episode_lines(&path, None, None, None).await.unwrap();
         assert!(output.contains("Episode: ep-001"), "should have header");
         assert!(
             output.contains("[line 2] User: hello world"),
@@ -756,7 +804,9 @@ mod tests {
         let path = write_sample_transcript(dir.path()).await;
 
         // from_line=2 means start at message index 2 (line 3 in 1-indexed)
-        let output = read_episode_lines(&path, Some(2), Some(1)).await.unwrap();
+        let output = read_episode_lines(&path, Some(2), Some(1), None)
+            .await
+            .unwrap();
         assert!(output.contains("Episode: ep-001"), "header always shown");
         assert!(!output.contains("[line 2]"), "should skip line 2");
         assert!(output.contains("[line 3]"), "should show line 3");
@@ -773,7 +823,9 @@ mod tests {
         let path = write_sample_transcript(dir.path()).await;
 
         // Request 999 lines, should clamp to MAX_LINES but still work
-        let output = read_episode_lines(&path, None, Some(999)).await.unwrap();
+        let output = read_episode_lines(&path, None, Some(999), None)
+            .await
+            .unwrap();
         assert!(output.contains("Episode: ep-001"), "should have header");
         assert!(output.contains("[line 2]"), "should show messages");
     }
@@ -784,7 +836,9 @@ mod tests {
         let path = write_sample_transcript(dir.path()).await;
 
         // Start beyond the file
-        let output = read_episode_lines(&path, Some(100), None).await.unwrap();
+        let output = read_episode_lines(&path, Some(100), None, None)
+            .await
+            .unwrap();
         assert!(output.contains("Episode: ep-001"), "header always shown");
         assert!(
             !output.contains("[line"),
@@ -814,7 +868,7 @@ mod tests {
             .unwrap();
         let path = episode_jsonl_path(dir.path(), &episode);
 
-        let output = read_episode_lines(&path, None, None).await.unwrap();
+        let output = read_episode_lines(&path, None, None, None).await.unwrap();
         assert!(output.contains("[line 2] System:"), "system role formatted");
         assert!(output.contains("[line 3] User:"), "user role formatted");
         assert!(
@@ -838,7 +892,7 @@ mod tests {
             .unwrap();
         let path = episode_jsonl_path(dir.path(), &episode);
 
-        let output = read_episode_lines(&path, None, None).await.unwrap();
+        let output = read_episode_lines(&path, None, None, None).await.unwrap();
         assert!(
             output.contains("...(truncated)"),
             "long tool result should be truncated"
@@ -846,6 +900,41 @@ mod tests {
         assert!(
             !output.contains(&long_content),
             "full long content should not appear"
+        );
+        assert!(
+            output.contains("showing 500 of 1000 chars"),
+            "truncation notice should report the original length: {output}"
+        );
+        assert!(
+            output.contains("expand_line=3"),
+            "truncation notice should point at expand_line for this line: {output}"
+        );
+
+        // expand_line retrieves the full content, uncut.
+        let full = read_episode_lines(&path, None, None, Some(3))
+            .await
+            .unwrap();
+        assert!(
+            full.contains(&long_content),
+            "expand_line should return the full untruncated content: {full}"
+        );
+        assert!(
+            !full.contains("...(truncated)"),
+            "expand_line output should not be truncated: {full}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_episode_lines_expand_line_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_sample_transcript(dir.path()).await;
+
+        let output = read_episode_lines(&path, None, None, Some(999))
+            .await
+            .unwrap();
+        assert!(
+            output.contains("does not exist"),
+            "an out-of-range expand_line should say so, not panic or error: {output}"
         );
     }
 

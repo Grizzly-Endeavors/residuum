@@ -522,7 +522,7 @@ mod tests {
             EventKind::Create(CreateKind::File),
             &[
                 ".index/seg",
-                "memory.db",
+                "memory/vectors.db",
                 ".a.md.0badf00d.residuum-tmp",
                 "a.md",
             ],
@@ -612,6 +612,9 @@ mod tests {
     async fn os_notifications_flow_through_the_feed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
+        // Created before the watcher starts, so its own (visible) directory
+        // creation isn't part of the change list this test asserts on.
+        std::fs::create_dir(root.join("memory")).unwrap();
         let bus = crate::bus::spawn_broker();
         let mut sub = bus.subscribe(topics::Workspace).await.unwrap();
         let (health_tx, mut health_rx) = watch::channel(WatchHealth::Starting);
@@ -624,7 +627,7 @@ mod tests {
 
         std::fs::create_dir(root.join(".index")).unwrap();
         std::fs::write(root.join(".index").join("seg"), "x").unwrap();
-        std::fs::write(root.join("store.db"), "x").unwrap();
+        std::fs::write(root.join("memory").join("vectors.db"), "x").unwrap();
         crate::util::fs::atomic_write(&root.join("a.md"), "hello")
             .await
             .unwrap();

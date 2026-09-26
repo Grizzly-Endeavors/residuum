@@ -826,20 +826,22 @@ async fn refuse_if_dir_holds_internal_data(
     relative: &str,
 ) -> Result<(), (StatusCode, String)> {
     let owned = dir.to_path_buf();
-    let holds = tokio::task::spawn_blocking(move || dir_holds_internal_data(&owned))
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to check {relative} for internal data: {e}"),
-            )
-        })?
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to check {relative} for internal data: {e}"),
-            )
-        })?;
+    let owned_relative = relative.to_string();
+    let holds =
+        tokio::task::spawn_blocking(move || dir_holds_internal_data(&owned, &owned_relative))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to check {relative} for internal data: {e}"),
+                )
+            })?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to check {relative} for internal data: {e}"),
+                )
+            })?;
     if holds {
         return Err((
             StatusCode::FORBIDDEN,
@@ -972,15 +974,19 @@ pub(super) async fn api_workspace_mkdir(
 /// A file replacing a file is left to the rename itself, which replaces the
 /// target in one step on every platform (on Windows `std::fs::rename` uses
 /// `MOVEFILE_REPLACE_EXISTING`), so a failed move never loses the existing
-/// file. Only when a directory is involved on either side is the destination
-/// cleared first, since no platform renames over a non-empty directory or
-/// between a file and a directory.
+/// file. Only when a directory is involved on either side does the
+/// destination need clearing first, since no platform renames over a
+/// non-empty directory or between a file and a directory — and even then,
+/// it's moved aside rather than deleted outright: returns `Some(aside_path)`
+/// for the caller to remove once its own rename onto `to_path` succeeds, or
+/// to rename back onto `to_path` if that rename fails, so a failed move
+/// never destroys what was there before.
 async fn ready_move_destination(
     to_path: &Path,
     to_relative: &str,
     overwrite: bool,
     source_is_dir: bool,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<Option<PathBuf>, (StatusCode, String)> {
     let to_exists = match tokio::fs::metadata(to_path).await {
         Ok(meta) => Some(meta),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -1013,28 +1019,87 @@ async fn ready_move_destination(
     })?;
 
     let Some(existing) = to_exists else {
-        return Ok(());
+        return Ok(None);
     };
     if !existing.is_dir() && !source_is_dir {
-        return Ok(());
+        return Ok(None);
     }
     if existing.is_dir() {
         refuse_if_dir_holds_internal_data(to_path, to_relative).await?;
-        tokio::fs::remove_dir_all(to_path).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to remove existing destination directory: {e}"),
-            )
-        })?;
-    } else {
-        tokio::fs::remove_file(to_path).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to remove existing destination file: {e}"),
-            )
-        })?;
     }
-    Ok(())
+
+    let aside = aside_path_for(to_path)?;
+    tokio::fs::rename(to_path, &aside).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to move the existing destination aside: {e}"),
+        )
+    })?;
+    Ok(Some(aside))
+}
+
+/// A same-directory temp path to move an existing destination aside to
+/// before it's cleared, so a failure between clearing it and completing the
+/// incoming rename never destroys data. Named like
+/// [`crate::util::fs::atomic_write`]'s temp files so
+/// [`crate::workspace::access::is_blocked_path`] (via
+/// [`crate::util::fs::is_atomic_write_temp`]) hides it from listings and the
+/// change feed for the brief window it exists.
+fn aside_path_for(path: &Path) -> Result<PathBuf, (StatusCode, String)> {
+    let dir = path.parent().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("path has no parent directory: {}", path.display()),
+        )
+    })?;
+    let filename = path
+        .file_name()
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("path has no filename: {}", path.display()),
+            )
+        })?
+        .to_string_lossy();
+    let suffix: u32 = rand::random();
+    Ok(dir.join(format!(".{filename}.{suffix:08x}.residuum-tmp")))
+}
+
+/// Remove whatever [`ready_move_destination`] moved aside, now that the
+/// incoming rename onto its original path has succeeded. A failure here
+/// only strands a hidden temp file — the move itself already succeeded —
+/// so it's logged rather than turned into an error response.
+async fn cleanup_aside(aside: &Path) {
+    let metadata = match tokio::fs::metadata(aside).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(path = %aside.display(), error = %e, "failed to stat the moved-aside destination for cleanup");
+            return;
+        }
+    };
+    let result = if metadata.is_dir() {
+        tokio::fs::remove_dir_all(aside).await
+    } else {
+        tokio::fs::remove_file(aside).await
+    };
+    if let Err(e) = result {
+        tracing::warn!(path = %aside.display(), error = %e, "failed to remove the moved-aside destination after a successful move; it may need manual cleanup");
+    }
+}
+
+/// Restore what [`ready_move_destination`] moved aside, because the
+/// incoming rename onto its original path failed. Logged at `error` rather
+/// than `warn`: if this rename-back itself fails, the original destination
+/// is stranded at `aside` and needs manual recovery.
+async fn restore_aside(aside: &Path, to_path: &Path) {
+    if let Err(e) = tokio::fs::rename(aside, to_path).await {
+        tracing::error!(
+            aside = %aside.display(),
+            to = %to_path.display(),
+            error = %e,
+            "failed to restore the destination moved aside after a failed move; it is stranded at the aside path and needs manual recovery"
+        );
+    }
 }
 
 /// `POST /api/workspace/move` — move or rename a workspace file or
@@ -1112,16 +1177,24 @@ pub(super) async fn api_workspace_move(
         ));
     }
 
-    ready_move_destination(&to_path, to_relative, req.overwrite, from_metadata.is_dir()).await?;
+    let aside =
+        ready_move_destination(&to_path, to_relative, req.overwrite, from_metadata.is_dir())
+            .await?;
 
     checkpoint_before_destructive_action(&state, &format!("move {from_relative} to {to_relative}"))
         .await;
-    tokio::fs::rename(&from_path, &to_path).await.map_err(|e| {
-        (
+    if let Err(e) = tokio::fs::rename(&from_path, &to_path).await {
+        if let Some(aside) = &aside {
+            restore_aside(aside, &to_path).await;
+        }
+        return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to move {from_relative} to {to_relative}: {e}"),
-        )
-    })?;
+        ));
+    }
+    if let Some(aside) = &aside {
+        cleanup_aside(aside).await;
+    }
 
     let version = if from_metadata.is_file() {
         let metadata = tokio::fs::metadata(&to_path).await.map_err(|e| {
@@ -1244,8 +1317,10 @@ mod tests {
         tokio::fs::write(ws_dir.join("skills").join("research.md"), "skill content")
             .await
             .unwrap();
-        // Create a blocked file to verify filtering
-        tokio::fs::write(ws_dir.join("vectors.db"), "binary data")
+        // Create Residuum's own database file to verify filtering; a
+        // same-named file elsewhere would not be blocked.
+        tokio::fs::create_dir(ws_dir.join("memory")).await.unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "binary data")
             .await
             .unwrap();
 
@@ -1259,13 +1334,24 @@ mod tests {
         assert!(names.contains(&"SOUL.md"));
         assert!(names.contains(&"notes.md"));
         assert!(names.contains(&"skills"));
-        assert!(!names.contains(&"vectors.db"));
         for entry in &entries.0 {
             assert!(
                 !entry.version.is_empty(),
                 "every entry should carry a version"
             );
         }
+
+        // Residuum's own database file is filtered out of the directory it's in.
+        let memory_entries = api_workspace_files(
+            Query(FilesQuery {
+                path: Some("memory".to_string()),
+            }),
+            State(state.clone()),
+        )
+        .await
+        .unwrap();
+        let memory_names: Vec<&str> = memory_entries.0.iter().map(|e| e.name.as_str()).collect();
+        assert!(!memory_names.contains(&"vectors.db"));
 
         // Read a file
         let response = api_workspace_file_read(
@@ -1836,7 +1922,7 @@ mod tests {
 
         let err = api_workspace_raw_write(
             Query(FileQuery {
-                path: "vectors.db".to_string(),
+                path: "memory/vectors.db".to_string(),
             }),
             State(state),
             HeaderMap::new(),
@@ -2001,15 +2087,17 @@ mod tests {
     async fn delete_blocked_path_answers_403() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
-        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        tokio::fs::write(ws_dir.join("vectors.db"), "x")
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "x")
             .await
             .unwrap();
         let state = make_state(ws_dir);
 
         let err = api_workspace_delete(
             Query(DeleteFileQuery {
-                path: "vectors.db".to_string(),
+                path: "memory/vectors.db".to_string(),
                 recursive: false,
             }),
             State(state),
@@ -2389,6 +2477,123 @@ mod tests {
         assert!(!ws_dir.join("a.md").exists());
     }
 
+    #[tokio::test]
+    async fn move_directory_onto_existing_directory_with_overwrite_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        tokio::fs::create_dir_all(ws_dir.join("src")).await.unwrap();
+        tokio::fs::write(ws_dir.join("src/file.md"), "new-content")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(ws_dir.join("dest"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("dest/old.md"), "old-content")
+            .await
+            .unwrap();
+        let state = make_state(ws_dir.clone());
+
+        let response = api_workspace_move(
+            State(state),
+            HeaderMap::new(),
+            Json(MoveRequest {
+                from: "src".to_string(),
+                to: "dest".to_string(),
+                overwrite: true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!ws_dir.join("src").exists());
+        assert!(!ws_dir.join("dest/old.md").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(ws_dir.join("dest/file.md"))
+                .await
+                .unwrap(),
+            "new-content"
+        );
+        // No stray aside temp file left behind in the parent directory.
+        let mut entries = tokio::fs::read_dir(&ws_dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(e) = entries.next_entry().await.unwrap() {
+            names.push(e.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(names, vec!["dest".to_string()], "got: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn ready_move_destination_moves_an_existing_directory_aside_instead_of_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let to_path = dir.path().join("dest");
+        tokio::fs::create_dir_all(&to_path).await.unwrap();
+        tokio::fs::write(to_path.join("keepsake.md"), "precious")
+            .await
+            .unwrap();
+
+        let aside = ready_move_destination(&to_path, "dest", true, true)
+            .await
+            .unwrap()
+            .expect("an existing directory destination should be moved aside, not deleted");
+
+        assert!(
+            !to_path.exists(),
+            "the original path should be clear for the incoming rename"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(aside.join("keepsake.md"))
+                .await
+                .unwrap(),
+            "precious",
+            "the aside path should hold the original data, untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_aside_puts_the_original_destination_back_after_a_failed_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let to_path = dir.path().join("dest");
+        tokio::fs::create_dir_all(&to_path).await.unwrap();
+        tokio::fs::write(to_path.join("keepsake.md"), "precious")
+            .await
+            .unwrap();
+
+        let aside = ready_move_destination(&to_path, "dest", true, true)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Simulates the incoming rename failing after the destination was
+        // cleared: the original data must come back exactly as it was.
+        restore_aside(&aside, &to_path).await;
+
+        assert!(!aside.exists(), "the aside path should be gone");
+        assert_eq!(
+            tokio::fs::read_to_string(to_path.join("keepsake.md"))
+                .await
+                .unwrap(),
+            "precious",
+            "a failed move must never lose the original destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_aside_removes_the_moved_aside_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let to_path = dir.path().join("dest");
+        tokio::fs::create_dir_all(&to_path).await.unwrap();
+
+        let aside = ready_move_destination(&to_path, "dest", true, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(aside.exists());
+
+        cleanup_aside(&aside).await;
+
+        assert!(!aside.exists(), "the aside path should be cleaned up");
+    }
+
     /// A workspace whose `memory/` holds a search index next to ordinary notes.
     async fn workspace_with_memory_index(dir: &Path) -> PathBuf {
         let ws_dir = dir.join("workspace");
@@ -2550,8 +2755,10 @@ mod tests {
     async fn move_blocked_path_answers_403() {
         let dir = tempfile::tempdir().unwrap();
         let ws_dir = dir.path().join("workspace");
-        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
-        tokio::fs::write(ws_dir.join("vectors.db"), "x")
+        tokio::fs::create_dir_all(ws_dir.join("memory"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws_dir.join("memory").join("vectors.db"), "x")
             .await
             .unwrap();
         let state = make_state(ws_dir);
@@ -2560,7 +2767,7 @@ mod tests {
             State(state),
             HeaderMap::new(),
             Json(MoveRequest {
-                from: "vectors.db".to_string(),
+                from: "memory/vectors.db".to_string(),
                 to: "dest.db".to_string(),
                 overwrite: false,
             }),

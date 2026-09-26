@@ -345,12 +345,12 @@ pub fn continuation_request(task: &Task) -> SendMessageRequest {
     }
 }
 
-/// Longest excerpt of any one caller message repeated in a continuation.
-const CONTINUATION_EXCERPT_CHARS: usize = 2000;
-
 /// The continuation prompt: what happened, plus the caller's own messages on
 /// the task, so the resumed session knows which task it is finishing even
 /// when the interrupted run left no episode behind.
+///
+/// Caller messages are passed in full, not excerpted: cutting them risked
+/// losing the instruction that matters most to finishing the task correctly.
 fn continuation_text(task: &Task) -> String {
     let mut text = String::from(
         "[Residuum restarted while this A2A task was in progress. Continue it where you \
@@ -362,7 +362,7 @@ fn continuation_text(task: &Task) -> String {
         .flatten()
         .filter(|message| message.role == a2a::Role::User && !is_synthetic(message))
         .map(|message| {
-            let joined: String = message
+            message
                 .parts
                 .iter()
                 .filter_map(|part| match &part.content {
@@ -372,8 +372,7 @@ fn continuation_text(task: &Task) -> String {
                     | a2a::PartContent::Data(_) => None,
                 })
                 .collect::<Vec<_>>()
-                .join("\n");
-            joined.chars().take(CONTINUATION_EXCERPT_CHARS).collect()
+                .join("\n")
         })
         .filter(|excerpt: &String| !excerpt.is_empty())
         .collect();
@@ -501,6 +500,17 @@ mod tests {
             text.matches("Residuum restarted").count(),
             1,
             "earlier synthetic continuations are not repeated: {text}"
+        );
+    }
+
+    #[test]
+    fn continuation_passes_a_caller_message_in_full_past_the_old_cap() {
+        let long_request = "a".repeat(2500);
+        let task = task_with_history(vec![user_message(&long_request, false)]);
+        let text = continuation_text(&task);
+        assert!(
+            text.contains(&long_request),
+            "a caller message over the old 2000-char excerpt cap should be passed in full"
         );
     }
 

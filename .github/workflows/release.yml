@@ -278,6 +278,15 @@ jobs:
           if [ -f "release-artifacts/ResiduumChat-macos/ResiduumChat-macos.zip" ]; then
             ASSETS+=("release-artifacts/ResiduumChat-macos/ResiduumChat-macos.zip")
           fi
+          # The updater hashes the download against this manifest before
+          # replacing the running binary. Basename-only entries match the
+          # asset names GitHub publishes from these paths.
+          : > SHA256SUMS
+          for asset in "${ASSETS[@]}"; do
+            hash=$(sha256sum "$asset" | cut -d' ' -f1)
+            printf '%s  %s\n' "$hash" "$(basename "$asset")" >> SHA256SUMS
+          done
+          ASSETS+=("SHA256SUMS")
           gh release create "${{ needs.version.outputs.tag }}" \
             --generate-notes \
             "${ASSETS[@]}"
@@ -312,4 +321,9 @@ jobs:
             echo "| ResiduumChat-macos | skipped (no mac/ changes) |" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "| ResiduumChat-macos | ${{ needs.mac-app.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f SHA256SUMS ]; then
+            echo "| SHA256SUMS | uploaded |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| SHA256SUMS | missing |" >> "$GITHUB_STEP_SUMMARY"
           fi

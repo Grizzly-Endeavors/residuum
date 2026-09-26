@@ -94,7 +94,7 @@ Semantic similarity search via embeddings. Available when an embedding provider 
 
 ### Hybrid Search Flow
 
-BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge (`vector_weight` and `text_weight`, rescaled to sum to 1 so the merged score stays in [0,1]; only their ratio matters) → optional temporal decay → filter by min_score → return top N.
+BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge (`vector_weight` and `text_weight`, rescaled to sum to 1 so the merged score stays in [0,1]; only their ratio matters) → optional temporal decay → filter by min_score → return top N. A result dropped by the min_score filter is not silently discarded: the caller learns how many were filtered (`memory_search`'s reply, or `below_threshold` on the HTTP endpoint), and can override the threshold for one search (`memory_search`'s `min_score` parameter, or the endpoint's `min_score` query parameter) to see them.
 
 Temporal decay never applies to wiki pages: they hold maintained knowledge, and staleness is handled by their `stale_after` field and the `wiki_lint` pulse rather than by age.
 
@@ -105,15 +105,16 @@ Temporal decay never applies to wiki pages: they hold maintained knowledge, and 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
 | `query` | string | yes | Supports AND, OR, phrase queries |
-| `limit` | integer | no | Max results. Default 5, cap 20 |
+| `limit` | integer | no | Max results. Default 5, no upper cap |
 | `source` | string enum | no | `"observations"`, `"episodes"`, or `"wiki"`; omit to search all three |
 | `date_from` | string | no | `YYYY-MM-DD`, inclusive lower bound |
 | `date_to` | string | no | `YYYY-MM-DD`, inclusive upper bound |
 | `episode_ids` | string[] | no | Limit to specific episode IDs (excludes wiki pages, which belong to no episode) |
+| `min_score` | number | no | Override the configured `[search].min_score` relevance threshold for this search only |
 
-A wiki result's ID is the page's workspace-relative path (`wiki/homelab/cluster.md`), ready for `read_file`.
+A wiki result's ID is the page's workspace-relative path (`wiki/homelab/cluster.md`), ready for `read_file`. When every match falls below the relevance threshold, the reply says so and names how many weaker matches were filtered, instead of reporting a flat "no results" — pass `min_score` lower to see them.
 
-`GET /api/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` runs the same hybrid search for workbench artifacts, with `episode_ids` unsupported (this endpoint has no equivalent parameter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, where `semantic` says whether vector search contributed to the results. A blank `q`, an unrecognized `source`, or a `date_from`/`date_to` that isn't `YYYY-MM-DD` answers `400`.
+`GET /api/memory/search?q=<query>&limit=<at least 1, default 10, no upper cap>&source=observations|episodes|wiki&date_from=&date_to=&min_score=<override>` runs the same hybrid search for workbench artifacts, with `episode_ids` unsupported (this endpoint has no equivalent parameter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic, below_threshold }`, where `semantic` says whether vector search contributed to the results and `below_threshold` counts results that scored under the threshold and were dropped. A blank `q`, an unrecognized `source`, or a `date_from`/`date_to` that isn't `YYYY-MM-DD` answers `400`.
 
 ### `memory_get`
 

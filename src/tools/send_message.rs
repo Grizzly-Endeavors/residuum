@@ -86,6 +86,23 @@ impl SendMessageTool {
     }
 }
 
+/// Per-platform attachment size limit for a `send_message` file, or `None`
+/// when the target endpoint has no platform-imposed limit residuum knows of.
+///
+/// Discord's free/non-boosted upload limit is 20 MB; Telegram Bot API's
+/// `sendDocument` limit is 50 MB. Every other endpoint — the web UI, A2A,
+/// Teams, or a notify-only channel — has no size cap here: it's not a
+/// residuum-imposed number, so it isn't enforced as one.
+fn platform_attachment_limit(endpoint_name: &str) -> Option<u64> {
+    if endpoint_name.contains("telegram") {
+        Some(50 * 1024 * 1024)
+    } else if endpoint_name.contains("discord") {
+        Some(20 * 1024 * 1024)
+    } else {
+        None
+    }
+}
+
 async fn validate_file_attachment(
     fp: &str,
     endpoint_name: &str,
@@ -93,13 +110,9 @@ async fn validate_file_attachment(
     let path = std::path::Path::new(fp);
     let att = crate::interfaces::attachment::FileAttachment::from_path(path).await?;
 
-    // Size limit: 50MB for Telegram, 25MB for others
-    let limit: u64 = if endpoint_name.contains("telegram") {
-        50 * 1024 * 1024
-    } else {
-        25 * 1024 * 1024
-    };
-    if att.size > limit {
+    if let Some(limit) = platform_attachment_limit(endpoint_name)
+        && att.size > limit
+    {
         let size_mb = att.size / (1024 * 1024);
         let limit_mb = limit / (1024 * 1024);
         return Err(format!(
@@ -857,5 +870,29 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error, "main can always message the owner");
+    }
+
+    #[test]
+    fn platform_attachment_limit_only_covers_discord_and_telegram() {
+        assert_eq!(platform_attachment_limit("discord"), Some(20 * 1024 * 1024));
+        assert_eq!(
+            platform_attachment_limit("telegram"),
+            Some(50 * 1024 * 1024)
+        );
+        assert_eq!(
+            platform_attachment_limit("ws"),
+            None,
+            "the web UI has no platform-imposed attachment size limit"
+        );
+        assert_eq!(
+            platform_attachment_limit("teams"),
+            None,
+            "Teams' attachment limit is not one residuum enforces here"
+        );
+        assert_eq!(
+            platform_attachment_limit("my-ntfy"),
+            None,
+            "a notify-only endpoint has no platform-imposed attachment size limit"
+        );
     }
 }

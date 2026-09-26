@@ -2,6 +2,7 @@
 //! for a new session run (pulse, action, webhook, or on-demand spawn).
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use anyhow::Context as _;
 use tokio::sync::{Mutex, Notify};
@@ -15,7 +16,9 @@ use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::ProviderSpec;
 use crate::config::{BackgroundConfig, BackgroundModelTier};
 use crate::inference::retry::RetryConfig;
-use crate::inference::{CompletionOptions, SharedHttpClient, build_provider_chain};
+use crate::inference::{
+    CompletionOptions, SharedHttpClient, build_provider_chain_with_shared_notices,
+};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -27,6 +30,33 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::messaging::AgentMessenger;
 use super::subagent::{SubAgentResources, build_subagent_resources};
 use super::types::SubAgentBuildConfig;
+
+/// Shared failover-transition counters for the background model tiers.
+///
+/// A background tier's provider chain is rebuilt fresh for every session
+/// spawn (see [`build_spawn_resources`]), unlike the main model's or the
+/// subconscious's, which are built once and live until the next config
+/// reload. Sharing one counter per tier here — held on `SpawnContext` for
+/// that tier's whole lifetime, across every spawn that uses it — means a
+/// transition notices exactly once when the tier actually fails over or
+/// recovers, rather than once per spawn made while it's already degraded.
+#[derive(Clone, Default)]
+pub(crate) struct BackgroundTierActiveIndex {
+    small: Arc<AtomicUsize>,
+    medium: Arc<AtomicUsize>,
+    large: Arc<AtomicUsize>,
+}
+
+impl BackgroundTierActiveIndex {
+    /// This tier's shared counter, cloned (the `Arc`, not the count).
+    fn for_tier(&self, tier: BackgroundModelTier) -> Arc<AtomicUsize> {
+        match tier {
+            BackgroundModelTier::Small => Arc::clone(&self.small),
+            BackgroundModelTier::Medium => Arc::clone(&self.medium),
+            BackgroundModelTier::Large => Arc::clone(&self.large),
+        }
+    }
+}
 
 /// Everything needed to fork a new session run from the gateway event loop.
 pub(crate) struct SpawnContext {
@@ -106,6 +136,9 @@ pub(crate) struct SpawnContext {
     /// Workspace and config checkpoint repositories, shared with main —
     /// backs the `workspace_history`/`workspace_restore` tools.
     pub(crate) checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Shared failover-transition counters for the background model tiers —
+    /// see [`BackgroundTierActiveIndex`].
+    pub(crate) bg_tier_active_index: BackgroundTierActiveIndex,
 }
 
 /// Identity and origin of the session [`build_spawn_resources`] is forking,
@@ -167,6 +200,43 @@ fn log_dropped_fallbacks(tier: BackgroundModelTier, dropped: &[crate::inference:
     }
 }
 
+/// Load identity fresh per fork and snapshot memory at fork time.
+///
+/// Identity (SOUL.md/AGENTS.md/etc.) is loaded fresh per fork so sessions
+/// see the current files; a read failure here fails the spawn — the caller
+/// logs it loudly. The observation log and recent-context narrative are
+/// snapshotted at fork time per the design's "Fork contents": a session
+/// never sees merges that happen after it forked. A read failure snapshotting
+/// either degrades gracefully (the run starts with no memory context) rather
+/// than failing the spawn: an agent missing background is better than no
+/// background work at all.
+async fn load_fork_identity_and_memory(
+    ctx: &SpawnContext,
+) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
+    let identity = IdentityFiles::load(&ctx.layout)
+        .await
+        .context("failed to load identity files for session fork")?;
+
+    let observations = match load_observations(&ctx.layout.observations_json()).await {
+        Ok(obs) => obs,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load observation snapshot for session fork");
+            None
+        }
+    };
+    let recent_context = match load_recent_context_narrative(&ctx.layout.recent_context_json())
+        .await
+    {
+        Ok(narrative) => narrative,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load recent-context snapshot for session fork");
+            None
+        }
+    };
+
+    Ok((identity, observations, recent_context))
+}
+
 #[tracing::instrument(skip_all, fields(tier = ?tier, skill = skill.unwrap_or("none")))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
@@ -187,11 +257,14 @@ pub(crate) async fn build_spawn_resources(
         .models
         .resolve_tier(tier, &ctx.main_provider_specs);
 
-    let (provider, dropped) = build_provider_chain(
+    let (provider, dropped) = build_provider_chain_with_shared_notices(
         &specs,
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
+        ctx.publisher.clone(),
+        format!("background sessions ({tier} tier)"),
+        ctx.bg_tier_active_index.for_tier(*tier),
     )
     .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
     log_dropped_fallbacks(*tier, &dropped);
@@ -212,31 +285,7 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
-    // Load identity fresh per fork so sessions see current SOUL.md/AGENTS.md/
-    // etc. A read failure fails the spawn — the caller logs it loudly.
-    let identity = IdentityFiles::load(&ctx.layout)
-        .await
-        .context("failed to load identity files for session fork")?;
-
-    // Snapshot memory at fork time. A read failure here degrades gracefully
-    // (the run starts with no memory context) rather than failing the spawn:
-    // an agent missing background is better than no background work at all.
-    let observations = match load_observations(&ctx.layout.observations_json()).await {
-        Ok(obs) => obs,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load observation snapshot for session fork");
-            None
-        }
-    };
-    let recent_context = match load_recent_context_narrative(&ctx.layout.recent_context_json())
-        .await
-    {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load recent-context snapshot for session fork");
-            None
-        }
-    };
+    let (identity, observations, recent_context) = load_fork_identity_and_memory(ctx).await?;
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
@@ -284,4 +333,30 @@ pub(crate) async fn build_spawn_resources(
         build_config,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_tier_gets_its_own_stable_counter() {
+        let counters = BackgroundTierActiveIndex::default();
+
+        let small_a = counters.for_tier(BackgroundModelTier::Small);
+        let small_b = counters.for_tier(BackgroundModelTier::Small);
+        let medium = counters.for_tier(BackgroundModelTier::Medium);
+        let large = counters.for_tier(BackgroundModelTier::Large);
+
+        // Same tier, two lookups: the same underlying counter (an `Arc`
+        // clone), so a store through one is visible through the other —
+        // this is what lets many short-lived spawns for one tier share
+        // transition state.
+        small_a.store(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(small_b.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Different tiers never share a counter.
+        assert_eq!(medium.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(large.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 }

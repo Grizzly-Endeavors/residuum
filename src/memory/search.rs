@@ -45,6 +45,19 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// The result of a [`HybridSearcher::search`] call.
+#[derive(Debug, Clone)]
+pub struct SearchOutcome {
+    /// Results at or above the min-score threshold, sorted and limited.
+    pub results: Vec<SearchResult>,
+    /// How many results among the retrieved candidates scored below the
+    /// min-score threshold and were dropped. Not a count of every weaker
+    /// match in the whole index — only among the candidates this search
+    /// actually retrieved — but enough to tell the caller there's more to
+    /// see with a lower threshold rather than reporting a flat "no results".
+    pub below_threshold: usize,
+}
+
 /// Filters for narrowing search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
@@ -878,6 +891,11 @@ impl HybridSearcher {
 
     /// Search using hybrid BM25 + vector scoring, or BM25-only fallback.
     ///
+    /// `min_score_override`, when given, replaces the configured
+    /// `[search].min_score` threshold for this call only — e.g. so a caller
+    /// that got no strong matches can retry with a lower bar to see the
+    /// weaker ones [`SearchOutcome::below_threshold`] reported.
+    ///
     /// # Errors
     /// Returns an error if BM25 search or embedding generation fails.
     #[tracing::instrument(skip_all, fields(limit, query))]
@@ -886,8 +904,14 @@ impl HybridSearcher {
         query: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> anyhow::Result<Vec<SearchResult>> {
+        min_score_override: Option<f64>,
+    ) -> anyhow::Result<SearchOutcome> {
         let candidates = limit * self.cfg.candidate_multiplier;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
+        )]
+        let min_score = min_score_override.unwrap_or(self.cfg.min_score) as f32;
 
         if filters.source.is_none_or(|s| s == DocSource::Wiki) {
             self.sync_wiki().await;
@@ -915,19 +939,19 @@ impl HybridSearcher {
             // search ran.
             let scores: Vec<f32> = results.iter().map(|r| r.score).collect();
             let normalized = normalize_scores(&scores);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
-            )]
-            let min_score = self.cfg.min_score as f32;
-            results = results
+            let total = results.len();
+            let mut results: Vec<SearchResult> = results
                 .into_iter()
                 .zip(normalized)
                 .filter(|(_, norm)| *norm >= min_score)
                 .map(|(r, _)| r)
                 .collect();
+            let below_threshold = total - results.len();
             results.truncate(limit);
-            return Ok(results);
+            return Ok(SearchOutcome {
+                results,
+                below_threshold,
+            });
         };
 
         // Embed the query
@@ -957,7 +981,13 @@ impl HybridSearcher {
         .context("vector search task failed")??;
 
         // Merge results
-        let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, candidates);
+        let (mut merged, below_threshold) = merge_hybrid_results(
+            &bm25_results,
+            &vec_results,
+            &self.cfg,
+            min_score,
+            candidates,
+        );
 
         // Apply temporal decay after merge if enabled
         if self.cfg.temporal_decay {
@@ -971,7 +1001,10 @@ impl HybridSearcher {
         }
 
         merged.truncate(limit);
-        Ok(merged)
+        Ok(SearchOutcome {
+            results: merged,
+            below_threshold,
+        })
     }
 
     /// Get a reference to the underlying BM25 index.
@@ -1000,12 +1033,16 @@ fn normalize_scores(scores: &[f32]) -> Vec<f32> {
 }
 
 /// Merge BM25 and vector results into hybrid-scored `SearchResult` values.
+///
+/// Returns the results at or above `min_score`, plus how many candidates
+/// scored below it and were dropped.
 fn merge_hybrid_results(
     bm25_results: &[SearchResult],
     vec_results: &[super::vector_store::VectorSearchResult],
     cfg: &SearchConfig,
+    min_score: f32,
     limit: usize,
-) -> Vec<SearchResult> {
+) -> (Vec<SearchResult>, usize) {
     // Normalize BM25 scores
     let bm25_scores: Vec<f32> = bm25_results.iter().map(|r| r.score).collect();
     let norm_bm25 = normalize_scores(&bm25_scores);
@@ -1062,19 +1099,16 @@ fn merge_hybrid_results(
         reason = "search weights are in [0.0, 1.0], safe to truncate to f32"
     )]
     let vec_w = cfg.vector_weight as f32;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
-    )]
-    let min_score = cfg.min_score as f32;
 
     let mut scored: Vec<SearchResult> = Vec::new();
+    let mut below_threshold = 0_usize;
     for id in &all_ids {
         let bm25_score = bm25_map.get(id).map_or(0.0, |(s, _)| *s);
         let vec_score = vec_map.get(id).map_or(0.0, |(s, _)| *s);
         let hybrid = text_w * bm25_score + vec_w * vec_score;
 
         if hybrid < min_score {
+            below_threshold += 1;
             continue;
         }
 
@@ -1111,7 +1145,7 @@ fn merge_hybrid_results(
     });
     scored.truncate(limit);
 
-    scored
+    (scored, below_threshold)
 }
 
 /// Apply exponential temporal decay to search result scores.
@@ -1916,7 +1950,8 @@ mod tests {
         let bm25 = vec![make_bm25_result("a", 5.0), make_bm25_result("b", 3.0)];
         let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
 
-        let merged = merge_hybrid_results(&bm25, &vec_results, &test_search_config(), 10);
+        let cfg = test_search_config();
+        let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 10);
         assert_eq!(merged.len(), 2, "should return all bm25 results");
         assert_eq!(merged[0].id, "a", "highest bm25 should be first");
     }
@@ -1926,7 +1961,8 @@ mod tests {
         let bm25: Vec<SearchResult> = vec![];
         let vec_results = vec![make_vec_result("x", 0.1), make_vec_result("y", 0.5)];
 
-        let merged = merge_hybrid_results(&bm25, &vec_results, &test_search_config(), 10);
+        let cfg = test_search_config();
+        let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 10);
         assert_eq!(merged.len(), 2, "should return all vector results");
         // x has smaller distance (0.1) → higher similarity → higher score
         assert_eq!(merged[0].id, "x", "closest vector should be first");
@@ -1941,7 +1977,7 @@ mod tests {
         ];
 
         let cfg = test_search_config();
-        let merged = merge_hybrid_results(&bm25, &vec_results, &cfg, 10);
+        let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 10);
 
         // "a" appears in both → hybrid score = text_w * norm_bm25 + vec_w * norm_vec
         // "b" is bm25-only, "c" is vec-only
@@ -1959,7 +1995,7 @@ mod tests {
             min_score: 0.5, // high threshold
             ..test_search_config()
         };
-        let merged = merge_hybrid_results(&bm25, &vec_results, &cfg, 10);
+        let (merged, below_threshold) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.5, 10);
 
         // With only BM25, scores are normalized. "a" → 1.0, "b" → 0.0
         // hybrid("a") = 0.3 * 1.0 = 0.3 (below 0.5 threshold)
@@ -1967,6 +2003,10 @@ mod tests {
         // Both below threshold because text_weight is only 0.3
         // This is expected: without vector scores, max hybrid = text_weight * 1.0 = 0.3
         assert!(merged.is_empty(), "min_score filter should reduce results");
+        assert_eq!(
+            below_threshold, 2,
+            "both dropped results should be counted as below the threshold"
+        );
     }
 
     #[test]
@@ -1978,7 +2018,8 @@ mod tests {
         ];
         let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
 
-        let merged = merge_hybrid_results(&bm25, &vec_results, &test_search_config(), 2);
+        let cfg = test_search_config();
+        let (merged, _) = merge_hybrid_results(&bm25, &vec_results, &cfg, 0.0, 2);
         assert_eq!(merged.len(), 2, "should respect limit");
     }
 
@@ -1997,11 +2038,62 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let results = rt
-            .block_on(searcher.search("rust ownership", 5, &no_filters()))
+        let outcome = rt
+            .block_on(searcher.search("rust ownership", 5, &no_filters(), None))
             .unwrap();
-        assert!(!results.is_empty(), "BM25 fallback should find results");
-        assert_eq!(results[0].source_type, DocSource::Observation);
+        assert!(
+            !outcome.results.is_empty(),
+            "BM25 fallback should find results"
+        );
+        assert_eq!(outcome.results[0].source_type, DocSource::Observation);
+    }
+
+    #[test]
+    fn hybrid_searcher_min_score_override_surfaces_weaker_matches() {
+        // A single-result search always normalizes to score 1.0 (see
+        // `normalize_scores`), so it can never itself be filtered by
+        // min_score. Use two observations with a clear relevance gap so the
+        // weaker one normalizes below the threshold while the stronger one
+        // doesn't.
+        let (_dir, index) = create_test_index();
+        let strong = sample_observation("rust ownership rust ownership rust ownership model");
+        let weak = sample_observation("a passing, incidental mention of rust");
+        index
+            .index_observations("ep-001", "2026-02-19", &[strong, weak])
+            .unwrap();
+
+        let cfg = SearchConfig {
+            min_score: 0.9,
+            ..SearchConfig::default()
+        };
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, cfg);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let strict = rt
+            .block_on(searcher.search("rust ownership", 5, &no_filters(), None))
+            .unwrap();
+        assert_eq!(
+            strict.results.len(),
+            1,
+            "only the strongly-matching observation should pass a high threshold"
+        );
+        assert_eq!(
+            strict.below_threshold, 1,
+            "the filtered-out weaker match should be counted"
+        );
+
+        // Overriding min_score for this call surfaces it.
+        let relaxed = rt
+            .block_on(searcher.search("rust ownership", 5, &no_filters(), Some(0.0)))
+            .unwrap();
+        assert_eq!(
+            relaxed.results.len(),
+            2,
+            "a lower min_score override should surface the weaker match too"
+        );
     }
 
     // ── Temporal decay tests ─────────────────────────────────────────────

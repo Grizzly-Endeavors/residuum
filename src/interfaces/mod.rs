@@ -265,13 +265,7 @@ pub(crate) async fn inbox_add_from_command(
     tz: chrono_tz::Tz,
     ok_response: String,
 ) -> String {
-    let title: String = body
-        .lines()
-        .next()
-        .unwrap_or("Inbox message")
-        .chars()
-        .take(60)
-        .collect();
+    let title = crate::inbox::derive_title(body);
     match crate::inbox::quick_add(inbox_dir, &title, body, source, tz).await {
         Ok(_) => ok_response,
         Err(e) => format!("failed to add inbox item: {e}"),
@@ -654,6 +648,30 @@ mod tests {
             format_elapsed(chrono::Duration::seconds(-5)),
             "0m",
             "clock skew or a just-started session must not render negative"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_add_from_command_keeps_the_full_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let long_line = "a".repeat(100);
+        let body = format!("{long_line}\nmore body text");
+
+        inbox_add_from_command(
+            dir.path(),
+            &body,
+            "discord:someone",
+            chrono_tz::UTC,
+            "added".to_string(),
+        )
+        .await;
+
+        let mut entries = std::fs::read_dir(dir.path()).unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        let contents = std::fs::read_to_string(entry.path()).unwrap();
+        assert!(
+            contents.contains(&long_line),
+            "the title should keep the full first line, not truncate to 60 chars: {contents}"
         );
     }
 }

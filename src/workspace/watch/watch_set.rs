@@ -7,12 +7,6 @@ use super::WorkspaceChange;
 /// resync instead of a change list.
 pub const MAX_CHANGES_PER_FRAME: usize = 500;
 
-/// Most prefixes one connection may watch at once.
-const MAX_PREFIXES: usize = 256;
-
-/// Longest prefix accepted, in bytes.
-const MAX_PREFIX_BYTES: usize = 1024;
-
 /// Why a `watch_workspace` request was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidWatchPrefix {
@@ -24,10 +18,6 @@ pub enum InvalidWatchPrefix {
     LeavesWorkspace(String),
     #[error("can't watch {0:?}: it contains a character that can't appear in a workspace path")]
     InvalidCharacter(String),
-    #[error("can't watch a path longer than {MAX_PREFIX_BYTES} bytes")]
-    TooLong,
-    #[error("can't watch more than {MAX_PREFIXES} paths at once")]
-    TooMany,
 }
 
 /// The prefixes one connection watches. Empty means not watching.
@@ -52,13 +42,16 @@ pub enum WatchedChanges {
 impl WatchSet {
     /// Validate and normalize the prefixes of a `watch_workspace` request.
     ///
+    /// There is no cap on prefix count or length: a connection watching an
+    /// unreasonable number of paths, or a very long one, just costs more to
+    /// match against each batch — and a batch that matches too much already
+    /// degrades to a resync (see [`MAX_CHANGES_PER_FRAME`]) rather than
+    /// failing.
+    ///
     /// # Errors
-    /// Returns [`InvalidWatchPrefix`] for an absolute path, a `..` segment, a
-    /// backslash or NUL, an over-long prefix, or too many prefixes.
+    /// Returns [`InvalidWatchPrefix`] for an absolute path, a `..` segment,
+    /// or a backslash or NUL.
     pub fn parse(prefixes: Vec<String>) -> Result<Self, InvalidWatchPrefix> {
-        if prefixes.len() > MAX_PREFIXES {
-            return Err(InvalidWatchPrefix::TooMany);
-        }
         let mut normalized = Vec::with_capacity(prefixes.len());
         for prefix in prefixes {
             let prefix = normalize_prefix(prefix)?;
@@ -119,9 +112,6 @@ fn is_within(path: &str, ancestor: &str) -> bool {
 }
 
 fn normalize_prefix(prefix: String) -> Result<String, InvalidWatchPrefix> {
-    if prefix.len() > MAX_PREFIX_BYTES {
-        return Err(InvalidWatchPrefix::TooLong);
-    }
     if prefix.contains(['\\', '\0']) {
         return Err(InvalidWatchPrefix::InvalidCharacter(prefix));
     }
@@ -215,8 +205,21 @@ mod tests {
                 "{prefix}: {err:?}"
             );
         }
-        let too_many = (0..=MAX_PREFIXES).map(|i| format!("p{i}")).collect();
-        assert_eq!(WatchSet::parse(too_many), Err(InvalidWatchPrefix::TooMany));
+    }
+
+    #[test]
+    fn there_is_no_cap_on_prefix_count_or_length() {
+        let many: Vec<String> = (0..500).map(|i| format!("p{i}")).collect();
+        assert!(
+            WatchSet::parse(many).is_ok(),
+            "any number of prefixes should be accepted"
+        );
+
+        let long_prefix = vec!["a/".repeat(1000)];
+        assert!(
+            WatchSet::parse(long_prefix).is_ok(),
+            "a long prefix should be accepted"
+        );
     }
 
     #[test]

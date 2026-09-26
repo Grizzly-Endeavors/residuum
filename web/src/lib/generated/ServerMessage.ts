@@ -157,6 +157,12 @@ status: SessionRunStatus,
  */
 error: string | null, 
 /**
+ * Full technical cause chain behind `error`, shown behind the same
+ * expandable "details" toggle as a live `SessionError`. `None` when
+ * there's nothing richer to show.
+ */
+error_details: string | null, 
+/**
  * Episode the run was merged into, if it produced one.
  */
 episode_id: string | null, } | { "type": "session_turn_started", 

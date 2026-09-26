@@ -127,6 +127,12 @@ pub struct SessionSummary {
     pub outcome: Option<SessionRunStatus>,
     /// The failure reason, when `outcome` is `Failed`. `None` otherwise.
     pub error: Option<String>,
+    /// Full technical cause chain behind `error`, shown behind the same
+    /// expandable "details" toggle the web UI uses for a live `SessionError`.
+    /// `None` for a failure with nothing richer to show, and `None` for a
+    /// record written before this field existed.
+    #[serde(default)]
+    pub error_details: Option<String>,
     /// Set when this run is a pulse fire that started while its previous run
     /// was still live. `None` for every other trigger.
     pub overlap: Option<crate::bus::PulseOverlap>,
@@ -476,6 +482,11 @@ pub enum ServerMessage {
         status: SessionRunStatus,
         /// The failure, when `status` is `failed`.
         error: Option<String>,
+        /// Full technical cause chain behind `error`, shown behind the same
+        /// expandable "details" toggle as a live `SessionError`. `None` when
+        /// there's nothing richer to show.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_details: Option<String>,
         /// Episode the run was merged into, if it produced one.
         episode_id: Option<String>,
     },

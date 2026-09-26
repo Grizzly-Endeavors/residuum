@@ -349,7 +349,7 @@ impl RemoteTaskTracker {
         text: Option<String>,
         is_final: bool,
     ) -> Option<(TrackedTask, bool)> {
-        let (result, recovered, snapshot) = {
+        let (result, snapshot, streak_ended, sender_was_told) = {
             let mut store = self.store.write().await;
             let entry = store.tasks.get_mut(task_id)?;
             entry.state = state.to_string();
@@ -357,33 +357,42 @@ impl RemoteTaskTracker {
                 entry.last_status_text = Some(t);
             }
             entry.updated_at = Utc::now();
+            let streak_ended = entry.first_unreachable_at.take().is_some();
             // Captured before clearing: whether this successful contact
-            // ends a streak the sender was already told about, so exactly
-            // one recovery notice goes out — same one-notice-per-streak
-            // shape as `note_unreachable`'s own notice.
-            let recovered = entry.unreachable_notified;
-            entry.first_unreachable_at = None;
+            // ends a streak the sender and user were already told about,
+            // so exactly one recovery notice goes out per notified streak.
+            let sender_was_told = entry.unreachable_notified;
             entry.unreachable_notified = false;
             let should_deliver = is_final && !entry.notified_this_turn;
             if should_deliver {
                 entry.notified_this_turn = true;
             }
-            ((entry.clone(), should_deliver), recovered, store.clone())
+            let task = entry.clone();
+            (
+                (task, should_deliver),
+                store.clone(),
+                streak_ended,
+                sender_was_told,
+            )
         };
         self.persist(&snapshot).await;
-        if recovered {
-            tracing::info!(task_id, agent = %result.0.agent, "a2a remote task reachable again");
+        if streak_ended {
+            tracing::info!(task_id, agent = %result.0.agent, "a2a remote task poll recovered");
+        }
+        if sender_was_told {
             self.notify_unreachable_recovered(&result.0).await;
         }
         Some(result)
     }
 
-    /// Record an unreachable attempt against `task_id`. After the streak
-    /// passes [`UNREACHABLE_NOTICE_AFTER`], tells the sending agent (a
-    /// transcript note, same as before) and publishes a user-facing
-    /// notice — retries continue regardless, with the same backoff either
-    /// way. [`Self::update_state`] sends a matching notice once the task
-    /// becomes reachable again.
+    /// Record an unreachable attempt against `task_id`. Logs at `warn` once
+    /// when the failure streak starts, not on every poll — see
+    /// [`Self::update_state`] for the matching single-line recovery log
+    /// (polling never gives up; it retries with backoff until it recovers or
+    /// the task is cancelled). After the streak passes
+    /// [`UNREACHABLE_NOTICE_AFTER`], tells the sending agent (a transcript
+    /// note) and publishes a user-facing notice, once per streak;
+    /// [`Self::update_state`] sends a matching notice to both on recovery.
     async fn note_unreachable(&self, task_id: &str, reason: &str) {
         let outcome = {
             let mut store = self.store.write().await;
@@ -391,7 +400,7 @@ impl RemoteTaskTracker {
                 return;
             };
             let now = Utc::now();
-            let is_new_streak = entry.first_unreachable_at.is_none();
+            let is_streak_start = entry.first_unreachable_at.is_none();
             let first = *entry.first_unreachable_at.get_or_insert(now);
             let should_notify =
                 !entry.unreachable_notified && now - first >= UNREACHABLE_NOTICE_AFTER;
@@ -399,7 +408,7 @@ impl RemoteTaskTracker {
                 entry.unreachable_notified = true;
             }
             (
-                is_new_streak,
+                is_streak_start,
                 should_notify,
                 entry.sender_address.clone(),
                 entry.agent.clone(),
@@ -407,14 +416,10 @@ impl RemoteTaskTracker {
                 store.clone(),
             )
         };
-        let (is_new_streak, should_notify, sender, agent, hop_count, snapshot) = outcome;
+        let (is_streak_start, should_notify, sender, agent, hop_count, snapshot) = outcome;
         self.persist(&snapshot).await;
-        // Logged once when a streak starts, not on every failed poll —
-        // repeat failures within the same streak stay quiet until it
-        // resolves, either by recovering or by crossing the notice
-        // threshold below.
-        if is_new_streak {
-            tracing::warn!(task_id, agent = %agent, reason, "a2a remote task became unreachable");
+        if is_streak_start {
+            tracing::warn!(task_id, agent = %agent, reason, "a2a remote task poll failing; will keep retrying");
         }
         if should_notify {
             let content = format!(
@@ -933,6 +938,60 @@ mod tests {
                 .awaiting_reply_task_for("main", "laptop")
                 .await
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn note_unreachable_starts_a_streak_once_and_recovery_clears_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, _bus) = messenger();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "t1".to_string(),
+                "c1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+
+        tracker.note_unreachable("t1", "connection refused").await;
+        let after_first_failure = tracker.get("t1").await.unwrap();
+        let first_seen = after_first_failure.first_unreachable_at;
+        assert!(
+            first_seen.is_some(),
+            "a failure should start the unreachable streak"
+        );
+
+        // A second failure doesn't move the streak's start time — this is
+        // what keeps note_unreachable's own warn log to once per streak
+        // instead of once per poll.
+        tracker.note_unreachable("t1", "connection refused").await;
+        let after_second_failure = tracker.get("t1").await.unwrap();
+        assert_eq!(
+            after_second_failure.first_unreachable_at, first_seen,
+            "the streak start should not move on repeated failures"
+        );
+
+        // A successful poll clears the streak, which is what the matching
+        // recovery log in update_state fires on.
+        tracker
+            .update_state("t1", "working", None, false)
+            .await
+            .unwrap();
+        let after_recovery = tracker.get("t1").await.unwrap();
+        assert!(
+            after_recovery.first_unreachable_at.is_none(),
+            "recovery should clear the unreachable streak"
         );
     }
 

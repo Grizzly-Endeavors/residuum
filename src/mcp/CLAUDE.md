@@ -34,8 +34,15 @@ built-in namespace is first reserved), not per turn, to avoid log spam.
   for a newly connecting server.
 - `tool_definitions` — returns the de-duplicated union actually offered to the
   model: reserved (built-in) names dropped, later MCP duplicates dropped.
-- `call_tool` — dispatches to the first running server owning the name,
-  consistent with the de-duplication above.
+- `resolve_tool` — resolves a name to the first running server owning it,
+  consistent with the de-duplication above, and returns a cheap-to-clone
+  `McpClientHandle` that doesn't borrow the registry. This is what
+  `agent/turn.rs::execute_mcp_tool` calls while holding the registry's read
+  lock, dropping that guard before awaiting the call on the handle — so a
+  slow or hung MCP server never holds the lock for the call's duration.
+  `call_tool` is a `resolve_tool` + await convenience wrapper for callers
+  that aren't holding the registry behind a lock they need to release
+  first (tests, and any other owned-registry caller).
 
 Because the registry hands `agent/turn.rs` an already-clean union, the turn
 loop's merge and built-in-first dispatch need no collision logic of their own —

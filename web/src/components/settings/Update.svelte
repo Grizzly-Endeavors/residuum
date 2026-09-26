@@ -153,6 +153,16 @@
             <code>residuum logs</code> on the machine running Residuum, or restart it manually.
           </p>
         {/if}
+        {#if status.unverified_update && restartOutcome !== "rolled_back"}
+          <div class="update-status-row">
+            <span class="update-dot update-dot-available"></span>
+            <span class="update-status-text">This update couldn't be verified</span>
+          </div>
+          <p class="update-hint">
+            {status.unverified_update.version} was installed, but the release had no checksum to check
+            the download against.
+          </p>
+        {/if}
         <div class="update-status-row">
           {#if status.update_available}
             <span class="update-dot update-dot-available"></span>

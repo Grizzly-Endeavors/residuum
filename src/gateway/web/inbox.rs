@@ -308,8 +308,7 @@ pub(crate) fn agent_inbox_api_router(state: GatewayState) -> axum::Router {
 /// Request body for `POST /api/agent-inbox`.
 #[derive(Debug, Deserialize)]
 pub(super) struct AgentInboxAddRequest {
-    /// Defaults to the body's first line, cut to 60 characters, when absent
-    /// or blank.
+    /// Defaults to the body's first line, in full, when absent or blank.
     #[serde(default)]
     pub title: Option<String>,
     pub body: String,

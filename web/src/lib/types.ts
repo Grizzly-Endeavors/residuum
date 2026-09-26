@@ -261,6 +261,11 @@ export interface RollbackNoticeResponse {
   at: string;
 }
 
+export interface UnverifiedUpdateResponse {
+  version: string;
+  at: string;
+}
+
 export interface UpdateStatusResponse {
   current: string;
   latest: string | null;
@@ -269,6 +274,8 @@ export interface UpdateStatusResponse {
   checking: boolean;
   /** Present when the most recent restart rolled back instead of completing. */
   rollback_notice: RollbackNoticeResponse | null;
+  /** Present when the installed update had no checksum to check it against. */
+  unverified_update: UnverifiedUpdateResponse | null;
 }
 
 export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
@@ -336,6 +343,8 @@ export interface AgentKeysListResponse {
 export interface SetAgentKeyResponse {
   name: string;
   env_var: string;
+  /** Present when the value is short enough that redaction becomes unreliable; the key is stored either way. */
+  warning?: string;
 }
 
 export interface SecretsListResponse {

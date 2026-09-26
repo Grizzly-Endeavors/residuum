@@ -50,7 +50,8 @@
     onStop={() => ws.stop()}
     {onOpenFeedback}
     isProcessing={ws.store.isProcessing}
-    disabled={ws.transport.status !== "connected"}
+    reconnecting={ws.transport.status !== "connected"}
+    pendingCount={ws.transport.pendingCount}
   />
   <ChatFooter
     usage={ws.store.sessionUsage}
