@@ -101,6 +101,7 @@ web/
 │       ├── models.ts             # Model fetching and caching
 │       ├── markdown.ts           # Markdown rendering
 │       ├── format-usage.ts       # Elapsed time / token count formatting for the indicator and footer
+│       ├── format-tool-result.ts # Tool result display: JSON, file dumps, lists, errors, long-output collapse
 │       ├── settings-toml.ts      # Config parsing (for display) and diffing (for the patch endpoints)
 │       └── secrets.ts            # secret:/${ENV_VAR} reference detection for settings fields
 ├── mock-server.ts            # Mock API + WebSocket (only used in dev:mock)
