@@ -134,8 +134,10 @@ Before submitting changes, run:
 npm run lint          # ESLint check
 npm run format        # Prettier auto-format
 npm run check         # TypeScript / Svelte type check
-npm test              # Vitest unit tests (*.test.ts next to the code they test)
+npm test              # Vitest: lib unit tests and Svelte component tests
 ```
+
+Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
 
 ## Running Against the Real Backend
 
