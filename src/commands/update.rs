@@ -45,8 +45,13 @@ pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalErr
 
     println!("residuum: downloading and installing {latest}...");
 
-    update::download_and_install(&latest).await?;
+    let installed = update::download_and_install(&latest).await?;
     println!("residuum: updated to {latest}");
+    if installed.verification == update::ReleaseVerification::Unverified {
+        println!(
+            "residuum: this update couldn't be verified — the release had no checksum to check the download against"
+        );
+    }
 
     // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()
