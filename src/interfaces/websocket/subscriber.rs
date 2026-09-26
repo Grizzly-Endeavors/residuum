@@ -2,8 +2,9 @@
 
 use crate::bus::{
     EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
-    PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent, Subscriber,
-    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent, topics,
+    OutboundA2aTaskEvent, PostTurnActivityEvent, PostTurnActivityKind, ResponseEvent, SessionEvent,
+    Subscriber, ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent,
+    WorkspaceEvent, topics,
 };
 use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
@@ -137,6 +138,8 @@ pub struct WsSubscribers {
     /// Agent session lifecycle and turn events, forwarded as the
     /// `session_*` frames. Main-agent frames never come from here.
     pub session: Subscriber<SessionEvent>,
+    /// Tasks sent to remote agents, for the sessions sidebar.
+    pub outbound_a2a: Subscriber<OutboundA2aTaskEvent>,
     /// Workbench artifact file changes, so an open artifact view reloads live.
     pub workbench: Subscriber<WorkbenchEvent>,
     /// The workspace change feed, filtered by `watch_set`.
@@ -171,6 +174,7 @@ impl WsSubscribers {
             inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
             session: bus_handle.subscribe(topics::Sessions).await?,
+            outbound_a2a: bus_handle.subscribe(system_topic()).await?,
             workbench: bus_handle.subscribe(topics::Workbench).await?,
             workspace: bus_handle.subscribe(topics::Workspace).await?,
             watch_set,
@@ -200,48 +204,40 @@ impl WsSubscribers {
                     Ok(Some(lifecycle)) => Some(turn_lifecycle_frame(lifecycle)),
                     _ => return None,
                 },
-                event = self.turn_usage.recv() => {
-                    match event {
-                        Ok(Some(usage)) => Some(turn_usage_frame(usage)),
-                        _ => return None,
-                    }
-                }
+                event = self.turn_usage.recv() => match event {
+                    Ok(Some(usage)) => Some(turn_usage_frame(usage)),
+                    _ => return None,
+                },
                 event = self.post_turn_activity.recv() => match event {
                     Ok(Some(activity)) => Some(post_turn_activity_frame(activity)),
                     _ => return None,
                 },
-                event = self.intermediate.recv() => {
-                    match event {
-                        Ok(Some(im)) => Some(ServerMessage::BroadcastResponse {
-                            content: im.content,
-                        }),
-                        _ => return None,
+                event = self.intermediate.recv() => match event {
+                    Ok(Some(im)) => Some(ServerMessage::BroadcastResponse { content: im.content }),
+                    _ => return None,
+                },
+                event = self.notice.recv() => match event {
+                    Ok(Some(NoticeEvent { message })) => Some(ServerMessage::Notice { message }),
+                    _ => return None,
+                },
+                event = self.inline_output.recv() => match event {
+                    Ok(Some(InlineOutputEvent { message })) => {
+                        Some(ServerMessage::InlineOutput { message })
                     }
-                }
-                event = self.notice.recv() => {
-                    match event {
-                        Ok(Some(NoticeEvent { message })) => {
-                            Some(ServerMessage::Notice { message })
-                        }
-                        _ => return None,
+                    _ => return None,
+                },
+                event = self.session.recv() => match event {
+                    Ok(Some(session_event)) => Some(
+                        crate::gateway::sessions::session_event_to_server_message(session_event),
+                    ),
+                    _ => return None,
+                },
+                event = self.outbound_a2a.recv() => match event {
+                    Ok(Some(OutboundA2aTaskEvent { task })) => {
+                        Some(ServerMessage::SessionOutboundA2aTask { task: (&task).into() })
                     }
-                }
-                event = self.inline_output.recv() => {
-                    match event {
-                        Ok(Some(InlineOutputEvent { message })) => {
-                            Some(ServerMessage::InlineOutput { message })
-                        }
-                        _ => return None,
-                    }
-                }
-                event = self.session.recv() => {
-                    match event {
-                        Ok(Some(session_event)) => Some(
-                            crate::gateway::sessions::session_event_to_server_message(session_event),
-                        ),
-                        _ => return None,
-                    }
-                }
+                    _ => return None,
+                },
                 event = self.workbench.recv() => {
                     match event {
                         Ok(Some(WorkbenchEvent::Updated { name })) => {
@@ -673,6 +669,53 @@ mod tests {
             ),
             "a session response must arrive as a session-tagged frame, never as a main `response`"
         );
+    }
+
+    #[tokio::test]
+    async fn outbound_a2a_task_event_maps_to_session_frame() {
+        let handle = crate::bus::spawn_broker();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            EndpointName::from("ws"),
+            crate::gateway::file_server::FileRegistry::new(),
+            no_watch_set(),
+        )
+        .await
+        .unwrap();
+        let now = chrono::Utc::now();
+        handle
+            .publisher()
+            .publish(
+                topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+                OutboundA2aTaskEvent {
+                    task: crate::a2a::TrackedTask {
+                        sender_address: "main".into(),
+                        agent: "laptop".into(),
+                        task_id: "t1".into(),
+                        context_id: "c1".into(),
+                        state: "working".into(),
+                        last_status_text: Some("halfway".into()),
+                        hop_count: 0,
+                        created_at: now,
+                        updated_at: now,
+                        first_unreachable_at: None,
+                        unreachable_notified: false,
+                        notified_this_turn: false,
+                        stopped_by_user: false,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        let ServerMessage::SessionOutboundA2aTask { task } = msg else {
+            panic!("expected a session_outbound_a2a_task frame, got {msg:?}");
+        };
+        assert_eq!(task.task_id, "t1");
+        assert_eq!(task.agent, "laptop");
+        assert_eq!(task.status_text.as_deref(), Some("halfway"));
+        assert!(task.open);
     }
 
     fn no_watch_set() -> tokio::sync::watch::Receiver<WatchSet> {

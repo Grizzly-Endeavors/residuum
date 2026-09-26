@@ -9,6 +9,7 @@ export type {
   ServerMessage,
   PostTurnActivityKind,
   ImageAttachment,
+  OutboundA2aTaskSummary,
   SessionCategory,
   SessionCommandErrorCode,
   SessionDeliveryOutcome,

@@ -1,6 +1,7 @@
 // ── Plain-language labels for agent sessions ─────────────────────────
 
 import type {
+  OutboundA2aTaskSummary,
   SessionCategory,
   SessionDeliveryOutcome,
   SessionRunStatus,
@@ -59,7 +60,7 @@ export function categoryDescription(category: SessionCategory): string {
     case "scheduled":
       return "Started on a schedule (a pulse or scheduled action)";
     case "external":
-      return "Started by someone else or another system (a chat conversation or webhook)";
+      return "Started by someone else or another system (a chat conversation or webhook), or sent by your agent to another agent";
     case "spawned":
       return "Started by an agent";
     case "artifact":
@@ -87,7 +88,7 @@ export function categoryIdleText(category: SessionCategory): string {
     case "scheduled":
       return "Nothing running. Pulses and scheduled actions show up here while they run.";
     case "external":
-      return "Nothing running. Conversations with other people and webhook calls show up here while they run.";
+      return "Nothing running. Conversations with other people, webhook calls, and tasks your agent sends to other agents show up here while they run.";
     case "spawned":
       return "Nothing running. Work your agent hands off shows up here while it runs.";
     case "artifact":
@@ -185,4 +186,31 @@ export function formatLocalDateTime(iso: string): string {
 /** When a run started, as a short local date and time. */
 export function formatStarted(session: SessionSummary): string {
   return formatLocalDateTime(session.started_at);
+}
+
+/** Where a task sent to another agent stands, for its sidebar row. */
+export function outboundStateText(task: OutboundA2aTaskSummary, now: number): string {
+  if (task.unreachable_since) {
+    const since = Date.parse(task.unreachable_since);
+    const gone = Number.isNaN(since) ? "" : ` for ${formatDuration(now - since)}`;
+    return `can't reach ${task.agent}${gone}, still retrying`;
+  }
+  switch (task.state) {
+    case "submitted":
+      return "sent";
+    case "working":
+      return "working";
+    case "input_required":
+      return "waiting on your agent's reply";
+    case "auth_required":
+      return "waiting on sign-in";
+    default:
+      return task.state.replace(/_/g, " ");
+  }
+}
+
+/** How long ago a task was sent to another agent. */
+export function outboundDuration(task: OutboundA2aTaskSummary, now: number): string {
+  const start = Date.parse(task.started_at);
+  return Number.isNaN(start) ? "" : formatDuration(now - start);
 }

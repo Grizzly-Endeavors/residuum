@@ -20,6 +20,7 @@ import type {
   A2aKeysListResponse,
   CreateA2aKeyResponse,
   A2aRemoteAgent,
+  OutboundA2aTaskSummary,
   WorkspaceEntry,
   WorkspaceWriteResponse,
   WorkspaceValidateResponse,
@@ -489,6 +490,30 @@ export async function revokeA2aKey(name: string): Promise<void> {
  */
 export async function fetchA2aAgents(): Promise<A2aRemoteAgent[]> {
   return apiFetch<A2aRemoteAgent[]>("/api/a2a/agents");
+}
+
+/** Open tasks the agent sent to remote agents, newest first. Throws `ApiError`. */
+export async function fetchOutboundA2aTasks(): Promise<OutboundA2aTaskSummary[]> {
+  return apiFetch<OutboundA2aTaskSummary[]>("/api/a2a/outbound");
+}
+
+/**
+ * Ask a task's remote agent to cancel it. Throws `ApiError`: `404` when the
+ * task already ended, `502` when its agent can't be reached (then
+ * `stopWatchingOutboundA2aTask` is the way out).
+ */
+export async function stopOutboundA2aTask(taskId: string): Promise<OutboundA2aTaskSummary> {
+  return apiFetch<OutboundA2aTaskSummary>(`/api/a2a/outbound/${encodeURIComponent(taskId)}/stop`, {
+    method: "POST",
+  });
+}
+
+/** Stop watching a task without reaching its agent. Throws `ApiError` (`404` when it already ended). */
+export async function stopWatchingOutboundA2aTask(taskId: string): Promise<OutboundA2aTaskSummary> {
+  return apiFetch<OutboundA2aTaskSummary>(
+    `/api/a2a/outbound/${encodeURIComponent(taskId)}/stop-watching`,
+    { method: "POST" },
+  );
 }
 
 export async function fetchA2aAgentsRaw(): Promise<string> {

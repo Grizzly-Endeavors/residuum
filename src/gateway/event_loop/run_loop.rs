@@ -428,6 +428,7 @@ async fn spawn_server_and_adapters(
             model: api_states.model,
             a2a_agents: web::a2a::A2aAgentsStatusState {
                 hub: Arc::clone(&parts.a2a_hub),
+                tracker: Arc::clone(&parts.a2a_tracker),
             },
         },
     );

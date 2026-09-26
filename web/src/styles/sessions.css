@@ -913,3 +913,23 @@ button.session-row-artifact-link:focus-visible {
     padding: var(--s-2) var(--s-3) var(--s-3);
   }
 }
+
+/* ── Tasks sent to other agents ──────────────────────────────────────── */
+
+/* Not selectable: no transcript lives here, only its controls respond. */
+.session-row.outbound-row {
+  cursor: default;
+}
+
+.session-row.outbound-row:hover {
+  background: transparent;
+}
+
+.session-row.outbound-row .session-row-stop {
+  z-index: auto;
+}
+
+.outbound-stop-watching {
+  align-self: flex-start;
+  margin-top: var(--s-1);
+}

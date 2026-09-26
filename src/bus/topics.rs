@@ -6,9 +6,9 @@
 
 use super::events::{
     A2aTaskSignalEvent, AgentResultEvent, ConversationTypingEvent, ErrorEvent, InlineOutputEvent,
-    IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, PostTurnActivityEvent,
-    ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent, ToolActivityEvent,
-    TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
+    IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, OutboundA2aTaskEvent,
+    PostTurnActivityEvent, ResponseEvent, SessionEvent, SessionResponseEvent, SpawnRequestEvent,
+    ToolActivityEvent, TurnLifecycleEvent, TurnUsageEvent, WorkbenchEvent, WorkspaceEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -189,6 +189,11 @@ impl Carries<InlineOutputEvent> for Notification {
 impl Carries<ErrorEvent> for Notification {
     // An error tied to a specific turn — silently dropping it is exactly
     // the silent failure `CLAUDE.md` forbids.
+    const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
+}
+impl Carries<OutboundA2aTaskEvent> for Notification {
+    // A dropped update would leave the sessions sidebar showing a task
+    // that already finished, with a Stop button that no longer applies.
     const DELIVERY_MODE: DeliveryMode = DeliveryMode::Lossless;
 }
 impl Carries<PostTurnActivityEvent> for Notification {

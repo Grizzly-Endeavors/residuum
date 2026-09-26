@@ -756,6 +756,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             };
             let a2a_agents_state = crate::gateway::web::a2a::A2aAgentsStatusState {
                 hub: std::sync::Arc::clone(&rt.a2a_hub),
+                tracker: std::sync::Arc::clone(&rt.a2a_tracker),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,

@@ -622,6 +622,14 @@ pub struct PostTurnActivityEvent {
     pub active: bool,
 }
 
+/// An outbound A2A task (one this instance sent to a remote agent with
+/// `message_agent a2a:<name>`) was recorded, changed state, or was stopped
+/// — for the web sessions sidebar's list of tasks sent to other agents.
+#[derive(Debug, Clone)]
+pub struct OutboundA2aTaskEvent {
+    pub task: crate::a2a::TrackedTask,
+}
+
 /// Multi-line command output meant for inline rendering in a chat surface.
 ///
 /// Distinct from [`NoticeEvent`]: notices are transient toasts in the web UI,

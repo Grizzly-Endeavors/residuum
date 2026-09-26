@@ -102,7 +102,7 @@
 
   // Tick the clock behind elapsed times only while something is live.
   $effect(() => {
-    const anyLive = sessions.live.length > 0;
+    const anyLive = sessions.live.length + sessions.outbound.length > 0;
     if (!anyLive) return;
     sessions.now = Date.now();
     const timer = window.setInterval(() => {
@@ -225,7 +225,7 @@
         ? undefined
         : {
             open: sidebarOpen,
-            liveCount: sessions.live.length,
+            liveCount: sessions.live.length + sessions.outbound.length,
             onToggle: () => setSidebarOpen(!sidebarOpen),
           }}
     />
