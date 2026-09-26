@@ -32,6 +32,8 @@ Release builds target Linux x86_64, Linux aarch64, macOS aarch64 (Apple Silicon)
 
 CI does not cross-compile by default; when it does, it runs clippy with `-D warnings` for each target and the test suite on a Windows runner. For platform-sensitive changes (unsafe/FFI, `cfg(target_os)`/`cfg(windows)`/`cfg(unix)` branches, paths, process spawning, signals, permissions), add the `cross-compile` label to the PR, or run `gh workflow run cross-compile.yml --ref <branch>`. PRs that change `Cargo.toml`, `Cargo.lock`, `build.rs`, or `rust-toolchain.toml` cross-compile automatically. See CONTRIBUTING.md.
 
+To run on real Windows locally (tests, clippy with the native toolchain, and desktop checks such as toast notifications), use the VM harness in `scripts/windows-vm/`; see [docs/runbooks/windows-harness.md](./docs/runbooks/windows-harness.md).
+
 ### Rust Toolchain
 
 The Rust version is pinned in `rust-toolchain.toml` so the pre-commit hook, CI, and release builds all use the same compiler and clippy. Bumping it is its own PR, together with fixes for any new lints.
