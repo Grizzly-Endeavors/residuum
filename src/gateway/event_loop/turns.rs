@@ -13,11 +13,13 @@ use crate::bus::{
     Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
 };
 
+use crate::config::Config;
 use crate::gateway::types::{GatewayRuntime, ReloadSignal, StopRequest};
 use crate::inference::ImageData;
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::skills::SharedSkillState;
+use crate::tracing_service::TracingService;
 
 use crate::agent::context::loading::build_skill_context_strings;
 use crate::gateway::memory::MemorySubsystems;
@@ -574,14 +576,18 @@ fn spawn_main_turn_end_checkpoint(
 /// nothing.
 ///
 /// On failure, logs the error, broadcasts an `ErrorEvent` on the system
-/// notification channel regardless of output endpoint, and — if there is an output
-/// endpoint — still closes the turn with `Ended`.
+/// notification channel regardless of output endpoint, auto-reports the
+/// failure through `tracing_service` (a no-op unless the user has enabled
+/// auto error reporting), and — if there is an output endpoint — still closes
+/// the turn with `Ended`.
 async fn publish_turn_outcome(
     turn_result: anyhow::Result<Vec<String>>,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
     correlation_id: &str,
     tz: chrono_tz::Tz,
+    tracing_service: &TracingService,
+    cfg: &Config,
 ) {
     match turn_result {
         Ok(texts) => {
@@ -610,6 +616,12 @@ async fn publish_turn_outcome(
         Err(e) => {
             let described = crate::inference::describe_turn_failure(&e);
             tracing::error!(error = %described.details, "agent processing error");
+            tracing_service
+                .on_error(
+                    &described.details,
+                    crate::tracing_service::client_context::gather_for_bug_report(cfg),
+                )
+                .await;
             if let Err(pub_err) = publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
@@ -735,6 +747,8 @@ pub async fn handle_inbound_message(
         output_endpoint.as_ref(),
         &reply_id,
         rt.tz,
+        &rt.tracing_service,
+        &rt.cfg,
     )
     .await;
 
@@ -774,12 +788,63 @@ pub async fn handle_inbound_message(
 mod tests {
     use super::*;
     use crate::bus::Subscriber;
+    use crate::util::telemetry::{SpanBufferConfig, SpanBufferLayer};
     use std::time::Duration;
 
     const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
 
     fn endpoint() -> EndpointName {
         EndpointName::from("ws")
+    }
+
+    /// Build a minimal test config; only `tracing` is meaningful to
+    /// `publish_turn_outcome`'s tests, the rest is filler to satisfy the type.
+    fn test_config() -> Config {
+        Config {
+            name: None,
+            main: vec![],
+            observer: vec![],
+            reflector: vec![],
+            pulse: vec![],
+            subconscious: vec![],
+            embedding: None,
+            workspace_dir: std::path::PathBuf::from("/tmp/test"),
+            timeout_secs: 30,
+            max_tokens: 4096,
+            memory: crate::config::MemoryConfig::default(),
+            pulse_enabled: false,
+            subconscious_settings: crate::config::SubconsciousSettings::default(),
+            learning: crate::config::LearningConfig::default(),
+            gateway: crate::config::GatewayConfig::default(),
+            timezone: chrono_tz::UTC,
+            cloud: None,
+            discord: None,
+            telegram: None,
+            teams: None,
+            a2a: crate::config::A2aConfig::default(),
+            webhooks: std::collections::HashMap::new(),
+            skills: crate::config::SkillsConfig { dirs: vec![] },
+            tools: crate::config::ToolsConfig { dirs: vec![] },
+            retry: crate::inference::retry::RetryConfig::default(),
+            background: crate::config::BackgroundConfig::default(),
+            agent: crate::config::AgentAbilitiesConfig::default(),
+            idle: crate::config::IdleConfig::default(),
+            temperature: None,
+            thinking: None,
+            web_search: crate::config::WebSearchConfig::default(),
+            tracing: crate::config::TracingConfig::default(),
+            role_overrides: std::collections::HashMap::new(),
+            config_dir: std::path::PathBuf::from("/tmp/config"),
+            load_notices: vec![],
+        }
+    }
+
+    /// A `TracingService` with auto error reporting off — `on_error` calls
+    /// through it are a guaranteed no-op, for tests that don't care about
+    /// auto-reporting behavior.
+    fn test_tracing_service() -> TracingService {
+        let (_, handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        TracingService::new(crate::config::TracingConfig::default(), handle)
     }
 
     #[test]
@@ -843,6 +908,8 @@ mod tests {
             Some(&endpoint()),
             "corr-1",
             TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
         )
         .await;
 
@@ -872,7 +939,16 @@ mod tests {
             .await
             .unwrap();
 
-        publish_turn_outcome(Ok(vec![]), &publisher, Some(&endpoint()), "corr-2", TEST_TZ).await;
+        publish_turn_outcome(
+            Ok(vec![]),
+            &publisher,
+            Some(&endpoint()),
+            "corr-2",
+            TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
+        )
+        .await;
 
         let ended = lifecycle.recv().await.unwrap().unwrap();
         assert!(
@@ -900,6 +976,8 @@ mod tests {
             None,
             "corr-3",
             TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
         )
         .await;
 
@@ -930,6 +1008,8 @@ mod tests {
             Some(&endpoint()),
             "corr-4",
             TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
         )
         .await;
 
@@ -973,6 +1053,8 @@ mod tests {
             None,
             "corr-5",
             TEST_TZ,
+            &test_tracing_service(),
+            &test_config(),
         )
         .await;
 
@@ -984,6 +1066,105 @@ mod tests {
             "the raw cause must survive in details even with no output endpoint"
         );
         assert_no_event(&mut lifecycle).await;
+    }
+
+    #[tokio::test]
+    async fn err_auto_reports_through_tracing_service_when_enabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-TURN-FAILURE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_, span_handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        let tracing_service = TracingService::new(
+            crate::config::TracingConfig {
+                feedback_endpoint: server.uri(),
+                auto_error_reporting: true,
+                ..crate::config::TracingConfig::default()
+            },
+            span_handle,
+        );
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Err(anyhow::anyhow!("model completion failed: connection reset")),
+            &publisher,
+            None,
+            "corr-6",
+            TEST_TZ,
+            &tracing_service,
+            &test_config(),
+        )
+        .await;
+
+        // The mock's `.expect(1)` (checked on drop) is the real assertion —
+        // this recv just drains the event the Err arm always publishes.
+        errors.recv().await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn ok_never_auto_reports_even_when_enabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/bug-report"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "public_id": "RR-SHOULD-NOT-FIRE",
+                "submitted_at": "2026-04-16T14:23:00Z"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let (_, span_handle) = SpanBufferLayer::new(&SpanBufferConfig::default());
+        let tracing_service = TracingService::new(
+            crate::config::TracingConfig {
+                feedback_endpoint: server.uri(),
+                auto_error_reporting: true,
+                ..crate::config::TracingConfig::default()
+            },
+            span_handle,
+        );
+
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        // An `Ok` outcome is what a user-cancelled or otherwise expected turn
+        // ending looks like by the time it reaches `publish_turn_outcome` —
+        // `execute_turn` never turns those into `Err` (see turn.rs).
+        publish_turn_outcome(
+            Ok(vec!["done".into()]),
+            &publisher,
+            Some(&endpoint()),
+            "corr-7",
+            TEST_TZ,
+            &tracing_service,
+            &test_config(),
+        )
+        .await;
+
+        lifecycle.recv().await.unwrap().unwrap();
     }
 
     /// A provider that blocks on a shared `Notify` until the test releases
