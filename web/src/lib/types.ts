@@ -253,6 +253,9 @@ export interface ValidateResponse {
   valid: boolean;
   error?: string;
   diagnostics?: Diagnostic[];
+  /** On a successful Settings PATCH: the checkpoint taken just before the
+   * write. Absent when that checkpoint failed (the write still happened). */
+  checkpoint_id?: string;
 }
 
 // ── Settings types ───────────────────────────────────────────────────

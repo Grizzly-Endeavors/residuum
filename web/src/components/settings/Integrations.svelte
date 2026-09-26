@@ -5,9 +5,20 @@
   import { fetchCloudStatus, disconnectCloud, storeSecret } from "../../lib/api";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
   import { toast } from "../../lib/toast.svelte";
+  import { notifyFormUndo } from "../../lib/form-undo";
+  import type { PendingSaveTracker } from "../../lib/pending-save";
 
-  let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
-    $props();
+  let {
+    fields = $bindable(),
+    simple = false,
+    pendingSave,
+    onReload,
+  }: {
+    fields: ConfigFields;
+    simple?: boolean;
+    pendingSave: PendingSaveTracker;
+    onReload: () => Promise<void>;
+  } = $props();
 
   // ── Skills ─────────────────────────────────────────────────────────
 
@@ -78,16 +89,20 @@
     const removed = fields.webhooks[idx];
     if (!removed) return;
     fields.webhooks = fields.webhooks.filter((_, i) => i !== idx);
-    toast.success(`Removed ${removed.name || "webhook"}.`, {
-      label: "Undo",
-      onClick: () => {
+    notifyFormUndo(
+      `Removed ${removed.name || "webhook"}.`,
+      pendingSave,
+      () => {
         fields.webhooks = [
           ...fields.webhooks.slice(0, idx),
           removed,
           ...fields.webhooks.slice(idx),
         ];
       },
-    });
+      "config",
+      "config.toml",
+      onReload,
+    );
   }
 
   // ── Cloud ──────────────────────────────────────────────────────────

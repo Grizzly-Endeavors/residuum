@@ -16,14 +16,19 @@
     type ModelEntry,
   } from "../../lib/models";
   import { isSecretReference, isEnvReference, envReferenceName } from "../../lib/secrets";
-  import { toast } from "../../lib/toast.svelte";
+  import { notifyFormUndo } from "../../lib/form-undo";
+  import type { PendingSaveTracker } from "../../lib/pending-save";
 
   let {
     providers = $bindable(),
     models = $bindable(),
+    pendingSave,
+    onReload,
   }: {
     providers: SettingsProviderEntry[];
     models: SettingsModelAssignments;
+    pendingSave: PendingSaveTracker;
+    onReload: () => Promise<void>;
   } = $props();
 
   const providerTypes: Record<string, string> = {
@@ -160,12 +165,16 @@
   function removeProvider(idx: number) {
     const [removed] = providers.splice(idx, 1);
     if (!removed) return;
-    toast.success(`Removed ${removed.name || "provider"}.`, {
-      label: "Undo",
-      onClick: () => {
+    notifyFormUndo(
+      `Removed ${removed.name || "provider"}.`,
+      pendingSave,
+      () => {
         providers.splice(idx, 0, removed);
       },
-    });
+      "config",
+      "providers.toml",
+      onReload,
+    );
   }
 
   function providerNameOptions(): string[] {

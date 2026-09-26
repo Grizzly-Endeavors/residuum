@@ -2,9 +2,18 @@
   import { onMount } from "svelte";
   import type { McpServerEntry, McpCatalogEntry } from "../../lib/types";
   import { fetchMcpCatalog } from "../../lib/api";
-  import { toast } from "../../lib/toast.svelte";
+  import { notifyFormUndo } from "../../lib/form-undo";
+  import type { PendingSaveTracker } from "../../lib/pending-save";
 
-  let { servers = $bindable() }: { servers: McpServerEntry[] } = $props();
+  let {
+    servers = $bindable(),
+    pendingSave,
+    onReload,
+  }: {
+    servers: McpServerEntry[];
+    pendingSave: PendingSaveTracker;
+    onReload: () => Promise<void>;
+  } = $props();
 
   let catalog = $state<McpCatalogEntry[]>([]);
   let pendingIdx = $state<number | null>(null);
@@ -37,12 +46,16 @@
   function removeServer(idx: number) {
     const [removed] = servers.splice(idx, 1);
     if (!removed) return;
-    toast.success(`Removed ${removed.name}.`, {
-      label: "Undo",
-      onClick: () => {
+    notifyFormUndo(
+      `Removed ${removed.name}.`,
+      pendingSave,
+      () => {
         servers.splice(idx, 0, removed);
       },
-    });
+      "workspace",
+      "config/mcp.json",
+      onReload,
+    );
   }
 
   // ── Catalog handling ─────────────────────────────────────────────────

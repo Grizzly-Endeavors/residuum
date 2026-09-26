@@ -57,6 +57,33 @@ pub(super) struct ValidateResponse {
     pub(super) diagnostics: Vec<crate::diagnostics::Diagnostic>,
 }
 
+/// Success body for a Settings form PATCH (`config.toml`, `providers.toml`,
+/// `mcp.json`): the validation summary plus the checkpoint taken just
+/// before the write, so the web UI's Undo restores exactly this save.
+/// `checkpoint_id` is absent when that checkpoint could not be recorded;
+/// the write still went through, and the UI should not offer Undo.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct PatchSavedResponse {
+    #[serde(flatten)]
+    pub(super) validation: ValidateResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) checkpoint_id: Option<String>,
+}
+
+impl PatchSavedResponse {
+    pub(super) fn saved(checkpoint_id: Option<String>) -> Self {
+        Self {
+            validation: ValidateResponse {
+                valid: true,
+                error: None,
+                diagnostics: Vec::new(),
+            },
+            checkpoint_id,
+        }
+    }
+}
+
 impl ValidateResponse {
     /// Build a response from a set of diagnostics: `valid` is `false` if any
     /// are errors, and `error` summarizes the first one for callers that
@@ -275,6 +302,78 @@ mod tests {
         );
         assert_eq!(response.diagnostics.len(), 1);
     }
+
+    #[tokio::test]
+    async fn config_patch_returns_the_checkpoint_taken_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let before = "timezone = \"UTC\"\n\n[gateway]\nport = 7700\n";
+        std::fs::write(state.config_dir.join("config.toml"), before).unwrap();
+
+        let Json(saved) = api_config_patch(
+            State(state.clone()),
+            Json(serde_json::json!({"gateway": {"port": 8080}})),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.validation.valid);
+        let id = saved
+            .checkpoint_id
+            .expect("a patch should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Config,
+                id,
+                "config.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(before.as_bytes()),
+            "the returned checkpoint must hold config.toml as it was before the patch"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_patch_returns_the_checkpoint_taken_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let mcp_path =
+            crate::workspace::layout::WorkspaceLayout::new(state.workspace_dir.clone()).mcp_json();
+        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+        let before = r#"{"mcpServers":{"fs":{"command":"npx","cwd":"/srv"}}}"#;
+        std::fs::write(&mcp_path, before).unwrap();
+
+        let Json(saved) = api_mcp_patch(
+            State(state.clone()),
+            Json(serde_json::json!({"mcpServers": {"fs": null}})),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.validation.valid);
+        let id = saved
+            .checkpoint_id
+            .expect("a patch should name the checkpoint taken before it");
+        let relative = mcp_path
+            .strip_prefix(&state.workspace_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let stored = state
+            .checkpoints
+            .file_content_at(crate::checkpoints::RepoKind::Workspace, id, relative)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(before.as_bytes()),
+            "the returned checkpoint must still hold the removed server, including fields the form doesn't model"
+        );
+    }
 }
 
 /// `GET /api/config/raw` — return raw `config.toml` contents as text.
@@ -352,7 +451,7 @@ pub(super) async fn api_config_raw_put(
 pub(super) async fn api_config_patch(
     State(state): State<ConfigApiState>,
     Json(diff): Json<serde_json::Value>,
-) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
     let bad_request = |msg: String| {
         (
             StatusCode::BAD_REQUEST,
@@ -397,8 +496,8 @@ pub(super) async fn api_config_patch(
         bad_request(e)
     })?;
 
-    state
-        .checkpoint_config_before_write("patch config.toml")
+    let checkpoint_id = state
+        .checkpoint_config_id_before_write("patch config.toml")
         .await;
     crate::util::fs::atomic_write(&config_path, &patched)
         .await
@@ -418,11 +517,7 @@ pub(super) async fn api_config_patch(
         reload_tx.send(super::super::ReloadSignal::Root).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-        diagnostics: Vec::new(),
-    }))
+    Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
 /// `POST /api/config/validate` — validate TOML body without saving.
@@ -524,7 +619,7 @@ pub(super) async fn api_mcp_raw_put(
 pub(super) async fn api_mcp_patch(
     State(state): State<ConfigApiState>,
     Json(diff): Json<serde_json::Value>,
-) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
     let bad_request = |msg: String| {
         (
             StatusCode::BAD_REQUEST,
@@ -567,8 +662,8 @@ pub(super) async fn api_mcp_patch(
     // allowlist, and this write happens outside any agent turn — without
     // this it would never be checkpointed until the next turn boundary
     // happened to snapshot it as an "outside edit".
-    state
-        .checkpoint_workspace_before_write("patch mcp.json")
+    let checkpoint_id = state
+        .checkpoint_workspace_id_before_write("patch mcp.json")
         .await;
 
     crate::util::fs::atomic_write(&mcp_path, &patched)
@@ -589,11 +684,7 @@ pub(super) async fn api_mcp_patch(
         reload_tx.send(super::super::ReloadSignal::Workspace).ok();
     }
 
-    Ok(Json(ValidateResponse {
-        valid: true,
-        error: None,
-        diagnostics: Vec::new(),
-    }))
+    Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
 /// `POST /api/config/complete-setup` — write config + providers, signal setup done.
