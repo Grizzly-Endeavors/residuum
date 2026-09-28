@@ -1187,13 +1187,14 @@ mod tests {
 
     #[tokio::test]
     async fn drain_injects_user_message_history_through_the_sink() {
-        use crate::interfaces::types::{InboundMessage, MessageOrigin};
+        use crate::bus::MessageEvent;
+        use crate::interfaces::types::MessageOrigin;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
         let mut recent = RecentMessages::new();
         let sink = MockSink::default();
 
-        let inbound = InboundMessage {
+        let inbound = MessageEvent {
             id: "msg-1".to_string(),
             content: "hello mid-turn".to_string(),
             origin: MessageOrigin {
@@ -1202,7 +1203,7 @@ mod tests {
                 conversation: None,
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         };

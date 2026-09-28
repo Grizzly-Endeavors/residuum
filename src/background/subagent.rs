@@ -14,9 +14,9 @@ use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{
     EventContext, EventTarget, SessionConversationTarget, TurnResources, execute_turn,
 };
+use crate::bus::MessageEvent;
 use crate::bus::{AgentMessageEvent, Publisher, SessionAddress};
 use crate::inference::{CompletionOptions, ImageData, InferenceProvider, Message, MessageSender};
-use crate::interfaces::types::InboundMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
@@ -58,9 +58,9 @@ pub(crate) enum TurnKickoff {
     /// A turn — the run's first, or a later one reached while idle — kicked
     /// off by an inbound conversation message: sender attribution and any
     /// buffered context arrive with it exactly as they do for the main
-    /// agent (see [`InboundMessage::into_history_messages`]). Always hop
+    /// agent (see [`MessageEvent::into_history_messages`]). Always hop
     /// count 0: inbound conversation messages are external input.
-    External(InboundMessage),
+    External(MessageEvent),
 }
 
 impl TurnKickoff {
@@ -844,7 +844,7 @@ mod tests {
         let mut recent_messages = RecentMessages::new();
         let mut interrupt_rx = dead_interrupt_rx();
 
-        let inbound = InboundMessage {
+        let inbound = MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -857,7 +857,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: Some("[14:00] Sam: build is red".to_string()),
         };
@@ -947,7 +947,7 @@ mod tests {
         let resources = make_resources("wrapping up");
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Interrupt>();
-        tx.send(Interrupt::UserMessage(InboundMessage {
+        tx.send(Interrupt::UserMessage(MessageEvent {
             id: "m2".to_string(),
             content: "any updates?".to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -960,7 +960,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }))

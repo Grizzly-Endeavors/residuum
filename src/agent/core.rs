@@ -286,7 +286,7 @@ impl Agent {
     /// LLM call and were drained after the turn completed. Ensures the message
     /// (with its sender, images, and background context) is visible in the next
     /// turn without being lost.
-    pub fn inject_inbound_message(&mut self, message: crate::interfaces::types::InboundMessage) {
+    pub fn inject_inbound_message(&mut self, message: crate::bus::MessageEvent) {
         self.recent_messages.extend(message.into_history_messages());
     }
 
@@ -1166,8 +1166,8 @@ mod tests {
         }
     }
 
-    fn make_inbound(id: &str, content: &str) -> crate::interfaces::types::InboundMessage {
-        crate::interfaces::types::InboundMessage {
+    fn make_inbound(id: &str, content: &str) -> crate::bus::MessageEvent {
+        crate::bus::MessageEvent {
             id: id.to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1176,7 +1176,7 @@ mod tests {
                 conversation: None,
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }

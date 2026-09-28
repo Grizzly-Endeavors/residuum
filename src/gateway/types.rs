@@ -346,12 +346,8 @@ pub(crate) struct GatewayRuntime {
     pub tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub tunnel_status_tx: Arc<tokio::sync::watch::Sender<TunnelStatus>>,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
-    pub discord_handle: Option<tokio::task::JoinHandle<()>>,
-    pub telegram_handle: Option<tokio::task::JoinHandle<()>>,
-    pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    pub teams_handle: Option<tokio::task::JoinHandle<()>>,
-    pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Discord, Telegram, and Teams, addressed by name for reload and shutdown.
+    pub chat_adapters: super::chat_adapters::ChatAdapters,
     pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
     pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// The live agent card, so a workspace-file reload can update it without

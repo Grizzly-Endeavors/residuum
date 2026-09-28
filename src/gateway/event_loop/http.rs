@@ -33,12 +33,7 @@ pub struct AdapterSenders {
 
 /// Lifecycle handles returned from spawning chat adapters.
 pub struct AdapterHandles {
-    pub discord_handle: Option<tokio::task::JoinHandle<()>>,
-    pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    pub telegram_handle: Option<tokio::task::JoinHandle<()>>,
-    pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    pub teams_handle: Option<tokio::task::JoinHandle<()>>,
-    pub teams_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub chat: crate::gateway::chat_adapters::ChatAdapters,
     pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
     pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// The live agent card, so a workspace-file reload can update it without
@@ -376,7 +371,7 @@ pub async fn spawn_adapters(
     tz: chrono_tz::Tz,
     a2a_deps: A2aListenerDeps,
 ) -> AdapterHandles {
-    let (mut discord_handle, mut discord_shutdown_tx) = (None, None);
+    let mut chat = crate::gateway::chat_adapters::ChatAdapters::new();
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::discord::DiscordInterface::new(
@@ -386,16 +381,18 @@ pub async fn spawn_adapters(
             tz,
             rx,
         );
-        discord_handle = Some(crate::util::spawn_monitored("discord", async move {
-            if let Err(e) = iface.start().await {
-                tracing::error!(error = %e, "discord interface failed");
-            }
-        }));
-        discord_shutdown_tx = Some(tx);
+        chat.insert(
+            "discord",
+            crate::util::spawn_monitored("discord", async move {
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "discord interface failed");
+                }
+            }),
+            tx,
+        );
         tracing::info!("discord interface started");
     }
 
-    let (mut telegram_handle, mut telegram_shutdown_tx) = (None, None);
     if let Some(ref telegram_cfg) = cfg.telegram {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::telegram::TelegramInterface::new(
@@ -405,16 +402,18 @@ pub async fn spawn_adapters(
             tz,
             rx,
         );
-        telegram_handle = Some(crate::util::spawn_monitored("telegram", async move {
-            if let Err(e) = iface.start().await {
-                tracing::error!(error = %e, "telegram interface failed");
-            }
-        }));
-        telegram_shutdown_tx = Some(tx);
+        chat.insert(
+            "telegram",
+            crate::util::spawn_monitored("telegram", async move {
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "telegram interface failed");
+                }
+            }),
+            tx,
+        );
         tracing::info!("telegram interface started");
     }
 
-    let (mut teams_handle, mut teams_shutdown_tx) = (None, None);
     if let Some(ref teams_cfg) = cfg.teams {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::teams::TeamsInterface::new(
@@ -425,12 +424,15 @@ pub async fn spawn_adapters(
             tz,
             rx,
         );
-        teams_handle = Some(crate::util::spawn_monitored("teams", async move {
-            if let Err(e) = iface.start().await {
-                tracing::error!(error = %e, "teams interface failed");
-            }
-        }));
-        teams_shutdown_tx = Some(tx);
+        chat.insert(
+            "teams",
+            crate::util::spawn_monitored("teams", async move {
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "teams interface failed");
+                }
+            }),
+            tx,
+        );
     }
 
     let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state, mut a2a_public_url) =
@@ -456,12 +458,7 @@ pub async fn spawn_adapters(
     }
 
     AdapterHandles {
-        discord_handle,
-        discord_shutdown_tx,
-        telegram_handle,
-        telegram_shutdown_tx,
-        teams_handle,
-        teams_shutdown_tx,
+        chat,
         a2a_handle,
         a2a_shutdown_tx,
         a2a_card_state,

@@ -1,20 +1,16 @@
 //! Telegram bus subscriber — translates typed bus events to Telegram chat messages.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use teloxide::Bot;
+use teloxide::RequestError;
 use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
-use teloxide::RequestError;
-
-use crate::bus::{
-    ConversationTypingEvent, ErrorEvent, NoticeEvent, ResponseEvent, SessionResponseEvent,
-    TurnLifecycleEvent,
-};
+use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::chunking::chunk_text;
-use crate::interfaces::notify_main_of_undeliverable_session_output;
+use crate::interfaces::outbound::ChatOutbound;
 
 use super::TelegramState;
 
@@ -28,119 +24,97 @@ const MAX_CAPTION_CHARS: usize = 1024;
 /// Telegram's typing indicator lasts ~5s, so 4s provides overlap.
 const TYPING_INTERVAL_SECS: u64 = 4;
 
+struct TelegramOutbound {
+    bot: Bot,
+    state: Arc<TelegramState>,
+}
+
 /// Receives events from the bus and delivers them to Telegram chats.
 pub(super) async fn run_telegram_subscriber(
-    mut subs: crate::interfaces::BaseSubscribers,
+    subs: crate::interfaces::BaseSubscribers,
     bot: Bot,
     state: Arc<TelegramState>,
 ) {
-    // One typing loop per in-flight turn, stopped by dropping its sender.
-    let mut typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
-    // Same, but for conversation sessions' own turns — keyed by conversation
-    // id rather than correlation id; see `crate::interfaces::BaseSubscribers`.
-    let mut conversation_typing: HashMap<String, tokio::sync::watch::Sender<()>> = HashMap::new();
-    let mut clean_exit = true;
-
-    loop {
-        tokio::select! {
-            event = subs.turn_lifecycle.recv() => {
-                match event {
-                    Ok(Some(TurnLifecycleEvent::Started { correlation_id })) => {
-                        if let Some(chat_id) = state.target_for(&correlation_id).await {
-                            typing.insert(correlation_id, spawn_typing(bot.clone(), chat_id));
-                        }
-                    }
-                    Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
-                        typing.remove(&correlation_id);
-                        state.reply_targets.release(&correlation_id);
-                    }
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-            event = subs.conversation_typing.recv() => {
-                match event {
-                    Ok(Some(ConversationTypingEvent { conversation_id, active: true })) => {
-                        if let Some(chat_id) = parse_chat_id(&conversation_id) {
-                            conversation_typing
-                                .insert(conversation_id, spawn_typing(bot.clone(), chat_id));
-                        }
-                    }
-                    Ok(Some(ConversationTypingEvent { conversation_id, active: false })) => {
-                        conversation_typing.remove(&conversation_id);
-                    }
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-            event = subs.response.recv() => {
-                match event {
-                    Ok(Some(resp)) => deliver_response(&bot, &state, resp).await,
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-            event = subs.session_response.recv() => {
-                match event {
-                    Ok(Some(resp)) => deliver_session_response(&bot, &state, resp).await,
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-            event = subs.intermediate.recv() => {
-                match event {
-                    Ok(Some(im)) => {
-                        if let Some(chat_id) = target_or_warn(&state, &im.correlation_id).await {
-                            send_or_warn(&bot, chat_id, &im.content).await;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-            // System notices and errors can carry internals; they only ever
-            // go to the owner.
-            event = subs.notice.recv() => {
-                match event {
-                    Ok(Some(NoticeEvent { message })) => {
-                        if let Some(chat_id) = state.owner_dm().await {
-                            send_or_warn(&bot, chat_id, &message).await;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-            event = subs.error.recv() => {
-                match event {
-                    Ok(Some(ErrorEvent { message, .. })) => {
-                        if let Some(chat_id) = state.owner_dm().await {
-                            send_or_warn(&bot, chat_id, &format!("**Error:** {message}")).await;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => { clean_exit = false; break; }
-                }
-            }
-        }
-    }
-
-    if clean_exit {
-        tracing::debug!("telegram subscriber loop ended");
-    } else {
-        tracing::warn!("telegram subscriber loop ended unexpectedly");
-    }
+    crate::interfaces::outbound::run(subs, TelegramOutbound { bot, state }).await;
 }
 
-async fn target_or_warn(state: &TelegramState, correlation_id: &str) -> Option<ChatId> {
-    let target = state.target_for(correlation_id).await;
-    if target.is_none() {
-        tracing::warn!(
-            correlation_id,
-            "no telegram chat to deliver to; the owner has not messaged the bot yet"
-        );
+#[async_trait]
+impl ChatOutbound for TelegramOutbound {
+    type Target = ChatId;
+
+    fn name(&self) -> &'static str {
+        "telegram"
     }
-    target
+
+    fn unknown_conversation_reason(&self) -> &'static str {
+        "that is not a Telegram chat ID"
+    }
+
+    fn publisher(&self) -> &crate::bus::Publisher {
+        &self.state.publisher
+    }
+
+    async fn reply_target(&self, correlation_id: &str) -> Option<ChatId> {
+        self.state.target_for(correlation_id).await
+    }
+
+    fn release_reply(&self, correlation_id: &str) {
+        self.state.reply_targets.release(correlation_id);
+    }
+
+    async fn conversation_target(&self, conversation_id: &str) -> Option<ChatId> {
+        parse_chat_id(conversation_id)
+    }
+
+    async fn owner(&self) -> Option<ChatId> {
+        self.state.owner_dm().await
+    }
+
+    async fn describe(&self, conversation_id: &str, _target: &ChatId) -> String {
+        self.state
+            .store
+            .conversation(conversation_id)
+            .await
+            .map_or_else(|| format!("chat {conversation_id}"), |chat| chat.label)
+    }
+
+    fn target_label(&self, target: &ChatId) -> String {
+        target.to_string()
+    }
+
+    fn start_typing(&self, chat_id: ChatId) -> tokio::sync::watch::Sender<()> {
+        let bot = self.bot.clone();
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
+                    tracing::trace!(error = %e, "telegram typing indicator failed");
+                }
+                tokio::select! {
+                    () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
+                    // Resolves with an error once the sender is dropped at turn end.
+                    _ = stop_rx.changed() => break,
+                }
+            }
+        });
+        stop_tx
+    }
+
+    async fn send(
+        &self,
+        chat_id: &ChatId,
+        content: &str,
+        attachment: Option<&FileAttachment>,
+    ) -> Result<(), String> {
+        let sent = if let Some(attachment) = attachment {
+            send_file(&self.bot, *chat_id, attachment, content).await
+        } else if content.is_empty() {
+            Ok(())
+        } else {
+            send_chunks(&self.bot, *chat_id, content).await
+        };
+        sent.map_err(|e| e.to_string())
+    }
 }
 
 /// Parse a conversation id into a Telegram chat id, or `None` if it isn't
@@ -149,113 +123,6 @@ async fn target_or_warn(state: &TelegramState, correlation_id: &str) -> Option<C
 /// notifying the owner about.
 fn parse_chat_id(conversation_id: &str) -> Option<ChatId> {
     conversation_id.parse::<i64>().map(ChatId).ok()
-}
-
-fn spawn_typing(bot: Bot, chat_id: ChatId) -> tokio::sync::watch::Sender<()> {
-    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-    tokio::spawn(async move {
-        loop {
-            if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
-                tracing::trace!(error = %e, "telegram typing indicator failed");
-            }
-            tokio::select! {
-                () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                // Resolves with an error once the sender is dropped at turn end.
-                _ = stop_rx.changed() => break,
-            }
-        }
-    });
-    stop_tx
-}
-
-async fn deliver_response(bot: &Bot, state: &TelegramState, resp: ResponseEvent) {
-    let target = match &resp.conversation {
-        Some(id) => {
-            let Ok(n) = id.parse::<i64>() else {
-                tracing::warn!(conversation = %id, "telegram message addressed to an invalid chat ID");
-                notify_owner_of_failure(bot, state, id, "that is not a Telegram chat ID").await;
-                return;
-            };
-            ChatId(n)
-        }
-        None => match target_or_warn(state, &resp.correlation_id).await {
-            Some(target) => target,
-            None => return,
-        },
-    };
-    let sent = if let Some(ref att) = resp.attachment {
-        send_file(bot, target, att, &resp.content).await
-    } else if resp.content.is_empty() {
-        Ok(())
-    } else {
-        send_chunks(bot, target, &resp.content).await
-    };
-    if let Err(e) = sent {
-        tracing::warn!(chat_id = %target, error = %e, "failed to deliver telegram message");
-        if let Some(id) = &resp.conversation {
-            let place = state
-                .store
-                .conversation(id)
-                .await
-                .map_or_else(|| format!("chat {id}"), |c| c.label);
-            notify_owner_of_failure(bot, state, &place, &e.to_string()).await;
-        }
-    }
-}
-
-/// Deliver a conversation session's turn output to its own Telegram chat.
-///
-/// Never falls back to the owner's DM on an unresolvable target — unlike
-/// [`deliver_response`], which the main agent's own delivery still uses.
-/// Either failure mode here (an invalid chat id, or the send itself failing)
-/// drops the output and notifies main instead, per the design's "only main
-/// talks to the owner" rule.
-async fn deliver_session_response(bot: &Bot, state: &TelegramState, resp: SessionResponseEvent) {
-    let Ok(target) = resp.conversation_id.parse::<i64>().map(ChatId) else {
-        notify_main_of_undeliverable_session_output(
-            &state.publisher,
-            &resp.session_address,
-            &resp.conversation_id,
-            "that is not a Telegram chat ID",
-        )
-        .await;
-        return;
-    };
-    let sent = if let Some(ref att) = resp.attachment {
-        send_file(bot, target, att, &resp.content).await
-    } else if resp.content.is_empty() {
-        Ok(())
-    } else {
-        send_chunks(bot, target, &resp.content).await
-    };
-    if let Err(e) = sent {
-        notify_main_of_undeliverable_session_output(
-            &state.publisher,
-            &resp.session_address,
-            &resp.conversation_id,
-            &e.to_string(),
-        )
-        .await;
-    }
-}
-
-/// Tell the owner a message the agent addressed to a specific conversation
-/// did not go out, since nobody else will see that it failed.
-async fn notify_owner_of_failure(bot: &Bot, state: &TelegramState, place: &str, reason: &str) {
-    if let Some(dm) = state.owner_dm().await {
-        send_or_warn(
-            bot,
-            dm,
-            &format!("**Error:** I couldn't post a message to {place}: {reason}"),
-        )
-        .await;
-    }
-}
-
-async fn send_or_warn(bot: &Bot, chat_id: ChatId, content: &str) {
-    if let Err(e) = send_chunks(bot, chat_id, content).await {
-        tracing::warn!(chat_id = %chat_id, error = %e, "failed to send telegram message");
-    }
 }
 
 /// Send `content` in chunks, stopping at the first failure.
@@ -269,7 +136,7 @@ async fn send_chunks(bot: &Bot, chat_id: ChatId, content: &str) -> Result<(), Re
 async fn send_file(
     bot: &Bot,
     chat_id: ChatId,
-    attachment: &crate::interfaces::attachment::FileAttachment,
+    attachment: &FileAttachment,
     caption: &str,
 ) -> Result<(), RequestError> {
     use teloxide::payloads::{SendAudioSetters, SendDocumentSetters, SendPhotoSetters};

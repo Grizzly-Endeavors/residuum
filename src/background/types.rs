@@ -6,10 +6,10 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
+use crate::bus::MessageEvent;
 use crate::bus::{EndpointRegistry, Publisher, SessionAddress};
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, MessageSender};
-use crate::interfaces::types::InboundMessage;
 use crate::memory::merge_writer::MemoryMergeWriter;
 use crate::memory::observer::Observer;
 use crate::memory::search::HybridSearcher;
@@ -45,7 +45,7 @@ pub struct SubAgentConfig {
     /// still be delivered into the winning run as `Interrupt::UserMessage`
     /// with correct sender attribution, instead of a plain agent message
     /// misattributed to `main`. `None` for every other trigger.
-    pub inbound: Option<InboundMessage>,
+    pub inbound: Option<MessageEvent>,
     /// Images attached to this run's kickoff message, carried into its
     /// first turn's opening message. Populated for a conversation-triggered
     /// spawn or resume; empty for every other trigger, which have no images

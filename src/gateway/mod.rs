@@ -1,6 +1,7 @@
 //! WebSocket gateway for multi-client access to the agent.
 
 mod actions;
+mod chat_adapters;
 pub(crate) mod cross_site;
 pub(crate) mod event_loop;
 pub mod file_server;

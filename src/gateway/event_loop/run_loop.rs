@@ -667,12 +667,7 @@ async fn build_runtime(
         tunnel_shutdown_tx: spawned.tunnel_shutdown_tx,
         tunnel_status_tx: spawned.tunnel_status_tx,
         tunnel_status_rx: spawned.tunnel_status_rx,
-        discord_handle: spawned.adapters.discord_handle,
-        telegram_handle: spawned.adapters.telegram_handle,
-        discord_shutdown_tx: spawned.adapters.discord_shutdown_tx,
-        telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
-        teams_handle: spawned.adapters.teams_handle,
-        teams_shutdown_tx: spawned.adapters.teams_shutdown_tx,
+        chat_adapters: spawned.adapters.chat,
         a2a_handle: spawned.adapters.a2a_handle,
         a2a_shutdown_tx: spawned.adapters.a2a_shutdown_tx,
         a2a_card_state: spawned.adapters.a2a_card_state,
@@ -966,15 +961,7 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(tx) = rt.tunnel_shutdown_tx.take() {
         tx.send(true).ok();
     }
-    if let Some(tx) = rt.discord_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(tx) = rt.telegram_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(tx) = rt.teams_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
+    rt.chat_adapters.signal_shutdown();
     if let Some(tx) = rt.a2a_shutdown_tx.take() {
         tx.send(true).ok();
     }
@@ -1110,18 +1097,12 @@ async fn poll_handle(
 /// Resolves when the first of the chat adapters or the workspace watchers
 /// exits, naming which one; pends forever while none are running.
 async fn next_log_only_task_exit(
-    discord: &mut Option<tokio::task::JoinHandle<()>>,
-    telegram: &mut Option<tokio::task::JoinHandle<()>>,
-    teams: &mut Option<tokio::task::JoinHandle<()>>,
     watcher: &mut Option<tokio::task::JoinHandle<()>>,
     root_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     change_feed: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
     tokio::select! {
-        result = poll_handle(discord) => ("discord adapter", result),
-        result = poll_handle(telegram) => ("telegram adapter", result),
-        result = poll_handle(teams) => ("teams adapter", result),
         result = poll_handle(watcher) => ("workspace config watcher", result),
         result = poll_handle(root_config_watcher) => ("root config watcher", result),
         result = poll_handle(workbench_watcher) => ("artifact reload watcher", result),
@@ -1175,15 +1156,7 @@ async fn handle_bus_event(
     idle_deadline: &mut Option<tokio::time::Instant>,
 ) -> BusEventAction {
     match event {
-        Ok(Some(msg_event)) => {
-            let message = crate::interfaces::types::InboundMessage {
-                id: msg_event.id,
-                content: msg_event.content,
-                origin: msg_event.origin,
-                timestamp: chrono::Utc::now(),
-                images: msg_event.images,
-                context: msg_event.context,
-            };
+        Ok(Some(message)) => {
             if message.origin.belongs_to_main() {
                 match handle_inbound_message(message, rt, observe_deadline, idle_deadline).await {
                     None => BusEventAction::Continue,
@@ -1371,10 +1344,11 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 respawn_tunnel(&mut rt, &result).await;
             }
 
+            (task_name, result) = rt.chat_adapters.next_exit() => {
+                log_adapter_task_exit(&rt, task_name, &result).await;
+            }
+
             (task_name, result) = next_log_only_task_exit(
-                &mut rt.discord_handle,
-                &mut rt.telegram_handle,
-                &mut rt.teams_handle,
                 &mut rt.watcher_handle,
                 &mut rt.root_config_watcher_handle,
                 &mut rt.workbench_watcher_handle,
