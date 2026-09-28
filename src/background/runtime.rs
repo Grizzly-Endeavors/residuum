@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::hop::HopCounter;
 use crate::agent::interrupt::Interrupt;
 use crate::agent::recent_messages::RecentMessages;
+use crate::bus::MessageEvent;
 use crate::bus::{
     AgentMessageEvent, AgentResultEvent, AgentResultStatus, ConversationTarget,
     ConversationTypingEvent, EndpointName, EventTrigger, HEARTBEAT_OK, HEARTBEAT_URGENT, Publisher,
@@ -25,7 +26,6 @@ use crate::bus::{
     SkillName, ends_with_sentinel, topics,
 };
 use crate::config::BackgroundConfig;
-use crate::interfaces::types::InboundMessage;
 use crate::tracing_service::{ClientContext, TracingService};
 
 use super::events::publish_session_event;
@@ -643,7 +643,7 @@ enum IdleOutcome {
     Woken(AgentMessageEvent),
     /// A new message arrived in this session's conversation; it becomes the
     /// next turn's kickoff.
-    WokenExternal(InboundMessage),
+    WokenExternal(MessageEvent),
 }
 
 /// Wait for a session's idle period to end: a stop, the idle timeout, or a
@@ -1783,8 +1783,8 @@ mod tests {
     }
 
     /// A minimal inbound conversation message for interrupt-channel tests.
-    fn sample_inbound_message(content: &str) -> InboundMessage {
-        InboundMessage {
+    fn sample_inbound_message(content: &str) -> MessageEvent {
+        MessageEvent {
             id: "conv-msg-1".to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1797,7 +1797,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }

@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::types::{SessionAddress, SkillName};
 use crate::config::BackgroundModelTier;
-use crate::inference::{ImageData, MessageSender};
+use crate::inference::{ImageData, Message, MessageSender};
 use crate::interfaces::attachment::FileAttachment;
-use crate::interfaces::types::{InboundMessage, MessageOrigin};
+use crate::interfaces::types::MessageOrigin;
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -194,6 +194,25 @@ impl MessageEvent {
         let mut event = Self::from_background(msg.format_for_agent());
         event.origin.agent_sender = msg.agent_sender().map(Box::new);
         event
+    }
+
+    /// The messages this adds to conversation history: its background
+    /// context (if any) as a system message, then the user message itself.
+    #[must_use]
+    pub fn into_history_messages(self) -> Vec<Message> {
+        let user = if self.images.is_empty() {
+            Message::user(self.content)
+        } else {
+            Message::user_with_images(self.content, self.images)
+        };
+        self.context
+            .map(Message::system)
+            .into_iter()
+            .chain(std::iter::once(
+                user.with_sender(self.origin.sender)
+                    .with_agent_sender(self.origin.agent_sender.map(|a| *a)),
+            ))
+            .collect()
     }
 }
 
@@ -538,7 +557,7 @@ pub struct SpawnRequestEvent {
     /// attribution ordinary conversation delivery gets — instead of being
     /// misattributed as a plain agent message from `main`. `None` for every
     /// other trigger.
-    pub inbound: Option<InboundMessage>,
+    pub inbound: Option<MessageEvent>,
     /// Images attached to this run's kickoff message, carried into its first
     /// turn alongside `prompt`/`context`. Populated for a `Conversation`-
     /// triggered spawn or resume from the triggering inbound message's
@@ -1062,5 +1081,73 @@ mod tests {
             event.format_for_agent(),
             "[Session Result]\nSession: scheduled-check-0001 (t1)\nTask: pulse:check\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: /tmp/transcript.txt"
         );
+    }
+
+    fn inbound(context: Option<&str>) -> MessageEvent {
+        MessageEvent {
+            id: "m1".to_string(),
+            content: "can you check the build?".to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                endpoint: "teams".to_string(),
+                sender: Some(crate::inference::MessageSender {
+                    name: "Jane".to_string(),
+                    id: "aad-jane".to_string(),
+                    interface: "teams".to_string(),
+                    location: Some("#builds".to_string()),
+                }),
+                conversation: Some(crate::interfaces::types::ConversationContext {
+                    id: "19:abc@thread.tacv2".to_string(),
+                    kind: crate::interfaces::types::ConversationKind::Channel,
+                    is_owner: true,
+                }),
+                agent_sender: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            context: context.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn context_precedes_the_attributed_user_message() {
+        use crate::inference::Role;
+
+        let messages = inbound(Some("[14:05] Sam: build is red")).into_history_messages();
+        let [context, user] = messages.as_slice() else {
+            panic!("expected context then user message, got {messages:?}");
+        };
+        assert_eq!(context.role, Role::System);
+        assert_eq!(context.content, "[14:05] Sam: build is red");
+        assert_eq!(user.role, Role::User);
+        assert_eq!(user.content, "can you check the build?");
+        assert_eq!(user.sender.as_ref().map(|s| s.name.as_str()), Some("Jane"));
+    }
+
+    #[test]
+    fn agent_sender_on_the_origin_reaches_the_history_message() {
+        let mut message = inbound(None);
+        message.origin.agent_sender = Some(Box::new(crate::inference::AgentSender {
+            address: "spawned-a".to_string(),
+            category: "spawned".to_string(),
+        }));
+        let messages = message.into_history_messages();
+        let [user] = messages.as_slice() else {
+            panic!("expected a single user message, got {messages:?}");
+        };
+        assert_eq!(
+            user.agent_sender.as_ref().map(|a| a.address.as_str()),
+            Some("spawned-a")
+        );
+    }
+
+    #[test]
+    fn without_context_only_the_user_message() {
+        use crate::inference::Role;
+
+        let messages = inbound(None).into_history_messages();
+        let [user] = messages.as_slice() else {
+            panic!("expected a single user message, got {messages:?}");
+        };
+        assert_eq!(user.role, Role::User);
     }
 }

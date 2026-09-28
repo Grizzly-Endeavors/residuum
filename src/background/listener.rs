@@ -19,11 +19,11 @@ use crate::background::registry::{
 use crate::background::runtime::SessionSpawnRequest;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 use crate::background::types::SubAgentConfig;
+use crate::bus::MessageEvent;
 use crate::bus::{
     AgentMessageEvent, BusHandle, EventTrigger, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL,
     SessionAddress, SpawnRequestEvent, Subscriber, topics,
 };
-use crate::interfaces::types::InboundMessage;
 
 /// Subscribe to the `Background` topic and fork sessions on demand.
 ///
@@ -333,7 +333,7 @@ fn deliver_race_guard_content(
 /// none).
 pub(crate) fn race_guard_interrupt(
     trigger: &EventTrigger,
-    inbound: Option<InboundMessage>,
+    inbound: Option<MessageEvent>,
     spawner: Option<SessionAddress>,
     category: SessionCategory,
     content: String,
@@ -418,8 +418,8 @@ mod tests {
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
     use tokio_util::sync::CancellationToken;
 
-    fn sample_inbound(id: &str, content: &str, sender_name: &str) -> InboundMessage {
-        InboundMessage {
+    fn sample_inbound(id: &str, content: &str, sender_name: &str) -> MessageEvent {
+        MessageEvent {
             id: id.to_string(),
             content: content.to_string(),
             origin: MessageOrigin {
@@ -437,13 +437,13 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }
     }
 
-    fn conversation_spawn_event(inbound: InboundMessage, address: &str) -> SpawnRequestEvent {
+    fn conversation_spawn_event(inbound: MessageEvent, address: &str) -> SpawnRequestEvent {
         SpawnRequestEvent {
             address: SessionAddress::from(address),
             skill: None,

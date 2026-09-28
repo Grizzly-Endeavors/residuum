@@ -8,6 +8,7 @@ pub mod commands;
 pub(crate) mod context_buffer;
 pub(crate) mod conversations;
 pub mod discord;
+mod outbound;
 pub(crate) mod reply_targets;
 pub mod teams;
 pub mod telegram;

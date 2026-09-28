@@ -11,7 +11,7 @@ use crate::interfaces::types::ConversationKind;
 
 /// Everything needed to post into a conversation later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct ConversationRef {
+pub(in crate::interfaces) struct ConversationRef {
     pub(super) conversation_id: String,
     pub(super) service_url: String,
     pub(super) kind: ConversationKind,

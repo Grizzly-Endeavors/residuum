@@ -16,7 +16,7 @@ use crate::bus::{
 use crate::config::Config;
 use crate::gateway::types::{GatewayRuntime, ReloadSignal, StopRequest};
 use crate::inference::ImageData;
-use crate::interfaces::types::{InboundMessage, MessageOrigin};
+use crate::interfaces::types::MessageOrigin;
 use crate::memory::types::Visibility;
 use crate::skills::SharedSkillState;
 use crate::tracing_service::TracingService;
@@ -74,7 +74,7 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, agent: &mut Agent)
             Interrupt::UserMessage(leftover_msg) => {
                 // Its hop, if any — this may be an agent message relayed to
                 // main (see `AgentMessenger::deliver_to_main`), which carries
-                // no hop count of its own in `InboundMessage` — was already
+                // no hop count of its own in `MessageEvent` — was already
                 // folded into the shared hop counter when it arrived
                 // mid-turn (see `run_agent_turn_with_interrupts`). Carry that
                 // current value forward since this message is still
@@ -231,15 +231,7 @@ fn handle_mid_turn_message(
     hop_counter: &crate::agent::HopCounter,
 ) {
     match next_msg {
-        Ok(Some(msg_event)) => {
-            let inbound = crate::interfaces::types::InboundMessage {
-                id: msg_event.id,
-                content: msg_event.content,
-                origin: msg_event.origin,
-                timestamp: chrono::Utc::now(),
-                images: msg_event.images,
-                context: msg_event.context,
-            };
+        Ok(Some(inbound)) => {
             if inbound.origin.belongs_to_main() {
                 // A mid-turn message on this topic may be a genuine user
                 // message (hop 0) or an agent message relayed to main (see
@@ -670,7 +662,7 @@ fn background_output_endpoint(
 /// loop's own idle-time handling of it.
 #[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
-    message: InboundMessage,
+    message: MessageEvent,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
     idle_deadline: &mut Option<tokio::time::Instant>,
@@ -1579,8 +1571,8 @@ mod tests {
         })
     }
 
-    fn sample_inbound(content: &str) -> crate::interfaces::types::InboundMessage {
-        crate::interfaces::types::InboundMessage {
+    fn sample_inbound(content: &str) -> crate::bus::MessageEvent {
+        crate::bus::MessageEvent {
             id: "leftover-1".to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1589,7 +1581,7 @@ mod tests {
                 conversation: None,
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }

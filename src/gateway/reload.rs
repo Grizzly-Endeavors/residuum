@@ -288,19 +288,7 @@ async fn shutdown_adapter(
     handle: &mut Option<tokio::task::JoinHandle<()>>,
     name: &str,
 ) {
-    if let Some(tx) = shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(h) = handle.take() {
-        if tokio::time::timeout(Duration::from_secs(5), h)
-            .await
-            .is_ok()
-        {
-            tracing::info!(adapter = %name, "adapter stopped");
-        } else {
-            tracing::warn!(adapter = %name, "adapter shutdown timed out after 5s");
-        }
-    }
+    super::chat_adapters::shutdown_adapter(shutdown_tx, handle, name).await;
 }
 
 /// Handle an in-place root config reload.
@@ -875,36 +863,10 @@ async fn reload_tracing(rt: &GatewayRuntime, new_cfg: &Config) {
     tracing::debug!(level = %new_cfg.tracing.log_level, "tracing config updated");
 }
 
-/// Shut down an adapter and optionally start a replacement using the provided build closure.
-///
-/// If `build` is `Some`, spawns a new adapter task and records the handle and shutdown sender.
-/// If `build` is `None`, the adapter is stopped and not restarted.
-async fn reload_adapter<F, Fut>(
-    shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
-    handle: &mut Option<tokio::task::JoinHandle<()>>,
-    name: &'static str,
-    build: Option<F>,
-) where
-    F: FnOnce(tokio::sync::watch::Receiver<bool>) -> Fut,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    shutdown_adapter(shutdown_tx, handle, name).await;
-    match build {
-        Some(build_fn) => {
-            let (tx, rx) = tokio::sync::watch::channel(false);
-            *handle = Some(crate::util::spawn_monitored(name, build_fn(rx)));
-            *shutdown_tx = Some(tx);
-            tracing::info!(adapter = %name, "adapter restarted with new config");
-        }
-        None => {
-            tracing::info!(adapter = %name, "adapter removed from config");
-        }
-    }
-}
-
-/// Stop the existing Discord adapter (if running) and start a new one if configured.
-async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    let senders = crate::gateway::event_loop::AdapterSenders {
+/// Senders a reloaded chat adapter needs. Built once per adapter because the
+/// closure that starts it has to own them.
+fn chat_adapter_senders(rt: &GatewayRuntime) -> crate::gateway::event_loop::AdapterSenders {
+    crate::gateway::event_loop::AdapterSenders {
         publisher: rt.publisher.clone(),
         bus_handle: rt.bus_handle.clone(),
         reload: rt.reload_tx.clone(),
@@ -912,30 +874,34 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         stop: rt.stop_tx.clone(),
         session_registry: Arc::clone(&rt.session_registry),
         conversations: rt.endpoint_registry.conversations().clone(),
-    };
-    reload_adapter(
-        &mut rt.discord_shutdown_tx,
-        &mut rt.discord_handle,
-        "discord",
-        new_cfg.discord.as_ref().map(|cfg| {
-            let cfg = cfg.clone();
-            let workspace_dir = new_cfg.workspace_dir.clone();
-            let tz = rt.tz;
-            move |rx: tokio::sync::watch::Receiver<bool>| async move {
-                let iface = crate::interfaces::discord::DiscordInterface::new(
-                    cfg,
-                    senders,
-                    workspace_dir,
-                    tz,
-                    rx,
-                );
-                if let Err(e) = iface.start().await {
-                    tracing::error!(error = %e, "discord interface failed after reload");
+    }
+}
+
+/// Stop the existing Discord adapter (if running) and start a new one if configured.
+async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    let senders = chat_adapter_senders(rt);
+    rt.chat_adapters
+        .reload(
+            "discord",
+            new_cfg.discord.as_ref().map(|cfg| {
+                let cfg = cfg.clone();
+                let workspace_dir = new_cfg.workspace_dir.clone();
+                let tz = rt.tz;
+                move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                    let iface = crate::interfaces::discord::DiscordInterface::new(
+                        cfg,
+                        senders,
+                        workspace_dir,
+                        tz,
+                        rx,
+                    );
+                    if let Err(e) = iface.start().await {
+                        tracing::error!(error = %e, "discord interface failed after reload");
+                    }
                 }
-            }
-        }),
-    )
-    .await;
+            }),
+        )
+        .await;
 }
 
 /// Stop the existing tunnel (if running) and start a new one if configured.
@@ -973,82 +939,64 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Stop the existing Telegram adapter (if running) and start a new one if configured.
 async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    let senders = crate::gateway::event_loop::AdapterSenders {
-        publisher: rt.publisher.clone(),
-        bus_handle: rt.bus_handle.clone(),
-        reload: rt.reload_tx.clone(),
-        command: rt.command_tx.clone(),
-        stop: rt.stop_tx.clone(),
-        session_registry: Arc::clone(&rt.session_registry),
-        conversations: rt.endpoint_registry.conversations().clone(),
-    };
-    reload_adapter(
-        &mut rt.telegram_shutdown_tx,
-        &mut rt.telegram_handle,
-        "telegram",
-        new_cfg.telegram.as_ref().map(|cfg| {
-            let cfg = cfg.clone();
-            let workspace_dir = new_cfg.workspace_dir.clone();
-            let tz = rt.tz;
-            move |rx: tokio::sync::watch::Receiver<bool>| async move {
-                let iface = crate::interfaces::telegram::TelegramInterface::new(
-                    cfg,
-                    senders,
-                    workspace_dir,
-                    tz,
-                    rx,
-                );
-                if let Err(e) = iface.start().await {
-                    tracing::error!(error = %e, "telegram interface failed after reload");
+    let senders = chat_adapter_senders(rt);
+    rt.chat_adapters
+        .reload(
+            "telegram",
+            new_cfg.telegram.as_ref().map(|cfg| {
+                let cfg = cfg.clone();
+                let workspace_dir = new_cfg.workspace_dir.clone();
+                let tz = rt.tz;
+                move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                    let iface = crate::interfaces::telegram::TelegramInterface::new(
+                        cfg,
+                        senders,
+                        workspace_dir,
+                        tz,
+                        rx,
+                    );
+                    if let Err(e) = iface.start().await {
+                        tracing::error!(error = %e, "telegram interface failed after reload");
+                    }
                 }
-            }
-        }),
-    )
-    .await;
+            }),
+        )
+        .await;
 }
 
 /// Stop the existing Teams adapter (if running) and start a new one if configured.
 async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    let senders = crate::gateway::event_loop::AdapterSenders {
-        publisher: rt.publisher.clone(),
-        bus_handle: rt.bus_handle.clone(),
-        reload: rt.reload_tx.clone(),
-        command: rt.command_tx.clone(),
-        stop: rt.stop_tx.clone(),
-        session_registry: Arc::clone(&rt.session_registry),
-        conversations: rt.endpoint_registry.conversations().clone(),
-    };
-    reload_adapter(
-        &mut rt.teams_shutdown_tx,
-        &mut rt.teams_handle,
-        "teams",
-        new_cfg.teams.as_ref().map(|cfg| {
-            let cfg = cfg.clone();
-            let bind = new_cfg.gateway.bind.clone();
-            let workspace_dir = new_cfg.workspace_dir.clone();
-            let tz = rt.tz;
-            move |rx: tokio::sync::watch::Receiver<bool>| async move {
-                let iface = crate::interfaces::teams::TeamsInterface::new(
-                    cfg,
-                    senders,
-                    bind,
-                    workspace_dir,
-                    tz,
-                    rx,
-                );
-                if let Err(e) = iface.start().await {
-                    tracing::error!(error = %e, "teams interface failed after reload");
+    let senders = chat_adapter_senders(rt);
+    rt.chat_adapters
+        .reload(
+            "teams",
+            new_cfg.teams.as_ref().map(|cfg| {
+                let cfg = cfg.clone();
+                let bind = new_cfg.gateway.bind.clone();
+                let workspace_dir = new_cfg.workspace_dir.clone();
+                let tz = rt.tz;
+                move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                    let iface = crate::interfaces::teams::TeamsInterface::new(
+                        cfg,
+                        senders,
+                        bind,
+                        workspace_dir,
+                        tz,
+                        rx,
+                    );
+                    if let Err(e) = iface.start().await {
+                        tracing::error!(error = %e, "teams interface failed after reload");
+                    }
                 }
-            }
-        }),
-    )
-    .await;
+            }),
+        )
+        .await;
 }
 
 /// Stop the existing A2A listener (if running) and start a new one if
 /// enabled. Unlike the other adapters, a config change also needs a fresh
 /// agent card (the base URL or visibility may have changed), so this
-/// doesn't go through the generic `reload_adapter` helper.
+/// doesn't go through [`super::chat_adapters::ChatAdapters`].
 async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     shutdown_adapter(&mut rt.a2a_shutdown_tx, &mut rt.a2a_handle, "a2a").await;
     rt.a2a_card_state = None;

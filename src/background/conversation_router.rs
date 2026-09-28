@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
+use crate::bus::MessageEvent;
 use crate::config::BackgroundModelTier;
-use crate::interfaces::types::InboundMessage;
 
 use super::messaging::{AgentMessenger, ConversationSpawn};
 use super::registry::conversation_session_address;
@@ -49,7 +49,7 @@ impl ConversationRouter {
     /// nothing to derive an address from; that should never actually happen
     /// given the caller contract.
     #[tracing::instrument(skip_all, fields(msg_id = %message.id, endpoint = %message.origin.endpoint))]
-    pub async fn route(&self, message: InboundMessage) {
+    pub async fn route(&self, message: MessageEvent) {
         let Some(conversation) = message.origin.conversation.as_ref() else {
             tracing::error!(
                 msg_id = %message.id,
@@ -104,8 +104,8 @@ mod tests {
     use super::*;
     use crate::interfaces::types::{ConversationContext, ConversationKind, MessageOrigin};
 
-    fn inbound(endpoint: &str, conversation_id: &str, location: Option<&str>) -> InboundMessage {
-        InboundMessage {
+    fn inbound(endpoint: &str, conversation_id: &str, location: Option<&str>) -> MessageEvent {
+        MessageEvent {
             id: "m1".to_string(),
             content: "can you check the build?".to_string(),
             origin: MessageOrigin {
@@ -123,7 +123,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: None,
         }

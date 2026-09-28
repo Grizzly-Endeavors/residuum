@@ -17,6 +17,7 @@ use super::ReloadSignal;
 pub(crate) mod a2a;
 mod agent_keys;
 pub(crate) mod artifact_identity;
+pub(super) mod chat;
 pub mod checkpoints;
 pub mod cloud;
 pub mod config;
@@ -151,8 +152,8 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         )
         .route("/api/system/timezone", get(config::api_system_timezone))
         .route("/api/mcp-catalog", get(config::api_mcp_catalog))
-        .route("/api/chat/history", get(config::api_chat_history))
-        .route("/api/usage", get(config::api_usage))
+        .route("/api/chat/history", get(chat::api_chat_history))
+        .route("/api/usage", get(chat::api_usage))
         .route(
             "/api/providers/models",
             post(providers::api_provider_models),
@@ -372,21 +373,21 @@ mod tests {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
         };
-        let Json(segment) = config::api_chat_history(
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap();
         match segment {
-            config::ChatHistorySegment::Recent {
+            chat::ChatHistorySegment::Recent {
                 messages,
                 next_cursor,
             } => {
                 assert!(messages.is_empty(), "setup mode should have no messages");
                 assert!(next_cursor.is_none(), "setup mode should have no cursor");
             }
-            config::ChatHistorySegment::Episode { .. } => {
+            chat::ChatHistorySegment::Episode { .. } => {
                 panic!("expected Recent segment in setup mode");
             }
         }
@@ -406,7 +407,7 @@ mod tests {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
         };
-        let Json(totals) = config::api_usage(State(state)).await;
+        let Json(totals) = chat::api_usage(State(state)).await;
         assert_eq!(totals, crate::agent::usage::SessionUsageTotals::default());
     }
 
@@ -440,7 +441,7 @@ mod tests {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
         };
-        let Json(loaded) = config::api_usage(State(state)).await;
+        let Json(loaded) = chat::api_usage(State(state)).await;
         assert_eq!(loaded, totals);
     }
 
@@ -458,21 +459,21 @@ mod tests {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
         };
-        let Json(segment) = config::api_chat_history(
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap();
         match segment {
-            config::ChatHistorySegment::Recent {
+            chat::ChatHistorySegment::Recent {
                 messages,
                 next_cursor,
             } => {
                 assert!(messages.is_empty(), "missing file should have no messages");
                 assert!(next_cursor.is_none(), "no episodes yet");
             }
-            config::ChatHistorySegment::Episode { .. } => {
+            chat::ChatHistorySegment::Episode { .. } => {
                 panic!("expected Recent segment when recent_messages.json is missing");
             }
         }
@@ -526,18 +527,18 @@ mod tests {
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
         };
-        let Json(segment) = config::api_chat_history(
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap();
 
         match segment {
-            config::ChatHistorySegment::Recent { next_cursor, .. } => {
+            chat::ChatHistorySegment::Recent { next_cursor, .. } => {
                 assert_eq!(next_cursor.as_deref(), Some("ep-002"));
             }
-            config::ChatHistorySegment::Episode { .. } => panic!("expected Recent"),
+            chat::ChatHistorySegment::Episode { .. } => panic!("expected Recent"),
         }
     }
 
@@ -594,9 +595,9 @@ mod tests {
             checkpoints: crate::checkpoints::test_engine(),
         };
 
-        let Json(segment) = config::api_chat_history(
+        let Json(segment) = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery {
+            Query(chat::ChatHistoryQuery {
                 episode: Some("ep-002".to_string()),
             }),
         )
@@ -604,7 +605,7 @@ mod tests {
         .unwrap();
 
         match segment {
-            config::ChatHistorySegment::Episode {
+            chat::ChatHistorySegment::Episode {
                 episode_id,
                 messages,
                 next_cursor,
@@ -619,7 +620,7 @@ mod tests {
                     "cursor should walk backward"
                 );
             }
-            config::ChatHistorySegment::Recent { .. } => panic!("expected Episode"),
+            chat::ChatHistorySegment::Recent { .. } => panic!("expected Episode"),
         }
     }
 
@@ -642,9 +643,9 @@ mod tests {
             checkpoints: crate::checkpoints::test_engine(),
         };
 
-        let err = config::api_chat_history(
+        let err = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery {
+            Query(chat::ChatHistoryQuery {
                 episode: Some("ep-999".to_string()),
             }),
         )
@@ -684,9 +685,9 @@ mod tests {
             checkpoints: crate::checkpoints::test_engine(),
         };
 
-        let err = config::api_chat_history(
+        let err = chat::api_chat_history(
             State(state),
-            Query(config::ChatHistoryQuery { episode: None }),
+            Query(chat::ChatHistoryQuery { episode: None }),
         )
         .await
         .unwrap_err();

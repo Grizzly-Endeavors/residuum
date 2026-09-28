@@ -36,7 +36,6 @@ use crate::bus::{
 };
 use crate::config::BackgroundModelTier;
 use crate::inference::{ImageData, Message};
-use crate::interfaces::types::InboundMessage;
 
 use super::events::publish_session_event;
 use super::registry::{DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry};
@@ -442,7 +441,7 @@ impl AgentMessenger {
     pub(crate) async fn deliver_conversation(
         &self,
         address: &SessionAddress,
-        inbound: InboundMessage,
+        inbound: MessageEvent,
         spawn: ConversationSpawn,
     ) -> Result<ConversationDeliveryOutcome, SendError> {
         match self
@@ -497,7 +496,7 @@ pub(crate) enum PendingInput {
     /// Another agent addressed this session (`message_agent`).
     Agent(AgentMessageEvent),
     /// A new message arrived in this session's own conversation.
-    External(InboundMessage),
+    External(MessageEvent),
 }
 
 impl PendingInput {
@@ -576,7 +575,7 @@ pub(crate) enum ConversationDeliveryOutcome {
 async fn publish_conversation_spawn(
     publisher: &Publisher,
     address: SessionAddress,
-    inbound: InboundMessage,
+    inbound: MessageEvent,
     spawn: ConversationSpawn,
 ) -> Result<(), SendError> {
     let Some(conversation) = inbound.origin.conversation.as_ref() else {
@@ -630,7 +629,7 @@ async fn publish_conversation_resume(
     publisher: &Publisher,
     address: &SessionAddress,
     point: &ResumePoint,
-    inbound: &InboundMessage,
+    inbound: &MessageEvent,
 ) -> Result<(), SendError> {
     let context = match &inbound.context {
         Some(ctx) => format!("{}\n\n{ctx}", pointer_note(point)),
@@ -693,7 +692,7 @@ pub(crate) async fn retry_race_guard_user_message(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
     address: SessionAddress,
-    inbound: InboundMessage,
+    inbound: MessageEvent,
     spawn_event: SpawnRequestEvent,
 ) {
     let mut attempts: u32 = 0;
@@ -748,7 +747,7 @@ async fn deferred_conversation_resume(
     registry: Arc<SessionRegistry>,
     publisher: Publisher,
     address: SessionAddress,
-    inbound: InboundMessage,
+    inbound: MessageEvent,
     spawn: ConversationSpawn,
 ) {
     loop {
@@ -783,7 +782,7 @@ async fn resume_or_start_conversation_after_clear(
     registry: &SessionRegistry,
     publisher: &Publisher,
     address: &SessionAddress,
-    inbound: &InboundMessage,
+    inbound: &MessageEvent,
     spawn: &ConversationSpawn,
 ) -> bool {
     let mut attempts: u32 = 0;
@@ -1612,8 +1611,8 @@ mod tests {
         );
     }
 
-    fn sample_inbound(content: &str, buffered: Option<&str>) -> InboundMessage {
-        InboundMessage {
+    fn sample_inbound(content: &str, buffered: Option<&str>) -> MessageEvent {
+        MessageEvent {
             id: "conv-1".to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
@@ -1631,7 +1630,7 @@ mod tests {
                 }),
                 agent_sender: None,
             },
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             images: vec![],
             context: buffered.map(str::to_string),
         }
