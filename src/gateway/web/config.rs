@@ -1,19 +1,13 @@
 //! Config API endpoints and types.
 
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Json, Response};
-use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::usage::{SessionUsageTotals, load_session_usage_totals};
 use crate::config::Config;
 use crate::features;
-use crate::inference::Message;
-use crate::memory::episode_store::{latest_episode_id, previous_episode_id, read_episode_jsonl};
-use crate::memory::recent_messages::{RecentMessage, load_recent_messages};
-use crate::memory::types::Visibility;
 use crate::update;
 
 use super::ConfigApiState;
@@ -154,226 +148,6 @@ async fn checkpoint_stats_or_log(
         },
         Some,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::*;
-
-    fn state(
-        setup_done: Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>>,
-    ) -> ConfigApiState {
-        ConfigApiState {
-            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
-    }
-
-    #[tokio::test]
-    async fn status_reports_mode_version_and_features() {
-        let Json(running) = api_status(State(state(None))).await;
-        assert_eq!(running.mode, "running");
-        assert_eq!(running.version, update::CURRENT_VERSION);
-        assert_eq!(running.features, features::FEATURES);
-
-        let (tx, _rx) = tokio::sync::watch::channel(false);
-        let Json(setup) = api_status(State(state(Some(std::sync::Arc::new(tx))))).await;
-        assert_eq!(setup.mode, "setup");
-    }
-
-    /// A state backed by a real temp directory, for tests that read/write
-    /// `config.toml`/`providers.toml` on disk.
-    fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
-        ConfigApiState {
-            config_dir: dir.to_path_buf(),
-            workspace_dir: dir.join("workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
-    }
-
-    #[tokio::test]
-    async fn config_raw_put_saves_invalid_toml_with_diagnostics() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("providers.toml"),
-            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
-        )
-        .unwrap();
-        let state = tempdir_state(dir.path());
-
-        let Json(response) = api_config_raw_put(State(state), "this is not valid toml".to_string())
-            .await
-            .unwrap();
-
-        assert!(!response.valid, "invalid TOML should be flagged invalid");
-        assert!(
-            !response.diagnostics.is_empty(),
-            "invalid TOML should produce a diagnostic"
-        );
-        let saved = tokio::fs::read_to_string(dir.path().join("config.toml"))
-            .await
-            .unwrap();
-        assert_eq!(
-            saved, "this is not valid toml",
-            "the save should have happened despite the invalid content"
-        );
-    }
-
-    #[tokio::test]
-    async fn config_raw_put_saves_valid_toml_with_no_diagnostics() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("providers.toml"),
-            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
-        )
-        .unwrap();
-        let state = tempdir_state(dir.path());
-
-        let Json(response) = api_config_raw_put(State(state), "timezone = \"UTC\"\n".to_string())
-            .await
-            .unwrap();
-
-        assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
-    }
-
-    #[tokio::test]
-    async fn mcp_raw_put_saves_invalid_json_with_diagnostics() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = tempdir_state(dir.path());
-
-        let Json(response) = api_mcp_raw_put(State(state), "not json".to_string())
-            .await
-            .unwrap();
-
-        assert!(!response.valid, "invalid JSON should be flagged invalid");
-        assert!(!response.diagnostics.is_empty());
-        let mcp_path =
-            crate::workspace::layout::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
-        let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
-        assert_eq!(
-            saved, "not json",
-            "the save should have happened despite the invalid content"
-        );
-    }
-
-    #[tokio::test]
-    async fn mcp_raw_put_saves_valid_json_with_no_diagnostics() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = tempdir_state(dir.path());
-
-        let Json(response) = api_mcp_raw_put(
-            State(state),
-            r#"{"mcpServers":{"fs":{"command":"npx"}}}"#.to_string(),
-        )
-        .await
-        .unwrap();
-
-        assert!(response.valid);
-        assert!(response.diagnostics.is_empty());
-    }
-
-    #[tokio::test]
-    async fn mcp_raw_put_reports_a_bad_server_entry_without_blocking_the_save() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = tempdir_state(dir.path());
-
-        let Json(response) = api_mcp_raw_put(
-            State(state),
-            r#"{"mcpServers":{"broken":{"type":"sse"}}}"#.to_string(),
-        )
-        .await
-        .unwrap();
-
-        assert!(
-            !response.valid,
-            "a server with a deprecated transport should be flagged invalid"
-        );
-        assert_eq!(response.diagnostics.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn config_patch_returns_the_checkpoint_taken_before_the_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
-        let before = "timezone = \"UTC\"\n\n[gateway]\nport = 7700\n";
-        std::fs::write(state.config_dir.join("config.toml"), before).unwrap();
-
-        let Json(saved) = api_config_patch(
-            State(state.clone()),
-            Json(serde_json::json!({"gateway": {"port": 8080}})),
-        )
-        .await
-        .unwrap();
-
-        assert!(saved.validation.valid);
-        let id = saved
-            .checkpoint_id
-            .expect("a patch should name the checkpoint taken before it");
-        let stored = state
-            .checkpoints
-            .file_content_at(
-                crate::checkpoints::RepoKind::Config,
-                id,
-                "config.toml".to_string(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            stored.as_deref(),
-            Some(before.as_bytes()),
-            "the returned checkpoint must hold config.toml as it was before the patch"
-        );
-    }
-
-    #[tokio::test]
-    async fn mcp_patch_returns_the_checkpoint_taken_before_the_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
-        let mcp_path =
-            crate::workspace::layout::WorkspaceLayout::new(state.workspace_dir.clone()).mcp_json();
-        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-        let before = r#"{"mcpServers":{"fs":{"command":"npx","cwd":"/srv"}}}"#;
-        std::fs::write(&mcp_path, before).unwrap();
-
-        let Json(saved) = api_mcp_patch(
-            State(state.clone()),
-            Json(serde_json::json!({"mcpServers": {"fs": null}})),
-        )
-        .await
-        .unwrap();
-
-        assert!(saved.validation.valid);
-        let id = saved
-            .checkpoint_id
-            .expect("a patch should name the checkpoint taken before it");
-        let relative = mcp_path
-            .strip_prefix(&state.workspace_dir)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let stored = state
-            .checkpoints
-            .file_content_at(crate::checkpoints::RepoKind::Workspace, id, relative)
-            .await
-            .unwrap();
-        assert_eq!(
-            stored.as_deref(),
-            Some(before.as_bytes()),
-            "the returned checkpoint must still hold the removed server, including fields the form doesn't model"
-        );
-    }
 }
 
 /// `GET /api/config/raw` — return raw `config.toml` contents as text.
@@ -812,151 +586,222 @@ pub(super) async fn api_mcp_catalog() -> Response {
     }
 }
 
-/// Query parameters for `GET /api/chat/history`.
-#[derive(Debug, Deserialize)]
-pub(super) struct ChatHistoryQuery {
-    /// If set, fetch this specific episode instead of the live recent messages.
-    #[serde(default)]
-    pub(super) episode: Option<String>,
-}
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
 
-/// One segment of chat history returned by `GET /api/chat/history`.
-///
-/// `next_cursor`, if present, is the episode ID the client should pass back
-/// as `?episode=<id>` to load the next-older segment.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum ChatHistorySegment {
-    /// Live, uncompressed messages from `recent_messages.json`.
-    Recent {
-        messages: Vec<RecentMessage>,
-        next_cursor: Option<String>,
-    },
-    /// A single archived episode, synthesized as `RecentMessage`s so the
-    /// frontend can render them through the existing pipeline.
-    Episode {
-        episode_id: String,
-        date: NaiveDate,
-        messages: Vec<RecentMessage>,
-        next_cursor: Option<String>,
-    },
-}
+    use super::*;
 
-/// `GET /api/chat/history` — return a segment of chat history.
-///
-/// With no query params, returns the live `Recent` segment plus a cursor
-/// pointing at the newest episode on disk (for the frontend's lazy-load).
-///
-/// With `?episode=ep-NNN`, returns that episode's transcript wrapped as
-/// `RecentMessage`s plus a cursor to the next-older episode. Returns 404
-/// when the episode does not exist.
-pub(super) async fn api_chat_history(
-    State(state): State<ConfigApiState>,
-    Query(params): Query<ChatHistoryQuery>,
-) -> Result<Json<ChatHistorySegment>, StatusCode> {
-    let Some(memory_dir) = &state.memory_dir else {
-        return Ok(Json(ChatHistorySegment::Recent {
-            messages: Vec::new(),
-            next_cursor: None,
-        }));
-    };
-    let episodes_dir = memory_dir.join("episodes");
-
-    match params.episode {
-        None => {
-            let recent_path = memory_dir.join("recent_messages.json");
-            let messages = load_recent_messages(&recent_path).await.map_err(|err| {
-                tracing::warn!(
-                    error = %err,
-                    path = %recent_path.display(),
-                    "failed to load recent messages — refusing to silently return empty history",
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            let next_cursor = latest_episode_id(&episodes_dir).await.map_err(|err| {
-                tracing::warn!(
-                    error = %err,
-                    path = %episodes_dir.display(),
-                    "failed to scan episodes directory",
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            Ok(Json(ChatHistorySegment::Recent {
-                messages,
-                next_cursor,
-            }))
-        }
-        Some(episode_id) => {
-            let path = crate::memory::episode_store::find_episode_path(&episodes_dir, &episode_id)
-                .map_err(|err| {
-                    tracing::warn!(error = %err, episode = %episode_id, "failed to locate episode");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-            let Some(path) = path else {
-                return Err(StatusCode::NOT_FOUND);
-            };
-
-            let (meta, raw_messages) = read_episode_jsonl(&path).await.map_err(|err| {
-                tracing::warn!(error = %err, episode = %episode_id, "failed to read episode transcript");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-            let timestamp = meta.date.and_hms_opt(0, 0, 0).unwrap_or_default();
-            let messages = raw_messages
-                .into_iter()
-                .map(|message| wrap_episode_message(message, timestamp))
-                .collect();
-
-            let next_cursor =
-                previous_episode_id(&episodes_dir, &meta.id)
-                    .await
-                    .map_err(|err| {
-                        tracing::warn!(
-                            error = %err,
-                            episode = %meta.id,
-                            path = %episodes_dir.display(),
-                            "failed to walk to previous episode",
-                        );
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
-
-            Ok(Json(ChatHistorySegment::Episode {
-                episode_id: meta.id,
-                date: meta.date,
-                messages,
-                next_cursor,
-            }))
+    fn state(
+        setup_done: Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>>,
+    ) -> ConfigApiState {
+        ConfigApiState {
+            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
         }
     }
-}
 
-/// `GET /api/usage` — the main agent's cumulative session token usage, for
-/// the chat footer to render correctly on load or reconnect without
-/// waiting for the next model call.
-///
-/// Reads the same on-disk totals the running agent writes through to after
-/// every model call (see `crate::agent::usage::MainUsageSink`), the same
-/// way `GET /api/chat/history` reads `recent_messages.json` rather than
-/// reaching into the live agent — this HTTP layer never holds a reference
-/// to it. Returns the zero default in setup mode (no memory dir yet).
-pub(super) async fn api_usage(State(state): State<ConfigApiState>) -> Json<SessionUsageTotals> {
-    let Some(memory_dir) = &state.memory_dir else {
-        return Json(SessionUsageTotals::default());
-    };
-    let path = memory_dir.join("usage_totals.json");
-    Json(load_session_usage_totals(&path).await)
-}
+    #[tokio::test]
+    async fn status_reports_mode_version_and_features() {
+        let Json(running) = api_status(State(state(None))).await;
+        assert_eq!(running.mode, "running");
+        assert_eq!(running.version, update::CURRENT_VERSION);
+        assert_eq!(running.features, features::FEATURES);
 
-/// Synthesize a `RecentMessage` wrapper around a raw episode `Message`.
-///
-/// Episode JSONL stores only raw `Message` values, so we fabricate metadata
-/// using the episode's date (at 00:00). Visibility is always `User` because
-/// the original per-message visibility was not recorded in the transcript.
-fn wrap_episode_message(message: Message, timestamp: chrono::NaiveDateTime) -> RecentMessage {
-    RecentMessage {
-        message,
-        timestamp,
-        visibility: Visibility::User,
-        turn_id: None,
+        let (tx, _rx) = tokio::sync::watch::channel(false);
+        let Json(setup) = api_status(State(state(Some(std::sync::Arc::new(tx))))).await;
+        assert_eq!(setup.mode, "setup");
+    }
+
+    /// A state backed by a real temp directory, for tests that read/write
+    /// `config.toml`/`providers.toml` on disk.
+    fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
+        ConfigApiState {
+            config_dir: dir.to_path_buf(),
+            workspace_dir: dir.join("workspace"),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            checkpoints: crate::checkpoints::test_engine(),
+        }
+    }
+
+    #[tokio::test]
+    async fn config_raw_put_saves_invalid_toml_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("providers.toml"),
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_config_raw_put(State(state), "this is not valid toml".to_string())
+            .await
+            .unwrap();
+
+        assert!(!response.valid, "invalid TOML should be flagged invalid");
+        assert!(
+            !response.diagnostics.is_empty(),
+            "invalid TOML should produce a diagnostic"
+        );
+        let saved = tokio::fs::read_to_string(dir.path().join("config.toml"))
+            .await
+            .unwrap();
+        assert_eq!(
+            saved, "this is not valid toml",
+            "the save should have happened despite the invalid content"
+        );
+    }
+
+    #[tokio::test]
+    async fn config_raw_put_saves_valid_toml_with_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("providers.toml"),
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        )
+        .unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_config_raw_put(State(state), "timezone = \"UTC\"\n".to_string())
+            .await
+            .unwrap();
+
+        assert!(response.valid);
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_saves_invalid_json_with_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(State(state), "not json".to_string())
+            .await
+            .unwrap();
+
+        assert!(!response.valid, "invalid JSON should be flagged invalid");
+        assert!(!response.diagnostics.is_empty());
+        let mcp_path =
+            crate::workspace::layout::WorkspaceLayout::new(dir.path().join("workspace")).mcp_json();
+        let saved = tokio::fs::read_to_string(&mcp_path).await.unwrap();
+        assert_eq!(
+            saved, "not json",
+            "the save should have happened despite the invalid content"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_saves_valid_json_with_no_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(
+            State(state),
+            r#"{"mcpServers":{"fs":{"command":"npx"}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.valid);
+        assert!(response.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_raw_put_reports_a_bad_server_entry_without_blocking_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = tempdir_state(dir.path());
+
+        let Json(response) = api_mcp_raw_put(
+            State(state),
+            r#"{"mcpServers":{"broken":{"type":"sse"}}}"#.to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !response.valid,
+            "a server with a deprecated transport should be flagged invalid"
+        );
+        assert_eq!(response.diagnostics.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn config_patch_returns_the_checkpoint_taken_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let before = "timezone = \"UTC\"\n\n[gateway]\nport = 7700\n";
+        std::fs::write(state.config_dir.join("config.toml"), before).unwrap();
+
+        let Json(saved) = api_config_patch(
+            State(state.clone()),
+            Json(serde_json::json!({"gateway": {"port": 8080}})),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.validation.valid);
+        let id = saved
+            .checkpoint_id
+            .expect("a patch should name the checkpoint taken before it");
+        let stored = state
+            .checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Config,
+                id,
+                "config.toml".to_string(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(before.as_bytes()),
+            "the returned checkpoint must hold config.toml as it was before the patch"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_patch_returns_the_checkpoint_taken_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = super::super::test_support::watching_state(dir.path());
+        let mcp_path =
+            crate::workspace::layout::WorkspaceLayout::new(state.workspace_dir.clone()).mcp_json();
+        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+        let before = r#"{"mcpServers":{"fs":{"command":"npx","cwd":"/srv"}}}"#;
+        std::fs::write(&mcp_path, before).unwrap();
+
+        let Json(saved) = api_mcp_patch(
+            State(state.clone()),
+            Json(serde_json::json!({"mcpServers": {"fs": null}})),
+        )
+        .await
+        .unwrap();
+
+        assert!(saved.validation.valid);
+        let id = saved
+            .checkpoint_id
+            .expect("a patch should name the checkpoint taken before it");
+        let relative = mcp_path
+            .strip_prefix(&state.workspace_dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let stored = state
+            .checkpoints
+            .file_content_at(crate::checkpoints::RepoKind::Workspace, id, relative)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(before.as_bytes()),
+            "the returned checkpoint must still hold the removed server, including fields the form doesn't model"
+        );
     }
 }
