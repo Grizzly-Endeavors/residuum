@@ -1,9 +1,11 @@
 //! CLI subcommand dispatch using clap.
 
 mod a2a;
+mod agent;
 mod agent_keys;
 mod bug_report;
 mod feedback;
+mod hub_client;
 mod logs;
 mod secret;
 mod serve;
@@ -60,6 +62,11 @@ enum Command {
         #[command(subcommand)]
         command: agent_keys::AgentKeysCommand,
     },
+    /// List, create, delete and control the hub's agents
+    Agent {
+        #[command(subcommand)]
+        command: agent::AgentCommand,
+    },
     /// Manage the A2A protocol listener
     A2a {
         #[command(subcommand)]
@@ -70,7 +77,7 @@ enum Command {
         #[command(subcommand)]
         command: secret::SecretCommand,
     },
-    /// Stop a running gateway daemon
+    /// Stop the running hub and all its agents
     Stop(stop::StopArgs),
     /// Manage tracing and observability
     Tracing {
@@ -120,6 +127,11 @@ pub async fn run() -> Result<(), FatalError> {
         Command::Secret { command } => secret::run_secret_command(&command).await,
         Command::AgentKeys { ref command } => agent_keys::run_agent_keys_command(command).await,
         Command::A2a { ref command } => a2a::run_a2a_command(command).await,
+        Command::Agent { ref command } => {
+            residuum::util::tracing_init::init_default_tracing();
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
+            agent::run_agent_command(command, &gateway_addr).await
+        }
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
             logs::run_logs_command(args).await
