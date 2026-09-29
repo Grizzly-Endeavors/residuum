@@ -13,9 +13,7 @@ use crate::inference::InferenceError;
 use crate::inference::SharedHttpClient;
 
 use crate::config::ProviderSpec;
-use crate::gateway::types::GatewayRuntime;
-use crate::gateway::types::GatewayState;
-use crate::tunnel::TunnelStatus;
+use crate::gateway::types::AgentRuntime;
 
 /// What the event loop should do with the idle timer after a config reload.
 pub(super) enum IdleAction {
@@ -30,10 +28,11 @@ pub(super) enum IdleAction {
 /// Which subsystems differ between two `Config` snapshots.
 ///
 /// Only operations that are expensive or user-visibly disruptive get a
-/// dedicated flag: rebinding the gateway HTTP listener, restarting the
-/// Discord/Telegram/Teams adapters, and restarting the cloud tunnel. Idle
-/// timeout/channel changes also get a dedicated flag because they control
-/// which `IdleAction` variant `handle_root_reload` returns, not a rebuild.
+/// dedicated flag: restarting the Discord/Telegram/Teams adapters and
+/// rebuilding the A2A state. Idle timeout/channel changes also get a
+/// dedicated flag because they control which `IdleAction` variant
+/// `handle_root_reload` returns, not a rebuild. The gateway bind, the cloud
+/// tunnel, and tracing belong to the hub, which applies them itself.
 ///
 /// Every other subsystem (provider chains, memory thresholds, subconscious,
 /// background config, skills, tool PATH, agent ability gates, tracing, the
@@ -60,8 +59,6 @@ pub(super) enum IdleAction {
 pub(super) struct ConfigDiff {
     /// True if anything at all differs between old and new config.
     pub changed: bool,
-    /// Gateway bind/port changed — rebinding the HTTP listener is disruptive.
-    pub gateway_changed: bool,
     /// Discord token added/removed/changed — restarting the adapter is user-visible.
     pub discord_changed: bool,
     /// Telegram token added/removed/changed — restarting the adapter is user-visible.
@@ -70,8 +67,6 @@ pub(super) struct ConfigDiff {
     pub teams_changed: bool,
     /// A2A config (or the gateway bind it listens on) changed — restarts its listener.
     pub a2a_changed: bool,
-    /// Cloud tunnel config changed — restarting the tunnel is disruptive.
-    pub cloud_changed: bool,
     /// The hub's `timezone` changed — applied live where possible, see
     /// `apply_timezone`.
     pub timezone_changed: bool,
@@ -94,14 +89,12 @@ impl ConfigDiff {
 /// operator-facing logging; only the fields documented on `ConfigDiff`
 /// itself are used to gate any actual reload work.
 pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
-    let gateway_changed = old.gateway != new.gateway;
     let discord_changed = old.discord != new.discord;
     let telegram_changed = old.telegram != new.telegram;
     let teams_changed =
         old.teams != new.teams || (new.teams.is_some() && old.gateway.bind != new.gateway.bind);
     let a2a_changed =
         old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind);
-    let cloud_changed = old.cloud != new.cloud;
     let idle_changed = old.idle != new.idle;
     let timezone_changed = old.timezone != new.timezone;
 
@@ -123,12 +116,10 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
 
     ConfigDiff {
         changed,
-        gateway_changed,
         discord_changed,
         telegram_changed,
         teams_changed,
         a2a_changed,
-        cloud_changed,
         timezone_changed,
         idle_changed,
         summary,
@@ -290,21 +281,12 @@ fn credential_change_labels(role: &str, old: &[ProviderSpec], new: &[ProviderSpe
         .collect()
 }
 
-/// Shut down an adapter task and wait up to 5 seconds for it to stop.
-async fn shutdown_adapter(
-    shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
-    handle: &mut Option<tokio::task::JoinHandle<()>>,
-    name: &str,
-) {
-    super::chat_adapters::shutdown_adapter(shutdown_tx, handle, name).await;
-}
-
 /// Handle an in-place root config reload.
 ///
 /// Loads the new config, diffs old vs new, and applies only the changed
 /// subsystems. On failure the running config stays in effect, the files on
 /// disk are left as the user wrote them, and clients are notified.
-pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
+pub(super) async fn handle_root_reload(rt: &mut AgentRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
 
     // Consumed once, up front: whether this specific reload is the one the
@@ -359,9 +341,6 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     // below stay flag-gated so they don't fire spuriously.
     rebuild_cheap_components(rt, &new_cfg).await;
 
-    if diff.gateway_changed {
-        reload_gateway(rt, &new_cfg).await;
-    }
     if diff.discord_changed {
         reload_discord_adapter(rt, &new_cfg).await;
     }
@@ -372,10 +351,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         reload_teams_adapter(rt, &new_cfg).await;
     }
     if diff.a2a_changed {
-        reload_a2a_adapter(rt, &new_cfg).await;
-    }
-    if diff.cloud_changed {
-        reload_tunnel(rt, &new_cfg).await;
+        reload_a2a(rt, &new_cfg).await;
     }
 
     // ── Store new config ────────────────────────────────────────────────
@@ -406,19 +382,21 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
 }
 
-/// Handle an in-place hub config reload (`hub/config.toml` changed).
+/// Handle an in-place hub config reload (`hub/config.toml` changed) for this
+/// agent.
 ///
-/// Hub-owned values (`timezone`, `[gateway]`, `[cloud]`, the A2A listener's
-/// `enabled`/`port`/`public_url`, `[tracing]`, and the shared
-/// `[background]` session budget/hop limits) are copied into a clone of the
-/// currently running agent `Config` so the existing diff/rebuild machinery
-/// in [`handle_root_reload`] above — built to compare two `Config`
-/// snapshots — can be reused unchanged: since every other field is
-/// identical to `rt.cfg`, [`diff_config`] only ever reports a change here
-/// for a hub-owned field. On failure the running hub config stays in
-/// effect, `hub/config.toml` is left as the user wrote it, and clients are
-/// notified — the same contract as [`handle_root_reload`].
-pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
+/// The hub applies what it owns itself: the HTTP listener's address, the
+/// relay tunnel, tracing, the A2A listener, and the shared session budget.
+/// What reaches an agent is the hub-owned values its own subsystems read: the
+/// `timezone`, the A2A settings its card advertises, and the hop limits.
+/// They are copied into a clone of the currently running agent `Config` so
+/// the existing diff/rebuild machinery in [`handle_root_reload`] above —
+/// built to compare two `Config` snapshots — can be reused unchanged: since
+/// every other field is identical to `rt.cfg`, [`diff_config`] only ever
+/// reports a change here for a hub-owned field. On failure the running hub
+/// config stays in effect, `hub/config.toml` is left as the user wrote it,
+/// and clients are notified — the same contract as [`handle_root_reload`].
+pub(super) async fn handle_hub_reload(rt: &mut AgentRuntime) {
     tracing::info!("handling hub config reload in-place");
 
     // Consumed once, up front, like `handle_root_reload`: whether the agent's
@@ -440,9 +418,6 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
             return;
         }
     };
-    for notice in &new_hub.load_notices {
-        publish_notice(&rt.publisher, notice.clone()).await;
-    }
 
     let mut new_cfg = rt.cfg.clone();
     new_cfg.gateway = new_hub.gateway.clone();
@@ -459,7 +434,6 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
     let diff = diff_config(&rt.cfg, &new_cfg);
 
     if !diff.changed {
-        last_known_good::hub::save(&rt.hub_dir);
         let message = "hub configuration reloaded: no changes detected".to_string();
         publish_notice(&rt.publisher, message.clone()).await;
         if deliver_to_agent {
@@ -470,17 +444,6 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
     }
 
     let summary = diff.summary().to_string();
-    if diff.summary().contains("background")
-        && (rt.hub_cfg.background.max_concurrent != new_hub.background.max_concurrent)
-    {
-        publish_notice(
-            &rt.publisher,
-            "background.max_concurrent changed in hub/config.toml — this takes effect on the \
-             next restart, not immediately."
-                .to_string(),
-        )
-        .await;
-    }
 
     // Set before the rebuild so every component built from `rt.tz`
     // (providers, observers, the spawn context) picks up the new value.
@@ -493,20 +456,12 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
     if diff.timezone_changed {
         apply_timezone(rt, &new_cfg).await;
     }
-    if diff.gateway_changed {
-        reload_gateway(rt, &new_cfg).await;
-    }
     if diff.a2a_changed {
-        reload_a2a_adapter(rt, &new_cfg).await;
-    }
-    if diff.cloud_changed {
-        reload_tunnel(rt, &new_cfg).await;
+        reload_a2a(rt, &new_cfg).await;
     }
 
     rt.cfg = new_cfg;
     rt.hub_cfg = new_hub;
-
-    last_known_good::hub::save(&rt.hub_dir);
 
     let message = format!("hub configuration reloaded: {summary}");
     publish_notice(&rt.publisher, message.clone()).await;
@@ -527,7 +482,7 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
 /// timestamps use it). Restart-only: the HTTP/webhook state, the inbox
 /// notification channel and the session runtime, which are shared handles
 /// built once at startup.
-async fn apply_timezone(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn apply_timezone(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.agent.set_timezone(
         new_cfg.timezone,
         Arc::clone(&rt.action_store),
@@ -557,7 +512,7 @@ async fn apply_timezone(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Build a fresh HTTP client for the given request timeout.
 ///
-/// Pure aside from the `reqwest::Client` construction: no `GatewayRuntime`
+/// Pure aside from the `reqwest::Client` construction: no `AgentRuntime`
 /// access, so it can be tested directly and so its only output — the new
 /// client — is what callers thread into everything downstream.
 fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, InferenceError> {
@@ -576,7 +531,7 @@ fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, InferenceE
 /// forever. Passing the freshly built client by value makes that ordering
 /// structural: there is no `rt.http_client` to accidentally read from until
 /// this function assigns it.
-async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn rebuild_cheap_components(rt: &mut AgentRuntime, new_cfg: &Config) {
     let http_client = match rebuild_http_client(new_cfg.timeout_secs) {
         Ok(client) => {
             tracing::debug!(timeout_secs = new_cfg.timeout_secs, "http client rebuilt");
@@ -621,7 +576,6 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
     reload_skills(rt).await;
     reload_tools_path(rt, new_cfg).await;
     reload_agent_abilities(rt, new_cfg).await;
-    reload_tracing(rt, new_cfg).await;
     rt.webhooks.replace_from_config(&new_cfg.webhooks);
     // Adapters added or removed by this reload must show up in list_endpoints,
     // send_message, and idle switching without a restart.
@@ -630,7 +584,7 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Build a new `SpawnContext` from the current runtime and new config.
 fn build_spawn_context(
-    rt: &GatewayRuntime,
+    rt: &AgentRuntime,
     new_cfg: &Config,
     http_client: SharedHttpClient,
 ) -> Arc<SpawnContext> {
@@ -705,11 +659,7 @@ fn build_spawn_context(
 /// `http_client` must be the already-rebuilt client (see
 /// `rebuild_cheap_components`), not `rt.http_client` read fresh here, so a
 /// timeout change can't be silently dropped by construction order.
-async fn reload_providers(
-    rt: &mut GatewayRuntime,
-    new_cfg: &Config,
-    http_client: SharedHttpClient,
-) {
+async fn reload_providers(rt: &mut AgentRuntime, new_cfg: &Config, http_client: SharedHttpClient) {
     let mut degradations: Vec<String> = Vec::new();
     match startup::init_providers(
         new_cfg,
@@ -769,7 +719,7 @@ async fn reload_providers(
 /// separate per-session step needed. A connect failure surfaces the same
 /// way `reload_providers`'s does: a `warn` log plus an operator-facing
 /// notice, rather than silently leaving the old (or no) server running.
-async fn reload_web_search(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_web_search(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.agent
         .reload_ollama_web_search_tool(new_cfg.web_search.standalone_backend.as_ref());
 
@@ -817,7 +767,7 @@ fn web_search_mcp_server_name(
 }
 
 /// Update observer and reflector thresholds from the new config.
-async fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_memory_thresholds(rt: &mut AgentRuntime, new_cfg: &Config) {
     use crate::memory::observer::ObserverConfig;
     use crate::memory::reflector::ReflectorConfig;
 
@@ -840,107 +790,6 @@ async fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
     tracing::debug!("memory thresholds updated");
 }
 
-/// Rebind the gateway HTTP server to a new address.
-async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    let new_addr = new_cfg.gateway.addr();
-    match tokio::net::TcpListener::bind(&new_addr).await {
-        Ok(listener) => {
-            rt.http_shutdown_tx.send(true).ok();
-
-            let new_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
-
-            let state = GatewayState {
-                reload_tx: rt.reload_tx.clone(),
-                command_tx: rt.command_tx.clone(),
-                stop_tx: rt.stop_tx.clone(),
-                agent_inbox_dir: rt.layout.agent_inbox_dir(),
-                tz: rt.tz,
-                tunnel_status_rx: rt.tunnel_status_rx.clone(),
-                publisher: rt.publisher.clone(),
-                bus_handle: rt.bus_handle.clone(),
-                file_registry: rt.file_registry.clone(),
-                webhooks: rt.webhooks.clone(),
-                session_registry: std::sync::Arc::clone(&rt.session_registry),
-                session_store: std::sync::Arc::clone(&rt.session_store),
-                agent_messenger: std::sync::Arc::clone(&rt.agent_messenger),
-                skill_state: std::sync::Arc::clone(&rt.skill_state),
-                workspace_watch_health: rt.workspace_watch_health.clone(),
-                action_store: std::sync::Arc::clone(&rt.action_store),
-                layout: rt.layout.clone(),
-            };
-            let config_api_state = crate::gateway::web::ConfigApiState {
-                hub_dir: rt.hub_dir.clone(),
-                config_dir: rt.config_dir.clone(),
-                agent_name: rt.cfg.agent_name.clone(),
-                workspace_dir: rt.layout.root().to_path_buf(),
-                memory_dir: Some(rt.layout.memory_dir()),
-                reload_tx: Some(rt.reload_tx.clone()),
-                setup_done: None,
-                secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-                checkpoints: std::sync::Arc::clone(&rt.checkpoints),
-                team: Some(rt.team.view_for_user(rt.layout.root())),
-            };
-            let update_api_state = crate::gateway::web::update::UpdateApiState {
-                update_status: std::sync::Arc::clone(&rt.update_status),
-                restart_tx: rt.restart_tx.clone(),
-                gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
-                hub_dir: rt.hub_dir.clone(),
-            };
-            let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
-                service: std::sync::Arc::clone(&rt.tracing_service),
-                client_context: std::sync::Arc::new(
-                    crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
-                ),
-                session_registry: std::sync::Arc::clone(&rt.session_registry),
-            };
-            let memory_api_state = crate::gateway::web::memory::MemoryApiState {
-                hybrid_searcher: std::sync::Arc::clone(&rt.hybrid_searcher),
-            };
-            let model_api_state = crate::gateway::web::model::ModelApiState {
-                resources: rt.model_call_resources_tx.subscribe(),
-            };
-            let a2a_agents_state = crate::gateway::web::a2a::A2aAgentsStatusState {
-                hub: std::sync::Arc::clone(&rt.a2a_hub),
-                tracker: std::sync::Arc::clone(&rt.a2a_tracker),
-            };
-            let app = crate::gateway::event_loop::build_gateway_app(
-                state,
-                config_api_state,
-                update_api_state,
-                tracing_api_state,
-                rt.workbench_serving.clone(),
-                crate::gateway::event_loop::ExtraApiStates {
-                    memory: memory_api_state,
-                    model: model_api_state,
-                    a2a_agents: a2a_agents_state,
-                },
-            );
-
-            let new_handle = crate::gateway::event_loop::spawn_server_with_listener(
-                listener,
-                app,
-                &new_shutdown_tx,
-            );
-
-            rt.server_handle = new_handle;
-            rt.http_shutdown_tx = new_shutdown_tx;
-            tracing::info!(addr = %new_addr, "gateway rebound to new address");
-        }
-        Err(e) => {
-            tracing::warn!(
-                addr = %new_addr,
-                error = %e,
-                "failed to bind to new gateway address, keeping current server"
-            );
-            publish_notice(
-                &rt.publisher,
-                format!("gateway rebind failed ({new_addr}): {e} — keeping current server"),
-            )
-            .await;
-        }
-    }
-}
-
 /// Rescan skill directories.
 ///
 /// A directory the rescan couldn't read is already skipped rather than
@@ -949,7 +798,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
 /// (a skill with an oversized description that loaded anyway, or a skill
 /// skipped for invalid frontmatter) so it reaches the user, not just the
 /// logs.
-async fn reload_skills(rt: &mut GatewayRuntime) {
+async fn reload_skills(rt: &mut AgentRuntime) {
     let mut skill_guard = rt.skill_state.lock().await;
     if let Err(err) = skill_guard.rescan().await {
         tracing::warn!(error = %err, "skill rescan failed during reload");
@@ -980,14 +829,14 @@ async fn reload_skills(rt: &mut GatewayRuntime) {
 /// the `exec` tool picks up the change on its next call. Already-running stdio
 /// MCP servers keep the `PATH` they were launched with until they next
 /// (re)connect — their environment is fixed at spawn.
-async fn reload_tools_path(rt: &GatewayRuntime, new_cfg: &Config) {
+async fn reload_tools_path(rt: &AgentRuntime, new_cfg: &Config) {
     *rt.tools_path.write().await = new_cfg.tools.effective_path();
     tracing::debug!("tool PATH updated from new config");
 }
 
 /// Update path policy and the main agent's tool-iteration limit from new
 /// agent ability gates.
-async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_agent_abilities(rt: &mut AgentRuntime, new_cfg: &Config) {
     rt.path_policy
         .write()
         .await
@@ -1009,22 +858,9 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
     );
 }
 
-/// Update the tracing service and global log filter from the new config.
-async fn reload_tracing(rt: &GatewayRuntime, new_cfg: &Config) {
-    rt.tracing_service
-        .update_config(new_cfg.tracing.clone())
-        .await;
-    if let Some(handle) = crate::util::tracing_init::global_filter_handle()
-        && let Err(e) = handle.set_filter(new_cfg.tracing.log_level)
-    {
-        tracing::warn!(error = %e, "failed to update log filter on tracing config reload");
-    }
-    tracing::debug!(level = %new_cfg.tracing.log_level, "tracing config updated");
-}
-
 /// Senders a reloaded chat adapter needs. Built once per adapter because the
 /// closure that starts it has to own them.
-fn chat_adapter_senders(rt: &GatewayRuntime) -> crate::gateway::event_loop::AdapterSenders {
+fn chat_adapter_senders(rt: &AgentRuntime) -> crate::gateway::event_loop::AdapterSenders {
     crate::gateway::event_loop::AdapterSenders {
         publisher: rt.publisher.clone(),
         bus_handle: rt.bus_handle.clone(),
@@ -1037,7 +873,7 @@ fn chat_adapter_senders(rt: &GatewayRuntime) -> crate::gateway::event_loop::Adap
 }
 
 /// Stop the existing Discord adapter (if running) and start a new one if configured.
-async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_discord_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
     rt.chat_adapters
         .reload(
@@ -1063,41 +899,8 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .await;
 }
 
-/// Stop the existing tunnel (if running) and start a new one if configured.
-async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    shutdown_adapter(&mut rt.tunnel_shutdown_tx, &mut rt.tunnel_handle, "tunnel").await;
-
-    // Ensure status reflects disconnected after old tunnel shutdown
-    rt.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
-
-    if let Some(ref cloud_cfg) = new_cfg.cloud {
-        let cloud = cloud_cfg.clone();
-        let (a2a_port, a2a) = crate::tunnel::a2a_tunnel_params(&new_cfg.a2a);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
-        let workbench_port = rt.workbench_serving.port();
-        rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
-            crate::tunnel::start_tunnel(
-                cloud,
-                workbench_port,
-                a2a_port,
-                a2a,
-                shutdown_rx,
-                status_tx,
-            )
-            .await;
-        }));
-        rt.tunnel_shutdown_tx = Some(shutdown_tx);
-        rt.cloud_config.clone_from(&new_cfg.cloud);
-        tracing::info!("tunnel restarted with new config");
-    } else {
-        rt.cloud_config = None;
-        tracing::info!("cloud tunnel removed from config");
-    }
-}
-
 /// Stop the existing Telegram adapter (if running) and start a new one if configured.
-async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_telegram_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
     rt.chat_adapters
         .reload(
@@ -1124,7 +927,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 }
 
 /// Stop the existing Teams adapter (if running) and start a new one if configured.
-async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_teams_adapter(rt: &mut AgentRuntime, new_cfg: &Config) {
     let senders = chat_adapter_senders(rt);
     rt.chat_adapters
         .reload(
@@ -1152,18 +955,17 @@ async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .await;
 }
 
-/// Stop the existing A2A listener (if running) and start a new one if
-/// enabled. Unlike the other adapters, a config change also needs a fresh
-/// agent card (the base URL or visibility may have changed), so this
-/// doesn't go through [`super::chat_adapters::ChatAdapters`].
-async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    shutdown_adapter(&mut rt.a2a_shutdown_tx, &mut rt.a2a_handle, "a2a").await;
-    rt.a2a_card_state = None;
-
+/// Rebuild the agent's A2A state after an `[a2a]` change, or drop it when A2A
+/// is disabled.
+///
+/// The card, its public URL, and the router are built from the new settings,
+/// so a base-URL change reaches the card. The hub's A2A listener reads the
+/// agent's router and visibility per request, so it needs no restart for
+/// this agent.
+async fn reload_a2a(rt: &mut AgentRuntime, new_cfg: &Config) {
+    rt.a2a = None;
     if new_cfg.a2a.enabled {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let deps = crate::gateway::event_loop::A2aListenerDeps {
-            hub_dir: rt.hub_dir.clone(),
+        let deps = crate::gateway::event_loop::A2aServingDeps {
             session_registry: Arc::clone(&rt.session_registry),
             agent_messenger: Arc::clone(&rt.agent_messenger),
             skill_state: Arc::clone(&rt.skill_state),
@@ -1171,24 +973,19 @@ async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             // The session spawner has been running since startup.
             sessions_ready: tokio::sync::watch::channel(true).1,
         };
-        match crate::gateway::event_loop::build_a2a_listener(new_cfg, deps, rx).await {
-            Ok((handle, card_state, public_url)) => {
-                tracing::info!(
-                    visibility = %new_cfg.a2a.visibility,
-                    public_url = %public_url,
-                    "a2a interface restarted with new config"
-                );
-                rt.a2a_handle = Some(handle);
-                rt.a2a_shutdown_tx = Some(tx);
-                rt.a2a_card_state = Some(card_state);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to restart the a2a interface; it will not run until the next successful reload");
-            }
+        rt.a2a = crate::gateway::event_loop::build_agent_a2a(new_cfg, deps).await;
+        if rt.a2a.is_none() {
+            publish_notice(
+                &rt.publisher,
+                "Your A2A settings changed, but the agent couldn't rebuild its A2A interface; other agents can't reach it until the next successful reload. Check the log for the reason.".to_string(),
+            )
+            .await;
         }
     } else {
         tracing::info!("a2a interface removed from config");
     }
+    rt.a2a_router_tx
+        .send_replace(rt.a2a.as_ref().map(|agent| agent.router.clone()));
 }
 
 #[cfg(test)]
@@ -1243,12 +1040,10 @@ mod tests {
     }
 
     /// A disruptive-flags-all-false assertion helper: confirms a change didn't
-    /// spuriously trip gateway rebind, adapter restart, or tunnel restart.
+    /// spuriously trip an adapter restart.
     fn assert_no_disruptive_flags(diff: &ConfigDiff) {
-        assert!(!diff.gateway_changed, "should not flag gateway rebind");
         assert!(!diff.discord_changed, "should not flag discord restart");
         assert!(!diff.telegram_changed, "should not flag telegram restart");
-        assert!(!diff.cloud_changed, "should not flag tunnel restart");
     }
 
     #[test]
@@ -1323,17 +1118,15 @@ mod tests {
     }
 
     #[test]
-    fn diff_config_detects_gateway_change() {
+    fn diff_config_reports_a_gateway_change_without_restarting_adapters() {
         let old = test_config();
         let mut new = old.clone();
         new.gateway.port = 9999;
 
         let diff = diff_config(&old, &new);
         assert!(diff.changed);
-        assert!(diff.gateway_changed);
         assert!(!diff.discord_changed);
         assert!(!diff.telegram_changed);
-        assert!(!diff.cloud_changed);
         assert!(diff.summary().contains("gateway"));
     }
 
@@ -1350,8 +1143,6 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(diff.discord_changed);
         assert!(!diff.telegram_changed);
-        assert!(!diff.gateway_changed);
-        assert!(!diff.cloud_changed);
     }
 
     #[test]
@@ -1593,7 +1384,8 @@ mod tests {
         });
 
         let diff = diff_config(&old, &new);
-        assert!(diff.cloud_changed);
+        assert!(diff.changed);
+        assert!(diff.summary().contains("cloud"));
         assert!(!diff.discord_changed);
     }
 
@@ -1608,7 +1400,7 @@ mod tests {
         });
 
         let diff = diff_config(&old, &new);
-        assert!(diff.cloud_changed);
+        assert!(diff.summary().contains("cloud"));
     }
 
     #[test]
@@ -1623,7 +1415,7 @@ mod tests {
         new.cloud = None;
 
         let diff = diff_config(&old, &new);
-        assert!(diff.cloud_changed);
+        assert!(diff.summary().contains("cloud"));
     }
 
     #[test]

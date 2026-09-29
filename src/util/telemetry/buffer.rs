@@ -42,6 +42,10 @@ impl Default for SpanBufferConfig {
     }
 }
 
+/// The span field naming the agent a span belongs to. Set on each agent's root
+/// span and inherited by every span inside it.
+const AGENT_FIELD: &str = "agent";
+
 // ── Captured span types ────────────────────────────────────────────
 
 /// A log event recorded within a span.
@@ -263,7 +267,7 @@ where
         });
 
         let meta = attrs.metadata();
-        let builder = SpanBuilder {
+        let mut builder = SpanBuilder {
             parent_id,
             name: meta.name().to_string(),
             target: meta.target().to_string(),
@@ -275,6 +279,16 @@ where
         };
 
         if let Ok(mut guard) = self.inner.lock() {
+            // Every span inside an agent's root span belongs to that agent,
+            // so a bug report or trace export can be read per agent.
+            if builder.fields.iter().all(|(key, _)| key != AGENT_FIELD)
+                && let Some(agent) = parent_id
+                    .and_then(|parent| guard.active.get(&parent))
+                    .and_then(|parent| parent.fields.iter().find(|(key, _)| key == AGENT_FIELD))
+                    .cloned()
+            {
+                builder.fields.push(agent);
+            }
             guard.active.insert(id.into_u64(), builder);
         }
     }
@@ -404,6 +418,67 @@ mod tests {
             "child should reference parent's span_id"
         );
         assert_eq!(parent.parent_id, None, "parent should have no parent");
+    }
+
+    fn field<'a>(span: &'a CompletedSpan, name: &str) -> Option<&'a str> {
+        span.fields
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn spans_inherit_the_agent_of_the_span_around_them() {
+        let (handle, _guard) = setup(SpanBufferConfig::default());
+
+        {
+            let root = tracing::info_span!("agent", agent = "scout").entered();
+            {
+                let child = tracing::info_span!("turn").entered();
+                {
+                    let _grandchild = tracing::info_span!("tool_call").entered();
+                }
+                drop(child);
+            }
+            drop(root);
+        }
+        {
+            let _hub_level = tracing::info_span!("tunnel").entered();
+        }
+
+        let spans = handle.snapshot();
+        for name in ["agent", "turn", "tool_call"] {
+            let span = spans.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(
+                field(span, "agent"),
+                Some("scout"),
+                "{name} names its agent"
+            );
+        }
+        let hub_level = spans.iter().find(|s| s.name == "tunnel").unwrap();
+        assert_eq!(field(hub_level, "agent"), None, "hub-level spans have none");
+    }
+
+    #[test]
+    fn a_span_that_names_its_own_agent_keeps_it() {
+        let (handle, _guard) = setup(SpanBufferConfig::default());
+
+        {
+            let _outer = tracing::info_span!("agent", agent = "scout").entered();
+            let _inner = tracing::info_span!("relay", agent = "atlas").entered();
+        }
+
+        let spans = handle.snapshot();
+        let relay = spans.iter().find(|s| s.name == "relay").unwrap();
+        assert_eq!(
+            spans.iter().find(|s| s.name == "relay").map(|s| s
+                .fields
+                .iter()
+                .filter(|(k, _)| k == "agent")
+                .count()),
+            Some(1)
+        );
+        assert_eq!(field(relay, "agent"), Some("atlas"));
     }
 
     #[test]

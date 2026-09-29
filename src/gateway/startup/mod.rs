@@ -17,6 +17,7 @@ use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
 use crate::config::{Config, HubConfig};
+use crate::hub::services::HubServices;
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -65,10 +66,6 @@ pub(crate) struct GatewayComponents {
     /// and the web file API.
     pub team: TeamWriteCoordinator,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
-    /// Shared tracing service. Owned here so feedback tools can register
-    /// against it during agent construction; downstream consumers (web
-    /// API, sub-agents) clone the Arc.
-    pub tracing_service: Arc<crate::tracing_service::TracingService>,
     /// Snapshot of the runtime client context for bug-report submissions.
     pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
     /// Remote A2A agents this instance's client can reach, loaded from
@@ -101,30 +98,30 @@ pub(super) async fn init_workspace(
     Ok((layout, tz))
 }
 
-/// Open (or create) the workspace, agent-config, and hub-config checkpoint
-/// repositories under `hub/checkpoints/`.
+/// Open (or create) this agent's workspace and agent-config checkpoint
+/// repositories under `hub/checkpoints/agents/<name>/`, recording into the
+/// team and hub-config repositories every agent shares.
 ///
 /// # Errors
-/// Returns `FatalError` if any checkpoint repository can't be opened or
+/// Returns `FatalError` if an agent checkpoint repository can't be opened or
 /// initialized.
 fn init_checkpoints(
     layout: &WorkspaceLayout,
     cfg: &Config,
     hub: &HubConfig,
     publisher: &crate::bus::Publisher,
-    team: &TeamWriteCoordinator,
+    shared: &HubServices,
 ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, FatalError> {
     let checkpoints_dir = crate::config::HubPaths::new(&hub.config_dir).checkpoints_dir();
-    crate::checkpoints::CheckpointEngine::new(
+    crate::checkpoints::CheckpointEngine::with_shared_repos(
+        Arc::clone(&shared.checkpoints),
         &cfg.agent_name,
         layout.root().to_path_buf(),
-        layout.team(),
         cfg.config_dir.clone(),
-        hub.config_dir.clone(),
         &checkpoints_dir,
         Some(publisher.clone()),
     )
-    .map(|engine| Arc::new(engine.with_team_coordinator(team.clone())))
+    .map(|engine| Arc::new(engine.with_team_coordinator(shared.team.clone())))
     .map_err(|e| {
         FatalError::Config(format!(
             "failed to open checkpoint repositories at {}: {e}",
@@ -306,7 +303,7 @@ fn build_session_memory_components(
 /// Inputs to [`build_startup_spawn_context`], gathered because
 /// `SpawnContext` itself has this many independent dependencies (mirrors
 /// `reload::build_spawn_context`'s equivalent construction from a live
-/// `GatewayRuntime`, which doesn't exist yet at startup).
+/// `AgentRuntime`, which doesn't exist yet at startup).
 struct StartupSpawnContextInputs<'a> {
     cfg: &'a Config,
     hub_dir: &'a std::path::Path,
@@ -462,6 +459,7 @@ struct SessionRuntimeInputs<'a> {
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
     tracing_service: &'a Arc<crate::tracing_service::TracingService>,
     tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
+    session_budget: &'a Arc<tokio::sync::Semaphore>,
 }
 
 /// Build the session runtime, once the tracing service and its client
@@ -471,7 +469,7 @@ fn build_session_runtime(inputs: &SessionRuntimeInputs<'_>) -> Arc<SessionRuntim
     Arc::new(SessionRuntime::new(
         Arc::clone(inputs.registry),
         Arc::clone(inputs.store),
-        inputs.cfg.background.max_concurrent,
+        Arc::clone(inputs.session_budget),
         &inputs.cfg.background,
         crate::background::runtime::SessionRuntimeHandles {
             publisher: inputs.publisher.clone(),
@@ -649,7 +647,7 @@ fn init_channels_and_registry(
 }
 
 /// The shared PATH, MCP registry, and endpoint/channel setup a fresh
-/// gateway (or a config reload) needs before it can build tools.
+/// agent (or a config reload) needs before it can build tools.
 struct NetworkingComponents {
     tools_path: SharedToolsPath,
     agent_keys: crate::agent_keys::SharedAgentKeys,
@@ -658,18 +656,16 @@ struct NetworkingComponents {
     endpoint_registry: EndpointRegistry,
 }
 
-/// Build the shared tools `PATH` and agent key store, connect workspace MCP
-/// servers, and load the channel/endpoint registry.
+/// Build the shared tools `PATH`, connect workspace MCP servers, and load
+/// the channel/endpoint registry. The agent key store is the hub's.
 async fn init_networking(
     cfg: &Config,
-    hub: &HubConfig,
+    agent_keys: crate::agent_keys::SharedAgentKeys,
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
 ) -> NetworkingComponents {
     let tools_path: SharedToolsPath =
         Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
-    // Agent keys are hub-level and shared by every agent the hub hosts.
-    let agent_keys = crate::agent_keys::AgentKeys::new_shared(&hub.config_dir);
     let mcp_registry = init_mcp_servers(
         layout,
         Arc::clone(&tools_path),
@@ -747,33 +743,11 @@ pub(crate) async fn spawn_notify_subscribers(
     handles
 }
 
-/// Construct the shared `TracingService` and snapshot the runtime
-/// client context used by the bug-report tools and HTTP handlers.
-///
-/// Falls back to a fresh in-memory span buffer if no global one was
-/// installed (e.g. during tests where the tracing layer wasn't wired).
-fn init_tracing_service(
-    cfg: &Config,
-    agent_keys: &crate::agent_keys::SharedAgentKeys,
-) -> (
-    Arc<crate::tracing_service::TracingService>,
-    Arc<crate::tracing_service::ClientContext>,
-) {
-    let buffer = crate::util::telemetry::global_span_buffer()
-        .cloned()
-        .unwrap_or_else(|| {
-            let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
-                &crate::util::telemetry::SpanBufferConfig::default(),
-            );
-            handle
-        });
-    let service = Arc::new(
-        crate::tracing_service::TracingService::new(cfg.tracing.clone(), buffer)
-            .with_agent_keys(Arc::clone(agent_keys)),
-    );
-    let client_context =
-        Arc::new(crate::tracing_service::client_context::gather_for_bug_report(cfg));
-    (service, client_context)
+/// Snapshot the agent's runtime client context, used by the bug-report tools
+/// and HTTP handlers. The tracing service itself is the hub's, shared by
+/// every agent.
+fn init_tracing_client_context(cfg: &Config) -> Arc<crate::tracing_service::ClientContext> {
+    Arc::new(crate::tracing_service::client_context::gather_for_bug_report(cfg))
 }
 
 /// Inputs to [`build_tools_and_agent`], gathered because building the tool
@@ -1052,20 +1026,16 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
     }
 }
 
-/// Publish each of the hub's and the agent's load notices individually —
-/// already complete, standalone sentences describing one hub or agent
-/// config.toml/providers.toml entry that was skipped or degraded while
-/// loading (see `config::resolve` and `config::tolerant`) — as opposed to
-/// the subsystem `degradations` above, which get folded into one shorter
-/// grouped sentence.
-async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config, hub: &HubConfig) {
-    for notice in hub.load_notices.iter().chain(&cfg.load_notices) {
+/// Publish each of the agent's load notices individually — already
+/// complete, standalone sentences describing one agent config.toml/
+/// providers.toml entry that was skipped or degraded while loading (see
+/// `config::resolve` and `config::tolerant`) — as opposed to the subsystem
+/// `degradations` above, which get folded into one shorter grouped sentence.
+/// The hub's own load notices and the removed-override notices belong to the
+/// hub, which publishes them once for the whole process.
+async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
+    for notice in &cfg.load_notices {
         super::helpers::publish_notice(publisher, notice.clone()).await;
-    }
-    // Startup only: these come from the process environment, which a config
-    // reload cannot change, so reloads must not repeat them.
-    for notice in crate::config::resolve::removed_agent_env_override_notices() {
-        super::helpers::publish_notice(publisher, notice).await;
     }
 }
 
@@ -1077,7 +1047,7 @@ async fn init_workspace_and_checkpoints(
     cfg: &Config,
     hub: &HubConfig,
     publisher: &crate::bus::Publisher,
-    team: &TeamWriteCoordinator,
+    shared: &HubServices,
 ) -> Result<
     (
         WorkspaceLayout,
@@ -1086,9 +1056,9 @@ async fn init_workspace_and_checkpoints(
     ),
     FatalError,
 > {
-    let (layout, tz) = init_workspace(cfg, team).await?;
-    let checkpoints = init_checkpoints(&layout, cfg, hub, publisher, team)?;
-    publish_load_notices(publisher, cfg, hub).await;
+    let (layout, tz) = init_workspace(cfg, &shared.team).await?;
+    let checkpoints = init_checkpoints(&layout, cfg, hub, publisher, shared)?;
+    publish_load_notices(publisher, cfg).await;
     Ok((layout, tz, checkpoints))
 }
 
@@ -1168,14 +1138,13 @@ async fn init_session_subsystems(inputs: SessionSubsystemInputs<'_>) -> SessionS
     }
 }
 
-/// Networking layer, tracing service, path policy, A2A client, and the
+/// Networking layer, client context, path policy, A2A client, and the
 /// agent's config-reload tracker — independent pieces of supporting
 /// infrastructure `initialize` needs before it can build the agent itself.
 /// Bundled into a struct (rather than a tuple) so `init_supporting_infra`'s
 /// call site stays short enough to keep `initialize`'s line count down.
 struct SupportingInfra {
     net: NetworkingComponents,
-    tracing_service: Arc<crate::tracing_service::TracingService>,
     tracing_client_context: Arc<crate::tracing_service::ClientContext>,
     path_policy: crate::tools::SharedPathPolicy,
     a2a_hub: Arc<crate::a2a::A2aClientHub>,
@@ -1191,15 +1160,14 @@ async fn init_supporting_infra(
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
     agent_messenger: Arc<AgentMessenger>,
-    team: &TeamWriteCoordinator,
+    shared: &HubServices,
 ) -> SupportingInfra {
-    let net = init_networking(cfg, hub, layout, degradations).await;
-    let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
-    let path_policy = build_path_policy(cfg, layout, hub, team);
+    let net = init_networking(cfg, Arc::clone(&shared.agent_keys), layout, degradations).await;
+    let tracing_client_context = init_tracing_client_context(cfg);
+    let path_policy = build_path_policy(cfg, layout, hub, &shared.team);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
     SupportingInfra {
         net,
-        tracing_service,
         tracing_client_context,
         path_policy,
         a2a_hub,
@@ -1212,19 +1180,19 @@ async fn init_supporting_infra(
 /// setup.
 struct SharedServices<'a> {
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
-    team: &'a TeamWriteCoordinator,
+    hub: &'a HubServices,
 }
 
 impl<'a> SharedServices<'a> {
     fn new(
         checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
-        team: &'a TeamWriteCoordinator,
+        hub: &'a HubServices,
     ) -> Self {
-        Self { checkpoints, team }
+        Self { checkpoints, hub }
     }
 }
 
-/// Build supporting infra and, once its tracing service exists, the session
+/// Build supporting infra and, once its client context exists, the session
 /// runtime that needs it — split out of `initialize` purely to keep that
 /// function's line count down. See [`init_session_registry_and_messenger`]
 /// for why the session runtime can't be built any earlier.
@@ -1243,7 +1211,7 @@ async fn init_infra_and_session_runtime(
         layout,
         degradations,
         Arc::clone(&sess.agent_messenger),
-        shared.team,
+        shared.hub,
     )
     .await;
     let session_runtime = build_session_runtime(&SessionRuntimeInputs {
@@ -1253,13 +1221,15 @@ async fn init_infra_and_session_runtime(
         store: &sess.session_store,
         messenger: &sess.agent_messenger,
         checkpoints: shared.checkpoints,
-        tracing_service: &infra.tracing_service,
+        tracing_service: &shared.hub.tracing_service,
         tracing_client_context: &infra.tracing_client_context,
+        session_budget: &shared.hub.session_budget,
     });
     (infra, session_runtime)
 }
 
-/// Initialize all gateway subsystems from config.
+/// Initialize all of one agent's subsystems from config, on the services the
+/// hub shares with every agent.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
 /// and `memory::init_memory` for the first stages, then wires up tools, the agent,
@@ -1271,10 +1241,10 @@ pub(crate) async fn initialize(
     cfg: &Config,
     hub: &HubConfig,
     publisher: &crate::bus::Publisher,
-    team: &TeamWriteCoordinator,
+    shared: &HubServices,
 ) -> Result<GatewayComponents, FatalError> {
     let (layout, tz, checkpoints) =
-        init_workspace_and_checkpoints(cfg, hub, publisher, team).await?;
+        init_workspace_and_checkpoints(cfg, hub, publisher, shared).await?;
 
     // Collects a plain-language line for every subsystem that degrades
     // along the way (rather than failing startup outright), so the whole
@@ -1285,8 +1255,7 @@ pub(crate) async fn initialize(
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone(), publisher, &mut degradations)?;
     let embedding = providers.embedding_provider.as_ref();
-    let team_wiki = memory::open_team_wiki(&layout, embedding).await?;
-    let mem = memory::init_memory(cfg, &layout, embedding, &team_wiki).await?;
+    let mem = memory::init_memory(cfg, &layout, embedding, &shared.team_wiki).await?;
     let subconscious =
         crate::subconscious::Subconscious::build(cfg, &layout, http.clone(), publisher.clone());
 
@@ -1309,7 +1278,7 @@ pub(crate) async fn initialize(
         &mut degradations,
         publisher,
         &sess,
-        &SharedServices::new(&checkpoints, team),
+        &SharedServices::new(&checkpoints, shared),
     )
     .await;
 
@@ -1331,7 +1300,7 @@ pub(crate) async fn initialize(
             skill_state: &sess.skill_state,
             publisher,
             agent_messenger: &sess.agent_messenger,
-            tracing_service: &infra.tracing_service,
+            tracing_service: &shared.tracing_service,
             tracing_client_context: &infra.tracing_client_context,
             path_policy: &infra.path_policy,
             a2a_hub: &infra.a2a_hub,
@@ -1372,9 +1341,8 @@ pub(crate) async fn initialize(
         conversation_router: sess.conversation_router,
         spawn_context,
         path_policy: infra.path_policy,
-        team: team.clone(),
+        team: shared.team.clone(),
         output_topic_override_tx,
-        tracing_service: infra.tracing_service,
         tracing_client_context: infra.tracing_client_context,
         a2a_hub: infra.a2a_hub,
         a2a_tracker: infra.a2a_tracker,

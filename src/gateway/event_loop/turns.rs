@@ -14,7 +14,7 @@ use crate::bus::{
 };
 
 use crate::config::Config;
-use crate::gateway::types::{GatewayRuntime, StopRequest};
+use crate::gateway::types::{AgentRuntime, StopRequest};
 use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::memory::types::Visibility;
@@ -135,7 +135,7 @@ fn drain_stale_stop_requests(stop_rx: &mut mpsc::Receiver<StopRequest>) {
 /// `turn_id` is the correlation id of the turn that produced these messages
 /// (the same id sent as `reply_to` on `turn_started`/`turn_ended`).
 pub async fn persist_and_maybe_observe(
-    rt: &mut GatewayRuntime,
+    rt: &mut AgentRuntime,
     new_messages: &[crate::inference::Message],
     visibility: Visibility,
     observe_deadline: &mut Option<tokio::time::Instant>,
@@ -191,30 +191,25 @@ fn apply_observe_action(
     }
 }
 
-/// Run an agent turn while monitoring interrupt sources (bus messages,
-/// reload signals). Returns the turn result and any leftover interrupts
-/// that arrived after the turn completed.
-/// Stop the turn for a shutdown trigger (SIGTERM, HTTP shutdown, restart)
-/// exactly the way an ordinary user stop does — cancel the model-call race
-/// and queue the same `Interrupt::Stopped` marker — so partial turn state
-/// is persisted identically either way.
+/// Stop the turn because the hub asked the agent to stop, exactly the way an
+/// ordinary user stop does — cancel the model-call race and queue the same
+/// `Interrupt::Stopped` marker — so partial turn state is persisted
+/// identically either way.
 ///
 /// Split out of `run_agent_turn_with_interrupts` purely to keep that
-/// function's line count down; it has one call site per shutdown trigger.
-fn stop_turn_for_shutdown(
-    reason: crate::gateway::types::ShutdownReason,
+/// function's line count down.
+fn stop_turn_for_agent_stop(
     correlation_id: &str,
     stop_token: &CancellationToken,
     interrupt_tx: &mpsc::UnboundedSender<Interrupt>,
-) -> crate::gateway::types::ShutdownReason {
-    tracing::info!(correlation_id = %correlation_id, ?reason, "shutdown trigger received, stopping active turn");
+) {
+    tracing::info!(correlation_id = %correlation_id, "agent stop requested, stopping active turn");
     stop_token.cancel();
     if interrupt_tx.send(Interrupt::Stopped).is_err() {
         tracing::warn!(
             "interrupt channel closed, stop marker dropped (model-call cancellation still applies)"
         );
     }
-    reason
 }
 
 /// Fold one mid-turn message-bus event into the turn: inject it if it
@@ -326,15 +321,13 @@ async fn run_agent_turn_with_interrupts(
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     stop_rx: &mut mpsc::Receiver<StopRequest>,
-    sigterm: &mut crate::gateway::types::TermSignal,
-    gateway_shutdown_rx: &mut mpsc::Receiver<()>,
-    restart_rx: &mut mpsc::Receiver<()>,
+    agent_stop_rx: &mut mpsc::Receiver<()>,
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
 ) -> (
     anyhow::Result<Vec<String>>,
     Vec<Interrupt>,
     Option<Arc<std::sync::Mutex<crate::subconscious::TurnScratch>>>,
-    Option<crate::gateway::types::ShutdownReason>,
+    bool,
 ) {
     // A request that arrived in the gap between the previous turn's own
     // select loop below ending and this one starting sits unread in
@@ -363,11 +356,10 @@ async fn run_agent_turn_with_interrupts(
     // lands between calls is instead observed via `Interrupt::Stopped` at
     // the tool loop's checkpoint (see `execute_turn`).
     let stop_token = CancellationToken::new();
-    // Set when a shutdown trigger (SIGTERM, HTTP shutdown, restart) fires
-    // while this turn is running, so the caller can perform the same action
-    // its own idle-time signal handling would have — the signal itself is
-    // already consumed here and won't fire again for the outer event loop.
-    let mut shutdown_reason: Option<crate::gateway::types::ShutdownReason> = None;
+    // Set when the hub asks the agent to stop while this turn is running, so
+    // the caller can shut the agent down — the request itself is already
+    // consumed here and won't arrive again for the outer event loop.
+    let mut stop_requested = false;
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,
@@ -397,33 +389,12 @@ async fn run_agent_turn_with_interrupts(
                 stop_req = stop_rx.recv() => {
                     handle_mid_turn_stop_request(stop_req, correlation_id, &stop_token, &interrupt_tx);
                 }
-                // The three shutdown triggers below all stop this turn the
-                // same way a user stop does (see `stop_turn_for_shutdown`)
-                // and record which one fired, for the caller to act on once
-                // this call returns.
-                () = sigterm.recv() => {
-                    shutdown_reason = Some(stop_turn_for_shutdown(
-                        crate::gateway::types::ShutdownReason::Sigterm,
-                        correlation_id,
-                        &stop_token,
-                        &interrupt_tx,
-                    ));
-                }
-                _ = gateway_shutdown_rx.recv() => {
-                    shutdown_reason = Some(stop_turn_for_shutdown(
-                        crate::gateway::types::ShutdownReason::GatewayShutdown,
-                        correlation_id,
-                        &stop_token,
-                        &interrupt_tx,
-                    ));
-                }
-                _ = restart_rx.recv() => {
-                    shutdown_reason = Some(stop_turn_for_shutdown(
-                        crate::gateway::types::ShutdownReason::Restart,
-                        correlation_id,
-                        &stop_token,
-                        &interrupt_tx,
-                    ));
+                // The hub's stop request stops this turn the same way a user
+                // stop does (see `stop_turn_for_agent_stop`) and records that
+                // it fired, for the caller to act on once this call returns.
+                _ = agent_stop_rx.recv() => {
+                    stop_turn_for_agent_stop(correlation_id, &stop_token, &interrupt_tx);
+                    stop_requested = true;
                 }
             }
         }
@@ -438,7 +409,7 @@ async fn run_agent_turn_with_interrupts(
     drop(interrupt_tx);
     let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
 
-    (turn_result, leftover_interrupts, scratch, shutdown_reason)
+    (turn_result, leftover_interrupts, scratch, stop_requested)
 }
 
 /// Fallback learning trigger for users running without the subconscious
@@ -448,7 +419,7 @@ async fn run_agent_turn_with_interrupts(
 /// Skipped when the subconscious learning path is active (that path owns
 /// spawning, so this avoids double-spawns) or when `nudge_after_turns` is zero.
 /// Shares the subconscious learning cooldown.
-async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
+async fn maybe_nudge_learner(rt: &mut AgentRuntime) {
     // When the subconscious learning path is active it already spawns from
     // detected signals; the dumb fallback must stay out of its way.
     if rt.subconscious.learning_enabled() {
@@ -483,7 +454,7 @@ async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
 /// and spawn the turn-start checkpoint, which captures the workspace state
 /// before anything this turn does, attributed as an outside edit.
 async fn publish_turn_started(
-    rt: &GatewayRuntime,
+    rt: &AgentRuntime,
     output_endpoint: Option<&EndpointName>,
     correlation_id: &str,
 ) {
@@ -554,7 +525,7 @@ fn main_turn_end_summary(turn_result: &anyhow::Result<Vec<String>>) -> String {
 /// Spawn the turn-end checkpoint, attributed with a short summary of the
 /// turn's outcome.
 fn spawn_main_turn_end_checkpoint(
-    rt: &GatewayRuntime,
+    rt: &AgentRuntime,
     correlation_id: &str,
     turn_result: &anyhow::Result<Vec<String>>,
 ) {
@@ -651,18 +622,18 @@ fn background_output_endpoint(
 
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 ///
-/// Returns the shutdown trigger that interrupted this turn, if any — the
-/// caller (`handle_bus_event`) must act on it, since the underlying signal
-/// was already consumed while stopping the turn (see
-/// `run_agent_turn_with_interrupts`) and won't fire again for the event
+/// Returns whether the hub's stop request interrupted this turn — the caller
+/// (`handle_bus_event`) must shut the agent down, since the request was
+/// already consumed while stopping the turn (see
+/// `run_agent_turn_with_interrupts`) and won't arrive again for the event
 /// loop's own idle-time handling of it.
 #[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
     message: MessageEvent,
-    rt: &mut GatewayRuntime,
+    rt: &mut AgentRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
     idle_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<crate::gateway::types::ShutdownReason> {
+) -> bool {
     let reply_id = message.id.clone();
     let origin = message.origin.clone();
     let is_background = origin.endpoint == "background";
@@ -691,6 +662,10 @@ pub async fn handle_inbound_message(
             .is_some_and(|entry| entry.capabilities.contains(EndpointCapabilities::STREAMING))
     });
 
+    // Held for the whole turn, so the agent switcher shows it busy until it
+    // ends, however the turn ends.
+    let _busy = rt.activity.main_turn();
+
     publish_turn_started(rt, output_endpoint.as_ref(), &reply_id).await;
 
     let before = rt.agent.message_count();
@@ -713,7 +688,7 @@ pub async fn handle_inbound_message(
     let ctx_strings = load_prompt_context_strings(&rt.skill_state).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
-    let (turn_result, leftover_interrupts, subconscious_scratch, shutdown_reason) =
+    let (turn_result, leftover_interrupts, subconscious_scratch, stop_requested) =
         run_agent_turn_with_interrupts(
             &mut rt.agent,
             &rt.agent_messenger,
@@ -728,15 +703,20 @@ pub async fn handle_inbound_message(
             &message.images,
             &mut rt.agent_subscriber,
             &mut rt.stop_rx,
-            &mut rt.sigterm,
-            &mut rt.gateway_shutdown_rx,
-            &mut rt.restart_rx,
+            &mut rt.agent_stop_rx,
             (!is_background && rt.subconscious.mid_turn_enabled())
                 .then(|| Arc::clone(&rt.subconscious)),
         )
         .await;
 
     spawn_main_turn_end_checkpoint(rt, &reply_id, &turn_result);
+
+    // Replies published to an endpoint are main-conversation messages the
+    // web UI may not have shown yet.
+    let published_replies = match (&turn_result, output_endpoint.as_ref()) {
+        (Ok(texts), Some(_)) => texts.len(),
+        _ => 0,
+    };
 
     publish_turn_outcome(
         turn_result,
@@ -748,6 +728,9 @@ pub async fn handle_inbound_message(
         &rt.cfg,
     )
     .await;
+    for _ in 0..published_replies {
+        rt.activity.main_message_published();
+    }
 
     let visibility = if is_background {
         Visibility::Background
@@ -785,7 +768,7 @@ pub async fn handle_inbound_message(
         *idle_deadline = Some(now + rt.cfg.idle.timeout);
     }
 
-    shutdown_reason
+    stop_requested
 }
 
 #[cfg(test)]
@@ -1200,19 +1183,6 @@ mod tests {
         }
     }
 
-    /// A termination-signal listener for tests that never triggers — its
-    /// construction differs by platform (fallible on Unix, infallible
-    /// elsewhere), and no test in this module needs it to actually fire.
-    #[cfg(unix)]
-    fn dummy_sigterm() -> crate::gateway::types::TermSignal {
-        crate::gateway::types::TermSignal::new()
-            .expect("failed to register a test-only SIGTERM listener")
-    }
-    #[cfg(not(unix))]
-    fn dummy_sigterm() -> crate::gateway::types::TermSignal {
-        crate::gateway::types::TermSignal::new()
-    }
-
     fn test_agent(provider: GatedProvider) -> Agent {
         Agent::new(
             Box::new(provider),
@@ -1259,9 +1229,7 @@ mod tests {
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
-        let mut sigterm = dummy_sigterm();
-        let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
-        let (_restart_tx, mut restart_rx) = mpsc::channel::<()>(1);
+        let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
 
         let prompt_ctx = PromptContext {
             skills: crate::agent::context::SkillsContext {
@@ -1273,7 +1241,7 @@ mod tests {
         let turn_messenger = Arc::clone(&messenger);
         let turn_conversation_router = Arc::clone(&conversation_router);
         let turn_task = crate::util::spawn_in_span(async move {
-            let (turn_result, _leftovers, _scratch, _shutdown) = run_agent_turn_with_interrupts(
+            let (turn_result, _leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
                 &mut agent,
                 &turn_messenger,
                 &turn_conversation_router,
@@ -1287,9 +1255,7 @@ mod tests {
                 &[],
                 &mut agent_subscriber,
                 &mut stop_rx,
-                &mut sigterm,
-                &mut gateway_shutdown_rx,
-                &mut restart_rx,
+                &mut agent_stop_rx,
                 None,
             )
             .await;
@@ -1365,9 +1331,7 @@ mod tests {
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(4);
-        let mut sigterm = dummy_sigterm();
-        let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
-        let (_restart_tx, mut restart_rx) = mpsc::channel::<()>(1);
+        let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
 
         // A stop request that arrived in the gap between the *previous*
         // turn's own select loop ending and this turn's own select loop
@@ -1389,7 +1353,7 @@ mod tests {
             },
         };
 
-        let (turn_result, _leftovers, _scratch, _shutdown) = run_agent_turn_with_interrupts(
+        let (turn_result, _leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
             &mut agent,
             &messenger,
             &conversation_router,
@@ -1403,9 +1367,7 @@ mod tests {
             &[],
             &mut agent_subscriber,
             &mut stop_rx,
-            &mut sigterm,
-            &mut gateway_shutdown_rx,
-            &mut restart_rx,
+            &mut agent_stop_rx,
             None,
         )
         .await;
@@ -1473,9 +1435,7 @@ mod tests {
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
-        let mut sigterm = dummy_sigterm();
-        let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
-        let (_restart_tx, mut restart_rx) = mpsc::channel::<()>(1);
+        let (_agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
 
         let prompt_ctx = PromptContext {
             skills: crate::agent::context::SkillsContext {
@@ -1487,7 +1447,7 @@ mod tests {
         let turn_messenger = Arc::clone(&messenger);
         let turn_conversation_router = Arc::clone(&conversation_router);
         let turn_task = crate::util::spawn_in_span(async move {
-            let (turn_result, _leftovers, _scratch, _shutdown) = run_agent_turn_with_interrupts(
+            let (turn_result, _leftovers, _scratch, _stopped) = run_agent_turn_with_interrupts(
                 &mut agent,
                 &turn_messenger,
                 &turn_conversation_router,
@@ -1501,9 +1461,7 @@ mod tests {
                 &[],
                 &mut agent_subscriber,
                 &mut stop_rx,
-                &mut sigterm,
-                &mut gateway_shutdown_rx,
-                &mut restart_rx,
+                &mut agent_stop_rx,
                 None,
             )
             .await;
@@ -1673,7 +1631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_trigger_stops_an_active_turn_and_reports_the_reason() {
+    async fn a_stop_request_ends_an_active_turn_and_reports_it() {
         let handle = crate::bus::spawn_broker();
         let publisher = handle.publisher();
         let dir = tempfile::tempdir().unwrap();
@@ -1701,9 +1659,7 @@ mod tests {
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
-        let mut sigterm = dummy_sigterm();
-        let (gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
-        let (_restart_tx, mut restart_rx) = mpsc::channel::<()>(1);
+        let (agent_stop_tx, mut agent_stop_rx) = mpsc::channel::<()>(1);
 
         let prompt_ctx = PromptContext {
             skills: crate::agent::context::SkillsContext {
@@ -1727,30 +1683,27 @@ mod tests {
                 &[],
                 &mut agent_subscriber,
                 &mut stop_rx,
-                &mut sigterm,
-                &mut gateway_shutdown_rx,
-                &mut restart_rx,
+                &mut agent_stop_rx,
                 None,
             )
             .await
         });
 
-        // The turn is now blocked on the gated model call; request a
-        // shutdown the way the HTTP `/api/shutdown` endpoint does.
-        gateway_shutdown_tx.send(()).await.unwrap();
+        // The turn is now blocked on the gated model call; the hub asks the
+        // agent to stop, the way a stop, restart, or hub shutdown does.
+        agent_stop_tx.send(()).await.unwrap();
 
-        let (turn_result, _leftovers, _scratch, shutdown_reason) =
+        let (turn_result, _leftovers, _scratch, stopped) =
             tokio::time::timeout(std::time::Duration::from_secs(2), turn_task)
                 .await
-                .expect("a shutdown trigger should stop the turn well within 2s")
+                .expect("a stop request should stop the turn well within 2s")
                 .unwrap();
 
-        assert_eq!(
-            shutdown_reason,
-            Some(crate::gateway::types::ShutdownReason::GatewayShutdown),
-            "the caller must learn which trigger stopped the turn"
+        assert!(
+            stopped,
+            "the caller must learn that the stop request ended the turn"
         );
-        let texts = turn_result.expect("a shutdown-stopped turn is not a turn error");
+        let texts = turn_result.expect("a stop-interrupted turn is not a turn error");
         assert!(
             texts.is_empty(),
             "the turn was cut short before producing a reply"

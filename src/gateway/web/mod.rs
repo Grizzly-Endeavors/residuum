@@ -307,6 +307,23 @@ impl ConfigApiState {
     }
 }
 
+/// Header a repair router's fallback sets on its `404`, so a caller can tell
+/// "this router has no such route" from a route answering `404` itself.
+pub(crate) const NO_ROUTE_HEADER: &str = "x-residuum-no-route";
+
+/// The routes that keep working on a stopped or failed agent so the user can
+/// repair it: its config, providers, MCP, channels, workspace files, and
+/// checkpoints. Anything else answers the `404` marked with
+/// [`NO_ROUTE_HEADER`].
+pub(crate) fn repair_router(state: ConfigApiState) -> axum::Router {
+    let checkpoints = checkpoints::CheckpointApiState {
+        checkpoints: Arc::clone(&state.checkpoints),
+    };
+    config_api_router(state)
+        .merge(checkpoints::checkpoints_api_router(checkpoints))
+        .fallback(|| async { (axum::http::StatusCode::NOT_FOUND, [(NO_ROUTE_HEADER, "1")]) })
+}
+
 /// Build the config API router.
 pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
     // Scoped to just this route via `route_layer` (which wraps every route
@@ -414,7 +431,7 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
 /// for the web UI's client-side routes (paths without file extensions).
 /// Unknown API and WebSocket paths get a 404 rather than the app shell, so a
 /// client calling a missing endpoint sees the failure instead of HTML.
-pub(super) async fn static_handler(uri: Uri) -> Response {
+pub(crate) async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
     // Try the exact path first

@@ -301,29 +301,38 @@ async fn exists(path: &Path) -> Result<bool, FatalError> {
 }
 
 /// Write `content` to `path` if it does not exist yet.
+///
+/// Agents starting at the same time each run this against a fresh team
+/// layer, so losing the race to create the file is not an error: the winner's
+/// copy is the file.
 async fn write_if_missing(path: &Path, content: &str) -> Result<(), FatalError> {
-    if !exists(path).await? {
-        write_new(path, content).await?;
+    if !exists(path).await? && write_new(path, content).await? {
         tracing::debug!(path = %path.display(), "wrote team default");
     }
     Ok(())
 }
 
-/// Create `path` and write `content`, failing if it already exists.
-async fn write_new(path: &Path, content: &str) -> Result<(), FatalError> {
+/// Create `path` and write `content`. Returns `false`, leaving the file
+/// alone, when it already exists.
+async fn write_new(path: &Path, content: &str) -> Result<bool, FatalError> {
     let write_error = |e: std::io::Error| {
         FatalError::Workspace(format!("failed to write {}: {e}", path.display()))
     };
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut file = match tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .await
-        .map_err(write_error)?;
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(write_error(e)),
+    };
     file.write_all(content.as_bytes())
         .await
         .map_err(write_error)?;
-    file.flush().await.map_err(write_error)
+    file.flush().await.map_err(write_error)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -355,6 +364,32 @@ mod tests {
         }
         let index = std::fs::read_to_string(team.wiki_index_md()).unwrap();
         assert!(index.contains("(/agents/index.md)"));
+    }
+
+    #[tokio::test]
+    async fn write_new_leaves_a_file_someone_else_created_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AGENTS.md");
+        std::fs::write(&path, "the winner's copy").unwrap();
+
+        let created = write_new(&path, "my default").await.unwrap();
+
+        assert!(!created, "losing the creation race is not an error");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the winner's copy");
+    }
+
+    #[tokio::test]
+    async fn agents_starting_together_on_a_fresh_team_layer_all_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = team_in(dir.path());
+
+        let starts = (0..8).map(|_| ensure_team(&team, None, None));
+        let results = futures_util::future::join_all(starts).await;
+
+        for result in results {
+            result.unwrap();
+        }
+        assert!(team.agents_md().is_file());
     }
 
     #[tokio::test]

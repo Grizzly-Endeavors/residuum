@@ -1,7 +1,7 @@
 //! Server command handler in the event loop.
 
 use crate::bus::{InlineOutputEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
-use crate::gateway::types::GatewayRuntime;
+use crate::gateway::types::AgentRuntime;
 use crate::gateway::types::ServerCommand;
 
 use super::turns::load_prompt_context_strings;
@@ -11,7 +11,7 @@ use crate::gateway::memory::{MemorySubsystems, run_forced_observe, run_forced_re
 #[tracing::instrument(skip_all, fields(command = %cmd.name))]
 pub async fn handle_server_command(
     cmd: ServerCommand,
-    rt: &mut GatewayRuntime,
+    rt: &mut AgentRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
     match cmd.name.as_str() {
@@ -62,6 +62,8 @@ pub async fn handle_server_command(
                 tracing::warn!(error = %e, "failed to publish context inline output");
             }
         }
+        #[cfg(test)]
+        "panic_for_test" => fault_injection::panic_in_event_loop(),
         unknown => {
             tracing::debug!(command = %unknown, "received unknown server command");
             let reason = format!("unknown server command: {unknown}");
@@ -81,5 +83,15 @@ pub async fn handle_server_command(
                 tracing::warn!(error = %e, "failed to publish error notice");
             }
         }
+    }
+}
+
+/// Faults the hub's tests inject into an agent's event loop to prove the
+/// loop's failure stays that agent's own.
+#[cfg(test)]
+mod fault_injection {
+    /// Panic the way an internal bug in the event loop would.
+    pub(super) fn panic_in_event_loop() -> ! {
+        panic!("forced panic in the agent event loop");
     }
 }

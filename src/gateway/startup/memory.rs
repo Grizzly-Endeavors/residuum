@@ -146,18 +146,6 @@ pub(super) fn build_memory_components(
     (observer, reflector, notices)
 }
 
-/// Open the team wiki search index, the one service every agent's memory
-/// search shares.
-///
-/// # Errors
-/// Returns `FatalError` if not even an in-memory index can be created.
-pub(super) async fn open_team_wiki(
-    layout: &WorkspaceLayout,
-    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
-) -> Result<Arc<TeamWikiIndex>, FatalError> {
-    Ok(TeamWikiIndex::open(layout.team(), embedding_provider.cloned()).await?)
-}
-
 /// Build the search index, vector store, and hybrid searcher.
 ///
 /// `team_wiki` is the hub's shared team wiki index; the searcher merges its

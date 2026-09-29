@@ -449,6 +449,10 @@ mod tests {
                 ),
             )),
             layout: crate::workspace::layout::WorkspaceLayout::new(workspace_dir),
+            activity: crate::hub::activity::ActivityTracker::new(
+                "test-agent",
+                tokio::sync::broadcast::channel(4).0,
+            ),
         }
     }
 

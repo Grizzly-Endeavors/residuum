@@ -2,10 +2,10 @@
 //!
 //! `~/.residuum/` holds `hub/` (hub-level state: hub config, secrets, key
 //! stores, logs, `bin/`, checkpoints, pid/lock/ready/update markers, and
-//! their last-known-good copies) plus exactly one agent directory, which
-//! *is* that agent's workspace root. This module is the only place that
-//! resolves the literal `~/.residuum` path, names the reserved directory
-//! names, and validates an agent name.
+//! their last-known-good copies), `team/` (the shared team layer), and one
+//! directory per agent, each of which *is* that agent's workspace root. This
+//! module is the only place that resolves the literal `~/.residuum` path,
+//! names the reserved directory names, and validates an agent name.
 
 use std::path::{Path, PathBuf};
 
@@ -149,55 +149,6 @@ pub fn discover_agents(root: &Path) -> Result<Vec<String>, FatalError> {
     }
     names.sort();
     Ok(names)
-}
-
-/// Discover the single agent this process runs: the first (alphabetically)
-/// agent directory under `root`. `None` on a fresh install with no agent yet.
-///
-/// If more than one agent directory exists (for example one created
-/// out-of-band), the first one runs and a warning names every agent found:
-/// a process hosts exactly one agent.
-///
-/// # Errors
-/// Returns `FatalError::Config` if `root` cannot be scanned (see
-/// [`discover_agents`]).
-pub fn discover_single_agent(root: &Path) -> Result<Option<String>, FatalError> {
-    let agents = discover_agents(root)?;
-    let Some(first) = agents.first().cloned() else {
-        return Ok(None);
-    };
-    if agents.len() > 1 {
-        tracing::warn!(
-            agents = %agents.join(", "),
-            running = %first,
-            "more than one agent directory exists; running the first by name \
-             (a process hosts exactly one agent)"
-        );
-    }
-    Ok(Some(first))
-}
-
-/// An agent directory found under `~/.residuum/`: its name and full path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscoveredAgent {
-    /// The agent's name (also its directory name).
-    pub name: String,
-    /// The agent's directory (its workspace root).
-    pub dir: PathBuf,
-}
-
-/// Like [`discover_single_agent`], but returns the full
-/// [`DiscoveredAgent`] (name plus resolved directory) instead of just the
-/// name.
-///
-/// # Errors
-/// Returns `FatalError::Config` if `root` cannot be scanned (see
-/// [`discover_agents`]).
-pub fn discover_single_agent_dir(root: &Path) -> Result<Option<DiscoveredAgent>, FatalError> {
-    Ok(discover_single_agent(root)?.map(|name| {
-        let dir = agent_dir(root, &name);
-        DiscoveredAgent { name, dir }
-    }))
 }
 
 /// Path helpers for the hub directory (`~/.residuum/hub`): hub config,
@@ -581,10 +532,6 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, root.join("linked")).unwrap();
 
         assert_eq!(discover_agents(&root).unwrap(), vec!["linked".to_string()]);
-        assert_eq!(
-            discover_single_agent(&root).unwrap(),
-            Some("linked".to_string())
-        );
     }
 
     #[cfg(unix)]
@@ -607,26 +554,6 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("couldn't read"), "{message}");
         assert!(message.contains("root-file"), "{message}");
-        assert!(discover_single_agent(&not_a_dir).is_err());
-    }
-
-    #[test]
-    fn discover_single_agent_picks_first_and_none_on_fresh_install() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        assert!(
-            discover_single_agent(root).unwrap().is_none(),
-            "fresh install has no agent"
-        );
-
-        for name in ["bravo", "alpha"] {
-            std::fs::create_dir_all(root.join(name).join("config")).unwrap();
-            std::fs::write(root.join(name).join("config").join("config.toml"), "").unwrap();
-        }
-        assert_eq!(
-            discover_single_agent(root).unwrap(),
-            Some("alpha".to_string())
-        );
     }
 
     #[test]

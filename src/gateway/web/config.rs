@@ -1104,10 +1104,8 @@ mod tests {
         assert!(team.agent_role_page("scout").is_file());
         assert!(*done_rx.borrow(), "setup should be signalled complete");
         assert_eq!(
-            crate::config::discover_single_agent(root.path())
-                .unwrap()
-                .as_deref(),
-            Some("scout")
+            crate::config::discover_agents(root.path()).unwrap(),
+            vec!["scout".to_string()]
         );
     }
 

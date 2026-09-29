@@ -42,13 +42,15 @@ impl ChatAdapters {
         });
     }
 
-    /// Ask every running adapter to stop. Does not wait for them.
-    pub(crate) fn signal_shutdown(&mut self) {
-        for task in &mut self.tasks {
-            if let Some(tx) = task.shutdown.take() {
-                tx.send(true).ok();
-            }
-        }
+    /// Stop every running adapter and wait for them to finish, each for up to
+    /// five seconds. A restart of the same agent starts its adapters again
+    /// right after this, so two copies of one bot never run at once.
+    pub(crate) async fn shutdown_all(&mut self) {
+        let stops = self.tasks.iter_mut().map(|task| {
+            let name = task.name;
+            shutdown_adapter(&mut task.shutdown, &mut task.handle, name)
+        });
+        futures_util::future::join_all(stops).await;
     }
 
     /// Stop the named adapter if it is running, then start `build` when the
@@ -94,6 +96,22 @@ impl ChatAdapters {
             .collect::<Vec<_>>();
         let ((name, result), _index, _rest) = futures_util::future::select_all(futures).await;
         (name, result)
+    }
+}
+
+impl Drop for ChatAdapters {
+    /// Adapters must not outlive the agent that owns them: dropping the set
+    /// (a graceful shutdown already stopped them; a crashed event loop did
+    /// not) signals and aborts whatever is still running.
+    fn drop(&mut self) {
+        for task in &mut self.tasks {
+            if let Some(tx) = task.shutdown.take() {
+                tx.send(true).ok();
+            }
+            if let Some(handle) = task.handle.take() {
+                handle.abort();
+            }
+        }
     }
 }
 
@@ -176,21 +194,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signal_shutdown_flips_the_watch() {
+    async fn dropping_the_adapters_stops_their_tasks() {
+        let (alive_tx, alive_rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, _rx) = tokio::sync::watch::channel(false);
         let mut adapters = ChatAdapters::new();
-        let (tx, mut rx) = tokio::sync::watch::channel(false);
         adapters.insert(
-            "teams",
-            crate::util::spawn_in_span(std::future::pending()),
+            "discord",
+            crate::util::spawn_in_span(async move {
+                // Holding the sender until the task ends lets the test see it end.
+                let _alive = alive_tx;
+                std::future::pending::<()>().await;
+            }),
             tx,
         );
 
-        adapters.signal_shutdown();
+        drop(adapters);
 
-        tokio::time::timeout(Duration::from_secs(1), rx.changed())
+        tokio::time::timeout(Duration::from_secs(1), alive_rx)
             .await
-            .expect("shutdown signal")
-            .expect("watch open");
-        assert!(*rx.borrow());
+            .expect("the task ended")
+            .expect_err("the task dropped its sender without sending");
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_waits_for_every_adapter_to_finish() {
+        let mut adapters = ChatAdapters::new();
+        for name in ["discord", "telegram"] {
+            let (tx, mut rx) = tokio::sync::watch::channel(false);
+            let handle = crate::util::spawn_in_span(async move {
+                let _changed = rx.changed().await;
+            });
+            adapters.insert(name, handle, tx);
+        }
+
+        adapters.shutdown_all().await;
+
+        for task in &adapters.tasks {
+            assert!(task.handle.is_none(), "{} was awaited", task.name);
+            assert!(task.shutdown.is_none(), "{} was signalled", task.name);
+        }
     }
 }

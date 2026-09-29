@@ -154,7 +154,7 @@ pub(super) fn spawn_root_config_watcher(
 ///
 /// Polls every 2 seconds; on the file's mtime changing, debounces 500ms then
 /// sends `ReloadSignal::Hub`.
-pub(super) fn spawn_hub_config_watcher(
+pub(crate) fn spawn_hub_config_watcher(
     hub_config_toml_path: PathBuf,
     reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {

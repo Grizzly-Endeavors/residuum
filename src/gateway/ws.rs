@@ -8,6 +8,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
@@ -22,7 +23,10 @@ pub(super) async fn ws_handler(
     ws: axum::extract::WebSocketUpgrade,
     State(state): State<GatewayState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_connection(socket, state))
+    // The upgraded connection runs in a task axum spawns with no span of its
+    // own; carrying the request's keeps the agent's `agent` log field on it.
+    let span = tracing::Span::current();
+    ws.on_upgrade(move |socket| handle_connection(socket, state).instrument(span))
 }
 
 /// Handle a single WebSocket connection.
@@ -38,6 +42,9 @@ pub(super) async fn ws_handler(
 /// agent's and every session's) are dropped in the forwarding task when
 /// verbose mode is off.
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
+    // While this connection is open the agent's unread count stays at zero:
+    // a client is there to show new messages.
+    let _client = state.activity.client_connected();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // The workspace prefixes this connection watches: replaced by the read

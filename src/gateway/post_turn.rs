@@ -18,7 +18,7 @@
 //!
 //! Each trigger call carries a fresh snapshot of whatever `Arc`/`Clone`
 //! runtime state the cycle needs (observer, merge writer, subconscious,
-//! learning state, ...), taken from `GatewayRuntime` at the moment of the
+//! learning state, ...), taken from `AgentRuntime` at the moment of the
 //! call. A coalesced run always uses the *latest* trigger's snapshot, so a
 //! reload that swaps a component in place between two coalesced triggers is
 //! still picked up — nothing here holds a stale clone from before the swap.
@@ -284,7 +284,7 @@ impl ObserveWorker {
 }
 
 /// Everything one subconscious evaluation cycle needs, snapshotted fresh
-/// from `GatewayRuntime` by the caller at trigger time.
+/// from `AgentRuntime` by the caller at trigger time.
 pub(crate) struct SubconsciousTrigger {
     pub subconscious: Arc<Subconscious>,
     pub learning_state: Arc<Mutex<LearningState>>,

@@ -1,10 +1,10 @@
 //! Foreground process lifecycle and setup wizard for the gateway.
 
-use residuum::config::{Config, HubConfig};
+use residuum::config::HubConfig;
 use residuum::util::FatalError;
 
 use super::ServeArgs;
-use super::startup_config::ensure_config_loads_or_has_fallback;
+use super::startup_config::ensure_hub_config_loads_or_has_fallback;
 
 /// How the foreground gateway finished.
 enum ForegroundExit {
@@ -64,7 +64,7 @@ fn remove_pid_file(pid_path: &std::path::Path) {
     }
 }
 
-/// Run the onboarding wizard in an isolated temp directory, then boot gateway.
+/// Run the onboarding wizard in an isolated temp directory, then boot the hub.
 #[tracing::instrument(skip_all)]
 async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
     let tmp_root = std::env::temp_dir().join("residuum-setup");
@@ -89,21 +89,19 @@ async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
         residuum::gateway::setup::SetupExit::Shutdown => return Ok(ForegroundExit::Done),
     }
 
-    // Load whichever agent the wizard created and run the gateway.
-    let hub_cfg = HubConfig::load_at(&hub_dir)?;
-    let agent_name = residuum::config::discover_single_agent(&tmp_root)?.ok_or_else(|| {
-        FatalError::Config("setup completed, but no agent directory was created".to_string())
-    })?;
-    let agent_dir = tmp_root.join(&agent_name);
-    let cfg = Config::load_agent_at(&agent_dir, &hub_cfg)?;
+    // Run the hub on the agent the wizard created.
+    let agents = residuum::config::discover_agents(&tmp_root)?;
+    if agents.is_empty() {
+        return Err(FatalError::Config(
+            "setup completed, but no agent directory was created".to_string(),
+        ));
+    }
     tracing::info!(
-        agent = %agent_name,
-        model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
-        provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
-        workspace = %cfg.workspace_dir.display(),
-        "setup-mode: configuration loaded, starting gateway"
+        agents = %agents.join(", "),
+        root = %tmp_root.display(),
+        "setup-mode: configuration saved, starting the hub"
     );
-    match Box::pin(residuum::gateway::run_gateway_with_config(cfg, hub_cfg)).await? {
+    match Box::pin(residuum::hub::run_hub(&tmp_root)).await? {
         residuum::gateway::GatewayExit::Shutdown => {}
         residuum::gateway::GatewayExit::Restart => {
             // Relaunching would repeat `--setup`, which wipes the temp config.
@@ -128,7 +126,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     loop {
         HubConfig::bootstrap_at(&hub_dir)?;
 
-        let Some(agent_name) = residuum::config::discover_single_agent(&residuum_root)? else {
+        if residuum::config::discover_agents(&residuum_root)?.is_empty() {
             tracing::info!("no agent found, starting setup wizard");
             // Box::pin reduces stack frame size — this future is large
             match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
@@ -138,21 +136,20 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
                 residuum::gateway::setup::SetupExit::Shutdown => break,
             }
             continue;
-        };
-        let agent_dir = residuum_root.join(&agent_name);
+        }
 
-        // A live config that fails to load is only reported here when
-        // there's no last-known-good copy to fall back on — `run_gateway`
-        // itself retries on one and publishes a notice once it's up if it
-        // had to. This mirrors the check `run_serve_command` makes before
-        // spawning the daemon.
-        ensure_config_loads_or_has_fallback(&residuum_root, &agent_name)?;
+        // A live hub config that fails to load is only reported here when
+        // there's no last-known-good copy to fall back on — the hub itself
+        // retries on one and publishes a notice once it's up if it had to.
+        // This mirrors the check `run_serve_command` makes before spawning
+        // the daemon.
+        ensure_hub_config_loads_or_has_fallback(&hub_dir)?;
 
-        // Gateway handles reloads in-place and only returns on shutdown or
-        // a fatal error neither the live config nor its last-known-good
-        // copy could recover from.
+        // The hub handles reloads in-place and only returns on shutdown or a
+        // fatal error no fallback could recover from. An agent that can't
+        // start is `failed`; it doesn't end the hub.
         // Box::pin reduces stack frame size — this future is large
-        match Box::pin(residuum::gateway::run_gateway(&agent_dir, &hub_dir)).await? {
+        match Box::pin(residuum::hub::run_hub(&residuum_root)).await? {
             residuum::gateway::GatewayExit::Restart => return Ok(ForegroundExit::Restart),
             residuum::gateway::GatewayExit::Shutdown => {}
         }

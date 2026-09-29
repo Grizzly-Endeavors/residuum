@@ -4,13 +4,9 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
-use crate::bus::BusHandle;
 use crate::config::Config;
 use crate::gateway::types::{GatewayState, ServerCommand, StopRequest};
-use crate::skills::SharedSkillState;
-use crate::util::FatalError;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
@@ -28,32 +24,6 @@ pub struct AdapterSenders {
     pub session_registry: Arc<SessionRegistry>,
     /// Where the adapter registers the conversations it can reach.
     pub(crate) conversations: crate::interfaces::conversations::ConversationDirectory,
-}
-
-/// Lifecycle handles returned from spawning chat adapters.
-pub struct AdapterHandles {
-    pub chat: crate::gateway::chat_adapters::ChatAdapters,
-    pub a2a_handle: Option<tokio::task::JoinHandle<()>>,
-    pub a2a_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
-    /// The live agent card, so a workspace-file reload can update it without
-    /// restarting the listener. `None` when A2A is disabled.
-    pub a2a_card_state: Option<crate::a2a::SharedCardState>,
-}
-
-/// What [`build_a2a_listener`] needs beyond `Config`: live runtime state
-/// (sessions, messaging, skills, the bus, and the tunnel's status) rather
-/// than anything derivable from config alone.
-pub(crate) struct A2aListenerDeps {
-    /// The hub directory, holding the A2A caller-key store.
-    pub hub_dir: std::path::PathBuf,
-    pub session_registry: Arc<SessionRegistry>,
-    pub agent_messenger: Arc<AgentMessenger>,
-    pub skill_state: SharedSkillState,
-    pub bus_handle: BusHandle,
-    /// Turns `true` once the session spawn listener is subscribed. Restart
-    /// continuations wait on it: a session spawn published before then has
-    /// no listener and would be lost.
-    pub sessions_ready: tokio::sync::watch::Receiver<bool>,
 }
 
 /// State bundle for the smaller, cross-cutting API routers, grouped so
@@ -317,55 +287,12 @@ fn tracing_api_router(state: web::tracing_api::TracingApiState) -> axum::Router 
         .with_state(state)
 }
 
-/// Spawn an axum server on a pre-bound listener with graceful shutdown.
-pub(crate) fn spawn_server_with_listener(
-    listener: tokio::net::TcpListener,
-    app: axum::Router,
-    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
-) -> tokio::task::JoinHandle<()> {
-    let mut shutdown_rx = http_shutdown_tx.subscribe();
-    crate::util::spawn_in_span(async move {
-        if let Err(e) = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown_rx.wait_for(|v| *v).await.ok();
-            })
-            .await
-        {
-            tracing::error!(error = %e, "gateway server error");
-        }
-    })
-}
-
-/// Bind the HTTP server and spawn it as a background task.
-///
-/// # Errors
-/// Returns `FatalError` if the listener cannot bind to the configured address.
-pub async fn spawn_http_server(
-    cfg: &Config,
-    app: axum::Router,
-    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
-) -> Result<tokio::task::JoinHandle<()>, FatalError> {
-    let addr = cfg.gateway.addr();
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .map_err(|e| FatalError::Gateway(format!("failed to bind to {addr}: {e}")))?;
-    tracing::info!(addr = %addr, "gateway listening");
-    if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
-        tracing::warn!(
-            bind = %cfg.gateway.bind,
-            "web UI is exposed on a non-loopback address with no authentication"
-        );
-    }
-    Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
-}
-
-/// Spawn the Discord, Telegram, Teams, and A2A adapters that are configured.
-pub async fn spawn_adapters(
+/// Spawn the Discord, Telegram, and Teams adapters that are configured.
+pub fn spawn_adapters(
     cfg: &Config,
     senders: &AdapterSenders,
     tz: chrono_tz::Tz,
-    a2a_deps: A2aListenerDeps,
-) -> AdapterHandles {
+) -> crate::gateway::chat_adapters::ChatAdapters {
     let mut chat = crate::gateway::chat_adapters::ChatAdapters::new();
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -430,55 +357,36 @@ pub async fn spawn_adapters(
         );
     }
 
-    let (mut a2a_handle, mut a2a_shutdown_tx, mut a2a_card_state) = (None, None, None);
-    if cfg.a2a.enabled {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        match build_a2a_listener(cfg, a2a_deps, rx).await {
-            Ok((handle, card_state, public_url)) => {
-                tracing::info!(
-                    visibility = %cfg.a2a.visibility,
-                    public_url = %public_url,
-                    "a2a interface started"
-                );
-                a2a_handle = Some(handle);
-                a2a_shutdown_tx = Some(tx);
-                a2a_card_state = Some(card_state);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to start the a2a interface; it will not run this session");
-            }
-        }
-    }
-
-    AdapterHandles {
-        chat,
-        a2a_handle,
-        a2a_shutdown_tx,
-        a2a_card_state,
-    }
+    chat
 }
 
-/// Build the agent's A2A server with [`crate::a2a::agent_a2a_router`] and
-/// spawn the hub A2A listener that serves it at `/agents/<name>/`.
+/// What [`build_agent_a2a`] needs beyond `Config`: the agent's live runtime
+/// state (sessions, messaging, skills, and the bus) rather than anything
+/// derivable from config alone.
+pub(crate) struct A2aServingDeps {
+    pub session_registry: Arc<SessionRegistry>,
+    pub agent_messenger: Arc<crate::background::messaging::AgentMessenger>,
+    pub skill_state: crate::skills::SharedSkillState,
+    pub bus_handle: crate::bus::BusHandle,
+    /// Turns `true` once the session spawn listener is subscribed. Restart
+    /// continuations wait on it: a session spawn published before then has
+    /// no listener and would be lost.
+    pub sessions_ready: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Build the agent's A2A server with [`crate::a2a::agent_a2a_router`]. The
+/// hub's A2A listener serves the router at `/agents/<name>/`.
 ///
-/// Shared between initial startup and reload: both rebuild the listener from
+/// Shared between startup and reload: both rebuild the agent's A2A state from
 /// scratch when `[a2a]` changes, since a visibility flip and a new base URL
-/// both need a fresh card as well as a fresh listener.
-///
-/// # Errors
-/// Returns an error if the persistent task store's directory can't be
-/// created or read.
-pub(crate) async fn build_a2a_listener(
+/// both need a fresh card. A build failure is logged and reported as `None`:
+/// the rest of the agent still runs, and the next successful reload retries.
+pub(crate) async fn build_agent_a2a(
     cfg: &Config,
-    deps: A2aListenerDeps,
-    shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<(
-    tokio::task::JoinHandle<()>,
-    crate::a2a::SharedCardState,
-    String,
-)> {
+    deps: A2aServingDeps,
+) -> Option<crate::a2a::AgentA2a> {
     let layout = crate::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir);
-    let agent = crate::a2a::agent_a2a_router(crate::a2a::AgentA2aState {
+    match crate::a2a::agent_a2a_router(crate::a2a::AgentA2aState {
         name: cfg.agent_name.clone(),
         a2a: cfg.a2a.clone(),
         bind: cfg.gateway.bind.clone(),
@@ -490,30 +398,19 @@ pub(crate) async fn build_a2a_listener(
         skill_state: deps.skill_state,
         sessions_ready: deps.sessions_ready,
     })
-    .await?;
-
-    let visibility = match cfg.a2a.visibility {
-        crate::config::A2aVisibility::Public => crate::hub::A2aVisibility::Public,
-        crate::config::A2aVisibility::Private => crate::hub::A2aVisibility::Private,
-    };
-    let directory = crate::a2a::StaticAgentDirectory::new().with_agent(
-        cfg.agent_name.clone(),
-        visibility,
-        agent.router,
-    );
-    let listener = crate::a2a::A2aListener::new(
-        cfg.gateway.bind.clone(),
-        cfg.a2a.port,
-        Arc::new(directory),
-        crate::a2a::A2aKeys::new_shared(&deps.hub_dir),
-        Arc::new(|| Some(Arc::<str>::from(crate::tunnel::tunnel_nonce()))),
-        shutdown_rx,
-    );
-    let handle = crate::util::spawn_monitored("a2a", async move {
-        if let Err(e) = listener.start().await {
-            tracing::error!(error = %e, "a2a interface failed");
+    .await
+    {
+        Ok(agent) => {
+            tracing::info!(
+                visibility = %cfg.a2a.visibility,
+                public_url = %agent.public_url,
+                "a2a interface ready"
+            );
+            Some(agent)
         }
-    });
-
-    Ok((handle, agent.card_state, agent.public_url))
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build the a2a interface; it will not run until the next successful reload");
+            None
+        }
+    }
 }

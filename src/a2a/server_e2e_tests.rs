@@ -418,7 +418,7 @@ fn build_harness_runtime(
     Arc::new(SessionRuntime::new(
         Arc::clone(session_registry),
         Arc::clone(session_store),
-        8,
+        Arc::new(tokio::sync::Semaphore::new(8)),
         background_config,
         crate::background::runtime::SessionRuntimeHandles {
             publisher: bus_handle.publisher(),

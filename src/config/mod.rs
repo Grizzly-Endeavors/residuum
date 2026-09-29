@@ -29,10 +29,7 @@ pub(crate) use constants::{
     DEFAULT_TEAMS_PORT,
 };
 pub use hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig};
-pub use paths::{
-    DiscoveredAgent, HubPaths, default_hub_dir, discover_agents, discover_single_agent,
-    residuum_root, validate_agent_name,
-};
+pub use paths::{HubPaths, default_hub_dir, discover_agents, residuum_root, validate_agent_name};
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
