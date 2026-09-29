@@ -972,7 +972,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.keep()));
+        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             registry,
             bus_handle.publisher(),

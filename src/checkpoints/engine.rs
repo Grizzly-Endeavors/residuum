@@ -46,6 +46,11 @@ pub struct CheckpointEngine {
     config_repo: Arc<Mutex<GitRepo>>,
     config_git_dir: PathBuf,
     publisher: Option<Publisher>,
+    /// Keeps a test fixture's backing temp directory alive (and cleaned up
+    /// on drop) for as long as this engine is in use, instead of leaking it
+    /// with [`tempfile::TempDir::keep`].
+    #[cfg(test)]
+    tempdir_guard: Option<tempfile::TempDir>,
 }
 
 impl CheckpointEngine {
@@ -78,7 +83,18 @@ impl CheckpointEngine {
             config_repo: Arc::new(Mutex::new(config_repo)),
             config_git_dir,
             publisher,
+            #[cfg(test)]
+            tempdir_guard: None,
         })
+    }
+
+    /// Attach a temp directory guard so it's dropped (and cleaned up)
+    /// together with this engine instead of being leaked.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
+        self.tempdir_guard = Some(dir);
+        self
     }
 
     /// Open the checkpoint repositories for a one-off CLI invocation

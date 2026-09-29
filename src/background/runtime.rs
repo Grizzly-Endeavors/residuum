@@ -3742,8 +3742,9 @@ mod tests {
     fn make_sequenced_resources_with_eager_observer(
         responses: Vec<&str>,
     ) -> (SubAgentResources, crate::workspace::layout::WorkspaceLayout) {
-        let dir = tempfile::tempdir().unwrap().keep();
-        let layout = crate::workspace::layout::WorkspaceLayout::new(&dir);
+        let dir = tempfile::tempdir().unwrap();
+        let layout =
+            crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
         let search_index = Arc::new(
             crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
         );
