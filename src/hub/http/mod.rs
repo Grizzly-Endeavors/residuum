@@ -22,6 +22,12 @@ mod error;
 mod lifecycle;
 mod process;
 mod state;
+#[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes parsed JSON for clarity"
+)]
+mod tests;
 mod ws;
 
 use std::sync::Arc;

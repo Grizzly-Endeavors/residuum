@@ -7,29 +7,40 @@
 //! it, and is called with `oneshot` so the request (and with it a WebSocket
 //! upgrade) passes through whole.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
-use axum::routing::any;
 use tower::ServiceExt;
 
 use super::error::{json_error, lifecycle_error_response};
 use crate::hub::{AgentDirectory, LifecycleError};
 
-const AGENTS_PREFIX: &str = "/api/agents/";
-const WEBHOOK_PREFIX: &str = "/webhook/";
-
 /// The routes that hand requests to an agent: everything under
-/// `/api/agents/{name}` and `/webhook/{agent}/{name}`.
+/// `/api/agents/` and `/webhook/`.
+///
+/// They are mounted as services under fixed prefixes rather than as routes
+/// with `{name}` captures. A capture would leave path parameters on the
+/// request, and the agent's own router would then see them beside its own
+/// and fail every `Path` extractor.
 pub(super) fn routes(directory: Arc<dyn AgentDirectory>) -> Router {
+    let agents = {
+        let directory = Arc::clone(&directory);
+        tower::service_fn(move |req: Request| {
+            let directory = Arc::clone(&directory);
+            async move { Ok::<_, Infallible>(agent_request(directory.as_ref(), req).await) }
+        })
+    };
+    let webhooks = tower::service_fn(move |req: Request| {
+        let directory = Arc::clone(&directory);
+        async move { Ok::<_, Infallible>(webhook_request(directory.as_ref(), req).await) }
+    });
     Router::new()
-        .route("/api/agents/{name}", any(agent_request))
-        .route("/api/agents/{name}/{*rest}", any(agent_request))
-        .route("/webhook/{agent}/{name}", any(webhook_request))
-        .with_state(directory)
+        .nest_service("/api/agents", agents)
+        .nest_service("/webhook", webhooks)
 }
 
 /// Which of an agent's routers serves an inner path.
@@ -67,8 +78,9 @@ fn agent_inner_path(after_name: &str) -> String {
     }
 }
 
-/// `/api/agents/{name}` and everything below it.
-async fn agent_request(State(directory): State<Arc<dyn AgentDirectory>>, req: Request) -> Response {
+/// `/api/agents/{name}` and everything below it. The request's path has
+/// already lost its `/api/agents` prefix: it is `/{name}{rest}`.
+async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response {
     let path = req.uri().path().to_string();
     let Some((name, after_name)) = split_agent_path(&path) else {
         return json_error(StatusCode::NOT_FOUND, "not found");
@@ -81,26 +93,26 @@ async fn agent_request(State(directory): State<Arc<dyn AgentDirectory>>, req: Re
     forward(router, req, &inner).await
 }
 
-/// `/webhook/{agent}/{name}`: the agent's own `/webhook/{name}` route.
-async fn webhook_request(
-    State(directory): State<Arc<dyn AgentDirectory>>,
-    req: Request,
-) -> Response {
+/// `/webhook/{agent}/{name}`: the agent's own `/webhook/{name}` route. The
+/// request's path has already lost its `/webhook` prefix: it is
+/// `/{agent}/{name}`.
+async fn webhook_request(directory: &dyn AgentDirectory, req: Request) -> Response {
     let path = req.uri().path().to_string();
-    let Some((agent, webhook)) = path
-        .strip_prefix(WEBHOOK_PREFIX)
-        .and_then(|rest| rest.split_once('/'))
+    let Some((agent, webhook)) = path.strip_prefix('/').and_then(|rest| rest.split_once('/'))
     else {
         return json_error(StatusCode::NOT_FOUND, "not found");
     };
-    let inner = format!("{WEBHOOK_PREFIX}{webhook}");
+    let inner = format!("/webhook/{webhook}");
     forward(directory.agent_router(agent), req, &inner).await
 }
 
-/// Split `/api/agents/{name}{rest}` into the raw name and `rest` (empty, or
-/// starting with `/`).
+/// Split `/{name}{rest}` into the raw name and `rest` (empty, or starting
+/// with `/`).
 fn split_agent_path(path: &str) -> Option<(&str, &str)> {
-    let after = path.strip_prefix(AGENTS_PREFIX)?;
+    let after = path.strip_prefix('/')?;
+    if after.is_empty() {
+        return None;
+    }
     Some(after.find('/').map_or((after, ""), |i| after.split_at(i)))
 }
 
@@ -140,15 +152,13 @@ mod tests {
     #[test]
     fn agent_paths_split_into_name_and_remainder() {
         assert_eq!(
-            split_agent_path("/api/agents/scout/config/raw"),
+            split_agent_path("/scout/config/raw"),
             Some(("scout", "/config/raw"))
         );
-        assert_eq!(split_agent_path("/api/agents/scout"), Some(("scout", "")));
-        assert_eq!(
-            split_agent_path("/api/agents/scout/ws"),
-            Some(("scout", "/ws"))
-        );
-        assert_eq!(split_agent_path("/api/hub/agents"), None);
+        assert_eq!(split_agent_path("/scout"), Some(("scout", "")));
+        assert_eq!(split_agent_path("/scout/ws"), Some(("scout", "/ws")));
+        assert_eq!(split_agent_path("/"), None);
+        assert_eq!(split_agent_path(""), None);
     }
 
     #[test]
