@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use residuum::checkpoints::CheckpointEngine;
-use residuum::config::Config;
 use residuum::util::FatalError;
 
 /// Secret management subcommands.
@@ -27,7 +26,7 @@ pub(super) enum SecretCommand {
 
 /// Run the `secret` subcommand — manage encrypted secret storage.
 pub(super) async fn run_secret_command(command: &SecretCommand) -> Result<(), FatalError> {
-    run_secret_command_at(Config::config_dir()?, command).await
+    run_secret_command_at(residuum::config::default_hub_dir()?, command).await
 }
 
 /// [`run_secret_command`] against an explicit config directory, so the
@@ -126,13 +125,7 @@ mod tests {
 
         let engine = CheckpointEngine::open_for_cli(dir.path()).unwrap();
         let page = engine
-            .list_checkpoints(
-                residuum::checkpoints::RepoKind::Config,
-                None,
-                None,
-                None,
-                None,
-            )
+            .list_checkpoints(residuum::checkpoints::RepoKind::Hub, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(

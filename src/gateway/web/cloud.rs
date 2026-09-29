@@ -16,7 +16,7 @@ use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
 /// Shared state for cloud API endpoints.
 #[derive(Clone)]
 pub(crate) struct CloudApiState {
-    pub config_dir: PathBuf,
+    pub hub_dir: PathBuf,
     pub reload_tx: watch::Sender<ReloadSignal>,
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
@@ -50,7 +50,7 @@ pub(crate) async fn api_cloud_status(
     };
 
     // Check config for cloud section presence
-    let config_path = state.config_dir.join("config.toml");
+    let config_path = state.hub_dir.join("config.toml");
     let (has_token, enabled) = match std::fs::read_to_string(&config_path) {
         Ok(raw) => parse_cloud_state(&raw),
         Err(_) => (false, false),
@@ -95,7 +95,7 @@ pub(crate) struct CallbackQuery {
 
 /// `GET /cloud/callback?token=...` — localhost OAuth callback.
 ///
-/// Stores the token in the secret store, updates config.toml to enable
+/// Stores the token in the secret store, updates hub config.toml to enable
 /// the cloud tunnel, and triggers a config reload.
 pub(crate) async fn cloud_callback(
     State(state): State<CloudApiState>,
@@ -109,13 +109,13 @@ pub(crate) async fn cloud_callback(
             .into_response();
     };
 
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
     let secret_lock = Arc::clone(&state.secret_lock);
 
     // Store the token as a secret
     let store_result = {
         let _guard = secret_lock.lock().await;
-        let dir = config_dir.clone();
+        let dir = hub_dir.clone();
         let tok = token.clone();
         tokio::task::spawn_blocking(move || {
             let mut store = SecretStore::load(&dir)?;
@@ -145,13 +145,13 @@ pub(crate) async fn cloud_callback(
         Ok(Ok(())) => {}
     }
 
-    // Update config.toml to add/update [cloud] section
-    let config_path = config_dir.join("config.toml");
+    // Update hub config.toml to add/update [cloud] section
+    let config_path = hub_dir.join("config.toml");
     let current = std::fs::read_to_string(&config_path).unwrap_or_default();
     let updated = update_cloud_section(&current, true);
 
     if let Err(e) = std::fs::write(&config_path, &updated) {
-        tracing::error!(error = %e, "failed to write config.toml");
+        tracing::error!(error = %e, "failed to write hub config.toml");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Html(format!("<h1>Error</h1><p>Failed to update config: {e}</p>")),
@@ -160,7 +160,7 @@ pub(crate) async fn cloud_callback(
     }
 
     // Trigger reload
-    state.reload_tx.send(ReloadSignal::Root).ok();
+    state.reload_tx.send(ReloadSignal::Hub).ok();
 
     (StatusCode::OK, Html(SUCCESS_HTML.to_string())).into_response()
 }
@@ -169,11 +169,11 @@ pub(crate) async fn cloud_callback(
 pub(crate) async fn api_cloud_disconnect(
     State(state): State<CloudApiState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let config_path = state.config_dir.join("config.toml");
+    let config_path = state.hub_dir.join("config.toml");
     let current = std::fs::read_to_string(&config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to read config.toml: {e}"),
+            format!("failed to read hub config.toml: {e}"),
         )
     })?;
 
@@ -181,12 +181,12 @@ pub(crate) async fn api_cloud_disconnect(
     std::fs::write(&config_path, &updated).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to write config.toml: {e}"),
+            format!("failed to write hub config.toml: {e}"),
         )
     })?;
 
     tracing::info!("cloud tunnel disconnected");
-    state.reload_tx.send(ReloadSignal::Root).ok();
+    state.reload_tx.send(ReloadSignal::Hub).ok();
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -408,7 +408,7 @@ token = "secret:discord"
         let (reload_tx, _reload_rx) = watch::channel(ReloadSignal::None);
         let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
         CloudApiState {
-            config_dir: std::env::temp_dir(),
+            hub_dir: std::env::temp_dir(),
             reload_tx,
             tunnel_status_rx,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),

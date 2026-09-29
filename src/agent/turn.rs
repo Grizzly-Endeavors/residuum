@@ -1512,6 +1512,7 @@ mod tests {
                 // Must exist: this test's tool call actually runs `exec`,
                 // which now starts the spawned command here.
                 workspace_dir: dir.path().to_path_buf(),
+                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
             },
             None,
         );

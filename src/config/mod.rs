@@ -8,8 +8,11 @@
 mod bootstrap;
 mod constants;
 pub(crate) mod deserialize;
+mod hub_load;
+mod hub_types;
 mod load;
 pub(crate) mod patch;
+pub mod paths;
 mod provider;
 pub(crate) mod resolve;
 pub(crate) mod secrets;
@@ -24,6 +27,11 @@ pub(crate) use constants::{
     DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
     DEFAULT_TEAMS_PORT,
+};
+pub use hub_types::{HubA2aConfig, HubBackgroundConfig, HubConfig};
+pub use paths::{
+    DiscoveredAgent, HubPaths, default_hub_dir, discover_agents, discover_single_agent,
+    residuum_root, validate_agent_name,
 };
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;

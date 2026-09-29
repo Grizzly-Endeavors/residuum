@@ -70,7 +70,7 @@ pub(super) struct ListQuery {
     pub limit: Option<usize>,
 }
 
-/// `GET /api/checkpoints?repo=workspace|config&path=&turn_id=&before=&limit=`
+/// `GET /api/checkpoints?repo=workspace|agent_config|hub&path=&turn_id=&before=&limit=`
 /// — one page of checkpoints, newest first.
 async fn api_checkpoints_list(
     State(state): State<CheckpointApiState>,
@@ -85,7 +85,7 @@ async fn api_checkpoints_list(
         .map_err(|e| error_response(&e))
 }
 
-/// `GET /api/checkpoints/stats?repo=workspace|config` — on-disk size,
+/// `GET /api/checkpoints/stats?repo=workspace|agent_config|hub` — on-disk size,
 /// checkpoint count, and oldest checkpoint.
 async fn api_checkpoints_stats(
     State(state): State<CheckpointApiState>,
@@ -99,7 +99,7 @@ async fn api_checkpoints_stats(
         .map_err(|e| error_response(&e))
 }
 
-/// `GET /api/checkpoints/{id}?repo=workspace|config` — a checkpoint's
+/// `GET /api/checkpoints/{id}?repo=workspace|agent_config|hub` — a checkpoint's
 /// metadata plus the paths it changed.
 async fn api_checkpoints_show(
     State(state): State<CheckpointApiState>,
@@ -284,7 +284,7 @@ mod tests {
         let resp = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/checkpoints/stats?repo=config")
+                    .uri("/api/checkpoints/stats?repo=hub")
                     .body(Body::empty())
                     .unwrap(),
             )

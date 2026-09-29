@@ -68,7 +68,7 @@
   async function handleRemove(name: string) {
     try {
       const checkpointId = await deleteAgentKey(name);
-      notifyWithUndo(`Removed ${name}.`, "config", "agent-keys.toml.enc", checkpointId, load);
+      notifyWithUndo(`Removed ${name}.`, "hub", "agent-keys.toml.enc", checkpointId, load);
       await load();
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: `Couldn't remove ${name}.` }));

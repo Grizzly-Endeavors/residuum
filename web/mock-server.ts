@@ -28,6 +28,7 @@ interface MockState {
   a2aKeys: Map<string, { description: string; created_at: string }>;
   a2aAgentsJson: string;
   configToml: string;
+  hubConfigToml: string;
   providersToml: string;
   mcpJson: string;
   workspaceFiles: Record<string, Array<{ name: string; entry_type: string; size: number | null }>>;
@@ -560,6 +561,7 @@ function createState(): MockState {
         2,
       ) + "\n",
     configToml: loadAsset("config.example.toml"),
+    hubConfigToml: loadAsset("hub-config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
     mcpJson: loadAsset("mcp.example.json"),
     workspaceFiles: {
@@ -1415,8 +1417,36 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      if (path === "/api/hub/config/raw" && method === "GET") {
+        text(res, 200, state.hubConfigToml);
+        return;
+      }
+
+      if (path === "/api/hub/config/raw" && method === "PUT") {
+        state.hubConfigToml = await readBody(req);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/hub/config/patch" && method === "PATCH") {
+        const diff = JSON.parse(await readBody(req)) as Record<string, unknown>;
+        const doc = state.hubConfigToml.trim()
+          ? (parseToml(state.hubConfigToml) as Record<string, unknown>)
+          : {};
+        applyJsonPatch(doc, diff);
+        state.hubConfigToml = stringifyToml(doc);
+        json(res, 200, { valid: true });
+        return;
+      }
+
+      if (path === "/api/hub/config/validate" && method === "POST") {
+        json(res, 200, { valid: true });
+        return;
+      }
+
       if (path === "/api/config/complete-setup" && method === "POST") {
         const body = JSON.parse(await readBody(req));
+        state.hubConfigToml = body.hub_config ?? state.hubConfigToml;
         state.configToml = body.config ?? state.configToml;
         state.providersToml = body.providers ?? state.providersToml;
         if (body.mcp_json) {

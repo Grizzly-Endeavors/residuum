@@ -1319,6 +1319,7 @@ mod tests {
             let engine = std::sync::Arc::new(
                 crate::checkpoints::CheckpointEngine::new(
                     dir.path().join("workspace"),
+                    dir.path().join("agent-config"),
                     dir.path().to_path_buf(),
                     &checkpoints_dir,
                     None,
@@ -1350,7 +1351,7 @@ mod tests {
             assert!(!result.is_error, "store should succeed: {}", result.output);
 
             let page = engine
-                .list_checkpoints(crate::checkpoints::RepoKind::Config, None, None, None, None)
+                .list_checkpoints(crate::checkpoints::RepoKind::Hub, None, None, None, None)
                 .await
                 .unwrap();
             assert_eq!(

@@ -204,7 +204,8 @@ mod tests {
     /// Minimal config for testing.
     fn minimal_config() -> Config {
         Config {
-            name: None,
+            agent_name: "test-agent".to_string(),
+            autostart: true,
             main: vec![],
             observer: vec![],
             reflector: vec![],

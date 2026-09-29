@@ -10,30 +10,12 @@
   <div class="settings-group">
     <div class="settings-group-label">General</div>
     <div class="settings-field">
-      <label for="rt-name">Name</label>
-      <input
-        id="rt-name"
-        type="text"
-        bind:value={fields.name}
-        placeholder="What the agent calls you"
-      />
-    </div>
-    <div class="settings-field">
       <label for="rt-timezone">Timezone</label>
       <input
         id="rt-timezone"
         type="text"
         bind:value={fields.timezone}
         placeholder="e.g. America/New_York"
-      />
-    </div>
-    <div class="settings-field">
-      <label for="rt-workspace-dir">Workspace Directory</label>
-      <input
-        id="rt-workspace-dir"
-        type="text"
-        bind:value={fields.workspace_dir}
-        placeholder="Default: ~/.residuum/workspace"
       />
     </div>
     <div class="settings-field">

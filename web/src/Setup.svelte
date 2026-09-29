@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type { SetupWizardState, McpCatalogEntry, ProviderKey } from "./lib/types";
   import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
+  import { DEFAULT_AGENT_NAME } from "./lib/agent-name";
   import Welcome from "./components/setup/Welcome.svelte";
   import Providers from "./components/setup/Providers.svelte";
   import Roles from "./components/setup/Roles.svelte";
@@ -36,6 +37,7 @@
   function defaultWizardState(): SetupWizardState {
     return {
       userName: "",
+      agentName: DEFAULT_AGENT_NAME,
       timezone: "",
       selectedProviders: ["anthropic"] as ProviderKey[],
       providerConfigs: {
@@ -109,7 +111,11 @@
   let step = $state(Math.min(Math.max(persisted?.step ?? 0, 0), TOTAL_STEPS - 1));
   let catalog = $state<McpCatalogEntry[]>([]);
 
-  let wizardState = $state<SetupWizardState>(persisted?.wizardState ?? defaultWizardState());
+  // Fields added after a draft was saved fall back to their defaults.
+  let wizardState = $state<SetupWizardState>({
+    ...defaultWizardState(),
+    ...persisted?.wizardState,
+  });
 
   onMount(async () => {
     const [tz, cat] = await Promise.all([fetchTimezone(), fetchMcpCatalog()]);

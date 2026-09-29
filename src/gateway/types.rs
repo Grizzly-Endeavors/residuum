@@ -11,7 +11,7 @@ use crate::background::registry::SessionRegistry;
 use crate::background::spawn_context::SpawnContext;
 use crate::background::store::SessionStore;
 use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
-use crate::config::Config;
+use crate::config::{Config, HubConfig};
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -30,8 +30,11 @@ pub enum ReloadSignal {
     /// No reload pending.
     #[default]
     None,
-    /// Full root config reload (config.toml changed).
-    Root,
+    /// Agent config reload (the agent's own `config.toml`/`providers.toml`
+    /// changed).
+    Agent,
+    /// Hub config reload (`hub/config.toml` changed).
+    Hub,
     /// Workspace-level reload (`mcp.json`, `channels.toml`, or
     /// `agent-card.json` changed).
     Workspace,
@@ -150,7 +153,10 @@ pub(crate) struct GatewayCore {
     pub stop_tx: mpsc::Sender<StopRequest>,
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
     pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// The agent's own `config/` directory (`~/.residuum/<agent>/config`).
     pub config_dir: std::path::PathBuf,
+    /// The hub's directory (`~/.residuum/hub`).
+    pub hub_dir: std::path::PathBuf,
     pub bus_handle: BusHandle,
     pub publisher: Publisher,
 }
@@ -164,7 +170,10 @@ pub(crate) struct CoreReceivers {
 
 impl GatewayCore {
     /// Create a new gateway core with fresh channels.
-    pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
+    pub fn new(
+        config_dir: std::path::PathBuf,
+        hub_dir: std::path::PathBuf,
+    ) -> (Self, CoreReceivers) {
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(8);
@@ -178,6 +187,7 @@ impl GatewayCore {
             stop_tx,
             http_shutdown_tx,
             config_dir,
+            hub_dir,
             bus_handle,
             publisher,
         };
@@ -228,6 +238,9 @@ pub(crate) struct GatewayState {
 pub(crate) struct GatewayRuntime {
     // Current running config (for diffing on reload)
     pub cfg: Config,
+    /// Current running hub config, reloaded independently of `cfg` — see
+    /// `gateway::reload::handle_hub_reload`.
+    pub hub_cfg: HubConfig,
     // Subsystems (from initialization)
     pub layout: WorkspaceLayout,
     pub tz: chrono_tz::Tz,
@@ -335,8 +348,10 @@ pub(crate) struct GatewayRuntime {
     pub sigterm: TermSignal,
     /// Dedicated shutdown signal for the HTTP server.
     pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
-    /// Path to the config directory (for backup/rollback during reload).
+    /// Path to the agent's own `config/` directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
+    /// Path to the hub's directory (`~/.residuum/hub`).
+    pub hub_dir: std::path::PathBuf,
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
     // Cloud config for tunnel respawn
@@ -371,6 +386,8 @@ pub(crate) struct GatewayRuntime {
     /// config API (the agent's own `write_file`/`edit_file`, or a manual
     /// edit) and signals a root reload.
     pub root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Polls `hub/config.toml` for changes and signals a hub reload.
+    pub hub_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// The workspace change feed (one recursive watcher over the workspace).
     pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     /// Whether the change feed is running; handed to the HTTP server's state
@@ -417,7 +434,8 @@ mod tests {
     #[tokio::test]
     async fn core_channels_survive_reload_signal() {
         let dir = tempfile::tempdir().unwrap();
-        let (core, mut receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let (core, mut receivers) =
+            GatewayCore::new(dir.path().to_path_buf(), dir.path().to_path_buf());
 
         let system_topic = || {
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
@@ -453,14 +471,14 @@ mod tests {
         );
 
         // Fire a reload signal
-        core.reload_tx.send(ReloadSignal::Root).unwrap();
+        core.reload_tx.send(ReloadSignal::Agent).unwrap();
 
         // Verify the reload signal propagated
         receivers.reload.changed().await.unwrap();
         let signal = receivers.reload.borrow_and_update().clone();
         assert_eq!(
             signal,
-            ReloadSignal::Root,
+            ReloadSignal::Agent,
             "reload signal should propagate to receiver"
         );
 

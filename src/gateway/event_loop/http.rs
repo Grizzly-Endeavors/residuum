@@ -48,6 +48,8 @@ pub struct AdapterHandles {
 /// (sessions, messaging, skills, the bus, and the tunnel's status) rather
 /// than anything derivable from config alone.
 pub(crate) struct A2aListenerDeps {
+    /// The hub directory, holding the A2A caller-key store.
+    pub hub_dir: std::path::PathBuf,
     pub session_registry: Arc<SessionRegistry>,
     pub agent_messenger: Arc<AgentMessenger>,
     pub skill_state: SharedSkillState,
@@ -74,7 +76,7 @@ fn cloud_api_router(state: &GatewayState, config_api_state: &web::ConfigApiState
     use axum::routing::{get, post};
 
     let cloud_state = web::cloud::CloudApiState {
-        config_dir: config_api_state.config_dir.clone(),
+        hub_dir: config_api_state.hub_dir.clone(),
         reload_tx: state.reload_tx.clone(),
         tunnel_status_rx: state.tunnel_status_rx.clone(),
         secret_lock: Arc::clone(&config_api_state.secret_lock),
@@ -498,7 +500,7 @@ pub(crate) async fn build_a2a_listener(
     );
     let card_state =
         crate::a2a::CardState::load_or_default(&layout.agent_card_json(), &card_runtime);
-    let keys = crate::a2a::A2aKeys::new_shared(&cfg.config_dir);
+    let keys = crate::a2a::A2aKeys::new_shared(&deps.hub_dir);
     let public_url = crate::a2a::A2aPublicUrl::new(
         cfg.a2a.clone(),
         cfg.gateway.bind.clone(),

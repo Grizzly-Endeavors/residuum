@@ -1,10 +1,10 @@
 //! Foreground process lifecycle and setup wizard for the gateway.
 
-use residuum::config::Config;
+use residuum::config::{Config, HubConfig};
 use residuum::util::FatalError;
 
 use super::ServeArgs;
-use super::startup_config::{ConfigProblem, classify_load_error};
+use super::startup_config::ensure_config_loads_or_has_fallback;
 
 /// How the foreground gateway finished.
 enum ForegroundExit {
@@ -23,8 +23,9 @@ enum ForegroundExit {
 /// Returns `FatalError` if initialization or the gateway loop fails.
 #[tracing::instrument(skip_all)]
 pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalError> {
-    let config_dir = residuum::config::Config::config_dir()?;
-    let pid_path = config_dir.join("residuum.pid");
+    let residuum_root = residuum::config::residuum_root()?;
+    let hub_dir = residuum::config::paths::hub_dir(&residuum_root);
+    let pid_path = residuum::config::HubPaths::new(&hub_dir).pid_file();
 
     // Acquire exclusive lock on the PID file. This both:
     // 1. Prevents two instances from running simultaneously
@@ -34,8 +35,8 @@ pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalEr
     // Clear markers a previous attempt left behind, so a waiter (the CLI or
     // the update-rollback watchdog) never reads a stale readiness signal or
     // error from before this attempt started.
-    residuum::daemon::remove_ready_file(&config_dir);
-    residuum::daemon::clear_startup_error(&config_dir);
+    residuum::daemon::remove_ready_file(&hub_dir);
+    residuum::daemon::clear_startup_error(&hub_dir);
 
     // Restart is handled here, above the gateway, so PID-file cleanup and the
     // relaunch happen in one place and in the right order. `relaunch` owns the
@@ -46,14 +47,14 @@ pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalEr
     }
 
     if let Err(ref e) = result {
-        residuum::daemon::write_startup_error(&config_dir, &e.to_string());
+        residuum::daemon::write_startup_error(&hub_dir, &e.to_string());
     }
 
     // Clean up PID file and readiness marker on exit. On crash/SIGKILL the
     // lock is released by the OS, and the next startup detects the stale
     // file.
     remove_pid_file(&pid_path);
-    residuum::daemon::remove_ready_file(&config_dir);
+    residuum::daemon::remove_ready_file(&hub_dir);
     result.map(|_| ())
 }
 
@@ -66,40 +67,43 @@ fn remove_pid_file(pid_path: &std::path::Path) {
 /// Run the onboarding wizard in an isolated temp directory, then boot gateway.
 #[tracing::instrument(skip_all)]
 async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
-    let tmp_dir = std::env::temp_dir().join("residuum-setup");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
+    let tmp_root = std::env::temp_dir().join("residuum-setup");
+    if tmp_root.exists() {
+        std::fs::remove_dir_all(&tmp_root).map_err(|e| {
             FatalError::Config(format!(
                 "failed to clean setup directory {}: {e}",
-                tmp_dir.display()
+                tmp_root.display()
             ))
         })?;
     }
-    residuum::config::Config::bootstrap_at_dir(&tmp_dir)?;
+    let hub_dir = residuum::config::paths::hub_dir(&tmp_root);
+    HubConfig::bootstrap_at(&hub_dir)?;
     println!(
-        "setup mode: config will be written to {}",
-        tmp_dir.display()
+        "setup mode: config will be written under {}",
+        tmp_root.display()
     );
-    match residuum::gateway::setup::run_setup_server_at(tmp_dir.clone()).await? {
+    match residuum::gateway::setup::run_setup_server_at(tmp_root.clone()).await? {
         residuum::gateway::setup::SetupExit::ConfigSaved => {
             tracing::debug!("setup complete, loading config from temp directory");
         }
         residuum::gateway::setup::SetupExit::Shutdown => return Ok(ForegroundExit::Done),
     }
 
-    // Load the config written by the wizard and run the gateway
-    let mut cfg = Config::load_at(&tmp_dir)?;
-    cfg.workspace_dir = tmp_dir.join("workspace");
-    if let Some(first) = cfg.skills.dirs.first_mut() {
-        *first = residuum::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir).skills_dir();
-    }
+    // Load whichever agent the wizard created and run the gateway.
+    let hub_cfg = HubConfig::load_at(&hub_dir)?;
+    let agent_name = residuum::config::discover_single_agent(&tmp_root).ok_or_else(|| {
+        FatalError::Config("setup completed, but no agent directory was created".to_string())
+    })?;
+    let agent_dir = tmp_root.join(&agent_name);
+    let cfg = Config::load_agent_at(&agent_dir, &hub_cfg)?;
     tracing::info!(
+        agent = %agent_name,
         model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
         provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
         workspace = %cfg.workspace_dir.display(),
         "setup-mode: configuration loaded, starting gateway"
     );
-    match Box::pin(residuum::gateway::run_gateway_with_config(cfg)).await? {
+    match Box::pin(residuum::gateway::run_gateway_with_config(cfg, hub_cfg)).await? {
         residuum::gateway::GatewayExit::Shutdown => {}
         residuum::gateway::GatewayExit::Restart => {
             // Relaunching would repeat `--setup`, which wipes the temp config.
@@ -119,39 +123,36 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
         return Box::pin(run_setup_mode()).await;
     }
 
-    let config_dir = residuum::config::Config::config_dir()?;
+    let residuum_root = residuum::config::residuum_root()?;
+    let hub_dir = residuum::config::paths::hub_dir(&residuum_root);
     loop {
-        Config::bootstrap_at_dir(&config_dir)?;
+        HubConfig::bootstrap_at(&hub_dir)?;
 
-        // A live config that fails to load is only classified (fresh
-        // install vs. a file to fix) when there's no last-known-good copy
-        // to fall back on — `run_gateway` itself retries on one and
-        // publishes a notice once it's up if it had to. This mirrors the
-        // check `run_serve_command` makes before spawning the daemon.
-        if let Err(err) = Config::load_at(&config_dir)
-            && !residuum::gateway::has_last_known_good(&config_dir)
-        {
-            match classify_load_error(&config_dir, &err) {
-                ConfigProblem::NotSetUp => {
-                    tracing::info!(error = %err, "config not set up yet, starting setup wizard");
-                    // Box::pin reduces stack frame size — this future is large
-                    match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
-                        residuum::gateway::setup::SetupExit::ConfigSaved => {
-                            tracing::debug!("setup complete, loading configuration");
-                        }
-                        residuum::gateway::setup::SetupExit::Shutdown => break,
-                    }
-                    continue;
+        let Some(agent_name) = residuum::config::discover_single_agent(&residuum_root) else {
+            tracing::info!("no agent found, starting setup wizard");
+            // Box::pin reduces stack frame size — this future is large
+            match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
+                residuum::gateway::setup::SetupExit::ConfigSaved => {
+                    tracing::debug!("setup complete, loading configuration");
                 }
-                ConfigProblem::Invalid(invalid) => return Err(invalid),
+                residuum::gateway::setup::SetupExit::Shutdown => break,
             }
-        }
+            continue;
+        };
+        let agent_dir = residuum_root.join(&agent_name);
+
+        // A live config that fails to load is only reported here when
+        // there's no last-known-good copy to fall back on — `run_gateway`
+        // itself retries on one and publishes a notice once it's up if it
+        // had to. This mirrors the check `run_serve_command` makes before
+        // spawning the daemon.
+        ensure_config_loads_or_has_fallback(&residuum_root, &agent_name)?;
 
         // Gateway handles reloads in-place and only returns on shutdown or
         // a fatal error neither the live config nor its last-known-good
         // copy could recover from.
         // Box::pin reduces stack frame size — this future is large
-        match Box::pin(residuum::gateway::run_gateway(&config_dir)).await? {
+        match Box::pin(residuum::gateway::run_gateway(&agent_dir, &hub_dir)).await? {
             residuum::gateway::GatewayExit::Restart => return Ok(ForegroundExit::Restart),
             residuum::gateway::GatewayExit::Shutdown => {}
         }

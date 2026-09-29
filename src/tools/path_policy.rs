@@ -1,12 +1,15 @@
 //! Write-scoping policy for file tools.
 //!
-//! Blocks writes to unconditionally protected paths: both credential stores,
-//! and the `.example.toml` reference templates, which Residuum regenerates
-//! from its compiled-in defaults on every startup (`config::bootstrap`), so
-//! any edit to them is silently lost at the next restart. `config.toml` and
-//! `providers.toml` themselves are writable — the agent edits them on the
-//! user's behalf and a reload picks up the change, same as any other file
-//! edit. All other workspace writes are unrestricted.
+//! Blocks writes to the `.example.toml` reference templates, which Residuum
+//! regenerates from its compiled-in defaults on every startup
+//! (`config::bootstrap`), so any edit to them is silently lost at the next
+//! restart. `config.toml` and `providers.toml` themselves are writable — the
+//! agent edits them on the user's behalf and a reload picks up the change,
+//! same as any other file edit. Both credential stores (secrets, agent
+//! keys, A2A caller keys) live in `hub/`, outside the agent's own directory
+//! entirely, so they are structurally unreachable through the agent's file
+//! tools rather than needing a blocklist entry. All other workspace writes
+//! are unrestricted.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,10 +20,9 @@ use tokio::sync::RwLock;
 use crate::config::Config;
 use crate::workspace::layout::WorkspaceLayout;
 
-/// Paths the file tools may never write: both credential stores, the
-/// `.example.toml` reference templates, and `mcp.json`/`channels.toml`
-/// unless the matching agent ability (`agent.modify_mcp`/`agent.modify_channels`)
-/// is on.
+/// Paths the file tools may never write: the `.example.toml` reference
+/// templates, and `mcp.json`/`channels.toml` unless the matching agent
+/// ability (`agent.modify_mcp`/`agent.modify_channels`) is on.
 ///
 /// The one definition of the blocked set, used at startup and on every
 /// config reload.
@@ -36,29 +38,20 @@ pub fn blocked_write_paths(cfg: &Config, layout: &WorkspaceLayout) -> HashSet<Pa
     blocked
 }
 
-/// Regenerated-template and credential-store files in `config_dir` that are
+/// Regenerated-template files in the agent's `config/` directory that are
 /// blocked regardless of agent abilities.
 ///
 /// `config.toml` and `providers.toml` are deliberately absent — the agent is
 /// allowed to edit them (see the module doc). The `.example.toml` templates
 /// stay blocked because they are always overwritten from the binary's
-/// compiled-in defaults at the next startup (`config::bootstrap::bootstrap_at`),
-/// so an edit to them would look like it worked and then vanish.
+/// compiled-in defaults at the next startup
+/// (`config::bootstrap::bootstrap_agent_at`), so an edit to them would look
+/// like it worked and then vanish.
 fn always_blocked_paths(config_dir: &Path) -> HashSet<PathBuf> {
-    [
-        "config.example.toml",
-        "providers.example.toml",
-        crate::config::secrets::ENCRYPTED_FILE,
-        crate::config::secrets::KEY_FILE,
-        crate::agent_keys::ENCRYPTED_FILE,
-        crate::agent_keys::KEY_FILE,
-        crate::agent_keys::LOCK_FILE,
-        crate::a2a::KEYS_FILE,
-        crate::a2a::LOCK_FILE,
-    ]
-    .into_iter()
-    .map(|name| config_dir.join(name))
-    .collect()
+    ["config.example.toml", "providers.example.toml"]
+        .into_iter()
+        .map(|name| config_dir.join(name))
+        .collect()
 }
 
 /// Names (not full paths) of the `.example.toml` reference templates, used to
@@ -338,20 +331,10 @@ mod tests {
     }
 
     #[test]
-    fn blocked_write_paths_cover_both_credential_stores() {
+    fn blocked_write_paths_cover_the_example_templates() {
         let config_dir = Path::new("/cfg");
         let blocked = always_blocked_paths(config_dir);
-        for name in [
-            "config.example.toml",
-            "providers.example.toml",
-            "secrets.toml.enc",
-            "secrets.key",
-            "agent-keys.toml.enc",
-            "agent-keys.key",
-            "agent-keys.lock",
-            "a2a-keys.toml",
-            "a2a-keys.lock",
-        ] {
+        for name in ["config.example.toml", "providers.example.toml"] {
             assert!(
                 blocked.contains(&config_dir.join(name)),
                 "{name} should be write-blocked"

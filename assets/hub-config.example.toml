@@ -1,0 +1,74 @@
+# Residuum hub example configuration — all options with defaults shown.
+# Copy to hub/config.toml and edit as needed.
+#
+# This file holds hub-level settings: shared by every agent the hub hosts.
+# Everything else (memory, pulse, subconscious, skills, tools, adapters,
+# agent ability gates, A2A visibility, per-agent background knobs) lives in
+# each agent's own config.toml — see config.example.toml.
+#
+# Every token/secret/api_key field below supports the same three forms: a
+# "${ENV_VAR}" reference, a "secret:name" reference into the encrypted
+# secret store, or a plain literal.
+
+# ── Timezone (REQUIRED) ──────────────────────────────────────────────────────
+# IANA timezone name, shared by every agent. Affects daily logs, memory
+# observations, pulse active hours, and all stored data.
+#
+# WARNING: Changing this value after initial setup is NOT recommended.
+# Existing timestamps will not be retroactively converted.
+#
+# Examples: "America/New_York", "Europe/London", "Asia/Tokyo", "UTC"
+timezone = "America/New_York"
+
+# ── WebSocket gateway ─────────────────────────────────────────────────────────
+[gateway]
+bind = "127.0.0.1"
+port = 7700
+
+# ── Cloud tunnel (optional) ──────────────────────────────────────────────────
+# Connects to the relay server to make this instance accessible from the
+# public internet via agent-residuum.com/user/{id}/.
+# Token can be set here or via RESIDUUM_CLOUD_TOKEN env var.
+#
+# [cloud]
+# enabled = true
+# token = "${RESIDUUM_CLOUD_TOKEN}"
+# relay_url = "wss://agent-residuum.com/tunnel/register"
+# local_port = 7700
+
+# ── Agent2Agent (A2A) listener (optional) ────────────────────────────────────
+# Enabled by default: every request still goes through the caller-key/sibling
+# auth layer, so turning it on costs nothing until a key or sibling instance
+# exists to use it. Manage caller keys with `residuum a2a keys create|list|revoke`.
+# Per-agent visibility ("public"/"private") is set in each agent's own config.
+#
+# A2A listens on its own port (bound on [gateway] bind), separate from the
+# gateway port — a public tunnel pointed at it exposes only the A2A
+# endpoints, never the unauthenticated config API.
+#
+# [a2a]
+# enabled = true
+# port = 7702
+# public_url = ""             # this instance's own tunnel/reverse proxy origin;
+#                              # leave empty to let the relay supply one instead
+
+# ── Tracing and observability (optional) ─────────────────────────────────────
+# [tracing]
+# log_level = "debug"             # "info", "debug", or "trace"
+# auto_error_reporting = false    # submit a sanitized bug report automatically on unexpected failures
+# sanitize_content = true         # redact message content in trace exports
+#
+# [[tracing.otel_endpoints]]
+# url = "http://localhost:4318"
+# name = "local-collector"
+# headers = { }
+
+# ── Shared agent sessions (optional) ─────────────────────────────────────────
+# Semaphore-bounded concurrent session turns, shared by every agent's session
+# runtime (pulses, scheduled actions, webhooks, subagent_spawn, workbench
+# artifacts). The permit is held only while a turn is running.
+#
+# [background]
+# max_concurrent = 3
+# hop_soft_limit = 8     # at/above this hop count, a message chain crossing agents carries a "reply only if needed" note
+# hop_hard_limit = 32    # at/above this hop count, delivery is refused outright (bounds message loops)

@@ -60,8 +60,7 @@ pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalErr
     {
         if args.yes {
             // Try to trigger seamless restart via the API
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = super::resolve_gateway_addr(&config_dir);
+            let gateway_addr = super::resolve_gateway_addr(&residuum::config::residuum_root()?);
             let url = format!("http://{gateway_addr}/api/update/restart");
             match reqwest::Client::new().post(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {

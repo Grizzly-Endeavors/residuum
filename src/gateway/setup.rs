@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::routing::get;
 
-use crate::config::Config;
+use crate::config::HubPaths;
 use crate::util::FatalError;
 
 use super::web::{self, ConfigApiState};
@@ -25,41 +25,52 @@ pub enum SetupExit {
 /// Run the setup-mode HTTP server (config API + static files only).
 ///
 /// Blocks until the user completes setup or the server is shut down.
-/// Uses the default config directory (`~/.residuum/`).
+/// Uses the default residuum root (`~/.residuum/`).
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Gateway` if the server cannot bind or the config
-/// directory cannot be determined.
+/// Returns `FatalError::Gateway` if the server cannot bind or the residuum
+/// root cannot be determined.
 pub async fn run_setup_server() -> Result<SetupExit, FatalError> {
-    let config_dir = Config::config_dir()?;
-    run_setup_server_at(config_dir).await
+    let residuum_root = crate::config::residuum_root()?;
+    run_setup_server_at(residuum_root).await
 }
 
-/// Run the setup-mode HTTP server writing config to `config_dir`.
+/// Run the setup-mode HTTP server. Onboarding writes `hub/config.toml` and
+/// the first agent's directory under `residuum_root`.
+///
+/// No agent exists yet, so `ConfigApiState`'s agent-scoped fields
+/// (`config_dir`, `workspace_dir`, `agent_name`) are placeholders —
+/// `api_complete_setup` creates the real agent directory itself, from the
+/// name in its request body.
 ///
 /// # Errors
 ///
 /// Returns `FatalError::Gateway` if the server cannot bind.
 #[tracing::instrument(skip_all)]
-pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, FatalError> {
+pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, FatalError> {
     let (setup_done_tx, mut setup_done_rx) = tokio::sync::watch::channel(false);
     let setup_done_tx = Arc::new(setup_done_tx);
 
-    // During setup, workspace_dir defaults to config_dir/workspace since the user
-    // hasn't configured a custom workspace yet.
-    let workspace_dir = config_dir.join("workspace");
+    let hub = HubPaths::new(&residuum_root);
+    let hub_dir = hub.root().to_path_buf();
+    let placeholder_agent_dir = residuum_root.join("_pending-agent");
+    let workspace_dir = placeholder_agent_dir.clone();
+    let config_dir = placeholder_agent_dir.join("config");
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             workspace_dir.clone(),
             config_dir.clone(),
-            &config_dir.join("checkpoints"),
+            hub_dir.clone(),
+            &hub.checkpoints_dir(),
             None,
         )
         .map_err(|e| FatalError::Gateway(format!("failed to open checkpoint repositories: {e}")))?,
     );
     let api_state = ConfigApiState {
+        hub_dir,
         config_dir,
+        agent_name: String::new(),
         workspace_dir,
         memory_dir: None,
         reload_tx: None,

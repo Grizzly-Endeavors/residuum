@@ -16,7 +16,7 @@ describe("notifyWithUndo", () => {
   });
 
   it("shows a success toast with an Undo action", () => {
-    notifyWithUndo("Removed github_token.", "config", "agent-keys.toml.enc", "action-cp");
+    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
     const shown = [...toast.toasts.values()].at(-1);
     expect(shown).toMatchObject({ kind: "success", message: "Removed github_token." });
     expect(shown?.action?.label).toBe("Undo");
@@ -28,13 +28,7 @@ describe("notifyWithUndo", () => {
       restored_paths: ["agent-keys.toml.enc"],
     });
     const onRestored = vi.fn();
-    notifyWithUndo(
-      "Removed github_token.",
-      "config",
-      "agent-keys.toml.enc",
-      "action-cp",
-      onRestored,
-    );
+    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp", onRestored);
     const shown = [...toast.toasts.values()].at(-1);
 
     shown?.action?.onClick();
@@ -42,14 +36,14 @@ describe("notifyWithUndo", () => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
 
-    expect(undoLastAction).toHaveBeenCalledWith("action-cp", "config", "agent-keys.toml.enc");
+    expect(undoLastAction).toHaveBeenCalledWith("action-cp", "hub", "agent-keys.toml.enc");
     const followUp = [...toast.toasts.values()].at(-1);
     expect(followUp?.message).toBe("Restored.");
   });
 
   it("surfaces a plain-language error if the restore call itself fails", async () => {
     undoLastAction.mockRejectedValue(new Error("network down"));
-    notifyWithUndo("Removed github_token.", "config", "agent-keys.toml.enc", "action-cp");
+    notifyWithUndo("Removed github_token.", "hub", "agent-keys.toml.enc", "action-cp");
     const shown = [...toast.toasts.values()].at(-1);
 
     shown?.action?.onClick();

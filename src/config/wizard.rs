@@ -4,12 +4,22 @@ use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
 
+use super::paths::validate_agent_name;
 use super::provider::ProviderKind;
 use crate::util::FatalError;
+
+/// Default name for the first agent when the user accepts the default.
+const DEFAULT_AGENT_NAME: &str = "assistant";
 
 /// Answers collected from the setup wizard (interactive or flags).
 #[derive(Debug)]
 pub struct WizardAnswers {
+    /// The user's name, written to `USER.md`. `None` if skipped.
+    pub user_name: Option<String>,
+    /// The first agent's name (validated with
+    /// [`validate_agent_name`]) — its directory name and identity
+    /// everywhere.
+    pub agent_name: String,
     /// IANA timezone (e.g. `"America/New_York"`).
     pub timezone: String,
     /// Selected provider kind.
@@ -28,8 +38,9 @@ pub struct WizardAnswers {
 
 /// Run the interactive terminal wizard.
 ///
-/// Prompts the user for timezone, provider, API key, and model. Returns
-/// the collected answers for config generation.
+/// Prompts the user for their name, the first agent's name, timezone,
+/// provider, API key, and model. Returns the collected answers for config
+/// generation.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if stdin/stdout interaction fails or
@@ -38,6 +49,35 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
     println!("residuum setup");
     println!("==============");
     println!();
+
+    // 0. User's name (optional)
+    print!("  what should residuum call you? (optional, press enter to skip): ");
+    std::io::stdout().flush().ok();
+    let mut name_input = String::new();
+    std::io::stdin()
+        .read_line(&mut name_input)
+        .map_err(|e| FatalError::Config(format!("failed to read input: {e}")))?;
+    let user_name = {
+        let trimmed = name_input.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
+
+    // 0b. First agent's name
+    println!();
+    let agent_name = loop {
+        let input = prompt_with_default(
+            &format!("agent name [{DEFAULT_AGENT_NAME}]"),
+            DEFAULT_AGENT_NAME,
+        )?;
+        match validate_agent_name(&input) {
+            Ok(()) => break input,
+            Err(e) => println!("  {e}"),
+        }
+    };
 
     // 1. Timezone
     let system_tz = iana_time_zone::get_timezone().unwrap_or_default();
@@ -107,6 +147,8 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
 
     println!();
     Ok(WizardAnswers {
+        user_name,
+        agent_name,
         timezone,
         provider,
         api_key,
@@ -117,21 +159,33 @@ pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
     })
 }
 
+/// CLI flags accepted by the non-interactive setup path. Bundled into one
+/// struct (rather than passed as separate parameters) purely to stay under
+/// the function-argument-count lint — `commands::setup::SetupArgs` mirrors
+/// this shape one-for-one and its fields are passed straight through.
+#[derive(Debug, Default)]
+pub struct WizardFlags<'a> {
+    /// See [`WizardAnswers::user_name`].
+    pub user_name: Option<&'a str>,
+    /// See [`WizardAnswers::agent_name`]. Defaults to `"assistant"` when unset.
+    pub agent_name: Option<&'a str>,
+    pub timezone: Option<&'a str>,
+    pub provider: Option<&'a str>,
+    pub api_key: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub web_search_backend: Option<&'a str>,
+    pub web_search_api_key: Option<&'a str>,
+    pub web_search_base_url: Option<&'a str>,
+}
+
 /// Build answers from CLI flags (non-interactive mode).
 ///
 /// # Errors
-/// Returns `FatalError::Config` if required fields are missing or
-/// timezone validation fails.
-pub fn from_flags(
-    timezone: Option<&str>,
-    provider: Option<&str>,
-    api_key: Option<&str>,
-    model: Option<&str>,
-    web_search_backend: Option<&str>,
-    web_search_api_key: Option<&str>,
-    web_search_base_url: Option<&str>,
-) -> Result<WizardAnswers, FatalError> {
-    let timezone = timezone.ok_or_else(|| {
+/// Returns `FatalError::Config` if required fields are missing, the
+/// timezone or agent name fails validation, or the web search backend is
+/// unrecognized.
+pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> {
+    let timezone = flags.timezone.ok_or_else(|| {
         FatalError::Config("--timezone is required in non-interactive mode".to_string())
     })?;
 
@@ -139,22 +193,25 @@ pub fn from_flags(
     chrono_tz::Tz::from_str(timezone)
         .map_err(|err| FatalError::Config(format!("invalid timezone '{timezone}': {err}")))?;
 
-    let provider_str = provider.ok_or_else(|| {
+    let agent_name = flags.agent_name.unwrap_or(DEFAULT_AGENT_NAME);
+    validate_agent_name(agent_name).map_err(FatalError::Config)?;
+
+    let provider_str = flags.provider.ok_or_else(|| {
         FatalError::Config("--provider is required in non-interactive mode".to_string())
     })?;
     let provider_kind = ProviderKind::from_str(provider_str).map_err(FatalError::Config)?;
 
     let default_model = default_model_for_provider(provider_kind);
-    let model = model.unwrap_or(default_model).to_string();
+    let model = flags.model.unwrap_or(default_model).to_string();
 
     // Validate web search backend if provided
-    let web_search_backend = if let Some(backend) = web_search_backend {
+    let web_search_backend = if let Some(backend) = flags.web_search_backend {
         if !matches!(backend, "brave" | "tavily" | "ollama") {
             return Err(FatalError::Config(format!(
                 "invalid web search backend '{backend}': must be brave, tavily, or ollama"
             )));
         }
-        if (backend == "brave" || backend == "tavily") && web_search_api_key.is_none() {
+        if (backend == "brave" || backend == "tavily") && flags.web_search_api_key.is_none() {
             tracing::warn!(
                 %backend,
                 "--web-search-api-key not provided; web search may not work without it"
@@ -166,30 +223,68 @@ pub fn from_flags(
     };
 
     Ok(WizardAnswers {
+        user_name: flags.user_name.map(ToString::to_string),
+        agent_name: agent_name.to_string(),
         timezone: timezone.to_string(),
         provider: provider_kind,
-        api_key: api_key.map(ToString::to_string),
+        api_key: flags.api_key.map(ToString::to_string),
         model,
         web_search_backend,
-        web_search_api_key: web_search_api_key.map(ToString::to_string),
-        web_search_base_url: web_search_base_url.map(ToString::to_string),
+        web_search_api_key: flags.web_search_api_key.map(ToString::to_string),
+        web_search_base_url: flags.web_search_base_url.map(ToString::to_string),
     })
 }
 
-/// Write config.toml and providers.toml from wizard answers.
+/// Write `hub/config.toml`, bootstrap and write the first agent's full
+/// workspace (`SOUL.md`, wiki, bundled skills, `USER.md` personalized with
+/// [`WizardAnswers::user_name`]), and write its `config.toml`/
+/// `providers.toml` from the wizard answers.
+///
+/// `residuum_root` is `~/.residuum` (or an override, e.g. for tests/the
+/// isolated `--setup` temp-directory flow); the hub lives at
+/// `residuum_root/hub` and the agent at `residuum_root/<agent_name>`.
 ///
 /// # Errors
-/// Returns `FatalError::Config` if writing either file fails.
-pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), FatalError> {
-    // config.toml — timezone only
-    let config_path = dir.join("config.toml");
+/// Returns `FatalError::Config`/`FatalError::Workspace` if bootstrapping the
+/// hub or agent directories, or writing any file, fails.
+pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Result<(), FatalError> {
+    let hub_dir = super::paths::hub_dir(residuum_root);
+    super::HubConfig::bootstrap_at(&hub_dir)?;
+
+    // hub/config.toml — timezone only
+    let hub_config_path = hub_dir.join("config.toml");
+    let hub_content = format!(
+        "# Hub configuration — generated by setup wizard\n\ntimezone = \"{}\"\n",
+        answers.timezone
+    );
+    std::fs::write(&hub_config_path, &hub_content).map_err(|e| {
+        FatalError::Config(format!(
+            "failed to write hub config.toml at {}: {e}",
+            hub_config_path.display()
+        ))
+    })?;
+
+    // The agent's full workspace: identity files, wiki, bundled skills, and
+    // USER.md personalized with the user's name.
+    let agent_dir = residuum_root.join(&answers.agent_name);
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
+    crate::workspace::bootstrap::ensure_workspace(
+        &layout,
+        answers.user_name.as_deref(),
+        Some(&answers.timezone),
+    )
+    .await
+    .map_err(|e| FatalError::Workspace(e.to_string()))?;
+
+    let agent_config_dir = layout.config_dir();
+    super::Config::bootstrap_agent_config_dir(&agent_config_dir)?;
+
+    // agent config.toml — web search only, for now
+    let config_path = agent_config_dir.join("config.toml");
     let mut config_lines = Vec::new();
-    config_lines.push("# Residuum configuration — generated by setup wizard".to_string());
-    config_lines.push(String::new());
-    config_lines.push(format!("timezone = \"{}\"", answers.timezone));
+    config_lines.push("# Agent configuration — generated by setup wizard".to_string());
     config_lines.push(String::new());
 
-    // Append web search section if configured
     if let Some(ref backend) = answers.web_search_backend {
         config_lines.push("[web_search]".to_string());
         config_lines.push(format!("backend = \"{backend}\""));
@@ -214,7 +309,7 @@ pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), FatalErro
     })?;
 
     // providers.toml — models + optional provider
-    let providers_path = dir.join("providers.toml");
+    let providers_path = agent_config_dir.join("providers.toml");
     let mut prov_lines = Vec::new();
     prov_lines.push("# Provider configuration — generated by setup wizard".to_string());
     prov_lines.push(String::new());
@@ -360,17 +455,25 @@ fn prompt_with_default(prompt: &str, default: &str) -> Result<String, FatalError
 mod tests {
     use super::*;
 
+    fn flags<'a>(timezone: Option<&'a str>, provider: Option<&'a str>) -> WizardFlags<'a> {
+        WizardFlags {
+            timezone,
+            provider,
+            ..WizardFlags::default()
+        }
+    }
+
     #[test]
     fn from_flags_all_present() {
-        let answers = from_flags(
-            Some("UTC"),
-            Some("anthropic"),
-            Some("sk-test"),
-            Some("claude-sonnet-4-6"),
-            None,
-            None,
-            None,
-        )
+        let answers = from_flags(&WizardFlags {
+            timezone: Some("UTC"),
+            provider: Some("anthropic"),
+            api_key: Some("sk-test"),
+            model: Some("claude-sonnet-4-6"),
+            agent_name: Some("my-agent"),
+            user_name: Some("Alex"),
+            ..WizardFlags::default()
+        })
         .unwrap();
 
         assert_eq!(answers.timezone, "UTC", "timezone should match");
@@ -385,11 +488,35 @@ mod tests {
             "api key should match"
         );
         assert_eq!(answers.model, "claude-sonnet-4-6", "model should match");
+        assert_eq!(answers.agent_name, "my-agent", "agent name should match");
+        assert_eq!(
+            answers.user_name.as_deref(),
+            Some("Alex"),
+            "user name should match"
+        );
+    }
+
+    #[test]
+    fn from_flags_agent_name_defaults() {
+        let answers = from_flags(&flags(Some("UTC"), Some("ollama"))).unwrap();
+        assert_eq!(answers.agent_name, DEFAULT_AGENT_NAME);
+        assert!(answers.user_name.is_none());
+    }
+
+    #[test]
+    fn from_flags_invalid_agent_name_is_rejected() {
+        let result = from_flags(&WizardFlags {
+            agent_name: Some("Not Valid!"),
+            ..flags(Some("UTC"), Some("anthropic"))
+        });
+        assert!(result.is_err(), "should reject an invalid agent name");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("agent name"), "{err}");
     }
 
     #[test]
     fn from_flags_missing_timezone() {
-        let result = from_flags(None, Some("anthropic"), None, None, None, None, None);
+        let result = from_flags(&flags(None, Some("anthropic")));
         assert!(result.is_err(), "should require timezone");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -400,7 +527,7 @@ mod tests {
 
     #[test]
     fn from_flags_missing_provider() {
-        let result = from_flags(Some("UTC"), None, None, None, None, None, None);
+        let result = from_flags(&flags(Some("UTC"), None));
         assert!(result.is_err(), "should require provider");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -411,22 +538,19 @@ mod tests {
 
     #[test]
     fn from_flags_default_model_ollama() {
-        let answers =
-            from_flags(Some("UTC"), Some("ollama"), None, None, None, None, None).unwrap();
+        let answers = from_flags(&flags(Some("UTC"), Some("ollama"))).unwrap();
         assert_eq!(answers.model, "llama3", "ollama should default to llama3");
     }
 
     #[test]
     fn from_flags_default_model_openai() {
-        let answers =
-            from_flags(Some("UTC"), Some("openai"), None, None, None, None, None).unwrap();
+        let answers = from_flags(&flags(Some("UTC"), Some("openai"))).unwrap();
         assert_eq!(answers.model, "gpt-4o", "openai should default to gpt-4o");
     }
 
     #[test]
     fn from_flags_default_model_gemini() {
-        let answers =
-            from_flags(Some("UTC"), Some("gemini"), None, None, None, None, None).unwrap();
+        let answers = from_flags(&flags(Some("UTC"), Some("gemini"))).unwrap();
         assert_eq!(
             answers.model, "gemini-2.0-flash",
             "gemini should default to gemini-2.0-flash"
@@ -435,8 +559,7 @@ mod tests {
 
     #[test]
     fn from_flags_default_model_anthropic() {
-        let answers =
-            from_flags(Some("UTC"), Some("anthropic"), None, None, None, None, None).unwrap();
+        let answers = from_flags(&flags(Some("UTC"), Some("anthropic"))).unwrap();
         assert_eq!(
             answers.model, "claude-sonnet-4-6",
             "anthropic should default to claude-sonnet-4-6"
@@ -445,52 +568,70 @@ mod tests {
 
     #[test]
     fn from_flags_invalid_timezone() {
-        let result = from_flags(
-            Some("Not/A/Timezone"),
-            Some("anthropic"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let result = from_flags(&flags(Some("Not/A/Timezone"), Some("anthropic")));
         assert!(result.is_err(), "should reject invalid timezone");
     }
 
     #[test]
     fn from_flags_invalid_provider() {
-        let result = from_flags(Some("UTC"), Some("notreal"), None, None, None, None, None);
+        let result = from_flags(&flags(Some("UTC"), Some("notreal")));
         assert!(result.is_err(), "should reject invalid provider");
     }
 
-    #[test]
-    fn write_config_basic() {
-        let dir = tempfile::tempdir().unwrap();
-        let answers = WizardAnswers {
-            timezone: "America/New_York".to_string(),
-            provider: ProviderKind::Anthropic,
-            api_key: Some("sk-test-key".to_string()),
-            model: "claude-sonnet-4-6".to_string(),
+    fn test_answers(
+        agent_name: &str,
+        timezone: &str,
+        provider: ProviderKind,
+        api_key: Option<&str>,
+        model: &str,
+    ) -> WizardAnswers {
+        WizardAnswers {
+            user_name: None,
+            agent_name: agent_name.to_string(),
+            timezone: timezone.to_string(),
+            provider,
+            api_key: api_key.map(ToString::to_string),
+            model: model.to_string(),
             web_search_backend: None,
             web_search_api_key: None,
             web_search_base_url: None,
-        };
+        }
+    }
 
-        write_config(dir.path(), &answers).unwrap();
+    #[tokio::test]
+    async fn write_config_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let answers = test_answers(
+            "assistant",
+            "America/New_York",
+            ProviderKind::Anthropic,
+            Some("sk-test-key"),
+            "claude-sonnet-4-6",
+        );
 
-        // config.toml — timezone only
-        let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        write_config(dir.path(), &answers).await.unwrap();
+
+        // hub/config.toml — timezone only
+        let hub_config =
+            std::fs::read_to_string(dir.path().join("hub").join("config.toml")).unwrap();
         assert!(
-            config.contains("timezone = \"America/New_York\""),
-            "config.toml should contain timezone: {config}"
+            hub_config.contains("timezone = \"America/New_York\""),
+            "hub config.toml should contain timezone: {hub_config}"
         );
         assert!(
+            !hub_config.contains("[models]"),
+            "hub config.toml should not contain [models]: {hub_config}"
+        );
+
+        let agent_config_dir = dir.path().join("assistant").join("config");
+        let config = std::fs::read_to_string(agent_config_dir.join("config.toml")).unwrap();
+        assert!(
             !config.contains("[models]"),
-            "config.toml should not contain [models]: {config}"
+            "agent config.toml should not contain [models]: {config}"
         );
 
         // providers.toml — models + provider
-        let providers = std::fs::read_to_string(dir.path().join("providers.toml")).unwrap();
+        let providers = std::fs::read_to_string(agent_config_dir.join("providers.toml")).unwrap();
         assert!(
             providers.contains("main = \"anthropic/claude-sonnet-4-6\""),
             "providers.toml should contain model spec: {providers}"
@@ -503,32 +644,36 @@ mod tests {
             providers.contains("api_key = \"sk-test-key\""),
             "providers.toml should contain api key: {providers}"
         );
+
+        // The agent's workspace was bootstrapped too.
+        assert!(
+            dir.path().join("assistant").join("SOUL.md").exists(),
+            "SOUL.md should be written as part of the agent's workspace bootstrap"
+        );
     }
 
-    #[test]
-    fn write_config_no_api_key() {
+    #[tokio::test]
+    async fn write_config_no_api_key() {
         let dir = tempfile::tempdir().unwrap();
-        let answers = WizardAnswers {
-            timezone: "UTC".to_string(),
-            provider: ProviderKind::Ollama,
-            api_key: None,
-            model: "llama3".to_string(),
-            web_search_backend: None,
-            web_search_api_key: None,
-            web_search_base_url: None,
-        };
+        let answers = test_answers("assistant", "UTC", ProviderKind::Ollama, None, "llama3");
 
-        write_config(dir.path(), &answers).unwrap();
+        write_config(dir.path(), &answers).await.unwrap();
 
-        // config.toml — timezone only
-        let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let hub_config =
+            std::fs::read_to_string(dir.path().join("hub").join("config.toml")).unwrap();
         assert!(
-            config.contains("timezone = \"UTC\""),
-            "config.toml should contain timezone: {config}"
+            hub_config.contains("timezone = \"UTC\""),
+            "hub config.toml should contain timezone: {hub_config}"
         );
 
         // providers.toml — models, no provider section
-        let providers = std::fs::read_to_string(dir.path().join("providers.toml")).unwrap();
+        let providers = std::fs::read_to_string(
+            dir.path()
+                .join("assistant")
+                .join("config")
+                .join("providers.toml"),
+        )
+        .unwrap();
         assert!(
             providers.contains("main = \"ollama/llama3\""),
             "providers.toml should contain model spec: {providers}"
@@ -541,15 +686,11 @@ mod tests {
 
     #[test]
     fn from_flags_with_web_search() {
-        let answers = from_flags(
-            Some("UTC"),
-            Some("ollama"),
-            None,
-            None,
-            Some("brave"),
-            Some("brv-key-123"),
-            None,
-        )
+        let answers = from_flags(&WizardFlags {
+            web_search_backend: Some("brave"),
+            web_search_api_key: Some("brv-key-123"),
+            ..flags(Some("UTC"), Some("ollama"))
+        })
         .unwrap();
 
         assert_eq!(
@@ -570,15 +711,12 @@ mod tests {
 
     #[test]
     fn from_flags_with_ollama_web_search() {
-        let answers = from_flags(
-            Some("UTC"),
-            Some("ollama"),
-            None,
-            None,
-            Some("ollama"),
-            Some("oll-key"),
-            Some("https://custom.ollama.com"),
-        )
+        let answers = from_flags(&WizardFlags {
+            web_search_backend: Some("ollama"),
+            web_search_api_key: Some("oll-key"),
+            web_search_base_url: Some("https://custom.ollama.com"),
+            ..flags(Some("UTC"), Some("ollama"))
+        })
         .unwrap();
 
         assert_eq!(
@@ -600,15 +738,11 @@ mod tests {
 
     #[test]
     fn from_flags_invalid_web_search_backend() {
-        let result = from_flags(
-            Some("UTC"),
-            Some("anthropic"),
-            Some("sk-test"),
-            None,
-            Some("invalid-backend"),
-            None,
-            None,
-        );
+        let result = from_flags(&WizardFlags {
+            api_key: Some("sk-test"),
+            web_search_backend: Some("invalid-backend"),
+            ..flags(Some("UTC"), Some("anthropic"))
+        });
         assert!(result.is_err(), "should reject invalid web search backend");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -617,22 +751,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_config_with_brave_web_search() {
+    #[tokio::test]
+    async fn write_config_with_brave_web_search() {
         let dir = tempfile::tempdir().unwrap();
-        let answers = WizardAnswers {
-            timezone: "UTC".to_string(),
-            provider: ProviderKind::Anthropic,
-            api_key: Some("sk-test".to_string()),
-            model: "claude-sonnet-4-6".to_string(),
-            web_search_backend: Some("brave".to_string()),
-            web_search_api_key: Some("brv-key-abc".to_string()),
-            web_search_base_url: None,
-        };
+        let mut answers = test_answers(
+            "assistant",
+            "UTC",
+            ProviderKind::Anthropic,
+            Some("sk-test"),
+            "claude-sonnet-4-6",
+        );
+        answers.web_search_backend = Some("brave".to_string());
+        answers.web_search_api_key = Some("brv-key-abc".to_string());
 
-        write_config(dir.path(), &answers).unwrap();
+        write_config(dir.path(), &answers).await.unwrap();
 
-        let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let config = std::fs::read_to_string(
+            dir.path()
+                .join("assistant")
+                .join("config")
+                .join("config.toml"),
+        )
+        .unwrap();
         assert!(
             config.contains("[web_search]"),
             "config.toml should contain [web_search]: {config}"
@@ -651,22 +791,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_config_with_ollama_web_search() {
+    #[tokio::test]
+    async fn write_config_with_ollama_web_search() {
         let dir = tempfile::tempdir().unwrap();
-        let answers = WizardAnswers {
-            timezone: "UTC".to_string(),
-            provider: ProviderKind::Ollama,
-            api_key: None,
-            model: "llama3".to_string(),
-            web_search_backend: Some("ollama".to_string()),
-            web_search_api_key: Some("oll-key-xyz".to_string()),
-            web_search_base_url: Some("https://api.ollama.com".to_string()),
-        };
+        let mut answers = test_answers("assistant", "UTC", ProviderKind::Ollama, None, "llama3");
+        answers.web_search_backend = Some("ollama".to_string());
+        answers.web_search_api_key = Some("oll-key-xyz".to_string());
+        answers.web_search_base_url = Some("https://api.ollama.com".to_string());
 
-        write_config(dir.path(), &answers).unwrap();
+        write_config(dir.path(), &answers).await.unwrap();
 
-        let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let config = std::fs::read_to_string(
+            dir.path()
+                .join("assistant")
+                .join("config")
+                .join("config.toml"),
+        )
+        .unwrap();
         assert!(
             config.contains("[web_search]"),
             "config.toml should contain [web_search]: {config}"
@@ -686,6 +827,22 @@ mod tests {
         assert!(
             config.contains("base_url = \"https://api.ollama.com\""),
             "config.toml should contain base_url: {config}"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_config_personalizes_user_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut answers = test_answers("assistant", "UTC", ProviderKind::Ollama, None, "llama3");
+        answers.user_name = Some("Sam".to_string());
+
+        write_config(dir.path(), &answers).await.unwrap();
+
+        let user_md =
+            std::fs::read_to_string(dir.path().join("assistant").join("USER.md")).unwrap();
+        assert!(
+            user_md.contains("Sam"),
+            "USER.md should be personalized with the user's name: {user_md}"
         );
     }
 }

@@ -430,7 +430,7 @@ mod tests {
             state,
             publisher: crate::bus::spawn_broker().publisher(),
             inbox_dir: std::env::temp_dir(),
-            reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
+            reload_tx: tokio::sync::watch::channel(ReloadSignal::Agent).0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

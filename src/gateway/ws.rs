@@ -213,7 +213,7 @@ async fn handle_client_message(
             local_tx.send(ServerMessage::Reloading).ok();
             state
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Root)
+                .send(crate::gateway::types::ReloadSignal::Agent)
                 .ok();
         }
         ClientMessage::ServerCommand { name, args } => {

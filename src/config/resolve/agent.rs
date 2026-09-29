@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use crate::inference::retry::RetryConfig;
 use crate::util::FatalError;
 
-use super::super::deserialize::{AgentConfigFile, ConfigFile, SkillsConfigFile, ToolsConfigFile};
+use super::super::deserialize::{
+    AgentAbilitiesConfigFile, AgentConfigFile, SkillsConfigFile, ToolsConfigFile,
+};
 use super::super::types::{AgentAbilitiesConfig, SkillsConfig, ToolsConfig};
 
 /// Resolve skills configuration from TOML section.
@@ -33,11 +35,11 @@ pub(super) fn resolve_skills_config(
 ///
 /// Directories are ordered highest precedence first: configured `[tools].path`
 /// entries (expanded, in listed order) followed by the default persistent
-/// `<config_dir>/bin` (`~/.residuum/bin`). All are prepended to the inherited
+/// `<hub_dir>/bin` (`~/.residuum/hub/bin`). All are prepended to the inherited
 /// `PATH` of spawned children at spawn time.
 pub(super) fn resolve_tools_config(
     section: Option<&ToolsConfigFile>,
-    config_dir: &Path,
+    hub_dir: &Path,
 ) -> ToolsConfig {
     let mut dirs = Vec::new();
 
@@ -49,13 +51,13 @@ pub(super) fn resolve_tools_config(
     }
 
     // Default persistent dir, lowest precedence of the tool dirs.
-    dirs.push(config_dir.join("bin"));
+    dirs.push(super::super::HubPaths::new(hub_dir).bin_dir());
 
     ToolsConfig { dirs }
 }
 
 /// Resolve retry configuration from TOML section with defaults.
-pub(super) fn resolve_retry_config(file: Option<&ConfigFile>) -> RetryConfig {
+pub(super) fn resolve_retry_config(file: Option<&AgentConfigFile>) -> RetryConfig {
     let r = file.and_then(|f| f.retry.as_ref());
     let mut cfg = RetryConfig::default();
     if let Some(v) = r.and_then(|r| r.max_retries) {
@@ -80,7 +82,7 @@ pub(super) fn resolve_retry_config(file: Option<&ConfigFile>) -> RetryConfig {
 /// turn that stops before ever calling a tool isn't a usable limit, so this
 /// is rejected rather than silently accepted.
 pub(super) fn resolve_agent_config(
-    section: Option<&AgentConfigFile>,
+    section: Option<&AgentAbilitiesConfigFile>,
 ) -> Result<AgentAbilitiesConfig, FatalError> {
     let mut cfg = AgentAbilitiesConfig::default();
     if let Some(s) = section {

@@ -135,7 +135,7 @@
       const checkpointId = await revokeA2aKey(name);
       notifyWithUndo(
         `Revoked ${name}. It can no longer reach this agent.`,
-        "config",
+        "hub",
         "a2a-keys.toml",
         checkpointId,
         loadKeys,

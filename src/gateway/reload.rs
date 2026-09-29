@@ -308,7 +308,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         .config_reload_tracker
         .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Root);
 
-    let new_cfg = match Config::load_at(&rt.config_dir) {
+    let new_cfg = match Config::load_agent_at(rt.layout.root(), &rt.hub_cfg) {
         Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
@@ -400,6 +400,97 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     } else {
         IdleAction::None
     }
+}
+
+/// Handle an in-place hub config reload (`hub/config.toml` changed).
+///
+/// Hub-owned values (`timezone`, `[gateway]`, `[cloud]`, the A2A listener's
+/// `enabled`/`port`/`public_url`, `[tracing]`, and the shared
+/// `[background]` session budget/hop limits) are copied into a clone of the
+/// currently running agent `Config` so the existing diff/rebuild machinery
+/// in [`handle_root_reload`] above — built to compare two `Config`
+/// snapshots — can be reused unchanged: since every other field is
+/// identical to `rt.cfg`, [`diff_config`] only ever reports a change here
+/// for a hub-owned field. On failure the running hub config stays in
+/// effect, `hub/config.toml` is left as the user wrote it, and clients are
+/// notified — the same contract as [`handle_root_reload`].
+pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
+    tracing::info!("handling hub config reload in-place");
+
+    let new_hub = match crate::config::HubConfig::load_at(&rt.hub_dir) {
+        Ok(hub) => hub,
+        Err(err) => {
+            tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
+            publish_notice(
+                &rt.publisher,
+                format!("hub config reload failed (keeping current hub config): {err}"),
+            )
+            .await;
+            return;
+        }
+    };
+    for notice in &new_hub.load_notices {
+        publish_notice(&rt.publisher, notice.clone()).await;
+    }
+
+    let mut new_cfg = rt.cfg.clone();
+    new_cfg.gateway = new_hub.gateway.clone();
+    new_cfg.timezone = new_hub.timezone;
+    new_cfg.cloud = new_hub.cloud.clone();
+    new_cfg.tracing = new_hub.tracing.clone();
+    new_cfg.a2a.enabled = new_hub.a2a.enabled;
+    new_cfg.a2a.port = new_hub.a2a.port;
+    new_cfg.a2a.public_url.clone_from(&new_hub.a2a.public_url);
+    new_cfg.background.max_concurrent = new_hub.background.max_concurrent;
+    new_cfg.background.hop_soft_limit = new_hub.background.hop_soft_limit;
+    new_cfg.background.hop_hard_limit = new_hub.background.hop_hard_limit;
+
+    let diff = diff_config(&rt.cfg, &new_cfg);
+
+    if !diff.changed {
+        last_known_good::hub::save(&rt.hub_dir);
+        publish_notice(
+            &rt.publisher,
+            "hub configuration reloaded: no changes detected".to_string(),
+        )
+        .await;
+        tracing::info!("hub config reload: no changes detected");
+        return;
+    }
+
+    let summary = diff.summary().to_string();
+    if diff.summary().contains("background")
+        && (rt.hub_cfg.background.max_concurrent != new_hub.background.max_concurrent)
+    {
+        publish_notice(
+            &rt.publisher,
+            "background.max_concurrent changed in hub/config.toml — this takes effect on the \
+             next restart, not immediately."
+                .to_string(),
+        )
+        .await;
+    }
+
+    rebuild_cheap_components(rt, &new_cfg).await;
+
+    if diff.gateway_changed {
+        reload_gateway(rt, &new_cfg).await;
+    }
+    if diff.a2a_changed {
+        reload_a2a_adapter(rt, &new_cfg).await;
+    }
+    if diff.cloud_changed || diff.a2a_changed {
+        reload_tunnel(rt, &new_cfg).await;
+    }
+
+    rt.cfg = new_cfg;
+    rt.hub_cfg = new_hub;
+
+    last_known_good::hub::save(&rt.hub_dir);
+
+    let message = format!("hub configuration reloaded: {summary}");
+    publish_notice(&rt.publisher, message).await;
+    tracing::info!(changes = %summary, "hub configuration reloaded successfully");
 }
 
 /// Build a fresh HTTP client for the given request timeout.
@@ -510,6 +601,7 @@ fn build_spawn_context(
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
         config_dir: new_cfg.config_dir.clone(),
+        hub_dir: rt.hub_dir.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
         session_runtime: Arc::clone(&rt.session_runtime),
@@ -715,7 +807,9 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 layout: rt.layout.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
+                hub_dir: rt.hub_dir.clone(),
                 config_dir: rt.config_dir.clone(),
+                agent_name: rt.cfg.agent_name.clone(),
                 workspace_dir: rt.layout.root().to_path_buf(),
                 memory_dir: Some(rt.layout.memory_dir()),
                 reload_tx: Some(rt.reload_tx.clone()),
@@ -727,7 +821,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 update_status: std::sync::Arc::clone(&rt.update_status),
                 restart_tx: rt.restart_tx.clone(),
                 gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
-                config_dir: rt.config_dir.clone(),
+                hub_dir: rt.hub_dir.clone(),
             };
             let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
                 service: std::sync::Arc::clone(&rt.tracing_service),
@@ -1005,6 +1099,7 @@ async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     if new_cfg.a2a.enabled {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let deps = crate::gateway::event_loop::A2aListenerDeps {
+            hub_dir: rt.hub_dir.clone(),
             session_registry: Arc::clone(&rt.session_registry),
             agent_messenger: Arc::clone(&rt.agent_messenger),
             skill_state: Arc::clone(&rt.skill_state),
@@ -1046,7 +1141,8 @@ mod tests {
     /// Build a minimal test config.
     fn test_config() -> Config {
         Config {
-            name: None,
+            agent_name: "test-agent".to_string(),
+            autostart: true,
             main: vec![],
             observer: vec![],
             reflector: vec![],

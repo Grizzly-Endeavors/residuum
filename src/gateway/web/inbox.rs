@@ -383,7 +383,9 @@ mod tests {
 
     fn make_state(workspace_dir: std::path::PathBuf) -> ConfigApiState {
         ConfigApiState {
+            hub_dir: workspace_dir.clone(),
             config_dir: workspace_dir.clone(),
+            agent_name: "test-agent".to_string(),
             workspace_dir,
             memory_dir: None,
             reload_tx: None,
@@ -396,8 +398,10 @@ mod tests {
     /// A minimal but real `GatewayState`, for exercising the agent-inbox
     /// handler directly rather than through the full HTTP stack.
     fn make_gateway_state(workspace_dir: &std::path::Path) -> GatewayState {
-        let (core, _receivers) =
-            crate::gateway::types::GatewayCore::new(workspace_dir.to_path_buf());
+        let (core, _receivers) = crate::gateway::types::GatewayCore::new(
+            workspace_dir.to_path_buf(),
+            workspace_dir.to_path_buf(),
+        );
         let (_tunnel_tx, tunnel_status_rx) =
             tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
         let session_registry =

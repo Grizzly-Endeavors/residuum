@@ -1,46 +1,24 @@
-//! Gateway bind, workspace directory, timezone, and cloud tunnel settings.
-
-use std::path::PathBuf;
+//! Gateway bind, timezone, and cloud tunnel settings (hub-level).
 
 use crate::util::FatalError;
 
-use super::super::bootstrap::default_workspace_dir;
 use super::super::constants::DEFAULT_CLOUD_RELAY_URL;
-use super::super::deserialize::{CloudConfigFile, ConfigFile, GatewayConfigFile};
+use super::super::deserialize::{CloudConfigFile, GatewayConfigFile, HubConfigFile};
 use super::super::secrets::SecretStore;
 use super::super::types::{CloudConfig, GatewayConfig};
 
-/// Resolve the workspace root directory: env var, then config file, then the
-/// platform default. `~` in an explicit value is expanded.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the default workspace directory can't be
-/// determined (no config value was given to fall back from).
-pub(super) fn resolve_workspace_dir_setting(
-    file: Option<&ConfigFile>,
-) -> Result<PathBuf, FatalError> {
-    std::env::var("RESIDUUM_WORKSPACE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
-        .map(|s| {
-            let expanded = shellexpand::tilde(&s);
-            PathBuf::from(expanded.as_ref())
-        })
-        .map_or_else(default_workspace_dir, Ok)
-}
-
-/// Resolve the timezone from env var or config file.
+/// Resolve the timezone from env var or hub config file.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if no timezone is set or the value is not a
 /// valid IANA timezone name.
-pub(super) fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
+pub(super) fn resolve_timezone(file: Option<&HubConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
     let tz_name = std::env::var("RESIDUUM_TIMEZONE")
         .ok()
         .or_else(|| file.and_then(|f| f.timezone.clone()))
         .ok_or_else(|| {
             FatalError::Config(
-                "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
+                "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in hub/config.toml \
                  (IANA name, e.g. \"America/New_York\")"
                     .to_string(),
             )
@@ -114,11 +92,9 @@ pub(super) fn resolve_cloud_config(
         return None;
     }
 
-    let token = super::channels::resolve_bot_token(
-        "RESIDUUM_CLOUD_TOKEN",
-        section.token.as_deref(),
-        secrets,
-    );
+    let token = std::env::var("RESIDUUM_CLOUD_TOKEN")
+        .ok()
+        .or_else(|| super::channels::resolve_bot_token(section.token.as_deref(), secrets));
 
     if let Some(tok) = token {
         let relay_url = section

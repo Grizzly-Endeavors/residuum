@@ -55,6 +55,7 @@ export const CACHE_KEY_STATUS = "GET /api/status";
 export const CACHE_KEY_TIMEZONE = "GET /api/system/timezone";
 export const CACHE_KEY_MCP_CATALOG = "GET /api/mcp-catalog";
 export const CACHE_KEY_CONFIG_RAW = "GET /api/config/raw";
+export const CACHE_KEY_HUB_CONFIG_RAW = "GET /api/hub/config/raw";
 export const CACHE_KEY_PROVIDERS_RAW = "GET /api/providers/raw";
 export const CACHE_KEY_MCP_RAW = "GET /api/mcp/raw";
 export const CACHE_KEY_A2A_AGENTS_RAW = "GET /api/a2a/agents/raw";
@@ -339,13 +340,26 @@ export async function storeSecret(name: string, value: string): Promise<SecretRe
   });
 }
 
-export async function completeSetup(
-  config: string,
-  providers: string,
-  mcpJson?: string,
-): Promise<ValidateResponse> {
-  const payload: Record<string, string> = { config, providers };
-  if (mcpJson) payload.mcp_json = mcpJson;
+/** Everything onboarding writes: the hub config, and the first agent's name and files. */
+export interface CompleteSetupPayload {
+  hubConfig: string;
+  agentName: string;
+  /** The user's name, written to USER.md. Empty when they skipped it. */
+  userName: string;
+  config: string;
+  providers: string;
+  mcpJson?: string;
+}
+
+export async function completeSetup(setup: CompleteSetupPayload): Promise<ValidateResponse> {
+  const payload: Record<string, string> = {
+    hub_config: setup.hubConfig,
+    agent_name: setup.agentName,
+    config: setup.config,
+    providers: setup.providers,
+  };
+  if (setup.userName) payload.user_name = setup.userName;
+  if (setup.mcpJson) payload.mcp_json = setup.mcpJson;
   return apiFetch<ValidateResponse>("/api/config/complete-setup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -370,6 +384,28 @@ export async function patchConfig(diff: Record<string, unknown>): Promise<Valida
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
   return apiFetch<ValidateResponse>("/api/config/validate", {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: toml,
+  });
+}
+
+/** The hub's `config.toml` (timezone, gateway, cloud, A2A listener, tracing, session limits). */
+export async function fetchHubConfigRaw(): Promise<string> {
+  return cachedFetch(CACHE_KEY_HUB_CONFIG_RAW, () => apiFetchText("/api/hub/config/raw"));
+}
+
+export async function putHubConfigRaw(toml: string): Promise<ValidateResponse> {
+  return putValidated("/api/hub/config/raw", "text/plain", toml, CACHE_KEY_HUB_CONFIG_RAW);
+}
+
+/** Merge a diff (the hub half of `splitConfigPatch`) into the hub's `config.toml`. */
+export async function patchHubConfig(diff: Record<string, unknown>): Promise<ValidateResponse> {
+  return patchValidated("/api/hub/config/patch", diff, CACHE_KEY_HUB_CONFIG_RAW);
+}
+
+export async function validateHubConfig(toml: string): Promise<ValidateResponse> {
+  return apiFetch<ValidateResponse>("/api/hub/config/validate", {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: toml,

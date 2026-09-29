@@ -567,6 +567,7 @@ mod tests {
         DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
         }
     }
 
@@ -993,6 +994,7 @@ mod tests {
         let diagnostics_paths = DiagnosticsPaths {
             config_dir: dir.path().join("config-unused"),
             workspace_dir: dir.path().to_path_buf(),
+            hub_dir: dir.path().join("hub-unused"),
         };
         let tool = EditTool::new(tracker, PathPolicy::new_shared(), diagnostics_paths);
 

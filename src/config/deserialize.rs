@@ -1,22 +1,70 @@
 //! Raw TOML deserialization structs.
 //!
 //! These types map 1:1 to the config file sections. They are private to the
-//! config module — callers always receive validated `Config` values.
+//! config module — callers always receive validated `Config`/`HubConfig`
+//! values. Two schemas exist: [`HubConfigFile`] for `hub/config.toml`
+//! (process-wide settings) and [`AgentConfigFile`] for
+//! `<agent>/config/config.toml` (everything else). `ProvidersFile` is always
+//! agent-scoped.
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 
-/// Raw TOML config file structure (deserialized directly).
+/// Raw TOML hub config file structure (`hub/config.toml`), deserialized
+/// directly. Hub-level: the timezone, gateway bind/port, cloud tunnel, the
+/// A2A listener's enablement/port/public URL, tracing, and the shared
+/// background session budget and hop limits.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConfigFile {
-    /// User's display name (what the agent calls them).
-    pub(super) name: Option<String>,
-    /// IANA timezone name (e.g. `"America/New_York"`).
+pub(crate) struct HubConfigFile {
+    /// IANA timezone name (e.g. `"America/New_York"`), shared by every agent.
     pub(super) timezone: Option<String>,
-    /// Workspace root directory path.
-    pub(super) workspace_dir: Option<String>,
+    /// Gateway configuration.
+    pub(super) gateway: Option<GatewayConfigFile>,
+    /// Cloud tunnel configuration.
+    pub(super) cloud: Option<CloudConfigFile>,
+    /// Tracing and observability configuration.
+    pub(super) tracing: Option<TracingConfigFile>,
+    /// `Agent2Agent` (A2A) listener configuration: enablement, port, public URL.
+    pub(super) a2a: Option<HubA2aConfigFile>,
+    /// Shared background session budget and cross-agent hop limits.
+    pub(super) background: Option<HubBackgroundConfigFile>,
+}
+
+/// Raw TOML `[a2a]` section in `hub/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HubA2aConfigFile {
+    /// Whether the A2A listener runs at all.
+    pub(super) enabled: Option<bool>,
+    /// Port for the dedicated A2A protocol listener.
+    pub(super) port: Option<u16>,
+    /// Public URL other agents should use to reach this instance's A2A
+    /// interfaces (own tunnel/reverse proxy). Empty or absent when the relay
+    /// is expected to supply the public origin instead.
+    pub(super) public_url: Option<String>,
+}
+
+/// Raw TOML `[background]` section in `hub/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HubBackgroundConfigFile {
+    /// Maximum number of concurrent background tasks, shared by every agent.
+    pub(super) max_concurrent: Option<usize>,
+    /// Hop count at or above which a delivered agent message carries a
+    /// "reply only if needed" note.
+    pub(super) hop_soft_limit: Option<u32>,
+    /// Hop count at or above which agent message delivery is refused
+    /// outright.
+    pub(super) hop_hard_limit: Option<u32>,
+}
+
+/// Raw TOML agent config file structure (`<agent>/config/config.toml`),
+/// deserialized directly. Everything that isn't hub-level.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AgentConfigFile {
     /// Request timeout in seconds.
     pub(super) timeout_secs: Option<u64>,
     /// Maximum tokens for model responses.
@@ -29,8 +77,8 @@ pub(crate) struct ConfigFile {
     pub(super) subconscious: Option<SubconsciousConfigFile>,
     /// Activity-triggered learning loop configuration.
     pub(super) learning: Option<LearningConfigFile>,
-    /// Gateway configuration.
-    pub(super) gateway: Option<GatewayConfigFile>,
+    /// Whether this agent starts when the hub starts (default `true`).
+    pub(super) autostart: Option<bool>,
     /// Discord bot configuration.
     pub(super) discord: Option<DiscordConfigFile>,
     /// Telegram bot configuration.
@@ -45,27 +93,73 @@ pub(crate) struct ConfigFile {
     pub(super) tools: Option<ToolsConfigFile>,
     /// Retry configuration.
     pub(super) retry: Option<RetryConfigFile>,
-    /// Background task configuration.
-    pub(super) background: Option<BackgroundConfigFile>,
+    /// Background task configuration (this agent's own knobs — the shared
+    /// session budget and hop limits live in hub config).
+    pub(super) background: Option<AgentBackgroundConfigFile>,
     /// Agent ability gates.
-    pub(super) agent: Option<AgentConfigFile>,
+    pub(super) agent: Option<AgentAbilitiesConfigFile>,
     /// Idle system configuration.
     pub(super) idle: Option<IdleConfigFile>,
     /// Sampling temperature for model completions (0.0–2.0).
     pub(super) temperature: Option<f32>,
     /// Thinking/reasoning configuration (off, on, low, medium, high).
     pub(super) thinking: Option<String>,
-    /// Cloud tunnel configuration.
-    pub(super) cloud: Option<CloudConfigFile>,
     /// Web search configuration.
     pub(super) web_search: Option<WebSearchConfigFile>,
-    /// Tracing and observability configuration.
-    pub(super) tracing: Option<TracingConfigFile>,
-    /// `Agent2Agent` (A2A) protocol configuration.
-    pub(super) a2a: Option<A2aConfigFile>,
+    /// `Agent2Agent` (A2A) visibility for this agent.
+    pub(super) a2a: Option<AgentA2aConfigFile>,
 }
 
-/// Raw TOML providers file structure (`providers.toml`).
+/// Raw TOML `[a2a]` section in `<agent>/config/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgentA2aConfigFile {
+    /// `"public"` (default) or `"private"`.
+    pub(super) visibility: Option<String>,
+}
+
+/// Raw TOML `[background]` section in `<agent>/config/config.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgentBackgroundConfigFile {
+    /// Idle timeout in minutes for `scheduled` sessions (also used by
+    /// webhook sessions) before they complete.
+    pub(super) idle_timeout_scheduled_minutes: Option<u64>,
+    /// Idle timeout in minutes for `spawned` sessions before they complete.
+    pub(super) idle_timeout_spawned_minutes: Option<u64>,
+    /// Idle timeout in minutes for non-webhook `external` sessions before
+    /// they complete.
+    pub(super) idle_timeout_external_minutes: Option<u64>,
+    /// Idle timeout in minutes for `artifact` sessions before they complete.
+    pub(super) idle_timeout_artifact_minutes: Option<u64>,
+    /// Token floor below which a completed run with nothing staged produces
+    /// no episode.
+    pub(super) episode_skip_token_floor: Option<usize>,
+    /// Maximum depth a `subagent_spawn`-created session may have.
+    pub(super) subagent_depth_cap: Option<u32>,
+}
+
+/// Raw TOML `[agent]` section (ability gates and turn limits).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgentAbilitiesConfigFile {
+    /// Whether the agent can modify MCP server configurations.
+    pub(super) modify_mcp: Option<bool>,
+    /// Whether the agent can modify notification channels.
+    pub(super) modify_channels: Option<bool>,
+    /// Maximum tool-call iterations per turn before it stops itself
+    /// gracefully. Unset means unlimited. Must be at least 1 when set.
+    pub(super) max_tool_iterations: Option<usize>,
+    /// Master switch for the repeat-identical-tool-call guard.
+    pub(super) repeat_call_guard_enabled: Option<bool>,
+    /// Consecutive identical calls at which a steering note is appended.
+    pub(super) repeat_call_steer_after: Option<u32>,
+    /// Consecutive identical calls at which the turn ends instead of
+    /// running the call again.
+    pub(super) repeat_call_stop_after: Option<u32>,
+}
+
+/// Raw TOML providers file structure (`providers.toml`, always agent-scoped).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProvidersFile {
@@ -263,7 +357,7 @@ pub(super) struct LearningConfigFile {
     pub(super) nudge_after_turns: Option<u32>,
 }
 
-/// Raw TOML `[gateway]` section.
+/// Raw TOML `[gateway]` section (hub config only).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GatewayConfigFile {
@@ -315,22 +409,6 @@ pub(super) struct TeamsConfigFile {
     pub(super) port: Option<u16>,
 }
 
-/// Raw TOML `[a2a]` section.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct A2aConfigFile {
-    /// Whether the A2A listener runs at all.
-    pub(super) enabled: Option<bool>,
-    /// Port for the dedicated A2A protocol listener.
-    pub(super) port: Option<u16>,
-    /// Public URL other agents should use to reach this instance's A2A
-    /// interfaces (own tunnel/reverse proxy). Empty or absent when the relay
-    /// is expected to supply the public origin instead.
-    pub(super) public_url: Option<String>,
-    /// `"public"` (default) or `"private"`.
-    pub(super) visibility: Option<String>,
-}
-
 /// Raw TOML `[webhooks.<name>]` entry.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -375,26 +453,6 @@ pub(super) struct RetryConfigFile {
     pub(super) backoff_multiplier: Option<f64>,
 }
 
-/// Raw TOML `[agent]` section.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct AgentConfigFile {
-    /// Whether the agent can modify MCP server configurations.
-    pub(super) modify_mcp: Option<bool>,
-    /// Whether the agent can modify notification channels.
-    pub(super) modify_channels: Option<bool>,
-    /// Maximum tool-call iterations per turn before it stops itself
-    /// gracefully. Unset means unlimited. Must be at least 1 when set.
-    pub(super) max_tool_iterations: Option<usize>,
-    /// Master switch for the repeat-identical-tool-call guard.
-    pub(super) repeat_call_guard_enabled: Option<bool>,
-    /// Consecutive identical calls at which a steering note is appended.
-    pub(super) repeat_call_steer_after: Option<u32>,
-    /// Consecutive identical calls at which the turn ends instead of
-    /// running the call again.
-    pub(super) repeat_call_stop_after: Option<u32>,
-}
-
 /// Raw TOML `[idle]` section.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -405,36 +463,7 @@ pub(super) struct IdleConfigFile {
     pub(super) idle_channel: Option<String>,
 }
 
-/// Raw TOML `[background]` section (in `config.toml`).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BackgroundConfigFile {
-    /// Maximum number of concurrent background tasks.
-    pub(super) max_concurrent: Option<usize>,
-    /// Idle timeout in minutes for `scheduled` sessions (also used by
-    /// webhook sessions) before they complete.
-    pub(super) idle_timeout_scheduled_minutes: Option<u64>,
-    /// Idle timeout in minutes for `spawned` sessions before they complete.
-    pub(super) idle_timeout_spawned_minutes: Option<u64>,
-    /// Idle timeout in minutes for non-webhook `external` sessions before
-    /// they complete.
-    pub(super) idle_timeout_external_minutes: Option<u64>,
-    /// Idle timeout in minutes for `artifact` sessions before they complete.
-    pub(super) idle_timeout_artifact_minutes: Option<u64>,
-    /// Token floor below which a completed run with nothing staged produces
-    /// no episode.
-    pub(super) episode_skip_token_floor: Option<usize>,
-    /// Maximum depth a `subagent_spawn`-created session may have.
-    pub(super) subagent_depth_cap: Option<u32>,
-    /// Hop count at or above which a delivered agent message carries a
-    /// "reply only if needed" note.
-    pub(super) hop_soft_limit: Option<u32>,
-    /// Hop count at or above which agent message delivery is refused
-    /// outright.
-    pub(super) hop_hard_limit: Option<u32>,
-}
-
-/// Raw TOML `[cloud]` section.
+/// Raw TOML `[cloud]` section (hub config only).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CloudConfigFile {
@@ -522,7 +551,7 @@ pub(super) struct GeminiSearchConfigFile {
     pub(super) exclude_domains: Option<Vec<String>>,
 }
 
-/// Raw TOML `[tracing]` section.
+/// Raw TOML `[tracing]` section (hub config only).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TracingConfigFile {

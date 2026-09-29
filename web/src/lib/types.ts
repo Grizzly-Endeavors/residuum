@@ -202,6 +202,7 @@ export interface IntegrationsConfig {
 
 export interface SetupWizardState {
   userName: string;
+  agentName: string;
   timezone: string;
   selectedProviders: ProviderKey[];
   providerConfigs: Record<ProviderKey, ProviderConfig>;

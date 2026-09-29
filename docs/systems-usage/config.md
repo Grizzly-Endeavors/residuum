@@ -1,18 +1,22 @@
 # Config Files
 
-Residuum's global settings live in two files outside the workspace directory, both in the config directory (`~/.residuum/` by default): `config.toml` (everything except providers/models) and `providers.toml` (provider credentials and `[models]` role assignments). Per-system files inside the workspace's `config/` directory (`mcp.json`, `channels.toml`, `agent-card.json`, `a2a.json`) hold narrower, system-specific settings — see each system's own doc.
+`~/.residuum/` holds `hub/` (hub-level state: never any one agent's workspace) plus exactly one agent directory, which *is* that agent's workspace root.
+
+Hub-level settings live in `hub/config.toml`: the timezone (shared by every agent), the gateway bind/port, the cloud tunnel, the A2A listener's enablement/port/public URL, tracing, and the shared background session budget and cross-agent hop limits. `hub/` also holds the encrypted secret store (`secrets.toml.enc`), the agent-key store (`agent-keys.toml.enc`), and A2A caller keys (`a2a-keys.toml`) — all shared by every agent.
+
+Everything else lives in the agent's own `config/` directory (`~/.residuum/<agent-name>/config/`): `config.toml` (memory, pulse, subconscious, adapters, agent abilities, idle, `autostart`, this agent's A2A `visibility`, and more), `providers.toml` (provider credentials and `[models]` role assignments), plus the narrower per-system files `mcp.json`, `channels.toml`, `agent-card.json`, and `a2a.json` — see each system's own doc.
 
 ## Who can write what
 
 | File | Writable by the agent? |
 |------|------------------------|
-| `config.toml`, `providers.toml` | Yes — the file tools (`write_file`, `edit_file`) allow it, same as any other file. |
-| `config.example.toml`, `providers.example.toml` | No. `PathPolicy` (`src/tools/path_policy.rs`) refuses every write. |
-| `config/mcp.json`, `config/channels.toml` | Yes, unless `agent.modify_mcp`/`agent.modify_channels` is turned off in `config.toml`. |
+| `config/config.toml`, `config/providers.toml` (agent's own) | Yes — the file tools (`write_file`, `edit_file`) allow it, same as any other workspace file. |
+| `config/config.example.toml`, `config/providers.example.toml` | No. `PathPolicy` (`src/tools/path_policy.rs`) refuses every write. |
+| `config/mcp.json`, `config/channels.toml` | Yes, unless `agent.modify_mcp`/`agent.modify_channels` is turned off in the agent's `config.toml`. |
 | `config/a2a.json`, `HEARTBEAT.yml` | Yes, same as any other workspace file — no ability gate. |
-| Credential stores (`secrets.toml.enc`, `agent-keys.toml.enc`, `a2a-keys.toml`, plus their key/lock files) | No, always. |
+| Anything under `hub/` (hub `config.toml`, credential stores, `hub/bin/`, checkpoints) | No — outside any agent's workspace tree, so the agent's file tools can't reach it at all. |
 
-The `.example.toml` files are reference templates, not user config: `config::bootstrap::bootstrap_at` regenerates both from the binary's compiled-in defaults on every startup, so a write to either would appear to succeed and then be silently overwritten at the next restart. `PathPolicy::check_write` gives a write refusal for one of them a distinct message naming this and pointing at the writable file instead of the generic "user-managed configuration" refusal every other blocked path gets.
+The `.example.toml` files are reference templates, not user config: `config::bootstrap::bootstrap_agent_at` (and `bootstrap_hub_at` for the hub's own example) regenerate them from the binary's compiled-in defaults on every startup, so a write to either would appear to succeed and then be silently overwritten at the next restart. `PathPolicy::check_write` gives a write refusal for one of them a distinct message naming this and pointing at the writable file instead of the generic "user-managed configuration" refusal every other blocked path gets.
 
 ## How the agent edits config.toml / providers.toml
 

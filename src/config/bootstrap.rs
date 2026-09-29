@@ -1,37 +1,33 @@
-//! Bootstrap logic for the config directory on first run.
+//! Bootstrap logic for the hub directory and an agent's config directory on
+//! first run.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::util::FatalError;
 
-/// Minimal config.toml written on first run — user edits this.
-const MINIMAL_CONFIG: &str = "# Residuum configuration. See config.example.toml for all options.\n\
+/// Minimal hub `config.toml` written on first run — user edits this.
+const MINIMAL_HUB_CONFIG: &str = "# Hub configuration. See hub-config.example.toml for all options.\n\
     \n\
     # timezone = \"America/New_York\"  # REQUIRED: IANA timezone name\n";
 
-/// Minimal providers.toml written on first run — user edits this.
+/// Minimal agent `config.toml` written on first run — user edits this.
+const MINIMAL_AGENT_CONFIG: &str =
+    "# Agent configuration. See config.example.toml for all options.\n";
+
+/// Minimal `providers.toml` written on first run — user edits this.
 const MINIMAL_PROVIDERS: &str = "# Provider and model configuration. See providers.example.toml for all options.\n\
     \n\
     [models]\n\
     main = \"anthropic/claude-sonnet-4-6\"\n";
 
-/// Full reference config always regenerated on startup.
+/// Full reference hub config always regenerated on startup.
+const EXAMPLE_HUB_CONFIG: &str = include_str!("../../assets/hub-config.example.toml");
+
+/// Full reference agent config always regenerated on startup.
 const EXAMPLE_CONFIG: &str = include_str!("../../assets/config.example.toml");
 
 /// Full reference providers config always regenerated on startup.
 const EXAMPLE_PROVIDERS: &str = include_str!("../../assets/providers.example.toml");
-
-/// Get the default config directory (`~/.residuum/`).
-pub(crate) fn default_config_dir() -> Result<PathBuf, FatalError> {
-    dirs::home_dir()
-        .map(|h| h.join(".residuum"))
-        .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
-}
-
-/// Get the default workspace directory (`~/.residuum/workspace/`).
-pub(super) fn default_workspace_dir() -> Result<PathBuf, FatalError> {
-    default_config_dir().map(|d| d.join("workspace"))
-}
 
 /// Write a file only if it doesn't already exist.
 ///
@@ -50,35 +46,75 @@ fn write_if_absent(path: &Path, content: &str) -> Result<bool, FatalError> {
     Ok(true)
 }
 
-/// Write bootstrap config files to `dir`.
+fn ensure_dir(dir: &Path, label: &str) -> Result<(), FatalError> {
+    if dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir).map_err(|e| {
+        FatalError::Config(format!(
+            "failed to create {label} directory {}: {e}",
+            dir.display()
+        ))
+    })
+}
+
+/// Write bootstrap files to `hub_dir` (`~/.residuum/hub`).
 ///
 /// Creates the directory if absent, writes `config.toml` only if absent,
-/// and always regenerates `config.example.toml`.
+/// and always regenerates `config.example.toml`. Also ensures `bin/` and
+/// `logs/` exist; `checkpoints/` is created lazily by `CheckpointEngine::new`.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the directory or files cannot be written.
-pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
-    if !dir.exists() {
-        std::fs::create_dir_all(dir).map_err(|e| {
-            FatalError::Config(format!(
-                "failed to create config directory {}: {e}",
-                dir.display()
-            ))
-        })?;
+pub(super) fn bootstrap_hub_at(hub_dir: &Path) -> Result<(), FatalError> {
+    ensure_dir(hub_dir, "hub")?;
+
+    let config_path = hub_dir.join("config.toml");
+    if write_if_absent(&config_path, MINIMAL_HUB_CONFIG)? {
+        tracing::info!(path = %config_path.display(), "wrote initial hub config.toml");
     }
 
-    let config_path = dir.join("config.toml");
-    if write_if_absent(&config_path, MINIMAL_CONFIG)? {
-        tracing::info!(path = %config_path.display(), "wrote initial config.toml");
+    let example_path = hub_dir.join("config.example.toml");
+    std::fs::write(&example_path, EXAMPLE_HUB_CONFIG).map_err(|e| {
+        FatalError::Config(format!(
+            "failed to write config.example.toml at {}: {e}",
+            example_path.display()
+        ))
+    })?;
+
+    // Default persistent tools dir (~/.residuum/hub/bin), shared by every
+    // agent the hub hosts. Drop static binaries here to make them
+    // resolvable by spawned children without rebuilding the image.
+    let hub_paths = super::HubPaths::new(hub_dir);
+    ensure_dir(&hub_paths.bin_dir(), "hub tools")?;
+    ensure_dir(&hub_paths.logs_dir(), "hub logs")?;
+
+    tracing::debug!(hub_dir = %hub_dir.display(), "hub directory bootstrapped");
+    Ok(())
+}
+
+/// Write bootstrap files to an agent's `config/` directory
+/// (`~/.residuum/<agent-name>/config`).
+///
+/// Creates the directory if absent, writes `config.toml`/`providers.toml`
+/// only if absent, and always regenerates the `.example.toml` templates.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the directory or files cannot be written.
+pub(super) fn bootstrap_agent_at(agent_config_dir: &Path) -> Result<(), FatalError> {
+    ensure_dir(agent_config_dir, "agent config")?;
+
+    let config_path = agent_config_dir.join("config.toml");
+    if write_if_absent(&config_path, MINIMAL_AGENT_CONFIG)? {
+        tracing::info!(path = %config_path.display(), "wrote initial agent config.toml");
     }
 
-    let providers_path = dir.join("providers.toml");
+    let providers_path = agent_config_dir.join("providers.toml");
     if write_if_absent(&providers_path, MINIMAL_PROVIDERS)? {
         tracing::info!(path = %providers_path.display(), "wrote initial providers.toml");
     }
 
-    // Always regenerate example files
-    let example_path = dir.join("config.example.toml");
+    let example_path = agent_config_dir.join("config.example.toml");
     std::fs::write(&example_path, EXAMPLE_CONFIG).map_err(|e| {
         FatalError::Config(format!(
             "failed to write config.example.toml at {}: {e}",
@@ -86,7 +122,7 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
         ))
     })?;
 
-    let providers_example_path = dir.join("providers.example.toml");
+    let providers_example_path = agent_config_dir.join("providers.example.toml");
     std::fs::write(&providers_example_path, EXAMPLE_PROVIDERS).map_err(|e| {
         FatalError::Config(format!(
             "failed to write providers.example.toml at {}: {e}",
@@ -95,47 +131,9 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
     })?;
 
     tracing::debug!(
-        config_example = %example_path.display(),
-        providers_example = %providers_example_path.display(),
-        "regenerated example config files"
+        agent_config_dir = %agent_config_dir.display(),
+        "agent config directory bootstrapped"
     );
-
-    // workspace/config/ directory with starter files
-    let ws_config_dir = dir.join("workspace").join("config");
-    if !ws_config_dir.exists() {
-        std::fs::create_dir_all(&ws_config_dir).map_err(|e| {
-            FatalError::Config(format!(
-                "failed to create workspace/config at {}: {e}",
-                ws_config_dir.display()
-            ))
-        })?;
-    }
-
-    let mcp_path = ws_config_dir.join("mcp.json");
-    if write_if_absent(&mcp_path, "{ \"mcpServers\": {} }\n")? {
-        tracing::info!(path = %mcp_path.display(), "wrote initial mcp.json");
-    }
-
-    let channels_path = ws_config_dir.join("channels.toml");
-    if write_if_absent(
-        &channels_path,
-        "# Notification channel configuration. See channels.example.toml for options.\n",
-    )? {
-        tracing::info!(path = %channels_path.display(), "wrote initial channels.toml");
-    }
-
-    // Default persistent tools dir (~/.residuum/bin). Drop static binaries here
-    // to make them resolvable by spawned children without rebuilding the image.
-    let bin_dir = dir.join("bin");
-    if !bin_dir.exists() {
-        std::fs::create_dir_all(&bin_dir).map_err(|e| {
-            FatalError::Config(format!(
-                "failed to create tools directory {}: {e}",
-                bin_dir.display()
-            ))
-        })?;
-    }
-
     Ok(())
 }
 
@@ -145,154 +143,113 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn bootstrap_creates_config_dir() {
+    fn bootstrap_hub_creates_dir_and_minimal_config() {
         let base = tempdir().unwrap();
-        let dir = base.path().join("newdir");
-        assert!(!dir.exists(), "dir should not exist before bootstrap");
-        bootstrap_at(&dir).unwrap();
-        assert!(dir.exists(), "dir should be created by bootstrap");
+        let dir = base.path().join("hub");
+        assert!(!dir.exists());
+        bootstrap_hub_at(&dir).unwrap();
+        assert!(dir.exists());
+        let body = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(body.contains("timezone"));
+        assert!(dir.join("bin").is_dir());
+        assert!(dir.join("logs").is_dir());
     }
 
     #[test]
-    fn bootstrap_writes_minimal_config() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        assert!(!config_path.exists(), "config.toml should not exist yet");
-        bootstrap_at(dir.path()).unwrap();
-        assert!(config_path.exists(), "config.toml should be written");
-        let body = std::fs::read_to_string(&config_path).unwrap();
-        assert!(
-            body.contains("timezone"),
-            "config.toml should reference timezone"
-        );
-    }
-
-    #[test]
-    fn bootstrap_writes_minimal_providers() {
-        let dir = tempdir().unwrap();
-        let providers_path = dir.path().join("providers.toml");
-        assert!(
-            !providers_path.exists(),
-            "providers.toml should not exist yet"
-        );
-        bootstrap_at(dir.path()).unwrap();
-        assert!(providers_path.exists(), "providers.toml should be written");
-        let body = std::fs::read_to_string(&providers_path).unwrap();
-        assert!(
-            body.contains("[models]"),
-            "providers.toml should contain [models] section"
-        );
-        assert!(
-            body.contains("main"),
-            "providers.toml should contain main key"
-        );
-    }
-
-    #[test]
-    fn bootstrap_skips_existing_config() {
+    fn bootstrap_hub_skips_existing_config() {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, "# user customization").unwrap();
-        bootstrap_at(dir.path()).unwrap();
-        let body = std::fs::read_to_string(&config_path).unwrap();
+        bootstrap_hub_at(dir.path()).unwrap();
         assert_eq!(
-            body, "# user customization",
-            "existing config.toml should not be overwritten"
+            std::fs::read_to_string(&config_path).unwrap(),
+            "# user customization"
         );
     }
 
     #[test]
-    fn bootstrap_skips_existing_providers() {
-        let dir = tempdir().unwrap();
-        let providers_path = dir.path().join("providers.toml");
-        std::fs::write(&providers_path, "# user providers").unwrap();
-        bootstrap_at(dir.path()).unwrap();
-        let body = std::fs::read_to_string(&providers_path).unwrap();
-        assert_eq!(
-            body, "# user providers",
-            "existing providers.toml should not be overwritten"
-        );
-    }
-
-    #[test]
-    fn bootstrap_always_writes_example_files() {
+    fn bootstrap_hub_always_regenerates_example() {
         let dir = tempdir().unwrap();
         let example_path = dir.path().join("config.example.toml");
         std::fs::write(&example_path, "# old content").unwrap();
-        bootstrap_at(dir.path()).unwrap();
+        bootstrap_hub_at(dir.path()).unwrap();
         let body = std::fs::read_to_string(&example_path).unwrap();
-        assert_ne!(
-            body, "# old content",
-            "config.example.toml should be regenerated"
+        assert_ne!(body, "# old content");
+        assert!(body.contains("[gateway]"));
+    }
+
+    #[test]
+    fn bootstrap_agent_creates_config_and_providers() {
+        let base = tempdir().unwrap();
+        let dir = base.path().join("sam/config");
+        assert!(!dir.exists());
+        bootstrap_agent_at(&dir).unwrap();
+        assert!(dir.join("config.toml").exists());
+        let providers = std::fs::read_to_string(dir.join("providers.toml")).unwrap();
+        assert!(providers.contains("[models]"));
+        assert!(providers.contains("main"));
+    }
+
+    #[test]
+    fn bootstrap_agent_skips_existing_files() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "# user customization").unwrap();
+        std::fs::write(dir.path().join("providers.toml"), "# user providers").unwrap();
+        bootstrap_agent_at(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            "# user customization"
         );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("providers.toml")).unwrap(),
+            "# user providers"
+        );
+    }
+
+    #[test]
+    fn bootstrap_agent_always_regenerates_examples() {
+        let dir = tempdir().unwrap();
+        let example_path = dir.path().join("config.example.toml");
+        std::fs::write(&example_path, "# old content").unwrap();
+        bootstrap_agent_at(dir.path()).unwrap();
+        let body = std::fs::read_to_string(&example_path).unwrap();
+        assert_ne!(body, "# old content");
+        assert!(body.contains("[memory]"));
+        assert!(body.contains("[agent]"));
 
         let prov_example = dir.path().join("providers.example.toml");
-        assert!(
-            prov_example.exists(),
-            "providers.example.toml should be written"
-        );
+        assert!(prov_example.exists());
         let prov_body = std::fs::read_to_string(&prov_example).unwrap();
-        assert!(
-            prov_body.contains("[models]"),
-            "providers example should contain [models] section"
-        );
+        assert!(prov_body.contains("[models]"));
     }
 
     #[test]
-    fn bootstrap_config_example_contains_key_sections() {
+    fn bootstrap_agent_config_example_does_not_contain_hub_only_sections() {
         let dir = tempdir().unwrap();
-        bootstrap_at(dir.path()).unwrap();
+        bootstrap_agent_at(dir.path()).unwrap();
         let body = std::fs::read_to_string(dir.path().join("config.example.toml")).unwrap();
         assert!(
-            body.contains("[memory]"),
-            "example should contain memory section"
+            !body.contains("[gateway]"),
+            "gateway is hub-only, must not appear in the agent example"
         );
         assert!(
-            body.contains("[pulse]"),
-            "example should contain pulse section"
-        );
-        assert!(
-            body.contains("[gateway]"),
-            "example should contain gateway section"
-        );
-        assert!(
-            body.contains("[agent]"),
-            "example should contain agent section"
+            !body.contains("[cloud]"),
+            "cloud is hub-only, must not appear in the agent example"
         );
     }
 
     #[test]
-    fn bootstrap_creates_workspace_config_dir() {
+    fn bootstrap_hub_config_example_does_not_contain_agent_only_sections() {
         let dir = tempdir().unwrap();
-        bootstrap_at(dir.path()).unwrap();
-
-        let mcp_json = dir.path().join("workspace").join("config").join("mcp.json");
-        assert!(mcp_json.exists(), "mcp.json should be created");
-        let mcp_body = std::fs::read_to_string(&mcp_json).unwrap();
+        bootstrap_hub_at(dir.path()).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("config.example.toml")).unwrap();
         assert!(
-            mcp_body.contains("mcpServers"),
-            "mcp.json should contain mcpServers key"
+            !body.contains("[memory]"),
+            "memory is agent-only, must not appear in the hub example"
         );
-
-        let channels_toml = dir
-            .path()
-            .join("workspace")
-            .join("config")
-            .join("channels.toml");
-        assert!(channels_toml.exists(), "channels.toml should be created");
-    }
-
-    #[test]
-    fn bootstrap_skips_existing_mcp_json() {
-        let dir = tempdir().unwrap();
-        bootstrap_at(dir.path()).unwrap();
-        let mcp_path = dir.path().join("workspace").join("config").join("mcp.json");
-        std::fs::write(&mcp_path, "{ \"mcpServers\": { \"custom\": {} } }").unwrap();
-        bootstrap_at(dir.path()).unwrap();
-        let body = std::fs::read_to_string(&mcp_path).unwrap();
-        assert_eq!(
-            body, "{ \"mcpServers\": { \"custom\": {} } }",
-            "existing mcp.json should not be overwritten"
+        assert!(
+            !body.contains("[discord]"),
+            "discord is agent-only, must not appear in the hub example"
         );
     }
 }

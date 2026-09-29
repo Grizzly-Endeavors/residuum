@@ -9,11 +9,17 @@ use ts_rs::TS;
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum RepoKind {
-    /// `~/.residuum/checkpoints/workspace.git`, work tree = the workspace root.
+    /// `hub/checkpoints/workspace.git`, work tree = the agent's workspace
+    /// root (the agent directory minus `config/config.toml` and
+    /// `config/providers.toml`, which the `AgentConfig` repo tracks instead).
     Workspace,
-    /// `~/.residuum/checkpoints/config.git`: root `config.toml`, `providers.toml`,
-    /// the encrypted secret/agent-key/A2A-key stores. Local-only forever.
-    Config,
+    /// `hub/checkpoints/agent-config.git`: exactly the agent's own
+    /// `config/config.toml` and `config/providers.toml`. Local-only forever
+    /// (may hold plaintext provider keys).
+    AgentConfig,
+    /// `hub/checkpoints/hub-config.git`: hub `config.toml`, the encrypted
+    /// secret/agent-key/A2A-key stores. Local-only forever.
+    Hub,
 }
 
 impl RepoKind {
@@ -22,7 +28,8 @@ impl RepoKind {
     pub(super) fn dir_name(self) -> &'static str {
         match self {
             Self::Workspace => "workspace.git",
-            Self::Config => "config.git",
+            Self::AgentConfig => "agent-config.git",
+            Self::Hub => "hub-config.git",
         }
     }
 }

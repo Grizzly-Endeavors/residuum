@@ -11,7 +11,7 @@
 mod subconscious_integration {
     use async_trait::async_trait;
 
-    use residuum::config::Config;
+    use residuum::config::{Config, HubConfig};
     use residuum::inference::{
         CompletionOptions, HttpClientConfig, InferenceError, InferenceProvider, InferenceResponse,
         Message, SharedHttpClient, ToolDefinition,
@@ -48,11 +48,20 @@ mod subconscious_integration {
         SharedHttpClient::new(&HttpClientConfig::default()).unwrap()
     }
 
-    fn write_config(dir: &std::path::Path, config_toml: &str) {
-        std::fs::write(dir.join("config.toml"), config_toml).unwrap();
+    /// Write an agent's `config/config.toml` and `config/providers.toml`
+    /// under `dir` (the agent directory), plus a hub config beside it, and
+    /// load the resulting agent `Config`.
+    fn load_agent(dir: &std::path::Path, config_toml: &str) -> Config {
+        let hub_dir = dir.join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        let agent_dir = dir.join("scout");
+        let agent_config_dir = agent_dir.join("config");
+        std::fs::create_dir_all(&agent_config_dir).unwrap();
+        std::fs::write(agent_config_dir.join("config.toml"), config_toml).unwrap();
         // Ollama needs no API key, so the provider chain builds in tests.
         std::fs::write(
-            dir.join("providers.toml"),
+            agent_config_dir.join("providers.toml"),
             r#"
 [models]
 main = "ollama/llama3"
@@ -60,18 +69,16 @@ subconscious = "ollama/llama3-mini"
 "#,
         )
         .unwrap();
+        let hub = HubConfig::load_at(&hub_dir).unwrap();
+        Config::load_agent_at(&agent_dir, &hub).unwrap()
     }
 
     #[test]
     fn build_enabled_from_config() {
         let dir = tempfile::tempdir().unwrap();
-        write_config(
-            dir.path(),
-            "timezone = \"UTC\"\n\n[subconscious]\nenabled = true\n",
-        );
-        let cfg = Config::load_at(dir.path()).unwrap();
+        let cfg = load_agent(dir.path(), "[subconscious]\nenabled = true\n");
 
-        let layout = WorkspaceLayout::new(dir.path());
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
         let sub = Subconscious::build(&cfg, &layout, http(), residuum::bus::Publisher::noop());
 
         assert!(
@@ -89,10 +96,9 @@ subconscious = "ollama/llama3-mini"
     #[test]
     fn build_disabled_when_section_absent() {
         let dir = tempfile::tempdir().unwrap();
-        write_config(dir.path(), "timezone = \"UTC\"\n");
-        let cfg = Config::load_at(dir.path()).unwrap();
+        let cfg = load_agent(dir.path(), "");
 
-        let layout = WorkspaceLayout::new(dir.path());
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
         let sub = Subconscious::build(&cfg, &layout, http(), residuum::bus::Publisher::noop());
 
         assert!(

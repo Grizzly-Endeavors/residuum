@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, HubConfig};
 use crate::gateway::types::{
     CoreReceivers, GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal,
 };
@@ -23,24 +23,31 @@ use super::turns::handle_inbound_message;
 
 use crate::gateway::{actions, idle, last_known_good, reload, watcher, web};
 
-/// Start the WebSocket gateway server and run the main event loop.
+/// Start the WebSocket gateway server and run the main event loop for the
+/// single agent at `agent_dir`, hosted by the hub at `hub_dir`.
 ///
-/// Loads config from `config_dir`. If the live files fail to load, or load
-/// but the gateway can't actually start on them (no usable main provider,
-/// etc.), falls back to the last-known-good copy (see [`last_known_good`])
-/// instead of refusing to start. A fallback is announced with a notice once
-/// the gateway is up, so it's visible to anyone using the web UI.
+/// Loads the hub config and the agent's config independently. If either's
+/// live files fail to load, or load but the gateway can't actually start on
+/// them (no usable main provider, etc.), that one falls back to its own
+/// last-known-good copy (see [`last_known_good`]) instead of refusing to
+/// start. A fallback is announced with a notice once the gateway is up, so
+/// it's visible to anyone using the web UI.
 ///
 /// # Errors
 ///
-/// Returns `FatalError` if the config can't be loaded and no working
-/// last-known-good copy is available, or the server cannot bind.
-#[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
-pub async fn run_gateway(config_dir: &std::path::Path) -> Result<GatewayExit, FatalError> {
-    let (core, receivers) = GatewayCore::new(config_dir.to_path_buf());
-    let (cfg, parts, fallback_problem) = load_and_initialize(config_dir, &core.publisher).await?;
+/// Returns `FatalError` if either config can't be loaded and no working
+/// last-known-good copy is available for it, or the server cannot bind.
+#[tracing::instrument(skip_all, fields(agent_dir = %agent_dir.display(), hub_dir = %hub_dir.display()))]
+pub async fn run_gateway(
+    agent_dir: &std::path::Path,
+    hub_dir: &std::path::Path,
+) -> Result<GatewayExit, FatalError> {
+    let (core, receivers) = GatewayCore::new(agent_dir.join("config"), hub_dir.to_path_buf());
+    let (cfg, hub_cfg, parts, fallback_problem) =
+        load_and_initialize(agent_dir, hub_dir, &core.publisher).await?;
     Box::pin(run_gateway_from_parts(
         cfg,
+        hub_cfg,
         parts,
         core,
         receivers,
@@ -49,70 +56,119 @@ pub async fn run_gateway(config_dir: &std::path::Path) -> Result<GatewayExit, Fa
     .await
 }
 
-/// Start the gateway from an already-built `Config`, bypassing the
-/// last-known-good load-and-fallback in [`run_gateway`].
+/// Start the gateway from an already-built `Config`/`HubConfig` pair,
+/// bypassing the last-known-good load-and-fallback in [`run_gateway`].
 ///
 /// Used by the setup wizard's isolated temp-directory flow, which builds
-/// its own `Config` (with an overridden workspace directory) instead of
-/// loading one from a config directory — there's no last-known-good copy
-/// to fall back to there anyway.
+/// its own configs (rooted at a temp directory) instead of loading them
+/// from the real residuum root — there's no last-known-good copy to fall
+/// back to there anyway.
 ///
 /// # Errors
 ///
 /// Returns `FatalError` if initialization fails or the server cannot bind.
 #[tracing::instrument(skip_all, fields(bind = %cfg.gateway.addr()))]
-pub async fn run_gateway_with_config(cfg: Config) -> Result<GatewayExit, FatalError> {
-    let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
-    let parts = crate::gateway::startup::initialize(&cfg, &core.publisher).await?;
-    Box::pin(run_gateway_from_parts(cfg, parts, core, receivers, None)).await
+pub async fn run_gateway_with_config(
+    cfg: Config,
+    hub_cfg: HubConfig,
+) -> Result<GatewayExit, FatalError> {
+    let (core, receivers) = GatewayCore::new(cfg.config_dir.clone(), hub_cfg.config_dir.clone());
+    let parts = crate::gateway::startup::initialize(&cfg, &hub_cfg, &core.publisher).await?;
+    Box::pin(run_gateway_from_parts(
+        cfg, hub_cfg, parts, core, receivers, None,
+    ))
+    .await
 }
 
-/// Load `config_dir`'s config and initialize the gateway on it, falling
-/// back to the last-known-good copy if either step fails. Returns the
-/// config actually used, its initialized components, and — only when a
-/// fallback was used — a description of what was wrong with the live
-/// files, for the caller to publish once the gateway is up.
+/// Load the hub config and the agent's config, initializing the gateway on
+/// them, falling back to either's last-known-good copy if it fails to load
+/// or the gateway can't start on it. Returns the configs actually used,
+/// their initialized components, and — only when a fallback was used for
+/// either — a description of what was wrong, for the caller to publish
+/// once the gateway is up.
 async fn load_and_initialize(
-    config_dir: &std::path::Path,
+    agent_dir: &std::path::Path,
+    hub_dir: &std::path::Path,
     publisher: &crate::bus::Publisher,
 ) -> Result<
     (
         Config,
+        HubConfig,
         crate::gateway::startup::GatewayComponents,
         Option<String>,
     ),
     FatalError,
 > {
-    match Config::load_at(config_dir) {
-        Ok(cfg) => match crate::gateway::startup::initialize(&cfg, publisher).await {
-            Ok(parts) => Ok((cfg, parts, None)),
-            Err(err) => last_known_good_fallback(config_dir, publisher, err).await,
+    let (hub_cfg, hub_fallback_problem) = load_hub_with_fallback(hub_dir)?;
+    match Config::load_agent_at(agent_dir, &hub_cfg) {
+        Ok(cfg) => match crate::gateway::startup::initialize(&cfg, &hub_cfg, publisher).await {
+            Ok(parts) => Ok((cfg, hub_cfg, parts, hub_fallback_problem)),
+            Err(err) => {
+                agent_last_known_good_fallback(
+                    agent_dir,
+                    hub_cfg,
+                    hub_fallback_problem,
+                    publisher,
+                    err,
+                )
+                .await
+            }
         },
-        Err(err) => last_known_good_fallback(config_dir, publisher, err).await,
+        Err(err) => {
+            agent_last_known_good_fallback(agent_dir, hub_cfg, hub_fallback_problem, publisher, err)
+                .await
+        }
     }
 }
 
-/// Try starting from the last-known-good config after `original_err` broke
-/// the live files. Returns `original_err` untouched if there's no
-/// last-known-good copy, or it fails to initialize too — the live files
-/// are still the more relevant problem to report in that case.
-async fn last_known_good_fallback(
-    config_dir: &std::path::Path,
+/// Load the hub config, falling back to its last-known-good copy if the
+/// live file fails to load. Returns the hub config actually used and —
+/// only when the fallback was used — a description of what was wrong with
+/// the live file.
+fn load_hub_with_fallback(
+    hub_dir: &std::path::Path,
+) -> Result<(HubConfig, Option<String>), FatalError> {
+    match HubConfig::load_at(hub_dir) {
+        Ok(hub) => Ok((hub, None)),
+        Err(err) => match last_known_good::hub::load(hub_dir) {
+            Ok(hub) => Ok((hub, Some(err.to_string()))),
+            Err(_) => Err(err),
+        },
+    }
+}
+
+/// Try starting the agent from its last-known-good config after
+/// `original_err` broke the live files. Returns `original_err` untouched if
+/// there's no last-known-good copy, or it fails to initialize too — the
+/// live files are still the more relevant problem to report in that case.
+/// Combines with `hub_fallback_problem` (if the hub config also fell back)
+/// into one description for the caller to publish.
+async fn agent_last_known_good_fallback(
+    agent_dir: &std::path::Path,
+    hub_cfg: HubConfig,
+    hub_fallback_problem: Option<String>,
     publisher: &crate::bus::Publisher,
     original_err: FatalError,
 ) -> Result<
     (
         Config,
+        HubConfig,
         crate::gateway::startup::GatewayComponents,
         Option<String>,
     ),
     FatalError,
 > {
-    let Ok(lkg_cfg) = last_known_good::load(config_dir) else {
+    let Ok(lkg_cfg) = last_known_good::load(agent_dir, &hub_cfg) else {
         return Err(original_err);
     };
-    match crate::gateway::startup::initialize(&lkg_cfg, publisher).await {
-        Ok(parts) => Ok((lkg_cfg, parts, Some(original_err.to_string()))),
+    match crate::gateway::startup::initialize(&lkg_cfg, &hub_cfg, publisher).await {
+        Ok(parts) => {
+            let problem = match hub_fallback_problem {
+                Some(hub_problem) => format!("{original_err}; also: {hub_problem}"),
+                None => original_err.to_string(),
+            };
+            Ok((lkg_cfg, hub_cfg, parts, Some(problem)))
+        }
         Err(_lkg_init_err) => Err(original_err),
     }
 }
@@ -122,6 +178,7 @@ async fn last_known_good_fallback(
 /// copy), and enter the event loop.
 async fn run_gateway_from_parts(
     cfg: Config,
+    hub_cfg: HubConfig,
     parts: crate::gateway::startup::GatewayComponents,
     core: GatewayCore,
     receivers: CoreReceivers,
@@ -150,7 +207,7 @@ async fn run_gateway_from_parts(
     // gateway's own listener are all ready. This marker is what the CLI
     // (`serve`'s startup report) and the update-rollback watchdog both wait
     // on to know the gateway is actually healthy rather than merely running.
-    crate::daemon::write_ready_file(&cfg.config_dir);
+    crate::daemon::write_ready_file(&core.hub_dir);
 
     if let Some(problem) = fallback_problem {
         tracing::error!(
@@ -160,12 +217,13 @@ async fn run_gateway_from_parts(
         crate::gateway::helpers::publish_notice(
             &core.publisher,
             format!(
-                "residuum couldn't start using your current config.toml/providers.toml ({problem}). It's running on the last configuration that worked instead — fix the files above, then reload (or restart residuum) to apply your changes."
+                "residuum couldn't start using your current config ({problem}). It's running on the last configuration that worked instead — fix the files above, then reload (or restart residuum) to apply your changes."
             ),
         )
         .await;
     } else {
         last_known_good::save(&cfg.config_dir);
+        last_known_good::hub::save(&hub_cfg.config_dir);
     }
 
     let channels = RuntimeChannels {
@@ -176,8 +234,7 @@ async fn run_gateway_from_parts(
         gateway_shutdown_rx,
         model_call_resources_tx,
     };
-    let cloud_config = cfg.cloud.clone();
-    let rt = build_runtime(parts, core, receivers, cfg, spawned, channels, cloud_config).await?;
+    let rt = build_runtime(parts, core, receivers, cfg, hub_cfg, spawned, channels).await?;
 
     // `run_event_loop`'s state (the accumulated select! branches' locals)
     // has grown past clippy's large-future threshold; boxing moves it to the
@@ -199,6 +256,7 @@ struct SpawnedHandles {
     webhooks: crate::interfaces::webhook::WebhookTable,
     watcher_handle: Option<tokio::task::JoinHandle<()>>,
     root_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    hub_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
@@ -256,7 +314,9 @@ fn build_api_states(
 ) -> ApiStates {
     ApiStates {
         config: web::ConfigApiState {
+            hub_dir: core.hub_dir.clone(),
             config_dir: cfg.config_dir.clone(),
+            agent_name: cfg.agent_name.clone(),
             workspace_dir: parts.layout.root().to_path_buf(),
             memory_dir: Some(parts.layout.memory_dir()),
             reload_tx: Some(core.reload_tx.clone()),
@@ -320,6 +380,7 @@ fn a2a_listener_deps(
 ) -> (A2aListenerDeps, tokio::sync::watch::Sender<bool>) {
     let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
     let deps = A2aListenerDeps {
+        hub_dir: core.hub_dir.clone(),
         session_registry: Arc::clone(&parts.session_registry),
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
@@ -330,20 +391,20 @@ fn a2a_listener_deps(
     (deps, sessions_ready_tx)
 }
 
-/// Spawn the two config-file pollers: workspace files (`mcp.json`,
+/// A config-file poller's task handle.
+type WatcherHandle = Option<tokio::task::JoinHandle<()>>;
+
+/// Spawn the config-file pollers: workspace files (`mcp.json`,
 /// `channels.toml`, `agent-card.json`, `a2a.json`) signaling
 /// `ReloadSignal::Workspace`, and root files (`config.toml`,
-/// `providers.toml`) signaling `ReloadSignal::Root`. Split out of
+/// `providers.toml`) signaling `ReloadSignal::Agent`. Split out of
 /// `spawn_server_and_adapters` purely to keep that function's line count
 /// down.
 fn spawn_config_watchers(
     cfg: &Config,
     parts: &crate::gateway::startup::GatewayComponents,
     core: &GatewayCore,
-) -> (
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::task::JoinHandle<()>>,
-) {
+) -> (WatcherHandle, WatcherHandle, WatcherHandle) {
     let watcher_handle = Some(watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
@@ -356,7 +417,15 @@ fn spawn_config_watchers(
         cfg.config_dir.join("providers.toml"),
         core.reload_tx.clone(),
     ));
-    (watcher_handle, root_config_watcher_handle)
+    let hub_config_watcher_handle = Some(watcher::spawn_hub_config_watcher(
+        core.hub_dir.join("config.toml"),
+        core.reload_tx.clone(),
+    ));
+    (
+        watcher_handle,
+        root_config_watcher_handle,
+        hub_config_watcher_handle,
+    )
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -407,7 +476,7 @@ async fn spawn_server_and_adapters(
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
         gateway_shutdown_tx: gateway_shutdown_tx.clone(),
-        config_dir: cfg.config_dir.clone(),
+        hub_dir: core.hub_dir.clone(),
     };
     let api_states = build_api_states(
         cfg,
@@ -442,7 +511,8 @@ async fn spawn_server_and_adapters(
         .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
     #[cfg(not(unix))]
     let sigterm = crate::gateway::types::TermSignal::new();
-    let (watcher_handle, root_config_watcher_handle) = spawn_config_watchers(cfg, parts, core);
+    let (watcher_handle, root_config_watcher_handle, hub_config_watcher_handle) =
+        spawn_config_watchers(cfg, parts, core);
 
     Ok(SpawnedHandles {
         server_handle,
@@ -457,6 +527,7 @@ async fn spawn_server_and_adapters(
         webhooks,
         watcher_handle,
         root_config_watcher_handle,
+        hub_config_watcher_handle,
         workbench_watcher_handle,
         change_feed_handle,
         workspace_watch_health,
@@ -596,10 +667,11 @@ async fn build_runtime(
     core: GatewayCore,
     receivers: crate::gateway::types::CoreReceivers,
     cfg: Config,
+    hub_cfg: HubConfig,
     spawned: SpawnedHandles,
     channels: RuntimeChannels,
-    cloud_config: Option<crate::config::CloudConfig>,
 ) -> Result<GatewayRuntime, FatalError> {
+    let cloud_config = cfg.cloud.clone();
     let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
     spawned.sessions_ready_tx.send_replace(true);
     let pulse_state_path = parts.layout.pulse_state_json();
@@ -661,6 +733,7 @@ async fn build_runtime(
         sigterm: spawned.sigterm,
         http_shutdown_tx: core.http_shutdown_tx,
         config_dir: core.config_dir.clone(),
+        hub_dir: core.hub_dir.clone(),
         last_user_message_instant: None,
         cloud_config,
         tunnel_handle: spawned.tunnel_handle,
@@ -678,6 +751,7 @@ async fn build_runtime(
         a2a_public_url: spawned.adapters.a2a_public_url,
         watcher_handle: spawned.watcher_handle,
         root_config_watcher_handle: spawned.root_config_watcher_handle,
+        hub_config_watcher_handle: spawned.hub_config_watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         change_feed_handle: spawned.change_feed_handle,
         workspace_watch_health: spawned.workspace_watch_health,
@@ -695,6 +769,7 @@ async fn build_runtime(
         gateway_shutdown_tx: channels.gateway_shutdown_tx,
         gateway_shutdown_rx: channels.gateway_shutdown_rx,
         cfg,
+        hub_cfg,
     })
 }
 
@@ -971,6 +1046,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(h) = rt.root_config_watcher_handle.take() {
         h.abort();
     }
+    if let Some(h) = rt.hub_config_watcher_handle.take() {
+        h.abort();
+    }
     if let Some(h) = rt.workbench_watcher_handle.take() {
         h.abort();
     }
@@ -1099,12 +1177,14 @@ async fn poll_handle(
 async fn next_log_only_task_exit(
     watcher: &mut Option<tokio::task::JoinHandle<()>>,
     root_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
+    hub_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     change_feed: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
     tokio::select! {
         result = poll_handle(watcher) => ("workspace config watcher", result),
         result = poll_handle(root_config_watcher) => ("root config watcher", result),
+        result = poll_handle(hub_config_watcher) => ("hub config watcher", result),
         result = poll_handle(workbench_watcher) => ("artifact reload watcher", result),
         result = poll_handle(change_feed) => ("workspace change feed", result),
     }
@@ -1231,6 +1311,25 @@ fn handle_idle_stop_request(stop_req: Option<crate::gateway::types::StopRequest>
     }
 }
 
+/// Apply one config reload signal: an agent config reload (which may put the
+/// agent back to idle), a hub config reload, or a workspace file reload.
+async fn dispatch_reload(
+    signal: ReloadSignal,
+    rt: &mut GatewayRuntime,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+) {
+    match signal {
+        ReloadSignal::None => {}
+        ReloadSignal::Agent => {
+            let idle_action = reload::handle_root_reload(rt).await;
+            apply_idle_action(idle_action, idle_deadline, rt, observe_deadline).await;
+        }
+        ReloadSignal::Hub => reload::handle_hub_reload(rt).await,
+        ReloadSignal::Workspace => handle_workspace_reload(rt).await,
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -1257,16 +1356,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
             _ = rt.reload_rx.changed() => {
                 let signal = rt.reload_rx.borrow_and_update().clone();
-                match signal {
-                    ReloadSignal::None => {}
-                    ReloadSignal::Root => {
-                        let idle_action = reload::handle_root_reload(&mut rt).await;
-                        apply_idle_action(idle_action, &mut idle_deadline, &mut rt, &mut observe_deadline).await;
-                    }
-                    ReloadSignal::Workspace => {
-                        handle_workspace_reload(&mut rt).await;
-                    }
-                }
+                dispatch_reload(signal, &mut rt, &mut idle_deadline, &mut observe_deadline).await;
             }
 
             event = rt.agent_subscriber.recv() => {
@@ -1351,6 +1441,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             (task_name, result) = next_log_only_task_exit(
                 &mut rt.watcher_handle,
                 &mut rt.root_config_watcher_handle,
+                &mut rt.hub_config_watcher_handle,
                 &mut rt.workbench_watcher_handle,
                 &mut rt.change_feed_handle,
             ) => {
@@ -1364,17 +1455,27 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
 #[cfg(test)]
 mod tests {
-    use super::last_known_good_fallback;
+    use super::{agent_last_known_good_fallback, load_hub_with_fallback};
+    use crate::config::HubConfig;
     use crate::gateway::types::{GatewayCore, ReloadSignal};
     use crate::util::FatalError;
+
+    fn hub_config(dir: &std::path::Path) -> HubConfig {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        HubConfig::load_at(dir).unwrap()
+    }
 
     #[tokio::test]
     async fn fallback_with_no_saved_copy_returns_the_original_error_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let agent_dir = dir.path().join("scout");
+        let hub = hub_config(&dir.path().join("hub"));
+        let (core, _receivers) = GatewayCore::new(agent_dir.join("config"), dir.path().join("hub"));
         let original = FatalError::Config("original problem".to_string());
 
-        let result = last_known_good_fallback(dir.path(), &core.publisher, original).await;
+        let result =
+            agent_last_known_good_fallback(&agent_dir, hub, None, &core.publisher, original).await;
 
         match result {
             Err(FatalError::Config(msg)) => assert_eq!(msg, "original problem"),
@@ -1386,25 +1487,30 @@ mod tests {
     #[tokio::test]
     async fn fallback_with_an_unloadable_saved_copy_returns_the_original_error() {
         let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("scout");
+        let agent_config_dir = agent_dir.join("config");
+        std::fs::create_dir_all(&agent_config_dir).unwrap();
         // A last-known-good pair that exists but is itself broken (should
         // never happen in practice, since it's only ever saved after a
         // successful start) still must not surface its own error in place
-        // of the live config's — the live config is what the user needs to
+        // of the live config's -- the live config is what the user needs to
         // fix.
         std::fs::write(
-            dir.path().join("config.last-known-good.toml"),
+            agent_config_dir.join("config.last-known-good.toml"),
             "not valid toml [[[",
         )
         .unwrap();
         std::fs::write(
-            dir.path().join("providers.last-known-good.toml"),
+            agent_config_dir.join("providers.last-known-good.toml"),
             "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();
-        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let hub = hub_config(&dir.path().join("hub"));
+        let (core, _receivers) = GatewayCore::new(agent_config_dir, dir.path().join("hub"));
         let original = FatalError::Config("original problem".to_string());
 
-        let result = last_known_good_fallback(dir.path(), &core.publisher, original).await;
+        let result =
+            agent_last_known_good_fallback(&agent_dir, hub, None, &core.publisher, original).await;
 
         match result {
             Err(FatalError::Config(msg)) => assert_eq!(msg, "original problem"),
@@ -1413,23 +1519,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hub_fallback_uses_its_own_saved_copy_when_the_live_file_is_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        hub_config(&hub_dir);
+        crate::gateway::last_known_good::hub::save(&hub_dir);
+        std::fs::write(hub_dir.join("config.toml"), "not valid toml [[[").unwrap();
+
+        let (hub, problem) = load_hub_with_fallback(&hub_dir).unwrap();
+
+        assert_eq!(hub.timezone, chrono_tz::UTC);
+        assert!(
+            problem.is_some(),
+            "a fallback should describe what was wrong with the live file"
+        );
+    }
+
+    #[test]
+    fn hub_fallback_without_a_saved_copy_reports_the_live_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "not valid toml [[[").unwrap();
+
+        assert!(load_hub_with_fallback(&hub_dir).is_err());
+    }
+
     #[tokio::test]
     async fn consecutive_reload_signals_both_received() {
         let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
 
         // First send
-        tx.send(ReloadSignal::Root).unwrap();
+        tx.send(ReloadSignal::Agent).unwrap();
         rx.changed().await.unwrap();
         let val = rx.borrow_and_update().clone();
-        assert_eq!(val, ReloadSignal::Root);
+        assert_eq!(val, ReloadSignal::Agent);
 
         // Second send of the same value — should still wake the receiver
-        tx.send(ReloadSignal::Root).unwrap();
+        tx.send(ReloadSignal::Agent).unwrap();
         rx.changed().await.unwrap();
         let val2 = rx.borrow_and_update().clone();
         assert_eq!(
             val2,
-            ReloadSignal::Root,
+            ReloadSignal::Agent,
             "second identical send should still be received"
         );
     }

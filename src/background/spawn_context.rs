@@ -74,10 +74,13 @@ pub(crate) struct SpawnContext {
     /// `cfg.agent.repeat_call_guard`.
     pub(crate) repeat_call_guard: crate::config::RepeatCallGuardConfig,
     pub(crate) layout: WorkspaceLayout,
-    /// The app config directory (`~/.residuum/`), for a session's
-    /// `write_file`/`edit_file` tools to recognize `config.toml`/
+    /// The agent's own `config/` directory (`<agent>/config`), for a
+    /// session's `write_file`/`edit_file` tools to recognize `config.toml`/
     /// `providers.toml` and diagnose them the same way main's do.
     pub(crate) config_dir: std::path::PathBuf,
+    /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
+    /// config those diagnostics run against.
+    pub(crate) hub_dir: std::path::PathBuf,
     pub(crate) tz: chrono_tz::Tz,
     pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
     // ── Session tool dependencies ────────────────────────────────────
@@ -290,6 +293,7 @@ pub(crate) async fn build_spawn_resources(
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
         config_dir: ctx.config_dir.clone(),
+        hub_dir: ctx.hub_dir.clone(),
         identity,
         options,
         max_tool_iterations: ctx.max_tool_iterations,

@@ -37,9 +37,7 @@ export interface WebhookFormEntry {
 }
 
 export interface ConfigFields {
-  name: string;
   timezone: string;
-  workspace_dir: string;
   timeout_secs: string;
   max_tokens: string;
   // gateway
@@ -138,9 +136,7 @@ export interface ConfigFields {
 
 export function defaultConfigFields(): ConfigFields {
   return {
-    name: "",
     timezone: "",
-    workspace_dir: "",
     timeout_secs: "",
     max_tokens: "",
     gateway_bind: "",
@@ -237,20 +233,49 @@ function bool(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
 
-export function parseConfigToml(raw: string): ConfigFields {
-  const fields = defaultConfigFields();
-  if (!raw.trim()) return fields;
+function isTable(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 
-  let doc: Record<string, unknown>;
+function parseTomlTable(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {};
   try {
-    doc = parseToml(raw) as Record<string, unknown>;
+    return parseToml(raw) as Record<string, unknown>;
   } catch {
-    return fields;
+    return {};
   }
+}
 
-  fields.name = str(doc.name);
+/**
+ * Merge the hub's config document into the agent's, section by section. The
+ * hub and the agent each own some keys of `[a2a]` and `[background]`; every
+ * other key belongs to exactly one of the two files.
+ */
+function mergeConfigDocs(
+  hub: Record<string, unknown>,
+  agent: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...hub, ...agent };
+  for (const [key, hubValue] of Object.entries(hub)) {
+    const agentValue = agent[key];
+    if (isTable(hubValue) && isTable(agentValue)) {
+      merged[key] = { ...hubValue, ...agentValue };
+    }
+  }
+  return merged;
+}
+
+/**
+ * Parse the agent's `config.toml` and the hub's `config.toml` into the one
+ * flat form the Settings page edits. Saving splits the changes back out by
+ * owner — see [`splitConfigPatch`].
+ */
+export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
+  const fields = defaultConfigFields();
+  const doc = mergeConfigDocs(parseTomlTable(hubRaw), parseTomlTable(raw));
+  if (Object.keys(doc).length === 0) return fields;
+
   fields.timezone = str(doc.timezone);
-  fields.workspace_dir = str(doc.workspace_dir);
   fields.timeout_secs = str(doc.timeout_secs);
   fields.max_tokens = str(doc.max_tokens);
   fields.temperature = str(doc.temperature);
@@ -675,9 +700,7 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
 }
 
 const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
-  { key: "name", path: ["name"], kind: "string" },
   { key: "timezone", path: ["timezone"], kind: "string" },
-  { key: "workspace_dir", path: ["workspace_dir"], kind: "string" },
   { key: "timeout_secs", path: ["timeout_secs"], kind: "number" },
   { key: "max_tokens", path: ["max_tokens"], kind: "number" },
   { key: "temperature", path: ["temperature"], kind: "number" },
@@ -1005,6 +1028,52 @@ export function diffConfigFields(
   if (touched) patch.webhooks = webhooksPatch;
 
   return patch;
+}
+
+// ── Hub / agent ownership of config fields ──────────────────────────
+
+/** Top-level sections that live in the hub's `config.toml`. */
+const HUB_SECTIONS: ReadonlySet<string> = new Set([
+  "timezone",
+  "gateway",
+  "cloud",
+  "tracing",
+  "update",
+]);
+
+/** Keys of shared sections (`[a2a]`, `[background]`) that live in the hub's `config.toml`. */
+const HUB_SECTION_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  a2a: new Set(["enabled", "port", "public_url"]),
+  background: new Set(["max_concurrent", "hop_soft_limit", "hop_hard_limit"]),
+};
+
+/**
+ * Split a config patch (from `diffConfigFields`) into the part for the
+ * hub's `config.toml` and the part for the agent's.
+ */
+export function splitConfigPatch(patch: Record<string, unknown>): {
+  hub: Record<string, unknown>;
+  agent: Record<string, unknown>;
+} {
+  const hub: Record<string, unknown> = {};
+  const agent: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    const hubKeys = HUB_SECTION_KEYS[key];
+    if (HUB_SECTIONS.has(key)) {
+      hub[key] = value;
+    } else if (hubKeys && isTable(value)) {
+      const hubPart: Record<string, unknown> = {};
+      const agentPart: Record<string, unknown> = {};
+      for (const [subKey, subValue] of Object.entries(value)) {
+        (hubKeys.has(subKey) ? hubPart : agentPart)[subKey] = subValue;
+      }
+      if (Object.keys(hubPart).length > 0) hub[key] = hubPart;
+      if (Object.keys(agentPart).length > 0) agent[key] = agentPart;
+    } else {
+      agent[key] = value;
+    }
+  }
+  return { hub, agent };
 }
 
 // ── Model role assignments (providers.toml `[models]` / `[background.models]`) ──

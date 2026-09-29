@@ -9,6 +9,12 @@
 
 use std::path::Path;
 
+/// The agent's own config file and providers file, tracked instead by the
+/// `AgentConfig` checkpoint repository (see `crate::checkpoints::RepoKind`)
+/// so plaintext provider keys never land in the workspace-style repo, which
+/// is designed to allow a user-configured remote later.
+const AGENT_CONFIG_TRACKED_PATHS: &[&str] = &["config/config.toml", "config/providers.toml"];
+
 /// Returns true if `relative` (workspace-relative, `/`-separated, no
 /// leading `/`) must never be included in a workspace checkpoint snapshot.
 ///
@@ -18,6 +24,9 @@ use std::path::Path;
 #[must_use]
 pub(super) fn is_excluded(relative: &str) -> bool {
     if crate::workspace::access::is_blocked_path(relative) {
+        return true;
+    }
+    if AGENT_CONFIG_TRACKED_PATHS.contains(&relative) {
         return true;
     }
 
@@ -34,7 +43,7 @@ pub(super) fn is_excluded(relative: &str) -> bool {
 }
 
 /// Runtime churn matched by file name: lock files and PID files. Log files
-/// live outside the workspace (`~/.residuum/logs/`), so they never reach
+/// live outside the workspace (`~/.residuum/hub/logs/`), so they never reach
 /// this check, but a workspace-relative `logs/` directory is excluded too
 /// in case one ever appears there.
 fn is_excluded_file_name(name: &str) -> bool {
@@ -77,6 +86,14 @@ mod tests {
         assert!(!is_excluded("skills/research/SKILL.md"));
         assert!(!is_excluded("workbench/dashboard/index.html"));
         assert!(!is_excluded("config/mcp.json"));
+    }
+
+    #[test]
+    fn excludes_the_agents_own_config_and_providers_toml() {
+        assert!(is_excluded("config/config.toml"));
+        assert!(is_excluded("config/providers.toml"));
+        // A look-alike path elsewhere in the tree is still tracked.
+        assert!(!is_excluded("skills/config/config.toml"));
     }
 
     #[test]

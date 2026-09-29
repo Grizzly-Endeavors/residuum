@@ -122,7 +122,7 @@ pub(crate) async fn run_chat_command(
             tracing::info!(interface, "reload requested via chat command");
             if dispatch
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Root)
+                .send(crate::gateway::types::ReloadSignal::Agent)
                 .is_err()
             {
                 tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");

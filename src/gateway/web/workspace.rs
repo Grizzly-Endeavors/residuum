@@ -560,6 +560,7 @@ fn diagnose_write_content(
     let paths = crate::diagnostics::DiagnosticsPaths {
         config_dir: state.config_dir.clone(),
         workspace_dir: state.workspace_dir.clone(),
+        hub_dir: state.hub_dir.clone(),
     };
 
     let Ok(text) = std::str::from_utf8(bytes) else {
@@ -1299,7 +1300,9 @@ mod tests {
 
     fn make_state(ws_dir: PathBuf) -> ConfigApiState {
         super::super::ConfigApiState {
+            hub_dir: ws_dir.clone(),
             config_dir: ws_dir.clone(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
@@ -1689,7 +1692,9 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let state = super::super::ConfigApiState {
+            hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
@@ -2290,7 +2295,9 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let state = super::super::ConfigApiState {
+            hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
@@ -2884,7 +2891,9 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let state = super::super::ConfigApiState {
+            hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),

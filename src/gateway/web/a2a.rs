@@ -79,7 +79,7 @@ fn error_response(e: &A2aKeyError) -> (StatusCode, String) {
 pub(super) async fn api_a2a_keys_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<ListA2aKeysResponse>, (StatusCode, String)> {
-    let snapshot = A2aKeys::new(state.config_dir)
+    let snapshot = A2aKeys::new(state.hub_dir)
         .snapshot()
         .await
         .map_err(|e| error_response(&e))?;
@@ -96,7 +96,7 @@ pub(super) async fn api_a2a_keys_create(
     state
         .checkpoint_config_before_write(format!("create a2a key '{}'", req.name))
         .await;
-    let token = A2aKeys::new(state.config_dir)
+    let token = A2aKeys::new(state.hub_dir)
         .create(&req.name, req.description.as_deref())
         .await
         .map_err(|e| error_response(&e))?;
@@ -114,7 +114,7 @@ pub(super) async fn api_a2a_keys_revoke(
     let checkpoint_id = state
         .checkpoint_config_id_before_write(format!("revoke a2a key '{name}'"))
         .await;
-    A2aKeys::new(state.config_dir)
+    A2aKeys::new(state.hub_dir)
         .revoke(&name)
         .await
         .map_err(|e| error_response(&e))?;
@@ -400,33 +400,49 @@ impl Default for A2aStatusConfig {
     }
 }
 
-fn read_a2a_status_config(config_dir: &FsPath) -> A2aStatusConfig {
+/// Read the A2A settings the status endpoints report: the listener's
+/// `enabled`/`port`/`public_url` and the gateway bind from the hub config,
+/// and this agent's `visibility` from its own config. Reads the raw TOML
+/// rather than a resolved config so a file that fails full validation still
+/// reports what it does say.
+fn read_a2a_status_config(hub_dir: &FsPath, agent_config_dir: &FsPath) -> A2aStatusConfig {
     let default = A2aStatusConfig::default();
-    let Ok(raw) = std::fs::read_to_string(config_dir.join("config.toml")) else {
-        return default;
+    let read_table = |path: std::path::PathBuf| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
     };
-    let Ok(value) = toml::from_str::<toml::Value>(&raw) else {
-        return default;
-    };
-    let a2a_table = value.get("a2a").and_then(toml::Value::as_table);
-    let gateway_table = value.get("gateway").and_then(toml::Value::as_table);
+    let hub_value = read_table(hub_dir.join("config.toml"));
+    let agent_value = read_table(agent_config_dir.join("config.toml"));
+    let hub_a2a = hub_value
+        .as_ref()
+        .and_then(|v| v.get("a2a"))
+        .and_then(toml::Value::as_table);
+    let gateway_table = hub_value
+        .as_ref()
+        .and_then(|v| v.get("gateway"))
+        .and_then(toml::Value::as_table);
+    let agent_a2a = agent_value
+        .as_ref()
+        .and_then(|v| v.get("a2a"))
+        .and_then(toml::Value::as_table);
     A2aStatusConfig {
-        enabled: a2a_table
+        enabled: hub_a2a
             .and_then(|t| t.get("enabled"))
             .and_then(toml::Value::as_bool)
             .unwrap_or(default.enabled),
-        port: a2a_table
+        port: hub_a2a
             .and_then(|t| t.get("port"))
             .and_then(toml::Value::as_integer)
             .and_then(|v| u16::try_from(v).ok())
             .unwrap_or(default.port),
-        public_url: a2a_table
+        public_url: hub_a2a
             .and_then(|t| t.get("public_url"))
             .and_then(toml::Value::as_str)
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_string),
-        visibility: match a2a_table
+        visibility: match agent_a2a
             .and_then(|t| t.get("visibility"))
             .and_then(toml::Value::as_str)
         {
@@ -529,7 +545,7 @@ pub(crate) fn a2a_status_router(state: A2aStatusApiState) -> axum::Router {
 pub(super) async fn api_a2a_status(
     State(state): State<A2aStatusApiState>,
 ) -> Json<A2aStatusResponse> {
-    let cfg = read_a2a_status_config(&state.config.config_dir);
+    let cfg = read_a2a_status_config(&state.config.hub_dir, &state.config.config_dir);
     let listener_running = if cfg.enabled {
         probe_listener_running(cfg.port).await
     } else {
@@ -559,7 +575,7 @@ pub(super) async fn api_a2a_status(
 pub(super) async fn api_a2a_card(
     State(state): State<A2aStatusApiState>,
 ) -> Result<Json<a2a::AgentCard>, (StatusCode, String)> {
-    let cfg = read_a2a_status_config(&state.config.config_dir);
+    let cfg = read_a2a_status_config(&state.config.hub_dir, &state.config.config_dir);
     let card_path = WorkspaceLayout::new(&state.config.workspace_dir).agent_card_json();
     let file = AgentCardFile::load(&card_path)
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, plain_card_error(&e)))?;
@@ -585,7 +601,9 @@ mod tests {
 
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
+            hub_dir: dir.to_path_buf(),
             config_dir: dir.to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -655,7 +673,7 @@ mod tests {
         let stored = state
             .checkpoints
             .file_content_at(
-                crate::checkpoints::RepoKind::Config,
+                crate::checkpoints::RepoKind::Hub,
                 id.clone(),
                 "a2a-keys.toml".to_string(),
             )
@@ -666,7 +684,7 @@ mod tests {
             "the returned checkpoint must still contain the caller-key file"
         );
 
-        std::fs::write(state.config_dir.join("config.toml"), "later = true").unwrap();
+        std::fs::write(state.hub_dir.join("config.toml"), "later = true").unwrap();
         let later = state
             .checkpoint_config_id_before_write("later config write")
             .await

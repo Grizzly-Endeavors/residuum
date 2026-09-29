@@ -99,7 +99,7 @@
           ...fields.webhooks.slice(idx),
         ];
       },
-      "config",
+      "agent_config",
       "config.toml",
       onReload,
     );
@@ -740,7 +740,7 @@
         <div class="integration-desc">
           Extra directories prepended to the PATH of spawned commands (the exec tool and MCP stdio
           servers). Drop static binaries in here to make them available without rebuilding.
-          <code>~/.residuum/bin</code> is always included.
+          <code>~/.residuum/hub/bin</code> is always included.
         </div>
         {#each fields.tools_path as dir, i (dir)}
           <div class="skill-dir-entry">

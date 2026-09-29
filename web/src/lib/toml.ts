@@ -1,6 +1,7 @@
 // ── Config Generators ───────────────────────────────────────────────
 //
-// Generates config.toml, providers.toml, and mcp.json from wizard state.
+// Generates hub/config.toml, the agent's config.toml and providers.toml, and
+// mcp.json from wizard state.
 
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
@@ -9,12 +10,14 @@ function escapeTomlString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-/** Generate config.toml content (timezone, integrations). */
+/** Generate hub/config.toml content (the timezone every agent shares). */
+export function generateHubConfigToml(state: SetupWizardState): string {
+  return `timezone = "${escapeTomlString(state.timezone)}"\n`;
+}
+
+/** Generate the agent's config.toml content (integrations). */
 export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
-
-  if (state.userName) lines.push(`name = "${escapeTomlString(state.userName)}"`);
-  lines.push(`timezone = "${escapeTomlString(state.timezone)}"`);
 
   // Discord (top-level section)
   if (state.integrations.discordToken) {

@@ -17,7 +17,7 @@ pub use runtime::{AgentKeys, AgentKeysSnapshot, SharedAgentKeys};
 pub use store::{
     AgentKeyInfo, AgentKeyStore, KeyCreator, env_var_for, validate_name, validate_value,
 };
-pub(crate) use store::{ENCRYPTED_FILE, KEY_FILE, LOCK_FILE};
+pub(crate) use store::{ENCRYPTED_FILE, LOCK_FILE};
 
 use thiserror::Error;
 

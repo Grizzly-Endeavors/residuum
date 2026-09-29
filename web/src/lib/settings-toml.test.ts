@@ -7,6 +7,7 @@ import {
   diffProviders,
   modelRoleJson,
   parseConfigToml,
+  splitConfigPatch,
   parseMcpJson,
 } from "./settings-toml";
 import type { McpServerEntry, SettingsProviderEntry } from "./types";
@@ -314,5 +315,51 @@ describe("a2a settings diff", () => {
     const baseline = defaultConfigFields();
     const current = { ...baseline, a2a_enabled: false };
     expect(diffConfigFields(baseline, current)).toEqual({ a2a: { enabled: false } });
+  });
+});
+
+describe("hub and agent config split", () => {
+  it("merges hub-owned and agent-owned keys of a shared section into one form", () => {
+    const fields = parseConfigToml(
+      '[a2a]\nvisibility = "private"\n[background]\nidle_timeout_spawned_minutes = 7\n',
+      'timezone = "Europe/Paris"\n[a2a]\nport = 7799\n[background]\nmax_concurrent = 9\n[gateway]\nport = 9001\n',
+    );
+    expect(fields.timezone).toBe("Europe/Paris");
+    expect(fields.gateway_port).toBe("9001");
+    expect(fields.a2a_port).toBe("7799");
+    expect(fields.a2a_visibility).toBe("private");
+    expect(fields.bg_max_concurrent).toBe("9");
+    expect(fields.bg_idle_timeout_spawned_minutes).toBe("7");
+  });
+
+  it("routes each changed key to the file that owns it", () => {
+    const split = splitConfigPatch({
+      timezone: "UTC",
+      gateway: { port: 9001 },
+      cloud: { enabled: false },
+      a2a: { port: 7799, visibility: "private" },
+      background: { max_concurrent: 9, hop_hard_limit: 12, subagent_depth_cap: 2 },
+      memory: { observer_cooldown_secs: 5 },
+      webhooks: { gh: { routing: "inbox" } },
+    });
+    expect(split.hub).toEqual({
+      timezone: "UTC",
+      gateway: { port: 9001 },
+      cloud: { enabled: false },
+      a2a: { port: 7799 },
+      background: { max_concurrent: 9, hop_hard_limit: 12 },
+    });
+    expect(split.agent).toEqual({
+      a2a: { visibility: "private" },
+      background: { subagent_depth_cap: 2 },
+      memory: { observer_cooldown_secs: 5 },
+      webhooks: { gh: { routing: "inbox" } },
+    });
+  });
+
+  it("leaves a shared section out of the file that owns none of its changed keys", () => {
+    const split = splitConfigPatch({ a2a: { visibility: "private" } });
+    expect(split.hub).toEqual({});
+    expect(split.agent).toEqual({ a2a: { visibility: "private" } });
   });
 });

@@ -468,6 +468,7 @@ mod tests {
         crate::diagnostics::DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
         }
     }
 

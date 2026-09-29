@@ -100,12 +100,12 @@ pub fn init_daemon_tracing(foreground: bool, log_level: LogLevel) {
         eprintln!("warning: filter reload handle was already initialized");
     }
 
-    let log_dir = crate::config::Config::config_dir().map_or_else(
+    let log_dir = crate::config::default_hub_dir().map_or_else(
         |_| {
             eprintln!("warning: could not determine log directory; logs will be written to ./logs");
             std::path::PathBuf::from("logs")
         },
-        |dir| dir.join("logs"),
+        |dir| crate::config::HubPaths::new(dir).logs_dir(),
     );
 
     let log_prefix = "serve";

@@ -19,7 +19,7 @@ pub(super) struct StopArgs;
 pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
 
-    let pid_path = residuum::config::Config::config_dir()?.join("residuum.pid");
+    let pid_path = residuum::daemon::pid_file_path()?;
     let label = "gateway";
 
     // Layer 1: File lock check
@@ -39,8 +39,7 @@ pub(super) async fn run_stop_command(_args: &StopArgs) -> Result<(), FatalError>
     let pid = read_pid_file(&pid_path)?;
 
     // Layer 2: HTTP graceful shutdown
-    let config_dir = residuum::config::Config::config_dir()?;
-    let gateway_addr = super::resolve_gateway_addr(&config_dir);
+    let gateway_addr = super::resolve_gateway_addr(&residuum::config::residuum_root()?);
 
     let http_ok = try_http_shutdown(&gateway_addr).await;
 

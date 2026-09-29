@@ -792,14 +792,25 @@ pub struct StandaloneBackendConfig {
     pub base_url: Option<String>,
 }
 
-/// Validated runtime configuration.
+/// Validated runtime configuration for one agent.
 ///
 /// All provider roles are fully resolved at load time. Consumers read fields
 /// directly — no fallback chains needed.
+///
+/// A handful of fields (`gateway`, `cloud`, `tracing`, `timezone`,
+/// `a2a.enabled`/`a2a.port`/`a2a.public_url`, and
+/// `background.max_concurrent`/`background.hop_soft_limit`/
+/// `background.hop_hard_limit`) belong to the hub: they live in
+/// `hub/config.toml` (see [`crate::config::HubConfig`]) and are copied in
+/// here at resolve time so the rest of the codebase reads one flat `Config`.
+/// Every other field is resolved from this agent's own files.
 #[derive(Clone, PartialEq)]
 pub struct Config {
-    /// User's display name (what the agent calls them).
-    pub name: Option<String>,
+    /// This agent's name — its directory name and identity everywhere
+    /// (addresses, A2A path segment).
+    pub agent_name: String,
+    /// Whether this agent starts automatically when the hub starts.
+    pub autostart: bool,
     /// Fully resolved main agent provider chain (failover).
     pub main: Vec<ProviderSpec>,
     /// Fully resolved observer provider chain (failover).
@@ -812,7 +823,7 @@ pub struct Config {
     pub subconscious: Vec<ProviderSpec>,
     /// Fully resolved embedding provider (None if not configured).
     pub embedding: Option<ProviderSpec>,
-    /// Path to the workspace root directory.
+    /// Path to this agent's workspace root directory (`~/.residuum/<name>`).
     pub workspace_dir: PathBuf,
     /// Request timeout in seconds.
     pub timeout_secs: u64,
@@ -826,11 +837,11 @@ pub struct Config {
     pub subconscious_settings: SubconsciousSettings,
     /// Activity-triggered learning loop settings (turn-count fallback).
     pub learning: LearningConfig,
-    /// WebSocket gateway configuration.
+    /// WebSocket gateway configuration. Hub-owned; copied from `HubConfig`.
     pub gateway: GatewayConfig,
-    /// IANA timezone for the agent (e.g. `America/New_York`).
+    /// IANA timezone, shared by every agent. Hub-owned; copied from `HubConfig`.
     pub timezone: chrono_tz::Tz,
-    /// Cloud tunnel configuration (None if `[cloud]` section absent or disabled).
+    /// Cloud tunnel configuration. Hub-owned; copied from `HubConfig`.
     pub cloud: Option<CloudConfig>,
     /// Discord bot configuration (None if `[discord]` section absent or no token).
     pub discord: Option<DiscordConfig>,
@@ -838,7 +849,8 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
     /// Microsoft Teams bot configuration (None if `[teams]` section absent).
     pub teams: Option<TeamsConfig>,
-    /// `Agent2Agent` (A2A) protocol configuration.
+    /// `Agent2Agent` (A2A) protocol configuration. `enabled`/`port`/`public_url`
+    /// are hub-owned (copied from `HubConfig`); `visibility` is this agent's own.
     pub a2a: A2aConfig,
     /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEntry>,
@@ -848,7 +860,9 @@ pub struct Config {
     pub tools: ToolsConfig,
     /// Retry configuration for model provider calls.
     pub retry: RetryConfig,
-    /// Background task configuration.
+    /// Background task configuration. `max_concurrent`/`hop_soft_limit`/
+    /// `hop_hard_limit` are hub-owned (copied from `HubConfig`); everything
+    /// else is this agent's own.
     pub background: BackgroundConfig,
     /// Agent ability gates.
     pub agent: AgentAbilitiesConfig,
@@ -860,11 +874,11 @@ pub struct Config {
     pub thinking: Option<crate::inference::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
-    /// Tracing and observability configuration.
+    /// Tracing and observability configuration. Hub-owned; copied from `HubConfig`.
     pub tracing: TracingConfig,
     /// Per-role overrides for temperature and thinking.
     pub role_overrides: HashMap<String, RoleOverrides>,
-    /// Directory this config was loaded from.
+    /// Directory this config was loaded from (`<agent>/config`).
     pub config_dir: PathBuf,
     /// User-facing notices describing what was skipped or degraded while
     /// loading this config — an unknown key, a dropped fallback provider,
@@ -877,7 +891,8 @@ pub struct Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("name", &self.name)
+            .field("agent_name", &self.agent_name)
+            .field("autostart", &self.autostart)
             .field("main", &self.main)
             .field("observer", &self.observer)
             .field("reflector", &self.reflector)

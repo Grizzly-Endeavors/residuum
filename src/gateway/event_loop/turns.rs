@@ -810,7 +810,8 @@ mod tests {
     /// `publish_turn_outcome`'s tests, the rest is filler to satisfy the type.
     fn test_config() -> Config {
         Config {
-            name: None,
+            agent_name: "test-agent".to_string(),
+            autostart: true,
             main: vec![],
             observer: vec![],
             reflector: vec![],

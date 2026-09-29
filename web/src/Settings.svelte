@@ -7,22 +7,28 @@
     SettingsProviderEntry,
     SettingsModelAssignments,
     Diagnostic,
+    ValidateResponse,
   } from "./lib/types";
   import {
     fetchConfigRaw,
+    fetchHubConfigRaw,
     fetchProvidersRaw,
     fetchMcpRaw,
     putConfigRaw,
+    putHubConfigRaw,
     putProvidersRaw,
     putMcpRaw,
     patchConfig,
+    patchHubConfig,
     patchProviders,
     patchMcp,
     storeSecret,
     validateConfig,
+    validateHubConfig,
     validateProviders,
     validateWorkspaceFile,
     CACHE_KEY_CONFIG_RAW,
+    CACHE_KEY_HUB_CONFIG_RAW,
     CACHE_KEY_PROVIDERS_RAW,
     CACHE_KEY_MCP_RAW,
   } from "./lib/api";
@@ -35,6 +41,7 @@
     parseProvidersToml,
     parseMcpJson,
     diffConfigFields,
+    splitConfigPatch,
     diffProviders,
     diffMcpServers,
     defaultConfigFields,
@@ -77,20 +84,25 @@
 
   // Raw text (source of truth from last save/load)
   let rawConfig = $state("");
+  let rawHubConfig = $state("");
   let rawProviders = $state("");
   let rawMcp = $state("");
 
   // Advanced mode editing buffers
   let editConfig = $state("");
+  let editHubConfig = $state("");
   let editProviders = $state("");
   let editMcp = $state("");
-  let advancedTab = $state<"config" | "providers" | "mcp">("config");
+  let advancedTab = $state<"config" | "hub" | "providers" | "mcp">("config");
 
   // Live diagnostics for the raw editors, refreshed on a debounce while
   // typing and replaced with each save's own diagnostics after saving.
-  let rawDiagnostics = $state<{ config: Diagnostic[]; providers: Diagnostic[]; mcp: Diagnostic[] }>(
-    { config: [], providers: [], mcp: [] },
-  );
+  let rawDiagnostics = $state<{
+    config: Diagnostic[];
+    hub: Diagnostic[];
+    providers: Diagnostic[];
+    mcp: Diagnostic[];
+  }>({ config: [], hub: [], providers: [], mcp: [] });
   let activeRawDiagnostics = $derived(rawDiagnostics[advancedTab]);
 
   // Form state
@@ -141,12 +153,14 @@
 
   onMount(async () => {
     try {
-      const [cfgRaw, provRaw, mcpRaw] = await Promise.all([
+      const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
         fetchConfigRaw(),
+        fetchHubConfigRaw(),
         fetchProvidersRaw(),
         fetchMcpRaw(),
       ]);
       rawConfig = cfgRaw;
+      rawHubConfig = hubRaw;
       rawProviders = provRaw;
       rawMcp = mcpRaw;
 
@@ -163,7 +177,7 @@
   });
 
   function parseAllToForm() {
-    configFields = parseConfigToml(rawConfig);
+    configFields = parseConfigToml(rawConfig, rawHubConfig);
     const prov = parseProvidersToml(rawProviders);
     providerEntries = prov.providers;
     modelAssignments = prov.models;
@@ -205,8 +219,9 @@
   async function reloadConfigFile(): Promise<void> {
     try {
       invalidate(CACHE_KEY_CONFIG_RAW);
-      rawConfig = await fetchConfigRaw();
-      configFields = parseConfigToml(rawConfig);
+      invalidate(CACHE_KEY_HUB_CONFIG_RAW);
+      [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(), fetchHubConfigRaw()]);
+      configFields = parseConfigToml(rawConfig, rawHubConfig);
       baselineConfigFields = $state.snapshot(configFields);
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: "Couldn't reload config.toml." }));
@@ -234,6 +249,7 @@
     if (mode === "raw") {
       // Entering raw — load text editors
       editConfig = rawConfig;
+      editHubConfig = rawHubConfig;
       editProviders = rawProviders;
       editMcp = rawMcp;
     } else if (settingsMode === "raw") {
@@ -267,17 +283,20 @@
     statusMsg = "";
     statusKind = "";
     try {
-      const [cfgRaw, provRaw, mcpRaw] = await Promise.all([
+      const [cfgRaw, hubRaw, provRaw, mcpRaw] = await Promise.all([
         fetchConfigRaw(),
+        fetchHubConfigRaw(),
         fetchProvidersRaw(),
         fetchMcpRaw(),
       ]);
       rawConfig = cfgRaw;
+      rawHubConfig = hubRaw;
       rawProviders = provRaw;
       rawMcp = mcpRaw;
 
       if (settingsMode === "raw") {
         editConfig = rawConfig;
+        editHubConfig = rawHubConfig;
         editProviders = rawProviders;
         editMcp = rawMcp;
       } else {
@@ -310,7 +329,7 @@
 
   function currentSnapshot(): string {
     if (settingsMode === "raw") {
-      return `adv:${editConfig}|${editProviders}|${editMcp}`;
+      return `adv:${editConfig}|${editHubConfig}|${editProviders}|${editMcp}`;
     }
     return `form:${JSON.stringify($state.snapshot(configFields))}|${JSON.stringify($state.snapshot(providerEntries))}|${JSON.stringify($state.snapshot(modelAssignments))}|${JSON.stringify($state.snapshot(mcpServers))}`;
   }
@@ -338,6 +357,7 @@
   // Raw mode: watch editor buffers for changes
   $effect(() => {
     editConfig;
+    editHubConfig;
     editProviders;
     editMcp;
     if (settingsMode === "raw") scheduleAutoSave();
@@ -348,11 +368,15 @@
   $effect(() => {
     if (settingsMode !== "raw") return;
     const cfg = editConfig;
+    const hub = editHubConfig;
     const prov = editProviders;
     const mcp = editMcp;
     const timer = setTimeout(() => {
       void validateConfig(cfg).then((r) => {
         rawDiagnostics = { ...rawDiagnostics, config: r.diagnostics ?? [] };
+      });
+      void validateHubConfig(hub).then((r) => {
+        rawDiagnostics = { ...rawDiagnostics, hub: r.diagnostics ?? [] };
       });
       void validateProviders(prov).then((r) => {
         rawDiagnostics = { ...rawDiagnostics, providers: r.diagnostics ?? [] };
@@ -393,15 +417,24 @@
   /**
    * Raw mode: PUT the whole text the user typed, unchanged from before.
    *
-   * `config.toml`, `providers.toml`, and `mcp.json` all always save now,
-   * even when invalid — the reload that picks each one up keeps the
+   * The hub's `config.toml`, the agent's `config.toml` and `providers.toml`,
+   * and `mcp.json` all always save, even when invalid — the reload that picks each one up keeps the
    * gateway running on its current config/workspace state and reports a
    * diagnostic instead of losing the edit.
    */
   async function autoSaveRaw(): Promise<void> {
     const cfgToml = editConfig;
+    const hubToml = editHubConfig;
     const provToml = editProviders;
     const mcpJson = editMcp;
+
+    // The hub config first: the agent's files validate against it on disk.
+    // Only when it changed: each hub save reloads the whole hub.
+    const hubChanged = hubToml !== rawHubConfig;
+    const hubResult: ValidateResponse = hubChanged
+      ? await putHubConfigRaw(hubToml)
+      : { valid: true, diagnostics: rawDiagnostics.hub };
+    rawHubConfig = hubToml;
 
     const provResult = await putProvidersRaw(provToml);
     rawProviders = provToml;
@@ -414,6 +447,7 @@
 
     rawDiagnostics = {
       config: cfgResult.diagnostics ?? [],
+      hub: hubResult.diagnostics ?? [],
       providers: provResult.diagnostics ?? [],
       mcp: mcpResult.diagnostics ?? [],
     };
@@ -421,6 +455,7 @@
     lastSavedSnapshot = currentSnapshot();
     const hadProblems =
       (cfgResult.diagnostics?.length ?? 0) > 0 ||
+      (hubResult.diagnostics?.length ?? 0) > 0 ||
       (provResult.diagnostics?.length ?? 0) > 0 ||
       (mcpResult.diagnostics?.length ?? 0) > 0;
     showStatus(hadProblems ? "Saved — see the problems noted below" : "Saved", "success");
@@ -453,11 +488,25 @@
       baselineModelAssignments,
       currentModels,
     );
-    const configDiff = diffConfigFields(baselineConfigFields, currentConfig);
+    const { hub: hubDiff, agent: configDiff } = splitConfigPatch(
+      diffConfigFields(baselineConfigFields, currentConfig),
+    );
     const mcpDiff = diffMcpServers(baselineMcpServers, currentMcp);
 
     const saved: string[] = [];
     const failed: { file: string; error: string }[] = [];
+
+    // The agent's files validate against the hub's config on disk, so the
+    // hub's changes go first. If they fail, the agent's config changes wait:
+    // they may depend on the hub change.
+    const hubResult: ValidateResponse =
+      Object.keys(hubDiff).length > 0 ? await patchHubConfig(hubDiff) : { valid: true };
+    if (!hubResult.valid) {
+      failed.push({ file: "hub config.toml", error: hubResult.error ?? "unknown error" });
+    } else if (Object.keys(hubDiff).length > 0) {
+      saved.push("hub config.toml");
+      pendingSave.recordWrite("hub/config.toml", hubResult.checkpoint_id ?? null);
+    }
 
     const provResult = await patchProviders(providersDiff);
     if (provResult.valid) {
@@ -473,7 +522,7 @@
 
     // config.toml validation reads providers.toml from disk, so only
     // attempt it once providers.toml is in the state config expects.
-    if (provResult.valid) {
+    if (provResult.valid && hubResult.valid) {
       const cfgResult = await patchConfig(configDiff);
       if (cfgResult.valid) {
         baselineConfigFields = currentConfig;
@@ -681,6 +730,13 @@
           >
           <button
             class="advanced-tab"
+            class:active={advancedTab === "hub"}
+            onclick={() => {
+              advancedTab = "hub";
+            }}>hub config.toml</button
+          >
+          <button
+            class="advanced-tab"
             class:active={advancedTab === "providers"}
             onclick={() => {
               advancedTab = "providers";
@@ -696,6 +752,8 @@
         </div>
         {#if advancedTab === "config"}
           <textarea class="toml-editor" bind:value={editConfig}></textarea>
+        {:else if advancedTab === "hub"}
+          <textarea class="toml-editor" bind:value={editHubConfig}></textarea>
         {:else if advancedTab === "providers"}
           <textarea class="toml-editor" bind:value={editProviders}></textarea>
         {:else}
