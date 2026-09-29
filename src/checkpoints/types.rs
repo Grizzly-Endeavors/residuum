@@ -13,6 +13,10 @@ pub enum RepoKind {
     /// root (the agent directory minus `config/config.toml` and
     /// `config/providers.toml`, which the `AgentConfig` repo tracks instead).
     Workspace,
+    /// `hub/checkpoints/team.git`, work tree = the shared `team/` directory
+    /// (team rules, user profile, wiki, workbench, skills) minus the team
+    /// wiki's search index and atomic-write temp files.
+    Team,
     /// `hub/checkpoints/agent-config.git`: exactly the agent's own
     /// `config/config.toml` and `config/providers.toml`. Local-only forever
     /// (may hold plaintext provider keys).
@@ -28,6 +32,7 @@ impl RepoKind {
     pub(super) fn dir_name(self) -> &'static str {
         match self {
             Self::Workspace => "workspace.git",
+            Self::Team => "team.git",
             Self::AgentConfig => "agent-config.git",
             Self::Hub => "hub-config.git",
         }

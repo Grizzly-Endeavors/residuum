@@ -344,7 +344,7 @@ export async function storeSecret(name: string, value: string): Promise<SecretRe
 export interface CompleteSetupPayload {
   hubConfig: string;
   agentName: string;
-  /** The user's name, written to USER.md. Empty when they skipped it. */
+  /** The user's name, written to the team's USER.md. Empty when they skipped it. */
   userName: string;
   config: string;
   providers: string;
@@ -668,11 +668,31 @@ export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
+/** What deleting an artifact removed, and the team checkpoint that can bring it back. */
+export interface ArtifactDeletion {
+  /** Team-relative paths of everything removed (`workbench/chart.html`, `workbench/graph`). */
+  paths: string[];
+  /** The pre-delete team checkpoint, or `null` when none was recorded. */
+  checkpointId: string | null;
+}
+
 /** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
-export async function deleteWorkbenchArtifact(name: string): Promise<void> {
-  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+export async function deleteWorkbenchArtifact(name: string): Promise<ArtifactDeletion> {
+  const body = await apiFetch<{ removed?: unknown; checkpoint_id?: unknown }>(
+    `/api/workbench/artifacts/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  const removed = Array.isArray(body.removed)
+    ? body.removed.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return {
+    // A folder artifact is reported as `name/`; the checkpoint stores it as `name`.
+    paths: removed.map((entry) => `workbench/${entry.replace(/\/$/, "")}`),
+    checkpointId:
+      typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
+        ? body.checkpoint_id
+        : null,
+  };
 }
 
 // ── Workspace API wrappers ──────────────────────────────────────────

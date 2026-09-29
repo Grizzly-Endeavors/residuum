@@ -23,6 +23,7 @@
   let pathFilter = $state("");
   let stats = $state<Record<RepoKind, RepoStats | null>>({
     workspace: null,
+    team: null,
     agent_config: null,
     hub: null,
   });
@@ -46,12 +47,13 @@
 
   async function loadStats(): Promise<void> {
     try {
-      const [workspace, agent_config, hub] = await Promise.all([
+      const [workspace, team, agent_config, hub] = await Promise.all([
         fetchCheckpointStats("workspace"),
+        fetchCheckpointStats("team"),
         fetchCheckpointStats("agent_config"),
         fetchCheckpointStats("hub"),
       ]);
-      stats = { workspace, agent_config, hub };
+      stats = { workspace, team, agent_config, hub };
     } catch {
       // Stats are a footnote, not load-bearing — the list still works without them.
     }
@@ -137,7 +139,8 @@
       const outcome = await restoreCheckpoint(selectedId, repo, path);
       toast.success(`Restored ${path}.`);
       void loadStats();
-      if (repo === "workspace" || outcome.restored_paths.length > 0) void loadList(true);
+      if (repo === "workspace" || repo === "team" || outcome.restored_paths.length > 0)
+        void loadList(true);
     } catch (err: unknown) {
       toast.error(userErrorMessage(err, { action: `Couldn't restore ${path}.` }));
     } finally {
@@ -178,6 +181,13 @@
           onclick={() => switchRepo("workspace")}
         >
           Workspace
+        </button>
+        <button
+          class="settings-mode-btn"
+          class:active={repo === "team"}
+          onclick={() => switchRepo("team")}
+        >
+          Team
         </button>
         <button
           class="settings-mode-btn"

@@ -3,4 +3,4 @@
 /**
  * Which checkpoint repository an operation targets.
  */
-export type RepoKind = "workspace" | "agent_config" | "hub";
+export type RepoKind = "workspace" | "team" | "agent_config" | "hub";

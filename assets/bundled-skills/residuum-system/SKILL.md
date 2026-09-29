@@ -14,7 +14,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Config | `write_file`, `edit_file` | `config.toml`, `providers.toml` | [config](references/config.md) |
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
 | Checkpoints | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` (outside the workspace) | [checkpoints](references/checkpoints.md) |
-| Wiki | `read_file`, `write_file`, `edit_file` | `team/wiki/` | the `wiki` skill |
+| Wiki | `read_file`, `write_file`, `edit_file` | `team/wiki/` (your role page is `team/wiki/agents/<name>.md`) | the `wiki` skill |
 | Workbench | `read_file`, `write_file`, `edit_file` | `team/workbench/` (shared by every agent) | the `workbench` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
 | Inbox | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* | [inbox](references/inbox.md) |
@@ -61,5 +61,6 @@ team/
 ├── USER.md                  # User preferences (core facts only)
 └── wiki/                    # Open Knowledge Format knowledge base (agent-maintained)
     ├── index.md             # Root index — the only page injected into prompts
-    └── log.md               # Append-only change log
+    ├── log.md               # Append-only change log
+    └── agents/              # One role page per agent (you maintain yours), plus index.md
 ```
