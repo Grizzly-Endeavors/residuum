@@ -91,7 +91,7 @@ async fn run_setup_mode() -> Result<ForegroundExit, FatalError> {
 
     // Load whichever agent the wizard created and run the gateway.
     let hub_cfg = HubConfig::load_at(&hub_dir)?;
-    let agent_name = residuum::config::discover_single_agent(&tmp_root).ok_or_else(|| {
+    let agent_name = residuum::config::discover_single_agent(&tmp_root)?.ok_or_else(|| {
         FatalError::Config("setup completed, but no agent directory was created".to_string())
     })?;
     let agent_dir = tmp_root.join(&agent_name);
@@ -128,7 +128,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<ForegroundExit, 
     loop {
         HubConfig::bootstrap_at(&hub_dir)?;
 
-        let Some(agent_name) = residuum::config::discover_single_agent(&residuum_root) else {
+        let Some(agent_name) = residuum::config::discover_single_agent(&residuum_root)? else {
             tracing::info!("no agent found, starting setup wizard");
             // Box::pin reduces stack frame size — this future is large
             match Box::pin(residuum::gateway::setup::run_setup_server()).await? {

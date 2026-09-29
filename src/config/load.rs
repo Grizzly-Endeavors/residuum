@@ -10,12 +10,14 @@ use super::{Config, HubConfig};
 use super::{bootstrap, deserialize, resolve};
 
 impl Config {
-    /// Write default config files to an agent's `config/` directory if not
-    /// already present.
+    /// Create an agent's `config/` directory and regenerate its reference
+    /// templates.
     ///
-    /// - `config.toml` is created only if absent (minimal template for the user to edit).
     /// - `config.example.toml`/`providers.example.toml` are always regenerated (kept in
     ///   sync with the current schema).
+    /// - The live `config.toml`/`providers.toml` are never written here: an
+    ///   agent is discovered by its `config/config.toml`, so the caller writes it
+    ///   last, once the real configuration is complete.
     ///
     /// # Errors
     /// Returns `FatalError::Config` if the directory or files cannot be written.

@@ -17,14 +17,14 @@ Everything else lives in the agent's own `config/` directory (`~/.residuum/<agen
 │   ├── a2a-keys.toml, a2a-keys.lock
 │   ├── logs/, bin/, checkpoints/
 │   ├── residuum.pid, residuum.lock, residuum.ready, residuum.startup-error, crash.log
-│   └── *.last-known-good.toml, update markers
+│   └── *.last-known-good.toml (hub's and each agent's), update markers
 └── <agent-name>/              # the agent's directory, and its workspace root
     └── config/                # config.toml, providers.toml, channels.toml, mcp.json, agent-card.json, a2a.json
 ```
 
 `config::paths` (`src/config/paths.rs`) is the only place that resolves the literal `~/.residuum` path (`residuum_root`); everything else takes a hub directory or an agent directory as a parameter. `HubPaths` names every file under `hub/`.
 
-An agent is any directory directly under `~/.residuum/` that holds `config/config.toml`. `hub`, `team`, `agents`, and any name starting with `.` are never agents. A process runs exactly one agent: if more than one such directory exists, the first by name runs and a warning lists all of them. A fresh install, with nothing under `hub/` and no agent directory, goes through onboarding (the web setup wizard, or `residuum setup`), which asks for the user's name, the first agent's name, and the model configuration.
+An agent is any directory directly under `~/.residuum/` that holds `config/config.toml`; a symlink to such a directory counts. `hub`, `team`, `agents`, and any name starting with `.` are never agents. A missing `~/.residuum/` is a fresh install, but a `~/.residuum/` that exists and cannot be read is reported as an error (never treated as empty), so an unreadable install is not mistaken for a fresh one. A process runs exactly one agent: if more than one such directory exists, the first by name runs and a warning lists all of them. A fresh install, with nothing under `hub/` and no agent directory, goes through onboarding (the web setup wizard, or `residuum setup`), which asks for the user's name, the first agent's name, and the model configuration. Onboarding writes each file atomically and writes the agent's `config/config.toml` last, since that file is what makes the directory an agent: a failure partway through never leaves a discoverable half-configured agent, and setup can be run again. The setup endpoint refuses with a 409 when an agent already exists, so a running gateway's live agent is never overwritten.
 
 ### Agent names
 

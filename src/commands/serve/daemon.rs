@@ -65,7 +65,7 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     let gateway_addr = super::super::resolve_gateway_addr(&residuum_root);
 
     // Detect whether the child will enter setup mode (no agent exists yet)
-    let agent_name = residuum::config::discover_single_agent(&residuum_root);
+    let agent_name = residuum::config::discover_single_agent(&residuum_root)?;
     let needs_setup = args.setup || agent_name.is_none();
 
     // Catch an invalid config here, where the user can see the error. The

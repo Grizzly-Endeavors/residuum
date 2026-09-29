@@ -202,16 +202,9 @@ pub(super) async fn api_hub_config_raw_put(
     state
         .checkpoint_config_before_write("raw write hub config.toml")
         .await;
-    tokio::fs::write(&config_path, &body).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("failed to write hub config: {e}")),
-                diagnostics: Vec::new(),
-            }),
-        )
-    })?;
+    crate::util::fs::atomic_write(&config_path, &body)
+        .await
+        .map_err(|e| internal_error("write hub config", e))?;
 
     if let Some(reload_tx) = &state.reload_tx {
         reload_tx.send(super::super::ReloadSignal::Hub).ok();
@@ -628,41 +621,49 @@ pub(super) async fn api_mcp_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// Write the first agent's `providers.toml`, `config.toml`, and optional
-/// `mcp.json` from the onboarding request.
+/// A 500 response saying which step failed, in the shape every config
+/// handler uses.
+fn internal_error(action: &str, e: impl std::fmt::Display) -> (StatusCode, Json<ValidateResponse>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ValidateResponse {
+            valid: false,
+            error: Some(format!("failed to {action}: {e:#}")),
+            diagnostics: Vec::new(),
+        }),
+    )
+}
+
+/// Write the first agent's `providers.toml`, optional `mcp.json`, and
+/// `config.toml` from the onboarding request, each atomically.
+///
+/// `config.toml` goes last: an agent is discovered by that file, so a
+/// failure on an earlier write never leaves a discoverable half-configured
+/// agent behind.
 async fn write_first_agent_config_files(
     layout: &crate::workspace::layout::WorkspaceLayout,
     body: &CompleteSetupRequest,
 ) -> Result<(), (StatusCode, Json<ValidateResponse>)> {
-    let internal = |action: &str, e: std::io::Error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("failed to {action}: {e}")),
-                diagnostics: Vec::new(),
-            }),
-        )
-    };
-
-    // providers.toml first (agent config validation reads it from disk).
     let agent_config_dir = layout.config_dir();
-    tokio::fs::write(agent_config_dir.join("providers.toml"), &body.providers)
+    crate::util::fs::atomic_write(&agent_config_dir.join("providers.toml"), &body.providers)
         .await
-        .map_err(|e| internal("write providers.toml", e))?;
-    tokio::fs::write(agent_config_dir.join("config.toml"), &body.config)
-        .await
-        .map_err(|e| internal("write config.toml", e))?;
+        .map_err(|e| internal_error("write providers.toml", e))?;
 
     if let Some(ref mcp_json) = body.mcp_json {
         let mcp_path = layout.mcp_json();
         if let Some(parent) = mcp_path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| internal_error("create the mcp.json directory", e))?;
         }
-        tokio::fs::write(&mcp_path, mcp_json)
+        crate::util::fs::atomic_write(&mcp_path, mcp_json)
             .await
-            .map_err(|e| internal("write mcp.json", e))?;
+            .map_err(|e| internal_error("write mcp.json", e))?;
     }
+
+    crate::util::fs::atomic_write(&agent_config_dir.join("config.toml"), &body.config)
+        .await
+        .map_err(|e| internal_error("write config.toml", e))?;
     Ok(())
 }
 
@@ -673,7 +674,10 @@ async fn write_first_agent_config_files(
 /// with [`crate::config::validate_agent_name`]) under the residuum root,
 /// bootstraps its full workspace (`SOUL.md`, the wiki, bundled skills,
 /// `USER.md` personalized with `body.user_name`), and writes its
-/// `config.toml`/`providers.toml`/`mcp.json`.
+/// `config.toml`/`providers.toml`/`mcp.json`, `config.toml` last.
+///
+/// Answers 409 when an agent already exists, so a running gateway's live
+/// agent is never overwritten.
 pub(super) async fn api_complete_setup(
     State(state): State<ConfigApiState>,
     Json(body): Json<CompleteSetupRequest>,
@@ -688,18 +692,38 @@ pub(super) async fn api_complete_setup(
             }),
         )
     };
-    let internal = |action: &str, e: std::io::Error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("failed to {action}: {e}")),
-                diagnostics: Vec::new(),
-            }),
-        )
-    };
 
     crate::config::validate_agent_name(&body.agent_name).map_err(err)?;
+
+    let residuum_root = state
+        .hub_dir
+        .parent()
+        .map_or_else(|| state.hub_dir.clone(), std::path::Path::to_path_buf);
+    let agent_dir = residuum_root.join(&body.agent_name);
+
+    let existing = crate::config::discover_agents(&residuum_root)
+        .map_err(|e| internal_error("check for existing agents", e))?;
+    if !existing.is_empty() {
+        let message = if existing.contains(&body.agent_name) {
+            format!(
+                "An agent named '{}' already exists. Choose a different name, or change the existing agent from its settings.",
+                body.agent_name
+            )
+        } else {
+            format!(
+                "This residuum already has an agent ('{}'). Setup only creates the first agent.",
+                existing.join("', '")
+            )
+        };
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(message),
+                diagnostics: Vec::new(),
+            }),
+        ));
+    }
 
     // Parse and resolve the hub config on its own first — the agent config
     // resolves against it (timezone, gateway, ...).
@@ -713,12 +737,6 @@ pub(super) async fn api_complete_setup(
     let providers_file =
         toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
             .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
-
-    let residuum_root = state
-        .hub_dir
-        .parent()
-        .map_or_else(|| state.hub_dir.clone(), std::path::Path::to_path_buf);
-    let agent_dir = residuum_root.join(&body.agent_name);
 
     // Validate the agent config together with the hub config and providers.
     crate::config::resolve::from_file_and_env(
@@ -744,9 +762,9 @@ pub(super) async fn api_complete_setup(
             }),
         )
     })?;
-    tokio::fs::write(state.hub_dir.join("config.toml"), &body.hub_config)
+    crate::util::fs::atomic_write(&state.hub_dir.join("config.toml"), &body.hub_config)
         .await
-        .map_err(|e| internal("write hub config.toml", e))?;
+        .map_err(|e| internal_error("write hub config.toml", e))?;
 
     // Bootstrap the agent's full workspace (identity files, wiki, bundled
     // skills), personalized with the user's name.
@@ -1080,7 +1098,9 @@ mod tests {
         assert!(user_md.contains("Sam"), "USER.md: {user_md}");
         assert!(*done_rx.borrow(), "setup should be signalled complete");
         assert_eq!(
-            crate::config::discover_single_agent(root.path()).as_deref(),
+            crate::config::discover_single_agent(root.path())
+                .unwrap()
+                .as_deref(),
             Some("scout")
         );
     }
@@ -1115,5 +1135,99 @@ mod tests {
 
         assert!(result.is_err(), "timezone belongs in the hub config");
         assert!(!root.path().join("scout").exists());
+    }
+
+    #[tokio::test]
+    async fn complete_setup_answers_409_when_the_agent_already_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_config = root.path().join("scout/config");
+        std::fs::create_dir_all(&agent_config).unwrap();
+        std::fs::write(agent_config.join("config.toml"), "# live agent\n").unwrap();
+        std::fs::write(agent_config.join("providers.toml"), "# live providers\n").unwrap();
+        let (state, done_rx) = setup_state(root.path());
+
+        let Err((status, Json(response))) =
+            api_complete_setup(State(state), Json(setup_request("scout"))).await
+        else {
+            panic!("an existing agent must not be overwritten");
+        };
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(!response.valid);
+        assert!(response.error.unwrap().contains("already exists"));
+        assert!(!*done_rx.borrow(), "setup must not be signalled complete");
+        assert_eq!(
+            std::fs::read_to_string(agent_config.join("providers.toml")).unwrap(),
+            "# live providers\n"
+        );
+        assert!(!root.path().join("hub/config.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn complete_setup_answers_409_when_a_different_agent_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_config = root.path().join("first/config");
+        std::fs::create_dir_all(&agent_config).unwrap();
+        std::fs::write(agent_config.join("config.toml"), "").unwrap();
+        let (state, _done_rx) = setup_state(root.path());
+
+        let Err((status, Json(response))) =
+            api_complete_setup(State(state), Json(setup_request("second"))).await
+        else {
+            panic!("setup creates only the first agent");
+        };
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(response.error.unwrap().contains("first"));
+        assert!(!root.path().join("second").exists());
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_setup_leaves_no_discoverable_agent() {
+        let root = tempfile::tempdir().unwrap();
+        // A directory where providers.toml must go makes that write fail
+        // after the workspace exists but before config.toml is written.
+        std::fs::create_dir_all(root.path().join("scout/config/providers.toml")).unwrap();
+        let (state, done_rx) = setup_state(root.path());
+
+        let result = api_complete_setup(State(state), Json(setup_request("scout"))).await;
+
+        let Err((status, _)) = result else {
+            panic!("the blocked providers.toml write should fail setup");
+        };
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!*done_rx.borrow());
+        assert!(!root.path().join("scout/config/config.toml").exists());
+        assert!(
+            crate::config::discover_agents(root.path())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_setup_can_be_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let blocker = root.path().join("scout/config/providers.toml");
+        std::fs::create_dir_all(&blocker).unwrap();
+        let (first_state, _first_done_rx) = setup_state(root.path());
+        assert!(
+            api_complete_setup(State(first_state), Json(setup_request("scout")))
+                .await
+                .is_err()
+        );
+
+        std::fs::remove_dir(&blocker).unwrap();
+        let (retry_state, done_rx) = setup_state(root.path());
+        let Json(response) = api_complete_setup(State(retry_state), Json(setup_request("scout")))
+            .await
+            .unwrap();
+
+        assert!(response.valid);
+        assert!(*done_rx.borrow());
+        assert_eq!(
+            crate::config::discover_agents(root.path()).unwrap(),
+            vec!["scout".to_string()]
+        );
     }
 }

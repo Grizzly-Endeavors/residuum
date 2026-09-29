@@ -20,13 +20,28 @@ pub(super) fn ensure_config_loads_or_has_fallback(
 ) -> Result<(), FatalError> {
     let hub_dir = residuum::config::paths::hub_dir(residuum_root);
     let agent_dir = residuum::config::paths::agent_dir(residuum_root, agent_name);
+    // A broken hub config falls back to its last-known-good copy, and the
+    // agent config is then validated against that copy, so a bad agent
+    // config gets the same friendly error (or its own fallback) either way.
     let hub = match residuum::config::HubConfig::load_at(&hub_dir) {
         Ok(hub) => hub,
-        Err(err) if residuum::gateway::has_hub_last_known_good(&hub_dir) => {
-            tracing::warn!(error = %err, "hub config failed to load; the gateway will fall back to its last-known-good copy");
-            return Ok(());
+        Err(err) => {
+            let had_last_known_good = residuum::gateway::has_hub_last_known_good(&hub_dir);
+            match residuum::gateway::load_hub_last_known_good(&hub_dir) {
+                Ok(hub) => {
+                    tracing::warn!(error = %err, "hub config failed to load; the gateway will fall back to its last-known-good copy");
+                    hub
+                }
+                Err(_) => {
+                    return Err(invalid_config_error(
+                        &hub_dir,
+                        &agent_dir,
+                        &err,
+                        had_last_known_good,
+                    ));
+                }
+            }
         }
-        Err(err) => return Err(invalid_config_error(&hub_dir, &agent_dir, &err, false)),
     };
     match residuum::config::Config::load_agent_at(&agent_dir, &hub) {
         Ok(_) => Ok(()),
@@ -77,16 +92,14 @@ mod tests {
     #[test]
     fn message_names_both_possible_files_and_the_detail() {
         let err = FatalError::Config("timezone is required".to_string());
-        let message = invalid_config_error(
-            Path::new("/home/x/.residuum/hub"),
-            Path::new("/home/x/.residuum/assistant"),
-            &err,
-            false,
-        )
-        .to_string();
+        let root = Path::new("/home/x/.residuum");
+        let hub_dir = root.join("hub");
+        let agent_dir = root.join("assistant");
+        let message = invalid_config_error(&hub_dir, &agent_dir, &err, false).to_string();
         assert!(message.contains("timezone is required"));
-        assert!(message.contains("/home/x/.residuum/hub"));
-        assert!(message.contains("/home/x/.residuum/assistant/config"));
+        assert!(message.contains(&hub_dir.display().to_string()));
+        let agent_config_dir = agent_dir.join("config");
+        assert!(message.contains(&agent_config_dir.display().to_string()));
         assert!(!message.contains("last configuration that worked"));
     }
 
@@ -96,5 +109,87 @@ mod tests {
         let message =
             invalid_config_error(Path::new("/hub"), Path::new("/agent"), &err, true).to_string();
         assert!(message.contains("last configuration that worked"));
+    }
+
+    const VALID_PROVIDERS: &str = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+
+    /// A residuum root with a hub dir and an agent `scout` whose
+    /// `config.toml` is the given text.
+    fn root_with_agent(agent_config: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        let config_dir = root.path().join("scout").join("config");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(config_dir.join("config.toml"), agent_config).unwrap();
+        std::fs::write(config_dir.join("providers.toml"), VALID_PROVIDERS).unwrap();
+        root
+    }
+
+    /// Break the live hub config but leave a good last-known-good copy.
+    fn break_hub_with_good_copy(root: &Path) {
+        let hub_dir = root.join("hub");
+        std::fs::write(
+            hub_dir.join("config.last-known-good.toml"),
+            "timezone = \"UTC\"\n",
+        )
+        .unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "not valid toml [[[").unwrap();
+    }
+
+    #[test]
+    fn hub_fallback_with_a_good_agent_config_passes() {
+        let root = root_with_agent("");
+        break_hub_with_good_copy(root.path());
+        ensure_config_loads_or_has_fallback(root.path(), "scout").unwrap();
+    }
+
+    #[test]
+    fn hub_fallback_still_reports_a_bad_agent_config_in_plain_language() {
+        let root = root_with_agent("not valid toml [[[");
+        break_hub_with_good_copy(root.path());
+
+        let message = ensure_config_loads_or_has_fallback(root.path(), "scout")
+            .unwrap_err()
+            .to_string();
+
+        assert!(message.contains("configuration is invalid"), "{message}");
+        assert!(message.contains("scout"), "{message}");
+    }
+
+    #[test]
+    fn hub_fallback_with_a_bad_agent_config_uses_the_agents_own_fallback() {
+        let root = root_with_agent("not valid toml [[[");
+        break_hub_with_good_copy(root.path());
+        let hub_dir = root.path().join("hub");
+        std::fs::write(hub_dir.join("scout.config.last-known-good.toml"), "").unwrap();
+        std::fs::write(
+            hub_dir.join("scout.providers.last-known-good.toml"),
+            VALID_PROVIDERS,
+        )
+        .unwrap();
+
+        ensure_config_loads_or_has_fallback(root.path(), "scout").unwrap();
+    }
+
+    #[test]
+    fn a_broken_hub_config_without_a_saved_copy_is_reported() {
+        let root = root_with_agent("");
+        std::fs::write(
+            root.path().join("hub").join("config.toml"),
+            "not valid toml [[[",
+        )
+        .unwrap();
+
+        let message = ensure_config_loads_or_has_fallback(root.path(), "scout")
+            .unwrap_err()
+            .to_string();
+
+        assert!(message.contains("configuration is invalid"), "{message}");
+        assert!(
+            !message.contains("last configuration that worked"),
+            "{message}"
+        );
     }
 }

@@ -49,6 +49,7 @@ fn error_response(e: &CheckpointError) -> (StatusCode, String) {
         CheckpointError::NotFound(_)
         | CheckpointError::PathNotFound(_, _)
         | CheckpointError::InvalidCursor => StatusCode::NOT_FOUND,
+        CheckpointError::NotAConfigRepo => StatusCode::BAD_REQUEST,
         CheckpointError::Git(_) | CheckpointError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, e.to_string())
