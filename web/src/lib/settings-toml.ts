@@ -1033,13 +1033,7 @@ export function diffConfigFields(
 // ── Hub / agent ownership of config fields ──────────────────────────
 
 /** Top-level sections that live in the hub's `config.toml`. */
-const HUB_SECTIONS: ReadonlySet<string> = new Set([
-  "timezone",
-  "gateway",
-  "cloud",
-  "tracing",
-  "update",
-]);
+const HUB_SECTIONS: ReadonlySet<string> = new Set(["timezone", "gateway", "cloud", "tracing"]);
 
 /** Keys of shared sections (`[a2a]`, `[background]`) that live in the hub's `config.toml`. */
 const HUB_SECTION_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {

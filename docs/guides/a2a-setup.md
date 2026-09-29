@@ -9,7 +9,7 @@ A2A is on by default. The steps below are about who can reach your agent, and wh
 Other agents reach yours at a public address, which is shown in **Settings → A2A → Status**:
 
 - **Through the Residuum relay** (when you're signed in to the cloud relay): `https://<your-username>.agent-residuum.com/a2a/<instance>`. You don't need to configure anything.
-- **Through your own tunnel or reverse proxy**: point it at the A2A port (`7702` by default), never at the gateway port (`7700`), which serves the settings API without a login. Then enter the tunnel's URL as **Your own address** in **Settings → A2A** (under the advanced settings), or set it in `config.toml`:
+- **Through your own tunnel or reverse proxy**: point it at the A2A port (`7702` by default), never at the gateway port (`7700`), which serves the settings API without a login. Then enter the tunnel's URL as **Your own address** in **Settings → A2A** (under the advanced settings), or set it in `hub/config.toml`:
 
   ```toml
   [a2a]

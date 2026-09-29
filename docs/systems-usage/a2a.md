@@ -6,11 +6,19 @@ Every A2A task maps to a conversation session, addressed by `{caller}/{context_i
 
 ## Configuration
 
+The listener settings live in `hub/config.toml`; the agent's visibility lives in its own `config/config.toml`:
+
 ```toml
+# hub/config.toml
 [a2a]
 enabled = true
 port = 7702
 public_url = ""          # this instance's own tunnel/reverse proxy origin
+```
+
+```toml
+# <agent>/config/config.toml
+[a2a]
 visibility = "public"    # "public" or "private"
 ```
 
@@ -19,7 +27,7 @@ visibility = "public"    # "public" or "private"
 - **`public_url`**: the base URL other agents should use to reach this instance, when it runs its own tunnel or reverse proxy. See [Public URL](#public-url) for how it's resolved when left empty.
 - **`visibility`**: `"public"` (default) or `"private"`. See [Visibility](#visibility).
 
-Changing any `[a2a]` value, or the gateway `bind` it shares, restarts the A2A listener on reload — the config API's reload path, `residuum a2a` commands, and manual edits to `config.toml` (picked up by the running gateway) all take effect the same way. An `[a2a]` change also restarts the relay tunnel, since its capabilities (whether `a2a`/`a2a-private` are advertised) are only sent on the tunnel's upgrade.
+Changing any `[a2a]` value, or the gateway `bind` it shares, restarts the A2A listener on reload — the config API's reload path, `residuum a2a` commands, and manual edits to `hub/config.toml` or the agent's `config.toml` (picked up by the running gateway) all take effect the same way. An `[a2a]` change also restarts the relay tunnel, since its capabilities (whether `a2a`/`a2a-private` are advertised) are only sent on the tunnel's upgrade.
 
 ## Public URL
 
@@ -48,7 +56,7 @@ residuum a2a keys revoke laptop
 
 The caller gives the token as `Authorization: Bearer <token>`.
 
-**Storage.** `~/.residuum/a2a-keys.toml`, mode 0600 on Unix, holds each key's name, description, a `sha256:<hex>` hash of the token, and its creation time — never the token itself. The store is unencrypted because there is nothing in it worth encrypting at rest: the hash's only job is to reject a stolen credential's replay, which it already does. `~/.residuum/a2a-keys.lock` serializes writes from the CLI, the web UI, and the running listener so none of them lose a concurrent change. Both files are write-blocked for `write_file` and `edit_file`, like the other credential stores.
+**Storage.** `~/.residuum/hub/a2a-keys.toml`, mode 0600 on Unix, holds each key's name, description, a `sha256:<hex>` hash of the token, and its creation time — never the token itself. The store is unencrypted because there is nothing in it worth encrypting at rest: the hash's only job is to reject a stolen credential's replay, which it already does. `~/.residuum/a2a-keys.lock` serializes writes from the CLI, the web UI, and the running listener so none of them lose a concurrent change. Both files are write-blocked for `write_file` and `edit_file`, like the other credential stores.
 
 **Web UI:** `GET /api/a2a/keys` (metadata only), `POST /api/a2a/keys` with `{ "name", "description" }` (returns the token once, in the response body — never again), `DELETE /api/a2a/keys/{name}` returning `{ "revoked": true, "checkpoint_id" }`. `checkpoint_id` is the config checkpoint taken just before the revoke, or null when that checkpoint could not be recorded. Like the rest of the config API, this is unauthenticated and meant to stay on loopback. Settings → A2A in the web UI wraps these three (see [Web UI](#web-ui) below).
 

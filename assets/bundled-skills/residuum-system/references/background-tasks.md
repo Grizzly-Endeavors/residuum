@@ -105,7 +105,7 @@ A session merges what it learned into global memory when it completes — full m
 
 ## Concurrency
 
-The session runtime enforces a configurable concurrency limit via a semaphore (`max_concurrent` in `[background]`), shared by every category, artifact sessions included. The permit is held only while a turn is running, not for the session's whole idle lifetime, so runs that exceed the limit wait for a slot rather than for another session to fully complete.
+The session runtime enforces a configurable concurrency limit via a semaphore (`max_concurrent` in `[background]` in the hub's config), shared by every category, artifact sessions included. The permit is held only while a turn is running, not for the session's whole idle lifetime, so runs that exceed the limit wait for a slot rather than for another session to fully complete.
 
 ## Session Store
 

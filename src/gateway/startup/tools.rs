@@ -96,6 +96,7 @@ pub(super) fn init_tool_registry(
     let config_watch = crate::tools::ConfigWriteWatch {
         recognized: crate::tools::config_reload_tracker::RecognizedConfigPaths::new(
             &cfg.config_dir,
+            deps.hub_dir,
             layout,
         ),
         tracker: deps.config_reload_tracker.clone(),

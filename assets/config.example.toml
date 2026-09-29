@@ -79,8 +79,10 @@ enabled = true
 # nudge_after_turns = 0
 
 # ── Discord bot (optional) ────────────────────────────────────────────────────
-# Bot token is set here (env var overrides for per-agent tokens were removed
-# by the hub/agent split — a shared env var can't tell which agent it's for).
+# The bot token is a "secret:name" reference, a "${ENV_VAR}" reference, or a
+# literal.
+# DMs always reach the agent; in server channels only @mentions do. The first
+# person to DM the bot becomes its owner (saved in discord_state.json).
 #
 # [discord]
 # token = "secret:discord_token"
@@ -88,6 +90,12 @@ enabled = true
 # context_messages = 20       # earlier unmentioned server messages shared on @mention
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
+# The bot token is a "secret:name" reference, a "${ENV_VAR}" reference, or a
+# literal.
+# Private chats always reach the agent; in groups only messages that mention
+# the bot, reply to it, or are commands do. The first person to message the
+# bot privately becomes its owner (saved in telegram_state.json).
+#
 # [telegram]
 # token = "secret:telegram_token"
 # respond_to_others = false   # true: anyone who can reach the bot can use the agent

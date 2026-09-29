@@ -2,10 +2,9 @@
 //!
 //! Reached only when an agent directory already exists (an agent is
 //! discovered by scanning for `config/config.toml` — see
-//! `residuum::config::discover_single_agent`), so there's no "not set up
-//! yet" case to distinguish here any more: a fresh install with no agent at
-//! all is routed straight to the setup wizard by the caller, before this is
-//! ever reached.
+//! `residuum::config::discover_single_agent`). A fresh install with no agent
+//! at all is routed straight to the setup wizard by the caller, before this
+//! is ever reached.
 
 use std::path::Path;
 

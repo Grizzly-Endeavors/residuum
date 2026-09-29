@@ -160,7 +160,7 @@ stderr in a `store_output_as` result is redacted against the new value as well a
 ### Side effects
 
 Commands are resolved against the configured tool `PATH`: the directories in
-`[tools].path` and the default `~/.residuum/bin`, prepended to the inherited
+`[tools].path` and the default `~/.residuum/hub/bin`, prepended to the inherited
 `PATH`. Binaries dropped into those dirs are runnable without a rebuild. See
 [Tool PATH](../../docs/systems-usage/tools.md).
 

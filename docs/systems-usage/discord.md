@@ -68,7 +68,7 @@ Long replies are split into 2000-character messages. A typing indicator shows in
 
 ```toml
 [discord]
-token = "${RESIDUUM_DISCORD_TOKEN}"   # or secret:discord; RESIDUUM_DISCORD_TOKEN also works on its own
+token = "secret:discord"   # or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
 ```

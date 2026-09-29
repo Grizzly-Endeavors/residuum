@@ -74,7 +74,7 @@ The agent cannot send files over Teams: bots can only deliver files through a co
 [teams]
 app_id = "11111111-2222-3333-4444-555555555555"   # bot ID from the Teams Developer Portal
 tenant_id = "your-directory-tenant-id"
-app_password = "secret:teams"                     # client secret; or RESIDUUM_TEAMS_APP_PASSWORD
+app_password = "secret:teams"                     # client secret; or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
 port = 7701

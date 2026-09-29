@@ -306,7 +306,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     // transcript too, when this is `true`.
     let deliver_to_agent = rt
         .config_reload_tracker
-        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Root);
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Agent);
 
     let new_cfg = match Config::load_agent_at(rt.layout.root(), &rt.hub_cfg) {
         Ok(cfg) => cfg,
@@ -417,15 +417,22 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
     tracing::info!("handling hub config reload in-place");
 
+    // Consumed once, up front, like `handle_root_reload`: whether the agent's
+    // own write to `hub/config.toml` caused this reload. Its outcome is
+    // delivered into the agent's transcript too when so.
+    let deliver_to_agent = rt
+        .config_reload_tracker
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Hub);
+
     let new_hub = match crate::config::HubConfig::load_at(&rt.hub_dir) {
         Ok(hub) => hub,
         Err(err) => {
             tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
-            publish_notice(
-                &rt.publisher,
-                format!("hub config reload failed (keeping current hub config): {err}"),
-            )
-            .await;
+            let message = format!("hub config reload failed (keeping current hub config): {err}");
+            publish_notice(&rt.publisher, message.clone()).await;
+            if deliver_to_agent {
+                rt.agent.inject_system_message(message);
+            }
             return;
         }
     };
@@ -449,11 +456,11 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
 
     if !diff.changed {
         last_known_good::hub::save(&rt.hub_dir);
-        publish_notice(
-            &rt.publisher,
-            "hub configuration reloaded: no changes detected".to_string(),
-        )
-        .await;
+        let message = "hub configuration reloaded: no changes detected".to_string();
+        publish_notice(&rt.publisher, message.clone()).await;
+        if deliver_to_agent {
+            rt.agent.inject_system_message(message);
+        }
         tracing::info!("hub config reload: no changes detected");
         return;
     }
@@ -489,7 +496,10 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
     last_known_good::hub::save(&rt.hub_dir);
 
     let message = format!("hub configuration reloaded: {summary}");
-    publish_notice(&rt.publisher, message).await;
+    publish_notice(&rt.publisher, message.clone()).await;
+    if deliver_to_agent {
+        rt.agent.inject_system_message(message);
+    }
     tracing::info!(changes = %summary, "hub configuration reloaded successfully");
 }
 
@@ -929,7 +939,9 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .write()
         .await
         .set_blocked_paths(crate::tools::path_policy::blocked_write_paths(
-            new_cfg, &rt.layout,
+            new_cfg,
+            &rt.layout,
+            &rt.hub_dir,
         ));
     rt.agent
         .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);

@@ -43,7 +43,7 @@ Only the main agent can post to your DM or the web UI. If a session (a pulse, an
 
 ## New `[background]` configuration keys
 
-A handful of new, optional settings landed in the `[background]` section of `config.toml`. None of them need to be set — every one has a default that matches what shipped — but they're worth knowing about if you want to tune session behavior:
+A handful of new, optional settings landed in the `[background]` section of the config (`max_concurrent`, `hop_soft_limit`, and `hop_hard_limit` in `hub/config.toml`; the rest in the agent's `config.toml`). None of them need to be set — every one has a default that matches what shipped — but they're worth knowing about if you want to tune session behavior:
 
 | Key | Default | What it controls |
 |-----|---------|-------------------|

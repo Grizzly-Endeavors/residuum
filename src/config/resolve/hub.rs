@@ -70,7 +70,12 @@ fn resolve_hub_background_config(section: Option<&HubBackgroundConfigFile>) -> H
 }
 
 #[cfg(test)]
+#[expect(
+    unsafe_code,
+    reason = "std::env::set_var/remove_var require unsafe in edition 2024"
+)]
 mod tests {
+    use super::super::test_helpers::ENV_MUTEX;
     use super::*;
 
     fn parse(toml: &str) -> HubConfigFile {
@@ -134,5 +139,37 @@ hop_hard_limit = 16
         assert_eq!(cfg.background.max_concurrent, 10);
         assert_eq!(cfg.background.hop_soft_limit, 4);
         assert_eq!(cfg.background.hop_hard_limit, 16);
+    }
+
+    #[test]
+    fn cloud_token_env_override_still_applies() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe { std::env::set_var("RESIDUUM_CLOUD_TOKEN", "env-cloud-token") };
+        let cfg = from_file_and_env(Some(&parse("timezone = \"UTC\"\n\n[cloud]\n")), &test_dir());
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe { std::env::remove_var("RESIDUUM_CLOUD_TOKEN") };
+        let cfg = cfg.unwrap();
+        assert_eq!(
+            cfg.cloud.as_ref().map(|c| c.token.as_str()),
+            Some("env-cloud-token")
+        );
+    }
+
+    #[test]
+    fn agent_only_sections_are_rejected() {
+        for agent_only in [
+            "[memory]\nobserver_cooldown_secs = 1\n",
+            "[discord]\ntoken = \"x\"\n",
+            "workspace_dir = \"/tmp/x\"\n",
+            "name = \"sam\"\n",
+            "[a2a]\nvisibility = \"private\"\n",
+            "[background]\nsubagent_depth_cap = 2\n",
+        ] {
+            assert!(
+                toml::from_str::<HubConfigFile>(agent_only).is_err(),
+                "hub config should reject {agent_only:?}"
+            );
+        }
     }
 }

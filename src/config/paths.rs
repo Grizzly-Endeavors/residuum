@@ -119,13 +119,12 @@ pub fn discover_agents(root: &Path) -> Vec<String> {
     names
 }
 
-/// Discover the single agent this Phase-1 single-agent process should run:
-/// the first (alphabetically) agent directory under `root`. `None` on a
-/// fresh install with no agent yet.
+/// Discover the single agent this process runs: the first (alphabetically)
+/// agent directory under `root`. `None` on a fresh install with no agent yet.
 ///
-/// If more than one agent directory exists (e.g. left over from a build
-/// that no longer runs, or created out-of-band), the first one runs and a
-/// warning names every agent found — multi-agent hosting is a later phase.
+/// If more than one agent directory exists (for example one created
+/// out-of-band), the first one runs and a warning names every agent found:
+/// a process hosts exactly one agent.
 #[must_use]
 pub fn discover_single_agent(root: &Path) -> Option<String> {
     let agents = discover_agents(root);
@@ -135,7 +134,7 @@ pub fn discover_single_agent(root: &Path) -> Option<String> {
             agents = %agents.join(", "),
             running = %first,
             "more than one agent directory exists; running the first by name \
-             (multi-agent hosting is not available yet)"
+             (a process hosts exactly one agent)"
         );
     }
     Some(first)
@@ -322,6 +321,7 @@ mod tests {
             "has space",
             "has_underscore",
             "has.dot",
+            ".hidden",
             &"x".repeat(25),
         ] {
             assert!(

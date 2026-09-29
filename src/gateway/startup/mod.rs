@@ -1025,9 +1025,10 @@ async fn build_spawn_context_and_agent(
 fn build_path_policy(
     cfg: &Config,
     layout: &WorkspaceLayout,
+    hub: &HubConfig,
 ) -> crate::tools::path_policy::SharedPathPolicy {
     crate::tools::PathPolicy::new_shared_with_blocked(
-        crate::tools::path_policy::blocked_write_paths(cfg, layout),
+        crate::tools::path_policy::blocked_write_paths(cfg, layout, &hub.config_dir),
     )
 }
 
@@ -1038,13 +1039,14 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
     }
 }
 
-/// Publish each of `cfg.load_notices` individually — already complete,
-/// standalone sentences describing one config.toml/providers.toml entry
-/// that was skipped or degraded while loading (see `config::resolve` and
-/// `config::tolerant`) — as opposed to the subsystem `degradations` above,
-/// which get folded into one shorter grouped sentence.
-async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
-    for notice in &cfg.load_notices {
+/// Publish each of the hub's and the agent's load notices individually —
+/// already complete, standalone sentences describing one hub or agent
+/// config.toml/providers.toml entry that was skipped or degraded while
+/// loading (see `config::resolve` and `config::tolerant`) — as opposed to
+/// the subsystem `degradations` above, which get folded into one shorter
+/// grouped sentence.
+async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config, hub: &HubConfig) {
+    for notice in hub.load_notices.iter().chain(&cfg.load_notices) {
         super::helpers::publish_notice(publisher, notice.clone()).await;
     }
 }
@@ -1067,7 +1069,7 @@ async fn init_workspace_and_checkpoints(
 > {
     let (layout, tz) = init_workspace(cfg).await?;
     let checkpoints = init_checkpoints(&layout, cfg, hub, publisher)?;
-    publish_load_notices(publisher, cfg).await;
+    publish_load_notices(publisher, cfg, hub).await;
     Ok((layout, tz, checkpoints))
 }
 
@@ -1173,7 +1175,7 @@ async fn init_supporting_infra(
 ) -> SupportingInfra {
     let net = init_networking(cfg, hub, layout, degradations).await;
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
-    let path_policy = build_path_policy(cfg, layout);
+    let path_policy = build_path_policy(cfg, layout, hub);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
     SupportingInfra {
         net,

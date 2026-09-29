@@ -90,7 +90,7 @@ Every delivered message names the sender's address and category, so the recipien
 
 Every agent message carries a hop count, used to bound message loops. Input that originates outside the agent system — a user message, a pulse or action firing, a webhook, a web sidebar message, a workbench artifact's start or message — is hop `0`. A message an agent sends during a turn carries one more than the highest hop count among the inputs that drove that turn: the turn's kickoff input, plus any agent messages drained as interrupts during it. A `subagent_spawn` task brief carries the same rule — one more than the spawning turn's highest input hop count — so the new session's first turn starts at that hop count; a resumed session's new run instead starts at the hop count of the message that triggered the resume (that message *is* its first turn's input). Result relays (see [Result Routing](#result-routing)) count as agent messages for this purpose. The main agent tracks its own current-turn hop count the same way a session does, including across a turn boundary: if a message arrives mid-turn but isn't consumed before the turn ends, its hop count carries forward into whichever turn picks it up next rather than being reset — otherwise a looping message that happened to arrive at the wrong moment could reset the loop guard to zero.
 
-Two limits, both configurable in `[background]`:
+Two limits, both configurable in the `[background]` section of `hub/config.toml` (one message chain can cross several agents, so the limit is hub-wide):
 
 | Limit | Config key | Default | Effect |
 |-------|-----------|---------|--------|
@@ -200,7 +200,7 @@ A spawn naming a skill that does not resolve fails loudly rather than running a 
 
 ## Concurrency
 
-The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` config section, shared by every category, `artifact` sessions included. The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
+The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` section of `hub/config.toml`, shared by every category, `artifact` sessions included. The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
 
 ## Result Routing
 

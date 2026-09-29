@@ -64,5 +64,5 @@ Stdio `env` values and HTTP `headers` values may contain `${agent-key:<name>}` a
 
 ## Interaction with Other Systems
 
-- **Tool PATH**: stdio servers resolve their `command` against the effective tool `PATH` (configured dirs + `~/.residuum/bin` + inherited `PATH`), injected into the registry via `McpRegistry::new_shared_with_tools_path`. See [tools.md](tools.md).
+- **Tool PATH**: stdio servers resolve their `command` against the effective tool `PATH` (configured dirs + `~/.residuum/hub/bin` + inherited `PATH`), injected into the registry via `McpRegistry::new_shared_with_tools_path`. See [tools.md](tools.md).
 - **Background tasks**: sub-agents share the same `SharedMcpRegistry` as the main agent — there is no per-agent isolation. See [background-tasks.md](background-tasks.md).

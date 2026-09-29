@@ -3,10 +3,9 @@
 //! config problem — the live files fail to load, or load but can't produce
 //! a working gateway (no usable main provider, etc.) — the gateway falls
 //! back to running on these copies instead of refusing to start, without
-//! touching the user's live files. Replaces the old `.bak` mechanism, which
-//! refreshed on every load attempt before anything proved the config
-//! actually worked, so a bad reload could overwrite a good backup with
-//! itself.
+//! touching the user's live files. A copy is only ever saved after the
+//! config has proven itself (a successful start or reload), so a bad reload
+//! can never overwrite a good copy with itself.
 //!
 //! The hub and each agent keep independent last-known-good copies, since
 //! the two configs are loaded, validated, and reloaded independently — see

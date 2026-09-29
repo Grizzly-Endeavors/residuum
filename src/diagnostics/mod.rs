@@ -165,7 +165,8 @@ pub struct DiagnosticsPaths {
 /// (not yet known to be valid UTF-8) tell whether it's looking at one of
 /// these files before it has decoded text to hand to a validator.
 ///
-/// `config.toml`/`providers.toml` are matched by their canonical location
+/// The hub's `config.toml` is matched by its canonical location under
+/// `paths.hub_dir`, and the agent's `config.toml`/`providers.toml` by theirs
 /// under `paths.config_dir`; `config/channels.toml`, `config/mcp.json`, and
 /// `config/a2a.json` by their canonical location under `paths.workspace_dir`.
 /// `HEARTBEAT.yml` and `SKILL.md` are matched by filename alone, regardless
@@ -174,6 +175,7 @@ pub struct DiagnosticsPaths {
 /// skill scanner, which accepts a `SKILL.md` anywhere under the skills root).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileKind {
+    HubConfigToml,
     ConfigToml,
     ProvidersToml,
     ChannelsToml,
@@ -188,6 +190,9 @@ enum FileKind {
 fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
     let file_name = path.file_name().and_then(|n| n.to_str())?;
 
+    if paths_match(path, &paths.hub_dir.join("config.toml")) {
+        return Some(FileKind::HubConfigToml);
+    }
     if paths_match(path, &paths.config_dir.join("config.toml")) {
         return Some(FileKind::ConfigToml);
     }
@@ -236,6 +241,7 @@ pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<
     let kind = recognize(path, paths)?;
 
     Some(match kind {
+        FileKind::HubConfigToml => crate::config::HubConfig::diagnose_toml(content, &paths.hub_dir),
         FileKind::ConfigToml | FileKind::ProvidersToml => {
             let agent_name = paths
                 .workspace_dir
@@ -335,6 +341,37 @@ mod tests {
             hub_dir: dir.path().join("hub"),
         };
         assert!(diagnose(Path::new("notes.md"), "hello", &paths).is_none());
+    }
+
+    #[test]
+    fn diagnose_validates_the_hub_config_against_the_hub_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let hub_config = hub_dir.join("config.toml");
+        std::fs::write(&hub_config, "timezone = \"UTC\"\n").unwrap();
+        let paths = DiagnosticsPaths {
+            config_dir: dir.path().join("agent/config"),
+            workspace_dir: dir.path().join("agent"),
+            hub_dir,
+        };
+
+        let valid = diagnose(&hub_config, "timezone = \"UTC\"\n", &paths)
+            .expect("the hub config.toml should be recognized");
+        assert!(valid.is_empty(), "a valid hub config: {valid:?}");
+
+        let wrong_schema = diagnose(
+            &hub_config,
+            "[memory]\nobserver_cooldown_secs = 1\n",
+            &paths,
+        )
+        .expect("the hub config.toml should be recognized");
+        assert!(
+            wrong_schema
+                .iter()
+                .any(|d| d.severity == Severity::Warning || d.severity == Severity::Error),
+            "an agent-only section in the hub config should be flagged: {wrong_schema:?}"
+        );
     }
 
     #[test]

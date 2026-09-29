@@ -61,8 +61,8 @@ fn load_secrets_degraded(config_dir: &Path, notices: &mut Vec<String>) -> Secret
 /// agent's own `config.toml`/`providers.toml` live in `agent_dir/config/`.
 /// Hub-owned values (timezone, gateway, cloud, tracing, the A2A listener's
 /// enablement/port/public URL, and the shared background session budget and
-/// hop limits) are copied in from `hub` rather than resolved from the
-/// agent's own file, which no longer carries those sections.
+/// hop limits) are copied in from `hub`; the agent's own file does not carry
+/// those sections.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the model spec cannot be parsed, a
@@ -443,8 +443,8 @@ observer_threshold_tokens = 30000
         assert_eq!(cfg.background.hop_soft_limit, 2);
         assert_eq!(cfg.background.hop_hard_limit, 9);
 
-        // The agent's own [background] section can no longer set these —
-        // an attempt to is an unknown-field parse error.
+        // The agent's own [background] section cannot set these: an attempt
+        // to is an unknown-field parse error.
         assert!(toml::from_str::<AgentConfigFile>("[background]\nmax_concurrent = 99\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[background]\nhop_soft_limit = 1\n").is_err());
     }
@@ -465,7 +465,7 @@ observer_threshold_tokens = 30000
         assert_eq!(cfg.gateway.port, 9001);
         assert_eq!(cfg.tracing.log_level, super::super::types::LogLevel::Trace);
 
-        // None of these are settable in the agent's own file anymore.
+        // None of these are settable in the agent's own file.
         assert!(toml::from_str::<AgentConfigFile>("[gateway]\nport = 1\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[cloud]\nenabled = true\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[tracing]\nlog_level = \"info\"\n").is_err());
@@ -478,6 +478,7 @@ observer_threshold_tokens = 30000
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o") };
         let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        unsafe { std::env::remove_var("RESIDUUM_MODEL") };
         assert!(
             cfg.load_notices
                 .iter()
@@ -485,7 +486,38 @@ observer_threshold_tokens = 30000
             "a removed override that is still set should produce a notice: {:?}",
             cfg.load_notices
         );
-        unsafe { std::env::remove_var("RESIDUUM_MODEL") };
+    }
+
+    #[test]
+    fn removed_agent_env_overrides_have_no_effect_on_resolved_values() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe {
+            std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o");
+            std::env::set_var("RESIDUUM_PROVIDER_URL", "http://override.invalid");
+            std::env::set_var("RESIDUUM_API_KEY", "sk-env-override");
+            std::env::set_var("RESIDUUM_DISCORD_TOKEN", "env-discord-token");
+        }
+        let cfg = resolve_test(
+            "[discord]\n",
+            "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
+        );
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe {
+            std::env::remove_var("RESIDUUM_MODEL");
+            std::env::remove_var("RESIDUUM_PROVIDER_URL");
+            std::env::remove_var("RESIDUUM_API_KEY");
+            std::env::remove_var("RESIDUUM_DISCORD_TOKEN");
+        }
+        let cfg = cfg.unwrap();
+        let main = cfg.main.first().unwrap();
+        assert_eq!(main.model.model, "claude-sonnet-4-6");
+        assert_ne!(main.provider_url, "http://override.invalid");
+        assert_ne!(main.api_key.as_deref(), Some("sk-env-override"));
+        assert!(
+            cfg.discord.is_none(),
+            "an env token must not enable Discord"
+        );
     }
 
     #[test]
@@ -755,6 +787,8 @@ format = "raw"
 
     #[test]
     fn webhooks_invalid_routing_is_skipped_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
         let cfg_toml = r#"
 [webhooks.bad]
 routing = "nowhere"
@@ -785,6 +819,8 @@ routing = "inbox"
 
     #[test]
     fn webhooks_empty_content_field_is_skipped_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = resolve_test(
             "[webhooks.bad]\ncontent_fields = [\"valid\", \"\"]\n",
             "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
@@ -1266,6 +1302,8 @@ port = 8801
 
     #[test]
     fn teams_section_missing_required_field_disables_teams_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
         for (missing, toml) in [
             (
                 "app_id",
@@ -1351,7 +1389,7 @@ app_password = "s"
             Some("https://example.com/a2a/laptop")
         );
 
-        // The agent's own [a2a] section can no longer set these.
+        // The agent's own [a2a] section cannot set these.
         assert!(toml::from_str::<AgentConfigFile>("[a2a]\nenabled = false\n").is_err());
         assert!(toml::from_str::<AgentConfigFile>("[a2a]\nport = 1\n").is_err());
     }
@@ -1368,6 +1406,8 @@ app_password = "s"
 
     #[test]
     fn a2a_invalid_visibility_falls_back_to_default_with_notice() {
+        // Counts notices, so the env-override tests must not add extras.
+        let _guard = ENV_MUTEX.lock().unwrap();
         let cfg = resolve_test(
             "[a2a]\nvisibility = \"hidden\"\n",
             "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",

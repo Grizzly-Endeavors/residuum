@@ -63,9 +63,8 @@ impl Default for HubBackgroundConfig {
 
 /// Validated hub-level runtime configuration, loaded from `hub/config.toml`.
 ///
-/// Shared by every agent the hub hosts. In Phase 1 (a single agent per
-/// process) this is loaded once at startup, hot-reloads independently of the
-/// agent's own config, and keeps its own last-known-good fallback.
+/// Shared by every agent the hub hosts. It hot-reloads independently of the
+/// agent's own config and keeps its own last-known-good fallback.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HubConfig {
     /// IANA timezone for the whole hub (e.g. `America/New_York`), shared by

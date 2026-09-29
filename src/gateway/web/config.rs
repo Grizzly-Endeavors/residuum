@@ -112,8 +112,7 @@ pub(super) struct CompleteSetupRequest {
     /// This installation's first agent name, validated with
     /// [`crate::config::validate_agent_name`].
     agent_name: String,
-    /// The user's name, written to the agent's `USER.md` (Phase 1 keeps the
-    /// team layer inside the agent directory).
+    /// The user's name, written to the agent's `USER.md`.
     #[serde(default)]
     user_name: Option<String>,
     /// Raw agent config.toml content.
@@ -1036,5 +1035,82 @@ mod tests {
             Some(before.as_bytes()),
             "the returned checkpoint must still hold the removed server, including fields the form doesn't model"
         );
+    }
+
+    /// A setup-mode state rooted at `root`: the hub directory is `root/hub`,
+    /// and no agent exists yet.
+    fn setup_state(root: &std::path::Path) -> (ConfigApiState, tokio::sync::watch::Receiver<bool>) {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut state = state(Some(std::sync::Arc::new(tx)));
+        state.hub_dir = root.join("hub");
+        (state, rx)
+    }
+
+    fn setup_request(agent_name: &str) -> CompleteSetupRequest {
+        CompleteSetupRequest {
+            hub_config: "timezone = \"UTC\"\n".to_string(),
+            agent_name: agent_name.to_string(),
+            user_name: Some("Sam".to_string()),
+            config: String::new(),
+            providers: "[models]\nmain = \"ollama/llama3\"\n".to_string(),
+            mcp_json: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_setup_writes_hub_config_and_the_first_agent() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, done_rx) = setup_state(root.path());
+
+        let Json(response) = api_complete_setup(State(state), Json(setup_request("scout")))
+            .await
+            .unwrap();
+
+        assert!(response.valid);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("hub/config.toml")).unwrap(),
+            "timezone = \"UTC\"\n"
+        );
+        assert!(root.path().join("scout/config/config.toml").is_file());
+        assert!(root.path().join("scout/config/providers.toml").is_file());
+        let user_md = std::fs::read_to_string(root.path().join("scout/USER.md")).unwrap();
+        assert!(user_md.contains("Sam"), "USER.md: {user_md}");
+        assert!(*done_rx.borrow(), "setup should be signalled complete");
+        assert_eq!(
+            crate::config::discover_single_agent(root.path()).as_deref(),
+            Some("scout")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_setup_refuses_an_invalid_agent_name_and_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        for bad in ["hub", "Team", "-x", "has space", ""] {
+            let (state, done_rx) = setup_state(root.path());
+
+            let Err((status, Json(response))) =
+                api_complete_setup(State(state), Json(setup_request(bad))).await
+            else {
+                panic!("agent name {bad:?} should be refused");
+            };
+
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!response.valid);
+            assert!(!*done_rx.borrow());
+        }
+        assert!(!root.path().join("hub/config.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn complete_setup_refuses_hub_only_keys_in_the_agent_config() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _done_rx) = setup_state(root.path());
+        let mut request = setup_request("scout");
+        request.config = "timezone = \"UTC\"\n".to_string();
+
+        let result = api_complete_setup(State(state), Json(request)).await;
+
+        assert!(result.is_err(), "timezone belongs in the hub config");
+        assert!(!root.path().join("scout").exists());
     }
 }
