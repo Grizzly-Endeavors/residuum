@@ -1,6 +1,6 @@
 # Config Files
 
-`~/.residuum/` holds `hub/` (hub-level state: never any one agent's workspace) plus exactly one agent directory, which *is* that agent's workspace root.
+`~/.residuum/` holds `hub/` (hub-level state: never any one agent's workspace), `team/` (the shared team layer), and one directory per agent, each of which *is* that agent's workspace root.
 
 Hub-level settings live in `hub/config.toml`: the timezone (shared by every agent), the gateway bind/port, the cloud tunnel, the A2A listener's enablement/port/public URL, tracing, and the shared background session budget and cross-agent hop limits. `hub/` also holds the encrypted secret store (`secrets.toml.enc`), the agent-key store (`agent-keys.toml.enc`), and A2A caller keys (`a2a-keys.toml`) — all shared by every agent.
 
@@ -24,7 +24,7 @@ Everything else lives in the agent's own `config/` directory (`~/.residuum/<agen
 
 `config::paths` (`src/config/paths.rs`) is the only place that resolves the literal `~/.residuum` path (`residuum_root`); everything else takes a hub directory or an agent directory as a parameter. `HubPaths` names every file under `hub/`.
 
-An agent is any directory directly under `~/.residuum/` that holds `config/config.toml`; a symlink to such a directory counts. `hub`, `team`, `agents`, and any name starting with `.` are never agents. A missing `~/.residuum/` is a fresh install, but a `~/.residuum/` that exists and cannot be read is reported as an error (never treated as empty), so an unreadable install is not mistaken for a fresh one. A process runs exactly one agent: if more than one such directory exists, the first by name runs and a warning lists all of them. A fresh install, with nothing under `hub/` and no agent directory, goes through onboarding (the web setup wizard, or `residuum setup`), which asks for the user's name, the first agent's name, and the model configuration. Onboarding writes each file atomically and writes the agent's `config/config.toml` last, since that file is what makes the directory an agent: a failure partway through never leaves a discoverable half-configured agent, and setup can be run again. The setup endpoint refuses with a 409 when an agent already exists, so a running gateway's live agent is never overwritten.
+An agent is any directory directly under `~/.residuum/` that holds `config/config.toml`; a symlink to such a directory counts. `hub`, `team`, `agents`, and any name starting with `.` are never agents. A missing `~/.residuum/` is a fresh install, but a `~/.residuum/` that exists and cannot be read is reported as an error (never treated as empty), so an unreadable install is not mistaken for a fresh one. One process hosts every agent it finds (see [Hub](hub.md)). A fresh install, with nothing under `hub/` and no agent directory, goes through onboarding (the web setup wizard, or `residuum setup`), which asks for the user's name, the first agent's name, and the model configuration. Onboarding writes each file atomically and writes the agent's `config/config.toml` last, since that file is what makes the directory an agent: a failure partway through never leaves a discoverable half-configured agent, and setup can be run again. The setup endpoint refuses with a 409 when an agent already exists, so a running gateway's live agent is never overwritten.
 
 ### Agent names
 

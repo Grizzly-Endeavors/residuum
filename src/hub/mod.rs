@@ -12,6 +12,8 @@ pub mod host;
 pub mod provision;
 pub mod runtime;
 pub mod services;
+#[cfg(test)]
+mod test_support;
 pub mod types;
 mod wiring;
 

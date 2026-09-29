@@ -702,11 +702,42 @@ impl AgentHost {
                 .await;
         }
         let summary = self.summary_of(&slot);
+        self.tell_acting_agent(
+            &by,
+            &format!("Created the agent {}", request.name),
+            &format!(
+                "You created the agent '{}'. It is {}.",
+                request.name, summary.state
+            ),
+        )
+        .await;
         self.publish(HubEvent::AgentCreated {
             agent: summary.clone(),
             by,
         });
         Ok(summary)
+    }
+
+    /// Leave a user inbox item for the agent that created or deleted another,
+    /// so the outcome is there for the user beside that agent's work. The
+    /// user acting through the web UI or CLI sees the toast only.
+    async fn tell_acting_agent(&self, by: &Actor, title: &str, body: &str) {
+        let Actor::Agent(actor) = by else {
+            return;
+        };
+        let dir = crate::config::paths::agent_dir(&self.services.root, actor);
+        let layout = WorkspaceLayout::new(&dir);
+        if let Err(e) = crate::inbox::quick_add(
+            &layout.user_inbox_dir(),
+            title,
+            body,
+            "hub",
+            self.hub_config().timezone,
+        )
+        .await
+        {
+            tracing::warn!(agent = %actor, error = %e, "couldn't leave a hub notice in the agent's inbox");
+        }
     }
 
     /// Deliver a new agent's role description to its main conversation, from
@@ -765,6 +796,12 @@ impl AgentHost {
             .await?
         };
         self.forget(name);
+        self.tell_acting_agent(
+            &by,
+            &format!("Deleted the agent {name}"),
+            &format!("You deleted the agent '{name}'. Its files were checkpointed first, so it can be restored."),
+        )
+        .await;
         self.publish(HubEvent::AgentDeleted {
             name: name.to_string(),
             by,

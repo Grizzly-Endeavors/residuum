@@ -14,6 +14,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::hub::test_support::{free_port, mount_reply, write_agent};
 use crate::hub::wiring::build_hub_app;
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -29,21 +30,6 @@ struct Fixture {
     http: reqwest::Client,
 }
 
-/// Mount a model reply of `text` on `server`, answering after `delay`.
-async fn mount_reply(server: &MockServer, text: &str, delay: Duration) {
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(delay)
-                .set_body_json(json!({
-                    "choices": [{ "message": { "role": "assistant", "content": text } }]
-                })),
-        )
-        .mount(server)
-        .await;
-}
-
 /// The string at `key` of a JSON object.
 fn str_at<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap()
@@ -52,19 +38,6 @@ fn str_at<'a>(value: &'a Value, key: &str) -> &'a str {
 /// The array at `key` of a JSON object.
 fn array_at<'a>(value: &'a Value, key: &str) -> &'a Vec<Value> {
     value.get(key).and_then(Value::as_array).unwrap()
-}
-
-fn write_agent(root: &std::path::Path, name: &str, model_url: &str) {
-    let config_dir = root.join(name).join("config");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(config_dir.join("config.toml"), "").unwrap();
-    std::fs::write(
-        config_dir.join("providers.toml"),
-        format!(
-            "[providers]\nmock = {{ type = \"openai\", api_key = \"test-key\", url = \"{model_url}\" }}\n\n[models]\nmain = \"mock/test-model\"\n"
-        ),
-    )
-    .unwrap();
 }
 
 impl Fixture {
@@ -971,6 +944,37 @@ async fn an_agent_created_by_another_agent_is_briefed_in_that_agents_name() {
 }
 
 #[tokio::test]
+async fn the_agent_that_creates_or_deletes_an_agent_gets_an_inbox_item_about_it() {
+    let hub = Fixture::new(&["scout"], "").await;
+    let inbox = WorkspaceLayout::new(hub.root.path().join("scout")).user_inbox_dir();
+    let items = || std::fs::read_dir(&inbox).map_or(0, Iterator::count);
+    hub.host.start("scout").await.unwrap();
+    let before = items();
+
+    hub.host
+        .create(
+            create_request("nova", None),
+            Actor::Agent("scout".to_string()),
+        )
+        .await
+        .unwrap();
+    let after_create = items();
+    hub.host
+        .delete("nova", Actor::Agent("scout".to_string()))
+        .await
+        .unwrap();
+    let after_delete = items();
+    hub.host
+        .create(create_request("kit", None), Actor::User)
+        .await
+        .unwrap();
+
+    assert_eq!(after_create, before + 1, "creating left an item");
+    assert_eq!(after_delete, after_create + 1, "deleting left an item");
+    assert_eq!(items(), after_delete, "the user's own actions leave none");
+}
+
+#[tokio::test]
 async fn creating_an_agent_refuses_bad_requests_before_writing_anything() {
     let hub = Fixture::new(&["scout"], "").await;
 
@@ -1070,6 +1074,37 @@ async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
     assert_eq!(hub.chat("scout", "am I back?").await, "scout here");
     let (_, history) = hub.get("/api/agents/scout/api/chat/history").await;
     assert!(history.contains("remember this"), "{history}");
+}
+
+#[tokio::test]
+async fn two_agents_cannot_hold_the_same_teams_port() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    let port = free_port().await;
+    for name in ["atlas", "scout"] {
+        std::fs::write(
+            hub.root
+                .path()
+                .join(name)
+                .join("config")
+                .join("config.toml"),
+            format!(
+                "[teams]\napp_id = \"app\"\napp_password = \"pw\"\ntenant_id = \"tenant\"\nport = {port}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    hub.host.start("atlas").await.unwrap();
+    let second = hub.host.start("scout").await;
+
+    let message = match second {
+        Err(LifecycleError::Failed(message)) => message,
+        other => panic!("expected the second start to fail, got {other:?}"),
+    };
+    assert!(message.contains(&format!("port {port}")), "{message}");
+    assert!(message.contains("'atlas'"), "{message}");
+    assert_eq!(hub.state_of("atlas"), AgentState::Running);
+    assert_eq!(hub.state_of("scout"), AgentState::Failed);
 }
 
 #[tokio::test]

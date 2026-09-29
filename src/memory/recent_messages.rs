@@ -5,7 +5,9 @@
 //! messages that episode covered are removed from the file. Messages
 //! appended while the observer was running stay for the next cycle.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -105,11 +107,27 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
     crate::util::fs::atomic_write(path, &json).await
 }
 
-/// Serializes every read-modify-write of a recent-messages file. The main
-/// loop appends after each turn while the background observer (see
-/// `crate::gateway::post_turn`) removes the messages it just observed; two
-/// rewrites interleaving would silently drop whichever landed first.
-static REWRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// The lock serializing every read-modify-write of the recent-messages file
+/// at `path`. The main loop appends after each turn while the background
+/// observer (see `crate::gateway::post_turn`) removes the messages it just
+/// observed; two rewrites interleaving would silently drop whichever landed
+/// first.
+///
+/// One lock per file, so an agent waiting on its own rewrite never holds up
+/// another agent's: every agent has its own recent-messages file.
+fn rewrite_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(lock) = locks.get(path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    // Locks nobody holds any more are dropped as new ones are made.
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
 
 /// Append messages to the recent messages file, wrapping each with metadata.
 ///
@@ -130,7 +148,8 @@ pub async fn append_recent_messages(
     if new_messages.is_empty() {
         return Ok(());
     }
-    let _guard = REWRITE_LOCK.lock().await;
+    let lock = rewrite_lock(path);
+    let _guard = lock.lock().await;
     let mut existing = load_recent_messages(path).await?;
     let now = crate::time::now_local(tz);
     existing.extend(new_messages.iter().map(|msg| RecentMessage {
@@ -149,7 +168,8 @@ pub async fn append_recent_messages(
 /// # Errors
 /// Returns an error if the file cannot be read or written.
 pub async fn remove_observed_recent_messages(path: &Path, observed: usize) -> anyhow::Result<()> {
-    let _guard = REWRITE_LOCK.lock().await;
+    let lock = rewrite_lock(path);
+    let _guard = lock.lock().await;
     let mut existing = load_recent_messages(path).await?;
     existing.drain(..observed.min(existing.len()));
     save_recent_messages(path, &existing).await
@@ -161,6 +181,33 @@ mod tests {
 
     fn sample_message(content: &str) -> Message {
         Message::user(content)
+    }
+
+    #[tokio::test]
+    async fn rewrites_of_different_files_do_not_wait_on_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let scout = dir.path().join("scout.json");
+        let atlas = dir.path().join("atlas.json");
+
+        let held = rewrite_lock(&scout);
+        let _scout_rewrite = held.lock().await;
+
+        // Another agent's file rewrites while scout's is locked.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            append_recent_messages(
+                &atlas,
+                &[sample_message("hello")],
+                Visibility::User,
+                chrono_tz::UTC,
+                None,
+            ),
+        )
+        .await
+        .expect("atlas's rewrite is not held up by scout's lock")
+        .unwrap();
+        assert!(Arc::ptr_eq(&held, &rewrite_lock(&scout)));
+        assert!(!Arc::ptr_eq(&held, &rewrite_lock(&atlas)));
     }
 
     #[tokio::test]

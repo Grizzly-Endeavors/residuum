@@ -334,8 +334,11 @@ impl HubRuntime {
     }
 
     /// Run until told to stop, then stop every agent and the servers.
-    async fn run(mut self) -> GatewayExit {
-        spawn_update_check(&self.services.control.update_status);
+    /// `check_updates` turns the periodic version check on.
+    async fn run(mut self, check_updates: bool) -> GatewayExit {
+        if check_updates {
+            spawn_update_check(&self.services.control.update_status);
+        }
         let mut update_tick = tokio::time::interval(UPDATE_CHECK_INTERVAL);
         update_tick.tick().await; // the check above covers the first tick
         tracing::info!("hub ready");
@@ -361,7 +364,7 @@ impl HubRuntime {
                         self.reload().await;
                     }
                 }
-                _ = update_tick.tick() => {
+                _ = update_tick.tick(), if check_updates => {
                     tracing::debug!("scheduled update check triggered");
                     spawn_update_check(&self.services.control.update_status);
                 }
@@ -657,12 +660,194 @@ pub async fn run_hub(root: &Path) -> Result<GatewayExit, FatalError> {
     let hub_dir = crate::config::paths::hub_dir(root);
     let (hub_cfg, fallback_problem) = load_hub_with_fallback(&hub_dir)?;
     let runtime = HubRuntime::start(root, hub_cfg, fallback_problem).await?;
-    Ok(Box::pin(runtime.run()).await)
+    Ok(Box::pin(runtime.run(true)).await)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hub::test_support::{free_port, mount_reply, write_agent};
+    use crate::hub::types::HubEvent;
+    use wiremock::MockServer;
+
+    /// A hub started on temp directories with two agents, running on free
+    /// ports, with the model server all its agents talk to.
+    struct RunningHub {
+        root: tempfile::TempDir,
+        gateway_port: u16,
+        a2a_port: u16,
+        events: tokio::sync::broadcast::Receiver<HubEvent>,
+        exit: JoinHandle<GatewayExit>,
+        http: reqwest::Client,
+        _model: MockServer,
+    }
+
+    impl RunningHub {
+        async fn start() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let (gateway_port, a2a_port) = (free_port().await, free_port().await);
+            let hub_dir = root.path().join("hub");
+            std::fs::create_dir_all(&hub_dir).unwrap();
+            std::fs::write(
+                hub_dir.join("config.toml"),
+                format!(
+                    "timezone = \"UTC\"\n[gateway]\nport = {gateway_port}\n[a2a]\nport = {a2a_port}\n"
+                ),
+            )
+            .unwrap();
+            let model = MockServer::start().await;
+            mount_reply(&model, "hello", Duration::ZERO).await;
+            for name in ["atlas", "scout"] {
+                write_agent(root.path(), name, &model.uri());
+            }
+            let runtime =
+                HubRuntime::start(root.path(), HubConfig::load_at(&hub_dir).unwrap(), None)
+                    .await
+                    .unwrap();
+            let events = runtime.host.subscribe();
+            Self {
+                root,
+                gateway_port,
+                a2a_port,
+                events,
+                exit: crate::util::spawn_in_span(runtime.run(false)),
+                http: reqwest::Client::new(),
+                _model: model,
+            }
+        }
+
+        async fn status_of(&self, port: u16, path: &str) -> Option<u16> {
+            self.http
+                .get(format!("http://127.0.0.1:{port}{path}"))
+                .send()
+                .await
+                .ok()
+                .map(|response| response.status().as_u16())
+        }
+
+        async fn eventually_status(&self, port: u16, path: &str, expected: Option<u16>) {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            while self.status_of(port, path).await != expected {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for {path} on port {port} to answer {expected:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+
+        fn hub_config_path(&self) -> std::path::PathBuf {
+            self.root.path().join("hub").join("config.toml")
+        }
+
+        async fn shut_down(self) {
+            let response = self
+                .http
+                .post(format!(
+                    "http://127.0.0.1:{}/api/shutdown",
+                    self.gateway_port
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            let exit = tokio::time::timeout(Duration::from_secs(60), self.exit)
+                .await
+                .expect("the hub stops after a shutdown request")
+                .unwrap();
+            assert!(matches!(exit, GatewayExit::Shutdown));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_hub_serves_its_agents_on_one_port_and_stops_them_on_shutdown() {
+        let hub = RunningHub::start().await;
+
+        for name in ["atlas", "scout"] {
+            hub.eventually_status(
+                hub.gateway_port,
+                &format!("/api/agents/{name}/api/status"),
+                Some(200),
+            )
+            .await;
+            hub.eventually_status(
+                hub.a2a_port,
+                &format!("/agents/{name}/.well-known/agent-card.json"),
+                Some(200),
+            )
+            .await;
+        }
+        assert!(
+            hub.root.path().join("hub").join("residuum.ready").is_file(),
+            "the readiness marker is written once the agents are up"
+        );
+        let gateway_port = hub.gateway_port;
+        let http = hub.http.clone();
+
+        hub.shut_down().await;
+
+        assert!(
+            http.get(format!(
+                "http://127.0.0.1:{gateway_port}/api/agents/scout/api/status"
+            ))
+            .send()
+            .await
+            .is_err(),
+            "the server is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_the_gateway_port_rebinds_the_server_and_keeps_the_agents_running() {
+        let hub = RunningHub::start().await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", Some(200))
+            .await;
+        let new_port = free_port().await;
+
+        std::fs::write(
+            hub.hub_config_path(),
+            format!(
+                "timezone = \"UTC\"\n[gateway]\nport = {new_port}\n[a2a]\nport = {}\n",
+                hub.a2a_port
+            ),
+        )
+        .unwrap();
+
+        hub.eventually_status(new_port, "/api/agents/scout/api/status", Some(200))
+            .await;
+        hub.eventually_status(new_port, "/api/agents/atlas/api/status", Some(200))
+            .await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", None)
+            .await;
+        let mut hub = hub;
+        hub.gateway_port = new_port;
+        hub.shut_down().await;
+    }
+
+    #[tokio::test]
+    async fn a_broken_hub_config_reload_keeps_the_hub_running_and_says_so() {
+        let mut hub = RunningHub::start().await;
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", Some(200))
+            .await;
+
+        std::fs::write(hub.hub_config_path(), "not valid toml [[[").unwrap();
+
+        let notice = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let HubEvent::Notice { message, .. } = hub.events.recv().await.unwrap()
+                    && message.contains("keeping current hub config")
+                {
+                    return message;
+                }
+            }
+        })
+        .await
+        .expect("the failed reload is announced");
+        assert!(notice.starts_with("hub config reload failed"), "{notice}");
+        hub.eventually_status(hub.gateway_port, "/api/agents/scout/api/status", Some(200))
+            .await;
+        hub.shut_down().await;
+    }
 
     #[test]
     fn hub_fallback_uses_its_own_saved_copy_when_the_live_file_is_broken() {
