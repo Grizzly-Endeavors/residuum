@@ -343,7 +343,6 @@ impl WorkspaceLayout {
     pub fn required_dirs(&self) -> Vec<PathBuf> {
         vec![
             self.root.clone(),
-            self.wiki_dir(),
             self.memory_dir(),
             self.episodes_dir(),
             self.search_index_dir(),
@@ -506,8 +505,8 @@ mod tests {
             "wiki_log_md path"
         );
         assert!(
-            layout.required_dirs().contains(&layout.wiki_dir()),
-            "wiki dir should be a required dir"
+            !layout.required_dirs().contains(&layout.wiki_dir()),
+            "the wiki lives in the team directory, not the agent's"
         );
     }
 

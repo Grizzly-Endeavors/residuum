@@ -1,19 +1,19 @@
 # Checkpoints
 
-Checkpoints are a hidden git history of the workspace, used for recovery. Not a user-facing version control system — there's no staging, no branches, no commit messages to write.
+Checkpoints are a hidden git history of the workspace and of the shared team directory (`~/.residuum/team/`), used for recovery. Not a user-facing version control system — there's no staging, no branches, no commit messages to write.
 
-Residuum takes a checkpoint automatically at the start and end of every turn (start captures edits made outside Residuum since the last checkpoint; end captures what the turn itself did) and before a destructive workspace action (delete, overwrite, move/rename with overwrite). Checkpointing never blocks or fails a turn or action — a failure is logged and surfaces as a notice, then things proceed normally.
+Residuum takes a checkpoint of each automatically at the start and end of every turn (start captures edits made outside Residuum since the last checkpoint; end captures what the turn itself did) and, for the workspace, before a destructive workspace action (delete, overwrite, move/rename with overwrite). Checkpointing never blocks or fails a turn or action — a failure is logged and surfaces as a notice, then things proceed normally.
 
-There are two more, separate checkpoint repositories: one for your own `config/config.toml` and `config/providers.toml`, and one for the hub's config (`hub/config.toml`) and the encrypted key stores. Each is checkpointed before writes to those files, is local-only, and is never reachable from either tool below.
+There are two more, separate checkpoint repositories (the team repository never includes the wiki search index or its vector store): one for your own `config/config.toml` and `config/providers.toml`, and one for the hub's config (`hub/config.toml`) and the encrypted key stores. Each is checkpointed before writes to those files, is local-only, and is never reachable from either tool below.
 
 ## Tools
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
-| `workspace_history` | `action` (`list`\|`show`), `path`, `limit`, `checkpoint_id` | List checkpoints (optionally filtered to ones that changed a path), or show what one checkpoint changed. |
-| `workspace_restore` | `action` (`restore_path`\|`undo_turn`), `checkpoint_id`, `path` | Restore a file/directory to a checkpoint, or undo a checkpoint's changes. |
+| `workspace_history` | `repo` (`workspace`\|`team`), `action` (`list`\|`show`), `path`, `limit`, `checkpoint_id` | List checkpoints (optionally filtered to ones that changed a path), or show what one checkpoint changed. |
+| `workspace_restore` | `repo` (`workspace`\|`team`), `action` (`restore_path`\|`undo_turn`), `checkpoint_id`, `path` | Restore a file/directory to a checkpoint, or undo a checkpoint's changes. |
 
-Both tools only ever see the workspace checkpoint repository — never the config one.
+Both tools see the workspace repository by default; pass `repo: "team"` for the team directory (paths are then relative to `team/`). They never see a config repository.
 
 ## Restoring vs. undoing
 
@@ -26,5 +26,5 @@ Both actions checkpoint the resulting state afterward, so a restore or an undo c
 ## Gotchas
 
 - `checkpoint_id` comes from `workspace_history`'s `list`/`show` output — there's no way to guess one.
-- `path` must be relative to the workspace root and can't contain `..` — both tools reject a path that would escape it.
+- `path` must be relative to the chosen repository's root (the workspace, or `team/`) and can't contain `..` — both tools reject a path that would escape it.
 - There's no retention or pruning: every checkpoint is kept. If workspace history feels heavy, that's expected for now.

@@ -29,6 +29,7 @@ pub(super) struct StatusResponse {
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
     workspace: Option<crate::checkpoints::RepoStats>,
+    team: Option<crate::checkpoints::RepoStats>,
     agent_config: Option<crate::checkpoints::RepoStats>,
     hub: Option<crate::checkpoints::RepoStats>,
 }
@@ -112,7 +113,7 @@ pub(super) struct CompleteSetupRequest {
     /// This installation's first agent name, validated with
     /// [`crate::config::validate_agent_name`].
     agent_name: String,
-    /// The user's name, written to the agent's `USER.md`.
+    /// The user's name, written to the team's `USER.md`.
     #[serde(default)]
     user_name: Option<String>,
     /// Raw agent config.toml content.
@@ -138,6 +139,7 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
         checkpoints: CheckpointsStatus {
             workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
                 .await,
+            team: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Team).await,
             agent_config: checkpoint_stats_or_log(
                 &state,
                 crate::checkpoints::RepoKind::AgentConfig,
@@ -672,8 +674,9 @@ async fn write_first_agent_config_files(
 /// Writes `hub/config.toml`, bootstraps the hub directory (`bin/`, `logs/`),
 /// creates the first agent's directory (named `body.agent_name`, validated
 /// with [`crate::config::validate_agent_name`]) under the residuum root,
-/// bootstraps its full workspace (`SOUL.md`, the wiki, bundled skills,
-/// `USER.md` personalized with `body.user_name`), and writes its
+/// bootstraps its full workspace (`SOUL.md`, bundled skills), the shared team
+/// directory (`AGENTS.md`, the wiki, `USER.md` personalized with
+/// `body.user_name`) and its role page, and writes its
 /// `config.toml`/`providers.toml`/`mcp.json`, `config.toml` last.
 ///
 /// Answers 409 when an agent already exists, so a running gateway's live
@@ -1094,8 +1097,12 @@ mod tests {
         );
         assert!(root.path().join("scout/config/config.toml").is_file());
         assert!(root.path().join("scout/config/providers.toml").is_file());
-        let user_md = std::fs::read_to_string(root.path().join("scout/USER.md")).unwrap();
-        assert!(user_md.contains("Sam"), "USER.md: {user_md}");
+        let team =
+            crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(root.path()));
+        let user_md = std::fs::read_to_string(team.user_md()).unwrap();
+        assert!(user_md.contains("Sam"), "team USER.md: {user_md}");
+        assert!(!root.path().join("scout").join("USER.md").exists());
+        assert!(team.agent_role_page("scout").is_file());
         assert!(*done_rx.borrow(), "setup should be signalled complete");
         assert_eq!(
             crate::config::discover_single_agent(root.path())

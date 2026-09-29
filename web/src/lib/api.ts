@@ -344,7 +344,7 @@ export async function storeSecret(name: string, value: string): Promise<SecretRe
 export interface CompleteSetupPayload {
   hubConfig: string;
   agentName: string;
-  /** The user's name, written to USER.md. Empty when they skipped it. */
+  /** The user's name, written to the team's USER.md. Empty when they skipped it. */
   userName: string;
   config: string;
   providers: string;

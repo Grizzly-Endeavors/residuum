@@ -12,7 +12,7 @@ The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from 
 
 | File | Churn | Notes |
 |------|-------|-------|
-| `team/wiki/` | High | Team layer, shared by every agent. Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `log.md`. Agents maintain pages and indexes by hand. |
+| `team/wiki/` | High | Team layer, shared by every agent. Open Knowledge Format bundle — one concept per page, plus `index.md` files, an append-only `log.md`, and a role page per agent in `agents/`. Agents maintain pages and indexes by hand. See [Team Directory](team-directory.md). |
 | `team/USER.md` | Medium | Team layer, shared by every agent. Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
 | `team/workbench/` | Medium | Interactive artifacts the agents build for the user, shared by every agent, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
@@ -62,8 +62,9 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 |--------|-----|---------------|--------|
 | [Config](config.md) | Global settings in `config.toml`/`providers.toml`, editable by the agent on the user's behalf | `write_file`, `edit_file` | `config.toml`, `providers.toml` |
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
+| [Team Directory](team-directory.md) | The `team/` directory every agent shares: team rules, user profile, wiki, and each agent's role page | `read_file`, `write_file`, `edit_file` | `team/` |
 | [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `team/wiki/` |
-| [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
+| [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the shared team directory, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
 | [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
 | [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |

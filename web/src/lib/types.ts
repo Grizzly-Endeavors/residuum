@@ -133,6 +133,7 @@ export interface StatusResponse {
   /** Each checkpoint repository's on-disk size and count, or `null` if just-now unreadable. */
   checkpoints: {
     workspace: RepoStats | null;
+    team: RepoStats | null;
     agent_config: RepoStats | null;
     hub: RepoStats | null;
   };

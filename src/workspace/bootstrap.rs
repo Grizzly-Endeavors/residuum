@@ -7,10 +7,6 @@ use super::layout::WorkspaceLayout;
 // ── Workspace bootstrap content (embedded at compile time from assets/) ──────
 
 const DEFAULT_SOUL: &str = include_str!("../../assets/workspace-bootstrap/SOUL.md");
-const DEFAULT_AGENTS: &str = include_str!("../../assets/workspace-bootstrap/AGENTS.md");
-const DEFAULT_USER: &str = include_str!("../../assets/workspace-bootstrap/USER.md");
-const DEFAULT_WIKI_INDEX: &str = include_str!("../../assets/workspace-bootstrap/wiki/index.md");
-const DEFAULT_WIKI_LOG: &str = include_str!("../../assets/workspace-bootstrap/wiki/log.md");
 
 /// Default content for BOOTSTRAP.md -- first-run guidance.
 ///
@@ -32,8 +28,6 @@ const DEFAULT_OBSERVER_PROMPT: &str =
 /// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_REFLECTOR_PROMPT: &str =
     include_str!("../../assets/workspace-bootstrap/memory/REFLECTOR.md");
-
-const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
 
 /// Default `config/agent-card.json` -- what this agent advertises to other
 /// agents reaching it over A2A. See `docs/systems-usage/a2a.md`.
@@ -166,11 +160,16 @@ const SKILL_AUTHORING_SKILL_MD: &str =
 const SKILL_AUTHORING_REF_STANDARDS: &str =
     include_str!("../../assets/bundled-skills/skill-authoring/references/authoring-standards.md");
 
-/// Ensure the workspace directory structure exists with default identity files.
+/// Ensure the agent's workspace directory structure exists with default
+/// identity files, and that the shared team layer it belongs to exists.
 ///
-/// When `user_name` is provided and `USER.md` does not yet exist, the default
-/// content is personalised with the user's name. When `timezone` is provided,
-/// it is included in `USER.md`.
+/// The agent directory gets `SOUL.md`, `HEARTBEAT.yml`, `SUBCONSCIOUS.md`,
+/// the memory prompts, its A2A card, and (once) `BOOTSTRAP.md`. The team
+/// directory (see [`super::team::ensure_team`]) gets the shared `AGENTS.md`,
+/// `USER.md` and wiki skeleton, and the agent gets a role page in the team
+/// wiki. When `user_name` is provided and the team's `USER.md` does not yet
+/// exist, the default content is personalised with the user's name; when
+/// `timezone` is provided, it is included as well.
 ///
 /// This is idempotent: existing files and directories are not modified.
 ///
@@ -213,13 +212,19 @@ pub async fn ensure_workspace(
 
     // Create default identity files if they don't exist
     write_if_missing(&layout.soul_md(), DEFAULT_SOUL).await?;
-    write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
 
-    let user_content = build_user_content(user_name, timezone);
-    write_if_missing(&layout.user_md(), &user_content).await?;
-
-    write_if_missing(&layout.wiki_index_md(), DEFAULT_WIKI_INDEX).await?;
-    write_if_missing(&layout.wiki_log_md(), DEFAULT_WIKI_LOG).await?;
+    super::team::ensure_team(layout.team(), user_name, timezone).await?;
+    match layout.agent_name() {
+        Some(name) => {
+            super::team::ensure_agent_role_page(layout.team(), name, None).await?;
+        }
+        None => {
+            return Err(FatalError::Workspace(format!(
+                "workspace {} has no directory name to use as the agent's name",
+                layout.root().display()
+            )));
+        }
+    }
 
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
@@ -245,7 +250,11 @@ pub async fn ensure_workspace(
 
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
-    write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
+    write_if_missing(
+        &layout.heartbeat_yml(),
+        super::team::first_agent_heartbeat(),
+    )
+    .await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
     write_if_missing(&layout.agent_card_json(), DEFAULT_AGENT_CARD).await?;
 
@@ -259,28 +268,6 @@ pub async fn ensure_workspace(
     );
 
     Ok(())
-}
-
-/// Build USER.md content from optional name and timezone.
-fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String {
-    let name = user_name.filter(|n| !n.is_empty());
-    let tz = timezone.filter(|t| !t.is_empty());
-
-    if name.is_none() && tz.is_none() {
-        return DEFAULT_USER.to_string();
-    }
-
-    let mut out = DEFAULT_USER.to_string();
-    if let Some(name) = name {
-        out.push_str("\n**Name**: ");
-        out.push_str(name);
-    }
-    if let Some(tz) = tz {
-        out.push_str("\n**Timezone**: ");
-        out.push_str(tz);
-    }
-    out.push('\n');
-    out
 }
 
 /// Write bundled skill trees to the team skills directory.
@@ -423,6 +410,8 @@ async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), F
 mod tests {
     use super::*;
 
+    const DEFAULT_TEAM_USER: &str = include_str!("../../assets/team-bootstrap/USER.md");
+
     #[tokio::test]
     async fn bootstrap_creates_structure() {
         let dir = tempfile::tempdir().unwrap();
@@ -435,13 +424,23 @@ mod tests {
         assert!(layout.episodes_dir().exists(), "episodes dir should exist");
         assert!(layout.skills_dir().exists(), "skills dir should exist");
         assert!(layout.soul_md().exists(), "SOUL.md should exist");
-        assert!(layout.agents_md().exists(), "AGENTS.md should exist");
-        assert!(layout.user_md().exists(), "USER.md should exist");
-        assert!(layout.wiki_dir().exists(), "wiki dir should exist");
+        let team = layout.team();
+        assert!(team.agents_md().exists(), "team AGENTS.md should exist");
+        assert!(team.user_md().exists(), "team USER.md should exist");
         assert!(
-            layout.wiki_index_md().exists(),
-            "wiki/index.md should exist"
+            team.wiki_index_md().exists(),
+            "team wiki/index.md should exist"
         );
+        assert!(
+            team.agent_role_page("workspace").exists(),
+            "the agent's role page should exist"
+        );
+        assert!(
+            !layout.agents_md().exists(),
+            "AGENTS.md belongs to the team"
+        );
+        assert!(!layout.user_md().exists(), "USER.md belongs to the team");
+        assert!(!layout.wiki_dir().exists(), "the wiki belongs to the team");
         assert!(layout.bootstrap_md().exists(), "BOOTSTRAP.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
         assert!(layout.reflector_md().exists(), "REFLECTOR.md should exist");
@@ -465,7 +464,9 @@ mod tests {
 
         let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
         assert!(!soul.is_empty(), "SOUL.md should have default content");
-        let user = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let user = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert!(!user.is_empty(), "USER.md should have default content");
     }
 
@@ -638,24 +639,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_seeds_wiki() {
+    async fn bootstrap_seeds_team_wiki() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        let index = tokio::fs::read_to_string(layout.wiki_index_md())
+        let index = tokio::fs::read_to_string(layout.team().wiki_index_md())
             .await
             .unwrap();
         assert!(
             index.contains("okf_version"),
             "root wiki index should declare its OKF version"
         );
-        assert!(layout.wiki_log_md().exists(), "wiki/log.md should exist");
+        assert!(
+            layout.team().wiki_log_md().exists(),
+            "team wiki/log.md should exist"
+        );
         assert!(
             layout.team().skills_dir().join("wiki/SKILL.md").exists(),
             "wiki skill should be bundled"
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_writes_team_defaults_only_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        let team = layout.team();
+        tokio::fs::create_dir_all(team.root()).await.unwrap();
+        tokio::fs::write(team.agents_md(), "shared rules")
+            .await
+            .unwrap();
+
+        ensure_workspace(&layout, Some("Alex"), None).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(team.agents_md()).await.unwrap(),
+            "shared rules",
+            "an existing team AGENTS.md is kept"
+        );
+        assert!(team.user_md().exists(), "missing team files are written");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_gives_the_first_agent_the_wiki_lint_pulse() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let heartbeat = tokio::fs::read_to_string(layout.heartbeat_yml())
+            .await
+            .unwrap();
+        assert!(heartbeat.contains("name: memory_tending"));
+        assert!(heartbeat.contains("name: wiki_lint"));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_recreates_a_missing_role_page_without_touching_the_agent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+        tokio::fs::remove_file(layout.team().agent_role_page("workspace"))
+            .await
+            .unwrap();
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        assert!(layout.team().agent_role_page("workspace").exists());
     }
 
     #[tokio::test]
@@ -748,7 +800,9 @@ mod tests {
 
         ensure_workspace(&layout, Some("Alex"), None).await.unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert!(
             content.contains("**Name**: Alex"),
             "USER.md should contain the user's name"
@@ -764,7 +818,9 @@ mod tests {
             .await
             .unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert!(
             content.contains("**Name**: Alex"),
             "USER.md should contain the user's name"
@@ -782,9 +838,11 @@ mod tests {
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert_eq!(
-            content, DEFAULT_USER,
+            content, DEFAULT_TEAM_USER,
             "USER.md should use default content when no name is provided"
         );
     }
@@ -798,7 +856,9 @@ mod tests {
             .await
             .unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert!(content.contains("**Timezone**: America/New_York"));
         assert!(!content.contains("**Name**"));
     }
@@ -810,9 +870,11 @@ mod tests {
 
         ensure_workspace(&layout, Some(""), Some("")).await.unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert_eq!(
-            content, DEFAULT_USER,
+            content, DEFAULT_TEAM_USER,
             "empty strings should produce default USER.md"
         );
     }

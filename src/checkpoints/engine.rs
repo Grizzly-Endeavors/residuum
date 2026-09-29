@@ -19,6 +19,7 @@ use super::types::{
     CheckpointSummary, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
 };
 use super::{exclude, notice};
+use crate::config::paths::{TeamPaths, team_dir};
 
 /// Hub `config.toml` and encrypted key stores tracked by the hub config
 /// repository. `secrets.key`/`agent-keys.key` (the machine keys the `.enc`
@@ -39,12 +40,15 @@ const AGENT_CONFIG_TRACKED_FILES: &[&str] = &["config.toml", "providers.toml"];
 /// one.
 const DEFAULT_PAGE_LIMIT: usize = 50;
 
-/// The workspace, agent-config, and hub-config checkpoint repositories, and
+/// The workspace, team, agent-config, and hub-config checkpoint repositories, and
 /// everything needed to take, list, and act on checkpoints in any of them.
 pub struct CheckpointEngine {
     workspace_root: PathBuf,
     workspace_repo: Arc<Mutex<GitRepo>>,
     workspace_git_dir: PathBuf,
+    team_root: PathBuf,
+    team_repo: Arc<Mutex<GitRepo>>,
+    team_git_dir: PathBuf,
     agent_config_dir: PathBuf,
     agent_config_repo: Arc<Mutex<GitRepo>>,
     agent_config_git_dir: PathBuf,
@@ -60,11 +64,13 @@ pub struct CheckpointEngine {
 }
 
 impl CheckpointEngine {
-    /// Open (or create) all three checkpoint repositories.
+    /// Open (or create) all four checkpoint repositories.
     ///
     /// `checkpoints_dir` is typically `~/.residuum/hub/checkpoints`. None of
-    /// the three git-dirs live inside `workspace_root` (the agent
-    /// directory), so a `.git` the user keeps there is never touched.
+    /// the git-dirs live inside `workspace_root` (the agent directory) or
+    /// the team directory, so a `.git` the user keeps there is never
+    /// touched. The team repository's work tree is the `team/` directory
+    /// beside `hub_dir`.
     ///
     /// # Errors
     /// Returns [`CheckpointError`] if any repository can't be opened or
@@ -77,15 +83,23 @@ impl CheckpointEngine {
         publisher: Option<Publisher>,
     ) -> Result<Self, CheckpointError> {
         let workspace_git_dir = checkpoints_dir.join(RepoKind::Workspace.dir_name());
+        let team_git_dir = checkpoints_dir.join(RepoKind::Team.dir_name());
+        let team_root = TeamPaths::new(team_dir(hub_dir.parent().unwrap_or(&hub_dir)))
+            .root()
+            .to_path_buf();
         let agent_config_git_dir = checkpoints_dir.join(RepoKind::AgentConfig.dir_name());
         let hub_git_dir = checkpoints_dir.join(RepoKind::Hub.dir_name());
         let workspace_repo = GitRepo::open_or_init(&workspace_git_dir)?;
+        let team_repo = GitRepo::open_or_init(&team_git_dir)?;
         let agent_config_repo = GitRepo::open_or_init(&agent_config_git_dir)?;
         let hub_repo = GitRepo::open_or_init(&hub_git_dir)?;
         Ok(Self {
             workspace_root,
             workspace_repo: Arc::new(Mutex::new(workspace_repo)),
             workspace_git_dir,
+            team_root,
+            team_repo: Arc::new(Mutex::new(team_repo)),
+            team_git_dir,
             agent_config_dir,
             agent_config_repo: Arc::new(Mutex::new(agent_config_repo)),
             agent_config_git_dir,
@@ -145,6 +159,7 @@ impl CheckpointEngine {
     fn repo(&self, kind: RepoKind) -> Arc<Mutex<GitRepo>> {
         match kind {
             RepoKind::Workspace => Arc::clone(&self.workspace_repo),
+            RepoKind::Team => Arc::clone(&self.team_repo),
             RepoKind::AgentConfig => Arc::clone(&self.agent_config_repo),
             RepoKind::Hub => Arc::clone(&self.hub_repo),
         }
@@ -153,6 +168,7 @@ impl CheckpointEngine {
     fn dest_root(&self, kind: RepoKind) -> PathBuf {
         match kind {
             RepoKind::Workspace => self.workspace_root.clone(),
+            RepoKind::Team => self.team_root.clone(),
             RepoKind::AgentConfig => self.agent_config_dir.clone(),
             RepoKind::Hub => self.hub_dir.clone(),
         }
@@ -161,6 +177,7 @@ impl CheckpointEngine {
     fn git_dir(&self, kind: RepoKind) -> PathBuf {
         match kind {
             RepoKind::Workspace => self.workspace_git_dir.clone(),
+            RepoKind::Team => self.team_git_dir.clone(),
             RepoKind::AgentConfig => self.agent_config_git_dir.clone(),
             RepoKind::Hub => self.hub_git_dir.clone(),
         }
@@ -181,14 +198,21 @@ impl CheckpointEngine {
         self.spawn_workspace_checkpoint(ctx);
     }
 
+    /// Checkpoint both trees an agent turn can change: the agent's own
+    /// workspace and the shared team directory.
     fn spawn_workspace_checkpoint(&self, ctx: CheckpointContext) {
-        let repo = Arc::clone(&self.workspace_repo);
-        let root = self.workspace_root.clone();
+        self.spawn_tree_checkpoint(RepoKind::Workspace, ctx.clone());
+        self.spawn_tree_checkpoint(RepoKind::Team, ctx);
+    }
+
+    fn spawn_tree_checkpoint(&self, kind: RepoKind, ctx: CheckpointContext) {
+        let repo = self.repo(kind);
+        let root = self.dest_root(kind);
         let publisher = self.publisher.clone();
         tokio::spawn(async move {
             let task_ctx = ctx.clone();
             let result = tokio::task::spawn_blocking(move || {
-                commit_workspace(&repo, &root, &task_ctx).map(|commit| commit.recorded_id())
+                commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
             })
             .await
             .unwrap_or_else(|e| {
@@ -196,7 +220,7 @@ impl CheckpointEngine {
                     "checkpoint task panicked: {e}"
                 )))
             });
-            report_outcome(publisher.as_ref(), "workspace", &ctx, &result).await;
+            report_outcome(publisher.as_ref(), kind.dir_name(), &ctx, &result).await;
         });
     }
 
@@ -222,11 +246,33 @@ impl CheckpointEngine {
         &self,
         ctx: CheckpointContext,
     ) -> Option<String> {
-        let repo = Arc::clone(&self.workspace_repo);
-        let root = self.workspace_root.clone();
+        self.checkpoint_tree_id_before_action(RepoKind::Workspace, ctx)
+            .await
+    }
+
+    /// [`Self::checkpoint_workspace_before_action`] for the shared team
+    /// directory: awaited before a destructive team action, never failing
+    /// or blocking it.
+    pub async fn checkpoint_team_before_action(&self, ctx: CheckpointContext) {
+        let _checkpoint_id = self
+            .checkpoint_tree_id_before_action(RepoKind::Team, ctx)
+            .await;
+    }
+
+    /// Snapshot a work-tree repository ([`RepoKind::Workspace`] or
+    /// [`RepoKind::Team`]) and report the outcome. Returns the id holding
+    /// the tree as it was, or `None` when recording failed or there was
+    /// nothing to record.
+    async fn checkpoint_tree_id_before_action(
+        &self,
+        kind: RepoKind,
+        ctx: CheckpointContext,
+    ) -> Option<String> {
+        let repo = self.repo(kind);
+        let root = self.dest_root(kind);
         let task_ctx = ctx.clone();
         let outcome =
-            tokio::task::spawn_blocking(move || commit_workspace(&repo, &root, &task_ctx))
+            tokio::task::spawn_blocking(move || commit_tree(kind, &repo, &root, &task_ctx))
                 .await
                 .unwrap_or_else(|e| {
                     Err(CheckpointError::Git(format!(
@@ -234,7 +280,7 @@ impl CheckpointEngine {
                     )))
                 });
         let (report, id) = id_and_report(outcome);
-        report_outcome(self.publisher.as_ref(), "workspace", &ctx, &report).await;
+        report_outcome(self.publisher.as_ref(), kind.dir_name(), &ctx, &report).await;
         id
     }
 
@@ -575,12 +621,12 @@ impl CheckpointEngine {
     /// the repository's current tip either way.
     async fn checkpoint_after_mutation(&self, kind: RepoKind, ctx: CheckpointContext) -> String {
         let result = match kind {
-            RepoKind::Workspace => {
-                let repo = Arc::clone(&self.workspace_repo);
-                let root = self.workspace_root.clone();
+            RepoKind::Workspace | RepoKind::Team => {
+                let repo = self.repo(kind);
+                let root = self.dest_root(kind);
                 let task_ctx = ctx.clone();
                 tokio::task::spawn_blocking(move || {
-                    commit_workspace(&repo, &root, &task_ctx).map(|commit| commit.recorded_id())
+                    commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
                 })
                 .await
                 .unwrap_or_else(|e| {
@@ -684,14 +730,14 @@ fn remove_path(target: &Path) -> std::io::Result<()> {
 }
 
 /// Build a checkpoint's file list by walking `root`, skipping anything
-/// [`exclude::is_excluded`] flags, and following no symlinks.
-fn collect_workspace_files(root: &Path) -> Vec<SnapshotFile> {
+/// `is_excluded` flags, and following no symlinks.
+fn collect_tree_files(root: &Path, is_excluded: fn(&str) -> bool) -> Vec<SnapshotFile> {
     let mut files = Vec::new();
-    walk_dir(root, root, &mut files);
+    walk_dir(root, root, is_excluded, &mut files);
     files
 }
 
-fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<SnapshotFile>) {
+fn walk_dir(root: &Path, dir: &Path, is_excluded: fn(&str) -> bool, out: &mut Vec<SnapshotFile>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -703,7 +749,7 @@ fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<SnapshotFile>) {
         let Some(rel_str) = to_slash_string(rel_path) else {
             continue;
         };
-        if exclude::is_excluded(&rel_str) {
+        if is_excluded(&rel_str) {
             continue;
         }
         let Ok(file_type) = entry.file_type() else {
@@ -713,7 +759,7 @@ fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<SnapshotFile>) {
             continue;
         }
         if file_type.is_dir() {
-            walk_dir(root, &abs_path, out);
+            walk_dir(root, &abs_path, is_excluded, out);
         } else if file_type.is_file() {
             out.push(SnapshotFile {
                 rel_path: rel_str,
@@ -758,7 +804,7 @@ fn collect_config_files(
     let tracked: &[&str] = match kind {
         RepoKind::Hub => HUB_TRACKED_FILES,
         RepoKind::AgentConfig => AGENT_CONFIG_TRACKED_FILES,
-        RepoKind::Workspace => return Err(CheckpointError::NotAConfigRepo),
+        RepoKind::Workspace | RepoKind::Team => return Err(CheckpointError::NotAConfigRepo),
     };
     Ok(tracked
         .iter()
@@ -795,15 +841,22 @@ fn dir_size(dir: &Path) -> u64 {
     total
 }
 
-/// Snapshot the workspace and commit if it changed. Free function (rather
-/// than a method) so it can be called from inside `spawn_blocking` without
-/// capturing `&CheckpointEngine` across the blocking boundary.
-fn commit_workspace(
+/// Snapshot a work-tree repository's tree (the agent workspace for
+/// [`RepoKind::Workspace`], the team directory for [`RepoKind::Team`]) and
+/// commit if it changed. Free function (rather than a method) so it can be
+/// called from inside `spawn_blocking` without capturing `&CheckpointEngine`
+/// across the blocking boundary.
+fn commit_tree(
+    kind: RepoKind,
     repo: &Mutex<GitRepo>,
     root: &Path,
     ctx: &CheckpointContext,
 ) -> Result<SnapshotCommit, CheckpointError> {
-    let files = collect_workspace_files(root);
+    let is_excluded = match kind {
+        RepoKind::Team => exclude::is_team_excluded,
+        RepoKind::Workspace | RepoKind::AgentConfig | RepoKind::Hub => exclude::is_excluded,
+    };
+    let files = collect_tree_files(root, is_excluded);
     let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
     guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
 }
@@ -1340,5 +1393,157 @@ mod tests {
             std::fs::read_to_string(workspace.join("notes.md")).unwrap(),
             "version one"
         );
+    }
+
+    fn write_team_file(team_root: &Path, rel: &str, content: &str) {
+        let path = rel
+            .split('/')
+            .fold(team_root.to_path_buf(), |acc, part| acc.join(part));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn team_repo_snapshots_the_team_dir_beside_the_hub_and_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let team_root = dir.path().join("team");
+        write_team_file(&team_root, "USER.md", "Bear");
+        write_team_file(&team_root, "wiki/index.md", "# Wiki");
+        let engine = new_engine(dir.path());
+
+        engine
+            .checkpoint_team_before_action(ctx(CheckpointTrigger::PreAction, "team"))
+            .await;
+
+        let page = engine
+            .list_checkpoints(RepoKind::Team, None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        let detail = engine
+            .show_checkpoint(RepoKind::Team, page.items.first().unwrap().id.clone())
+            .await
+            .unwrap();
+        let mut paths: Vec<&str> = detail
+            .changed_paths
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["USER.md", "wiki/index.md"]);
+        let workspace_page = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        assert!(workspace_page.items.is_empty(), "repos are independent");
+    }
+
+    #[tokio::test]
+    async fn team_repo_excludes_the_search_index_vector_store_and_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let team_root = dir.path().join("team");
+        write_team_file(&team_root, "wiki/page.md", "kept");
+        write_team_file(&team_root, ".index/segments/a.bin", "index");
+        write_team_file(&team_root, "vectors.db", "vectors");
+        write_team_file(&team_root, "vectors.db-wal", "wal");
+        write_team_file(&team_root, "wiki/.page.md.0badf00d.residuum-tmp", "temp");
+        let engine = new_engine(dir.path());
+
+        engine
+            .checkpoint_team_before_action(ctx(CheckpointTrigger::PreAction, "team"))
+            .await;
+
+        let id = engine
+            .list_checkpoints(RepoKind::Team, None, None, None, None)
+            .await
+            .unwrap()
+            .items
+            .first()
+            .unwrap()
+            .id
+            .clone();
+        let detail = engine.show_checkpoint(RepoKind::Team, id).await.unwrap();
+        let paths: Vec<&str> = detail
+            .changed_paths
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        assert_eq!(paths, ["wiki/page.md"]);
+    }
+
+    #[tokio::test]
+    async fn team_restore_writes_back_from_a_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let team_root = dir.path().join("team");
+        write_team_file(&team_root, "wiki/log.md", "v1");
+        let engine = new_engine(dir.path());
+        engine
+            .checkpoint_team_before_action(ctx(CheckpointTrigger::PreAction, "v1"))
+            .await;
+        let id = engine
+            .list_checkpoints(RepoKind::Team, None, None, None, None)
+            .await
+            .unwrap()
+            .items
+            .first()
+            .unwrap()
+            .id
+            .clone();
+        write_team_file(&team_root, "wiki/log.md", "v2 clobbered");
+
+        let outcome = engine
+            .restore_path(
+                RepoKind::Team,
+                id,
+                "wiki/log.md".to_string(),
+                ctx(CheckpointTrigger::Restore, "restore log"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.restored_paths, vec!["wiki/log.md".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(team_root.join("wiki").join("log.md")).unwrap(),
+            "v1"
+        );
+        assert_eq!(
+            outcome.checkpoint_id,
+            engine
+                .list_checkpoints(RepoKind::Team, None, None, None, None)
+                .await
+                .unwrap()
+                .items
+                .first()
+                .unwrap()
+                .id,
+            "the restore reports the team repository tip"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_hooks_checkpoint_the_team_dir_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let team_root = dir.path().join("team");
+        write_team_file(&team_root, "wiki/index.md", "edited by a teammate");
+        std::fs::create_dir_all(dir.path().join("workspace")).unwrap();
+        let engine = new_engine(dir.path());
+
+        engine.spawn_turn_end_checkpoint(ctx(CheckpointTrigger::TurnEnd, "turn"));
+
+        let items = wait_for_checkpoint_count(&engine, RepoKind::Team, 1).await;
+        assert_eq!(items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn team_repo_is_not_a_config_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = new_engine(dir.path());
+        assert!(matches!(
+            engine.checkpoint_config_kind_now(
+                RepoKind::Team,
+                &ctx(CheckpointTrigger::PreConfigWrite, "x")
+            ),
+            Err(CheckpointError::NotAConfigRepo)
+        ));
     }
 }

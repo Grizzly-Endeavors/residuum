@@ -4,12 +4,15 @@ The wiki is where the agent keeps distilled long-term knowledge: facts about the
 
 The wiki is entirely agent-maintained. The user can read and edit it through the web UI's file editor like any other file.
 
+`wiki/agents/` holds one role page per agent (frontmatter `type: Agent`, `title`, and a one-line `description`) and an `index.md` roster. Each agent owns and maintains its own page.
+
 ## Layout
 
 ```
 team/wiki/
 ├── index.md          # Root catalog — injected into every prompt as WIKI_INDEX
 ├── log.md            # Append-only history of wiki changes
+├── agents/           # Role pages, one per agent, plus a roster index.md
 ├── <concept>.md      # A page at the root
 └── <folder>/
     ├── index.md      # Catalog of this folder

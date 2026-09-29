@@ -4,13 +4,13 @@ Heartbeats are ambient scheduled checks the agent performs in the background. Th
 
 ## Built-in Pulses
 
-Every bootstrapped workspace ships `HEARTBEAT.yml` with three pulses enabled by default:
+The first agent's `HEARTBEAT.yml` ships with three pulses enabled by default. Agents created later start from a template with `reflection` and `memory_tending` only: `wiki_lint` checks the shared team wiki, so one agent runs it, and moving it to another agent means editing both agents' `HEARTBEAT.yml`.
 
 | Pulse | Schedule | Agent | Purpose |
 |-------|----------|-------|---------|
 | `reflection` | `"7d"` | `introspection` | Reviews recent episodes/observations for recurring patterns, unfinished requests, and friction; delivers suggestions to the user inbox via `user_inbox_add`. |
 | `memory_tending` | `"24h"`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `team/wiki/log.md` into team wiki pages and `team/USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `team/USER.md` core-facts list (capped ~15 entries, replace-don't-append). A page is created with `status: draft` on a single supporting episode and promoted to `stable` once a second independent episode corroborates it. See [wiki.md](wiki.md) for the page format and promotion rule. |
-| `wiki_lint` | `"7d"`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages (past `stale_after`), old drafts, duplicates, contradictions between pages, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
+| `wiki_lint` | `"7d"`, active `02:00-06:00` | `wiki` | Audits the team wiki for index drift, missing frontmatter, stale pages (past `stale_after`), old drafts, duplicates, contradictions between pages, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
 `reflection` names the bundled `introspection` skill (`team/skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md and the team's AGENTS.md in its system message, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only propose SOUL.md/AGENTS.md changes through its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` name the bundled `wiki` skill (`team/skills/wiki/SKILL.md`) with `model_tier: large`, and may edit wiki pages and `USER.md` directly.
 
