@@ -90,14 +90,6 @@ pub(super) async fn init_workspace(
     let tz = cfg.timezone;
     ensure_workspace(&layout, cfg.name.as_deref(), Some(cfg.timezone.name())).await?;
 
-    std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
-        FatalError::Config(format!(
-            "failed to change to workspace directory {}: {e}",
-            cfg.workspace_dir.display()
-        ))
-    })?;
-    tracing::info!(workspace = %cfg.workspace_dir.display(), "changed to workspace directory");
-
     Ok((layout, tz))
 }
 
@@ -484,7 +476,11 @@ async fn init_mcp_servers(
     agent_keys: crate::agent_keys::SharedAgentKeys,
     degradations: &mut Vec<String>,
 ) -> SharedMcpRegistry {
-    let mcp_registry = crate::mcp::McpRegistry::new_shared_with_spawn_env(tools_path, agent_keys);
+    let mcp_registry = crate::mcp::McpRegistry::new_shared_with_spawn_env(
+        tools_path,
+        agent_keys,
+        layout.root().to_path_buf(),
+    );
     match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
         Ok(servers) => {
             if !servers.is_empty() {

@@ -295,7 +295,15 @@ impl ToolRegistry {
         diagnostics_paths: crate::diagnostics::DiagnosticsPaths,
         config_watch: Option<super::config_reload_tracker::ConfigWriteWatch>,
     ) {
-        self.register(Box::new(read::ReadTool::new(Arc::clone(&tracker))));
+        // Every file/shell tool resolves a relative path (or spawns a child
+        // process) against this workspace root rather than the process's
+        // current directory, which is shared across every agent hosted in
+        // the same process.
+        let workspace_root = diagnostics_paths.workspace_dir.clone();
+        self.register(Box::new(read::ReadTool::new(
+            Arc::clone(&tracker),
+            workspace_root.clone(),
+        )));
         let mut write_tool = write::WriteTool::new(
             Arc::clone(&tracker),
             Arc::clone(&policy),
@@ -312,6 +320,7 @@ impl ToolRegistry {
             self.tools_path.clone(),
             self.agent_keys.clone(),
             self.checkpoints.clone(),
+            workspace_root,
         );
         if let Some(publisher) = &self.publisher {
             exec_tool = exec_tool.with_publisher(publisher.clone());

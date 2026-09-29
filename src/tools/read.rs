@@ -1,6 +1,6 @@
 //! File reading tool for the agent.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -21,25 +21,43 @@ const MAX_CHARS_PER_LINE: usize = 2000;
 /// Tool that reads file contents with numbered lines.
 pub struct ReadTool {
     tracker: SharedFileTracker,
+    /// The agent's workspace root. A relative `path` argument is resolved
+    /// against this rather than the process's current directory, which is
+    /// shared across every agent hosted in the same process.
+    workspace_root: PathBuf,
 }
 
 impl ReadTool {
-    /// Create a new `ReadTool` with shared file tracker.
+    /// Create a new `ReadTool` with a shared file tracker and the workspace
+    /// root a relative `path` argument resolves against.
     #[must_use]
-    pub fn new(tracker: SharedFileTracker) -> Self {
-        Self { tracker }
+    pub fn new(tracker: SharedFileTracker, workspace_root: PathBuf) -> Self {
+        Self {
+            tracker,
+            workspace_root,
+        }
     }
 
     /// Read an image file, base64-encode it, and return as a tool result with inline image data.
     #[expect(clippy::cast_precision_loss, reason = "file size in KB display only")]
-    async fn read_image(&self, path: &str, size: u64, mime: &str) -> Result<ToolResult, ToolError> {
-        let bytes = match tokio::fs::read(path).await {
+    async fn read_image(
+        &self,
+        display_path: &str,
+        resolved_path: &Path,
+        size: u64,
+        mime: &str,
+    ) -> Result<ToolResult, ToolError> {
+        let bytes = match tokio::fs::read(resolved_path).await {
             Ok(b) => b,
-            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+            Err(e) => {
+                return Ok(ToolResult::error(format!(
+                    "failed to read {display_path}: {e}"
+                )));
+            }
         };
 
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let filename = Path::new(path)
+        let filename = resolved_path
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
@@ -47,7 +65,10 @@ impl ReadTool {
         let size_kb = size as f64 / 1024.0;
         let summary = format!("[Image: {filename}, {size_kb:.1} KB]");
 
-        self.tracker.lock().await.record_read(path);
+        self.tracker
+            .lock()
+            .await
+            .record_read(&resolved_path.to_string_lossy());
 
         Ok(ToolResult::success_with_images(
             summary,
@@ -111,7 +132,14 @@ impl Tool for ReadTool {
         let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
         let explicit_limit = arguments.get("limit").and_then(Value::as_u64);
 
-        let metadata = match tokio::fs::metadata(path).await {
+        // `path` as given by the model (absolute or workspace-relative) is
+        // kept for display; every filesystem operation and the tracker key
+        // use `resolved`, which resolves against the workspace root instead
+        // of the process's current directory — see `workspace_root`'s doc
+        // comment.
+        let resolved = self.workspace_root.join(path);
+
+        let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
@@ -120,14 +148,14 @@ impl Tool for ReadTool {
         // Check if this is a supported image file — return inline image data.
         // The size cap here is a model API fact (the maximum image size the
         // provider accepts inline), not a residuum-imposed limit.
-        if let Some(mime) = image_mime_type(Path::new(path)) {
+        if let Some(mime) = image_mime_type(&resolved) {
             if total_size > u64::from(MAX_IMAGE_INLINE_SIZE) {
                 return Ok(ToolResult::error(format!(
                     "image {path} is too large to send inline ({total_size} bytes, max \
                      {MAX_IMAGE_INLINE_SIZE} bytes — this is a model API limit)"
                 )));
             }
-            return self.read_image(path, total_size, mime).await;
+            return self.read_image(path, &resolved, total_size, mime).await;
         }
 
         // Text files have no size limit: page through by offset/limit rather
@@ -145,7 +173,7 @@ impl Tool for ReadTool {
             |l| Some(usize::try_from(l).unwrap_or(usize::MAX)),
         );
 
-        let file = match tokio::fs::File::open(path).await {
+        let file = match tokio::fs::File::open(&resolved).await {
             Ok(f) => f,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
@@ -209,8 +237,13 @@ impl Tool for ReadTool {
             ));
         }
 
-        // Record read in tracker
-        self.tracker.lock().await.record_read(path);
+        // Record read in tracker, keyed by the resolved path so it matches
+        // what write_file/edit_file check against regardless of how this
+        // call's path argument was spelled.
+        self.tracker
+            .lock()
+            .await
+            .record_read(&resolved.to_string_lossy());
 
         let header = warnings.join("\n");
         let body = selected.join("\n");
@@ -253,8 +286,15 @@ mod tests {
     use super::*;
     use crate::tools::file_tracker::FileTracker;
 
+    /// A workspace root that doesn't correspond to any real directory, for
+    /// tests that always pass an absolute `path` (join drops the base for
+    /// an absolute joined component, so its value never matters there).
+    fn unused_workspace_root() -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/residuum-test-workspace-unused")
+    }
+
     fn make_tool() -> ReadTool {
-        ReadTool::new(FileTracker::new_shared())
+        ReadTool::new(FileTracker::new_shared(), unused_workspace_root())
     }
 
     #[tokio::test]
@@ -468,7 +508,7 @@ mod tests {
         tokio::fs::write(&file_path, "content").await.unwrap();
 
         let tracker = FileTracker::new_shared();
-        let tool = ReadTool::new(std::sync::Arc::clone(&tracker));
+        let tool = ReadTool::new(std::sync::Arc::clone(&tracker), unused_workspace_root());
 
         tool.execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
             .await
@@ -546,7 +586,7 @@ mod tests {
             .unwrap();
 
         let tracker = FileTracker::new_shared();
-        let tool = ReadTool::new(std::sync::Arc::clone(&tracker));
+        let tool = ReadTool::new(std::sync::Arc::clone(&tracker), unused_workspace_root());
 
         tool.execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
             .await
@@ -604,6 +644,37 @@ mod tests {
 
         assert!(!result.is_error, "reading empty file should succeed");
         assert!(result.images.is_empty(), "empty file should have no images");
+    }
+
+    #[tokio::test]
+    async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
+        // The process's current directory here is the crate root (however
+        // `cargo test` was invoked), not `workspace_root` — so this only
+        // passes if the relative path is joined against `workspace_root`.
+        let workspace_root = tempfile::tempdir().unwrap();
+        tokio::fs::write(workspace_root.path().join("relative.txt"), "from workspace")
+            .await
+            .unwrap();
+
+        let tool = ReadTool::new(
+            FileTracker::new_shared(),
+            workspace_root.path().to_path_buf(),
+        );
+        let result = tool
+            .execute(serde_json::json!({ "path": "relative.txt" }))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "a relative path should resolve against the workspace root: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("from workspace"),
+            "should read the file from the workspace root: {}",
+            result.output
+        );
     }
 
     #[test]

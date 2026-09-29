@@ -31,6 +31,8 @@ On error (returned as `is_error = true`):
 
 **Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
 
+A relative `path` resolves against the agent's workspace root, not the process's current directory.
+
 ---
 
 ## `write_file`
@@ -60,6 +62,8 @@ On error:
 **Side effect:** Records the path in the `FileTracker` after a successful write.
 
 **Note:** `config.toml` and `providers.toml` are writable (the agent may edit them on the user's behalf); `config.example.toml`/`providers.example.toml` are always blocked — Residuum regenerates them from its own defaults on every startup. See the `residuum-system` skill's [config reference](../../assets/bundled-skills/residuum-system/references/config.md) for which file holds what and how to edit them.
+
+A relative `path` resolves against the agent's workspace root, not the process's current directory.
 
 ---
 
@@ -106,6 +110,8 @@ On error (returned as `is_error = true`; nothing is written):
   - no exact match, and the whitespace-insensitive retry matches several places (lists line numbers)
 
 Malformed arguments (missing `path` or `edits`, an empty `edits` list, an entry missing `old_string`/`new_string`, an empty `old_string`, or identical `old_string` and `new_string`) return a `ToolError::InvalidArguments`.
+
+A relative `path` resolves against the agent's workspace root, not the process's current directory.
 
 ---
 
@@ -161,6 +167,8 @@ Commands are resolved against the configured tool `PATH`: the directories in
 Named keys are set only in the spawned child's environment. `store_output_as` writes to the agent key store. Every agent-key value in the result — this tool's or any other — is replaced with `[agent-key:<name>]` by the turn loop before the result is recorded or sent anywhere. See [Agent keys](../../docs/systems-usage/agent-keys.md).
 
 The spawned command runs in its own process group (Unix) so a timeout or cancellation can kill the whole tree it started, not just the immediate shell — killed via `killpg` on Unix, `taskkill /T /F` on Windows. A stop or timeout races against the running command rather than waiting for the tool call to return; the call's own child process is what gets killed, not any process a future background-command feature hands off elsewhere. See [Stopping a Turn](../../docs/systems-usage/turn-control.md).
+
+The command starts in the agent's workspace root (`Command::current_dir`), not the process's current directory.
 
 ---
 

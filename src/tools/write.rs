@@ -20,6 +20,17 @@ pub struct WriteTool {
     config_watch: Option<ConfigWriteWatch>,
 }
 
+/// Resolve a tool's `path` argument (absolute or workspace-relative) against
+/// the agent's workspace root, instead of the process's current directory,
+/// which is shared across every agent hosted in the same process.
+/// `Path::join` already replaces the base when `path` is absolute, so this
+/// is correct either way. `diagnostics_paths.workspace_dir` is reused here
+/// rather than adding a separate workspace-root field, since every file
+/// tool already carries it.
+pub(super) fn resolve(diagnostics_paths: &DiagnosticsPaths, path: &str) -> std::path::PathBuf {
+    diagnostics_paths.workspace_dir.join(path)
+}
+
 impl WriteTool {
     /// Create a new `WriteTool` with shared file tracker, path policy, and
     /// the directories needed to recognize a strictly-parsed file for
@@ -93,15 +104,18 @@ impl Tool for WriteTool {
                 ToolError::InvalidArguments("missing required 'content' argument".to_string())
             })?;
 
-        let file_path = std::path::Path::new(path);
+        // `path` (the model's argument) resolves against the workspace root,
+        // not the process's current directory — see `resolve`'s doc comment.
+        let file_path = resolve(&self.diagnostics_paths, path);
 
         // Enforce write-scoping policy
-        if let Err(reason) = self.policy.read().await.check_write(file_path) {
+        if let Err(reason) = self.policy.read().await.check_write(&file_path) {
             return Ok(ToolResult::error(reason));
         }
 
         // Enforce read-before-overwrite for existing files
-        if file_path.exists() && !self.tracker.lock().await.has_been_read(path) {
+        let resolved_str = file_path.to_string_lossy();
+        if file_path.exists() && !self.tracker.lock().await.has_been_read(&resolved_str) {
             return Ok(ToolResult::error(format!(
                 "file {path} already exists but has not been read; use read_file before overwriting"
             )));
@@ -118,17 +132,17 @@ impl Tool for WriteTool {
             )));
         }
 
-        match tokio::fs::write(path, file_content).await {
+        match tokio::fs::write(&file_path, file_content).await {
             Ok(()) => {
                 // Record in tracker — the agent knows the content since it just wrote it
-                self.tracker.lock().await.record_read(path);
+                self.tracker.lock().await.record_read(&resolved_str);
                 if let Some(watch) = &self.config_watch {
-                    watch.note_write(file_path);
+                    watch.note_write(&file_path);
                 }
                 let mut output = format!("wrote {} bytes to {path}", file_content.len());
                 append_diagnostics(
                     &mut output,
-                    file_path,
+                    &file_path,
                     file_content,
                     &self.diagnostics_paths,
                 );
@@ -411,6 +425,44 @@ mod tests {
             result.output,
             format!("wrote {} bytes to {}", content.len(), file_path.display()),
             "clean file should leave the result unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_path_resolves_against_workspace_root_not_process_cwd() {
+        // The process's current directory here is the crate root (however
+        // `cargo test` was invoked), not the workspace dir below — so this
+        // only passes if the relative path is joined against it.
+        let workspace = tempfile::tempdir().unwrap();
+        let diagnostics_paths = DiagnosticsPaths {
+            config_dir: workspace.path().join("config-unused"),
+            workspace_dir: workspace.path().to_path_buf(),
+        };
+        let tool = WriteTool::new(
+            FileTracker::new_shared(),
+            permissive_policy(),
+            diagnostics_paths,
+        );
+
+        let result = tool
+            .execute(serde_json::json!({
+                "path": "relative.txt",
+                "content": "from workspace"
+            }))
+            .await
+            .unwrap();
+
+        assert!(
+            !result.is_error,
+            "a relative path should resolve against the workspace root: {}",
+            result.output
+        );
+        let contents = tokio::fs::read_to_string(workspace.path().join("relative.txt"))
+            .await
+            .unwrap();
+        assert_eq!(
+            contents, "from workspace",
+            "the file should land inside the workspace root, not the process cwd"
         );
     }
 }
