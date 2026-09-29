@@ -84,7 +84,7 @@ Config, providers, MCP, channels, workspace-file and checkpoint routes still wor
 | `POST` | `/api/hub/agents/{name}/start` | none | `AgentSummary` |
 | `POST` | `/api/hub/agents/{name}/stop` | none | `AgentSummary` |
 | `POST` | `/api/hub/agents/{name}/restart` | none | `AgentSummary` |
-| `PATCH` | `/api/hub/agents/{name}` | `{ "autostart": bool }` | `AgentSummary` |
+| `PATCH` | `/api/hub/agents/{name}` | `{ "autostart"?: bool, "a2a_visibility"?: "public" \| "private" }` (at least one field) | `AgentSummary`. The server writes the agent's config file and reloads it, which re-announces its A2A entry to the relay. |
 | `GET` | `/api/hub/status` | none | `{ "version", "uptime_secs", "tunnel": <today's cloud status shape>, "agents": { "running", "stopped", "failed" } }` |
 
 The CLI `residuum agent list|create|delete|start|stop|restart` maps one-to-one onto these routes.
@@ -100,5 +100,5 @@ Server to client only. Each message is a JSON object tagged by `type`.
 | `agent_created` | `agent: AgentSummary`, `by: "user" \| "agent:<name>"` |
 | `agent_deleted` | `name`, `by` |
 | `agent_activity` | `name`, `busy: bool` (a main turn is in progress), `unread: u32` (main-conversation messages the web UI hasn't shown). `unread` resets when a client opens that agent's `/ws`. |
-| `notice` | `level: "info" \| "warn" \| "error"`, `message`, `agent?: name`. Hub notices as a toast. |
+| `notice` | `level: "info" \| "warn" \| "error"`, `message`, `agent?: name`. Hub notices as a toast. Created, deleted and failed events are conveyed only by their own frames (`agent_created`, `agent_deleted`, and `agent_state` with state `failed`) and never also as a `notice`, so a client raising a toast for each frame doesn't show duplicates. |
 | `workspace_changed` | the same shape as the agent WebSocket's team change-feed frames, for `team/` paths the client watches via `{ "type": "watch_team", "prefixes": [...] }` (client to server, the only client message) |
