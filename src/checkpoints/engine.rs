@@ -584,6 +584,52 @@ impl CheckpointEngine {
         })
     }
 
+    /// Restore the whole tree checkpoint `id` recorded into the repository's
+    /// root directory, then checkpoint the result so the restore itself can
+    /// be undone. Entries already on disk that the checkpoint doesn't have
+    /// are left alone. This is how a deleted agent's directory comes back
+    /// from its workspace repository.
+    ///
+    /// # Errors
+    /// Returns [`CheckpointError::NotFound`] if `id` doesn't name a
+    /// checkpoint.
+    pub async fn restore_tree(
+        &self,
+        kind: RepoKind,
+        id: String,
+        ctx: CheckpointContext,
+    ) -> Result<RestoreOutcome, CheckpointError> {
+        let repo = self.repo(kind);
+        let dest_root = self.dest_root(kind);
+        let restored_paths = {
+            let repo = Arc::clone(&repo);
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || {
+                let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
+                let oid = guard.resolve_commit(&id)?;
+                guard.restore_root(oid, &dest_root)
+            })
+            .await
+            .unwrap_or_else(|e| Err(CheckpointError::Git(format!("restore task panicked: {e}"))))?
+        };
+
+        let checkpoint_id = self.checkpoint_after_mutation(kind, ctx).await;
+        notice::publish(
+            self.publisher.as_ref(),
+            format!(
+                "Restored {} path(s) from checkpoint {}.",
+                restored_paths.len(),
+                short_id(&id)
+            ),
+        )
+        .await;
+
+        Ok(RestoreOutcome {
+            checkpoint_id,
+            restored_paths,
+        })
+    }
+
     /// Undo a checkpoint's own changes: revert every path it changed back
     /// to its content just before it, skipping any path that changed again
     /// since (by a later checkpoint or the user) so it isn't clobbered.
@@ -1401,6 +1447,46 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(workspace.join("notes.md")).unwrap(),
             "version one"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_tree_brings_back_a_deleted_root_and_keeps_extra_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("memory")).unwrap();
+        std::fs::write(workspace.join("SOUL.md"), "soul").unwrap();
+        std::fs::write(workspace.join("memory").join("notes.md"), "notes").unwrap();
+        let engine = new_engine(dir.path());
+        let id = engine
+            .checkpoint_workspace_id_before_action(ctx(CheckpointTrigger::PreAction, "before"))
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("newer.md"), "kept").unwrap();
+
+        let outcome = engine
+            .restore_tree(
+                RepoKind::Workspace,
+                id,
+                ctx(CheckpointTrigger::Restore, "restore tree"),
+            )
+            .await
+            .unwrap();
+
+        assert!(outcome.restored_paths.contains(&"SOUL.md".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("SOUL.md")).unwrap(),
+            "soul"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("memory").join("notes.md")).unwrap(),
+            "notes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("newer.md")).unwrap(),
+            "kept"
         );
     }
 

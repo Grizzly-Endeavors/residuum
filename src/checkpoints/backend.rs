@@ -482,6 +482,38 @@ impl GitRepo {
         Ok(written)
     }
 
+    /// Write back every top-level entry of checkpoint `id`'s tree under
+    /// `dest_root`, making each restored directory match the checkpoint
+    /// exactly. Top-level entries of `dest_root` the checkpoint doesn't have
+    /// are left alone, so a whole-tree restore into a fresh directory never
+    /// deletes anything. Returns the paths written.
+    pub(super) fn restore_root(
+        &self,
+        id: gix::ObjectId,
+        dest_root: &Path,
+    ) -> Result<Vec<String>, CheckpointError> {
+        let commit = self.repo.find_commit(id).map_err(git_err)?;
+        let tree = commit.tree().map_err(git_err)?;
+        let decoded = tree.decode().map_err(git_err)?;
+
+        let mut written = Vec::new();
+        for entry in &decoded.entries {
+            let name = entry.filename.to_string();
+            let dest_path = dest_root.join(&name);
+            if entry.mode.is_tree() {
+                self.replace_directory(entry.oid.to_owned(), &name, &dest_path, &mut written)?;
+            } else {
+                self.write_blob_to_disk(
+                    entry.oid.to_owned(),
+                    entry.mode.is_executable(),
+                    &dest_path,
+                )?;
+                written.push(name);
+            }
+        }
+        Ok(written)
+    }
+
     /// Make `dest_dir` match the tree at `tree_id` exactly: write every
     /// entry the tree has, and remove anything under `dest_dir` the tree
     /// doesn't have.

@@ -274,6 +274,35 @@ pub async fn ensure_workspace(
     Ok(())
 }
 
+/// The default `SOUL.md` with `name` as the agent's name.
+fn soul_named(name: &str) -> String {
+    DEFAULT_SOUL.replace("**Name**: Ralph", &format!("**Name**: {name}"))
+}
+
+/// The identity and prompt files of the blank agent template, as
+/// `(path under layout, content)`: a `SOUL.md` naming the agent, the
+/// created-agent `HEARTBEAT.yml`, `SUBCONSCIOUS.md`, the memory prompts, and
+/// the A2A card. `BOOTSTRAP.md` is not part of it, since created agents never
+/// run the first-run interview. `config/config.toml` and
+/// `config/providers.toml` are not part of it either; the caller writes them.
+#[must_use]
+pub(crate) fn blank_agent_template(
+    layout: &WorkspaceLayout,
+    name: &str,
+) -> Vec<(std::path::PathBuf, String)> {
+    vec![
+        (layout.soul_md(), soul_named(name)),
+        (
+            layout.heartbeat_yml(),
+            super::team::created_agent_heartbeat().to_string(),
+        ),
+        (layout.subconscious_md(), DEFAULT_SUBCONSCIOUS.to_string()),
+        (layout.observer_md(), DEFAULT_OBSERVER_PROMPT.to_string()),
+        (layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT.to_string()),
+        (layout.agent_card_json(), DEFAULT_AGENT_CARD.to_string()),
+    ]
+}
+
 /// Write bundled skill trees to the team skills directory.
 ///
 /// Bundled skills are team skills: every agent finds them through the team
@@ -415,6 +444,24 @@ mod tests {
     use super::*;
 
     const DEFAULT_TEAM_USER: &str = include_str!("../../assets/team-bootstrap/USER.md");
+
+    #[test]
+    fn blank_template_names_the_agent_and_has_no_bootstrap_file() {
+        let layout = WorkspaceLayout::new(std::path::Path::new("res").join("scout"));
+        let files = blank_agent_template(&layout, "scout");
+
+        let soul = files
+            .iter()
+            .find(|(path, _)| *path == layout.soul_md())
+            .map(|(_, content)| content.as_str())
+            .unwrap();
+        assert!(soul.contains("**Name**: scout"));
+        assert!(!soul.contains("Ralph"));
+        assert!(
+            files.iter().all(|(path, _)| *path != layout.bootstrap_md()),
+            "created agents never get BOOTSTRAP.md"
+        );
+    }
 
     #[tokio::test]
     async fn bootstrap_creates_structure() {

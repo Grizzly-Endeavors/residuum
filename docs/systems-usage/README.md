@@ -65,6 +65,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Config](config.md) | Global settings in `config.toml`/`providers.toml`, editable by the agent on the user's behalf | `write_file`, `edit_file` | `config.toml`, `providers.toml` |
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
 | [Team Directory](team-directory.md) | The `team/` directory every agent shares: team rules, user profile, wiki, and each agent's role page | `read_file`, `write_file`, `edit_file` | `team/` |
+| [Agent Creation and Deletion](agent-lifecycle.md) | How an agent directory is written from the blank template with its role page, and removed with a checkpoint | *(hub operation, no tools)* | `~/.residuum/<name>/`, `team/wiki/agents/` |
 | [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `team/wiki/` |
 | [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the shared team directory, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
 | [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
