@@ -29,7 +29,7 @@ function session(
     completed_at: null,
     episode_id: null,
     interrupted: false,
-    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null },
+    usage: { input_tokens: 0, output_tokens: 0, context_tokens: null, tool_calls: 0 },
     outcome: null,
     error: null,
     error_details: null,

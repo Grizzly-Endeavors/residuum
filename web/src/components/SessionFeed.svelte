@@ -12,6 +12,7 @@
     turnStartedAt = null,
     turnOutputTokens = 0,
     turnHasUsage = false,
+    turnToolCalls = 0,
     loading,
     loadError,
     onRetry,
@@ -22,6 +23,7 @@
     turnStartedAt?: number | null;
     turnOutputTokens?: number;
     turnHasUsage?: boolean;
+    turnToolCalls?: number;
     loading: boolean;
     loadError: string | null;
     onRetry: () => void;
@@ -82,6 +84,7 @@
             since={turnStartedAt}
             outputTokens={turnOutputTokens}
             hasUsage={turnHasUsage}
+            toolCalls={turnToolCalls}
           />
         {/if}
       {/if}

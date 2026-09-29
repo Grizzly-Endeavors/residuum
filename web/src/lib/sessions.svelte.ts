@@ -70,6 +70,8 @@ export class SessionView {
   turnOutputTokens = $state(0);
   /** Whether any model call so far this turn reported usage. */
   turnHasUsage = $state(false);
+  /** Tool calls executed so far this turn. */
+  turnToolCalls = $state(0);
   /**
    * Set when a message from this view started (or will start) a new run at
    * the same address; the view follows that run when it appears.
@@ -169,6 +171,7 @@ export class SessionView {
         this.turnStartedAt = Date.now();
         this.turnOutputTokens = 0;
         this.turnHasUsage = false;
+        this.turnToolCalls = 0;
         break;
       case "session_turn_ended":
         this.tagTurnStart(frame.turn_id);
@@ -178,6 +181,7 @@ export class SessionView {
       case "session_turn_usage":
         this.turnOutputTokens = frame.output_tokens;
         this.turnHasUsage = frame.has_usage;
+        this.turnToolCalls = frame.tool_calls;
         if (frame.session_totals && this.summary) this.summary.usage = frame.session_totals;
         break;
       case "session_state_changed":

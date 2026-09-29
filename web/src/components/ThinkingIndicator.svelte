@@ -5,6 +5,7 @@
     since = null,
     outputTokens = 0,
     hasUsage = false,
+    toolCalls = 0,
     stopHint = null,
   }: {
     /** `Date.now()` when this turn started, for the live elapsed clock. */
@@ -13,6 +14,8 @@
     outputTokens?: number;
     /** Whether any model call so far this turn reported usage. */
     hasUsage?: boolean;
+    /** Tool calls executed so far this turn. */
+    toolCalls?: number;
     /** Trailing hint for the real stop affordance (e.g. "Esc to stop"). */
     stopHint?: string | null;
   } = $props();
@@ -37,6 +40,7 @@
   let label = $derived.by(() => {
     const parts = [`Thinking… ${formatElapsed(elapsedMs)}`];
     if (hasUsage) parts.push(`↓ ${formatTokenCount(outputTokens)} tokens`);
+    if (toolCalls > 0) parts.push(`${toolCalls} tool call${toolCalls === 1 ? "" : "s"}`);
     if (stopHint) parts.push(stopHint);
     return parts.join(" · ");
   });

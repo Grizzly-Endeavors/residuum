@@ -13,6 +13,7 @@
     turnStartedAt = null,
     turnOutputTokens = 0,
     turnHasUsage = false,
+    turnToolCalls = 0,
   }: {
     items: FeedItem[];
     isProcessing: boolean;
@@ -20,6 +21,7 @@
     turnStartedAt?: number | null;
     turnOutputTokens?: number;
     turnHasUsage?: boolean;
+    turnToolCalls?: number;
   } = $props();
 
   let feedEl: HTMLDivElement | undefined = $state();
@@ -313,6 +315,7 @@
         since={turnStartedAt}
         outputTokens={turnOutputTokens}
         hasUsage={turnHasUsage}
+        toolCalls={turnToolCalls}
         stopHint="Esc to stop"
       />
     {/if}

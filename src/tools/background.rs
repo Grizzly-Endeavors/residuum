@@ -157,10 +157,10 @@ impl Tool for ListAgentsTool {
             name: self.name().to_string(),
             description: "List the main agent, every live (running or idle) session, and every \
                           remote agent reachable over A2A (address \"a2a:<name>\"): for sessions, \
-                          address, category, source, state, depth, spawner, elapsed time, and \
-                          purpose; for remote agents, online status, description, skills, and \
-                          your own open tasks with them. Completed sessions are not listed, but \
-                          their addresses remain valid."
+                          address, category, source, state, depth, spawner, elapsed time, tool \
+                          calls executed, and purpose; for remote agents, online status, \
+                          description, skills, and your own open tasks with them. Completed \
+                          sessions are not listed, but their addresses remain valid."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -186,13 +186,15 @@ impl Tool for ListAgentsTool {
                 .map_or_else(|| "-".to_string(), ToString::to_string);
             lines.push(format!(
                 "  [{address}] {source} — category: {category} — state: {state} — depth: {depth} \
-                 — spawner: {spawner} — running {elapsed}s — purpose: {purpose}",
+                 — spawner: {spawner} — running {elapsed}s — tool calls: {tool_calls} — \
+                 purpose: {purpose}",
                 address = info.address,
                 source = info.source_label,
                 category = info.category,
                 state = info.state,
                 depth = info.depth,
                 elapsed = elapsed_secs,
+                tool_calls = info.usage.tool_calls,
                 purpose = info.purpose,
             ));
         }
@@ -742,6 +744,45 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.output.contains("main"));
         assert!(result.output.contains("remote agent(s)"));
+    }
+
+    #[tokio::test]
+    async fn list_agents_shows_a_live_sessions_tool_call_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(SessionRegistry::new());
+        let info = crate::background::registry::SessionInfo {
+            address: SessionAddress::from("spawned-researcher-0001"),
+            run_id: "run-1".to_string(),
+            category: crate::background::registry::SessionCategory::Spawned,
+            trigger: EventTrigger::Agent,
+            source_label: "agent:researcher".to_string(),
+            state: crate::background::registry::SessionState::Running,
+            spawner: Some(SessionAddress::from(MAIN_ADDRESS)),
+            depth: 1,
+            purpose: "research the thing".to_string(),
+            agent_skill: None,
+            model_tier: BackgroundModelTier::Medium,
+            conversation_target: None,
+            started_at: Utc::now(),
+            usage: crate::agent::usage::SessionUsageTotals {
+                tool_calls: 7,
+                ..Default::default()
+            },
+            overlap: None,
+        };
+        let _rx = registry
+            .register(info, tokio_util::sync::CancellationToken::new())
+            .unwrap();
+        let (hub, tracker) = bare_a2a(dir.path()).await;
+        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(!result.is_error);
+        assert!(
+            result.output.contains("tool calls: 7"),
+            "got: {}",
+            result.output
+        );
     }
 
     #[tokio::test]

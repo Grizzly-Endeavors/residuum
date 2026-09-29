@@ -202,6 +202,7 @@ impl EventContext<'_> {
                             correlation_id: correlation_id.to_owned(),
                             output_tokens: turn.output_tokens,
                             has_usage: turn.has_usage,
+                            tool_calls: turn.tool_calls,
                             session_totals,
                         },
                     )
@@ -222,6 +223,7 @@ impl EventContext<'_> {
                     SessionEventKind::TurnUsage {
                         output_tokens: turn.output_tokens,
                         has_usage: turn.has_usage,
+                        tool_calls: turn.tool_calls,
                         session_totals,
                     },
                 )
@@ -469,7 +471,7 @@ pub(crate) async fn execute_turn(
 
         if response.tool_calls.is_empty() {
             log_usage(&response);
-            update_and_publish_usage(&response, &mut turn_usage, resources.usage_sink, events)
+            update_and_publish_usage(&response, 0, &mut turn_usage, resources.usage_sink, events)
                 .await;
             if response.content.is_empty() {
                 if empty_retries < MAX_EMPTY_RESPONSE_RETRIES {
@@ -497,7 +499,7 @@ pub(crate) async fn execute_turn(
             "processing tool calls"
         );
 
-        if let Some(notice) = handle_tool_call_response(
+        let notice = process_tool_call_batch(
             &response,
             recent_messages,
             &mut repeat_guard,
@@ -508,16 +510,49 @@ pub(crate) async fn execute_turn(
                 iteration,
                 turn_start,
             },
+            &mut turn_usage,
         )
-        .await
-        {
+        .await;
+
+        if let Some(notice) = notice {
             return finish_turn_with_notice(notice, recent_messages, resources).await;
         }
-
-        log_usage(&response);
-        update_and_publish_usage(&response, &mut turn_usage, resources.usage_sink, events).await;
         iteration += 1;
     }
+}
+
+/// Run a response's tool-call batch, then fold its token usage and this
+/// batch's executed tool-call count into the turn (and, when tracked, the
+/// durable session) totals and publish the result. Published for every
+/// batch — including one that ends the turn via the repeat-call guard's
+/// notice, which [`handle_tool_call_response`] surfaces through the return
+/// value here too — so neither the tool-call count nor this response's own
+/// token usage is ever silently dropped from the running-turn indicator or
+/// the durable session totals. Split out of [`execute_turn`] purely to keep
+/// that function's line count down.
+async fn process_tool_call_batch(
+    response: &InferenceResponse,
+    recent_messages: &mut RecentMessages,
+    repeat_guard: &mut RepeatCallGuard,
+    ctx: ToolCallResponseContext<'_>,
+    turn_usage: &mut TurnUsage,
+) -> Option<String> {
+    let usage_sink = ctx.resources.usage_sink;
+    let events = ctx.events;
+    let (tool_calls_executed, notice) =
+        handle_tool_call_response(response, recent_messages, repeat_guard, ctx).await;
+
+    log_usage(response);
+    update_and_publish_usage(
+        response,
+        tool_calls_executed,
+        turn_usage,
+        usage_sink,
+        events,
+    )
+    .await;
+
+    notice
 }
 
 /// Check whether this iteration has reached the configured
@@ -568,15 +603,17 @@ struct ToolCallResponseContext<'a> {
 /// subconscious evaluation, and run the tool-call batch. Split out of
 /// [`execute_turn`] purely to keep that function's line count down.
 ///
-/// Returns `Some(notice)` when the repeat-call guard's stop threshold ended
-/// the turn on this batch — the caller turns that into the turn's final
-/// user-visible message. `None` means the loop should continue as normal.
+/// Returns how many of this batch's tool calls actually ran (see
+/// [`run_tool_call_batch`]), and `Some(notice)` when the repeat-call
+/// guard's stop threshold ended the turn on this batch — the caller turns
+/// that into the turn's final user-visible message. `None` means the loop
+/// should continue as normal.
 async fn handle_tool_call_response(
     response: &InferenceResponse,
     recent_messages: &mut RecentMessages,
     repeat_guard: &mut RepeatCallGuard,
     ctx: ToolCallResponseContext<'_>,
-) -> Option<String> {
+) -> (u32, Option<String>) {
     if !response.content.is_empty() {
         ctx.events.publish_intermediate(&response.content).await;
     }
@@ -593,26 +630,33 @@ async fn handle_tool_call_response(
         );
     }
 
-    let (tool_name, count) = run_tool_call_batch(
+    let (executed, stopped) = run_tool_call_batch(
         &response.tool_calls,
         ctx.resources,
         recent_messages,
         ctx.events,
         repeat_guard,
     )
-    .await?;
+    .await;
+
+    let Some((tool_name, count)) = stopped else {
+        return (executed, None);
+    };
 
     tracing::warn!(
         tool_name = %tool_name,
         consecutive = count,
         "turn stopped: model repeated the same tool call too many times in a row"
     );
-    Some(format!(
-        "I stopped this turn because I called `{tool_name}` with the exact same arguments \
-         {count} times in a row — the result can't change by calling it again. Adjust \
-         `repeat_call_stop_after` under `[agent]` in your Residuum config (or in Settings) if \
-         this is expected, or let me know what you'd like me to try instead."
-    ))
+    (
+        executed,
+        Some(format!(
+            "I stopped this turn because I called `{tool_name}` with the exact same arguments \
+             {count} times in a row — the result can't change by calling it again. Adjust \
+             `repeat_call_stop_after` under `[agent]` in your Residuum config (or in Settings) if \
+             this is expected, or let me know what you'd like me to try instead."
+        )),
+    )
 }
 
 /// Drain interrupts at a tool-loop checkpoint and report whether the turn
@@ -748,16 +792,24 @@ impl RepeatCallGuard {
 /// call. The same happens once the repeat-call guard's stop threshold is
 /// reached; when that happens this returns `Some((tool_name, consecutive))`
 /// so the caller can end the turn with a user-visible notice.
+///
+/// Also returns how many calls in this batch were actually executed (via
+/// `execute_tool`, steered or not) — every call the model made in parallel
+/// within this one response counts individually, for the turn and session
+/// tool-call counters. A skipped call (the turn already stopping) or the
+/// call that tripped the repeat-call guard's stop threshold never ran, so
+/// neither counts.
 async fn run_tool_call_batch(
     tool_calls: &[ToolCall],
     resources: &TurnResources<'_>,
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
     repeat_guard: &mut RepeatCallGuard,
-) -> Option<(String, u32)> {
+) -> (u32, Option<(String, u32)>) {
     let guard_cfg = resources.repeat_call_guard;
     let mut stopped_by_repeat_guard = None;
     let mut skipped = 0_usize;
+    let mut executed: u32 = 0;
     for tool_call in tool_calls {
         if resources.stop_token.is_cancelled() || stopped_by_repeat_guard.is_some() {
             skip_tool_call(tool_call, resources, recent_messages, events).await;
@@ -784,11 +836,13 @@ async fn run_tool_call_batch(
                      arguments; the result won't change. Try something different or finish."
                 );
                 execute_tool(tool_call, resources, recent_messages, events, Some(note)).await;
+                executed += 1;
                 continue;
             }
         }
 
         execute_tool(tool_call, resources, recent_messages, events, None).await;
+        executed += 1;
     }
     if skipped > 0 {
         tracing::info!(
@@ -797,7 +851,7 @@ async fn run_tool_call_batch(
             "skipped remaining tool calls after the turn was stopped"
         );
     }
-    stopped_by_repeat_guard
+    (executed, stopped_by_repeat_guard)
 }
 
 /// Dispatch a tool call to the built-in registry, falling back to MCP.
@@ -1078,21 +1132,29 @@ fn log_usage(response: &InferenceResponse) {
     }
 }
 
-/// Fold a model call's usage into this turn's running totals, into the
-/// durable session totals when the turn tracks them, and publish the
-/// result for the web UI's running-turn indicator and chat footer. Never
-/// delivered to the agent itself — see `docs/systems-usage/turn-control.md`.
+/// Fold a model call's usage and the tool calls its batch just executed
+/// into this turn's running totals, into the durable session totals when
+/// the turn tracks them, and publish the result for the web UI's
+/// running-turn indicator and chat footer. Never delivered to the agent
+/// itself — see `docs/systems-usage/turn-control.md`.
 async fn update_and_publish_usage(
     response: &InferenceResponse,
+    tool_calls_executed: u32,
     turn_usage: &mut TurnUsage,
     usage_sink: Option<&dyn UsageSink>,
     events: &EventContext<'_>,
 ) {
     turn_usage.accumulate(response.usage);
-    let session_totals = match usage_sink {
+    turn_usage.record_tool_calls(tool_calls_executed);
+    let mut session_totals = match usage_sink {
         Some(sink) => Some(sink.accumulate(response.usage).await),
         None => None,
     };
+    if tool_calls_executed > 0
+        && let Some(sink) = usage_sink
+    {
+        session_totals = Some(sink.record_tool_calls(tool_calls_executed).await);
+    }
     events.publish_usage(*turn_usage, session_totals).await;
 }
 
@@ -1828,10 +1890,14 @@ mod tests {
     }
 
     /// A [`UsageSink`] test double that records every call it's asked to
-    /// accumulate and returns pre-set cumulative totals in sequence.
+    /// accumulate — token usage and tool-call batches alike — and returns
+    /// pre-set cumulative totals in sequence, drawn from the same queue
+    /// either kind of call advances, matching how a real sink's single
+    /// running total is shared between them.
     #[derive(Default)]
     struct MockUsageSink {
         calls: StdMutex<Vec<Option<crate::inference::Usage>>>,
+        tool_call_batches: StdMutex<Vec<u32>>,
         totals_to_return: StdMutex<Vec<SessionUsageTotals>>,
     }
 
@@ -1839,7 +1905,17 @@ mod tests {
         fn new(totals_to_return: Vec<SessionUsageTotals>) -> Self {
             Self {
                 calls: StdMutex::new(Vec::new()),
+                tool_call_batches: StdMutex::new(Vec::new()),
                 totals_to_return: StdMutex::new(totals_to_return),
+            }
+        }
+
+        fn next_totals(&self) -> SessionUsageTotals {
+            let mut totals = self.totals_to_return.lock().unwrap();
+            if totals.len() > 1 {
+                totals.remove(0)
+            } else {
+                totals.first().copied().unwrap_or_default()
             }
         }
     }
@@ -1848,12 +1924,12 @@ mod tests {
     impl UsageSink for MockUsageSink {
         async fn accumulate(&self, usage: Option<crate::inference::Usage>) -> SessionUsageTotals {
             self.calls.lock().unwrap().push(usage);
-            let mut totals = self.totals_to_return.lock().unwrap();
-            if totals.len() > 1 {
-                totals.remove(0)
-            } else {
-                totals.first().copied().unwrap_or_default()
-            }
+            self.next_totals()
+        }
+
+        async fn record_tool_calls(&self, n: u32) -> SessionUsageTotals {
+            self.tool_call_batches.lock().unwrap().push(n);
+            self.next_totals()
         }
     }
 
@@ -1967,6 +2043,7 @@ mod tests {
                 TurnUsage {
                     output_tokens: 20,
                     has_usage: true,
+                    tool_calls: 3,
                 },
                 Some(totals),
             )
@@ -1980,6 +2057,7 @@ mod tests {
         assert_eq!(event.correlation_id, "corr-1");
         assert_eq!(event.output_tokens, 20);
         assert!(event.has_usage);
+        assert_eq!(event.tool_calls, 3);
         assert_eq!(event.session_totals, Some(totals));
     }
 
@@ -2032,6 +2110,7 @@ mod tests {
                 TurnUsage {
                     output_tokens: 7,
                     has_usage: true,
+                    tool_calls: 2,
                 },
                 None,
             )
@@ -2049,6 +2128,7 @@ mod tests {
             crate::bus::SessionEventKind::TurnUsage {
                 output_tokens: 7,
                 has_usage: true,
+                tool_calls: 2,
                 session_totals: None,
             }
         ));
@@ -2081,16 +2161,25 @@ mod tests {
         let mut turn_usage = TurnUsage::default();
         let mut response = InferenceResponse::new("hi".to_string(), vec![]);
         response.usage = Some(usage(100, 20));
-        update_and_publish_usage(&response, &mut turn_usage, Some(&sink), &events).await;
+        update_and_publish_usage(&response, 2, &mut turn_usage, Some(&sink), &events).await;
 
         assert_eq!(
             turn_usage.output_tokens, 20,
             "the turn's own running total should accumulate"
         );
         assert_eq!(
+            turn_usage.tool_calls, 2,
+            "the turn's own running total should count this batch's executed tool calls"
+        );
+        assert_eq!(
             sink.calls.lock().unwrap().as_slice(),
             &[Some(usage(100, 20))],
             "the sink should receive exactly the response's usage"
+        );
+        assert_eq!(
+            sink.tool_call_batches.lock().unwrap().as_slice(),
+            &[2],
+            "the sink should receive exactly this batch's executed tool-call count"
         );
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
@@ -2099,7 +2188,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(event.output_tokens, 20);
+        assert_eq!(event.tool_calls, 2);
         assert_eq!(event.session_totals.map(|t| t.input_tokens), Some(100));
+    }
+
+    #[tokio::test]
+    async fn update_and_publish_usage_with_zero_tool_calls_does_not_call_the_sinks_tool_call_path()
+    {
+        let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+
+        let mut turn_usage = TurnUsage::default();
+        let mut response = InferenceResponse::new("hi".to_string(), vec![]);
+        response.usage = Some(usage(100, 20));
+        update_and_publish_usage(&response, 0, &mut turn_usage, Some(&sink), &events).await;
+
+        assert_eq!(
+            turn_usage.tool_calls, 0,
+            "a text-only response carries no executed tool calls"
+        );
+        assert!(
+            sink.tool_call_batches.lock().unwrap().is_empty(),
+            "a batch of zero tool calls should not reach the sink's tool-call path"
+        );
     }
 
     #[tokio::test]
@@ -2124,7 +2246,7 @@ mod tests {
         let mut turn_usage = TurnUsage::default();
         let mut response = InferenceResponse::new("hi".to_string(), vec![]);
         response.usage = Some(usage(50, 5));
-        update_and_publish_usage(&response, &mut turn_usage, None, &events).await;
+        update_and_publish_usage(&response, 0, &mut turn_usage, None, &events).await;
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
             .await
@@ -2160,7 +2282,7 @@ mod tests {
 
         let mut turn_usage = TurnUsage::default();
         let response = InferenceResponse::new("hi".to_string(), vec![]);
-        update_and_publish_usage(&response, &mut turn_usage, Some(&sink), &events).await;
+        update_and_publish_usage(&response, 0, &mut turn_usage, Some(&sink), &events).await;
 
         assert!(
             !turn_usage.has_usage,
@@ -2173,6 +2295,261 @@ mod tests {
             .unwrap();
         assert!(!event.has_usage);
         assert_eq!(event.output_tokens, 0);
+    }
+
+    /// Always returns a text-only response (no tool calls) with usage set —
+    /// used to check that a turn with zero tool calls reports a zero tool
+    /// count rather than never publishing one.
+    struct TextOnlyProvider;
+
+    #[async_trait]
+    impl InferenceProvider for TextOnlyProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            let mut resp = InferenceResponse::new("hello".to_string(), vec![]);
+            resp.usage = Some(usage(10, 5));
+            Ok(resp)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "text-only"
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_turn_with_no_tool_calls_reports_zero_tool_calls() {
+        let provider = TextOnlyProvider;
+        let tools = ToolRegistry::new();
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: Some(&sink),
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("go"));
+
+        let texts = execute_turn(
+            &resources,
+            &memory_ctx,
+            &prompt_ctx,
+            &mut recent,
+            &events,
+            None,
+            &mut interrupt_rx,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(texts, vec!["hello".to_string()]);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should be published promptly")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.tool_calls, 0,
+            "a turn with no tool calls should report a zero tool-call count, not omit it"
+        );
+        assert!(
+            sink.tool_call_batches.lock().unwrap().is_empty(),
+            "the sink's tool-call path should never be reached when no tools ran"
+        );
+    }
+
+    /// Returns two parallel tool calls on the first turn, then a text-only
+    /// response on the second — used to check that a turn's tool-call
+    /// count accumulates correctly across a batch of parallel calls and
+    /// stays put once the turn moves on to its final response.
+    struct ToolsThenTextProvider {
+        served: AtomicBool,
+    }
+
+    #[async_trait]
+    impl InferenceProvider for ToolsThenTextProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::inference::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<InferenceResponse, crate::inference::InferenceError> {
+            if self.served.swap(true, Ordering::SeqCst) {
+                let mut resp = InferenceResponse::new("done".to_string(), vec![]);
+                resp.usage = Some(usage(20, 5));
+                return Ok(resp);
+            }
+            let mut resp = InferenceResponse::new(
+                String::new(),
+                vec![
+                    ToolCall {
+                        id: "call-1".to_string(),
+                        name: "counting_tool".to_string(),
+                        arguments: serde_json::json!({"x": 1}),
+                    },
+                    ToolCall {
+                        id: "call-2".to_string(),
+                        name: "counting_tool".to_string(),
+                        arguments: serde_json::json!({"x": 2}),
+                    },
+                    ToolCall {
+                        id: "call-3".to_string(),
+                        name: "counting_tool".to_string(),
+                        arguments: serde_json::json!({"x": 3}),
+                    },
+                ],
+            );
+            resp.usage = Some(usage(30, 10));
+            Ok(resp)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "tools-then-text"
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_turn_counts_every_parallel_tool_call_in_a_batch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(CountingTool {
+            calls: Arc::clone(&calls),
+        }));
+
+        let provider = ToolsThenTextProvider {
+            served: AtomicBool::new(false),
+        };
+        let mcp_registry = crate::mcp::McpRegistry::new_shared();
+        let identity = IdentityFiles::default();
+        let options = CompletionOptions::default();
+        let stop_token = CancellationToken::new();
+        let hop_counter = HopCounter::new(0);
+        let sink = MockUsageSink::new(vec![SessionUsageTotals::default()]);
+        let resources = TurnResources {
+            provider: &provider,
+            tools: &tools,
+            mcp_registry: &mcp_registry,
+            identity: &identity,
+            options: &options,
+            max_tool_iterations: None,
+            repeat_call_guard: crate::config::RepeatCallGuardConfig::default(),
+            stop_token: &stop_token,
+            transcript_sink: None,
+            usage_sink: Some(&sink),
+            hop_counter: &hop_counter,
+        };
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub: crate::bus::Subscriber<TurnUsageEvent> = bus_handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let events = EventContext {
+            publisher: &publisher,
+            target: EventTarget::Endpoint {
+                output_endpoint: Some(&ep),
+                tool_activity_endpoint: None,
+                correlation_id: "corr-1",
+            },
+            session_conversation: None,
+        };
+        let memory_ctx = MemoryContext {
+            observations: None,
+            recent_context: None,
+        };
+        let prompt_ctx = PromptContext::default();
+        let (_interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<Interrupt>();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("go"));
+
+        let texts = execute_turn(
+            &resources,
+            &memory_ctx,
+            &prompt_ctx,
+            &mut recent,
+            &events,
+            None,
+            &mut interrupt_rx,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(texts, vec!["done".to_string()]);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "all three calls should have run"
+        );
+
+        // First TurnUsageEvent, published right after the tool batch: the
+        // three parallel calls should already be reflected.
+        let after_batch = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should be published after the tool batch")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after_batch.tool_calls, 3,
+            "every parallel call in the batch should count individually"
+        );
+
+        // Second TurnUsageEvent, published after the final text-only
+        // response: the count must not be reset or double-counted.
+        let after_final = tokio::time::timeout(std::time::Duration::from_secs(1), sub.recv())
+            .await
+            .expect("a TurnUsageEvent should be published after the final response")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after_final.tool_calls, 3,
+            "the tool-call count must carry over unchanged into the turn's final response"
+        );
+
+        assert_eq!(
+            sink.tool_call_batches.lock().unwrap().as_slice(),
+            &[3],
+            "the durable session sink should receive exactly one batch of 3"
+        );
     }
 
     #[tokio::test]
@@ -2308,7 +2685,7 @@ mod tests {
 
         let mut recent = RecentMessages::new();
         let mut guard = RepeatCallGuard::new();
-        let stopped =
+        let (executed, stopped) =
             run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
 
         assert!(stopped.is_none(), "3 repeats is below the stop threshold");
@@ -2316,6 +2693,10 @@ mod tests {
             calls.load(Ordering::SeqCst),
             3,
             "all three calls should have actually run"
+        );
+        assert_eq!(
+            executed, 3,
+            "every call in a parallel batch should count individually toward the executed total"
         );
 
         let tool_messages: Vec<_> = recent
@@ -2392,7 +2773,7 @@ mod tests {
 
         let mut recent = RecentMessages::new();
         let mut guard = RepeatCallGuard::new();
-        let stopped =
+        let (executed, stopped) =
             run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
 
         let (name, count) = stopped.expect("the 6th identical call should stop the turn");
@@ -2402,6 +2783,10 @@ mod tests {
             calls.load(Ordering::SeqCst),
             5,
             "only the first 5 calls should actually run; the 6th is refused and the 7th skipped"
+        );
+        assert_eq!(
+            executed, 5,
+            "the refused and skipped calls must not count toward the executed total"
         );
 
         let tool_messages: Vec<_> = recent
@@ -2475,7 +2860,7 @@ mod tests {
 
         let mut recent = RecentMessages::new();
         let mut guard = RepeatCallGuard::new();
-        let stopped =
+        let (executed, stopped) =
             run_tool_call_batch(&batch, &resources, &mut recent, &events, &mut guard).await;
 
         assert!(stopped.is_none(), "a disabled guard never stops the turn");
@@ -2483,6 +2868,10 @@ mod tests {
             calls.load(Ordering::SeqCst),
             10,
             "every call should run when the guard is disabled"
+        );
+        assert_eq!(
+            executed, 10,
+            "every parallel call should count individually toward the executed total"
         );
         assert!(
             recent

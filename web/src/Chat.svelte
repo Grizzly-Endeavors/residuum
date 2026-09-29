@@ -44,6 +44,7 @@
     turnStartedAt={ws.store.turnStartedAt}
     turnOutputTokens={ws.store.turnOutputTokens}
     turnHasUsage={ws.store.turnHasUsage}
+    turnToolCalls={ws.store.turnToolCalls}
   />
   <ChatInput
     onSend={handleSend}

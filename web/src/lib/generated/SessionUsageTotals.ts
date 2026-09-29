@@ -23,4 +23,14 @@ output_tokens: number,
  * size known to the codebase, so this is shown as an absolute count
  * rather than a percentage.
  */
-context_tokens: number | null, };
+context_tokens: number | null, 
+/**
+ * Tool calls executed across every turn this session has run. Every
+ * tool call an executed batch carries counts individually, including
+ * calls made in parallel within the same model response.
+ *
+ * `#[serde(default)]` so a totals file or run record persisted before
+ * this field existed still deserializes, showing zero rather than
+ * failing to load.
+ */
+tool_calls: number, };

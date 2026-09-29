@@ -323,6 +323,7 @@ mod tests {
             correlation_id: "c1".into(),
             output_tokens,
             has_usage: true,
+            tool_calls: 0,
             session_totals: None,
         }
     }
