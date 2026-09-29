@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::io;
+use std::path::PathBuf;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +43,11 @@ pub struct ExecTool {
     /// created. `None` (e.g. in tests) means the overwrite still happens but
     /// goes unannounced.
     publisher: Option<Publisher>,
+    /// The agent's workspace root. Every spawned command starts here
+    /// (`Command::current_dir`) rather than inheriting the process's current
+    /// directory, which is shared across every agent hosted in the same
+    /// process.
+    workspace_root: PathBuf,
 }
 
 /// Where a minted key goes: the `store_output_as` parameter.
@@ -56,18 +62,21 @@ impl ExecTool {
     /// Pass the shared tools-`PATH` handle to prepend the configured tool
     /// directories to spawned commands' `PATH`; pass `None` to inherit the
     /// process `PATH` unchanged. Pass the agent key store to enable the
-    /// `keys` and `store_output_as` parameters.
+    /// `keys` and `store_output_as` parameters. Every spawned command starts
+    /// in `workspace_root`.
     #[must_use]
     pub fn new(
         tools_path: Option<SharedToolsPath>,
         agent_keys: Option<SharedAgentKeys>,
         checkpoints: Option<Arc<CheckpointEngine>>,
+        workspace_root: PathBuf,
     ) -> Self {
         Self {
             tools_path,
             agent_keys,
             checkpoints,
             publisher: None,
+            workspace_root,
         }
     }
 
@@ -372,6 +381,7 @@ impl Tool for ExecTool {
         );
 
         let mut cmd = shell_command(command);
+        cmd.current_dir(&self.workspace_root);
 
         // Prepend configured tool dirs to the child's PATH (read live so config
         // reloads apply). Leaves PATH inherited when no override is configured.
@@ -803,6 +813,12 @@ fn format_output(output: &Output) -> ToolResult {
 mod tests {
     use super::*;
 
+    /// A workspace root for tests that don't care where commands start —
+    /// the system temp dir, which always exists.
+    fn workspace_root() -> PathBuf {
+        std::env::temp_dir()
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn exec_resolves_binary_from_tools_path() {
@@ -830,7 +846,7 @@ mod tests {
         let handle: SharedToolsPath = std::sync::Arc::new(tokio::sync::RwLock::new(Some(path)));
 
         // With the handle, the bare binary name resolves.
-        let tool = ExecTool::new(Some(handle), None, None);
+        let tool = ExecTool::new(Some(handle), None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
             .await
@@ -847,7 +863,7 @@ mod tests {
         );
 
         // Without the handle, the same bare name is not on PATH → fails.
-        let bare = ExecTool::new(None, None, None);
+        let bare = ExecTool::new(None, None, None, workspace_root());
         let missing = bare
             .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
             .await
@@ -863,7 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_simple_command() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "echo hello" }))
             .await
@@ -876,9 +892,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_starts_in_the_workspace_root_not_the_process_cwd() {
+        // The process's own current directory here is whatever `cargo test`
+        // was invoked from, not this tempdir — so the command only sees
+        // this directory if `current_dir` is set explicitly.
+        let dir = tempfile::tempdir().unwrap();
+        let expected = tokio::fs::canonicalize(dir.path()).await.unwrap();
+
+        let tool = ExecTool::new(None, None, None, dir.path().to_path_buf());
+        let result = tool
+            .execute(serde_json::json!({ "command": "pwd" }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "pwd should succeed: {}", result.output);
+        let printed = tokio::fs::canonicalize(result.output.trim()).await.unwrap();
+        assert_eq!(
+            printed, expected,
+            "the command should start in the configured workspace root"
+        );
+    }
+
     #[tokio::test]
     async fn exec_failing_command() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "false" }))
             .await
@@ -899,7 +938,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_timeout() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({
                 "command": "sleep 10",
@@ -956,7 +995,7 @@ mod tests {
     async fn exec_timeout_kills_the_whole_process_tree() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("pid");
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
 
         // The shell's own pid doubles as the process group id (see
         // `shell_command`), so reading it back is enough to check the
@@ -983,7 +1022,7 @@ mod tests {
     async fn exec_cancellation_kills_the_process_and_returns_partial_output() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("pid");
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let cancel = CancellationToken::new();
 
         let command = format!(
@@ -1028,7 +1067,7 @@ mod tests {
         // that `kill_on_drop` alone would reach.
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("grandchild-pid");
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let cancel = CancellationToken::new();
 
         let command = format!("sleep 10 & echo $! > {}; wait", pid_path.display());
@@ -1048,14 +1087,14 @@ mod tests {
 
     #[tokio::test]
     async fn exec_missing_command() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing command should return ToolError");
     }
 
     #[tokio::test]
     async fn exec_stderr_output() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "echo error >&2" }))
             .await
@@ -1071,7 +1110,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_passes_quotes_through_to_the_shell() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         let result = tool
             .execute(serde_json::json!({ "command": "echo \"hello  world\"" }))
             .await
@@ -1092,7 +1131,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_output_truncated() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         // Generate more than 100KB of output
         let command = if cfg!(windows) {
             "powershell -NoProfile -Command \"'x' * 204800\""
@@ -1126,7 +1165,10 @@ mod tests {
             keys.set("api_key", "sk-test-abcdef123", None, KeyCreator::User)
                 .await
                 .unwrap();
-            (ExecTool::new(None, Some(Arc::clone(&keys)), None), keys)
+            (
+                ExecTool::new(None, Some(Arc::clone(&keys)), None, workspace_root()),
+                keys,
+            )
         }
 
         #[tokio::test]
@@ -1191,7 +1233,7 @@ mod tests {
 
         #[tokio::test]
         async fn keys_without_store_explain_unavailability() {
-            let result = ExecTool::new(None, None, None)
+            let result = ExecTool::new(None, None, None, workspace_root())
                 .execute(serde_json::json!({ "command": "true", "keys": ["api_key"] }))
                 .await
                 .unwrap();
@@ -1291,7 +1333,12 @@ mod tests {
             keys.set("first", "value-one-abc123", None, KeyCreator::Agent)
                 .await
                 .unwrap();
-            let tool = ExecTool::new(None, Some(keys), Some(std::sync::Arc::clone(&engine)));
+            let tool = ExecTool::new(
+                None,
+                Some(keys),
+                Some(std::sync::Arc::clone(&engine)),
+                workspace_root(),
+            );
 
             let result = tool
                 .execute(serde_json::json!({
@@ -1408,7 +1455,8 @@ mod tests {
                 .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
                 .await
                 .unwrap();
-            let tool = ExecTool::new(None, Some(keys), None).with_publisher(bus_handle.publisher());
+            let tool = ExecTool::new(None, Some(keys), None, workspace_root())
+                .with_publisher(bus_handle.publisher());
 
             let result = tool
                 .execute(serde_json::json!({
@@ -1438,7 +1486,7 @@ mod tests {
 
     #[test]
     fn exec_tool_definition() {
-        let tool = ExecTool::new(None, None, None);
+        let tool = ExecTool::new(None, None, None, workspace_root());
         assert_eq!(tool.name(), "exec", "tool name should match");
     }
 }

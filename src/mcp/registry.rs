@@ -4,6 +4,7 @@
 //! and exposes discovered tools to the agent's tool loop.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -110,6 +111,12 @@ pub struct McpRegistry {
     /// [`set_reserved_tool_names`](Self::set_reserved_tool_names); empty in
     /// bare registries (tests). See `src/mcp/CLAUDE.md` for the full policy.
     reserved_tool_names: HashSet<String>,
+    /// The agent's workspace root, passed to every spawned stdio server as
+    /// its `current_dir` (see [`McpClient::connect`]) instead of the
+    /// process's current directory, which is shared across every agent
+    /// hosted in the same process. `None` in bare registries (tests), where
+    /// a spawned stdio server inherits the process's current directory.
+    workspace_root: Option<PathBuf>,
 }
 
 impl Default for McpRegistry {
@@ -127,6 +134,7 @@ impl McpRegistry {
             tools_path: None,
             agent_keys: None,
             reserved_tool_names: HashSet::new(),
+            workspace_root: None,
         }
     }
 
@@ -137,18 +145,21 @@ impl McpRegistry {
     }
 
     /// Create a new shared registry that prepends the configured tool
-    /// directories to the `PATH` of spawned stdio servers and resolves
-    /// `${agent-key:<name>}` references from `agent_keys`.
+    /// directories to the `PATH` of spawned stdio servers, resolves
+    /// `${agent-key:<name>}` references from `agent_keys`, and starts every
+    /// spawned stdio server in `workspace_root`.
     #[must_use]
     pub fn new_shared_with_spawn_env(
         tools_path: SharedToolsPath,
         agent_keys: SharedAgentKeys,
+        workspace_root: PathBuf,
     ) -> SharedMcpRegistry {
         Arc::new(RwLock::new(Self {
             servers: Vec::new(),
             tools_path: Some(tools_path),
             agent_keys: Some(agent_keys),
             reserved_tool_names: HashSet::new(),
+            workspace_root: Some(workspace_root),
         }))
     }
 
@@ -294,7 +305,13 @@ impl McpRegistry {
                 return Err(e);
             }
         };
-        let client = match McpClient::connect(&resolved, tools_path.as_deref()).await {
+        let client = match McpClient::connect(
+            &resolved,
+            tools_path.as_deref(),
+            self.workspace_root.as_deref(),
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 self.mark_failed_if_tracked(&entry.name, &e.to_string());
@@ -922,6 +939,56 @@ mod tests {
             names.contains(&"new-server"),
             "new-server should be tracked (failed)"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_spawns_stdio_server_in_the_configured_workspace_root() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Not a real MCP server: it exits immediately (so `connect` reports
+        // a failed handshake), but by then it has already written its own
+        // cwd to a file, which is what this test checks — proving the
+        // registry threads its configured workspace root through to the
+        // spawned process rather than leaving it on the process cwd.
+        let dir =
+            std::env::temp_dir().join(format!("residuum-mcp-registry-cwd-{}", std::process::id()));
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let pwd_file = dir.join("pwd.txt");
+
+        let script = dir.join("residuum_fake_mcp_registry_cwd");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\npwd > {}\nexit 0\n", pwd_file.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let mut registry = McpRegistry {
+            workspace_root: Some(workspace.clone()),
+            ..McpRegistry::new()
+        };
+        let report = registry
+            .connect_servers(&[entry("fake", script.to_str().unwrap())])
+            .await;
+        assert_eq!(
+            report.failures.len(),
+            1,
+            "the fake process isn't a real mcp server, so the handshake should fail"
+        );
+
+        let printed = std::fs::canonicalize(std::fs::read_to_string(&pwd_file).unwrap().trim())
+            .unwrap_or_else(|e| panic!("child should have written its cwd to {pwd_file:?}: {e}"));
+        let expected = std::fs::canonicalize(&workspace).unwrap();
+        assert_eq!(
+            printed, expected,
+            "the spawned server should start in the registry's configured workspace root"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

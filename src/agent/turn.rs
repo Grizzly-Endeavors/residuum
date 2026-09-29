@@ -1447,7 +1447,9 @@ mod tests {
             crate::tools::PathPolicy::new_shared(),
             crate::diagnostics::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
-                workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+                // Must exist: this test's tool call actually runs `exec`,
+                // which now starts the spawned command here.
+                workspace_dir: dir.path().to_path_buf(),
             },
             None,
         );
