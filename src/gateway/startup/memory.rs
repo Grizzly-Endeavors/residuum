@@ -12,9 +12,9 @@ use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
+use crate::memory::team_wiki::TeamWikiIndex;
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
-use crate::memory::wiki_index::WikiIndexer;
 use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 use anyhow::Context;
@@ -146,7 +146,22 @@ pub(super) fn build_memory_components(
     (observer, reflector, notices)
 }
 
+/// Open the team wiki search index, the one service every agent's memory
+/// search shares.
+///
+/// # Errors
+/// Returns `FatalError` if not even an in-memory index can be created.
+pub(super) async fn open_team_wiki(
+    layout: &WorkspaceLayout,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
+) -> Result<Arc<TeamWikiIndex>, FatalError> {
+    Ok(TeamWikiIndex::open(layout.team(), embedding_provider.cloned()).await?)
+}
+
 /// Build the search index, vector store, and hybrid searcher.
+///
+/// `team_wiki` is the hub's shared team wiki index; the searcher merges its
+/// results with the agent's own memory.
 ///
 /// # Errors
 /// Returns `FatalError` if the search index cannot be created.
@@ -154,6 +169,7 @@ pub(super) async fn init_memory(
     cfg: &Config,
     layout: &WorkspaceLayout,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
+    team_wiki: &Arc<TeamWikiIndex>,
 ) -> Result<MemoryComponents, FatalError> {
     // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
@@ -226,6 +242,8 @@ pub(super) async fn init_memory(
         backfill_embeddings(vs, ep.as_ref(), layout, &manifest_path).await;
     }
 
+    purge_wiki_documents(&search_index, vector_store.as_deref());
+
     // Hybrid searcher
     let hybrid_searcher = Arc::new(
         HybridSearcher::new(
@@ -234,7 +252,7 @@ pub(super) async fn init_memory(
             embedding_provider.cloned(),
             cfg.memory.search.clone(),
         )
-        .with_wiki(WikiIndexer::new(layout.root(), layout.wiki_dir())),
+        .with_team_wiki(Arc::clone(team_wiki)),
     );
 
     Ok(MemoryComponents {
@@ -242,6 +260,37 @@ pub(super) async fn init_memory(
         hybrid_searcher,
         vector_store,
     })
+}
+
+/// Remove wiki documents from the agent's own index and vectors.
+///
+/// Wiki pages are indexed in the team wiki index, not in an agent's memory. An
+/// index built before that holds them; this clears them once and finds nothing
+/// afterwards. A failure is logged and leaves the leftovers in place: they
+/// duplicate team wiki hits until the next start clears them.
+fn purge_wiki_documents(search_index: &MemoryIndex, vector_store: Option<&VectorStore>) {
+    match search_index.purge_wiki_documents() {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(
+            count,
+            "removed wiki documents from the agent's search index; the team wiki index holds them now"
+        ),
+        Err(err) => tracing::warn!(
+            error = %format!("{err:#}"),
+            "failed to remove wiki documents from the agent's search index; wiki hits may appear twice"
+        ),
+    }
+    let Some(vs) = vector_store else {
+        return;
+    };
+    match vs.purge_wiki_vectors() {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "removed wiki vectors from the agent's vector store"),
+        Err(err) => tracing::warn!(
+            error = %format!("{err:#}"),
+            "failed to remove wiki vectors from the agent's vector store"
+        ),
+    }
 }
 
 /// Perform a full search index rebuild and save the resulting manifest.
@@ -626,5 +675,58 @@ mod tests {
             !vs.has_observation("ep-001-o0").unwrap(),
             "vector row should be pruned once its episode file is gone"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_removes_wiki_documents_from_an_older_agent_index() {
+        use crate::memory::search::SearchFilters;
+        use crate::memory::types::DocSource;
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let ep = FakeEmbedder;
+        let manifest_path = layout.index_manifest_json();
+        write_obs_file(
+            &layout
+                .episodes_dir()
+                .join("2026-02")
+                .join("19")
+                .join("ep-001.obs.json"),
+            "cluster upgrade planning",
+        );
+
+        // An agent index and vector store built before wiki pages moved to the team index.
+        let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
+        let manifest = IndexManifest::load(&manifest_path).await.unwrap();
+        sync_search_index(&index, &manifest, &layout, &manifest_path).await;
+        let vs = build_vector_store(&ep, &layout, &manifest, &manifest_path)
+            .await
+            .unwrap();
+        let old_page = crate::memory::wiki_index::WikiPage {
+            id: "wiki/cluster.md".to_string(),
+            date: "2026-02-19".to_string(),
+            content: "cluster wiki page".to_string(),
+        };
+        index
+            .replace_wiki_documents(std::slice::from_ref(&old_page), &[], true)
+            .unwrap();
+        vs.upsert_wiki_pages(&[crate::memory::vector_store::WikiVector {
+            page_id: &old_page.id,
+            date: &old_page.date,
+            content: &old_page.content,
+            embedding: &[0.1, 0.2, 0.3, 0.4],
+        }])
+        .unwrap();
+
+        purge_wiki_documents(&index, Some(&vs));
+
+        let hits = index
+            .search("cluster", 10, &SearchFilters::default())
+            .unwrap();
+        assert!(
+            hits.iter().all(|h| h.source_type != DocSource::Wiki) && !hits.is_empty(),
+            "only memory documents should remain, got {hits:?}"
+        );
+        assert!(vs.wiki_page_contents().unwrap().is_empty());
     }
 }

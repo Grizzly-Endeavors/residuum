@@ -1,15 +1,15 @@
-//! Keeps the knowledge wiki's pages in the memory search index.
+//! Keeps the team wiki's pages in the team search index.
 //!
-//! Each concept page under `wiki/` is one search document, keyed by its
-//! workspace-relative path (`wiki/homelab/cluster.md`) so a hit is a path the
-//! agent can open directly. `index.md` and `log.md` are reserved OKF names at
-//! every folder level and are not indexed.
+//! Each concept page under `team/wiki/` is one search document, keyed by its
+//! path from the residuum root (`team/wiki/homelab/cluster.md`) so a hit is a
+//! path the agent can open directly. `index.md` and `log.md` are reserved OKF
+//! names at every folder level and are not indexed.
 //!
-//! Pages change whenever the agent edits them, so instead of a startup-only
-//! sync the searcher calls [`WikiIndexer::sync`] before every search: a walk of
-//! modification times finds changed, new, and deleted pages, and only those are
-//! reindexed. Embeddings are reused across restarts when a page's text is
-//! unchanged.
+//! Pages change whenever an agent or the user edits them, so instead of a
+//! startup-only sync the team index calls [`WikiIndexer::sync`] before every
+//! search: a walk of modification times finds changed, new, and deleted pages,
+//! and only those are reindexed. Embeddings are reused across restarts when a
+//! page's text is unchanged.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -18,6 +18,7 @@ use std::time::SystemTime;
 
 use anyhow::Context;
 
+use crate::config::paths::{TEAM_DIR_NAME, TeamPaths};
 use crate::inference::EmbeddingProvider;
 use crate::memory::search::MemoryIndex;
 use crate::memory::vector_store::{VectorStore, WikiVector};
@@ -31,7 +32,7 @@ const EMBED_BATCH_SIZE: usize = 64;
 /// A wiki page prepared for indexing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WikiPage {
-    /// Workspace-relative path with `/` separators, e.g. `wiki/homelab/cluster.md`.
+    /// Path from the residuum root with `/` separators, e.g. `team/wiki/homelab/cluster.md`.
     pub(crate) id: String,
     /// Date of the page's last modification (YYYY-MM-DD).
     pub(crate) date: String,
@@ -39,9 +40,12 @@ pub(crate) struct WikiPage {
     pub(crate) content: String,
 }
 
-/// Incrementally syncs `wiki/` pages into the BM25 index and vector store.
+/// Incrementally syncs `team/wiki/` pages into the BM25 index and vector store.
+///
+/// Syncs are serialized by an internal lock, so every handle to one indexer
+/// sees whole syncs, never interleaved ones.
 pub struct WikiIndexer {
-    workspace_root: PathBuf,
+    team_root: PathBuf,
     wiki_dir: PathBuf,
     /// Modification time of each page as of the last successful sync, keyed by
     /// page ID. `None` until the first sync, which replaces every wiki document.
@@ -49,12 +53,12 @@ pub struct WikiIndexer {
 }
 
 impl WikiIndexer {
-    /// Create an indexer for the wiki at `wiki_dir` inside `workspace_root`.
+    /// Create an indexer for the wiki of the team layer at `team`.
     #[must_use]
-    pub fn new(workspace_root: impl Into<PathBuf>, wiki_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(team: &TeamPaths) -> Self {
         Self {
-            workspace_root: workspace_root.into(),
-            wiki_dir: wiki_dir.into(),
+            team_root: team.root().to_path_buf(),
+            wiki_dir: team.wiki_dir(),
             synced: tokio::sync::Mutex::new(None),
         }
     }
@@ -76,9 +80,9 @@ impl WikiIndexer {
         let mut synced = self.synced.lock().await;
         let first_sync = synced.is_none();
 
-        let workspace_root = self.workspace_root.clone();
+        let team_root = self.team_root.clone();
         let wiki_dir = self.wiki_dir.clone();
-        let scanned = tokio::task::spawn_blocking(move || scan_pages(&workspace_root, &wiki_dir))
+        let scanned = tokio::task::spawn_blocking(move || scan_pages(&team_root, &wiki_dir))
             .await
             .context("wiki scan task failed")??;
 
@@ -211,7 +215,7 @@ async fn sync_vectors(
 
 /// Walk `wiki_dir` for concept pages, returning each page's path and mtime by ID.
 fn scan_pages(
-    workspace_root: &Path,
+    team_root: &Path,
     wiki_dir: &Path,
 ) -> anyhow::Result<HashMap<String, (PathBuf, SystemTime)>> {
     let mut pages = HashMap::new();
@@ -244,18 +248,19 @@ fn scan_pages(
                     .metadata()
                     .and_then(|m| m.modified())
                     .with_context(|| format!("failed to read mtime of {}", path.display()))?;
-                pages.insert(page_id(workspace_root, &path), (path, mtime));
+                pages.insert(page_id(team_root, &path), (path, mtime));
             }
         }
     }
     Ok(pages)
 }
 
-/// Workspace-relative page path with `/` separators on every platform.
-fn page_id(workspace_root: &Path, path: &Path) -> String {
-    let rel = path.strip_prefix(workspace_root).unwrap_or(path);
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy())
+/// Page ID: the page's path under the residuum root (`team/wiki/...`), with
+/// `/` separators on every platform, ready for `read_file`.
+fn page_id(team_root: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(team_root).unwrap_or(path);
+    std::iter::once(TEAM_DIR_NAME.into())
+        .chain(rel.components().map(|c| c.as_os_str().to_string_lossy()))
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -331,8 +336,14 @@ mod tests {
 
     const PAGE: &str = "---\ntype: Project\ntitle: Grizzly Platform\ndescription: Self-hosted infrastructure repo.\nsources:\n  - resource: episode:ep-042\n---\n\n# Grizzly Platform\n\nRuns Flux on the homelab cluster.\n";
 
+    fn team(root: &Path) -> TeamPaths {
+        TeamPaths::new(root.join("team"))
+    }
+
     fn write(root: &Path, rel: &str, content: &str) {
-        let path = root.join(rel);
+        let path = rel
+            .split('/')
+            .fold(root.to_path_buf(), |p, part| p.join(part));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
     }
@@ -358,7 +369,7 @@ mod tests {
 
     #[test]
     fn search_text_uses_title_description_and_body() {
-        let text = page_search_text("wiki/p.md", PAGE);
+        let text = page_search_text("team/wiki/p.md", PAGE);
         assert!(text.starts_with("Grizzly Platform\n\nSelf-hosted infrastructure repo."));
         assert!(text.contains("Runs Flux on the homelab cluster."));
         assert!(
@@ -370,50 +381,53 @@ mod tests {
     #[test]
     fn search_text_falls_back_to_full_text_without_frontmatter() {
         assert_eq!(
-            page_search_text("wiki/p.md", "# Plain\n\nbody\n"),
+            page_search_text("team/wiki/p.md", "# Plain\n\nbody\n"),
             "# Plain\n\nbody"
         );
         let unterminated = "---\ntitle: x\nbody without a closing fence";
-        assert_eq!(page_search_text("wiki/p.md", unterminated), unterminated);
+        assert_eq!(
+            page_search_text("team/wiki/p.md", unterminated),
+            unterminated
+        );
     }
 
     #[test]
     fn scan_skips_reserved_and_hidden_files() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, "wiki/index.md", "# Wiki");
-        write(root, "wiki/log.md", "# Log");
-        write(root, "wiki/homelab/index.md", "# Homelab");
-        write(root, "wiki/homelab/cluster.md", PAGE);
-        write(root, "wiki/notes.txt", "not markdown");
-        write(root, "wiki/.drafts/hidden.md", PAGE);
+        write(root, "team/wiki/index.md", "# Wiki");
+        write(root, "team/wiki/log.md", "# Log");
+        write(root, "team/wiki/homelab/index.md", "# Homelab");
+        write(root, "team/wiki/homelab/cluster.md", PAGE);
+        write(root, "team/wiki/notes.txt", "not markdown");
+        write(root, "team/wiki/.drafts/hidden.md", PAGE);
 
-        let pages = scan_pages(root, &root.join("wiki")).unwrap();
+        let pages = scan_pages(&root.join("team"), &root.join("team").join("wiki")).unwrap();
         let ids: Vec<&str> = pages.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["wiki/homelab/cluster.md"]);
+        assert_eq!(ids, ["team/wiki/homelab/cluster.md"]);
     }
 
     #[tokio::test]
     async fn sync_indexes_updates_and_removes_pages() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, "wiki/index.md", "# Wiki");
-        write(root, "wiki/grizzly-platform.md", PAGE);
+        write(root, "team/wiki/index.md", "# Wiki");
+        write(root, "team/wiki/grizzly-platform.md", PAGE);
         write(
             root,
-            "wiki/tools/fish.md",
+            "team/wiki/tools/fish.md",
             "---\ntype: Tool\ntitle: Fish shell\n---\nThe user's login shell.\n",
         );
 
         let bm25 = Arc::new(MemoryIndex::empty().unwrap());
-        let indexer = WikiIndexer::new(root, root.join("wiki"));
+        let indexer = WikiIndexer::new(&team(root));
         indexer.sync(&bm25, None).await.unwrap();
 
         let hits = bm25.search("Flux", 5, &wiki_filter()).unwrap();
         let [hit] = hits.as_slice() else {
             panic!("page body should be searchable as one hit, got {hits:?}");
         };
-        assert_eq!(hit.id, "wiki/grizzly-platform.md");
+        assert_eq!(hit.id, "team/wiki/grizzly-platform.md");
         assert_eq!(hit.source_type, DocSource::Wiki);
         assert!(
             bm25.search("Wiki", 5, &wiki_filter()).unwrap().is_empty(),
@@ -421,10 +435,10 @@ mod tests {
         );
 
         // Edit one page, delete the other.
-        let page = root.join("wiki/grizzly-platform.md");
+        let page = root.join("team").join("wiki").join("grizzly-platform.md");
         std::fs::write(&page, PAGE.replace("Flux", "ArgoCD")).unwrap();
         touch_later(&page);
-        std::fs::remove_file(root.join("wiki/tools/fish.md")).unwrap();
+        std::fs::remove_file(root.join("team").join("wiki").join("tools").join("fish.md")).unwrap();
         indexer.sync(&bm25, None).await.unwrap();
 
         assert!(bm25.search("Flux", 5, &wiki_filter()).unwrap().is_empty());
@@ -442,19 +456,19 @@ mod tests {
         let root = dir.path();
         write(
             root,
-            "wiki/gone.md",
+            "team/wiki/gone.md",
             "---\ntitle: Gone\n---\nobsolete page\n",
         );
 
         let bm25 = Arc::new(MemoryIndex::empty().unwrap());
-        WikiIndexer::new(root, root.join("wiki"))
+        WikiIndexer::new(&team(root))
             .sync(&bm25, None)
             .await
             .unwrap();
-        std::fs::remove_file(root.join("wiki/gone.md")).unwrap();
+        std::fs::remove_file(root.join("team").join("wiki").join("gone.md")).unwrap();
 
         // A fresh indexer (as after a restart) holds no state about "gone.md".
-        WikiIndexer::new(root, root.join("wiki"))
+        WikiIndexer::new(&team(root))
             .sync(&bm25, None)
             .await
             .unwrap();
@@ -491,10 +505,10 @@ mod tests {
     async fn vectors_are_reused_across_restarts_and_follow_edits() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(root, "wiki/grizzly-platform.md", PAGE);
+        write(root, "team/wiki/grizzly-platform.md", PAGE);
         write(
             root,
-            "wiki/fish.md",
+            "team/wiki/fish.md",
             "---\ntitle: Fish shell\n---\nlogin shell\n",
         );
 
@@ -504,28 +518,28 @@ mod tests {
         let embedder: Arc<dyn EmbeddingProvider> = Arc::<CountingEmbedder>::clone(&counter);
         let embed_count = || counter.0.load(std::sync::atomic::Ordering::SeqCst);
 
-        WikiIndexer::new(root, root.join("wiki"))
+        WikiIndexer::new(&team(root))
             .sync(&bm25, Some((&store, &embedder)))
             .await
             .unwrap();
         assert_eq!(embed_count(), 2, "first sync embeds every page");
 
         // A fresh indexer, as after a restart: unchanged pages keep their vectors.
-        let indexer = WikiIndexer::new(root, root.join("wiki"));
+        let indexer = WikiIndexer::new(&team(root));
         indexer
             .sync(&bm25, Some((&store, &embedder)))
             .await
             .unwrap();
         assert_eq!(embed_count(), 2, "unchanged pages must not be re-embedded");
 
-        let page = root.join("wiki/fish.md");
+        let page = root.join("team").join("wiki").join("fish.md");
         std::fs::write(
             &page,
             "---\ntitle: Fish shell\n---\nlogin shell, with abbreviations\n",
         )
         .unwrap();
         touch_later(&page);
-        std::fs::remove_file(root.join("wiki/grizzly-platform.md")).unwrap();
+        std::fs::remove_file(root.join("team").join("wiki").join("grizzly-platform.md")).unwrap();
         indexer
             .sync(&bm25, Some((&store, &embedder)))
             .await
@@ -534,12 +548,12 @@ mod tests {
         assert_eq!(embed_count(), 3, "only the edited page is re-embedded");
         let contents = store.wiki_page_contents().unwrap();
         assert!(
-            !contents.contains_key("wiki/grizzly-platform.md"),
+            !contents.contains_key("team/wiki/grizzly-platform.md"),
             "deleted page's vector should be removed"
         );
         assert!(
             contents
-                .get("wiki/fish.md")
+                .get("team/wiki/fish.md")
                 .is_some_and(|c| c.contains("abbreviations")),
             "edited page's vector should hold the new text"
         );
@@ -549,7 +563,7 @@ mod tests {
     async fn sync_without_wiki_dir_is_a_no_op() {
         let dir = tempfile::tempdir().unwrap();
         let bm25 = Arc::new(MemoryIndex::empty().unwrap());
-        WikiIndexer::new(dir.path(), dir.path().join("wiki"))
+        WikiIndexer::new(&team(dir.path()))
             .sync(&bm25, None)
             .await
             .unwrap();

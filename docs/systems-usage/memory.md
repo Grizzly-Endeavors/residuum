@@ -74,27 +74,28 @@ The intended workflow: the agent sets up a heartbeat to periodically review its 
 
 ## Search
 
-Two search backends, used together when both are available:
+Two search backends, used together when both are available. They run over two indexes: the agent's own memory (observations and interaction-pair chunks, in `memory/`) and the team wiki (`team/wiki/`, in `team/.index/` and `team/vectors.db`). The team wiki index holds only wiki pages and is one shared service: every agent in the process searches the same instance, and its writes are serialized. Agent memory indexes hold no wiki pages; an index built before that has its wiki documents and vectors removed at startup.
 
 ### BM25 (tantivy)
 
-Full-text keyword search over observations, interaction-pair chunks, and wiki pages. Always available.
+Full-text keyword search over observations and interaction-pair chunks (the agent's index) and over wiki pages (the team index). Always available.
 
 - Episode files are synced on startup (incremental via `.index_manifest.json`) and indexed after each observer extraction; the observer records what it indexed in the manifest, so startup does not index an episode twice
-- Wiki pages are synced before every search: changed, new, and deleted pages are found by modification time, and only those are reindexed (see [wiki.md](wiki.md#how-it-reaches-the-model))
+- Wiki pages are synced into the team index before every search that includes the wiki: changed, new, and deleted pages under `team/wiki/` are found by modification time, and only those are reindexed (see [wiki.md](wiki.md#how-it-reaches-the-model))
 - Supports AND, OR, and phrase queries with quotes
 
 ### Vector (sqlite-vec)
 
 Semantic similarity search via embeddings. Available when an embedding provider is configured in `[memory.search]`.
 
-- Storage: `memory/vectors.db` (sqlite — deliberate exception to file-first philosophy since raw vectors aren't human-parsable), one table each for observations, chunks, and wiki pages
+- Storage: `memory/vectors.db` for the agent's observations and chunks, and `team/vectors.db` for wiki pages (sqlite — deliberate exception to file-first philosophy since raw vectors aren't human-parsable)
+- Wiki pages are embedded with the embedding model configured for the agent that opened the team index, and the model name is recorded in `team/vectors.db`; if it changes, the wiki vectors are cleared and re-embedded
 - A wiki page is re-embedded only when its text changes, so restarts reuse existing page embeddings
-- When no embedding provider is configured, this branch is silently skipped (graceful degradation to BM25-only)
+- When no embedding provider is configured, this branch is silently skipped (graceful degradation to BM25-only); the team index is then text only, and the agent's own memory is too
 
 ### Hybrid Search Flow
 
-BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge (`vector_weight` and `text_weight`, rescaled to sum to 1 so the merged score stays in [0,1]; only their ratio matters) → optional temporal decay → filter by min_score → return top N. A result dropped by the min_score filter is not silently discarded: the caller learns how many were filtered (`memory_search`'s reply, or `below_threshold` on the HTTP endpoint), and can override the threshold for one search (`memory_search`'s `min_score` parameter, or the endpoint's `min_score` query parameter) to see them.
+The pipeline runs separately against the agent's memory index and the team wiki index, both with the agent's `[memory.search]` settings: BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge (`vector_weight` and `text_weight`, rescaled to sum to 1 so the merged score stays in [0,1]; only their ratio matters) → optional temporal decay → filter by min_score. The two ranked lists are then merged by score into one ranking and the limit is applied once, returning the top N. A result dropped by the min_score filter is not silently discarded: the caller learns how many were filtered (`memory_search`'s reply, or `below_threshold` on the HTTP endpoint), and can override the threshold for one search (`memory_search`'s `min_score` parameter, or the endpoint's `min_score` query parameter) to see them.
 
 Temporal decay never applies to wiki pages: they hold maintained knowledge, and staleness is handled by their `stale_after` field and the `wiki_lint` pulse rather than by age.
 
@@ -106,15 +107,15 @@ Temporal decay never applies to wiki pages: they hold maintained knowledge, and 
 |-----------|------|----------|-------|
 | `query` | string | yes | Supports AND, OR, phrase queries |
 | `limit` | integer | no | Max results. Default 5, no upper cap |
-| `source` | string enum | no | `"observations"`, `"episodes"`, or `"wiki"`; omit to search all three |
+| `source` | string enum | no | `"observations"` or `"episodes"` (the agent's index only), `"wiki"` (the team index only); omit to search all three |
 | `date_from` | string | no | `YYYY-MM-DD`, inclusive lower bound |
 | `date_to` | string | no | `YYYY-MM-DD`, inclusive upper bound |
 | `episode_ids` | string[] | no | Limit to specific episode IDs (excludes wiki pages, which belong to no episode) |
 | `min_score` | number | no | Override the configured `[search].min_score` relevance threshold for this search only |
 
-A wiki result's ID is the page's workspace-relative path (`wiki/homelab/cluster.md`), ready for `read_file`. When every match falls below the relevance threshold, the reply says so and names how many weaker matches were filtered, instead of reporting a flat "no results" — pass `min_score` lower to see them.
+A wiki result's ID is the page's path under the residuum root (`team/wiki/homelab/cluster.md`), ready for `read_file`. `below_threshold` counts weaker matches from both indexes together. When every match falls below the relevance threshold, the reply says so and names how many weaker matches were filtered, instead of reporting a flat "no results" — pass `min_score` lower to see them.
 
-`GET /api/memory/search?q=<query>&limit=<at least 1, default 10, no upper cap>&source=observations|episodes|wiki&date_from=&date_to=&min_score=<override>` runs the same hybrid search for workbench artifacts, with `episode_ids` unsupported (this endpoint has no equivalent parameter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic, below_threshold }`, where `semantic` says whether vector search contributed to the results and `below_threshold` counts results that scored under the threshold and were dropped. A blank `q`, an unrecognized `source`, or a `date_from`/`date_to` that isn't `YYYY-MM-DD` answers `400`.
+`GET /api/memory/search?q=<query>&limit=<at least 1, default 10, no upper cap>&source=observations|episodes|wiki&date_from=&date_to=&min_score=<override>` runs the same hybrid search for workbench artifacts, with `episode_ids` unsupported (this endpoint has no equivalent parameter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic, below_threshold }`, where `semantic` says whether vector search contributed to the results on either index that was searched and `below_threshold` counts results that scored under the threshold and were dropped. A blank `q`, an unrecognized `source`, or a `date_from`/`date_to` that isn't `YYYY-MM-DD` answers `400`.
 
 ### `memory_get`
 

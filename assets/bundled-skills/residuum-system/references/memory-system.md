@@ -53,7 +53,7 @@ Customize compression guidance by editing `memory/REFLECTOR.md`.
 
 ## Search
 
-Use `memory_search` to query past observations, episode chunks, and wiki pages. When an embedding provider is configured, hybrid search (BM25 + vector similarity) is used automatically. Otherwise, BM25 keyword search only.
+Use `memory_search` to query past observations, episode chunks, and wiki pages. Your own memory and the team wiki are separate indexes: the hybrid search (BM25 + vector similarity when an embedding provider is configured, otherwise BM25 keyword search only) runs against each with your `[memory.search]` settings, and the two rankings are merged by score.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -65,7 +65,7 @@ Use `memory_search` to query past observations, episode chunks, and wiki pages. 
 
 Use `memory_get` to retrieve the full transcript of a specific episode by ID, or a session run's transcript by run id (exactly one of `episode_id`/`run_id`) — the run-id mode reads from the session store, so it also works on a run that produced no episode, or one that's still in progress. An unknown run id points at `list_agents` and `memory_search`.
 
-Episodes are indexed after each observer extraction and synced on startup. Wiki pages are resynced before every search, so a page you just wrote is searchable immediately; a wiki result's ID is the page path to open with `read_file`. Wiki pages are exempt from temporal decay.
+Episodes are indexed after each observer extraction and synced on startup. Wiki pages in `team/wiki/` are resynced into the team index before every search, so a page you just wrote is searchable immediately; a wiki result's ID is the page path (`team/wiki/...`) to open with `read_file`, and `source: "wiki"` searches only the team wiki. Wiki pages are exempt from temporal decay.
 
 A workbench artifact runs the same search via `GET /api/memory/search?q=<query>&limit=<1..50, default 10>&source=observations|episodes|wiki&date_from=&date_to=` (no `episode_ids` filter). It answers `{ results: [{ id, source, episode_id, date, line_start, line_end, snippet, score }], semantic }`, `semantic` saying whether vector search contributed. A blank `q`, an unrecognized `source`, or a malformed date answers `400`.
 
