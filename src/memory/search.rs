@@ -359,9 +359,9 @@ impl MemoryIndex {
         if count == 0 {
             return Ok(0);
         }
-        let mut writer = self.writer()?;
+        let writer = self.writer()?;
         writer.delete_term(wiki_term);
-        self.commit_and_reload(&mut writer)?;
+        self.commit_and_reload(writer)?;
         Ok(count)
     }
 
