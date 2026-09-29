@@ -27,10 +27,10 @@
     validateHubConfig,
     validateProviders,
     validateWorkspaceFile,
-    CACHE_KEY_CONFIG_RAW,
+    cacheKeyConfigRaw,
     CACHE_KEY_HUB_CONFIG_RAW,
-    CACHE_KEY_PROVIDERS_RAW,
-    CACHE_KEY_MCP_RAW,
+    cacheKeyProvidersRaw,
+    cacheKeyMcpRaw,
   } from "./lib/api";
   import { invalidate } from "./lib/cache";
   import { isStoredReference } from "./lib/secrets";
@@ -204,7 +204,7 @@
    */
   async function reloadProvidersFile(): Promise<void> {
     try {
-      invalidate(CACHE_KEY_PROVIDERS_RAW);
+      invalidate(cacheKeyProvidersRaw());
       rawProviders = await fetchProvidersRaw();
       const prov = parseProvidersToml(rawProviders);
       providerEntries = prov.providers;
@@ -218,7 +218,7 @@
 
   async function reloadConfigFile(): Promise<void> {
     try {
-      invalidate(CACHE_KEY_CONFIG_RAW);
+      invalidate(cacheKeyConfigRaw());
       invalidate(CACHE_KEY_HUB_CONFIG_RAW);
       [rawConfig, rawHubConfig] = await Promise.all([fetchConfigRaw(), fetchHubConfigRaw()]);
       configFields = parseConfigToml(rawConfig, rawHubConfig);
@@ -230,7 +230,7 @@
 
   async function reloadMcpFile(): Promise<void> {
     try {
-      invalidate(CACHE_KEY_MCP_RAW);
+      invalidate(cacheKeyMcpRaw());
       rawMcp = await fetchMcpRaw();
       mcpServers = parseMcpJson(rawMcp);
       baselineMcpServers = $state.snapshot(mcpServers);

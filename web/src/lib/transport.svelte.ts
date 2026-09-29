@@ -2,12 +2,19 @@
 
 import type { ClientMessage, ServerMessage, ConnectionStatus } from "./types";
 
+export interface TransportOptions {
+  /** The socket URL, read on every (re)connect so it can follow the current agent. */
+  url: () => string;
+  /** Send a `ping` every 30 seconds. Off for sockets that take no client frames. */
+  keepalive?: boolean;
+}
+
 /** Low-level WebSocket transport with reconnect and keepalive. */
-export class WsTransport {
+export class WsTransport<S = ServerMessage, C extends { type: string } = ClientMessage> {
   status = $state<ConnectionStatus>("disconnected");
 
   /** Called when a parsed ServerMessage arrives. */
-  onMessage: ((msg: ServerMessage) => void) | null = null;
+  onMessage: ((msg: S) => void) | null = null;
 
   /** Called after the socket connects (before any messages). */
   onConnected: (() => void) | null = null;
@@ -16,7 +23,7 @@ export class WsTransport {
   onDisconnected: (() => void) | null = null;
 
   /** Messages queued while disconnected, flushed in order once reconnected. */
-  private pending: ClientMessage[] = [];
+  private pending: C[] = [];
 
   /** How many messages are queued waiting for reconnect (reactive). */
   pendingCount = $state(0);
@@ -26,14 +33,15 @@ export class WsTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
+  constructor(private readonly options: TransportOptions) {}
+
   connect(): void {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${location.host}/ws`;
-
     this.status = "connecting";
-    this.ws = new WebSocket(url);
+    const socket = new WebSocket(this.options.url());
+    this.ws = socket;
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
       this.status = "connected";
       this.reconnectDelay = 1000;
       this.onConnected?.();
@@ -41,9 +49,10 @@ export class WsTransport {
       this.flushPending();
     };
 
-    this.ws.onmessage = (e) => {
+    socket.onmessage = (e) => {
+      if (this.ws !== socket) return;
       try {
-        const msg: ServerMessage = JSON.parse(e.data);
+        const msg: S = JSON.parse(e.data);
         this.onMessage?.(msg);
       } catch (err) {
         // eslint-disable-next-line no-console -- transport-layer failure has no user-visible channel; project rule mandates failure visibility
@@ -51,7 +60,8 @@ export class WsTransport {
       }
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
       const wasConnected = this.status === "connected";
       this.status = "disconnected";
       this.stopPing();
@@ -67,6 +77,8 @@ export class WsTransport {
     }
     this.stopPing();
     if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
       this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
@@ -75,11 +87,23 @@ export class WsTransport {
   }
 
   /**
+   * Disconnect and drop everything queued for the old connection, for when
+   * the socket is about to point somewhere else: a queued message must never
+   * be delivered to a different agent than the one it was written for.
+   */
+  reset(): void {
+    this.disconnect();
+    this.pending = [];
+    this.pendingCount = 0;
+    this.reconnectDelay = 1000;
+  }
+
+  /**
    * Send a message, or queue it while disconnected/reconnecting so it isn't
    * silently dropped — flushed in order once the socket reopens. A `ping`
    * is never worth queuing (the next real reconnect makes it moot).
    */
-  send(msg: ClientMessage): void {
+  send(msg: C): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
       return;
@@ -112,8 +136,9 @@ export class WsTransport {
 
   private startPing(): void {
     this.stopPing();
+    if (!this.options.keepalive) return;
     this.pingTimer = setInterval(() => {
-      this.send({ type: "ping" });
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "ping" }));
     }, 30000);
   }
 

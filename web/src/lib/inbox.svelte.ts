@@ -5,6 +5,7 @@ import {
   restoreUserInboxItem,
 } from "./api";
 import { userErrorMessage } from "./errors";
+import { agentPath, getCurrentAgent } from "./paths";
 import { notifications } from "./notifications.svelte";
 import type { UserInboxItem } from "./types";
 
@@ -37,12 +38,24 @@ class UserInboxState {
     }
   }
 
+  /**
+   * Forget the current agent's items, for a switch to another agent. Polling
+   * carries on for the new agent when it was running.
+   */
+  reset() {
+    this.items = [];
+    this.archivedItems = [];
+    if (this.intervalId !== null) this.startPolling();
+  }
+
   async refresh() {
+    const agent = getCurrentAgent();
+    if (agent === null) return;
     try {
-      const response = await fetch("/api/inbox");
+      const response = await fetch(agentPath("/inbox", agent));
       if (response.ok) {
         const data = await response.json();
-        this.items = data;
+        if (agent === getCurrentAgent()) this.items = data;
       }
     } catch {
       // Silently ignore fetch failures — next poll cycle will retry

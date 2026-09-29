@@ -73,6 +73,11 @@ export class WorkspaceWatchSync {
     this.send({ type: "watch_workspace", prefixes: next });
   }
 
+  /** Forget the watched prefixes without telling anyone, for a connection about to be discarded. */
+  clear(): void {
+    this.prefixes = [];
+  }
+
   /** A connection opened: it watches nothing until told again. */
   connected(): void {
     if (this.prefixes.length > 0) this.send({ type: "watch_workspace", prefixes: this.prefixes });

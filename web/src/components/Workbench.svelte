@@ -165,7 +165,7 @@
               <li class="workbench-slab" class:just-changed={justChanged.has(item.name)}>
                 <a
                   class="workbench-slab-link"
-                  href="/workbench/{item.name}"
+                  href="/team/workbench/{item.name}"
                   onclick={(e) => open(e, item.name)}
                 >
                   <span class="workbench-slab-title">{item.title}</span>

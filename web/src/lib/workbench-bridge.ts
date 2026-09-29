@@ -15,6 +15,7 @@
 
 import type { ServerMessage, WorkspaceChange } from "./types";
 import { changesUnder, normalizeWatchPrefix } from "./workspace-watch";
+import { scopeApiPath } from "./paths";
 
 /** Tag on every message between the SDK and the bridge. Matches sdk.js. */
 export const BRIDGE_TAG = "residuum-workbench";
@@ -56,38 +57,38 @@ interface BlockRule {
 
 const BLOCKED_ROUTES: BlockRule[] = [
   {
-    path: /^\/api\/secrets(\/|$)/,
+    path: /^\/api\/(hub\/)?secrets(\/|$)/,
     methods: "writes",
     reason: "Workbench artifacts can't change secrets. Manage them in Settings.",
   },
   {
-    path: /^\/api\/agent-keys(\/|$)/,
+    path: /^\/api\/(hub\/)?agent-keys(\/|$)/,
     methods: "writes",
     reason: "Workbench artifacts can't change agent keys. Manage them in Settings.",
   },
   {
-    path: /^\/api\/(config|providers)\/raw(\/|$)/,
+    path: /^\/api\/(agents\/[^/]+\/)?(config|providers)\/raw(\/|$)/,
     methods: "all",
     reason:
       "Workbench artifacts can't read or change raw configuration files, since they can hold credentials.",
   },
   {
-    path: /^\/api\/config\/complete-setup(\/|$)/,
+    path: /^\/api\/(hub\/|agents\/[^/]+\/)?config\/complete-setup(\/|$)/,
     methods: "all",
     reason: "Workbench artifacts can't run setup.",
   },
   {
-    path: /^\/api\/(shutdown|update\/(check|apply|restart))(\/|$)/,
+    path: /^\/api\/(hub\/)?(shutdown|update\/(check|apply|restart))(\/|$)/,
     methods: "all",
     reason: "Workbench artifacts can't shut down, update, or restart Residuum.",
   },
   {
-    path: /^\/api\/cloud\/disconnect(\/|$)/,
+    path: /^\/api\/(hub\/)?cloud\/disconnect(\/|$)/,
     methods: "all",
     reason: "Workbench artifacts can't disconnect remote access.",
   },
   {
-    path: /^\/api\/tracing\//,
+    path: /^\/api\/(hub\/)?tracing\//,
     methods: "writes",
     reason: "Workbench artifacts can't change tracing or send diagnostics.",
   },
@@ -585,7 +586,7 @@ export class WorkbenchBridge {
     signal?: AbortSignal,
   ): Promise<Response> {
     for (let attempt = 0; ; attempt += 1) {
-      const resp = await this.deps.fetch(url, {
+      const resp = await this.deps.fetch(scopeApiPath(url), {
         method: request.method,
         headers: this.withArtifactHeader(request.headers),
         body: request.body,

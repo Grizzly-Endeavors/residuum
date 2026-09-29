@@ -40,7 +40,7 @@
   });
   let headingEl: HTMLHeadingElement | undefined = $state();
 
-  const sessions = ws.sessions;
+  const sessions = $derived(ws.sessions);
   let selectedRunId = $derived(sessions.view?.runId ?? null);
 
   let liveByCategory = $derived(groupByCategory(sessions.live));

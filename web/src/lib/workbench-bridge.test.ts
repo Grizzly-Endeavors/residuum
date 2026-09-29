@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentAgent } from "./paths";
 import {
   BRIDGE_TAG,
   checkArtifactRequest,
@@ -13,13 +14,24 @@ import type { ServerMessage } from "./types";
 const ORIGIN = "https://bear.agent-residuum.com";
 const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
 
+beforeEach(() => {
+  setCurrentAgent("scout");
+});
+
+afterEach(() => {
+  setCurrentAgent(null);
+});
+
 describe("checkArtifactRequest", () => {
   it.each([
     ["GET", "/api/status"],
     ["GET", "/api/workspace/file?path=team/workbench/chart.state.json"],
     ["PUT", "/api/workspace/file"],
     ["GET", "/api/secrets"],
+    ["GET", "/api/hub/secrets"],
     ["GET", "/api/agent-keys"],
+    ["GET", "/api/agents/scout/status"],
+    ["GET", "/api/team/workbench/artifacts"],
     ["GET", "/api/workbench/artifacts"],
     ["GET", "/api/tracing/status"],
     ["POST", "/api/inbox/abc/archive"],
@@ -45,6 +57,18 @@ describe("checkArtifactRequest", () => {
     ["POST", "/api/cloud/disconnect"],
     ["POST", "/api/tracing/sanitize"],
     ["POST", "/api/tracing/otel/endpoints"],
+    ["POST", "/api/hub/secrets"],
+    ["DELETE", "/api/hub/secrets/openai"],
+    ["POST", "/api/hub/agent-keys"],
+    ["GET", "/api/agents/scout/config/raw"],
+    ["PUT", "/api/agents/atlas/providers/raw"],
+    ["POST", "/api/hub/config/complete-setup"],
+    ["POST", "/api/agents/scout/config/complete-setup"],
+    ["POST", "/api/hub/shutdown"],
+    ["POST", "/api/hub/update/apply"],
+    ["POST", "/api/hub/cloud/disconnect"],
+    ["POST", "/api/hub/tracing/sanitize"],
+    ["POST", "/api/agents/scout/../../hub/secrets"],
   ])("blocks %s %s", (method, path) => {
     const check = checkArtifactRequest(method, path, ORIGIN);
     expect(check.allowed).toBe(false);
@@ -225,7 +249,7 @@ describe("WorkbenchBridge", () => {
     const h = harness();
     await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/status",
+      "/api/agents/scout/status",
       expect.objectContaining({ method: "GET", headers: { "X-Residuum-Artifact": "chart" } }),
     );
     const reply = h.frame.posted[0];
@@ -243,7 +267,7 @@ describe("WorkbenchBridge", () => {
       body: bytes.buffer,
     });
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/workspace/raw?path=image.bin",
+      "/api/agents/scout/workspace/raw?path=image.bin",
       expect.objectContaining({ method: "PUT", body: bytes.buffer }),
     );
   });
@@ -256,7 +280,7 @@ describe("WorkbenchBridge", () => {
       body: blob,
     });
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/workspace/raw?path=image.bin",
+      "/api/agents/scout/workspace/raw?path=image.bin",
       expect.objectContaining({ method: "PUT", body: blob }),
     );
   });
@@ -268,7 +292,7 @@ describe("WorkbenchBridge", () => {
       headers: { "x-residuum-ARTIFACT": "someone-else", "X-Keep-Me": "yes" },
     });
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/status",
+      "/api/agents/scout/status",
       expect.objectContaining({
         headers: { "X-Keep-Me": "yes", "X-Residuum-Artifact": "chart" },
       }),
@@ -499,7 +523,7 @@ describe("WorkbenchBridge", () => {
   it("cancelModelCalls leaves ordinary requests untouched", async () => {
     const ordinaryReleased: (() => void)[] = [];
     const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      if (requestUrl(input).includes("/api/model/complete")) {
+      if (requestUrl(input).includes("/model/complete")) {
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => {
             reject(Object.assign(new Error("aborted"), { name: "AbortError" }));

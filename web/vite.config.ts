@@ -25,8 +25,8 @@ export default defineConfig({
   server: {
     ...(!isMock && {
       proxy: {
-        "/api": "http://localhost:7700",
-        "/ws": {
+        // Carries the agent and hub WebSockets too (`/api/agents/{name}/ws`, `/api/hub/ws`).
+        "/api": {
           target: "http://localhost:7700",
           ws: true,
         },
