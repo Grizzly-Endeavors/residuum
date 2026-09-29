@@ -59,12 +59,12 @@ final class SlashCommandTests: XCTestCase {
 
     // MARK: - AgentStore system messages
 
-    func testAppendSystemMessageAddsToSelectedTab() {
+    func testAppendSystemMessageAddsToFeed() {
         let store = AgentStore()
-        let initial = store.selectedTab?.messages.count ?? 0
+        let initial = store.messages.count
         store.appendSystemMessage("hello notice")
-        XCTAssertEqual(store.selectedTab?.messages.count, initial + 1)
-        let last = store.selectedTab?.messages.last
+        XCTAssertEqual(store.messages.count, initial + 1)
+        let last = store.messages.last
         XCTAssertEqual(last?.content, "hello notice")
         XCTAssertEqual(last?.role, .system)
     }
@@ -72,16 +72,8 @@ final class SlashCommandTests: XCTestCase {
     func testAppendSystemBlockAddsSystemBlockRole() {
         let store = AgentStore()
         store.appendSystemBlock("key   value")
-        let last = store.selectedTab?.messages.last
+        let last = store.messages.last
         XCTAssertEqual(last?.role, .systemBlock)
         XCTAssertEqual(last?.content, "key   value")
-    }
-
-    func testAppendDoesNothingWhenNoTabsSelected() {
-        let store = AgentStore()
-        store.tabs.removeAll()
-        // Must not crash — no assertion needed beyond absence of crash
-        store.appendSystemMessage("orphan")
-        store.appendSystemBlock("orphan block")
     }
 }
