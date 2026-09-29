@@ -22,6 +22,7 @@ import type {
   AgentSummary,
   CreateAgentRequest,
   DeleteAgentResponse,
+  HubActor,
   HubClientMessage,
   HubNoticeLevel,
   HubServerMessage,
@@ -47,6 +48,11 @@ export interface HubNotice {
   /** The agent it concerns, if any. */
   agent?: string;
   at: Date;
+}
+
+/** Who acted, as a sentence subject: "You" for the user, else the teammate's name. */
+function actorLabel(by: HubActor): string {
+  return by === "user" ? "You" : by.slice("agent:".length);
 }
 
 const IDLE: AgentActivity = { busy: false, unread: 0 };
@@ -235,11 +241,15 @@ export class HubStore {
         this.setAgents(msg.agents);
         break;
       case "agent_state":
+        this.upsert(msg.agent);
+        break;
       case "agent_created":
         this.upsert(msg.agent);
+        this.addNotice("info", `${actorLabel(msg.by)} created ${msg.agent.name}.`);
         break;
       case "agent_deleted":
         this.removeAgent(msg.name);
+        this.addNotice("info", `${actorLabel(msg.by)} deleted ${msg.name}.`);
         break;
       case "agent_activity":
         this.activity = { ...this.activity, [msg.name]: { busy: msg.busy, unread: msg.unread } };

@@ -22,7 +22,7 @@ import {
   type WorkbenchLocation,
 } from "./routes";
 import { readLastAgent, rememberLastAgent, setCurrentAgent } from "./paths";
-import type { SettingsSection } from "./types";
+import { defaultSection, isSectionOf, type SettingsSection } from "./settings-sections";
 
 type HistoryMode = "push" | "replace";
 
@@ -73,7 +73,10 @@ class Router {
    * every agent (its settings, its scheduled view), else on its main chat.
    */
   openAgent(name: string): void {
-    if (name === this.agent) return;
+    // Already on this agent's own page; from a team page it still navigates.
+    const onAgentPage =
+      this.team === null && this.workbench === null && this.settings?.scope !== "hub";
+    if (name === this.agent && onAgentPage) return;
     rememberLastAgent(name);
     this.go(
       {
@@ -118,8 +121,10 @@ class Router {
   }
 
   /** Open a settings page: an agent's by default, or the hub's. */
-  openSettings(section: SettingsSection = "runtime", scope: SettingsScope = "agent"): void {
-    this.go({ ...this.chatSide(this.chat), settings: { scope, section } }, "push");
+  openSettings(section?: SettingsSection, scope: SettingsScope = "agent"): void {
+    const target =
+      section !== undefined && isSectionOf(scope, section) ? section : defaultSection(scope);
+    this.go({ ...this.chatSide(this.chat), settings: { scope, section: target } }, "push");
   }
 
   /** Leave settings for the chat side as it was before settings opened. */

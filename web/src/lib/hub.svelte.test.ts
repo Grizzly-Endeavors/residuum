@@ -105,6 +105,23 @@ describe("HubStore frames", () => {
     expect([...toast.toasts.values()].map((t) => t.kind)).toEqual(["info", "error"]);
   });
 
+  it("toasts a created agent naming who created it", () => {
+    const hub = new HubStore();
+    hub.handleFrame({ type: "agent_created", agent: agent("atlas"), by: "user" });
+    hub.handleFrame({ type: "agent_created", agent: agent("nova"), by: "agent:scout" });
+    hub.handleFrame({ type: "agent_deleted", name: "atlas", by: "agent:nova" });
+    hub.handleFrame({ type: "agent_deleted", name: "nova", by: "user" });
+
+    expect(hub.agents).toHaveLength(0);
+    expect(hub.notices.map((n) => n.message).reverse()).toEqual([
+      "You created atlas.",
+      "scout created nova.",
+      "nova deleted atlas.",
+      "You deleted nova.",
+    ]);
+    expect([...toast.toasts.values()]).toHaveLength(4);
+  });
+
   it("caps the notices it keeps", () => {
     const hub = new HubStore();
     for (let i = 0; i < 60; i++) {

@@ -81,6 +81,8 @@ web/
 │   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
 │   │   ├── Header.svelte           # Top bar with navigation
+│   │   ├── AgentSwitcher.svelte    # Persistent agent switcher: state, working and unread per agent
+│   │   ├── TeamView.svelte         # Team page: lifecycle controls, autostart, delete, create agent
 │   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
 │   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
 │   │   ├── settings/               # Settings sub-panels
@@ -117,13 +119,18 @@ The URL is the source of truth for where the user is:
 
 | URL | Shows |
 |-----|-------|
-| `/` | Main chat |
-| `/sessions/:runId` | A session's run in the main pane |
-| `?workspace` (on either of the above) | Workspace panel open beside the main pane |
-| `/settings/:section` | Settings, on one section |
-| `/workbench` | The workbench's artifact list |
-| `/workbench/:artifact` | One workbench artifact |
-| `/workbench/:artifact?full` | The artifact filling the window, Residuum chrome hidden |
+| `/` | Redirects to the last-used agent (or the first) |
+| `/agent/:name` | That agent's main chat |
+| `/agent/:name/sessions/:runId` | A session's run in the main pane |
+| `/agent/:name/workspace` (or `?workspace`) | Workspace panel open beside the main pane |
+| `/agent/:name/scheduled` | Pulses and scheduled actions |
+| `/agent/:name/settings/:section` | Agent settings: runtime, providers, channels, pulses, memory, skills, mcp, a2a, webhooks, history |
+| `/team` | Team view: every agent with lifecycle controls and the create form |
+| `/team/files` | Shared team files |
+| `/team/workbench[/:artifact[?full]]` | The workbench's artifact list, one artifact, or one filling the window |
+| `/team/settings/:section` | Hub settings: general, cloud, a2a, sessions, tracing, update, secrets, agent-keys, history |
+
+The agent switcher under the header is on every page. Older unprefixed links (`/settings/...`, `/workbench/...`, `/scheduled`, `/sessions/:runId`) redirect to the agent or team page they belong to, and a settings section named under the wrong scope redirects to the scope that has it (`/settings/agent-keys` goes to `/team/settings/agent-keys`, `/settings/integrations` to the agent's `channels`).
 
 `App.svelte` derives its layout state from `router` instead of mounting a component per route, so the chat, session view, and workspace stay mounted and every transition is the same CSS transition whether it came from a click or the back button. Navigate through `router` (or `sessions.openRun`), never by setting layout state directly.
 

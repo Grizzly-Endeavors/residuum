@@ -3,7 +3,7 @@
   import { Icon } from "../lib/icons";
   import BrandMark from "./BrandMark.svelte";
   import { userInbox } from "../lib/inbox.svelte";
-  import AgentPicker from "./AgentPicker.svelte";
+  import AgentSwitcher from "./AgentSwitcher.svelte";
 
   let {
     status,
@@ -102,7 +102,7 @@
         <button
           class="hamburger-menu-item"
           class:active={activeView === "settings"}
-          onclick={() => select(onOpenSettings)}>Settings</button
+          onclick={() => select(onOpenSettings)}>Agent settings</button
         >
         <button
           class="hamburger-menu-item"
@@ -143,7 +143,6 @@
     <span class="header-title">Residuum</span>
     <span class="header-status {status}">{status}</span>
   </div>
-  <AgentPicker />
   <div class="header-right">
     <button
       class="header-action-btn"
@@ -166,6 +165,7 @@
     </button>
   </div>
 </div>
+<AgentSwitcher />
 
 <style>
   .header-right {

@@ -2508,7 +2508,6 @@ async function handleLifecycle(
     });
     if (body.a2a_visibility === "public") agent.visibility = "public";
     hub.broadcast({ type: "agent_created", agent: hub.summary(agent), by: "user" });
-    notice(hub, "info", `Created ${name}.`, name);
     json(res, 201, hub.summary(agent));
     return;
   }
@@ -2545,7 +2544,6 @@ async function handleLifecycle(
     agent.state.dropSockets();
     hub.agents.delete(agent.name);
     hub.broadcast({ type: "agent_deleted", name: agent.name, by: "user" });
-    notice(hub, "info", `Deleted ${agent.name}. It can be restored from its checkpoint history.`);
     json(res, 200, { deleted: true, checkpoint_id: `ckpt-${agent.name}-${Date.now()}` });
     return;
   }

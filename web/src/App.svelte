@@ -15,7 +15,7 @@
   import SessionView from "./components/SessionView.svelte";
   import Workbench from "./components/Workbench.svelte";
   import Scheduled from "./Scheduled.svelte";
-  import TeamOverview from "./components/TeamOverview.svelte";
+  import TeamView from "./components/TeamView.svelte";
   import { userInbox } from "./lib/inbox.svelte";
   import { hub } from "./lib/hub.svelte";
   import { notifications } from "./lib/notifications.svelte";
@@ -252,7 +252,7 @@
       }}
       onOpenHubSettings={() => {
         if (activeView === "hub-settings") router.closeSettings();
-        else router.openSettings("runtime", "hub");
+        else router.openSettings(undefined, "hub");
       }}
       onOpenWorkbench={() => {
         if (activeView === "workbench") router.closeWorkbench();
@@ -282,14 +282,18 @@
   {/if}
   {#key router.agent}
     {#if activeView === "settings" || activeView === "hub-settings"}
-      <Settings
-        section={router.settings?.section ?? "runtime"}
-        onSelectSection={(section) =>
-          router.openSettings(section, router.settings?.scope ?? "agent")}
-        onClose={() => router.closeSettings()}
-      />
+      {#key router.settings?.scope}
+        <Settings
+          scope={router.settings?.scope ?? "agent"}
+          agent={router.agent}
+          section={router.settings?.section ?? "runtime"}
+          onSelectSection={(section) =>
+            router.openSettings(section, router.settings?.scope ?? "agent")}
+          onClose={() => router.closeSettings()}
+        />
+      {/key}
     {:else if activeView === "team"}
-      <TeamOverview onClose={() => router.closeTeam()} />
+      <TeamView onClose={() => router.closeTeam()} />
     {:else if activeView === "team-files"}
       <div class="app-body">
         <div class="app-main">

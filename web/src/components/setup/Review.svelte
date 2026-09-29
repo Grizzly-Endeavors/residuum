@@ -117,6 +117,12 @@
 <p class="subtitle">Your configuration is ready. Click below to save and start Residuum.</p>
 
 <div class="review-summary">
+  {#if wizardState.userName.trim() !== ""}
+    <div class="review-item">
+      <span class="review-label">Your name</span>
+      <span class="review-value">{wizardState.userName.trim()}</span>
+    </div>
+  {/if}
   <div class="review-item">
     <span class="review-label">Agent</span>
     <span class="review-value">{wizardState.agentName}</span>
