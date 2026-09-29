@@ -118,6 +118,9 @@ pub struct RemoteTaskTracker {
     /// Where inbound-style attachments (large text parts, file parts) from a
     /// remote agent's artifacts are saved.
     inbox_dir: PathBuf,
+    /// Cancelled when the agent that owns this tracker stops, which ends
+    /// every task watcher it started.
+    shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl RemoteTaskTracker {
@@ -172,7 +175,15 @@ impl RemoteTaskTracker {
             hub,
             messenger,
             inbox_dir,
+            shutdown: tokio_util::sync::CancellationToken::new(),
         })
+    }
+
+    /// End every task watcher this tracker started. Called when the owning
+    /// agent stops, so a restarted agent's new tracker is the only one
+    /// watching its open tasks.
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
     }
 
     async fn persist(&self, snapshot: &OutboundStore) {
@@ -207,7 +218,11 @@ impl RemoteTaskTracker {
     fn spawn_watch(self: &Arc<Self>, task_id: String) {
         let tracker = Arc::clone(self);
         crate::util::spawn_monitored("a2a-task-watch", async move {
-            tracker.watch_loop(task_id).await;
+            let shutdown = tracker.shutdown.clone();
+            tokio::select! {
+                () = shutdown.cancelled() => {}
+                () = tracker.watch_loop(task_id) => {}
+            }
         });
     }
 
@@ -1023,6 +1038,45 @@ mod tests {
         );
         let open = rebuilt.any_open_task_for("main", "laptop").await.unwrap();
         assert_eq!(open.task_id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn shutdown_ends_the_watchers_of_open_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = A2aClientHub::new_shared();
+        let (messenger, _bus) = messenger();
+        let tracker = RemoteTaskTracker::load(
+            dir.path().join("outbound.json"),
+            hub,
+            messenger,
+            dir.path().join("inbox"),
+        )
+        .await;
+        tracker
+            .track(
+                &SessionAddress::from("main"),
+                "laptop",
+                "task-1".to_string(),
+                "ctx-1".to_string(),
+                "working",
+                0,
+            )
+            .await;
+        tracker.spawn_resume_watchers().await;
+        assert!(
+            Arc::strong_count(&tracker) > 1,
+            "the open task has a watcher holding the tracker"
+        );
+
+        tracker.shutdown();
+
+        for _ in 0..200 {
+            if Arc::strong_count(&tracker) == 1 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the watchers kept running after shutdown");
     }
 
     #[tokio::test]

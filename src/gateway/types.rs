@@ -392,6 +392,7 @@ impl Drop for AgentRuntime {
     /// [`ChatAdapters`](super::chat_adapters::ChatAdapters)); this aborts the
     /// rest.
     fn drop(&mut self) {
+        self.a2a_tracker.shutdown();
         for handle in self
             .notify_handles
             .drain(..)

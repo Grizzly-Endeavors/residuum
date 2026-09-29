@@ -127,14 +127,23 @@ impl FileRegistry {
         (before - remaining, remaining)
     }
 
-    /// Spawn a background task that periodically sweeps expired entries.
+    /// Spawn a background task that periodically sweeps expired entries. It
+    /// holds the entries weakly, so it ends on its own once every handle to
+    /// the registry is gone (the agent that owns it stopped).
     pub fn spawn_cleanup_task(&self) {
-        let registry = self.clone();
+        let entries = Arc::downgrade(&self.entries);
         crate::util::spawn_in_span(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
             loop {
                 interval.tick().await;
+                let Some(entries) = entries.upgrade() else {
+                    return;
+                };
+                let registry = FileRegistry {
+                    entries,
+                    workspace_root: None,
+                };
                 let (removed, remaining) = registry.sweep_expired().await;
                 if removed > 0 {
                     tracing::debug!(removed, remaining, "swept expired file entries");

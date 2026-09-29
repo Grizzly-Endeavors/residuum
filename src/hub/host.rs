@@ -421,7 +421,7 @@ impl AgentHost {
         // Its own task, so a panic while starting is this agent's failure
         // instead of unwinding into the caller.
         let started = crate::util::spawn_in_span(
-            async move { start_agent(inputs).await }.instrument(agent_span(&slot.name)),
+            async move { Box::pin(start_agent(inputs)).await }.instrument(agent_span(&slot.name)),
         )
         .await;
         match started {
@@ -595,6 +595,12 @@ impl AgentHost {
             run.cleanup.run().await;
         }
         run.slot.activity.run_ended();
+        // Whether the agent shut down itself or died, it no longer takes part
+        // in sibling discovery.
+        self.services
+            .sibling_fanout
+            .unregister(&run.slot.name)
+            .await;
 
         let current = run.slot.lock().generation == run.generation;
         if current {

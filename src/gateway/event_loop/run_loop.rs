@@ -214,6 +214,7 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         },
         publisher: core.publisher.clone(),
     };
+    let sibling_fanout = Arc::clone(&services.sibling_fanout);
     let runtime = build_runtime(
         parts,
         core,
@@ -232,6 +233,11 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         },
     )
     .await?;
+    // The hub's one discovery task feeds every registered agent's client hub;
+    // this agent joins it until it stops.
+    sibling_fanout
+        .register(&runtime.name, Arc::clone(&runtime.a2a_hub))
+        .await;
     Ok(StartedAgent { runtime, control })
 }
 
@@ -475,12 +481,6 @@ async fn spawn_agent_tasks(
         session_registry: Arc::clone(&parts.session_registry),
         conversations: parts.endpoint_registry.conversations().clone(),
     };
-    // The hub's one discovery task feeds every registered agent's client hub;
-    // this agent joins it until it stops.
-    services
-        .sibling_fanout
-        .register(&cfg.agent_name, Arc::clone(&parts.a2a_hub))
-        .await;
 
     let file_registry = crate::gateway::file_server::FileRegistry::new()
         .with_workspace_root(parts.layout.root().to_path_buf());
