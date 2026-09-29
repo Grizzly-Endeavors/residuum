@@ -202,6 +202,8 @@ pub struct TeamConflict {
     /// The writer of the change the caller has not seen, `None` when the file
     /// changed outside Residuum.
     pub changed_by: Option<TeamWriter>,
+    /// Whether the file no longer exists.
+    pub missing: bool,
 }
 
 impl TeamPathGuard {
@@ -232,6 +234,7 @@ impl TeamPathGuard {
         }
         Err(CheckError::Conflict(TeamConflict {
             changed_by: self.last_writer(&current),
+            missing: current.version.is_none(),
         }))
     }
 
@@ -476,9 +479,15 @@ impl TeamFiles {
             Some(TeamWriter::User) => "the user".to_string(),
             None => "an unknown writer (a change made outside Residuum)".to_string(),
         };
+        let next = if conflict.missing {
+            "It no longer exists. Read it again with read_file to confirm, then write_file can \
+             create it again"
+        } else {
+            "Read it again with read_file, then reapply your change to the current contents"
+        };
         format!(
             "{display} changed since you read it: it was changed by {who}. Nothing was written. \
-             Read it again with read_file, then reapply your change to the current contents"
+             {next}"
         )
     }
 }

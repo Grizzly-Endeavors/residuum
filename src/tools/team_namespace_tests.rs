@@ -366,3 +366,84 @@ async fn team_files_get_the_same_diagnostics_as_agent_files() {
         result.output
     );
 }
+
+/// Delete `path` under the coordinator as the user, the way the web file API
+/// does.
+async fn delete_as_user(hub: &Hub, path: &Path) {
+    let guard = hub.coordinator.lock(path).await;
+    std::fs::remove_file(path).unwrap();
+    guard.record_removed(&TeamWriter::User);
+}
+
+#[tokio::test]
+async fn a_write_after_a_deletion_conflicts_once_then_recreates() {
+    let hub = Hub::new();
+    let path = hub.team().join("x.md");
+    std::fs::write(&path, "start").unwrap();
+    let sam = hub.tools_for("sam");
+    assert!(!read(&sam, "team/x.md").await.is_error);
+
+    delete_as_user(&hub, &path).await;
+
+    let refused = write(&sam, "team/x.md", "again").await;
+    assert!(refused.is_error);
+    assert!(refused.output.contains("the user"), "{}", refused.output);
+    assert!(
+        refused.output.contains("no longer exists"),
+        "{}",
+        refused.output
+    );
+    assert!(!path.exists());
+
+    let missing = read(&sam, "team/x.md").await;
+    assert!(missing.is_error);
+
+    let created = write(&sam, "team/x.md", "again").await;
+    assert!(!created.is_error, "{}", created.output);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "again");
+}
+
+#[tokio::test]
+async fn a_deletion_outside_residuum_clears_after_a_reread() {
+    let hub = Hub::new();
+    let path = hub.team().join("x.md");
+    std::fs::write(&path, "start").unwrap();
+    let sam = hub.tools_for("sam");
+    assert!(!read(&sam, "team/x.md").await.is_error);
+
+    std::fs::remove_file(&path).unwrap();
+
+    let refused = write(&sam, "team/x.md", "again").await;
+    assert!(refused.is_error);
+    assert!(read(&sam, "team/x.md").await.is_error);
+    let created = write(&sam, "team/x.md", "again").await;
+    assert!(!created.is_error, "{}", created.output);
+}
+
+#[tokio::test]
+async fn an_edit_after_a_deletion_and_recreation_is_still_checked() {
+    let hub = Hub::new();
+    let path = hub.team().join("x.md");
+    std::fs::write(&path, "one two").unwrap();
+    let sam = hub.tools_for("sam");
+    let robin = hub.tools_for("robin");
+    assert!(!read(&sam, "team/x.md").await.is_error);
+
+    delete_as_user(&hub, &path).await;
+
+    let missing_edit = edit(&sam, "team/x.md", "two", "three").await;
+    assert!(missing_edit.is_error);
+    assert!(read(&sam, "team/x.md").await.is_error);
+
+    // A teammate recreates the file after sam saw it gone: sam's edit must
+    // refuse rather than apply to contents sam never read.
+    assert!(!write(&robin, "team/x.md", "one two").await.is_error);
+    let refused = edit(&sam, "team/x.md", "two", "three").await;
+    assert!(refused.is_error);
+    assert!(refused.output.contains("robin"), "{}", refused.output);
+
+    assert!(!read(&sam, "team/x.md").await.is_error);
+    let edited = edit(&sam, "team/x.md", "two", "three").await;
+    assert!(!edited.is_error, "{}", edited.output);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one three");
+}
