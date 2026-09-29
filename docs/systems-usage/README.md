@@ -8,6 +8,8 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 
 The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from the agent's own directory. `AGENTS.md`, `USER.md` and the wiki index (`wiki/index.md`) come from the team layer, `team/` beside the agent directories, and are the same for every agent. The order is `SOUL.md`, `AGENTS.md`, `HARNESS`, `BOOTSTRAP.md`, `USER.md`, `WIKI_INDEX`, then memory and skills. A missing file is left out of the prompt. Files are re-read every turn; if a read fails, the previous turn's snapshot is used. The subconscious classifier and session forks read the same sources.
 
+Every agent's file tools and the web file API see the team layer under a `team/` prefix, and writes to team files are checked so agents and the user can't silently overwrite each other. See [Team files](team-files.md).
+
 ### Agent-owned files
 
 | File | Churn | Notes |

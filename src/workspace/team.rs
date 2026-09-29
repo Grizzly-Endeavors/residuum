@@ -19,13 +19,18 @@ const DEFAULT_WIKI_AGENTS_INDEX: &str =
 /// The first agent's `HEARTBEAT.yml`: the built-in pulses including
 /// `wiki_lint`, which checks the shared team wiki and so belongs to exactly
 /// one agent.
-const FIRST_AGENT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
+const FIRST_AGENT_HEARTBEAT: &str = concat!(
+    include_str!("../../assets/workspace-bootstrap/heartbeat/base.yml"),
+    include_str!("../../assets/workspace-bootstrap/heartbeat/wiki-lint.yml"),
+    include_str!("../../assets/workspace-bootstrap/heartbeat/starters.yml"),
+);
 
-/// First line of the `wiki_lint` pulse entry in [`FIRST_AGENT_HEARTBEAT`].
-const WIKI_LINT_PULSE_START: &str = "  - name: wiki_lint\n";
-
-/// Heading of the section that follows the built-in pulses.
-const AFTER_BUILTIN_PULSES: &str = "# ── Starter pulses";
+/// The created-agent `HEARTBEAT.yml`: the same built-in pulses without
+/// `wiki_lint`.
+const CREATED_AGENT_HEARTBEAT: &str = concat!(
+    include_str!("../../assets/workspace-bootstrap/heartbeat/base.yml"),
+    include_str!("../../assets/workspace-bootstrap/heartbeat/starters.yml"),
+);
 
 /// Description written to a role page whose agent has not described its
 /// role yet.
@@ -48,14 +53,8 @@ pub fn first_agent_heartbeat() -> &'static str {
 /// shared wiki. `memory_tending` stays, since it files each agent's own
 /// memory into the wiki.
 #[must_use]
-pub fn created_agent_heartbeat() -> String {
-    let Some((before, from_lint)) = FIRST_AGENT_HEARTBEAT.split_once(WIKI_LINT_PULSE_START) else {
-        return FIRST_AGENT_HEARTBEAT.to_string();
-    };
-    let Some((_lint_pulse, after)) = from_lint.split_once(AFTER_BUILTIN_PULSES) else {
-        return FIRST_AGENT_HEARTBEAT.to_string();
-    };
-    format!("{before}{AFTER_BUILTIN_PULSES}{after}")
+pub fn created_agent_heartbeat() -> &'static str {
+    CREATED_AGENT_HEARTBEAT
 }
 
 /// Create the team directory tree and write the team defaults that are
@@ -478,7 +477,7 @@ mod tests {
     #[test]
     fn created_agent_heartbeat_keeps_memory_tending_without_wiki_lint() {
         let template = created_agent_heartbeat();
-        assert_eq!(pulse_names(&template), ["reflection", "memory_tending"]);
+        assert_eq!(pulse_names(template), ["reflection", "memory_tending"]);
         assert!(!template.contains("wiki_lint"));
         assert!(template.contains("# ── Starter pulses"));
     }

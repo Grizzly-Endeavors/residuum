@@ -23,6 +23,8 @@ pub mod send_message;
 pub mod skills;
 pub(crate) mod submit_feedback;
 pub(crate) mod switch_endpoint;
+#[cfg(test)]
+pub(crate) mod team_namespace_tests;
 pub(crate) mod web_fetch;
 pub mod workspace_checkpoints;
 mod write;

@@ -840,6 +840,7 @@ mod tests {
         setup_done: Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>>,
     ) -> ConfigApiState {
         ConfigApiState {
+            team: None,
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             agent_name: "test-agent".to_string(),
@@ -874,6 +875,7 @@ mod tests {
         std::fs::create_dir_all(&hub_dir).unwrap();
         std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         ConfigApiState {
+            team: None,
             hub_dir,
             config_dir: dir.to_path_buf(),
             agent_name: "test-agent".to_string(),

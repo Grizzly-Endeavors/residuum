@@ -17,6 +17,7 @@ use tokio::sync::RwLock;
 
 use crate::config::Config;
 use crate::workspace::layout::WorkspaceLayout;
+use crate::workspace::team_files::TeamFiles;
 
 /// Paths the file tools may never write: the credential stores in `hub_dir`,
 /// the `.example.toml` reference templates, and `mcp.json`/`channels.toml`
@@ -80,6 +81,10 @@ pub type SharedPathPolicy = Arc<RwLock<PathPolicy>>;
 pub struct PathPolicy {
     /// Paths that are unconditionally blocked from writes (e.g. config files).
     blocked_paths: HashSet<PathBuf>,
+    /// The `team/` namespace and write coordination, when the agent belongs
+    /// to a team. The file tools resolve `team/...` paths and check team
+    /// writes through it.
+    team: Option<TeamFiles>,
 }
 
 impl PathPolicy {
@@ -88,6 +93,7 @@ impl PathPolicy {
     pub fn new() -> Self {
         Self {
             blocked_paths: HashSet::new(),
+            team: None,
         }
     }
 
@@ -100,7 +106,21 @@ impl PathPolicy {
             .collect();
         Self {
             blocked_paths: canonicalized,
+            team: None,
         }
+    }
+
+    /// Attach the agent's view of the team namespace.
+    #[must_use]
+    pub fn with_team(mut self, team: TeamFiles) -> Self {
+        self.team = Some(team);
+        self
+    }
+
+    /// The agent's view of the team namespace, if it belongs to a team.
+    #[must_use]
+    pub fn team(&self) -> Option<&TeamFiles> {
+        self.team.as_ref()
     }
 
     /// Create a new shared path policy.
@@ -113,6 +133,18 @@ impl PathPolicy {
     #[must_use]
     pub fn new_shared_with_blocked(blocked_paths: HashSet<PathBuf>) -> SharedPathPolicy {
         Arc::new(RwLock::new(Self::with_blocked_paths(blocked_paths)))
+    }
+
+    /// Create a new shared path policy with blocked paths and the agent's
+    /// view of the team namespace.
+    #[must_use]
+    pub fn new_shared_with_team(
+        blocked_paths: HashSet<PathBuf>,
+        team: TeamFiles,
+    ) -> SharedPathPolicy {
+        Arc::new(RwLock::new(
+            Self::with_blocked_paths(blocked_paths).with_team(team),
+        ))
     }
 
     /// Replace the set of unconditionally blocked paths.

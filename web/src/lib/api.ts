@@ -753,12 +753,46 @@ export async function validateWorkspaceFile(path: string, content: string): Prom
   }
 }
 
-/** Delete a workspace file. Throws `ApiError` (404 if already gone).
- * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
-export async function deleteWorkspaceFile(path: string): Promise<string | null> {
-  return readCheckpointId(`/api/workspace/file?path=${encodeURIComponent(path)}`, {
-    method: "DELETE",
-  });
+/** A pre-action checkpoint and the repository that holds it. */
+export interface WorkspaceCheckpoint {
+  id: string;
+  repo: RepoKind;
+}
+
+interface CheckpointFields {
+  checkpoint_id?: unknown;
+  checkpoint_repo?: unknown;
+}
+
+/**
+ * The checkpoints a workspace-API response names: `checkpoint_id` +
+ * `checkpoint_repo` for one, or a `checkpoints` list when the action spanned
+ * the agent and team directories. Empty when none was recorded. A response
+ * without `checkpoint_repo` came from an agent-only path, so the workspace
+ * repository holds it.
+ */
+export function parseWorkspaceCheckpoints(
+  body: CheckpointFields & { checkpoints?: unknown },
+): WorkspaceCheckpoint[] {
+  const repoOf = (value: unknown): RepoKind => (value === "team" ? "team" : "workspace");
+  const one = (entry: CheckpointFields): WorkspaceCheckpoint[] =>
+    typeof entry.checkpoint_id === "string" && entry.checkpoint_id.length > 0
+      ? [{ id: entry.checkpoint_id, repo: repoOf(entry.checkpoint_repo) }]
+      : [];
+  if (Array.isArray(body.checkpoints)) {
+    return (body.checkpoints as CheckpointFields[]).flatMap(one);
+  }
+  return one(body);
+}
+
+/** Delete a workspace file or `team/...` file. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint(s), empty when none was recorded. */
+export async function deleteWorkspaceFile(path: string): Promise<WorkspaceCheckpoint[]> {
+  const body = await apiFetch<Parameters<typeof parseWorkspaceCheckpoints>[0]>(
+    `/api/workspace/file?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
+  return parseWorkspaceCheckpoints(body);
 }
 
 /** Move or rename a workspace file. Throws `ApiError` (409 if `to` exists and `overwrite` isn't set). */

@@ -13,12 +13,13 @@
 
 use std::path::Path;
 
-/// Residuum's own database files, as workspace-relative paths.
+/// Residuum's own database files, as paths in the workspace namespace (the
+/// team layer's database appears under `team/`).
 ///
 /// Matched exactly (plus each path's `-wal`/`-shm`/`-journal` sidecars), not
 /// by extension: a user's own `*.db`/`*.sqlite` file elsewhere in the
 /// workspace is their data, not Residuum's, and is not hidden.
-const INTERNAL_DB_PATHS: &[&str] = &["memory/vectors.db"];
+const INTERNAL_DB_PATHS: &[&str] = &["memory/vectors.db", "team/vectors.db"];
 
 /// Returns true if `relative` names a path that must never be exposed
 /// through the workspace file API or change feed.
@@ -137,6 +138,14 @@ mod tests {
         assert!(is_blocked_path("memory/vectors.db-wal"));
         assert!(is_blocked_path("memory/vectors.db-shm"));
         assert!(is_blocked_path("memory/vectors.db-journal"));
+    }
+
+    #[test]
+    fn blocks_the_team_layers_database_and_index() {
+        assert!(is_blocked_path("team/vectors.db"));
+        assert!(is_blocked_path("team/vectors.db-wal"));
+        assert!(is_blocked_path("team/.index/segments/foo.bin"));
+        assert!(!is_blocked_path("team/wiki/vectors.db"));
     }
 
     #[test]

@@ -159,6 +159,28 @@ mod tests {
     }
 
     #[test]
+    fn team_prefixes_receive_team_changes_and_plain_prefixes_agent_changes() {
+        let team = set(&["team/workbench"]);
+        assert!(team.matches("team/workbench/tool.html"));
+        assert!(!team.matches("workbench/tool.html"));
+        assert!(!team.matches("team/wiki/a.md"));
+
+        let agent = set(&["workbench"]);
+        assert!(agent.matches("workbench/tool.html"));
+        assert!(!agent.matches("team/workbench/tool.html"));
+
+        let everything = set(&[""]);
+        assert!(everything.matches("team/wiki/a.md"));
+        assert!(everything.matches("memory/a.md"));
+
+        let changes = [change("team/wiki/a.md"), change("wiki/a.md")];
+        assert_eq!(
+            set(&["team"]).filter(&changes),
+            WatchedChanges::Changes(vec![change("team/wiki/a.md")])
+        );
+    }
+
+    #[test]
     fn a_file_prefix_matches_only_that_file() {
         let watch = set(&["inbox/user/today.md"]);
         assert!(watch.matches("inbox/user/today.md"));
