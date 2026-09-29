@@ -15,10 +15,12 @@ import {
   fetchAgents,
   restartAgent as apiRestartAgent,
   setAgentAutostart as apiSetAgentAutostart,
+  setAgentVisibility as apiSetAgentVisibility,
   startAgent as apiStartAgent,
   stopAgent as apiStopAgent,
 } from "./api";
 import type {
+  A2aVisibility,
   AgentSummary,
   CreateAgentRequest,
   DeleteAgentResponse,
@@ -207,6 +209,14 @@ export class HubStore {
       name,
       (n) => apiSetAgentAutostart(n, autostart),
       "change the autostart setting of",
+    );
+  }
+
+  async setVisibility(name: string, visibility: A2aVisibility): Promise<boolean> {
+    return this.lifecycle(
+      name,
+      (n) => apiSetAgentVisibility(n, visibility),
+      "change the A2A visibility of",
     );
   }
 

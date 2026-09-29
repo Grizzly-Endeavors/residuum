@@ -43,6 +43,7 @@ import type {
   UndoOutcome,
 } from "./types";
 import type {
+  A2aVisibility,
   AgentListResponse,
   AgentSummary,
   CheckpointRepo,
@@ -1007,6 +1008,18 @@ export async function stopAgent(name: string): Promise<AgentSummary> {
 
 export async function restartAgent(name: string): Promise<AgentSummary> {
   return agentLifecycle(name, "restart");
+}
+
+/** Make an agent's A2A card public or private. */
+export async function setAgentVisibility(
+  name: string,
+  a2a_visibility: A2aVisibility,
+): Promise<AgentSummary> {
+  return apiFetch<AgentSummary>(hubPath(`/agents/${encodeURIComponent(name)}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ a2a_visibility }),
+  });
 }
 
 /** Turn an agent's autostart on or off. */

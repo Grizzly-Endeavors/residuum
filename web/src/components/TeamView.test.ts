@@ -51,9 +51,7 @@ function serveHub(respond?: (call: Call) => Response | undefined): void {
     const one = /^\/api\/hub\/agents\/([^/]+)$/.exec(url);
     if (one && method === "DELETE") return jsonResponse({ deleted: true, checkpoint_id: "ckpt-9" });
     if (one && method === "PATCH") {
-      return jsonResponse(
-        agent(one[1] ?? "", { autostart: (call.body as { autostart: boolean }).autostart }),
-      );
+      return jsonResponse(agent(one[1] ?? "", call.body as Partial<AgentSummary>));
     }
     return jsonResponse({ error: `unexpected ${method} ${url}` }, 500);
   });
@@ -89,6 +87,12 @@ function row(name: string): HTMLElement {
   return li;
 }
 
+function visibilityOf(name: string): HTMLSelectElement {
+  const select = row(name).querySelector("select");
+  if (!select) throw new Error(`no visibility select for ${name}`);
+  return select;
+}
+
 function within(el: HTMLElement): { button: (name: string) => HTMLButtonElement } {
   return {
     button: (name) => {
@@ -106,9 +110,9 @@ describe("TeamView agent list", () => {
     render(TeamView, { onClose: () => {} });
     expect(row("atlas")).toHaveTextContent("running");
     expect(row("atlas")).toHaveTextContent("atlas keeps notes");
-    expect(row("atlas")).toHaveTextContent("A2A private");
+    expect(visibilityOf("atlas")).toHaveValue("private");
     expect(row("drifter")).toHaveTextContent("stopped");
-    expect(row("drifter")).toHaveTextContent("A2A public");
+    expect(visibilityOf("drifter")).toHaveValue("public");
     expect(row("brittle")).toHaveTextContent("failed");
     expect(row("brittle")).toHaveTextContent("providers.toml is missing");
   });
@@ -214,6 +218,55 @@ describe("TeamView lifecycle", () => {
     await vi.waitFor(() => {
       expect(checkbox?.checked).toBe(false);
       expect(checkbox).toBeEnabled();
+    });
+  });
+});
+
+describe("TeamView A2A visibility", () => {
+  it("explains that public exposes only the card", () => {
+    render(TeamView, { onClose: () => {} });
+    expect(screen.getByText(/Public shows only an agent's card/)).toBeTruthy();
+    expect(screen.getByText(/still needs a caller key/)).toBeTruthy();
+    expect(visibilityOf("atlas")).toHaveAttribute("aria-describedby", "team-visibility-hint");
+  });
+
+  it("changes visibility through the hub API and keeps the choice", async () => {
+    render(TeamView, { onClose: () => {} });
+    await fireEvent.change(visibilityOf("atlas"), { target: { value: "public" } });
+    await vi.waitFor(() => {
+      expect(hub.agent("atlas")?.a2a_visibility).toBe("public");
+    });
+    expect(calls).toEqual([
+      { method: "PATCH", url: "/api/hub/agents/atlas", body: { a2a_visibility: "public" } },
+    ]);
+    expect(visibilityOf("atlas")).toHaveValue("public");
+  });
+
+  it("puts the choice back and reports the error when the change fails", async () => {
+    serveHub(() => jsonResponse({ error: "nope" }, 500));
+    render(TeamView, { onClose: () => {} });
+    await fireEvent.change(visibilityOf("atlas"), { target: { value: "public" } });
+    await vi.waitFor(() => {
+      expect(visibilityOf("atlas")).toHaveValue("private");
+      expect(visibilityOf("atlas")).toBeEnabled();
+    });
+    expect([...toast.toasts.values()].some((t) => t.kind === "error")).toBe(true);
+  });
+
+  it("is disabled while the change is in flight", async () => {
+    let release: (r: Response) => void = () => {};
+    mockFetch(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(TeamView, { onClose: () => {} });
+    await fireEvent.change(visibilityOf("atlas"), { target: { value: "public" } });
+    expect(visibilityOf("atlas")).toBeDisabled();
+    release(jsonResponse(agent("atlas", { a2a_visibility: "public" })));
+    await vi.waitFor(() => {
+      expect(visibilityOf("atlas")).toBeEnabled();
     });
   });
 });

@@ -2550,7 +2550,13 @@ async function handleLifecycle(
 
   if (!action && method === "PATCH") {
     const body = JSON.parse(await readBody(req));
+    const hasVisibility = body.a2a_visibility === "public" || body.a2a_visibility === "private";
+    if (typeof body.autostart !== "boolean" && !hasVisibility) {
+      json(res, 400, { error: "give autostart or a2a_visibility" });
+      return;
+    }
     if (typeof body.autostart === "boolean") agent.autostart = body.autostart;
+    if (hasVisibility) agent.visibility = body.a2a_visibility;
     hub.broadcast({ type: "agent_state", agent: hub.summary(agent) });
     json(res, 200, hub.summary(agent));
     return;

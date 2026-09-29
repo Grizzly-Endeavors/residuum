@@ -10,7 +10,7 @@
 
   let { onClose }: { onClose: () => void } = $props();
 
-  type Action = "start" | "stop" | "restart" | "autostart" | "delete";
+  type Action = "start" | "stop" | "restart" | "autostart" | "visibility" | "delete";
 
   // What each agent is waiting on right now, so its buttons show progress.
   let pending = $state<Record<string, Action | undefined>>({});
@@ -47,6 +47,15 @@
       const saved = await hub.setAutostart(agent.name, wanted);
       // The list is the source of truth: put the box back if the change didn't land.
       if (!saved) input.checked = agent.autostart;
+    });
+  }
+
+  // Applied at once so the select never lags the choice; put back if it doesn't land.
+  async function changeVisibility(agent: AgentSummary, select: HTMLSelectElement): Promise<void> {
+    const wanted = select.value as A2aVisibility;
+    await run(agent.name, "visibility", async () => {
+      const saved = await hub.setVisibility(agent.name, wanted);
+      if (!saved) select.value = agent.a2a_visibility;
     });
   }
 
@@ -184,7 +193,6 @@
               {#if activity.unread > 0}
                 <span class="team-chip team-chip-unread">{unreadText(activity.unread)} unread</span>
               {/if}
-              <span class="team-chip">A2A {agent.a2a_visibility}</span>
             </div>
             <p class="team-role">{agent.role ?? "No role page yet."}</p>
             {#if agent.state === "failed" && agent.last_error}
@@ -196,6 +204,18 @@
           </div>
 
           <div class="team-row-controls">
+            <label class="team-visibility-select">
+              A2A card
+              <select
+                value={agent.a2a_visibility}
+                disabled={busyAction !== undefined}
+                aria-describedby="team-visibility-hint"
+                onchange={(e) => void changeVisibility(agent, e.currentTarget)}
+              >
+                <option value="private">Private</option>
+                <option value="public">Public</option>
+              </select>
+            </label>
             <label class="team-autostart">
               <input
                 type="checkbox"
@@ -247,6 +267,11 @@
       {/each}
     </ul>
   {/if}
+
+  <p id="team-visibility-hint" class="team-visibility-hint">
+    Public shows only an agent's card to other agents. Everything else, including handing it work,
+    still needs a caller key.
+  </p>
 
   <form class="team-create" onsubmit={create} novalidate aria-labelledby="create-title">
     <h3 id="create-title" class="team-create-title">Create an agent</h3>
@@ -544,6 +569,20 @@
     font-size: var(--fs-sm);
     color: var(--text-muted);
     cursor: pointer;
+  }
+
+  .team-visibility-select {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+  }
+
+  .team-visibility-hint {
+    margin: calc(var(--s-4) * -1) 0 var(--s-6);
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
   }
 
   .team-buttons {

@@ -403,4 +403,29 @@ describe("HubStore lifecycle actions", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ autostart: false }));
     expect(hub.agent("scout")?.autostart).toBe(false);
   });
+
+  it("sends the visibility change to the agent's route", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(jsonResponse(agent("scout", { a2a_visibility: "public" }))),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const hub = new HubStore();
+    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+
+    expect(await hub.setVisibility("scout", "public")).toBe(true);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/hub/agents/scout");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ a2a_visibility: "public" }));
+    expect(hub.agent("scout")?.a2a_visibility).toBe("public");
+  });
+
+  it("reports a failed visibility change and leaves the agent as it was", async () => {
+    vi.stubGlobal("fetch", () => Promise.resolve(jsonResponse({ error: "nope" }, 500)));
+    const hub = new HubStore();
+    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+
+    expect(await hub.setVisibility("scout", "public")).toBe(false);
+    expect(hub.agent("scout")?.a2a_visibility).toBe("private");
+    expect(notifications.history[0]?.kind).toBe("error");
+  });
 });
