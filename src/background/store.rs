@@ -314,13 +314,31 @@ fn is_day_dir(name: &str) -> bool {
 /// Durable on-disk record of every session run.
 pub struct SessionStore {
     sessions_dir: PathBuf,
+    /// Keeps a test fixture's backing temp directory alive (and cleaned up
+    /// on drop) for as long as this store is in use, instead of leaking it
+    /// with [`tempfile::TempDir::keep`].
+    #[cfg(test)]
+    tempdir_guard: Option<tempfile::TempDir>,
 }
 
 impl SessionStore {
     /// Create a store rooted at the given sessions directory.
     #[must_use]
     pub fn new(sessions_dir: PathBuf) -> Self {
-        Self { sessions_dir }
+        Self {
+            sessions_dir,
+            #[cfg(test)]
+            tempdir_guard: None,
+        }
+    }
+
+    /// Attach a temp directory guard so it's dropped (and cleaned up)
+    /// together with this store instead of being leaked.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
+        self.tempdir_guard = Some(dir);
+        self
     }
 
     /// Path a run's metadata record lives at, given its start time.

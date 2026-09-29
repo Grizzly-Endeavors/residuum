@@ -170,6 +170,24 @@ struct Harness {
     _tempdir: tempfile::TempDir,
 }
 
+impl Drop for Harness {
+    /// Removes the workspace before the temp-dir guard runs. Session and
+    /// checkpoint tasks may still be writing into the workspace when a test
+    /// ends, and a write that lands mid-removal makes `TempDir`'s single
+    /// best-effort `remove_dir_all` give up and leave the directory in
+    /// `/tmp`. Retrying until the tree is gone lets those writers finish.
+    fn drop(&mut self) {
+        self.shutdown_tx.send(true).ok();
+        for _ in 0..50 {
+            match std::fs::remove_dir_all(&self.workspace_dir) {
+                Ok(()) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    }
+}
+
 /// Options for building a [`Harness`], so each test only sets what it needs.
 struct HarnessOptions {
     card_skills: Vec<crate::a2a::card::AgentCardSkillFile>,

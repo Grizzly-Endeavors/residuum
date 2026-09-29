@@ -10,13 +10,32 @@ pub const WORKBENCH_DIR: &str = "workbench";
 #[derive(Debug, Clone)]
 pub struct WorkspaceLayout {
     root: PathBuf,
+    /// Keeps a test fixture's backing temp directory alive (and cleaned up
+    /// on drop) for as long as any clone of this layout is in use. `Arc`
+    /// so the guard survives every clone, not just the first owner.
+    #[cfg(test)]
+    tempdir_guard: Option<std::sync::Arc<tempfile::TempDir>>,
 }
 
 impl WorkspaceLayout {
     /// Create a new workspace layout rooted at the given directory.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            #[cfg(test)]
+            tempdir_guard: None,
+        }
+    }
+
+    /// Attach a temp directory guard so it's dropped (and cleaned up)
+    /// together with this layout and every clone of it, instead of being
+    /// leaked with [`tempfile::TempDir::keep`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
+        self.tempdir_guard = Some(std::sync::Arc::new(dir));
+        self
     }
 
     /// Root directory of the workspace.

@@ -495,8 +495,8 @@ pub(crate) fn test_memory_extras() -> (
     Arc<Observer>,
     Arc<MemoryMergeWriter>,
 ) {
-    let dir = tempfile::tempdir().unwrap().keep();
-    let layout = crate::workspace::layout::WorkspaceLayout::new(&dir);
+    let dir = tempfile::tempdir().unwrap();
+    let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path()).with_tempdir_guard(dir);
     let search_index = Arc::new(
         crate::memory::search::MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap(),
     );
