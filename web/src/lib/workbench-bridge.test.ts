@@ -15,36 +15,49 @@ const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
 
 describe("checkArtifactRequest", () => {
   it.each([
-    ["GET", "/api/status"],
-    ["GET", "/api/workspace/file?path=team/workbench/chart.state.json"],
-    ["PUT", "/api/workspace/file"],
-    ["GET", "/api/secrets"],
-    ["GET", "/api/agent-keys"],
-    ["GET", "/api/workbench/artifacts"],
-    ["GET", "/api/tracing/status"],
-    ["POST", "/api/inbox/abc/archive"],
-    ["PUT", "/api/mcp/raw"],
-    ["DELETE", "/api/workbench/artifacts/chart"],
-    ["POST", "/api/model/complete"],
+    ["GET", "/api/agents/scout/status"],
+    ["GET", "/api/team/workspace/file?path=workbench/chart.state.json"],
+    ["PUT", "/api/team/workspace/file"],
+    ["GET", "/api/agents/scout/workspace/file?path=notes.md"],
+    ["GET", "/api/hub/secrets"],
+    ["GET", "/api/hub/agent-keys"],
+    ["GET", "/api/hub/a2a/keys"],
+    ["GET", "/api/hub/agents"],
+    ["GET", "/api/team/workbench/artifacts"],
+    ["GET", "/api/hub/tracing/status"],
+    ["POST", "/api/agents/scout/inbox/abc/archive"],
+    ["PUT", "/api/agents/scout/mcp/raw"],
+    ["DELETE", "/api/team/workbench/artifacts/chart"],
+    ["POST", "/api/agents/scout/model/complete"],
+    ["POST", "/api/agents/scout/sessions"],
   ])("allows %s %s", (method, path) => {
     expect(checkArtifactRequest(method, path, ORIGIN)).toEqual({ allowed: true, url: path });
   });
 
   it.each([
-    ["POST", "/api/secrets"],
-    ["DELETE", "/api/secrets/openai"],
-    ["POST", "/api/agent-keys"],
-    ["GET", "/api/config/raw"],
-    ["PUT", "/api/config/raw"],
-    ["GET", "/api/providers/raw"],
-    ["POST", "/api/config/complete-setup"],
-    ["POST", "/api/shutdown"],
-    ["POST", "/api/shutdown/"],
-    ["POST", "/api/update/apply"],
-    ["POST", "/api/update/restart"],
-    ["POST", "/api/cloud/disconnect"],
-    ["POST", "/api/tracing/sanitize"],
-    ["POST", "/api/tracing/otel/endpoints"],
+    ["POST", "/api/hub/secrets"],
+    ["DELETE", "/api/hub/secrets/openai"],
+    ["POST", "/api/hub/agent-keys"],
+    ["POST", "/api/hub/a2a/keys"],
+    ["DELETE", "/api/hub/a2a/keys/laptop"],
+    ["GET", "/api/hub/config/raw"],
+    ["PUT", "/api/hub/config/raw"],
+    ["GET", "/api/agents/scout/config/raw"],
+    ["PUT", "/api/agents/scout/config/raw"],
+    ["GET", "/api/agents/scout/providers/raw"],
+    ["POST", "/api/hub/config/complete-setup"],
+    ["POST", "/api/hub/shutdown"],
+    ["POST", "/api/hub/shutdown/"],
+    ["POST", "/api/hub/stop-all"],
+    ["POST", "/api/hub/update/apply"],
+    ["POST", "/api/hub/update/restart"],
+    ["POST", "/api/hub/cloud/disconnect"],
+    ["POST", "/api/hub/tracing/sanitize"],
+    ["POST", "/api/hub/tracing/otel/endpoints"],
+    ["POST", "/api/hub/agents"],
+    ["DELETE", "/api/hub/agents/scout"],
+    ["POST", "/api/hub/agents/scout/stop"],
+    ["PATCH", "/api/hub/agents/scout"],
   ])("blocks %s %s", (method, path) => {
     const check = checkArtifactRequest(method, path, ORIGIN);
     expect(check.allowed).toBe(false);
@@ -52,13 +65,25 @@ describe("checkArtifactRequest", () => {
   });
 
   it.each([
-    "/api/workspace/../secrets",
-    "/api/%2e%2e/api/secrets",
-    "/api/workspace/%2E%2E/secrets",
-    "/api/secrets%2Fopenai",
+    "/api/team/workspace/../../hub/secrets",
+    "/api/%2e%2e/api/hub/secrets",
+    "/api/team/%2E%2E/hub/secrets",
+    "/api/hub/secrets%2Fopenai",
   ])("blocks secret writes reached through path tricks: %s", (path) => {
     expect(checkArtifactRequest("POST", path, ORIGIN).allowed).toBe(false);
   });
+
+  it.each(["/api/sessions", "/api/sessions/"])(
+    "refuses a session start that names no agent: POST %s",
+    (path) => {
+      const check = checkArtifactRequest("POST", path, ORIGIN);
+      expect(check.allowed).toBe(false);
+      if (!check.allowed) {
+        expect(check.status).toBe(400);
+        expect(check.reason).toContain("residuum.sessions.start({ agent, prompt })");
+      }
+    },
+  );
 
   it.each([
     "https://evil.example/api/status",
@@ -353,7 +378,7 @@ describe("WorkbenchBridge", () => {
 
   it("answers a blocked request with a 403 without calling the gateway", async () => {
     const h = harness();
-    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/shutdown", "POST"));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/hub/shutdown", "POST"));
     expect(h.deps.fetch).not.toHaveBeenCalled();
     const result = h.frame.posted[0]?.result as RelayedResponse;
     expect(result.status).toBe(403);
@@ -390,7 +415,7 @@ describe("WorkbenchBridge", () => {
 
     // A model call still goes out immediately: it has its own lane.
     const modelCall = h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      ...fetchMsg("/api/model/complete", "POST"),
+      ...fetchMsg("/api/agents/scout/model/complete", "POST"),
       id: "model-1",
     });
     await vi.waitFor(() => {
@@ -416,7 +441,7 @@ describe("WorkbenchBridge", () => {
     const calls = Promise.all(
       Array.from({ length: 5 }, (_, n) =>
         h.bridge.handleMessage(h.frame, ARTIFACTS, {
-          ...fetchMsg("/api/model/complete", "POST"),
+          ...fetchMsg("/api/agents/scout/model/complete", "POST"),
           id: `model-${n}`,
         }),
       ),
@@ -450,7 +475,7 @@ describe("WorkbenchBridge", () => {
     const h = harness({ fetch: fetchImpl });
 
     const pending = h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      ...fetchMsg("/api/model/complete", "POST"),
+      ...fetchMsg("/api/agents/scout/model/complete", "POST"),
       id: "model-1",
     });
     await vi.waitFor(() => {
@@ -481,7 +506,7 @@ describe("WorkbenchBridge", () => {
     const calls = Promise.all(
       Array.from({ length: 2 }, (_, n) =>
         h.bridge.handleMessage(h.frame, ARTIFACTS, {
-          ...fetchMsg("/api/model/complete", "POST"),
+          ...fetchMsg("/api/agents/scout/model/complete", "POST"),
           id: `model-${n}`,
         }),
       ),
@@ -499,7 +524,7 @@ describe("WorkbenchBridge", () => {
   it("cancelModelCalls leaves ordinary requests untouched", async () => {
     const ordinaryReleased: (() => void)[] = [];
     const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      if (requestUrl(input).includes("/api/model/complete")) {
+      if (requestUrl(input).includes("/api/agents/scout/model/complete")) {
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => {
             reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
@@ -519,7 +544,7 @@ describe("WorkbenchBridge", () => {
       id: "ord-1",
     });
     const modelCall = h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      ...fetchMsg("/api/model/complete", "POST"),
+      ...fetchMsg("/api/agents/scout/model/complete", "POST"),
       id: "model-1",
     });
     await vi.waitFor(() => {
@@ -548,7 +573,7 @@ describe("WorkbenchBridge", () => {
     const h = harness({ fetch: fetchImpl });
 
     const pending = h.bridge.handleMessage(h.frame, ARTIFACTS, {
-      ...fetchMsg("/api/model/complete", "POST"),
+      ...fetchMsg("/api/agents/scout/model/complete", "POST"),
       id: "model-1",
     });
     await vi.waitFor(() => {

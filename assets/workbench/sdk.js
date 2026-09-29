@@ -67,7 +67,7 @@
 
   function fetchVia(path, init = {}) {
     if (typeof path !== "string") {
-      return Promise.reject(new TypeError("residuum.fetch path must be a string like '/api/status'"));
+      return Promise.reject(new TypeError("residuum.fetch path must be a string like '/api/hub/status'"));
     }
     const headers = { ...(init.headers || {}) };
     let encoded;
@@ -94,8 +94,9 @@
     );
   }
 
+  // Relative to the team directory, which is what the team file API addresses.
   function statePath() {
-    return `team/workbench/${__RESIDUUM_ARTIFACT__}.state.json`;
+    return `workbench/${__RESIDUUM_ARTIFACT__}.state.json`;
   }
 
   async function errorFromResponse(res, fallback) {
@@ -109,7 +110,9 @@
   }
 
   async function stateGet() {
-    const res = await fetchVia(`/api/workspace/file?path=${encodeURIComponent(statePath())}`);
+    const res = await fetchVia(
+      `/api/team/workspace/file?path=${encodeURIComponent(statePath())}`,
+    );
     if (res.status === 404) return null;
     if (!res.ok) {
       throw await errorFromResponse(res, `residuum.state.get failed with status ${res.status}`);
@@ -123,7 +126,7 @@
   }
 
   async function stateSet(value) {
-    const res = await fetchVia("/api/workspace/file", {
+    const res = await fetchVia("/api/team/workspace/file", {
       method: "PUT",
       body: { path: statePath(), content: JSON.stringify(value) },
     });
@@ -132,18 +135,30 @@
     }
   }
 
-  function ask(promptOrRequest) {
+  // A model call runs on one agent's models, so the request names the agent:
+  // `residuum.ask(prompt, { agent })` or `residuum.ask({ agent, prompt, ... })`.
+  function ask(promptOrRequest, options) {
     let body;
     if (typeof promptOrRequest === "string") {
       body = { prompt: promptOrRequest };
     } else if (promptOrRequest && typeof promptOrRequest === "object") {
-      body = promptOrRequest;
+      body = { ...promptOrRequest };
     } else {
       return Promise.reject(
         new TypeError("residuum.ask needs a prompt string or a request object"),
       );
     }
-    return fetchVia("/api/model/complete", { method: "POST", body }).then((resp) =>
+    const agent = (options && options.agent) ?? body.agent;
+    delete body.agent;
+    if (typeof agent !== "string" || agent === "") {
+      return Promise.reject(
+        new TypeError(
+          "residuum.ask needs an agent: pass { agent } in the request or as the second argument",
+        ),
+      );
+    }
+    const path = `/api/agents/${encodeURIComponent(agent)}/model/complete`;
+    return fetchVia(path, { method: "POST", body }).then((resp) =>
       resp
         .json()
         .catch(() => null)
@@ -215,6 +230,8 @@
     }
     const err = new Error(body && typeof body.error === "string" ? body.error : fallback);
     if (body && typeof body.code === "string") err.code = body.code;
+    // A refusal for an agent that isn't running names its state.
+    if (body && typeof body.state === "string") err.state = body.state;
     err.status = resp.status;
     return err;
   }
@@ -222,7 +239,7 @@
   // `buffered` holds the frames that arrived before the handle existed. Each
   // handler registered for their type gets them first, so `session_started`
   // (which carries the run id) and early output aren't lost.
-  function sessionHandle(address, buffered) {
+  function sessionHandle(agent, address, buffered) {
     const own = new Map();
     sessionRouters.set(address, (frame) => {
       for (const key of [frame.type, "*"]) {
@@ -235,8 +252,9 @@
         }
       }
     });
-    const path = `/api/sessions/${encodeURIComponent(address)}`;
+    const path = `/api/agents/${encodeURIComponent(agent)}/sessions/${encodeURIComponent(address)}`;
     return Object.freeze({
+      agent,
       address,
       on(type, handler) {
         if (typeof handler !== "function") {
@@ -274,10 +292,18 @@
     });
   }
 
+  // A session runs on one agent, so the start request names it. An agent that
+  // doesn't exist or isn't running refuses the start with its state.
   async function startSession(options) {
-    if (!options || typeof options.prompt !== "string" || options.prompt.trim() === "") {
+    if (!options || typeof options.agent !== "string" || options.agent === "") {
+      throw new TypeError(
+        "residuum.sessions.start needs { agent, prompt }: name the agent that runs the session",
+      );
+    }
+    if (typeof options.prompt !== "string" || options.prompt.trim() === "") {
       throw new TypeError("residuum.sessions.start needs { prompt } with a non-empty prompt");
     }
+    const agent = options.agent;
     const body = { prompt: options.prompt };
     for (const key of ["context", "skill", "model"]) {
       if (options[key] !== undefined) body[key] = options[key];
@@ -287,7 +313,10 @@
     let address = null;
     let buffered = [];
     try {
-      const resp = await fetchVia("/api/sessions", { method: "POST", body });
+      const resp = await fetchVia(`/api/agents/${encodeURIComponent(agent)}/sessions`, {
+        method: "POST",
+        body,
+      });
       if (!resp.ok) throw await errorFrom(resp, "Couldn't start the session.");
       address = (await resp.json()).address;
     } finally {
@@ -299,7 +328,7 @@
       }
       if (startsInFlight === 0) earlyFrames = [];
     }
-    return sessionHandle(address, buffered);
+    return sessionHandle(agent, address, buffered);
   }
 
   function dispatch(frame) {
