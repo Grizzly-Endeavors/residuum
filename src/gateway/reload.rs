@@ -72,6 +72,9 @@ pub(super) struct ConfigDiff {
     pub a2a_changed: bool,
     /// Cloud tunnel config changed — restarting the tunnel is disruptive.
     pub cloud_changed: bool,
+    /// The hub's `timezone` changed — applied live where possible, see
+    /// `apply_timezone`.
+    pub timezone_changed: bool,
     /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
     pub idle_changed: bool,
     /// Human-readable summary of every subsystem that changed, for the reload log line.
@@ -100,6 +103,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind);
     let cloud_changed = old.cloud != new.cloud;
     let idle_changed = old.idle != new.idle;
+    let timezone_changed = old.timezone != new.timezone;
 
     let parts = summary_parts(old, new);
     let changed = !parts.is_empty();
@@ -125,6 +129,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         teams_changed,
         a2a_changed,
         cloud_changed,
+        timezone_changed,
         idle_changed,
         summary,
     }
@@ -152,6 +157,9 @@ fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
     }
     if old.memory != new.memory {
         parts.push("memory thresholds");
+    }
+    if old.timezone != new.timezone {
+        parts.push("timezone");
     }
     if old.gateway != new.gateway {
         parts.push("gateway bind/port");
@@ -478,8 +486,17 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
         .await;
     }
 
+    // Set before the rebuild so every component built from `rt.tz`
+    // (providers, observers, the spawn context) picks up the new value.
+    if diff.timezone_changed {
+        rt.tz = new_cfg.timezone;
+    }
+
     rebuild_cheap_components(rt, &new_cfg).await;
 
+    if diff.timezone_changed {
+        apply_timezone(rt, &new_cfg).await;
+    }
     if diff.gateway_changed {
         reload_gateway(rt, &new_cfg).await;
     }
@@ -501,6 +518,45 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
         rt.agent.inject_system_message(message);
     }
     tracing::info!(changes = %summary, "hub configuration reloaded successfully");
+}
+
+/// Push a changed hub timezone into every holder that can take it live, and
+/// publish a notice for the ones that only pick it up on restart.
+///
+/// Live: `rt.tz` (read at call time by turns, pulse, idle, commands and the
+/// subconscious hook), the agent's turn timestamps and its timezone-aware
+/// tools (`schedule_action`, `list_actions`, `user_inbox_add`), the observer
+/// and reflector, the provider components, the spawn context that seeds new
+/// background sessions, and the chat adapters (restarted so their message
+/// timestamps use it). Restart-only: the HTTP/webhook state, the inbox
+/// notification channel and the session runtime, which are shared handles
+/// built once at startup.
+async fn apply_timezone(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    rt.agent.set_timezone(
+        new_cfg.timezone,
+        Arc::clone(&rt.action_store),
+        Arc::clone(&rt.action_notify),
+        &rt.layout,
+    );
+    if new_cfg.discord.is_some() {
+        reload_discord_adapter(rt, new_cfg).await;
+    }
+    if new_cfg.telegram.is_some() {
+        reload_telegram_adapter(rt, new_cfg).await;
+    }
+    if new_cfg.teams.is_some() {
+        reload_teams_adapter(rt, new_cfg).await;
+    }
+    publish_notice(
+        &rt.publisher,
+        format!(
+            "timezone changed to {} — the agent, memory, pulse and new background sessions use it \
+             now. Web API and webhook timestamps, inbox notification timestamps and already \
+             running background sessions keep the previous timezone until the next restart.",
+            new_cfg.timezone.name()
+        ),
+    )
+    .await;
 }
 
 /// Build a fresh HTTP client for the given request timeout.
@@ -1256,6 +1312,20 @@ mod tests {
             !diff.summary().contains("providers"),
             "settings change alone should not flag providers"
         );
+    }
+
+    #[test]
+    fn diff_config_detects_timezone_change() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.timezone = chrono_tz::America::New_York;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.changed, "a timezone edit is a change");
+        assert!(diff.timezone_changed);
+        assert!(diff.summary().contains("timezone"));
+        assert!(!diff.summary().contains("no changes"));
+        assert_no_disruptive_flags(&diff);
     }
 
     #[test]
