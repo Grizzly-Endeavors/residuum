@@ -29,7 +29,7 @@ pub(super) async fn run_feedback_command(
     args: &FeedbackArgs,
     gateway_addr: &str,
 ) -> Result<(), FatalError> {
-    let url = format!("http://{gateway_addr}/api/tracing/feedback");
+    let url = format!("http://{gateway_addr}/api/hub/tracing/feedback");
     let body = serde_json::json!({
         "message": args.message,
         "category": args.category,

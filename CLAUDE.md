@@ -148,7 +148,7 @@ The failure this section exists to prevent is a guard built around a failure nob
 
 ### Debugging & Tracing
 - Log level is configured in `config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
-- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time
+- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time; `residuum logs --agent <name>` to show one agent's lines
 - `residuum tracing status` — show current tracing config and streaming state
 - `residuum tracing otel add <url>` — add an OTEL endpoint for trace export
 - `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
