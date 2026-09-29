@@ -1548,7 +1548,10 @@ mod tests {
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard so the directory outlives this helper and
+        // is removed when the runtime (and so the store) is dropped.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let idle_timeouts = IdleTimeouts {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
@@ -1570,7 +1573,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -1590,7 +1593,10 @@ mod tests {
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard so the directory outlives this helper and
+        // is removed when the runtime (and so the store) is dropped.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let idle_timeouts = IdleTimeouts {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
@@ -1612,7 +1618,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service,
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -2319,7 +2325,10 @@ mod tests {
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard so the directory outlives this helper and
+        // is removed when the runtime (and so the store) is dropped.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let idle_timeouts = IdleTimeouts {
             scheduled: Duration::from_millis(20),
             spawned: Duration::from_millis(20),
@@ -2341,7 +2350,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -2488,7 +2497,10 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -2691,7 +2703,10 @@ mod tests {
             bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -2712,7 +2727,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -3119,7 +3134,10 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3140,7 +3158,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -3429,7 +3447,10 @@ mod tests {
         let sub = bus_handle.subscribe(topics::Background).await.unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3450,7 +3471,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -3637,7 +3658,10 @@ mod tests {
                 .unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3658,7 +3682,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -3694,7 +3718,10 @@ mod tests {
                 .unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -3715,7 +3742,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },
@@ -4104,7 +4131,10 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let registry = Arc::new(SessionRegistry::new());
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(SessionStore::new(dir.path().to_path_buf()));
+        let dir_path = dir.path().to_path_buf();
+        // The store owns the guard, so the directory lives as long as any
+        // session task still writing through it.
+        let store = Arc::new(SessionStore::new(dir_path.clone()).with_tempdir_guard(dir));
         let messenger = Arc::new(AgentMessenger::new(
             Arc::clone(&registry),
             bus_handle.publisher(),
@@ -4125,7 +4155,7 @@ mod tests {
                 publisher: bus_handle.publisher(),
                 tz: chrono_tz::UTC,
                 messenger,
-                checkpoints: test_checkpoints(dir.path()),
+                checkpoints: test_checkpoints(&dir_path),
                 tracing_service: test_tracing_service(),
                 tracing_client_context: test_tracing_client_context(),
             },

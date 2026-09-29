@@ -239,7 +239,11 @@ mod tests {
     async fn spawn_listener(
         port: u16,
         visibility: A2aVisibility,
-    ) -> (SharedA2aKeys, tokio::sync::watch::Sender<bool>) {
+    ) -> (
+        SharedA2aKeys,
+        tokio::sync::watch::Sender<bool>,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let card_path = dir.path().join("agent-card.json");
         std::fs::write(
@@ -268,13 +272,13 @@ mod tests {
         tokio::spawn(listener.start());
         // Give the listener a moment to bind before the test issues requests.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        (keys, shutdown_tx)
+        (keys, shutdown_tx, dir)
     }
 
     #[tokio::test]
     async fn card_is_served_and_stub_handler_refuses_jsonrpc() {
         let port = free_port().await;
-        let (_keys, shutdown_tx) = spawn_listener(port, A2aVisibility::Public).await;
+        let (_keys, shutdown_tx, _dir) = spawn_listener(port, A2aVisibility::Public).await;
 
         let client = reqwest::Client::new();
         let card_resp = client
@@ -319,7 +323,7 @@ mod tests {
     #[tokio::test]
     async fn valid_key_reaches_the_stub_handler_and_gets_unsupported_operation() {
         let port = free_port().await;
-        let (keys, shutdown_tx) = spawn_listener(port, A2aVisibility::Public).await;
+        let (keys, shutdown_tx, _dir) = spawn_listener(port, A2aVisibility::Public).await;
         let token = keys.create("caller", None).await.unwrap();
 
         let client = reqwest::Client::new();
@@ -352,7 +356,7 @@ mod tests {
     #[tokio::test]
     async fn private_visibility_hides_the_card_without_a_key() {
         let port = free_port().await;
-        let (_keys, shutdown_tx) = spawn_listener(port, A2aVisibility::Private).await;
+        let (_keys, shutdown_tx, _dir) = spawn_listener(port, A2aVisibility::Private).await;
 
         let resp = reqwest::get(format!(
             "http://127.0.0.1:{port}/.well-known/agent-card.json"
