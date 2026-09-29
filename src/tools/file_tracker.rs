@@ -37,12 +37,14 @@ impl FileTracker {
         Arc::new(tokio::sync::Mutex::new(Self::new()))
     }
 
-    /// Canonical form of `path`, or the raw path when it can't be resolved.
+    /// Canonical form of `path`, stable whether or not the file still
+    /// exists: a read recorded before a teammate deletes the file must still
+    /// match the write that follows. Canonicalizing only an existing path
+    /// would fall back to the raw spelling once the file is gone, which
+    /// differs from the canonical one wherever the temp or home directory
+    /// sits behind a symlink or a `\\?\` prefix.
     fn key(path: &str) -> PathBuf {
-        std::fs::canonicalize(path).unwrap_or_else(|_| {
-            tracing::trace!(path = %path, "canonicalize failed, using raw path");
-            PathBuf::from(path)
-        })
+        crate::workspace::team_files::canonical_key(std::path::Path::new(path))
     }
 
     /// Record that a file has been read. Canonicalizes the path where possible.
@@ -119,6 +121,38 @@ mod tests {
             tracker.has_been_read(file_path.to_str().unwrap()),
             "canonical path should match"
         );
+    }
+
+    #[test]
+    fn read_still_matches_after_the_file_is_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("gone.md");
+        std::fs::write(&file_path, "data").unwrap();
+        let mut tracker = FileTracker::new();
+        tracker.record_read(file_path.to_str().unwrap());
+
+        std::fs::remove_file(&file_path).unwrap();
+
+        assert!(tracker.has_been_read(file_path.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_through_a_symlinked_dir_matches_after_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let via_link = link.join("gone.md");
+        std::fs::write(&via_link, "data").unwrap();
+        let mut tracker = FileTracker::new();
+        tracker.record_read(via_link.to_str().unwrap());
+
+        std::fs::remove_file(&via_link).unwrap();
+
+        assert!(tracker.has_been_read(via_link.to_str().unwrap()));
+        assert!(tracker.has_been_read(real.join("gone.md").to_str().unwrap()));
     }
 
     #[test]

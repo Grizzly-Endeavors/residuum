@@ -1,0 +1,10 @@
+  - name: wiki_lint
+    enabled: true
+    schedule: "7d"
+    active_hours: "02:00-06:00"
+    agent: "wiki"
+    model_tier: "small"
+    tasks:
+      - name: lint
+        prompt: "Run the Lint procedure from your instructions across the whole team wiki, fixing each problem as you find it. Summarize what you fixed, one line per fix."
+

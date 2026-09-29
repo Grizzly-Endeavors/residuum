@@ -505,7 +505,7 @@ pub fn team_relative_path(path: &str) -> Option<PathBuf> {
 /// Lexically normalize `path` (drop `.`, apply `..`), then canonicalize its
 /// nearest existing ancestor, so the result is stable whether or not the file
 /// exists and whichever symlinked spelling reached it.
-fn canonical_key(path: &Path) -> PathBuf {
+pub(crate) fn canonical_key(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
