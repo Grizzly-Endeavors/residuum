@@ -1,7 +1,17 @@
 import Foundation
 import Observation
 
-/// Central store for all agent tabs and their conversations.
+/// The subset of the hub's `AgentSummary` this app needs to pick an agent.
+private struct HubAgentSummary: Decodable {
+    let name: String
+    let state: String
+}
+
+private struct HubAgentList: Decodable {
+    let agents: [HubAgentSummary]
+}
+
+/// Store for the single conversation with one agent on the Residuum hub.
 ///
 /// Inject into the SwiftUI environment via `.environment(agentStore)` and
 /// read with `@Environment(AgentStore.self)` in views.
@@ -9,189 +19,210 @@ import Observation
 final class AgentStore {
     // MARK: - Public state (observed by SwiftUI)
 
-    var tabs: [AgentTab] = []
-    var selectedTabId: UUID?
     var host: String
+    /// Agent name from Settings. Empty means "first running agent".
+    var agent: String
+    /// The agent this conversation is connected (or connecting) to.
+    var agentName: String?
+    var connectionState: ConnectionState = .disconnected
+    /// Plain-language reason the app cannot chat yet; nil otherwise.
+    var problem: String?
+    /// All messages in the conversation (chronological order).
+    var messages: [ChatMessage] = []
+    /// True while the agent is processing a turn (between turn_started and response).
+    var isThinking = false
+    /// Whether tool calls and results are shown. Toggled by the /verbose command.
+    var verboseEnabled = false
 
-    /// The currently selected agent tab, or the first tab if none is selected.
-    var selectedTab: AgentTab? {
-        guard let id = selectedTabId else { return tabs.first }
-        return tabs.first { $0.id == id }
-    }
+    // MARK: - Private
 
-    /// Index of the currently selected tab.
-    var selectedTabIndex: Int? {
-        guard let id = selectedTabId else { return tabs.isEmpty ? nil : 0 }
-        return tabs.firstIndex { $0.id == id }
-    }
-
-    /// True if the default agent (first tab) is connected.
-    var defaultAgentConnected: Bool {
-        tabs.first?.connection.state == .connected
-    }
+    let port: UInt16 = 7700
+    private var connection: ResiduumConnection?
+    private var connectTask: Task<Void, Never>?
+    /// The pending tool group being accumulated during the current turn.
+    private var pendingToolCalls: [ToolCallData] = []
+    /// Correlation ID of the in-flight turn, for matching response/error to turn.
+    private var pendingCorrelationId: String?
 
     // MARK: - Init
 
-    init(host: String = "127.0.0.1") {
-        self.host = host
-        loadAgents()
+    init() {
+        host = UserDefaults.standard.string(forKey: "residuum.host") ?? "127.0.0.1"
+        agent = UserDefaults.standard.string(forKey: "residuum.agent") ?? ""
+        connect()
     }
 
     // MARK: - Public API
 
-    /// Select the given agent tab.
-    func select(_ tab: AgentTab) {
-        selectedTabId = tab.id
-    }
-
-    /// Send a message on the currently selected agent tab.
+    /// Send a message to the agent.
     func sendMessage(content: String, images: [ImageData] = []) {
-        guard let idx = selectedTabIndex else { return }
         let correlationId = UUID().uuidString
-        let userMsg = ChatMessage(role: .user, content: content)
-        tabs[idx].messages.append(userMsg)
-        tabs[idx].pendingCorrelationId = correlationId
-        tabs[idx].connection.send(.sendMessage(id: correlationId, content: content, images: images))
+        messages.append(ChatMessage(role: .user, content: content))
+        pendingCorrelationId = correlationId
+        connection?.send(.sendMessage(id: correlationId, content: content, images: images))
     }
 
-    /// Force-reconnect a specific tab's connection.
-    func reconnect(tab: AgentTab) {
-        guard let idx = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
-        tabs[idx].connection.disconnect()
-        tabs[idx].connection.connect()
+    /// Send a ClientMessage to the agent.
+    func send(_ message: ClientMessage) {
+        connection?.send(message)
     }
 
-    /// Appends a centred italic system notice to the selected tab's feed.
+    /// Toggle tool call visibility and tell the agent.
+    func toggleVerbose() {
+        verboseEnabled.toggle()
+        connection?.send(.setVerbose(enabled: verboseEnabled))
+    }
+
+    /// Appends a centred italic system notice to the feed.
     func appendSystemMessage(_ content: String) {
-        guard let idx = selectedTabIndex else { return }
-        tabs[idx].messages.append(ChatMessage(role: .system, content: content))
+        messages.append(ChatMessage(role: .system, content: content))
     }
 
-    /// Appends a blue-bordered monospace block to the selected tab's feed.
+    /// Appends a blue-bordered monospace block to the feed.
     func appendSystemBlock(_ content: String) {
-        guard let idx = selectedTabIndex else { return }
-        tabs[idx].messages.append(ChatMessage(role: .systemBlock, content: content))
+        messages.append(ChatMessage(role: .systemBlock, content: content))
     }
 
-    /// Send a ClientMessage to the currently selected tab's connection.
-    func sendToSelectedTab(_ message: ClientMessage) {
-        guard let idx = selectedTabIndex else { return }
-        tabs[idx].connection.send(message)
-    }
-
-    /// Update the host and reconnect all agent connections.
-    func reconnectAll(host newHost: String) {
+    /// Apply new settings and reconnect. Clears the feed when the target changed.
+    func reconnect(host newHost: String, agent newAgent: String) {
+        if newHost != host || newAgent != agent {
+            messages = []
+        }
         host = newHost
-        for idx in tabs.indices {
-            tabs[idx].connection.disconnect()
-            let newConn = ResiduumConnection(host: newHost, port: tabs[idx].port)
-            tabs[idx].connection = newConn
-            wireHandlers(tabIndex: idx)
-            tabs[idx].connection.connect()
+        agent = newAgent
+        connect()
+    }
+
+    /// Drop the current connection and connect again, re-resolving the agent.
+    func connect() {
+        connectTask?.cancel()
+        connection?.disconnect()
+        connection = nil
+        problem = nil
+        isThinking = false
+        pendingToolCalls = []
+        pendingCorrelationId = nil
+        connectionState = .connecting
+        connectTask = Task { @MainActor [weak self] in
+            await self?.resolveAndConnect()
         }
     }
 
     // MARK: - Setup
 
-    private func loadAgents() {
-        // Default agent is always first (port 7700).
-        let defaultConn = makeConnection(port: 7700)
-        let defaultTab = AgentTab(name: "Default", port: 7700, connection: defaultConn)
-        tabs.append(defaultTab)
-
-        // Named agents from registry.
-        let registry = AgentRegistry.load()
-        for entry in registry.agents {
-            let conn = makeConnection(port: entry.port)
-            let tab = AgentTab(name: entry.name, port: entry.port, connection: conn)
-            tabs.append(tab)
+    @MainActor
+    private func resolveAndConnect() async {
+        let configured = agent.trimmingCharacters(in: .whitespaces)
+        let name: String
+        if configured.isEmpty {
+            do {
+                guard let first = try await firstRunningAgent() else {
+                    fail("No agent is running. Start one from the web interface or with `residuum agent start`, then reconnect.")
+                    return
+                }
+                name = first
+            } catch {
+                fail("Couldn't reach the Residuum hub at \(host):\(port). Make sure it is running and check the host in Settings.")
+                return
+            }
+        } else {
+            name = configured
         }
+        if Task.isCancelled { return }
 
-        selectedTabId = tabs.first?.id
-
-        // Wire up handlers and connect all.
-        for idx in tabs.indices {
-            wireHandlers(tabIndex: idx)
-            tabs[idx].connection.connect()
+        agentName = name
+        let conn = ResiduumConnection(host: host, port: port, agent: name)
+        conn.onMessage = { [weak self] message in
+            self?.handle(message)
         }
+        conn.onStateChange = { [weak self] state in
+            guard let self else { return }
+            self.connectionState = state
+            if state == .connected {
+                // The connection resets the server-side verbose flag on every open.
+                self.verboseEnabled = false
+            }
+        }
+        connection = conn
+        conn.connect()
     }
 
-    private func makeConnection(port: UInt16) -> ResiduumConnection {
-        ResiduumConnection(host: host, port: port)
+    @MainActor
+    private func fail(_ message: String) {
+        problem = message
+        connectionState = .disconnected
     }
 
-    private func wireHandlers(tabIndex: Int) {
-        let tabId = tabs[tabIndex].id
-        tabs[tabIndex].connection.onMessage = { [weak self] message in
-            guard let self, let idx = self.tabs.firstIndex(where: { $0.id == tabId }) else { return }
-            self.handle(message, tabIndex: idx)
+    /// Asks the hub for its agents and returns the first running one (the API sorts by name).
+    private func firstRunningAgent() async throws -> String? {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = host
+        components.port = Int(port)
+        components.path = "/api/hub/agents"
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
         }
-        tabs[tabIndex].connection.onStateChange = { [weak self] _ in
-            // Accessing tabs triggers @Observable to notify views of the state change.
-            guard let self, let idx = self.tabs.firstIndex(where: { $0.id == tabId }) else { return }
-            _ = self.tabs[idx].connection.state
-        }
+        let list = try JSONDecoder().decode(HubAgentList.self, from: data)
+        return list.agents.first { $0.state == "running" }?.name
     }
 
     // MARK: - Message handling
 
-    private func handle(_ message: ServerMessage, tabIndex: Int) {
+    private func handle(_ message: ServerMessage) {
         switch message {
         case .turnStarted(let correlationId):
-            tabs[tabIndex].isThinking = true
-            tabs[tabIndex].pendingCorrelationId = correlationId
-            tabs[tabIndex].pendingToolCalls = []
+            isThinking = true
+            pendingCorrelationId = correlationId
+            pendingToolCalls = []
 
         case .toolCall(let id, let name, let arguments):
             let call = ToolCallData(id: id, name: name, arguments: arguments, isError: false)
-            tabs[tabIndex].pendingToolCalls.append(call)
+            pendingToolCalls.append(call)
 
         case .toolResult(let toolCallId, _, let output, let isError):
-            if let idx = tabs[tabIndex].pendingToolCalls.firstIndex(where: { $0.id == toolCallId }) {
-                tabs[tabIndex].pendingToolCalls[idx].result = output
-                tabs[tabIndex].pendingToolCalls[idx].isError = isError
+            if let idx = pendingToolCalls.firstIndex(where: { $0.id == toolCallId }) {
+                pendingToolCalls[idx].result = output
+                pendingToolCalls[idx].isError = isError
             }
 
         case .response(_, let content):
             var assistantMsg = ChatMessage(role: .assistant, content: content)
-            assistantMsg.toolCalls = tabs[tabIndex].pendingToolCalls
-            tabs[tabIndex].messages.append(assistantMsg)
-            tabs[tabIndex].isThinking = false
-            tabs[tabIndex].pendingToolCalls = []
-            tabs[tabIndex].pendingCorrelationId = nil
+            assistantMsg.toolCalls = pendingToolCalls
+            messages.append(assistantMsg)
+            isThinking = false
+            pendingToolCalls = []
+            pendingCorrelationId = nil
 
         case .broadcastResponse(let content):
             // Intermediate text emitted alongside tool calls.
             // Skip while thinking — the final response will replace it.
-            if tabs[tabIndex].isThinking { break }
-            let msg = ChatMessage(role: .assistant, content: content)
-            tabs[tabIndex].messages.append(msg)
+            if isThinking { break }
+            messages.append(ChatMessage(role: .assistant, content: content))
 
         case .systemEvent(let source, let content):
-            let msg = ChatMessage(role: .system, content: "[\(source)] \(content)")
-            tabs[tabIndex].messages.append(msg)
+            messages.append(ChatMessage(role: .system, content: "[\(source)] \(content)"))
 
         case .notice(let message):
-            let msg = ChatMessage(role: .system, content: message)
-            tabs[tabIndex].messages.append(msg)
+            messages.append(ChatMessage(role: .system, content: message))
 
         case .error(_, let message):
-            tabs[tabIndex].isThinking = false
-            let msg = ChatMessage(role: .system, content: "Error: \(message)")
-            tabs[tabIndex].messages.append(msg)
+            isThinking = false
+            messages.append(ChatMessage(role: .system, content: "Error: \(message)"))
 
         case .fileAttachment(_, let filename, let mimeType, let size, let urlPath, let caption):
             // Pre-compute the absolute URL so views don't need host/port plumbed through them.
-            let port = tabs[tabIndex].port
             let fullURL = "http://\(host):\(port)\(urlPath)"
             let attachment = FileAttachmentData(filename: filename, mimeType: mimeType, size: size, url: fullURL)
-            let msg = ChatMessage(role: .assistant, content: caption ?? "", fileAttachment: attachment)
-            tabs[tabIndex].messages.append(msg)
-            tabs[tabIndex].isThinking = false
+            messages.append(ChatMessage(role: .assistant, content: caption ?? "", fileAttachment: attachment))
+            isThinking = false
 
         case .reloading:
-            let msg = ChatMessage(role: .system, content: "Reloading configuration…")
-            tabs[tabIndex].messages.append(msg)
+            messages.append(ChatMessage(role: .system, content: "Reloading configuration…"))
 
         case .pong, .unknown:
             break

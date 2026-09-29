@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Settings sheet — host configuration and per-agent connection status.
+/// Settings sheet — hub host and agent selection.
 struct SettingsView: View {
     @Environment(AgentStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("residuum.host") private var host = "127.0.0.1"
+    @AppStorage("residuum.agent") private var agent = ""
     @State private var editingHost = ""
+    @State private var editingAgent = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -51,19 +53,26 @@ struct SettingsView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
                                 .overlay(RoundedRectangle(cornerRadius: 6)
                                     .stroke(Style.border, lineWidth: 1))
-                            Text("Ports are read from the agent registry.")
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Agent")
+                                .font(Style.literata(size: 12))
+                                .foregroundStyle(Style.textMuted)
+                            TextField("first running agent", text: $editingAgent)
+                                .font(Style.mono(size: 12))
+                                .foregroundStyle(Style.textPrimary)
+                                .textFieldStyle(.plain)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Style.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Style.border, lineWidth: 1))
+                            Text("Leave empty to use the first running agent.")
                                 .font(Style.literata(size: 11))
                                 .italic()
                                 .foregroundStyle(Style.textDim)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Agents")
-                                .font(Style.literata(size: 12))
-                                .foregroundStyle(Style.textMuted)
-                            ForEach(store.tabs) { tab in
-                                AgentStatusRow(tab: tab)
-                            }
                         }
                     }
                 }
@@ -76,7 +85,8 @@ struct SettingsView: View {
                 Spacer()
                 Button("Save") {
                     host = editingHost
-                    store.reconnectAll(host: editingHost)
+                    agent = editingAgent
+                    store.reconnect(host: editingHost, agent: editingAgent)
                     dismiss()
                 }
                 .font(Style.mono(size: 11))
@@ -87,44 +97,9 @@ struct SettingsView: View {
         }
         .background(Style.background)
         .frame(width: 340, height: 400)
-        .onAppear { editingHost = host }
-    }
-}
-
-private struct AgentStatusRow: View {
-    let tab: AgentTab
-
-    private var stateLabel: String {
-        switch tab.connection.state {
-        case .connected:    return "connected"
-        case .connecting:   return "connecting…"
-        case .disconnected: return "disconnected"
-        }
-    }
-
-    private var stateColor: Color {
-        switch tab.connection.state {
-        case .connected:    return Style.blue
-        case .connecting:   return Style.moss
-        case .disconnected: return Style.textDim
-        }
-    }
-
-    var body: some View {
-        HStack {
-            Circle()
-                .fill(stateColor)
-                .frame(width: 5, height: 5)
-            Text(tab.name)
-                .font(Style.mono(size: 11))
-                .foregroundStyle(Style.textPrimary)
-            Spacer()
-            Text(":\(tab.port)")
-                .font(Style.mono(size: 10))
-                .foregroundStyle(Style.textMuted)
-            Text(stateLabel)
-                .font(Style.mono(size: 10))
-                .foregroundStyle(stateColor)
+        .onAppear {
+            editingHost = host
+            editingAgent = agent
         }
     }
 }
