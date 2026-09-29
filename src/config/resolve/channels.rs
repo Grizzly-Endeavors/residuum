@@ -7,7 +7,7 @@ use super::super::constants::{
     DEFAULT_TEAMS_PORT, DEFAULT_TELEGRAM_CONTEXT_MESSAGES,
 };
 use super::super::deserialize::{
-    ConfigFile, DiscordConfigFile, TeamsConfigFile, TelegramConfigFile, WebhookEntryFile,
+    AgentConfigFile, DiscordConfigFile, TeamsConfigFile, TelegramConfigFile, WebhookEntryFile,
 };
 use super::super::secrets::SecretStore;
 use super::super::types::{
@@ -15,31 +15,26 @@ use super::super::types::{
     WebhookRouting,
 };
 
-/// Resolve a bot token from an env var, falling back to the raw TOML value with secret expansion.
-pub(super) fn resolve_bot_token(
-    env_var: &str,
-    raw_token: Option<&str>,
-    secrets: &SecretStore,
-) -> Option<String> {
-    std::env::var(env_var)
-        .ok()
-        .or_else(|| raw_token.and_then(|t| super::resolve_secret_value(t, secrets)))
+/// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
+/// expansion. There are no agent-scoped env var overrides (such as
+/// `RESIDUUM_DISCORD_TOKEN`): in a multi-agent hub they would apply the same
+/// value to every agent. A set one gets a startup notice — see
+/// `removed_agent_env_override_notices`.
+pub(super) fn resolve_bot_token(raw_token: Option<&str>, secrets: &SecretStore) -> Option<String> {
+    raw_token
+        .and_then(|t| super::resolve_secret_value(t, secrets))
         .filter(|t| !t.is_empty())
 }
 
-/// Resolve Discord configuration from TOML section and environment.
+/// Resolve Discord configuration from the TOML section.
 ///
-/// Token resolution: `RESIDUUM_DISCORD_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
+/// Token resolution: `token` field in TOML (with `${ENV_VAR}` / `secret:name`
+/// expansion) > `None` if section is absent or no token found.
 pub(super) fn resolve_discord_config(
     section: Option<&DiscordConfigFile>,
     secrets: &SecretStore,
 ) -> Option<DiscordConfig> {
-    let token = resolve_bot_token(
-        "RESIDUUM_DISCORD_TOKEN",
-        section.and_then(|s| s.token.as_deref()),
-        secrets,
-    );
+    let token = resolve_bot_token(section.and_then(|s| s.token.as_deref()), secrets);
 
     match (section, token) {
         (_, Some(tok)) => Some(DiscordConfig {
@@ -52,7 +47,7 @@ pub(super) fn resolve_discord_config(
         (Some(_), None) => {
             tracing::warn!(
                 section = "discord",
-                "section present but no token found; set RESIDUUM_DISCORD_TOKEN or token in config"
+                "section present but no token found; set token in config"
             );
             None
         }
@@ -60,19 +55,15 @@ pub(super) fn resolve_discord_config(
     }
 }
 
-/// Resolve Telegram configuration from TOML section and environment.
+/// Resolve Telegram configuration from the TOML section.
 ///
-/// Token resolution: `RESIDUUM_TELEGRAM_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
+/// Token resolution: `token` field in TOML (with `${ENV_VAR}` / `secret:name`
+/// expansion) > `None` if section is absent or no token found.
 pub(super) fn resolve_telegram_config(
     section: Option<&TelegramConfigFile>,
     secrets: &SecretStore,
 ) -> Option<TelegramConfig> {
-    let token = resolve_bot_token(
-        "RESIDUUM_TELEGRAM_TOKEN",
-        section.and_then(|s| s.token.as_deref()),
-        secrets,
-    );
+    let token = resolve_bot_token(section.and_then(|s| s.token.as_deref()), secrets);
 
     match (section, token) {
         (_, Some(tok)) => Some(TelegramConfig {
@@ -85,7 +76,7 @@ pub(super) fn resolve_telegram_config(
         (Some(_), None) => {
             tracing::warn!(
                 section = "telegram",
-                "section present but no token found; set RESIDUUM_TELEGRAM_TOKEN or token in config"
+                "section present but no token found; set token in config"
             );
             None
         }
@@ -93,10 +84,10 @@ pub(super) fn resolve_telegram_config(
     }
 }
 
-/// Resolve Microsoft Teams configuration from the TOML section and environment.
+/// Resolve Microsoft Teams configuration from the TOML section.
 ///
-/// The client secret comes from `RESIDUUM_TEAMS_APP_PASSWORD` or the
-/// `app_password` field (with `${ENV_VAR}` / `secret:name` expansion).
+/// The client secret comes from the `app_password` field (with `${ENV_VAR}`
+/// / `secret:name` expansion).
 ///
 /// Teams is an optional, independent feature: a half-configured `[teams]`
 /// section (missing `app_id`, `tenant_id`, or the app password) disables
@@ -129,12 +120,8 @@ pub(super) fn resolve_teams_config(
         disable("tenant_id");
         return None;
     };
-    let Some(app_password) = resolve_bot_token(
-        "RESIDUUM_TEAMS_APP_PASSWORD",
-        section.app_password.as_deref(),
-        secrets,
-    ) else {
-        disable("app_password (set RESIDUUM_TEAMS_APP_PASSWORD or app_password)");
+    let Some(app_password) = resolve_bot_token(section.app_password.as_deref(), secrets) else {
+        disable("app_password");
         return None;
     };
 
@@ -241,7 +228,7 @@ fn resolve_webhook_entry(
 /// to no idle channel (idle switching stays disabled) with a notice, rather
 /// than failing the whole config over one bad setting.
 pub(super) fn resolve_idle_config(
-    file: Option<&ConfigFile>,
+    file: Option<&AgentConfigFile>,
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
     teams: Option<&TeamsConfig>,
@@ -289,7 +276,7 @@ pub(super) fn resolve_idle_config(
 /// Idle validation needs the three chat configs, so they are resolved together.
 #[must_use]
 pub(super) fn resolve_configured_chats(
-    file: Option<&ConfigFile>,
+    file: Option<&AgentConfigFile>,
     secrets: &SecretStore,
     notices: &mut Vec<String>,
 ) -> (

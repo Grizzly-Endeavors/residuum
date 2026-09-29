@@ -17,7 +17,7 @@ use serenity::prelude::*;
 
 use crate::background::registry::SessionRegistry;
 use crate::bus::Publisher;
-use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
@@ -41,7 +41,7 @@ pub(super) struct DiscordHandler {
     pub(super) state: Arc<DiscordState>,
     pub(super) publisher: Publisher,
     pub(super) inbox_dir: PathBuf,
-    pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    pub(super) reload_tx: crate::gateway::types::ReloadSender,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     pub(super) session_registry: Arc<SessionRegistry>,
@@ -430,7 +430,9 @@ mod tests {
             state,
             publisher: crate::bus::spawn_broker().publisher(),
             inbox_dir: std::env::temp_dir(),
-            reload_tx: tokio::sync::watch::channel(ReloadSignal::Root).0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),

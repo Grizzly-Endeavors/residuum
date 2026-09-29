@@ -65,7 +65,7 @@ fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
 pub(super) async fn api_agent_keys_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<ListAgentKeysResponse>, (StatusCode, String)> {
-    let snapshot = AgentKeys::new(state.config_dir)
+    let snapshot = AgentKeys::new(state.hub_dir)
         .snapshot()
         .await
         .map_err(|e| error_response(&e))?;
@@ -82,7 +82,7 @@ pub(super) async fn api_agent_keys_set(
     state
         .checkpoint_config_before_write(format!("set agent key '{}'", req.name))
         .await;
-    let warning = AgentKeys::new(state.config_dir)
+    let warning = AgentKeys::new(state.hub_dir)
         .set(
             &req.name,
             &req.value,
@@ -106,7 +106,7 @@ pub(super) async fn api_agent_keys_delete(
     let checkpoint_id = state
         .checkpoint_config_id_before_write(format!("delete agent key '{name}'"))
         .await;
-    AgentKeys::new(state.config_dir)
+    AgentKeys::new(state.hub_dir)
         .delete(&name)
         .await
         .map_err(|e| error_response(&e))?;
@@ -122,7 +122,9 @@ mod tests {
 
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
+            hub_dir: dir.to_path_buf(),
             config_dir: dir.to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -251,7 +253,7 @@ mod tests {
         let stored = state
             .checkpoints
             .file_content_at(
-                crate::checkpoints::RepoKind::Config,
+                crate::checkpoints::RepoKind::Hub,
                 id.clone(),
                 "agent-keys.toml.enc".to_string(),
             )
@@ -262,7 +264,7 @@ mod tests {
             "the returned checkpoint must still contain the key file"
         );
 
-        std::fs::write(state.config_dir.join("config.toml"), "later = true").unwrap();
+        std::fs::write(state.hub_dir.join("config.toml"), "later = true").unwrap();
         let later = state
             .checkpoint_config_id_before_write("later config write")
             .await
@@ -293,8 +295,9 @@ mod tests {
 
         let objects = dir
             .path()
+            .join("hub")
             .join("checkpoints")
-            .join("config.git")
+            .join("hub-config.git")
             .join("objects");
         std::fs::set_permissions(&objects, std::fs::Permissions::from_mode(0o500)).unwrap();
         let _reset = ResetObjects(&objects);

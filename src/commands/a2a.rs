@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use residuum::a2a::A2aKeys;
 use residuum::checkpoints::CheckpointEngine;
-use residuum::config::Config;
 use residuum::util::FatalError;
 
 /// A2A subcommands.
@@ -45,7 +44,7 @@ pub(super) async fn run_a2a_command(command: &A2aCommand) -> Result<(), FatalErr
 }
 
 async fn run_a2a_keys_command(command: &A2aKeysCommand) -> Result<(), FatalError> {
-    run_a2a_keys_command_at(Config::config_dir()?, command).await
+    run_a2a_keys_command_at(residuum::config::default_hub_dir()?, command).await
 }
 
 /// [`run_a2a_keys_command`] against an explicit config directory, so the
@@ -195,13 +194,7 @@ mod tests {
 
         let engine = CheckpointEngine::open_for_cli(dir.path()).unwrap();
         let page = engine
-            .list_checkpoints(
-                residuum::checkpoints::RepoKind::Config,
-                None,
-                None,
-                None,
-                None,
-            )
+            .list_checkpoints(residuum::checkpoints::RepoKind::Hub, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(

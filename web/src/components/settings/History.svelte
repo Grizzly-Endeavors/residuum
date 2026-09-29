@@ -21,7 +21,11 @@
 
   let repo = $state<RepoKind>("workspace");
   let pathFilter = $state("");
-  let stats = $state<Record<RepoKind, RepoStats | null>>({ workspace: null, config: null });
+  let stats = $state<Record<RepoKind, RepoStats | null>>({
+    workspace: null,
+    agent_config: null,
+    hub: null,
+  });
 
   let items = $state<CheckpointSummary[]>([]);
   let nextCursor = $state<string | null>(null);
@@ -42,11 +46,12 @@
 
   async function loadStats(): Promise<void> {
     try {
-      const [workspace, config] = await Promise.all([
+      const [workspace, agent_config, hub] = await Promise.all([
         fetchCheckpointStats("workspace"),
-        fetchCheckpointStats("config"),
+        fetchCheckpointStats("agent_config"),
+        fetchCheckpointStats("hub"),
       ]);
-      stats = { workspace, config };
+      stats = { workspace, agent_config, hub };
     } catch {
       // Stats are a footnote, not load-bearing — the list still works without them.
     }
@@ -176,10 +181,17 @@
         </button>
         <button
           class="settings-mode-btn"
-          class:active={repo === "config"}
-          onclick={() => switchRepo("config")}
+          class:active={repo === "agent_config"}
+          onclick={() => switchRepo("agent_config")}
         >
-          Config
+          Agent config
+        </button>
+        <button
+          class="settings-mode-btn"
+          class:active={repo === "hub"}
+          onclick={() => switchRepo("hub")}
+        >
+          Hub config
         </button>
       </div>
       <form
@@ -278,7 +290,7 @@
           {:else}
             <ul class="history-paths">
               {#each detail.changed_paths as cp (cp.path)}
-                {@const encrypted = repo === "config" && isEncryptedConfigFile(cp.path)}
+                {@const encrypted = repo === "hub" && isEncryptedConfigFile(cp.path)}
                 <li class="history-path">
                   <div class="history-path-row">
                     <span class="history-path-name">{cp.path}</span>

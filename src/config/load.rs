@@ -1,88 +1,66 @@
-//! Config loading and validation methods.
+//! Agent config loading and validation methods: the agent counterpart to
+//! [`super::hub_load`]'s `HubConfig::load_at`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::util::FatalError;
 
-use super::Config;
 use super::tolerant::parse_tolerating_unknown_keys;
+use super::{Config, HubConfig};
 use super::{bootstrap, deserialize, resolve};
 
 impl Config {
-    /// Write default config files to `~/.residuum/` if not already present.
+    /// Create an agent's `config/` directory and regenerate its reference
+    /// templates.
     ///
-    /// - `config.toml` is created only if absent (minimal template for the user to edit).
-    /// - `config.example.toml` is always regenerated (kept in sync with the current schema).
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the config directory or files cannot be written.
-    pub fn bootstrap_config_dir() -> Result<(), FatalError> {
-        let dir = bootstrap::default_config_dir()?;
-        bootstrap::bootstrap_at(&dir)
-    }
-
-    /// Write default config files to an arbitrary directory.
-    ///
-    /// Same as [`bootstrap_config_dir`](Self::bootstrap_config_dir) but targets
-    /// a caller-specified path instead of `~/.residuum/`.
+    /// - `config.example.toml`/`providers.example.toml` are always regenerated (kept in
+    ///   sync with the current schema).
+    /// - The live `config.toml`/`providers.toml` are never written here: an
+    ///   agent is discovered by its `config/config.toml`, so the caller writes it
+    ///   last, once the real configuration is complete.
     ///
     /// # Errors
     /// Returns `FatalError::Config` if the directory or files cannot be written.
-    pub fn bootstrap_at_dir(dir: &std::path::Path) -> Result<(), FatalError> {
-        bootstrap::bootstrap_at(dir)
+    pub fn bootstrap_agent_config_dir(agent_config_dir: &Path) -> Result<(), FatalError> {
+        bootstrap::bootstrap_agent_at(agent_config_dir)
     }
 
-    /// Get the default config directory path (`~/.residuum/`).
+    /// Load an agent's configuration from `agent_dir` (its workspace root)
+    /// and the hub config it belongs to.
+    ///
+    /// The agent's own `config.toml`/`providers.toml` live in
+    /// `agent_dir/config/`. The agent's name is `agent_dir`'s directory name.
     ///
     /// # Errors
-    /// Returns `FatalError::Config` if the home directory cannot be determined.
-    pub fn config_dir() -> Result<PathBuf, FatalError> {
-        bootstrap::default_config_dir()
+    /// Returns `FatalError::Config` if `providers.toml` is missing, either
+    /// file exists but cannot be read or parsed, or required values are
+    /// missing/invalid.
+    #[tracing::instrument(skip_all, fields(agent_dir = %agent_dir.display()))]
+    pub fn load_agent_at(agent_dir: &Path, hub: &HubConfig) -> Result<Self, FatalError> {
+        let agent_config_dir = agent_dir.join("config");
+        let config_path = agent_config_dir.join("config.toml");
+        let providers_path = find_providers_path(&agent_config_dir)?;
+        let agent_name = agent_name_from_dir(agent_dir)?;
+        Self::load_agent_from_paths(agent_dir, &config_path, &providers_path, &agent_name, hub)
     }
 
-    /// Load configuration from the default config file and environment.
+    /// Load an agent's configuration from explicit `config.toml`/`providers.toml`
+    /// paths.
     ///
-    /// Priority: env vars > config file > defaults.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the config file exists but cannot be
-    /// read or parsed, or if required values are missing.
-    pub fn load() -> Result<Self, FatalError> {
-        let config_dir = bootstrap::default_config_dir()?;
-        Self::load_at(&config_dir)
-    }
-
-    /// Load configuration from a specific directory.
-    ///
-    /// Same as [`load`](Self::load) but reads `config.toml` from the given
-    /// directory instead of the default `~/.residuum/`.
-    ///
-    /// # Errors
-    /// Returns `FatalError::Config` if the config file exists but cannot be
-    /// read or parsed, or if required values are missing.
-    #[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
-    pub fn load_at(config_dir: &std::path::Path) -> Result<Self, FatalError> {
-        let config_path = config_dir.join("config.toml");
-        let providers_path = find_providers_path(config_dir)?;
-        Self::load_from_paths(config_dir, &config_path, &providers_path)
-    }
-
-    /// Load configuration from explicit `config.toml`/`providers.toml`
-    /// paths, resolved against `config_dir` for everything else (secrets,
-    /// workspace defaults, tool paths).
-    ///
-    /// Used by [`load_at`](Self::load_at) for the normal path, and by the
-    /// last-known-good fallback (`gateway::last_known_good`) to load a
+    /// Used by [`load_agent_at`](Self::load_agent_at) for the normal path, and by
+    /// the last-known-good fallback (`gateway::last_known_good`) to load a
     /// saved copy under different filenames without touching the user's
     /// live `config.toml`/`providers.toml`.
     ///
     /// # Errors
     /// Returns `FatalError::Config` if either file exists but cannot be
     /// read or parsed, or if required values are missing.
-    pub(crate) fn load_from_paths(
-        config_dir: &std::path::Path,
-        config_path: &std::path::Path,
-        providers_path: &std::path::Path,
+    pub(crate) fn load_agent_from_paths(
+        agent_dir: &Path,
+        config_path: &Path,
+        providers_path: &Path,
+        agent_name: &str,
+        hub: &HubConfig,
     ) -> Result<Self, FatalError> {
         let (file_config, config_notices) = if config_path.exists() {
             let contents = std::fs::read_to_string(config_path).map_err(|e| {
@@ -91,9 +69,11 @@ impl Config {
                     config_path.display()
                 ))
             })?;
-            let (parsed, notices) =
-                parse_tolerating_unknown_keys::<deserialize::ConfigFile>(&contents, "config.toml")
-                    .map_err(FatalError::Config)?;
+            let (parsed, notices) = parse_tolerating_unknown_keys::<deserialize::AgentConfigFile>(
+                &contents,
+                "config.toml",
+            )
+            .map_err(FatalError::Config)?;
             (Some(parsed), notices)
         } else {
             (None, Vec::new())
@@ -101,126 +81,151 @@ impl Config {
 
         let (providers, providers_notices) = load_providers(providers_path)?;
 
-        let mut cfg =
-            resolve::from_file_and_env(file_config.as_ref(), Some(&providers), config_dir)?;
+        let mut cfg = resolve::from_file_and_env(
+            file_config.as_ref(),
+            Some(&providers),
+            agent_dir,
+            agent_name,
+            hub,
+        )?;
         let mut load_notices = config_notices;
         load_notices.extend(providers_notices);
         load_notices.extend(std::mem::take(&mut cfg.load_notices));
         cfg.load_notices = load_notices;
 
         tracing::info!(
+            agent = %agent_name,
             config = %config_path.display(),
             providers = %providers_path.display(),
             main_model = %cfg.main.first().map(|p| p.model.to_string()).unwrap_or_default(),
-            timezone = %cfg.timezone,
             notices = cfg.load_notices.len(),
-            "config loaded"
+            "agent config loaded"
         );
         Ok(cfg)
     }
 
-    /// Check that `config.toml` and `providers.toml` in `config_dir` are
+    /// Check that an agent's `config.toml` and `providers.toml` are
     /// well-formed: valid TOML containing only known keys.
     ///
     /// Missing files pass. Semantic checks (required values, model specs)
-    /// are left to [`load_at`](Self::load_at), so this separates a malformed
-    /// file from one that is merely not configured yet.
+    /// are left to [`load_agent_at`](Self::load_agent_at), so this separates a
+    /// malformed file from one that is merely not configured yet.
     ///
     /// # Errors
     /// Returns `FatalError::Config` naming the file and the parse error.
-    pub fn check_files_parse_at(config_dir: &std::path::Path) -> Result<(), FatalError> {
-        read_optional_toml::<deserialize::ConfigFile>(
-            &config_dir.join("config.toml"),
+    pub fn check_files_parse_at(agent_config_dir: &Path) -> Result<(), FatalError> {
+        read_optional_toml::<deserialize::AgentConfigFile>(
+            &agent_config_dir.join("config.toml"),
             "config.toml",
         )
         .map_err(FatalError::Config)?;
         read_optional_toml::<deserialize::ProvidersFile>(
-            &config_dir.join("providers.toml"),
+            &agent_config_dir.join("providers.toml"),
             "providers.toml",
         )
         .map_err(FatalError::Config)?;
         Ok(())
     }
 
-    /// Validate a TOML string as a config file without saving it.
+    /// Validate a TOML string as an agent's `config.toml` without saving it.
     ///
     /// Parses the TOML into the raw config structure, then runs full resolution
-    /// to catch semantic errors (missing timezone, etc.). Reads the existing
-    /// `providers.toml` from the config directory for model resolution.
+    /// to catch semantic errors. Reads the existing `providers.toml` from the
+    /// agent's config directory for model resolution.
     ///
     /// # Errors
     /// Returns a human-readable error string if validation fails.
-    pub fn validate_toml(contents: &str, config_dir: &std::path::Path) -> Result<(), String> {
+    pub fn validate_agent_toml(
+        contents: &str,
+        agent_dir: &Path,
+        agent_name: &str,
+        hub: &HubConfig,
+    ) -> Result<(), String> {
         let (file, _notices) =
-            parse_tolerating_unknown_keys::<deserialize::ConfigFile>(contents, "config.toml")?;
+            parse_tolerating_unknown_keys::<deserialize::AgentConfigFile>(contents, "config.toml")?;
 
-        // Load providers.toml from disk for resolution (may not exist during setup)
         let providers_file = read_optional_toml::<deserialize::ProvidersFile>(
-            &config_dir.join("providers.toml"),
+            &agent_dir.join("config").join("providers.toml"),
             "providers.toml",
         )?;
 
-        resolve::from_file_and_env(Some(&file), providers_file.as_ref(), config_dir)
-            .map_err(|e| e.to_string())?;
+        resolve::from_file_and_env(
+            Some(&file),
+            providers_file.as_ref(),
+            agent_dir,
+            agent_name,
+            hub,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Validate a TOML string as a providers file without saving it.
+    /// Validate a TOML string as an agent's `providers.toml` without saving it.
     ///
     /// Parses the TOML and runs model resolution against the existing
     /// `config.toml` on disk to catch semantic errors.
     ///
     /// # Errors
     /// Returns a human-readable error string if validation fails.
-    pub fn validate_providers_toml(
+    pub fn validate_agent_providers_toml(
         contents: &str,
-        config_dir: &std::path::Path,
+        agent_dir: &Path,
+        agent_name: &str,
+        hub: &HubConfig,
     ) -> Result<(), String> {
         let (providers_file, _notices) = parse_tolerating_unknown_keys::<deserialize::ProvidersFile>(
             contents,
             "providers.toml",
         )?;
 
-        // Load config.toml from disk for resolution
-        let config_file = read_optional_toml::<deserialize::ConfigFile>(
-            &config_dir.join("config.toml"),
+        let config_file = read_optional_toml::<deserialize::AgentConfigFile>(
+            &agent_dir.join("config").join("config.toml"),
             "config.toml",
         )?;
 
-        resolve::from_file_and_env(config_file.as_ref(), Some(&providers_file), config_dir)
-            .map_err(|e| e.to_string())?;
+        resolve::from_file_and_env(
+            config_file.as_ref(),
+            Some(&providers_file),
+            agent_dir,
+            agent_name,
+            hub,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Diagnostics for `contents` as `config.toml`.
+    /// Diagnostics for `contents` as an agent's `config.toml`.
     ///
-    /// Reuses [`Self::validate_toml`] for the semantic check, so a diagnostic
-    /// can never disagree with what loading rejects. Parses the TOML a
-    /// second time first so a syntax error can carry the parser's own
-    /// line/column via its byte span — `validate_toml` only returns the
-    /// crate's pre-formatted `Display` text, which has no structured
-    /// position. Semantic errors (missing timezone, a bad model string) have
-    /// no byte position to report, since they're found only after
-    /// deserialization succeeds.
+    /// Reuses [`Self::validate_agent_toml`] for the semantic check, so a
+    /// diagnostic can never disagree with what loading rejects. Parses the
+    /// TOML a second time first so a syntax error can carry the parser's own
+    /// line/column via its byte span — `validate_agent_toml` only returns
+    /// the crate's pre-formatted `Display` text, which has no structured
+    /// position. Semantic errors have no byte position to report, since
+    /// they're found only after deserialization succeeds.
     #[must_use]
-    pub fn diagnose_toml(
+    pub fn diagnose_agent_toml(
         contents: &str,
-        config_dir: &std::path::Path,
+        agent_dir: &Path,
+        agent_name: &str,
+        hub: &HubConfig,
     ) -> Vec<crate::diagnostics::Diagnostic> {
-        diagnose_toml_file::<deserialize::ConfigFile>(contents, "config.toml", || {
-            Self::validate_toml(contents, config_dir)
+        diagnose_toml_file::<deserialize::AgentConfigFile>(contents, "config.toml", || {
+            Self::validate_agent_toml(contents, agent_dir, agent_name, hub)
         })
     }
 
-    /// Diagnostics for `contents` as `providers.toml`. See
-    /// [`Self::diagnose_toml`] for the approach.
+    /// Diagnostics for `contents` as an agent's `providers.toml`. See
+    /// [`Self::diagnose_agent_toml`] for the approach.
     #[must_use]
-    pub fn diagnose_providers_toml(
+    pub fn diagnose_agent_providers_toml(
         contents: &str,
-        config_dir: &std::path::Path,
+        agent_dir: &Path,
+        agent_name: &str,
+        hub: &HubConfig,
     ) -> Vec<crate::diagnostics::Diagnostic> {
         diagnose_toml_file::<deserialize::ProvidersFile>(contents, "providers.toml", || {
-            Self::validate_providers_toml(contents, config_dir)
+            Self::validate_agent_providers_toml(contents, agent_dir, agent_name, hub)
         })
     }
 
@@ -240,12 +245,31 @@ impl Config {
     }
 }
 
-/// Locate the `providers.toml` to load for the given config directory.
+/// The agent's name from its workspace directory's file name.
+///
+/// # Errors
+/// Returns `FatalError::Config` if `agent_dir` has no valid UTF-8 file name
+/// component (shouldn't happen for a directory reached through agent
+/// discovery, which already filters on this).
+fn agent_name_from_dir(agent_dir: &Path) -> Result<String, FatalError> {
+    agent_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            FatalError::Config(format!(
+                "couldn't determine an agent name from directory {}",
+                agent_dir.display()
+            ))
+        })
+}
+
+/// Locate the `providers.toml` to load for the given agent config directory.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if no providers file can be found.
-fn find_providers_path(config_dir: &std::path::Path) -> Result<std::path::PathBuf, FatalError> {
-    let providers_path = config_dir.join("providers.toml");
+fn find_providers_path(agent_config_dir: &Path) -> Result<PathBuf, FatalError> {
+    let providers_path = agent_config_dir.join("providers.toml");
     if providers_path.exists() {
         return Ok(providers_path);
     }
@@ -261,7 +285,7 @@ fn find_providers_path(config_dir: &std::path::Path) -> Result<std::path::PathBu
 /// # Errors
 /// Returns a human-readable error string if the file cannot be read or parsed.
 fn read_optional_toml<T: serde::de::DeserializeOwned>(
-    path: &std::path::Path,
+    path: &Path,
     file_name: &str,
 ) -> Result<Option<T>, String> {
     if !path.exists() {
@@ -277,11 +301,11 @@ fn read_optional_toml<T: serde::de::DeserializeOwned>(
 /// Shared syntax-then-semantic diagnostic path for a TOML config file: try
 /// to parse `contents` as `T` first so a syntax error carries the parser's
 /// own line/column (from its byte span). An unknown top-level key is not a
-/// syntax error here — [`load_at`](Self::load_at) tolerates it (see
-/// [`parse_tolerating_unknown_keys`]), skipping the key with a notice
+/// syntax error here — [`load_agent_at`](Config::load_agent_at) tolerates it
+/// (see [`parse_tolerating_unknown_keys`]), skipping the key with a notice
 /// instead of failing the file — so it's reported as a warning, one per
 /// dropped key, not an error. Once the file parses (with or without keys
-/// dropped), `validate` (the real semantic check `load_at` also runs) finds
+/// dropped), `validate` (the real semantic check loading also runs) finds
 /// the one error loading would actually raise.
 fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
     contents: &str,
@@ -303,7 +327,7 @@ fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
 
         // At least one unknown key is present; re-parse tolerating it (and
         // any others) to collect one warning per dropped key, matching what
-        // load_at actually does with this content.
+        // loading actually does with this content.
         return match parse_tolerating_unknown_keys::<T>(contents, file_label) {
             Ok((_, notices)) => {
                 let mut diagnostics: Vec<Diagnostic> =
@@ -324,9 +348,7 @@ fn diagnose_toml_file<T: serde::de::DeserializeOwned>(
 }
 
 /// Load and parse a `providers.toml` file from the given path.
-fn load_providers(
-    path: &std::path::Path,
-) -> Result<(deserialize::ProvidersFile, Vec<String>), FatalError> {
+fn load_providers(path: &Path) -> Result<(deserialize::ProvidersFile, Vec<String>), FatalError> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
         FatalError::Config(format!(
             "failed to read providers config at {}: {e}",
@@ -341,49 +363,54 @@ fn load_providers(
 mod tests {
     use super::*;
 
-    /// Valid minimal config TOML (no providers/models — those are in providers.toml).
-    const VALID_CONFIG: &str = "timezone = \"UTC\"\n";
+    /// Valid minimal agent config TOML (no timezone — that's hub-level now).
+    const VALID_CONFIG: &str = "";
 
     /// Valid minimal providers TOML.
     const VALID_PROVIDERS: &str = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
 
-    /// Write a `providers.toml` to disk for tests that call `validate_toml`/`load_at`.
-    fn write_providers(dir: &std::path::Path) {
-        std::fs::write(dir.join("providers.toml"), VALID_PROVIDERS).unwrap();
+    fn test_hub() -> HubConfig {
+        HubConfig {
+            timezone: chrono_tz::UTC,
+            gateway: super::super::GatewayConfig::default(),
+            cloud: None,
+            a2a: super::super::HubA2aConfig::default(),
+            tracing: super::super::TracingConfig::default(),
+            background: super::super::HubBackgroundConfig::default(),
+            config_dir: std::env::temp_dir().join("residuum-test-load-hub"),
+            load_notices: Vec::new(),
+        }
+    }
+
+    /// Write a bootstrapped agent directory (`config/config.toml`,
+    /// `config/providers.toml`) under `dir/<name>`, returning the agent dir.
+    fn write_agent(dir: &Path, name: &str, config: &str, providers: &str) -> PathBuf {
+        let agent_dir = dir.join(name);
+        let config_dir = agent_dir.join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), config).unwrap();
+        std::fs::write(config_dir.join("providers.toml"), providers).unwrap();
+        agent_dir
     }
 
     #[test]
-    fn validate_toml_accepts_valid_config() {
+    fn validate_agent_toml_accepts_valid_config() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let result = Config::validate_toml(VALID_CONFIG, dir.path());
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
+        let result = Config::validate_agent_toml(VALID_CONFIG, &agent_dir, "sam", &test_hub());
         assert!(result.is_ok(), "valid config should pass: {result:?}");
     }
 
     #[test]
-    fn validate_toml_rejects_missing_timezone() {
+    fn validate_agent_toml_resolves_secrets_from_hub_store() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        // Empty config — no timezone
-        let result = Config::validate_toml("", dir.path());
-        assert!(result.is_err(), "missing timezone should fail validation");
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("timezone"),
-            "error should mention timezone: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_toml_resolves_secrets_from_real_store() {
-        let dir = tempfile::tempdir().unwrap();
-        // Store a secret
-        let mut store = super::super::secrets::SecretStore::load(dir.path()).unwrap();
+        let hub = test_hub();
+        std::fs::create_dir_all(&hub.config_dir).unwrap();
+        let mut store = super::super::secrets::SecretStore::load(&hub.config_dir).unwrap();
         store
-            .set("test_api_key", "sk-test-123", dir.path())
+            .set("test_api_key", "sk-test-123", &hub.config_dir)
             .unwrap();
 
-        // Providers file that references the secret
         let providers_with_secret = r#"
 [providers.my-provider]
 type = "anthropic"
@@ -392,9 +419,9 @@ api_key = "secret:test_api_key"
 [models]
 main = "my-provider/claude-sonnet-4-6"
 "#;
-        std::fs::write(dir.path().join("providers.toml"), providers_with_secret).unwrap();
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, providers_with_secret);
 
-        let result = Config::validate_toml(VALID_CONFIG, dir.path());
+        let result = Config::validate_agent_toml(VALID_CONFIG, &agent_dir, "sam", &hub);
         assert!(
             result.is_ok(),
             "secret reference should resolve with real store: {result:?}"
@@ -402,15 +429,19 @@ main = "my-provider/claude-sonnet-4-6"
     }
 
     #[test]
-    fn load_at_returns_error_on_invalid_toml() {
+    fn load_agent_at_returns_error_on_invalid_toml() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        std::fs::write(dir.path().join("config.toml"), "invalid toml syntax = [").unwrap();
+        let agent_dir = write_agent(
+            dir.path(),
+            "sam",
+            "invalid toml syntax = [",
+            VALID_PROVIDERS,
+        );
 
-        let result = Config::load_at(dir.path());
+        let result = Config::load_agent_at(&agent_dir, &test_hub());
         assert!(
             result.is_err(),
-            "load_at should fail on invalid TOML syntax"
+            "load_agent_at should fail on invalid TOML syntax"
         );
         let err = result.unwrap_err();
         assert!(
@@ -420,15 +451,16 @@ main = "my-provider/claude-sonnet-4-6"
     }
 
     #[test]
-    fn load_at_returns_error_when_providers_missing() {
+    fn load_agent_at_returns_error_when_providers_missing() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
-        // No providers.toml written
+        let agent_dir = dir.path().join("sam");
+        std::fs::create_dir_all(agent_dir.join("config")).unwrap();
+        std::fs::write(agent_dir.join("config/config.toml"), VALID_CONFIG).unwrap();
 
-        let result = Config::load_at(dir.path());
+        let result = Config::load_agent_at(&agent_dir, &test_hub());
         assert!(
             result.is_err(),
-            "load_at should fail when providers.toml is missing"
+            "load_agent_at should fail when providers.toml is missing"
         );
         let err = result.unwrap_err().to_string();
         assert!(
@@ -438,10 +470,21 @@ main = "my-provider/claude-sonnet-4-6"
     }
 
     #[test]
-    fn validate_toml_rejects_invalid_toml_syntax() {
+    fn load_agent_at_uses_the_directory_name_as_the_agent_name() {
         let dir = tempfile::tempdir().unwrap();
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
+        let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
+        assert_eq!(cfg.agent_name, "sam");
+        assert_eq!(cfg.workspace_dir, agent_dir);
+        assert_eq!(cfg.config_dir, agent_dir.join("config"));
+    }
+
+    #[test]
+    fn validate_agent_toml_rejects_invalid_toml_syntax() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
         let bad_toml = "this is not valid toml";
-        let result = Config::validate_toml(bad_toml, dir.path());
+        let result = Config::validate_agent_toml(bad_toml, &agent_dir, "sam", &test_hub());
         assert!(result.is_err(), "invalid TOML syntax should fail parse");
         let err = result.unwrap_err();
         assert!(
@@ -451,15 +494,13 @@ main = "my-provider/claude-sonnet-4-6"
     }
 
     #[test]
-    fn validate_providers_toml_rejects_invalid_model_format() {
+    fn validate_agent_providers_toml_rejects_invalid_model_format() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
 
-        let bad_providers = r#"
-[models]
-main = "invalid-format"
-"#;
-        let result = Config::validate_providers_toml(bad_providers, dir.path());
+        let bad_providers = "[models]\nmain = \"invalid-format\"\n";
+        let result =
+            Config::validate_agent_providers_toml(bad_providers, &agent_dir, "sam", &test_hub());
         assert!(
             result.is_err(),
             "missing slash in model should fail validation"
@@ -495,11 +536,13 @@ main = "invalid-format"
     }
 
     #[test]
-    fn diagnose_toml_reports_syntax_error_with_line_column() {
+    fn diagnose_agent_toml_reports_syntax_error_with_line_column() {
         use crate::diagnostics::Location;
 
         let dir = tempfile::tempdir().unwrap();
-        let diagnostics = Config::diagnose_toml("this is not valid toml", dir.path());
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
+        let diagnostics =
+            Config::diagnose_agent_toml("this is not valid toml", &agent_dir, "sam", &test_hub());
         assert_eq!(diagnostics.len(), 1, "should report exactly one diagnostic");
         assert!(
             matches!(
@@ -511,31 +554,13 @@ main = "invalid-format"
     }
 
     #[test]
-    fn diagnose_toml_reports_semantic_error_without_position() {
-        let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let diagnostics = Config::diagnose_toml("", dir.path());
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "missing timezone should be one diagnostic"
-        );
-        let diagnostic = diagnostics.first().unwrap();
-        assert!(diagnostic.message.contains("timezone"));
-        assert!(
-            diagnostic.location.is_none(),
-            "semantic error has no source position"
-        );
-    }
-
-    #[test]
-    fn diagnose_toml_reports_unknown_key_as_warning() {
+    fn diagnose_agent_toml_reports_unknown_key_as_warning() {
         use crate::diagnostics::Severity;
 
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let contents = "timezone = \"UTC\"\nnot_a_real_key = 1\n";
-        let diagnostics = Config::diagnose_toml(contents, dir.path());
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
+        let contents = "not_a_real_key = 1\n";
+        let diagnostics = Config::diagnose_agent_toml(contents, &agent_dir, "sam", &test_hub());
         assert_eq!(diagnostics.len(), 1, "should report exactly one diagnostic");
         let diagnostic = diagnostics.first().unwrap();
         assert_eq!(diagnostic.severity, Severity::Warning);
@@ -547,18 +572,21 @@ main = "invalid-format"
     }
 
     #[test]
-    fn diagnose_toml_clean_config_has_no_diagnostics() {
+    fn diagnose_agent_toml_clean_config_has_no_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        assert!(Config::diagnose_toml(VALID_CONFIG, dir.path()).is_empty());
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
+        assert!(
+            Config::diagnose_agent_toml(VALID_CONFIG, &agent_dir, "sam", &test_hub()).is_empty()
+        );
     }
 
     #[test]
-    fn diagnose_providers_toml_reports_semantic_error() {
+    fn diagnose_agent_providers_toml_reports_semantic_error() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
         let bad_providers = "[models]\nmain = \"invalid-format\"\n";
-        let diagnostics = Config::diagnose_providers_toml(bad_providers, dir.path());
+        let diagnostics =
+            Config::diagnose_agent_providers_toml(bad_providers, &agent_dir, "sam", &test_hub());
         assert_eq!(diagnostics.len(), 1);
         assert!(
             diagnostics
@@ -572,9 +600,8 @@ main = "invalid-format"
     #[test]
     fn idle_config_defaults_when_section_missing() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
-        let cfg = Config::load_at(dir.path()).unwrap();
+        let agent_dir = write_agent(dir.path(), "sam", VALID_CONFIG, VALID_PROVIDERS);
+        let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(30));
         assert!(cfg.idle.idle_channel.is_none());
     }
@@ -582,76 +609,23 @@ main = "invalid-format"
     #[test]
     fn idle_config_timeout_zero_disables() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let toml = "timezone = \"UTC\"\n\n[idle]\ntimeout_minutes = 0\n";
-        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let cfg = Config::load_at(dir.path()).unwrap();
+        let agent_dir = write_agent(
+            dir.path(),
+            "sam",
+            "[idle]\ntimeout_minutes = 0\n",
+            VALID_PROVIDERS,
+        );
+        let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::ZERO);
     }
 
     #[test]
     fn idle_config_explicit_values() {
         let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let toml = "timezone = \"UTC\"\n\n[telegram]\ntoken = \"test-token\"\n\n[idle]\ntimeout_minutes = 15\nidle_channel = \"telegram\"\n";
-        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let cfg = Config::load_at(dir.path()).unwrap();
+        let toml = "[telegram]\ntoken = \"test-token\"\n\n[idle]\ntimeout_minutes = 15\nidle_channel = \"telegram\"\n";
+        let agent_dir = write_agent(dir.path(), "sam", toml, VALID_PROVIDERS);
+        let cfg = Config::load_agent_at(&agent_dir, &test_hub()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(15));
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("telegram"));
-    }
-
-    #[test]
-    fn idle_channel_disabled_with_notice_for_unconfigured_interface() {
-        let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"telegram\"\n";
-        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let cfg = Config::load_at(dir.path()).unwrap();
-        assert!(
-            cfg.idle.idle_channel.is_none(),
-            "idle_channel=telegram without [telegram] should be disabled, not fail the config"
-        );
-        assert_eq!(cfg.load_notices.len(), 1);
-        let notice = cfg.load_notices.first().unwrap();
-        assert!(
-            notice.contains("idle_channel") && notice.contains("missing"),
-            "notice should mention idle_channel and missing section: {notice}"
-        );
-    }
-
-    #[test]
-    fn idle_channel_disabled_with_notice_for_unknown_name() {
-        let dir = tempfile::tempdir().unwrap();
-        write_providers(dir.path());
-        let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"sms\"\n";
-        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-        let cfg = Config::load_at(dir.path()).unwrap();
-        assert!(
-            cfg.idle.idle_channel.is_none(),
-            "idle_channel=sms should be disabled as unknown, not fail the config"
-        );
-        assert_eq!(cfg.load_notices.len(), 1);
-        let notice = cfg.load_notices.first().unwrap();
-        assert!(
-            notice.contains("not a recognized interface"),
-            "notice should mention unrecognized interface: {notice}"
-        );
-    }
-
-    #[test]
-    fn idle_channel_websocket_always_valid_and_names_the_ws_endpoint() {
-        for written in ["websocket", "ws"] {
-            let dir = tempfile::tempdir().unwrap();
-            write_providers(dir.path());
-            let toml = format!("timezone = \"UTC\"\n\n[idle]\nidle_channel = \"{written}\"\n");
-            std::fs::write(dir.path().join("config.toml"), toml).unwrap();
-            let cfg = Config::load_at(dir.path()).unwrap();
-            // Must match the registry's endpoint ID or idle switching silently does nothing.
-            assert_eq!(
-                cfg.idle.idle_channel.as_deref(),
-                Some("ws"),
-                "written as {written}"
-            );
-        }
     }
 }

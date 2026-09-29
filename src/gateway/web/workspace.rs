@@ -560,6 +560,7 @@ fn diagnose_write_content(
     let paths = crate::diagnostics::DiagnosticsPaths {
         config_dir: state.config_dir.clone(),
         workspace_dir: state.workspace_dir.clone(),
+        hub_dir: state.hub_dir.clone(),
     };
 
     let Ok(text) = std::str::from_utf8(bytes) else {
@@ -606,7 +607,7 @@ fn signal_identity_reload(relative: &str, state: &ConfigApiState) {
         && let Some(tx) = &state.reload_tx
     {
         // Best-effort: receiver may have been dropped during shutdown.
-        drop(tx.send(ReloadSignal::Workspace));
+        tx.send(ReloadSignal::Workspace).ok();
     }
 }
 
@@ -1299,7 +1300,9 @@ mod tests {
 
     fn make_state(ws_dir: PathBuf) -> ConfigApiState {
         super::super::ConfigApiState {
+            hub_dir: ws_dir.clone(),
             config_dir: ws_dir.clone(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
@@ -1687,9 +1690,12 @@ mod tests {
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
 
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
+            hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
@@ -1709,8 +1715,7 @@ mod tests {
         .await
         .unwrap();
 
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow(), ReloadSignal::Workspace);
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
     #[tokio::test]
@@ -2288,9 +2293,12 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
+            hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
@@ -2310,8 +2318,7 @@ mod tests {
         .await
         .unwrap();
 
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow(), ReloadSignal::Workspace);
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
     // ── Mkdir ────────────────────────────────────────────────────────
@@ -2882,9 +2889,12 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
+            hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
@@ -2905,8 +2915,7 @@ mod tests {
         .await
         .unwrap();
 
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow(), ReloadSignal::Workspace);
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
     #[tokio::test]

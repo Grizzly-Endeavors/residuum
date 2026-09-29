@@ -8,9 +8,9 @@ Agent keys live in their own encrypted store, separate from the system secret st
 
 | File | Holds |
 |------|-------|
-| `~/.residuum/agent-keys.toml.enc` | The keys: value, description, and who created each one. AES-256-GCM-SIV. |
-| `~/.residuum/agent-keys.key` | The store's own 32-byte machine key, mode 0600. |
-| `~/.residuum/agent-keys.lock` | Lock file that serializes writes from the CLI, the web UI, and the running agent. |
+| `~/.residuum/hub/agent-keys.toml.enc` | The keys: value, description, and who created each one. AES-256-GCM-SIV. |
+| `~/.residuum/hub/agent-keys.key` | The store's own 32-byte machine key, mode 0600. |
+| `~/.residuum/hub/agent-keys.lock` | Lock file that serializes writes from the CLI, the web UI, and the running agent. |
 
 No agent tool or MCP reference opens the system secret store (`secrets.toml.enc`), so the agent-key machinery never hands out a provider key. All of these files are write-blocked for `write_file` and `edit_file`.
 

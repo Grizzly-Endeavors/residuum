@@ -16,7 +16,7 @@ use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
-use crate::config::Config;
+use crate::config::{Config, HubConfig};
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -88,26 +88,31 @@ pub(super) async fn init_workspace(
 ) -> Result<(WorkspaceLayout, chrono_tz::Tz), FatalError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
-    ensure_workspace(&layout, cfg.name.as_deref(), Some(cfg.timezone.name())).await?;
+    // USER.md is personalized once, at onboarding time
+    // (`gateway::web::config::api_complete_setup`). Every later call here is
+    // idempotent (write-if-missing).
+    ensure_workspace(&layout, None, Some(cfg.timezone.name())).await?;
 
     Ok((layout, tz))
 }
 
-/// Open (or create) the workspace and config checkpoint repositories under
-/// `~/.residuum/checkpoints/`.
+/// Open (or create) the workspace, agent-config, and hub-config checkpoint
+/// repositories under `hub/checkpoints/`.
 ///
 /// # Errors
-/// Returns `FatalError` if either checkpoint repository can't be opened or
+/// Returns `FatalError` if any checkpoint repository can't be opened or
 /// initialized.
 fn init_checkpoints(
     layout: &WorkspaceLayout,
     cfg: &Config,
+    hub: &HubConfig,
     publisher: &crate::bus::Publisher,
 ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, FatalError> {
-    let checkpoints_dir = cfg.config_dir.join("checkpoints");
+    let checkpoints_dir = crate::config::HubPaths::new(&hub.config_dir).checkpoints_dir();
     crate::checkpoints::CheckpointEngine::new(
         layout.root().to_path_buf(),
         cfg.config_dir.clone(),
+        hub.config_dir.clone(),
         &checkpoints_dir,
         Some(publisher.clone()),
     )
@@ -296,6 +301,7 @@ fn build_session_memory_components(
 /// `GatewayRuntime`, which doesn't exist yet at startup).
 struct StartupSpawnContextInputs<'a> {
     cfg: &'a Config,
+    hub_dir: &'a std::path::Path,
     layout: &'a WorkspaceLayout,
     tz: chrono_tz::Tz,
     http_client: SharedHttpClient,
@@ -352,6 +358,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         repeat_call_guard: inputs.cfg.agent.repeat_call_guard,
         layout: inputs.layout.clone(),
         config_dir: inputs.cfg.config_dir.clone(),
+        hub_dir: inputs.hub_dir.to_path_buf(),
         tz: inputs.tz,
         role_overrides: inputs.cfg.role_overrides.clone(),
         session_runtime: Arc::clone(inputs.session_runtime),
@@ -647,12 +654,14 @@ struct NetworkingComponents {
 /// servers, and load the channel/endpoint registry.
 async fn init_networking(
     cfg: &Config,
+    hub: &HubConfig,
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
 ) -> NetworkingComponents {
     let tools_path: SharedToolsPath =
         Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
-    let agent_keys = crate::agent_keys::AgentKeys::new_shared(&cfg.config_dir);
+    // Agent keys are hub-level and shared by every agent the hub hosts.
+    let agent_keys = crate::agent_keys::AgentKeys::new_shared(&hub.config_dir);
     let mcp_registry = init_mcp_servers(
         layout,
         Arc::clone(&tools_path),
@@ -832,6 +841,7 @@ async fn build_tools_and_agent(
 /// needs this many independent pieces.
 struct MainAgentInputs<'a> {
     cfg: &'a Config,
+    hub_dir: &'a std::path::Path,
     layout: &'a WorkspaceLayout,
     mem: &'a memory::MemoryComponents,
     tz: chrono_tz::Tz,
@@ -895,6 +905,7 @@ async fn build_main_agent(
             a2a_tracker: inputs.a2a_tracker,
             checkpoints: inputs.checkpoints,
             config_reload_tracker: inputs.config_reload_tracker,
+            hub_dir: inputs.hub_dir,
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -912,6 +923,7 @@ async fn build_main_agent(
 /// [`initialize`] purely to keep that function's line count down.
 struct AgentInitInputs<'a> {
     cfg: &'a Config,
+    hub_dir: &'a std::path::Path,
     layout: &'a WorkspaceLayout,
     tz: chrono_tz::Tz,
     http_client: SharedHttpClient,
@@ -952,6 +964,7 @@ async fn build_spawn_context_and_agent(
 ) {
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg: inputs.cfg,
+        hub_dir: inputs.hub_dir,
         layout: inputs.layout,
         tz: inputs.tz,
         http_client: inputs.http_client,
@@ -980,6 +993,7 @@ async fn build_spawn_context_and_agent(
 
     let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
         cfg: inputs.cfg,
+        hub_dir: inputs.hub_dir,
         layout: inputs.layout,
         mem: inputs.mem,
         tz: inputs.tz,
@@ -1011,9 +1025,10 @@ async fn build_spawn_context_and_agent(
 fn build_path_policy(
     cfg: &Config,
     layout: &WorkspaceLayout,
+    hub: &HubConfig,
 ) -> crate::tools::path_policy::SharedPathPolicy {
     crate::tools::PathPolicy::new_shared_with_blocked(
-        crate::tools::path_policy::blocked_write_paths(cfg, layout),
+        crate::tools::path_policy::blocked_write_paths(cfg, layout, &hub.config_dir),
     )
 }
 
@@ -1024,14 +1039,20 @@ async fn publish_degradation_notice(publisher: &crate::bus::Publisher, degradati
     }
 }
 
-/// Publish each of `cfg.load_notices` individually — already complete,
-/// standalone sentences describing one config.toml/providers.toml entry
-/// that was skipped or degraded while loading (see `config::resolve` and
-/// `config::tolerant`) — as opposed to the subsystem `degradations` above,
-/// which get folded into one shorter grouped sentence.
-async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
-    for notice in &cfg.load_notices {
+/// Publish each of the hub's and the agent's load notices individually —
+/// already complete, standalone sentences describing one hub or agent
+/// config.toml/providers.toml entry that was skipped or degraded while
+/// loading (see `config::resolve` and `config::tolerant`) — as opposed to
+/// the subsystem `degradations` above, which get folded into one shorter
+/// grouped sentence.
+async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config, hub: &HubConfig) {
+    for notice in hub.load_notices.iter().chain(&cfg.load_notices) {
         super::helpers::publish_notice(publisher, notice.clone()).await;
+    }
+    // Startup only: these come from the process environment, which a config
+    // reload cannot change, so reloads must not repeat them.
+    for notice in crate::config::resolve::removed_agent_env_override_notices() {
+        super::helpers::publish_notice(publisher, notice).await;
     }
 }
 
@@ -1041,6 +1062,7 @@ async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config) {
 /// keep that function's line count down.
 async fn init_workspace_and_checkpoints(
     cfg: &Config,
+    hub: &HubConfig,
     publisher: &crate::bus::Publisher,
 ) -> Result<
     (
@@ -1051,8 +1073,8 @@ async fn init_workspace_and_checkpoints(
     FatalError,
 > {
     let (layout, tz) = init_workspace(cfg).await?;
-    let checkpoints = init_checkpoints(&layout, cfg, publisher)?;
-    publish_load_notices(publisher, cfg).await;
+    let checkpoints = init_checkpoints(&layout, cfg, hub, publisher)?;
+    publish_load_notices(publisher, cfg, hub).await;
     Ok((layout, tz, checkpoints))
 }
 
@@ -1151,13 +1173,14 @@ struct SupportingInfra {
 /// function's line count down.
 async fn init_supporting_infra(
     cfg: &Config,
+    hub: &HubConfig,
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
     agent_messenger: Arc<AgentMessenger>,
 ) -> SupportingInfra {
-    let net = init_networking(cfg, layout, degradations).await;
+    let net = init_networking(cfg, hub, layout, degradations).await;
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
-    let path_policy = build_path_policy(cfg, layout);
+    let path_policy = build_path_policy(cfg, layout, hub);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
     SupportingInfra {
         net,
@@ -1176,14 +1199,21 @@ async fn init_supporting_infra(
 /// for why the session runtime can't be built any earlier.
 async fn init_infra_and_session_runtime(
     cfg: &Config,
+    hub: &HubConfig,
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
     publisher: &crate::bus::Publisher,
     sess: &SessionSubsystems,
     checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
 ) -> (SupportingInfra, Arc<SessionRuntime>) {
-    let infra =
-        init_supporting_infra(cfg, layout, degradations, Arc::clone(&sess.agent_messenger)).await;
+    let infra = init_supporting_infra(
+        cfg,
+        hub,
+        layout,
+        degradations,
+        Arc::clone(&sess.agent_messenger),
+    )
+    .await;
     let session_runtime = build_session_runtime(&SessionRuntimeInputs {
         cfg,
         publisher,
@@ -1207,9 +1237,10 @@ async fn init_infra_and_session_runtime(
 /// Returns `FatalError` if any subsystem fails to initialize.
 pub(crate) async fn initialize(
     cfg: &Config,
+    hub: &HubConfig,
     publisher: &crate::bus::Publisher,
 ) -> Result<GatewayComponents, FatalError> {
-    let (layout, tz, checkpoints) = init_workspace_and_checkpoints(cfg, publisher).await?;
+    let (layout, tz, checkpoints) = init_workspace_and_checkpoints(cfg, hub, publisher).await?;
 
     // Collects a plain-language line for every subsystem that degrades
     // along the way (rather than failing startup outright), so the whole
@@ -1237,6 +1268,7 @@ pub(crate) async fn initialize(
     .await;
     let (infra, session_runtime) = init_infra_and_session_runtime(
         cfg,
+        hub,
         &layout,
         &mut degradations,
         publisher,
@@ -1248,6 +1280,7 @@ pub(crate) async fn initialize(
     let (spawn_context, agent, output_topic_override_tx) =
         build_spawn_context_and_agent(AgentInitInputs {
             cfg,
+            hub_dir: &hub.config_dir,
             layout: &layout,
             tz,
             http_client: http.clone(),

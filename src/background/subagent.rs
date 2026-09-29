@@ -228,6 +228,7 @@ pub async fn build_subagent_resources(
     let SubAgentBuildConfig {
         workspace_layout,
         config_dir,
+        hub_dir,
         identity,
         options,
         max_tool_iterations,
@@ -280,6 +281,7 @@ pub async fn build_subagent_resources(
         hybrid_searcher,
         workspace_dir: workspace_layout.root().to_path_buf(),
         config_dir,
+        hub_dir,
         episodes_dir: workspace_layout.episodes_dir(),
         sessions_dir: workspace_layout.sessions_dir(),
         agent_inbox_dir: workspace_layout.agent_inbox_dir(),

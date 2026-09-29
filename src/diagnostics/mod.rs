@@ -149,12 +149,15 @@ impl Diagnostic {
 /// file on disk.
 #[derive(Debug, Clone)]
 pub struct DiagnosticsPaths {
-    /// The app config directory (`~/.residuum/` by default), holding
+    /// The agent's own config directory (`<agent>/config`), holding
     /// `config.toml` and `providers.toml`.
     pub config_dir: PathBuf,
     /// The workspace root, holding `config/channels.toml`, `config/mcp.json`,
     /// `config/a2a.json`, `HEARTBEAT.yml`, and skill `SKILL.md` files.
     pub workspace_dir: PathBuf,
+    /// The hub directory (`~/.residuum/hub`), needed to resolve the hub
+    /// config that `config.toml`/`providers.toml` diagnostics run against.
+    pub hub_dir: PathBuf,
 }
 
 /// Which strictly-parsed file `path` refers to, independent of content —
@@ -162,7 +165,8 @@ pub struct DiagnosticsPaths {
 /// (not yet known to be valid UTF-8) tell whether it's looking at one of
 /// these files before it has decoded text to hand to a validator.
 ///
-/// `config.toml`/`providers.toml` are matched by their canonical location
+/// The hub's `config.toml` is matched by its canonical location under
+/// `paths.hub_dir`, and the agent's `config.toml`/`providers.toml` by theirs
 /// under `paths.config_dir`; `config/channels.toml`, `config/mcp.json`, and
 /// `config/a2a.json` by their canonical location under `paths.workspace_dir`.
 /// `HEARTBEAT.yml` and `SKILL.md` are matched by filename alone, regardless
@@ -171,6 +175,7 @@ pub struct DiagnosticsPaths {
 /// skill scanner, which accepts a `SKILL.md` anywhere under the skills root).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileKind {
+    HubConfigToml,
     ConfigToml,
     ProvidersToml,
     ChannelsToml,
@@ -185,6 +190,9 @@ enum FileKind {
 fn recognize(path: &Path, paths: &DiagnosticsPaths) -> Option<FileKind> {
     let file_name = path.file_name().and_then(|n| n.to_str())?;
 
+    if paths_match(path, &paths.hub_dir.join("config.toml")) {
+        return Some(FileKind::HubConfigToml);
+    }
     if paths_match(path, &paths.config_dir.join("config.toml")) {
         return Some(FileKind::ConfigToml);
     }
@@ -233,9 +241,35 @@ pub fn diagnose(path: &Path, content: &str, paths: &DiagnosticsPaths) -> Option<
     let kind = recognize(path, paths)?;
 
     Some(match kind {
-        FileKind::ConfigToml => crate::config::Config::diagnose_toml(content, &paths.config_dir),
-        FileKind::ProvidersToml => {
-            crate::config::Config::diagnose_providers_toml(content, &paths.config_dir)
+        FileKind::HubConfigToml => crate::config::HubConfig::diagnose_toml(content, &paths.hub_dir),
+        FileKind::ConfigToml | FileKind::ProvidersToml => {
+            let agent_name = paths
+                .workspace_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            match crate::config::HubConfig::load_at(&paths.hub_dir) {
+                Ok(hub) => {
+                    if matches!(kind, FileKind::ConfigToml) {
+                        crate::config::Config::diagnose_agent_toml(
+                            content,
+                            &paths.workspace_dir,
+                            agent_name,
+                            &hub,
+                        )
+                    } else {
+                        crate::config::Config::diagnose_agent_providers_toml(
+                            content,
+                            &paths.workspace_dir,
+                            agent_name,
+                            &hub,
+                        )
+                    }
+                }
+                Err(e) => vec![Diagnostic::error(format!(
+                    "hub config couldn't be loaded, so this can't be fully validated: {e}"
+                ))],
+            }
         }
         FileKind::ChannelsToml => crate::workspace::config::diagnose_channels_toml(content),
         FileKind::McpJson => crate::workspace::config::diagnose_mcp_json(content),
@@ -304,8 +338,40 @@ mod tests {
         let paths = DiagnosticsPaths {
             config_dir: dir.path().to_path_buf(),
             workspace_dir: dir.path().join("workspace"),
+            hub_dir: dir.path().join("hub"),
         };
         assert!(diagnose(Path::new("notes.md"), "hello", &paths).is_none());
+    }
+
+    #[test]
+    fn diagnose_validates_the_hub_config_against_the_hub_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        let hub_config = hub_dir.join("config.toml");
+        std::fs::write(&hub_config, "timezone = \"UTC\"\n").unwrap();
+        let paths = DiagnosticsPaths {
+            config_dir: dir.path().join("agent/config"),
+            workspace_dir: dir.path().join("agent"),
+            hub_dir,
+        };
+
+        let valid = diagnose(&hub_config, "timezone = \"UTC\"\n", &paths)
+            .expect("the hub config.toml should be recognized");
+        assert!(valid.is_empty(), "a valid hub config: {valid:?}");
+
+        let wrong_schema = diagnose(
+            &hub_config,
+            "[memory]\nobserver_cooldown_secs = 1\n",
+            &paths,
+        )
+        .expect("the hub config.toml should be recognized");
+        assert!(
+            wrong_schema
+                .iter()
+                .any(|d| d.severity == Severity::Warning || d.severity == Severity::Error),
+            "an agent-only section in the hub config should be flagged: {wrong_schema:?}"
+        );
     }
 
     #[test]
@@ -319,6 +385,7 @@ mod tests {
         let paths = DiagnosticsPaths {
             config_dir: dir.path().to_path_buf(),
             workspace_dir: dir.path().join("workspace"),
+            hub_dir: dir.path().join("hub"),
         };
         let diagnostics = diagnose(&dir.path().join("config.toml"), "not valid toml [", &paths)
             .expect("config.toml should be recognized");
@@ -335,6 +402,7 @@ mod tests {
         let paths = DiagnosticsPaths {
             config_dir: dir.path().to_path_buf(),
             workspace_dir: dir.path().join("workspace"),
+            hub_dir: dir.path().join("hub"),
         };
         let diagnostics = diagnose(
             Path::new("some/nested/HEARTBEAT.yml"),

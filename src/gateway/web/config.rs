@@ -6,7 +6,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
 use crate::features;
 use crate::update;
 
@@ -30,7 +29,8 @@ pub(super) struct StatusResponse {
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
     workspace: Option<crate::checkpoints::RepoStats>,
-    config: Option<crate::checkpoints::RepoStats>,
+    agent_config: Option<crate::checkpoints::RepoStats>,
+    hub: Option<crate::checkpoints::RepoStats>,
 }
 
 /// Response from validation or save endpoints.
@@ -107,7 +107,15 @@ pub(super) struct TimezoneResponse {
 /// Request body for the complete-setup endpoint.
 #[derive(Deserialize)]
 pub(super) struct CompleteSetupRequest {
-    /// Raw config.toml content.
+    /// Raw `hub/config.toml` content.
+    hub_config: String,
+    /// This installation's first agent name, validated with
+    /// [`crate::config::validate_agent_name`].
+    agent_name: String,
+    /// The user's name, written to the agent's `USER.md`.
+    #[serde(default)]
+    user_name: Option<String>,
+    /// Raw agent config.toml content.
     config: String,
     /// Raw providers.toml content.
     providers: String,
@@ -130,7 +138,12 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
         checkpoints: CheckpointsStatus {
             workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
                 .await,
-            config: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Config).await,
+            agent_config: checkpoint_stats_or_log(
+                &state,
+                crate::checkpoints::RepoKind::AgentConfig,
+            )
+            .await,
+            hub: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Hub).await,
         },
     })
 }
@@ -148,6 +161,146 @@ async fn checkpoint_stats_or_log(
         },
         Some,
     )
+}
+
+/// `GET /api/hub/config/raw` — return raw `hub/config.toml` contents as text.
+pub(super) async fn api_hub_config_raw_get(
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let config_path = state.hub_dir.join("config.toml");
+    let contents = tokio::fs::read_to_string(&config_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read hub config: {e}"),
+        )
+    })?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(contents))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("response build error: {e}"),
+            )
+        })
+}
+
+/// `PUT /api/hub/config/raw` — write TOML body to `hub/config.toml`, save
+/// unconditionally, trigger a hub reload if running, and report diagnostics.
+///
+/// Same "save regardless, report what's wrong" contract as
+/// [`api_config_raw_put`] — a hub reload that can't load the new file keeps
+/// the hub running on its last-known-good config (see
+/// `gateway::reload::handle_hub_reload`).
+pub(super) async fn api_hub_config_raw_put(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    let diagnostics = crate::config::HubConfig::diagnose_toml(&body, &state.hub_dir);
+
+    let config_path = state.hub_dir.join("config.toml");
+    state
+        .checkpoint_config_before_write("raw write hub config.toml")
+        .await;
+    crate::util::fs::atomic_write(&config_path, &body)
+        .await
+        .map_err(|e| internal_error("write hub config", e))?;
+
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(super::super::ReloadSignal::Hub).ok();
+    }
+
+    Ok(Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "hub/config.toml",
+    )))
+}
+
+/// `PATCH /api/hub/config/patch` — merge a JSON diff into the existing
+/// `hub/config.toml`, validate, save, trigger a hub reload if running.
+pub(super) async fn api_hub_config_patch(
+    State(state): State<ConfigApiState>,
+    Json(diff): Json<serde_json::Value>,
+) -> Result<Json<PatchSavedResponse>, (StatusCode, Json<ValidateResponse>)> {
+    let bad_request = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(msg),
+                diagnostics: Vec::new(),
+            }),
+        )
+    };
+
+    let Some(diff_map) = diff.as_object() else {
+        return Err(bad_request(
+            "hub config patch must be a JSON object".to_string(),
+        ));
+    };
+
+    let config_path = state.hub_dir.join("config.toml");
+    let existing = match tokio::fs::read_to_string(&config_path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::error!(error = %e, path = %config_path.display(), "failed to read hub config.toml for patching");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to read hub config.toml: {e}")),
+                    diagnostics: Vec::new(),
+                }),
+            ));
+        }
+    };
+
+    let patched =
+        crate::config::patch::apply_patch(&existing, diff_map, "hub/config.toml").map_err(|msg| {
+            tracing::warn!(error = %msg, path = %config_path.display(), "hub config.toml patch rejected");
+            bad_request(msg)
+        })?;
+
+    crate::config::HubConfig::validate_toml(&patched, &state.hub_dir).map_err(|e| {
+        tracing::warn!(error = %e, path = %config_path.display(), "patched hub config.toml failed validation");
+        bad_request(e)
+    })?;
+
+    let checkpoint_id = state
+        .checkpoint_config_id_before_write("patch hub config.toml")
+        .await;
+    crate::util::fs::atomic_write(&config_path, &patched)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, path = %config_path.display(), "failed to write patched hub config.toml");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write hub config.toml: {e}")),
+                    diagnostics: Vec::new(),
+                }),
+            )
+        })?;
+
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(super::super::ReloadSignal::Hub).ok();
+    }
+
+    Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
+}
+
+/// `POST /api/hub/config/validate` — validate hub config TOML body without saving.
+pub(super) async fn api_hub_config_validate(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Json<ValidateResponse> {
+    let diagnostics = crate::config::HubConfig::diagnose_toml(&body, &state.hub_dir);
+    Json(ValidateResponse::from_diagnostics(
+        diagnostics,
+        "hub/config.toml",
+    ))
 }
 
 /// `GET /api/config/raw` — return raw `config.toml` contents as text.
@@ -186,11 +339,11 @@ pub(super) async fn api_config_raw_put(
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
     // Diagnose first (use real config dir so secret:name references are
     // checked), but never block the write on what it finds.
-    let diagnostics = Config::diagnose_toml(&body, &state.config_dir);
+    let diagnostics = state.diagnose_agent_config(&body);
 
     let config_path = state.config_dir.join("config.toml");
     state
-        .checkpoint_config_before_write("raw write config.toml")
+        .checkpoint_agent_config_before_write("raw write config.toml")
         .await;
     tokio::fs::write(&config_path, &body).await.map_err(|e| {
         (
@@ -205,7 +358,7 @@ pub(super) async fn api_config_raw_put(
 
     // Trigger reload if in running mode
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Root).ok();
+        reload_tx.send(super::super::ReloadSignal::Agent).ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
@@ -265,13 +418,20 @@ pub(super) async fn api_config_patch(
         bad_request(msg)
     })?;
 
-    Config::validate_toml(&patched, &state.config_dir).map_err(|e| {
+    state.validate_agent_config(&patched).map_err(|e| {
         tracing::warn!(error = %e, path = %config_path.display(), "patched config.toml failed validation");
         bad_request(e)
     })?;
 
     let checkpoint_id = state
-        .checkpoint_config_id_before_write("patch config.toml")
+        .checkpoints
+        .checkpoint_config_kind_id_before_write(
+            crate::checkpoints::RepoKind::AgentConfig,
+            crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                "patch config.toml",
+            ),
+        )
         .await;
     crate::util::fs::atomic_write(&config_path, &patched)
         .await
@@ -288,7 +448,7 @@ pub(super) async fn api_config_patch(
         })?;
 
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Root).ok();
+        reload_tx.send(super::super::ReloadSignal::Agent).ok();
     }
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
@@ -299,7 +459,7 @@ pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    let diagnostics = Config::diagnose_toml(&body, &state.config_dir);
+    let diagnostics = state.diagnose_agent_config(&body);
     Json(ValidateResponse::from_diagnostics(
         diagnostics,
         "config.toml",
@@ -461,7 +621,63 @@ pub(super) async fn api_mcp_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
+/// A 500 response saying which step failed, in the shape every config
+/// handler uses.
+fn internal_error(action: &str, e: impl std::fmt::Display) -> (StatusCode, Json<ValidateResponse>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ValidateResponse {
+            valid: false,
+            error: Some(format!("failed to {action}: {e:#}")),
+            diagnostics: Vec::new(),
+        }),
+    )
+}
+
+/// Write the first agent's `providers.toml`, optional `mcp.json`, and
+/// `config.toml` from the onboarding request, each atomically.
+///
+/// `config.toml` goes last: an agent is discovered by that file, so a
+/// failure on an earlier write never leaves a discoverable half-configured
+/// agent behind.
+async fn write_first_agent_config_files(
+    layout: &crate::workspace::layout::WorkspaceLayout,
+    body: &CompleteSetupRequest,
+) -> Result<(), (StatusCode, Json<ValidateResponse>)> {
+    let agent_config_dir = layout.config_dir();
+    crate::util::fs::atomic_write(&agent_config_dir.join("providers.toml"), &body.providers)
+        .await
+        .map_err(|e| internal_error("write providers.toml", e))?;
+
+    if let Some(ref mcp_json) = body.mcp_json {
+        let mcp_path = layout.mcp_json();
+        if let Some(parent) = mcp_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| internal_error("create the mcp.json directory", e))?;
+        }
+        crate::util::fs::atomic_write(&mcp_path, mcp_json)
+            .await
+            .map_err(|e| internal_error("write mcp.json", e))?;
+    }
+
+    crate::util::fs::atomic_write(&agent_config_dir.join("config.toml"), &body.config)
+        .await
+        .map_err(|e| internal_error("write config.toml", e))?;
+    Ok(())
+}
+
 /// `POST /api/config/complete-setup` — write config + providers, signal setup done.
+///
+/// Writes `hub/config.toml`, bootstraps the hub directory (`bin/`, `logs/`),
+/// creates the first agent's directory (named `body.agent_name`, validated
+/// with [`crate::config::validate_agent_name`]) under the residuum root,
+/// bootstraps its full workspace (`SOUL.md`, the wiki, bundled skills,
+/// `USER.md` personalized with `body.user_name`), and writes its
+/// `config.toml`/`providers.toml`/`mcp.json`, `config.toml` last.
+///
+/// Answers 409 when an agent already exists, so a running gateway's live
+/// agent is never overwritten.
 pub(super) async fn api_complete_setup(
     State(state): State<ConfigApiState>,
     Json(body): Json<CompleteSetupRequest>,
@@ -477,75 +693,100 @@ pub(super) async fn api_complete_setup(
         )
     };
 
-    // Parse both files to validate structure
-    let config_file = toml::from_str::<crate::config::deserialize::ConfigFile>(&body.config)
+    crate::config::validate_agent_name(&body.agent_name).map_err(err)?;
+
+    let residuum_root = state
+        .hub_dir
+        .parent()
+        .map_or_else(|| state.hub_dir.clone(), std::path::Path::to_path_buf);
+    let agent_dir = residuum_root.join(&body.agent_name);
+
+    let existing = crate::config::discover_agents(&residuum_root)
+        .map_err(|e| internal_error("check for existing agents", e))?;
+    if !existing.is_empty() {
+        let message = if existing.contains(&body.agent_name) {
+            format!(
+                "An agent named '{}' already exists. Choose a different name, or change the existing agent from its settings.",
+                body.agent_name
+            )
+        } else {
+            format!(
+                "This residuum already has an agent ('{}'). Setup only creates the first agent.",
+                existing.join("', '")
+            )
+        };
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(message),
+                diagnostics: Vec::new(),
+            }),
+        ));
+    }
+
+    // Parse and resolve the hub config on its own first — the agent config
+    // resolves against it (timezone, gateway, ...).
+    let hub_file = toml::from_str::<crate::config::deserialize::HubConfigFile>(&body.hub_config)
+        .map_err(|e| err(format!("hub config.toml parse error: {e}")))?;
+    let hub = crate::config::resolve::resolve_hub_config(Some(&hub_file), &state.hub_dir)
+        .map_err(|e| err(format!("{e}")))?;
+
+    let config_file = toml::from_str::<crate::config::deserialize::AgentConfigFile>(&body.config)
         .map_err(|e| err(format!("config.toml parse error: {e}")))?;
     let providers_file =
         toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
             .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
 
-    // Validate together
+    // Validate the agent config together with the hub config and providers.
     crate::config::resolve::from_file_and_env(
         Some(&config_file),
         Some(&providers_file),
-        &state.config_dir,
+        &agent_dir,
+        &body.agent_name,
+        &hub,
     )
     .map_err(|e| err(format!("{e}")))?;
 
-    // Write providers.toml first (config validation reads it from disk)
-    let providers_path = state.config_dir.join("providers.toml");
+    // Write hub/config.toml, and bootstrap the hub directory (bin/, logs/).
     state
-        .checkpoint_config_before_write("complete setup: providers.toml + config.toml")
+        .checkpoint_config_before_write("complete setup: hub config.toml")
         .await;
-    tokio::fs::write(&providers_path, &body.providers)
+    crate::config::HubConfig::bootstrap_at(&state.hub_dir).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(format!("failed to bootstrap hub directory: {e}")),
+                diagnostics: Vec::new(),
+            }),
+        )
+    })?;
+    crate::util::fs::atomic_write(&state.hub_dir.join("config.toml"), &body.hub_config)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to write providers.toml: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            )
-        })?;
+        .map_err(|e| internal_error("write hub config.toml", e))?;
 
-    // Write config.toml
-    let config_path = state.config_dir.join("config.toml");
-    tokio::fs::write(&config_path, &body.config)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to write config.toml: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            )
-        })?;
+    // Bootstrap the agent's full workspace (identity files, wiki, bundled
+    // skills), personalized with the user's name.
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
+    crate::workspace::bootstrap::ensure_workspace(
+        &layout,
+        body.user_name.as_deref(),
+        Some(hub.timezone.name()),
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(format!("failed to bootstrap agent workspace: {e}")),
+                diagnostics: Vec::new(),
+            }),
+        )
+    })?;
 
-    // Write mcp.json if provided
-    if let Some(ref mcp_json) = body.mcp_json {
-        let mcp_path = state
-            .config_dir
-            .join("workspace")
-            .join("config")
-            .join("mcp.json");
-        if let Some(parent) = mcp_path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
-        tokio::fs::write(&mcp_path, mcp_json).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ValidateResponse {
-                    valid: false,
-                    error: Some(format!("failed to write mcp.json: {e}")),
-                    diagnostics: Vec::new(),
-                }),
-            )
-        })?;
-    }
+    write_first_agent_config_files(&layout, &body).await?;
 
     // Signal setup server to shut down
     if let Some(done_sender) = &state.setup_done {
@@ -596,7 +837,9 @@ mod tests {
         setup_done: Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>>,
     ) -> ConfigApiState {
         ConfigApiState {
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             memory_dir: None,
             reload_tx: None,
@@ -619,10 +862,18 @@ mod tests {
     }
 
     /// A state backed by a real temp directory, for tests that read/write
-    /// `config.toml`/`providers.toml` on disk.
+    /// `config.toml`/`providers.toml` on disk. Seeds a valid hub `config.toml`
+    /// (just a timezone) so `diagnose_agent_config`/`validate_agent_config`
+    /// can actually resolve the hub side rather than reporting "hub config
+    /// couldn't be loaded" for every test.
     fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
+        let hub_dir = dir.join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         ConfigApiState {
+            hub_dir,
             config_dir: dir.to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -670,7 +921,7 @@ mod tests {
         .unwrap();
         let state = tempdir_state(dir.path());
 
-        let Json(response) = api_config_raw_put(State(state), "timezone = \"UTC\"\n".to_string())
+        let Json(response) = api_config_raw_put(State(state), "max_tokens = 4096\n".to_string())
             .await
             .unwrap();
 
@@ -737,12 +988,14 @@ mod tests {
     async fn config_patch_returns_the_checkpoint_taken_before_the_write() {
         let dir = tempfile::tempdir().unwrap();
         let state = super::super::test_support::watching_state(dir.path());
-        let before = "timezone = \"UTC\"\n\n[gateway]\nport = 7700\n";
+        std::fs::create_dir_all(&state.hub_dir).unwrap();
+        std::fs::write(state.hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        let before = "max_tokens = 4096\n";
         std::fs::write(state.config_dir.join("config.toml"), before).unwrap();
 
         let Json(saved) = api_config_patch(
             State(state.clone()),
-            Json(serde_json::json!({"gateway": {"port": 8080}})),
+            Json(serde_json::json!({"max_tokens": 8192})),
         )
         .await
         .unwrap();
@@ -754,7 +1007,7 @@ mod tests {
         let stored = state
             .checkpoints
             .file_content_at(
-                crate::checkpoints::RepoKind::Config,
+                crate::checkpoints::RepoKind::AgentConfig,
                 id,
                 "config.toml".to_string(),
             )
@@ -802,6 +1055,179 @@ mod tests {
             stored.as_deref(),
             Some(before.as_bytes()),
             "the returned checkpoint must still hold the removed server, including fields the form doesn't model"
+        );
+    }
+
+    /// A setup-mode state rooted at `root`: the hub directory is `root/hub`,
+    /// and no agent exists yet.
+    fn setup_state(root: &std::path::Path) -> (ConfigApiState, tokio::sync::watch::Receiver<bool>) {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut state = state(Some(std::sync::Arc::new(tx)));
+        state.hub_dir = root.join("hub");
+        (state, rx)
+    }
+
+    fn setup_request(agent_name: &str) -> CompleteSetupRequest {
+        CompleteSetupRequest {
+            hub_config: "timezone = \"UTC\"\n".to_string(),
+            agent_name: agent_name.to_string(),
+            user_name: Some("Sam".to_string()),
+            config: String::new(),
+            providers: "[models]\nmain = \"ollama/llama3\"\n".to_string(),
+            mcp_json: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_setup_writes_hub_config_and_the_first_agent() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, done_rx) = setup_state(root.path());
+
+        let Json(response) = api_complete_setup(State(state), Json(setup_request("scout")))
+            .await
+            .unwrap();
+
+        assert!(response.valid);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("hub/config.toml")).unwrap(),
+            "timezone = \"UTC\"\n"
+        );
+        assert!(root.path().join("scout/config/config.toml").is_file());
+        assert!(root.path().join("scout/config/providers.toml").is_file());
+        let user_md = std::fs::read_to_string(root.path().join("scout/USER.md")).unwrap();
+        assert!(user_md.contains("Sam"), "USER.md: {user_md}");
+        assert!(*done_rx.borrow(), "setup should be signalled complete");
+        assert_eq!(
+            crate::config::discover_single_agent(root.path())
+                .unwrap()
+                .as_deref(),
+            Some("scout")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_setup_refuses_an_invalid_agent_name_and_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        for bad in ["hub", "Team", "-x", "has space", ""] {
+            let (state, done_rx) = setup_state(root.path());
+
+            let Err((status, Json(response))) =
+                api_complete_setup(State(state), Json(setup_request(bad))).await
+            else {
+                panic!("agent name {bad:?} should be refused");
+            };
+
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!response.valid);
+            assert!(!*done_rx.borrow());
+        }
+        assert!(!root.path().join("hub/config.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn complete_setup_refuses_hub_only_keys_in_the_agent_config() {
+        let root = tempfile::tempdir().unwrap();
+        let (state, _done_rx) = setup_state(root.path());
+        let mut request = setup_request("scout");
+        request.config = "timezone = \"UTC\"\n".to_string();
+
+        let result = api_complete_setup(State(state), Json(request)).await;
+
+        assert!(result.is_err(), "timezone belongs in the hub config");
+        assert!(!root.path().join("scout").exists());
+    }
+
+    #[tokio::test]
+    async fn complete_setup_answers_409_when_the_agent_already_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_config = root.path().join("scout/config");
+        std::fs::create_dir_all(&agent_config).unwrap();
+        std::fs::write(agent_config.join("config.toml"), "# live agent\n").unwrap();
+        std::fs::write(agent_config.join("providers.toml"), "# live providers\n").unwrap();
+        let (state, done_rx) = setup_state(root.path());
+
+        let Err((status, Json(response))) =
+            api_complete_setup(State(state), Json(setup_request("scout"))).await
+        else {
+            panic!("an existing agent must not be overwritten");
+        };
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(!response.valid);
+        assert!(response.error.unwrap().contains("already exists"));
+        assert!(!*done_rx.borrow(), "setup must not be signalled complete");
+        assert_eq!(
+            std::fs::read_to_string(agent_config.join("providers.toml")).unwrap(),
+            "# live providers\n"
+        );
+        assert!(!root.path().join("hub/config.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn complete_setup_answers_409_when_a_different_agent_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_config = root.path().join("first/config");
+        std::fs::create_dir_all(&agent_config).unwrap();
+        std::fs::write(agent_config.join("config.toml"), "").unwrap();
+        let (state, _done_rx) = setup_state(root.path());
+
+        let Err((status, Json(response))) =
+            api_complete_setup(State(state), Json(setup_request("second"))).await
+        else {
+            panic!("setup creates only the first agent");
+        };
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(response.error.unwrap().contains("first"));
+        assert!(!root.path().join("second").exists());
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_setup_leaves_no_discoverable_agent() {
+        let root = tempfile::tempdir().unwrap();
+        // A directory where providers.toml must go makes that write fail
+        // after the workspace exists but before config.toml is written.
+        std::fs::create_dir_all(root.path().join("scout/config/providers.toml")).unwrap();
+        let (state, done_rx) = setup_state(root.path());
+
+        let result = api_complete_setup(State(state), Json(setup_request("scout"))).await;
+
+        let Err((status, _)) = result else {
+            panic!("the blocked providers.toml write should fail setup");
+        };
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!*done_rx.borrow());
+        assert!(!root.path().join("scout/config/config.toml").exists());
+        assert!(
+            crate::config::discover_agents(root.path())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_setup_can_be_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let blocker = root.path().join("scout/config/providers.toml");
+        std::fs::create_dir_all(&blocker).unwrap();
+        let (first_state, _first_done_rx) = setup_state(root.path());
+        assert!(
+            api_complete_setup(State(first_state), Json(setup_request("scout")))
+                .await
+                .is_err()
+        );
+
+        std::fs::remove_dir(&blocker).unwrap();
+        let (retry_state, done_rx) = setup_state(root.path());
+        let Json(response) = api_complete_setup(State(retry_state), Json(setup_request("scout")))
+            .await
+            .unwrap();
+
+        assert!(response.valid);
+        assert!(*done_rx.borrow());
+        assert_eq!(
+            crate::config::discover_agents(root.path()).unwrap(),
+            vec!["scout".to_string()]
         );
     }
 }

@@ -173,6 +173,25 @@ impl Agent {
         self.options = options;
     }
 
+    /// Apply a new user timezone to future turns: the turn timestamps and
+    /// every tool that captured the timezone when it was registered.
+    pub fn set_timezone(
+        &mut self,
+        tz: chrono_tz::Tz,
+        action_store: std::sync::Arc<tokio::sync::Mutex<crate::actions::store::ActionStore>>,
+        action_notify: std::sync::Arc<tokio::sync::Notify>,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+    ) {
+        self.tz = tz;
+        self.tools.reload_timezone_tools(
+            action_store,
+            action_notify,
+            layout.user_inbox_dir(),
+            layout.user_inbox_attachments_dir(),
+            tz,
+        );
+    }
+
     /// Set the maximum tool-call iterations for future turns (e.g. at
     /// startup, or after a config reload). `None` means unlimited.
     pub fn set_max_tool_iterations(&mut self, limit: Option<usize>) {
@@ -468,6 +487,7 @@ mod tests {
         crate::diagnostics::DiagnosticsPaths {
             config_dir: std::path::PathBuf::from("/tmp/residuum-test-config-unused"),
             workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace-unused"),
+            hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub-unused"),
         }
     }
 

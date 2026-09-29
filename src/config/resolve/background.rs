@@ -4,30 +4,38 @@ use std::collections::HashMap;
 
 use crate::util::FatalError;
 
-use super::super::deserialize::{BackgroundConfigFile, BackgroundModelsFile, ProviderEntryFile};
+use super::super::deserialize::{
+    AgentBackgroundConfigFile, BackgroundModelsFile, ProviderEntryFile,
+};
+use super::super::hub_types::HubConfig;
 use super::super::secrets::SecretStore;
 use super::super::types::BackgroundConfig;
 
-/// Resolve background task configuration.
+/// Resolve this agent's own background task configuration (idle timeouts,
+/// episode floor, subagent depth cap) and model tiers, with the hub-owned
+/// knobs (the shared session budget and cross-agent hop limits) copied in
+/// from the already-resolved `hub`.
 ///
-/// Reads `max_concurrent` from `config.toml`'s `[background]` section, and
-/// model tiers from `providers.toml`'s `[background.models]` section.
+/// Model tiers come from `providers.toml`'s `[background.models]` section.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if a model tier string cannot be resolved.
 pub(super) fn resolve_background_config(
-    section: Option<&BackgroundConfigFile>,
+    section: Option<&AgentBackgroundConfigFile>,
     models_section: Option<&BackgroundModelsFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
     role_overrides: &mut HashMap<String, super::super::types::RoleOverrides>,
+    hub: &HubConfig,
 ) -> Result<BackgroundConfig, FatalError> {
-    let mut cfg = BackgroundConfig::default();
+    let mut cfg = BackgroundConfig {
+        max_concurrent: hub.background.max_concurrent,
+        hop_soft_limit: hub.background.hop_soft_limit,
+        hop_hard_limit: hub.background.hop_hard_limit,
+        ..BackgroundConfig::default()
+    };
 
     if let Some(section) = section {
-        if let Some(v) = section.max_concurrent {
-            cfg.max_concurrent = v;
-        }
         if let Some(v) = section.idle_timeout_scheduled_minutes {
             cfg.idle_timeout_scheduled = std::time::Duration::from_secs(v.saturating_mul(60));
         }
@@ -45,12 +53,6 @@ pub(super) fn resolve_background_config(
         }
         if let Some(v) = section.subagent_depth_cap {
             cfg.subagent_depth_cap = v;
-        }
-        if let Some(v) = section.hop_soft_limit {
-            cfg.hop_soft_limit = v;
-        }
-        if let Some(v) = section.hop_hard_limit {
-            cfg.hop_hard_limit = v;
         }
     }
 

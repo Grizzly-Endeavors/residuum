@@ -43,7 +43,7 @@ pub(super) struct UpdateWatchdogArgs {
 pub(super) fn run_update_watchdog(args: &UpdateWatchdogArgs) -> Result<(), FatalError> {
     residuum::util::tracing_init::init_default_tracing();
 
-    let config_dir = residuum::config::Config::config_dir()?;
+    let config_dir = residuum::config::default_hub_dir()?;
     let ready_path = residuum::daemon::ready_file_path(&config_dir);
 
     tracing::info!(

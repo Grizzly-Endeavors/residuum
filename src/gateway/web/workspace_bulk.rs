@@ -770,7 +770,9 @@ mod tests {
 
     fn make_state(ws_dir: PathBuf) -> ConfigApiState {
         super::super::ConfigApiState {
+            hub_dir: ws_dir.clone(),
             config_dir: ws_dir.clone(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,

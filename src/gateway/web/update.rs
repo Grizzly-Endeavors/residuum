@@ -18,7 +18,7 @@ pub(crate) struct UpdateApiState {
     pub gateway_shutdown_tx: mpsc::Sender<()>,
     /// Where to look for a rollback notice the update-rollback watchdog may
     /// have left behind (see `crate::update::RollbackNotice`).
-    pub config_dir: PathBuf,
+    pub hub_dir: PathBuf,
 }
 
 /// Why an update-rollback watchdog restored the previous version, for the
@@ -89,9 +89,8 @@ pub(crate) async fn api_update_check(
 }
 
 async fn current_status(state: &UpdateApiState) -> UpdateStatusResponse {
-    let rollback_notice = crate::update::read_rollback_notice(&state.config_dir).map(Into::into);
-    let unverified_update =
-        crate::update::read_unverified_update(&state.config_dir).map(Into::into);
+    let rollback_notice = crate::update::read_rollback_notice(&state.hub_dir).map(Into::into);
+    let unverified_update = crate::update::read_unverified_update(&state.hub_dir).map(Into::into);
     let s = state.update_status.read().await;
     UpdateStatusResponse {
         current: s.current.clone(),
@@ -187,14 +186,14 @@ pub(crate) async fn api_shutdown(
 mod tests {
     use super::*;
 
-    fn test_state(config_dir: PathBuf) -> UpdateApiState {
+    fn test_state(hub_dir: PathBuf) -> UpdateApiState {
         let (restart_tx, _restart_rx) = mpsc::channel(1);
         let (gateway_shutdown_tx, _shutdown_rx) = mpsc::channel(1);
         UpdateApiState {
             update_status: crate::update::SharedUpdateStatus::default(),
             restart_tx,
             gateway_shutdown_tx,
-            config_dir,
+            hub_dir,
         }
     }
 

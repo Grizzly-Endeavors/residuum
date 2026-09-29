@@ -108,7 +108,8 @@ fn test_config(dir: &std::path::Path) -> Config {
     use crate::inference::retry::RetryConfig;
 
     Config {
-        name: None,
+        agent_name: "test-agent".to_string(),
+        autostart: true,
         main: vec![],
         observer: vec![],
         reflector: vec![],
@@ -457,6 +458,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             layout.root().to_path_buf(),
+            workspace_dir.join("config"),
             workspace_dir.clone(),
             &workspace_dir.join("checkpoints"),
             None,
@@ -609,6 +611,7 @@ fn build_test_resources(deps: &MiniListenerDeps, event: &SpawnRequestEvent) -> S
         hybrid_searcher: Arc::clone(&deps.hybrid_searcher),
         workspace_dir: deps.workspace_dir.clone(),
         config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
+        hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
         episodes_dir: deps.layout.episodes_dir(),
         sessions_dir: deps.layout.sessions_dir(),
         agent_inbox_dir: deps.layout.agent_inbox_dir(),

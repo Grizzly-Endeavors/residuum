@@ -12,8 +12,6 @@ use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
-use super::ReloadSignal;
-
 pub(crate) mod a2a;
 mod agent_keys;
 pub(crate) mod artifact_identity;
@@ -53,14 +51,20 @@ use embedded::WebAssets;
 /// Shared state for the config API.
 #[derive(Clone)]
 pub(crate) struct ConfigApiState {
-    /// Path to the residuum config directory (`~/.residuum/`).
+    /// Path to the hub directory (`~/.residuum/hub`): secrets, key stores,
+    /// hub `config.toml`.
+    pub hub_dir: PathBuf,
+    /// Path to the agent's own `config/` directory (`config.toml`,
+    /// `providers.toml`, `mcp.json`, `channels.toml`, ...).
     pub config_dir: PathBuf,
+    /// This agent's name.
+    pub agent_name: String,
     /// Path to the workspace root directory (for resolving `mcp.json`, `channels.toml`, etc.).
     pub workspace_dir: PathBuf,
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
     /// Signal the running gateway to reload (None in setup mode).
-    pub reload_tx: Option<watch::Sender<ReloadSignal>>,
+    pub reload_tx: Option<crate::gateway::types::ReloadSender>,
     /// Signal the setup server that config is saved (None in running mode).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
     /// Serializes secret store writes to prevent lost-update races.
@@ -70,9 +74,23 @@ pub(crate) struct ConfigApiState {
 }
 
 impl ConfigApiState {
-    /// Checkpoint the config repository (root `config.toml`/`providers.toml`
-    /// and the encrypted key stores) before a write to one of them. Never
-    /// fails or blocks the write — see `crate::checkpoints`.
+    /// The current hub config, reloaded fresh from `hub_dir` (these are
+    /// validation/diagnostic paths, not hot paths, so a fresh load is
+    /// simpler than threading the running gateway's cached `HubConfig`
+    /// through the config API).
+    ///
+    /// # Errors
+    /// Returns `FatalError::Config` if the hub config can't currently be
+    /// loaded (e.g. an invalid `hub/config.toml`) — diagnosing the agent's
+    /// own config needs the hub's resolved values (timezone, gateway, ...)
+    /// to run the same resolution loading does.
+    fn hub_config(&self) -> Result<crate::config::HubConfig, crate::util::FatalError> {
+        crate::config::HubConfig::load_at(&self.hub_dir)
+    }
+
+    /// Checkpoint the hub config repository (hub `config.toml` and the
+    /// encrypted key stores) before a write to one of them. Never fails or
+    /// blocks the write — see `crate::checkpoints`.
     pub(super) async fn checkpoint_config_before_write(&self, summary: impl Into<String>) {
         let _checkpoint_id = self.checkpoint_config_id_before_write(summary).await;
     }
@@ -91,6 +109,105 @@ impl ConfigApiState {
                 summary,
             ))
             .await
+    }
+
+    /// Checkpoint the agent's own config repository (`config.toml` and
+    /// `providers.toml` in the agent's `config/` directory) before a write
+    /// to either. Never fails or blocks the write.
+    pub(super) async fn checkpoint_agent_config_before_write(&self, summary: impl Into<String>) {
+        let _checkpoint_id = self.checkpoint_agent_config_id_before_write(summary).await;
+    }
+
+    /// [`Self::checkpoint_agent_config_before_write`], returning the id of
+    /// the checkpoint that holds the pre-write tree. `None` when that
+    /// checkpoint could not be recorded; the write still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_agent_config_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
+        self.checkpoints
+            .checkpoint_config_kind_id_before_write(
+                crate::checkpoints::RepoKind::AgentConfig,
+                crate::checkpoints::CheckpointContext::system(
+                    crate::checkpoints::CheckpointTrigger::PreConfigWrite,
+                    summary,
+                ),
+            )
+            .await
+    }
+
+    /// Diagnostics for `contents` as this agent's `config.toml`. A hub
+    /// config that currently fails to load surfaces as a single error
+    /// diagnostic rather than panicking — semantic validation needs the
+    /// hub's resolved values (timezone, gateway, ...) the same way loading
+    /// does.
+    pub(super) fn diagnose_agent_config(
+        &self,
+        contents: &str,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        match self.hub_config() {
+            Ok(hub) => crate::config::Config::diagnose_agent_toml(
+                contents,
+                &self.workspace_dir,
+                &self.agent_name,
+                &hub,
+            ),
+            Err(e) => vec![crate::diagnostics::Diagnostic::error(format!(
+                "hub config couldn't be loaded, so this can't be fully validated: {e}"
+            ))],
+        }
+    }
+
+    /// [`Self::diagnose_agent_config`] for `providers.toml`.
+    pub(super) fn diagnose_agent_providers(
+        &self,
+        contents: &str,
+    ) -> Vec<crate::diagnostics::Diagnostic> {
+        match self.hub_config() {
+            Ok(hub) => crate::config::Config::diagnose_agent_providers_toml(
+                contents,
+                &self.workspace_dir,
+                &self.agent_name,
+                &hub,
+            ),
+            Err(e) => vec![crate::diagnostics::Diagnostic::error(format!(
+                "hub config couldn't be loaded, so this can't be fully validated: {e}"
+            ))],
+        }
+    }
+
+    /// Validate `contents` as this agent's `config.toml`, without saving it.
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails, including
+    /// when the hub config can't currently be loaded.
+    pub(super) fn validate_agent_config(&self, contents: &str) -> Result<(), String> {
+        let hub = self.hub_config().map_err(|e| {
+            format!("hub config couldn't be loaded, so this can't be validated: {e}")
+        })?;
+        crate::config::Config::validate_agent_toml(
+            contents,
+            &self.workspace_dir,
+            &self.agent_name,
+            &hub,
+        )
+    }
+
+    /// [`Self::validate_agent_config`] for `providers.toml`.
+    ///
+    /// # Errors
+    /// Same as [`Self::validate_agent_config`].
+    pub(super) fn validate_agent_providers(&self, contents: &str) -> Result<(), String> {
+        let hub = self.hub_config().map_err(|e| {
+            format!("hub config couldn't be loaded, so this can't be validated: {e}")
+        })?;
+        crate::config::Config::validate_agent_providers_toml(
+            contents,
+            &self.workspace_dir,
+            &self.agent_name,
+            &hub,
+        )
     }
 
     /// Checkpoint the workspace repository before a destructive workspace
@@ -142,6 +259,13 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
 
     axum::Router::new()
         .route("/api/status", get(config::api_status))
+        .route("/api/hub/config/raw", get(config::api_hub_config_raw_get))
+        .route("/api/hub/config/raw", put(config::api_hub_config_raw_put))
+        .route("/api/hub/config/patch", patch(config::api_hub_config_patch))
+        .route(
+            "/api/hub/config/validate",
+            post(config::api_hub_config_validate),
+        )
         .route("/api/config/raw", get(config::api_config_raw_get))
         .route("/api/config/raw", put(config::api_config_raw_put))
         .route("/api/config/patch", patch(config::api_config_patch))
@@ -366,6 +490,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -400,6 +526,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -434,6 +562,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: dir.path().to_path_buf(),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.path().to_path_buf(),
             memory_dir: Some(memory_dir),
             reload_tx: None,
@@ -452,6 +582,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
             reload_tx: None,
@@ -520,6 +652,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: tmp.path().to_path_buf(),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: tmp.path().to_path_buf(),
             memory_dir: Some(memory_dir),
             reload_tx: None,
@@ -587,6 +721,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: tmp.path().to_path_buf(),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: tmp.path().to_path_buf(),
             memory_dir: Some(memory_dir),
             reload_tx: None,
@@ -635,6 +771,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: tmp.path().to_path_buf(),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: tmp.path().to_path_buf(),
             memory_dir: Some(memory_dir),
             reload_tx: None,
@@ -677,6 +815,8 @@ mod tests {
 
         let state = ConfigApiState {
             config_dir: tmp.path().to_path_buf(),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: tmp.path().to_path_buf(),
             memory_dir: Some(memory_dir),
             reload_tx: None,
@@ -706,6 +846,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = ConfigApiState {
             config_dir: dir.path().to_path_buf(),
+            hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.path().join("workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -755,19 +897,24 @@ pub(super) mod test_support {
     pub(super) fn watching_state(root: &std::path::Path) -> ConfigApiState {
         let config_dir = root.join("config");
         let workspace_dir = root.join("workspace");
+        let hub_dir = root.join("hub");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::fs::create_dir_all(&hub_dir).unwrap();
         let checkpoints = std::sync::Arc::new(
             crate::checkpoints::CheckpointEngine::new(
                 workspace_dir.clone(),
                 config_dir.clone(),
-                &root.join("checkpoints"),
+                hub_dir.clone(),
+                &hub_dir.join("checkpoints"),
                 None,
             )
             .unwrap(),
         );
         ConfigApiState {
+            hub_dir,
             config_dir,
+            agent_name: "test-agent".to_string(),
             workspace_dir,
             memory_dir: None,
             reload_tx: None,

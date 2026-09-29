@@ -300,7 +300,8 @@ mod tests {
         Arc::new(
             CheckpointEngine::new(
                 workspace,
-                dir.join("config"),
+                dir.join("agent-config"),
+                dir.join("hub"),
                 &dir.join("checkpoints"),
                 None,
             )
@@ -363,7 +364,8 @@ mod tests {
         let checkpoints_engine = Arc::new(
             CheckpointEngine::new(
                 ws.clone(),
-                dir.path().join("config"),
+                dir.path().join("agent-config"),
+                dir.path().join("hub"),
                 &dir.path().join("checkpoints"),
                 None,
             )

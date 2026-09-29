@@ -52,7 +52,7 @@ pub(super) fn spawn_workspace_watcher(
     channels_path: PathBuf,
     agent_card_path: PathBuf,
     a2a_agents_path: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut mcp_file = WatchedFile::new(mcp_path);
@@ -103,14 +103,14 @@ pub(super) fn spawn_workspace_watcher(
 /// Spawn a polling watcher for `config.toml`/`providers.toml`.
 ///
 /// Polls both files every 2 seconds; on either's mtime changing, debounces
-/// 500ms then sends `ReloadSignal::Root` — the same signal the web UI's
+/// 500ms then sends `ReloadSignal::Agent` — the same signal the web UI's
 /// Settings form and Raw tab already send explicitly after their own
 /// writes, so a direct edit (the agent's `write_file`/`edit_file`, or a
 /// manual edit outside Residuum entirely) picks up the change the same way.
 pub(super) fn spawn_root_config_watcher(
     config_toml_path: PathBuf,
     providers_toml_path: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut config_file = WatchedFile::new(config_toml_path);
@@ -141,8 +141,42 @@ pub(super) fn spawn_root_config_watcher(
                 providers_file.sync_mtime();
 
                 tracing::info!("sending root config reload signal");
-                if reload_tx.send(ReloadSignal::Root).is_err() {
+                if reload_tx.send(ReloadSignal::Agent).is_err() {
                     tracing::debug!("reload receiver dropped, stopping root config watcher");
+                    break;
+                }
+            }
+        }
+    })
+}
+
+/// Spawn a polling watcher for `hub/config.toml`.
+///
+/// Polls every 2 seconds; on the file's mtime changing, debounces 500ms then
+/// sends `ReloadSignal::Hub`.
+pub(super) fn spawn_hub_config_watcher(
+    hub_config_toml_path: PathBuf,
+    reload_tx: crate::gateway::types::ReloadSender,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut hub_config_file = WatchedFile::new(hub_config_toml_path);
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+
+        // Skip the first immediate tick (the file was just loaded at startup)
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+
+            if hub_config_file.check() {
+                tracing::debug!("hub config file change detected, debouncing");
+
+                sleep(Duration::from_millis(500)).await;
+                hub_config_file.sync_mtime();
+
+                tracing::info!("sending hub config reload signal");
+                if reload_tx.send(ReloadSignal::Hub).is_err() {
+                    tracing::debug!("reload receiver dropped, stopping hub config watcher");
                     break;
                 }
             }

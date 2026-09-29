@@ -31,11 +31,12 @@ async fn checkpoint_config_before_write(checkpoints: Option<&CheckpointEngine>, 
         .await;
 }
 
-fn resolve_gateway_addr(config_dir: &std::path::Path) -> String {
-    use residuum::config::{Config, GatewayConfig};
-    Config::load_at(config_dir).map_or_else(
+fn resolve_gateway_addr(residuum_root: &std::path::Path) -> String {
+    use residuum::config::{GatewayConfig, HubConfig};
+    let hub_dir = residuum::config::paths::hub_dir(residuum_root);
+    HubConfig::load_at(&hub_dir).map_or_else(
         |_| GatewayConfig::default().addr(),
-        |cfg| cfg.gateway.addr(),
+        |hub| hub.gateway.addr(),
     )
 }
 
@@ -138,31 +139,28 @@ pub async fn run() -> Result<(), FatalError> {
         Command::UpdateWatchdog(ref args) => update_watchdog::run_update_watchdog(args),
         Command::Tracing { ref command } => {
             residuum::util::tracing_init::init_default_tracing();
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = resolve_gateway_addr(&config_dir);
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             tracing_cmd::run_tracing_command(command, &gateway_addr).await
         }
         Command::BugReport(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = resolve_gateway_addr(&config_dir);
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             bug_report::run_bug_report_command(args, &gateway_addr).await
         }
         Command::Feedback(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
-            let config_dir = residuum::config::Config::config_dir()?;
-            let gateway_addr = resolve_gateway_addr(&config_dir);
+            let gateway_addr = resolve_gateway_addr(&residuum::config::residuum_root()?);
             feedback::run_feedback_command(args, &gateway_addr).await
         }
         Command::Serve(ref args) => {
             if args.foreground {
-                // Load config to get the configured log level
+                // Load the hub config to get the configured log level
+                // ([tracing] is hub-owned).
                 let log_level = {
-                    let config_dir = residuum::config::Config::config_dir()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    residuum::config::Config::load_at(&config_dir)
-                        .map_or(residuum::config::LogLevel::default(), |cfg| {
-                            cfg.tracing.log_level
+                    residuum::config::default_hub_dir()
+                        .and_then(|hub_dir| residuum::config::HubConfig::load_at(&hub_dir))
+                        .map_or(residuum::config::LogLevel::default(), |hub| {
+                            hub.tracing.log_level
                         })
                 };
                 residuum::util::tracing_init::init_daemon_tracing(args.foreground, log_level);

@@ -28,7 +28,7 @@ describe("notifyFormUndo", () => {
     const pendingSave = new PendingSaveTracker();
     const revertLocally = vi.fn();
 
-    notifyFormUndo("Removed acme.", pendingSave, revertLocally, "config", "providers.toml");
+    notifyFormUndo("Removed acme.", pendingSave, revertLocally, "agent_config", "providers.toml");
     const timer = setTimeout(() => {}, 800);
     pendingSave.markScheduled(timer);
     lastToastAction()?.onClick();
@@ -48,7 +48,7 @@ describe("notifyFormUndo", () => {
       "Removed acme.",
       pendingSave,
       revertLocally,
-      "config",
+      "agent_config",
       "providers.toml",
       onRestored,
     );
@@ -65,7 +65,7 @@ describe("notifyFormUndo", () => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
     expect(revertLocally).not.toHaveBeenCalled();
-    expect(undoLastAction).toHaveBeenCalledWith("cp-removal", "config", "providers.toml");
+    expect(undoLastAction).toHaveBeenCalledWith("cp-removal", "agent_config", "providers.toml");
   });
 
   it("ignores a save that was already in flight when the entry was removed", async () => {
@@ -107,7 +107,7 @@ describe("notifyFormUndo", () => {
     const pendingSave = new PendingSaveTracker();
     const revertLocally = vi.fn();
 
-    notifyFormUndo("Removed acme.", pendingSave, revertLocally, "config", "providers.toml");
+    notifyFormUndo("Removed acme.", pendingSave, revertLocally, "agent_config", "providers.toml");
     pendingSave.markSaving();
     pendingSave.markSettled();
     lastToastAction()?.onClick();
@@ -121,7 +121,7 @@ describe("notifyFormUndo", () => {
   it("reports plainly when the save's checkpoint failed", async () => {
     const pendingSave = new PendingSaveTracker();
 
-    notifyFormUndo("Removed acme.", pendingSave, vi.fn(), "config", "providers.toml");
+    notifyFormUndo("Removed acme.", pendingSave, vi.fn(), "agent_config", "providers.toml");
     pendingSave.markSaving();
     pendingSave.recordWrite("providers.toml", null);
     pendingSave.markSettled();

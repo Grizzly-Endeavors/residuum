@@ -90,7 +90,7 @@ pub(crate) async fn notify_main_of_undeliverable_session_output(
 
 /// Channels a chat adapter needs to carry out slash-command side effects.
 pub(crate) struct CommandDispatch<'a> {
-    pub(crate) reload_tx: &'a tokio::sync::watch::Sender<crate::gateway::types::ReloadSignal>,
+    pub(crate) reload_tx: &'a crate::gateway::types::ReloadSender,
     pub(crate) command_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
     pub(crate) stop_tx: &'a tokio::sync::mpsc::Sender<crate::gateway::types::StopRequest>,
     /// Looked up to stop a conversation session's turn — see
@@ -122,7 +122,7 @@ pub(crate) async fn run_chat_command(
             tracing::info!(interface, "reload requested via chat command");
             if dispatch
                 .reload_tx
-                .send(crate::gateway::types::ReloadSignal::Root)
+                .send(crate::gateway::types::ReloadSignal::Agent)
                 .is_err()
             {
                 tracing::warn!(command = %name, interface, "reload_tx closed, reload dropped");

@@ -101,7 +101,7 @@ impl LogFilter {
 #[tracing::instrument(skip_all)]
 pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> {
     let filter = LogFilter::from_args(args)?;
-    let log_dir = residuum::config::Config::config_dir()?.join("logs");
+    let log_dir = residuum::config::HubPaths::new(residuum::config::default_hub_dir()?).logs_dir();
 
     if !log_dir.exists() {
         println!(

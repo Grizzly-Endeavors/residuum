@@ -47,6 +47,9 @@ pub(super) struct ToolRegistryDeps<'a> {
     /// triggers can report back into its transcript. Wired only into main's
     /// `write_file`/`edit_file` — see `ConfigWriteWatch`'s doc comment.
     pub config_reload_tracker: &'a crate::tools::SharedConfigReloadTracker,
+    /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
+    /// config that `config.toml`/`providers.toml` diagnostics run against.
+    pub hub_dir: &'a std::path::Path,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -88,10 +91,12 @@ pub(super) fn init_tool_registry(
     let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
         config_dir: cfg.config_dir.clone(),
         workspace_dir: cfg.workspace_dir.clone(),
+        hub_dir: deps.hub_dir.to_path_buf(),
     };
     let config_watch = crate::tools::ConfigWriteWatch {
         recognized: crate::tools::config_reload_tracker::RecognizedConfigPaths::new(
             &cfg.config_dir,
+            deps.hub_dir,
             layout,
         ),
         tracker: deps.config_reload_tracker.clone(),
@@ -291,7 +296,8 @@ mod tests {
     /// exercises every conditionally-registered tool on both surfaces.
     fn test_config(dir: &std::path::Path) -> Config {
         Config {
-            name: None,
+            agent_name: "test-agent".to_string(),
+            autostart: true,
             main: vec![],
             observer: vec![],
             reflector: vec![],
@@ -361,6 +367,7 @@ mod tests {
         a2a_tracker: Arc<crate::a2a::RemoteTaskTracker>,
         checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
         config_reload_tracker: crate::tools::SharedConfigReloadTracker,
+        hub_dir: std::path::PathBuf,
     }
 
     async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -416,6 +423,7 @@ mod tests {
         let checkpoints = Arc::new(
             crate::checkpoints::CheckpointEngine::new(
                 layout.root().to_path_buf(),
+                dir.join("agent-config"),
                 dir.to_path_buf(),
                 &dir.join("checkpoints"),
                 None,
@@ -444,6 +452,7 @@ mod tests {
             a2a_tracker,
             checkpoints,
             config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
+            hub_dir: dir.join("hub"),
         }
     }
 
@@ -467,6 +476,7 @@ mod tests {
             hybrid_searcher: Arc::clone(&h.mem.hybrid_searcher),
             workspace_dir: h.layout.root().to_path_buf(),
             config_dir: h.cfg.config_dir.clone(),
+            hub_dir: h.hub_dir.clone(),
             episodes_dir: h.layout.episodes_dir(),
             sessions_dir: h.layout.sessions_dir(),
             agent_inbox_dir: h.layout.agent_inbox_dir(),
@@ -534,6 +544,7 @@ mod tests {
             a2a_tracker: &h.a2a_tracker,
             checkpoints: &h.checkpoints,
             config_reload_tracker: &h.config_reload_tracker,
+            hub_dir: &h.hub_dir,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();

@@ -41,7 +41,9 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
 
     residuum::util::tracing_init::init_default_tracing();
 
-    let pid_path = residuum::config::Config::config_dir()?.join("residuum.pid");
+    let residuum_root = residuum::config::residuum_root()?;
+    let hub_dir = residuum::config::paths::hub_dir(&residuum_root);
+    let pid_path = residuum::config::HubPaths::new(&hub_dir).pid_file();
     let label = "gateway";
 
     // Check for an already-running instance via file lock (primary detection)
@@ -60,11 +62,11 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     }
 
     // Resolve gateway address from config or defaults
-    let config_dir = residuum::config::Config::config_dir()?;
-    let gateway_addr = super::super::resolve_gateway_addr(&config_dir);
+    let gateway_addr = super::super::resolve_gateway_addr(&residuum_root);
 
-    // Detect whether the child will enter setup mode (no PID file until setup completes)
-    let needs_setup = args.setup || !config_dir.join("config.toml").exists();
+    // Detect whether the child will enter setup mode (no agent exists yet)
+    let agent_name = residuum::config::discover_single_agent(&residuum_root)?;
+    let needs_setup = args.setup || agent_name.is_none();
 
     // Catch an invalid config here, where the user can see the error. The
     // child takes its PID lock before loading config, so the startup poll
@@ -72,13 +74,8 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     // that fails to load is only blocked here when there's no
     // last-known-good copy either — the child falls back to one and keeps
     // running, same as `run_serve_foreground_inner`'s check.
-    if !needs_setup
-        && let Err(err) = residuum::config::Config::load_at(&config_dir)
-        && !residuum::gateway::has_last_known_good(&config_dir)
-        && let super::startup_config::ConfigProblem::Invalid(invalid) =
-            super::startup_config::classify_load_error(&config_dir, &err)
-    {
-        return Err(invalid);
+    if let Some(agent_name) = agent_name.filter(|_| !needs_setup) {
+        super::startup_config::ensure_config_loads_or_has_fallback(&residuum_root, &agent_name)?;
     }
 
     // First-launch welcome (or --setup which mimics it)
@@ -102,10 +99,10 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
 
     // A previous attempt's readiness/error markers must not leak into this
     // one's poll below.
-    residuum::daemon::remove_ready_file(&config_dir);
-    residuum::daemon::clear_startup_error(&config_dir);
+    residuum::daemon::remove_ready_file(&hub_dir);
+    residuum::daemon::clear_startup_error(&hub_dir);
 
-    let mut child = residuum::daemon::spawn_gateway_process(&exe, &child_args, &config_dir)
+    let mut child = residuum::daemon::spawn_gateway_process(&exe, &child_args, &hub_dir)
         .map_err(|e| FatalError::Gateway(format!("failed to spawn daemon process: {e}")))?;
 
     // When setup is needed, the setup wizard runs before the gateway and
@@ -137,7 +134,7 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     // `gateway::event_loop::run_loop::run_gateway`). Reaching the PID lock
     // alone isn't enough — a later init failure would otherwise be reported
     // as "started" and then exit silently.
-    let ready_path = residuum::daemon::ready_file_path(&config_dir);
+    let ready_path = residuum::daemon::ready_file_path(&hub_dir);
     let outcome = residuum::daemon::wait_for_ready(
         &ready_path,
         residuum::daemon::READINESS_TIMEOUT,
@@ -153,14 +150,14 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
             Ok(())
         }
         residuum::daemon::ReadinessOutcome::ProcessExited => {
-            report_startup_failure(&config_dir, label, "crashed during startup");
+            report_startup_failure(&hub_dir, label, "crashed during startup");
             Err(FatalError::Gateway(format!(
                 "{label} crashed during startup"
             )))
         }
         residuum::daemon::ReadinessOutcome::TimedOut => {
             report_startup_failure(
-                &config_dir,
+                &hub_dir,
                 label,
                 &format!(
                     "did not become healthy within {}s",

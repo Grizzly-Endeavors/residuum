@@ -8,7 +8,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
 use crate::config::secrets::SecretStore;
 use crate::inference::providers::anthropic::is_oauth_key;
 
@@ -415,11 +414,11 @@ pub(super) async fn api_providers_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
+    let diagnostics = state.diagnose_agent_providers(&body);
 
     let providers_path = state.config_dir.join("providers.toml");
     state
-        .checkpoint_config_before_write("raw write providers.toml")
+        .checkpoint_agent_config_before_write("raw write providers.toml")
         .await;
     tokio::fs::write(&providers_path, &body)
         .await
@@ -434,9 +433,9 @@ pub(super) async fn api_providers_raw_put(
             )
         })?;
 
-    // Trigger root reload — provider changes affect model resolution
+    // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Root).ok();
+        reload_tx.send(super::super::ReloadSignal::Agent).ok();
     }
 
     Ok(Json(ValidateResponse::from_diagnostics(
@@ -498,13 +497,13 @@ pub(super) async fn api_providers_patch(
             bad_request(msg)
         })?;
 
-    Config::validate_providers_toml(&patched, &state.config_dir).map_err(|e| {
+    state.validate_agent_providers(&patched).map_err(|e| {
         tracing::warn!(error = %e, path = %providers_path.display(), "patched providers.toml failed validation");
         bad_request(e)
     })?;
 
     let checkpoint_id = state
-        .checkpoint_config_id_before_write("patch providers.toml")
+        .checkpoint_agent_config_id_before_write("patch providers.toml")
         .await;
     crate::util::fs::atomic_write(&providers_path, &patched)
         .await
@@ -520,9 +519,9 @@ pub(super) async fn api_providers_patch(
             )
         })?;
 
-    // Trigger root reload — provider changes affect model resolution
+    // Trigger agent reload — provider changes affect model resolution
     if let Some(reload_tx) = &state.reload_tx {
-        reload_tx.send(super::super::ReloadSignal::Root).ok();
+        reload_tx.send(super::super::ReloadSignal::Agent).ok();
     }
 
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
@@ -533,7 +532,7 @@ pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Json<ValidateResponse> {
-    let diagnostics = Config::diagnose_providers_toml(&body, &state.config_dir);
+    let diagnostics = state.diagnose_agent_providers(&body);
     Json(ValidateResponse::from_diagnostics(
         diagnostics,
         "providers.toml",
@@ -545,10 +544,16 @@ mod tests {
     use super::*;
 
     /// A state backed by a real temp directory, for tests that read/write
-    /// `config.toml`/`providers.toml` on disk.
+    /// `config.toml`/`providers.toml` on disk. Seeds a valid hub `config.toml`
+    /// so diagnosis/validation can resolve the hub side.
     fn tempdir_state(dir: &std::path::Path) -> ConfigApiState {
+        let hub_dir = dir.join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         ConfigApiState {
+            hub_dir,
             config_dir: dir.to_path_buf(),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
@@ -561,7 +566,6 @@ mod tests {
     #[tokio::test]
     async fn providers_raw_put_saves_invalid_toml_with_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let state = tempdir_state(dir.path());
 
         let Json(response) =
@@ -586,7 +590,6 @@ mod tests {
     #[tokio::test]
     async fn providers_raw_put_saves_valid_toml_with_no_diagnostics() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let state = tempdir_state(dir.path());
 
         let Json(response) = api_providers_raw_put(
@@ -668,7 +671,8 @@ mod tests {
     async fn providers_patch_returns_the_checkpoint_taken_before_the_write() {
         let dir = tempfile::tempdir().unwrap();
         let state = super::super::test_support::watching_state(dir.path());
-        std::fs::write(state.config_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
+        std::fs::create_dir_all(&state.hub_dir).unwrap();
+        std::fs::write(state.hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         let before = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
         std::fs::write(state.config_dir.join("providers.toml"), before).unwrap();
 
@@ -686,7 +690,7 @@ mod tests {
         let stored = state
             .checkpoints
             .file_content_at(
-                crate::checkpoints::RepoKind::Config,
+                crate::checkpoints::RepoKind::AgentConfig,
                 id,
                 "providers.toml".to_string(),
             )

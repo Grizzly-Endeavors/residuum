@@ -72,6 +72,9 @@ pub(super) struct ConfigDiff {
     pub a2a_changed: bool,
     /// Cloud tunnel config changed — restarting the tunnel is disruptive.
     pub cloud_changed: bool,
+    /// The hub's `timezone` changed — applied live where possible, see
+    /// `apply_timezone`.
+    pub timezone_changed: bool,
     /// Idle timeout or `idle_channel` changed — controls the `IdleAction` returned to the caller.
     pub idle_changed: bool,
     /// Human-readable summary of every subsystem that changed, for the reload log line.
@@ -100,6 +103,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         old.a2a != new.a2a || (new.a2a.enabled && old.gateway.bind != new.gateway.bind);
     let cloud_changed = old.cloud != new.cloud;
     let idle_changed = old.idle != new.idle;
+    let timezone_changed = old.timezone != new.timezone;
 
     let parts = summary_parts(old, new);
     let changed = !parts.is_empty();
@@ -125,6 +129,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         teams_changed,
         a2a_changed,
         cloud_changed,
+        timezone_changed,
         idle_changed,
         summary,
     }
@@ -152,6 +157,9 @@ fn summary_parts(old: &Config, new: &Config) -> Vec<&'static str> {
     }
     if old.memory != new.memory {
         parts.push("memory thresholds");
+    }
+    if old.timezone != new.timezone {
+        parts.push("timezone");
     }
     if old.gateway != new.gateway {
         parts.push("gateway bind/port");
@@ -306,9 +314,9 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     // transcript too, when this is `true`.
     let deliver_to_agent = rt
         .config_reload_tracker
-        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Root);
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Agent);
 
-    let new_cfg = match Config::load_at(&rt.config_dir) {
+    let new_cfg = match Config::load_agent_at(rt.layout.root(), &rt.hub_cfg) {
         Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
@@ -400,6 +408,155 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     } else {
         IdleAction::None
     }
+}
+
+/// Handle an in-place hub config reload (`hub/config.toml` changed).
+///
+/// Hub-owned values (`timezone`, `[gateway]`, `[cloud]`, the A2A listener's
+/// `enabled`/`port`/`public_url`, `[tracing]`, and the shared
+/// `[background]` session budget/hop limits) are copied into a clone of the
+/// currently running agent `Config` so the existing diff/rebuild machinery
+/// in [`handle_root_reload`] above — built to compare two `Config`
+/// snapshots — can be reused unchanged: since every other field is
+/// identical to `rt.cfg`, [`diff_config`] only ever reports a change here
+/// for a hub-owned field. On failure the running hub config stays in
+/// effect, `hub/config.toml` is left as the user wrote it, and clients are
+/// notified — the same contract as [`handle_root_reload`].
+pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
+    tracing::info!("handling hub config reload in-place");
+
+    // Consumed once, up front, like `handle_root_reload`: whether the agent's
+    // own write to `hub/config.toml` caused this reload. Its outcome is
+    // delivered into the agent's transcript too when so.
+    let deliver_to_agent = rt
+        .config_reload_tracker
+        .take_if_matches(crate::tools::config_reload_tracker::ConfigReloadKind::Hub);
+
+    let new_hub = match crate::config::HubConfig::load_at(&rt.hub_dir) {
+        Ok(hub) => hub,
+        Err(err) => {
+            tracing::warn!(error = %err, "hub config reload failed, keeping current hub config");
+            let message = format!("hub config reload failed (keeping current hub config): {err}");
+            publish_notice(&rt.publisher, message.clone()).await;
+            if deliver_to_agent {
+                rt.agent.inject_system_message(message);
+            }
+            return;
+        }
+    };
+    for notice in &new_hub.load_notices {
+        publish_notice(&rt.publisher, notice.clone()).await;
+    }
+
+    let mut new_cfg = rt.cfg.clone();
+    new_cfg.gateway = new_hub.gateway.clone();
+    new_cfg.timezone = new_hub.timezone;
+    new_cfg.cloud = new_hub.cloud.clone();
+    new_cfg.tracing = new_hub.tracing.clone();
+    new_cfg.a2a.enabled = new_hub.a2a.enabled;
+    new_cfg.a2a.port = new_hub.a2a.port;
+    new_cfg.a2a.public_url.clone_from(&new_hub.a2a.public_url);
+    new_cfg.background.max_concurrent = new_hub.background.max_concurrent;
+    new_cfg.background.hop_soft_limit = new_hub.background.hop_soft_limit;
+    new_cfg.background.hop_hard_limit = new_hub.background.hop_hard_limit;
+
+    let diff = diff_config(&rt.cfg, &new_cfg);
+
+    if !diff.changed {
+        last_known_good::hub::save(&rt.hub_dir);
+        let message = "hub configuration reloaded: no changes detected".to_string();
+        publish_notice(&rt.publisher, message.clone()).await;
+        if deliver_to_agent {
+            rt.agent.inject_system_message(message);
+        }
+        tracing::info!("hub config reload: no changes detected");
+        return;
+    }
+
+    let summary = diff.summary().to_string();
+    if diff.summary().contains("background")
+        && (rt.hub_cfg.background.max_concurrent != new_hub.background.max_concurrent)
+    {
+        publish_notice(
+            &rt.publisher,
+            "background.max_concurrent changed in hub/config.toml — this takes effect on the \
+             next restart, not immediately."
+                .to_string(),
+        )
+        .await;
+    }
+
+    // Set before the rebuild so every component built from `rt.tz`
+    // (providers, observers, the spawn context) picks up the new value.
+    if diff.timezone_changed {
+        rt.tz = new_cfg.timezone;
+    }
+
+    rebuild_cheap_components(rt, &new_cfg).await;
+
+    if diff.timezone_changed {
+        apply_timezone(rt, &new_cfg).await;
+    }
+    if diff.gateway_changed {
+        reload_gateway(rt, &new_cfg).await;
+    }
+    if diff.a2a_changed {
+        reload_a2a_adapter(rt, &new_cfg).await;
+    }
+    if diff.cloud_changed || diff.a2a_changed {
+        reload_tunnel(rt, &new_cfg).await;
+    }
+
+    rt.cfg = new_cfg;
+    rt.hub_cfg = new_hub;
+
+    last_known_good::hub::save(&rt.hub_dir);
+
+    let message = format!("hub configuration reloaded: {summary}");
+    publish_notice(&rt.publisher, message.clone()).await;
+    if deliver_to_agent {
+        rt.agent.inject_system_message(message);
+    }
+    tracing::info!(changes = %summary, "hub configuration reloaded successfully");
+}
+
+/// Push a changed hub timezone into every holder that can take it live, and
+/// publish a notice for the ones that only pick it up on restart.
+///
+/// Live: `rt.tz` (read at call time by turns, pulse, idle, commands and the
+/// subconscious hook), the agent's turn timestamps and its timezone-aware
+/// tools (`schedule_action`, `list_actions`, `user_inbox_add`), the observer
+/// and reflector, the provider components, the spawn context that seeds new
+/// background sessions, and the chat adapters (restarted so their message
+/// timestamps use it). Restart-only: the HTTP/webhook state, the inbox
+/// notification channel and the session runtime, which are shared handles
+/// built once at startup.
+async fn apply_timezone(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    rt.agent.set_timezone(
+        new_cfg.timezone,
+        Arc::clone(&rt.action_store),
+        Arc::clone(&rt.action_notify),
+        &rt.layout,
+    );
+    if new_cfg.discord.is_some() {
+        reload_discord_adapter(rt, new_cfg).await;
+    }
+    if new_cfg.telegram.is_some() {
+        reload_telegram_adapter(rt, new_cfg).await;
+    }
+    if new_cfg.teams.is_some() {
+        reload_teams_adapter(rt, new_cfg).await;
+    }
+    publish_notice(
+        &rt.publisher,
+        format!(
+            "timezone changed to {} — the agent, memory, pulse and new background sessions use it \
+             now. Web API and webhook timestamps, inbox notification timestamps and already \
+             running background sessions keep the previous timezone until the next restart.",
+            new_cfg.timezone.name()
+        ),
+    )
+    .await;
 }
 
 /// Build a fresh HTTP client for the given request timeout.
@@ -510,6 +667,7 @@ fn build_spawn_context(
         repeat_call_guard: new_cfg.agent.repeat_call_guard,
         layout: rt.layout.clone(),
         config_dir: new_cfg.config_dir.clone(),
+        hub_dir: rt.hub_dir.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
         session_runtime: Arc::clone(&rt.session_runtime),
@@ -715,7 +873,9 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 layout: rt.layout.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
+                hub_dir: rt.hub_dir.clone(),
                 config_dir: rt.config_dir.clone(),
+                agent_name: rt.cfg.agent_name.clone(),
                 workspace_dir: rt.layout.root().to_path_buf(),
                 memory_dir: Some(rt.layout.memory_dir()),
                 reload_tx: Some(rt.reload_tx.clone()),
@@ -727,7 +887,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 update_status: std::sync::Arc::clone(&rt.update_status),
                 restart_tx: rt.restart_tx.clone(),
                 gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
-                config_dir: rt.config_dir.clone(),
+                hub_dir: rt.hub_dir.clone(),
             };
             let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
                 service: std::sync::Arc::clone(&rt.tracing_service),
@@ -835,7 +995,9 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .write()
         .await
         .set_blocked_paths(crate::tools::path_policy::blocked_write_paths(
-            new_cfg, &rt.layout,
+            new_cfg,
+            &rt.layout,
+            &rt.hub_dir,
         ));
     rt.agent
         .set_max_tool_iterations(new_cfg.agent.max_tool_iterations);
@@ -1005,6 +1167,7 @@ async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     if new_cfg.a2a.enabled {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let deps = crate::gateway::event_loop::A2aListenerDeps {
+            hub_dir: rt.hub_dir.clone(),
             session_registry: Arc::clone(&rt.session_registry),
             agent_messenger: Arc::clone(&rt.agent_messenger),
             skill_state: Arc::clone(&rt.skill_state),
@@ -1046,7 +1209,8 @@ mod tests {
     /// Build a minimal test config.
     fn test_config() -> Config {
         Config {
-            name: None,
+            agent_name: "test-agent".to_string(),
+            autostart: true,
             main: vec![],
             observer: vec![],
             reflector: vec![],
@@ -1148,6 +1312,20 @@ mod tests {
             !diff.summary().contains("providers"),
             "settings change alone should not flag providers"
         );
+    }
+
+    #[test]
+    fn diff_config_detects_timezone_change() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.timezone = chrono_tz::America::New_York;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.changed, "a timezone edit is a change");
+        assert!(diff.timezone_changed);
+        assert!(diff.summary().contains("timezone"));
+        assert!(!diff.summary().contains("no changes"));
+        assert_no_disruptive_flags(&diff);
     }
 
     #[test]

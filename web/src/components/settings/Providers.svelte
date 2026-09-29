@@ -171,7 +171,7 @@
       () => {
         providers.splice(idx, 0, removed);
       },
-      "config",
+      "agent_config",
       "providers.toml",
       onReload,
     );

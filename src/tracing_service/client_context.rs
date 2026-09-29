@@ -137,35 +137,44 @@ mod tests {
         "private-workspace-dir",
     ];
 
-    fn load_config(config_toml: &str) -> Config {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
+    /// Load an agent named after a "private" workspace directory, so the
+    /// leak checks below also cover the agent directory path.
+    fn load_config(hub_toml: &str, agent_toml: &str) -> Config {
+        let root = tempfile::tempdir().unwrap();
+        let hub_dir = root.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), hub_toml).unwrap();
+        let agent_dir = root.path().join("private-workspace-dir");
+        let agent_config_dir = agent_dir.join("config");
+        std::fs::create_dir_all(&agent_config_dir).unwrap();
+        std::fs::write(agent_config_dir.join("config.toml"), agent_toml).unwrap();
         std::fs::write(
-            dir.path().join("providers.toml"),
+            agent_config_dir.join("providers.toml"),
             "[providers.private-provider]\ntype = \"anthropic\"\napi_key = \"sk-provider-secret\"\n\n[models]\nmain = \"private-provider/claude-sonnet-4-6\"\n",
         )
         .unwrap();
-        Config::load_at(dir.path()).unwrap()
+        let hub = crate::config::HubConfig::load_at(&hub_dir).unwrap();
+        Config::load_agent_at(&agent_dir, &hub).unwrap()
     }
 
     fn full_config() -> Config {
         load_config(
             r#"
 timezone = "UTC"
-workspace_dir = "/home/someone/private-workspace-dir"
-
-[discord]
-token = "discord-token-secret"
 
 [cloud]
 token = "cloud-token-secret"
 
-[webhooks.private-hook-name]
-secret = "webhook-secret-value"
-
 [tracing]
 log_level = "trace"
 auto_error_reporting = true
+"#,
+            r#"
+[discord]
+token = "discord-token-secret"
+
+[webhooks.private-hook-name]
+secret = "webhook-secret-value"
 "#,
         )
     }

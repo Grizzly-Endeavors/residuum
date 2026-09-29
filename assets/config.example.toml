@@ -1,32 +1,24 @@
-# Residuum example configuration — all options with defaults shown.
-# Copy to config.toml and edit as needed.
+# Residuum agent example configuration — all options with defaults shown.
+# Copy to <agent>/config/config.toml and edit as needed.
 #
-# Provider and model configuration lives in providers.toml.
-# See providers.example.toml for those options.
+# Provider and model configuration lives in providers.toml, in this same
+# directory. See providers.example.toml for those options.
 #
-# Every token/secret/api_key field below (Discord, Telegram, Teams, cloud,
+# Hub-level settings (timezone, gateway bind/port, cloud tunnel, the A2A
+# listener's enablement/port/public URL, tracing, and the shared session
+# budget/hop limits) live in hub/config.toml instead — see
+# hub-config.example.toml. This agent's directory *is* its workspace; there
+# is no `workspace_dir` setting.
+#
+# Every token/secret/api_key field below (Discord, Telegram, Teams,
 # webhooks, web search) supports the same three forms: a "${ENV_VAR}"
 # reference, a "secret:name" reference into the encrypted secret store, or a
 # plain literal. The web settings page preserves a "${...}" or "secret:..."
 # reference exactly as-is when you save — it only ever moves a literal value
 # into the secret store, never a reference to something else.
 
-# ── User name (optional) ─────────────────────────────────────────────────────
-# What the agent should call you. Stored in USER.md on first run.
-# name = "Alex"
-
-# ── Timezone (REQUIRED) ──────────────────────────────────────────────────────
-# IANA timezone name for all timestamps. Affects daily logs, memory
-# observations, pulse active hours, and all stored data.
-#
-# WARNING: Changing this value after initial setup is NOT recommended.
-# Existing timestamps will not be retroactively converted.
-#
-# Examples: "America/New_York", "Europe/London", "Asia/Tokyo", "UTC"
-timezone = "America/New_York"
-
 # ── General settings ──────────────────────────────────────────────────────────
-# workspace_dir = "~/.residuum/workspace"
+# autostart = true   # whether this agent starts when the hub starts
 timeout_secs = 120
 max_tokens = 8192
 # temperature = 0.7
@@ -86,31 +78,26 @@ enabled = true
 # [learning]
 # nudge_after_turns = 0
 
-# ── WebSocket gateway ─────────────────────────────────────────────────────────
-[gateway]
-bind = "127.0.0.1"
-port = 7700
-
 # ── Discord bot (optional) ────────────────────────────────────────────────────
-# Bot token can be set here or via RESIDUUM_DISCORD_TOKEN env var.
-# Supports ${ENV_VAR} syntax for referencing environment variables.
+# The bot token is a "secret:name" reference, a "${ENV_VAR}" reference, or a
+# literal.
 # DMs always reach the agent; in server channels only @mentions do. The first
 # person to DM the bot becomes its owner (saved in discord_state.json).
 #
 # [discord]
-# token = "${RESIDUUM_DISCORD_TOKEN}"
+# token = "secret:discord_token"
 # respond_to_others = false   # true: anyone who can DM or @mention the bot can use the agent
 # context_messages = 20       # earlier unmentioned server messages shared on @mention
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
-# Bot token can be set here or via RESIDUUM_TELEGRAM_TOKEN env var.
-# Supports ${ENV_VAR} syntax for referencing environment variables.
+# The bot token is a "secret:name" reference, a "${ENV_VAR}" reference, or a
+# literal.
 # Private chats always reach the agent; in groups only messages that mention
 # the bot, reply to it, or are commands do. The first person to message the
 # bot privately becomes its owner (saved in telegram_state.json).
 #
 # [telegram]
-# token = "${RESIDUUM_TELEGRAM_TOKEN}"
+# token = "secret:telegram_token"
 # respond_to_others = false   # true: anyone who can reach the bot can use the agent
 # context_messages = 20       # earlier unmentioned group messages shared when addressed; requires
 #                              # privacy mode off in BotFather (or the bot made a group admin)
@@ -118,11 +105,11 @@ port = 7700
 # ── Microsoft Teams bot (optional) ───────────────────────────────────────────
 # Setup walkthrough: docs/guides/teams-setup.md.
 # app_id, tenant_id, and app_password are all required when the section is
-# present. The client secret can also come from RESIDUUM_TEAMS_APP_PASSWORD.
+# present.
 #
-# Teams listens on its own port (bound on [gateway] bind). Point your public
-# tunnel at this port only — never at the gateway port, which serves the
-# unauthenticated config API.
+# Teams listens on its own port (bound on the hub's gateway bind). Point
+# your public tunnel at this port only — never at the gateway port, which
+# serves the unauthenticated config API.
 #
 # [teams]
 # app_id = "11111111-2222-3333-4444-555555555555"
@@ -132,36 +119,14 @@ port = 7700
 # context_messages = 20       # earlier group chat messages shared on @mention
 # port = 7701
 
-# ── Agent2Agent (A2A) protocol (optional) ────────────────────────────────────
-# Lets other agents (including your own other instances) delegate work to this
-# one over the A2A protocol. Enabled by default: every request still goes
-# through the caller-key/sibling auth layer, so turning it on costs nothing
-# until a key or sibling instance exists to use it.
-# Manage caller keys with `residuum a2a keys create|list|revoke`.
-#
-# A2A listens on its own port (bound on [gateway] bind), separate from the
-# gateway port for the same reason Teams does — a public tunnel pointed at it
-# exposes only the A2A endpoints, never the unauthenticated config API.
+# ── Agent2Agent (A2A) visibility (optional) ──────────────────────────────────
+# The A2A listener itself (enabled/port/public_url) is hub-level — see
+# hub-config.example.toml. Only this agent's visibility is set here.
 #
 # [a2a]
-# enabled = true
-# port = 7702
-# public_url = ""             # this instance's own tunnel/reverse proxy origin;
-#                              # leave empty to let the relay supply one instead
 # visibility = "public"       # "public" or "private" — a private agent (and its
 #                              # card) answers a plain 404 to anyone without a
 #                              # valid caller key
-
-# ── Cloud tunnel (optional) ──────────────────────────────────────────────────
-# Connects to the relay server to make this instance accessible from the
-# public internet via agent-residuum.com/user/{id}/.
-# Token can be set here or via RESIDUUM_CLOUD_TOKEN env var.
-#
-# [cloud]
-# enabled = true
-# token = "${RESIDUUM_CLOUD_TOKEN}"
-# relay_url = "wss://agent-residuum.com/tunnel/register"
-# local_port = 7700
 
 # ── Skills (optional, extra scan directories) ────────────────────────────────
 # The workspace skills/ directory is always scanned. Add extra directories here.
@@ -170,16 +135,17 @@ port = 7700
 # dirs = ["~/my-skills", "/opt/shared-skills"]
 
 # ── Tools (optional, runtime-extensible PATH) ────────────────────────────────
-# Directories prepended to the PATH of every child process Residuum spawns
+# Directories prepended to the PATH of every child process this agent spawns
 # (MCP stdio servers and the exec tool), so external CLIs become resolvable at
 # runtime with no rebuild. Drop a static single-file binary (gh, kubectl, uv,
 # most Go/Rust CLIs) into one of these dirs and the agent can use it.
 #
-# The default persistent dir ~/.residuum/bin is always included and is created
-# at first run. In containers it lives under the state volume, so tools placed
-# there survive restarts and image upgrades.
+# The default persistent dir ~/.residuum/hub/bin is always included (shared
+# across every agent the hub hosts) and is created at first run. In
+# containers it lives under the state volume, so tools placed there survive
+# restarts and image upgrades.
 #
-# Entries below take precedence over ~/.residuum/bin (both come before the
+# Entries below take precedence over ~/.residuum/hub/bin (both come before the
 # inherited system PATH). A dir can be mounted read-only to give the agent a
 # toolbox it can use but not modify.
 #
@@ -270,20 +236,15 @@ port = 7700
 # [web_search.gemini]
 # exclude_domains = ["example.com"]
 
-# ── Agent sessions (optional) ──────────────────────────────────────────────
-# Semaphore-bounded concurrent session turns (pulses, scheduled actions,
-# webhooks, subagent_spawn, and workbench artifacts). The permit is held only while a turn is
-# running, not for a session's whole idle lifetime.
-# Model tiers fall back: tier → next tier up → main.
+# ── This agent's background knobs (optional) ─────────────────────────────────
+# The shared session budget and hop limits live in hub/config.toml. Everything
+# below is this agent's own.
 # Model tier assignments are configured in providers.toml under [background.models].
 #
 # [background]
-# max_concurrent = 3
 # idle_timeout_scheduled_minutes = 2    # pulses, actions; webhook sessions use this too
 # idle_timeout_spawned_minutes = 10     # subagent_spawn, the learner
 # idle_timeout_external_minutes = 30    # non-webhook external sessions
 # idle_timeout_artifact_minutes = 10    # sessions a workbench artifact starts
 # episode_skip_token_floor = 2000       # below this, a run with nothing staged produces no episode
 # subagent_depth_cap = 3                # max nesting depth for subagent_spawn (main = 0)
-# hop_soft_limit = 8                    # at/above this hop count, delivered messages carry a "reply only if needed" note
-# hop_hard_limit = 32                   # at/above this hop count, message delivery is refused (bounds message loops)

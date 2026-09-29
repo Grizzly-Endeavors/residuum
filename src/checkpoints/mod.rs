@@ -37,7 +37,8 @@ pub(crate) fn test_engine() -> std::sync::Arc<CheckpointEngine> {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = CheckpointEngine::new(
         dir.path().join("workspace"),
-        dir.path().join("config"),
+        dir.path().join("agent-config"),
+        dir.path().join("hub"),
         &dir.path().join("checkpoints"),
         None,
     )

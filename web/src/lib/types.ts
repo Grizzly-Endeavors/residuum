@@ -131,7 +131,11 @@ export interface StatusResponse {
   /** Feature ids this build supports, the same list the workbench SDK exposes as `residuum.features`. */
   features: string[];
   /** Each checkpoint repository's on-disk size and count, or `null` if just-now unreadable. */
-  checkpoints: { workspace: RepoStats | null; config: RepoStats | null };
+  checkpoints: {
+    workspace: RepoStats | null;
+    agent_config: RepoStats | null;
+    hub: RepoStats | null;
+  };
 }
 
 // ── Setup wizard types ──────────────────────────────────────────────
@@ -202,6 +206,7 @@ export interface IntegrationsConfig {
 
 export interface SetupWizardState {
   userName: string;
+  agentName: string;
   timezone: string;
   selectedProviders: ProviderKey[];
   providerConfigs: Record<ProviderKey, ProviderConfig>;

@@ -15,17 +15,17 @@ Residuum prepends one or more directories to the `PATH` of every child it
 spawns. Effective order (first match wins):
 
 1. Directories listed in `[tools].path`, in the order given.
-2. The default persistent dir `~/.residuum/bin`.
+2. The default persistent dir `~/.residuum/hub/bin`.
 3. The inherited system `PATH`.
 
 Drop a binary into any of these directories and the agent can invoke it —
 `exec`-ing it directly, or configuring an MCP stdio server whose `command` is
 that binary.
 
-## The default dir: `~/.residuum/bin`
+## The default dir: `~/.residuum/hub/bin`
 
-Created at first run, always on the tool `PATH`. It lives next to the workspace
-under `~/.residuum`, which in the container image is the mounted state volume
+Created at first run, always on the tool `PATH`, shared by every agent. It lives
+in the hub directory under `~/.residuum`, which in the container image is the mounted state volume
 (`VOLUME /home/residuum/.residuum`). Anything placed here therefore **persists**
 across restarts, recreations, and image upgrades — install once, not every
 start.
@@ -35,11 +35,11 @@ start.
 ```toml
 [tools]
 # Extra dirs prepended to the PATH of spawned children. Prepended in order,
-# ahead of ~/.residuum/bin.
+# ahead of ~/.residuum/hub/bin.
 path = ["/opt/residuum-tools"]
 ```
 
-These entries take precedence over `~/.residuum/bin` on a name collision, so an
+These entries take precedence over `~/.residuum/hub/bin` on a name collision, so an
 externally-managed directory can pin or override a tool.
 
 ### Container pattern: a read-only tools volume
@@ -49,7 +49,7 @@ The intended self-hosting pattern is to mount a **dedicated tools volume**
 
 - Mount it **read-only** so the agent can *use* the tools but not modify its own
   toolbox — a meaningful boundary given the `exec` tool can write to
-  `~/.residuum/bin`.
+  `~/.residuum/hub/bin`.
 - **Share** it across multiple agents/instances.
 - Add tools by dropping a binary into the mounted dir — no custom image, no
   rebuild.
@@ -89,5 +89,5 @@ neither can be supplied through the tool `PATH`:
   trust store, so every HTTPS model provider is unreachable without a CA
   bundle in the image.
 
-Everything else is expected to arrive via `~/.residuum/bin` or a mounted
+Everything else is expected to arrive via `~/.residuum/hub/bin` or a mounted
 `[tools].path` dir.

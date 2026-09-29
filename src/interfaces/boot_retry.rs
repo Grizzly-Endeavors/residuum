@@ -108,7 +108,10 @@ mod tests {
 
     fn test_publisher() -> (Publisher, crate::gateway::types::CoreReceivers) {
         let dir = tempfile::tempdir().unwrap();
-        let (core, receivers) = crate::gateway::types::GatewayCore::new(dir.path().to_path_buf());
+        let (core, receivers) = crate::gateway::types::GatewayCore::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+        );
         (core.publisher, receivers)
     }
 

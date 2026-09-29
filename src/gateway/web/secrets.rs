@@ -67,18 +67,18 @@ pub(super) async fn api_secrets_set(
         .checkpoint_config_before_write(format!("set secret '{}'", req.name))
         .await;
 
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
     let name = req.name;
     let value = req.value;
 
     tokio::task::spawn_blocking(move || {
-        let mut store = SecretStore::load(&config_dir).map_err(|e| {
+        let mut store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to load secret store: {e}"),
             )
         })?;
-        store.set(&name, &value, &config_dir).map_err(|e| {
+        store.set(&name, &value, &hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to store secret: {e}"),
@@ -101,10 +101,10 @@ pub(super) async fn api_secrets_set(
 pub(super) async fn api_secrets_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
 
     tokio::task::spawn_blocking(move || {
-        let store = SecretStore::load(&config_dir).map_err(|e| {
+        let store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to load secret store: {e}"),
@@ -130,16 +130,16 @@ pub(super) async fn api_secrets_delete(
     state
         .checkpoint_config_before_write(format!("delete secret '{name}'"))
         .await;
-    let config_dir = state.config_dir.clone();
+    let hub_dir = state.hub_dir.clone();
 
     tokio::task::spawn_blocking(move || {
-        let mut store = SecretStore::load(&config_dir).map_err(|e| {
+        let mut store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to load secret store: {e}"),
             )
         })?;
-        store.delete(&name, &config_dir).map_err(|e| {
+        store.delete(&name, &hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("failed to delete secret: {e}"),
@@ -166,7 +166,9 @@ mod tests {
 
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
-            config_dir: dir.to_path_buf(),
+            hub_dir: dir.to_path_buf(),
+            config_dir: dir.join("config"),
+            agent_name: "test-agent".to_string(),
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,

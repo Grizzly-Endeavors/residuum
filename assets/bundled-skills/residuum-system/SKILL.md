@@ -13,7 +13,7 @@ This skill provides reference documentation for every major workspace system. Ac
 |--------|-------|-------------|-----------|
 | Config | `write_file`, `edit_file` | `config.toml`, `providers.toml` | [config](references/config.md) |
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
-| Checkpoints | `workspace_history`, `workspace_restore` | `~/.residuum/checkpoints/` (outside the workspace) | [checkpoints](references/checkpoints.md) |
+| Checkpoints | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` (outside the workspace) | [checkpoints](references/checkpoints.md) |
 | Wiki | `read_file`, `write_file`, `edit_file` | `wiki/` | the `wiki` skill |
 | Workbench | `read_file`, `write_file`, `edit_file` | `workbench/` | the `workbench` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
@@ -21,10 +21,10 @@ This skill provides reference documentation for every major workspace system. Ac
 | Scheduled Actions | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` | [scheduled-actions](references/scheduled-actions.md) |
 | Skills | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` | [skills](references/skills.md) |
 | Agent Keys | `agent_keys_list`, `agent_key_delete`, `exec` (`keys`, `store_output_as`) | `residuum agent-keys` CLI, Settings → Agent keys | [agent-keys](references/agent-keys.md) |
-| Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/bin` | [tools](references/tools.md) |
+| Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/hub/bin` | [tools](references/tools.md) |
 | MCP | *(none — surfaced as regular tools)* | `config/mcp.json` | [mcp](references/mcp.md) |
 | Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
-| Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
+| Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in config.toml (idle timeouts, depth cap; the shared budget and hop limits are in the hub config) | [background-tasks](references/background-tasks.md) |
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
 | A2A | `list_agents`, `message_agent`, `stop_agent` (address `a2a:<name>`); `a2a_task_update` (session-only, in `a2a` conversation sessions) | `config/agent-card.json`, `config/a2a.json`, `[a2a]` in config.toml | [a2a](references/a2a.md) |
 

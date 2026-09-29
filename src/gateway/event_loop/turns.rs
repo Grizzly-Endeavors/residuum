@@ -14,7 +14,7 @@ use crate::bus::{
 };
 
 use crate::config::Config;
-use crate::gateway::types::{GatewayRuntime, ReloadSignal, StopRequest};
+use crate::gateway::types::{GatewayRuntime, StopRequest};
 use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::memory::types::Visibility;
@@ -325,7 +325,6 @@ async fn run_agent_turn_with_interrupts(
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
-    reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
     stop_rx: &mut mpsc::Receiver<StopRequest>,
     sigterm: &mut crate::gateway::types::TermSignal,
     gateway_shutdown_rx: &mut mpsc::Receiver<()>,
@@ -394,9 +393,6 @@ async fn run_agent_turn_with_interrupts(
                         &interrupt_tx,
                         &hop_counter,
                     );
-                }
-                _ = reload_rx.changed() => {
-                    tracing::info!("reload signal received during active turn, deferring");
                 }
                 stop_req = stop_rx.recv() => {
                     handle_mid_turn_stop_request(stop_req, correlation_id, &stop_token, &interrupt_tx);
@@ -731,7 +727,6 @@ pub async fn handle_inbound_message(
             &prompt_ctx,
             &message.images,
             &mut rt.agent_subscriber,
-            &mut rt.reload_rx,
             &mut rt.stop_rx,
             &mut rt.sigterm,
             &mut rt.gateway_shutdown_rx,
@@ -810,7 +805,8 @@ mod tests {
     /// `publish_turn_outcome`'s tests, the rest is filler to satisfy the type.
     fn test_config() -> Config {
         Config {
-            name: None,
+            agent_name: "test-agent".to_string(),
+            autostart: true,
             main: vec![],
             observer: vec![],
             reflector: vec![],
@@ -1262,7 +1258,6 @@ mod tests {
 
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
-        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
         let mut sigterm = dummy_sigterm();
         let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
@@ -1291,7 +1286,6 @@ mod tests {
                 &prompt_ctx,
                 &[],
                 &mut agent_subscriber,
-                &mut reload_rx,
                 &mut stop_rx,
                 &mut sigterm,
                 &mut gateway_shutdown_rx,
@@ -1370,7 +1364,6 @@ mod tests {
 
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
-        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(4);
         let mut sigterm = dummy_sigterm();
         let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
@@ -1409,7 +1402,6 @@ mod tests {
             &prompt_ctx,
             &[],
             &mut agent_subscriber,
-            &mut reload_rx,
             &mut stop_rx,
             &mut sigterm,
             &mut gateway_shutdown_rx,
@@ -1480,7 +1472,6 @@ mod tests {
 
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
-        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
         let mut sigterm = dummy_sigterm();
         let (_gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
@@ -1509,7 +1500,6 @@ mod tests {
                 &prompt_ctx,
                 &[],
                 &mut agent_subscriber,
-                &mut reload_rx,
                 &mut stop_rx,
                 &mut sigterm,
                 &mut gateway_shutdown_rx,
@@ -1710,7 +1700,6 @@ mod tests {
 
         let mut agent_subscriber: Subscriber<MessageEvent> =
             handle.subscribe(topics::UserMessage).await.unwrap();
-        let (_reload_tx, mut reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (_stop_tx, mut stop_rx) = mpsc::channel::<StopRequest>(1);
         let mut sigterm = dummy_sigterm();
         let (gateway_shutdown_tx, mut gateway_shutdown_rx) = mpsc::channel::<()>(1);
@@ -1737,7 +1726,6 @@ mod tests {
                 &prompt_ctx,
                 &[],
                 &mut agent_subscriber,
-                &mut reload_rx,
                 &mut stop_rx,
                 &mut sigterm,
                 &mut gateway_shutdown_rx,

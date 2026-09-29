@@ -29,12 +29,15 @@ const INTERNAL_DB_PATHS: &[&str] = &["memory/vectors.db"];
 /// - One of [`INTERNAL_DB_PATHS`], or one of its `-wal`/`-shm`/`-journal`
 ///   sidecar files.
 /// - An atomic-write temp file (see [`crate::util::fs::is_atomic_write_temp`]).
+/// - A `config/*.last-known-good.toml` copy. Last-known-good copies live in
+///   `hub/`; a copy inside the workspace's `config/` directory would hold
+///   plaintext provider keys, so it is never exposed even if one appears.
 ///
 /// A look-alike name that merely contains these as a substring — `index.md`,
 /// `my.index.md`, or a user's own `notes.db` — is never blocked.
 #[must_use]
 pub fn is_blocked_path(relative: &str) -> bool {
-    if is_internal_data_path(relative) {
+    if is_internal_data_path(relative) || is_last_known_good_copy(relative) {
         return true;
     }
 
@@ -42,6 +45,17 @@ pub fn is_blocked_path(relative: &str) -> bool {
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(crate::util::fs::is_atomic_write_temp)
+}
+
+/// Whether `relative` is a `*.last-known-good.toml` file directly inside the
+/// workspace's `config/` directory.
+fn is_last_known_good_copy(relative: &str) -> bool {
+    let path = Path::new(relative.trim_start_matches("./"));
+    path.parent() == Some(Path::new("config"))
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".last-known-good.toml"))
 }
 
 /// Returns true if `relative` names Residuum's own data: a `.index` segment
@@ -123,6 +137,15 @@ mod tests {
         assert!(is_blocked_path("memory/vectors.db-wal"));
         assert!(is_blocked_path("memory/vectors.db-shm"));
         assert!(is_blocked_path("memory/vectors.db-journal"));
+    }
+
+    #[test]
+    fn blocks_last_known_good_copies_in_the_config_directory() {
+        assert!(is_blocked_path("config/config.last-known-good.toml"));
+        assert!(is_blocked_path("config/providers.last-known-good.toml"));
+        assert!(is_blocked_path("./config/providers.last-known-good.toml"));
+        assert!(!is_blocked_path("notes/config.last-known-good.toml"));
+        assert!(!is_blocked_path("config/mcp.json"));
     }
 
     #[test]

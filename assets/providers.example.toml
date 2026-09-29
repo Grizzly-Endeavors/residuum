@@ -36,7 +36,8 @@
 # Format: "provider_or_type/model_name"
 # If the part before / matches a [providers] entry, that connection is used.
 # Otherwise it is treated as an implicit provider type (anthropic, openai, etc.)
-# and the API key is read from the provider-specific env var or RESIDUUM_API_KEY.
+# and the API key is read from the provider-specific env var (ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, GEMINI_API_KEY, FIREWORKS_API_KEY, OLLAMA_API_KEY).
 #
 # Roles: main (required), default (fallback for unset roles), observer,
 #        reflector, pulse, subconscious

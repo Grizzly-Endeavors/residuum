@@ -629,9 +629,9 @@ fn swap_in_new_binary(exe_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
 /// the config directory can't be found, the update still installed
 /// correctly, it just won't be able to roll back on a failed restart.
 fn record_pending_rollback(prev_path: &Path, target_version: &str) {
-    let Ok(config_dir) = crate::config::Config::config_dir() else {
+    let Ok(config_dir) = crate::config::default_hub_dir() else {
         tracing::warn!(
-            "could not determine config directory; the next restart won't be able to roll back this update on failure"
+            "could not determine hub directory; the next restart won't be able to roll back this update on failure"
         );
         return;
     };
@@ -652,9 +652,9 @@ fn record_pending_rollback(prev_path: &Path, target_version: &str) {
 /// it. Best-effort, same as [`record_pending_rollback`]: the binary is
 /// already in place either way.
 fn record_verification(version: &str, verification: ReleaseVerification) {
-    let Ok(config_dir) = crate::config::Config::config_dir() else {
+    let Ok(config_dir) = crate::config::default_hub_dir() else {
         tracing::warn!(
-            "could not determine config directory; the update page won't show whether this update was verified"
+            "could not determine hub directory; the update page won't show whether this update was verified"
         );
         return;
     };

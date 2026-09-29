@@ -65,7 +65,7 @@ Telegram gives bots no way to list their chats, so `list_conversations` shows wh
 
 ```toml
 [telegram]
-token = "${RESIDUUM_TELEGRAM_TOKEN}"   # or secret:telegram; RESIDUUM_TELEGRAM_TOKEN also works on its own
+token = "secret:telegram"   # or a "${ENV_VAR}" reference, or a literal
 respond_to_others = false
 context_messages = 20
 ```

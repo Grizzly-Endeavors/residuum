@@ -20,31 +20,37 @@ use super::types::{
 };
 use super::{exclude, notice};
 
-/// Root config files and encrypted key stores tracked by the config
+/// Hub `config.toml` and encrypted key stores tracked by the hub config
 /// repository. `secrets.key`/`agent-keys.key` (the machine keys the `.enc`
 /// files are decrypted with) are deliberately never in this list — see
 /// `docs/systems-usage/checkpoints.md`.
-const CONFIG_TRACKED_FILES: &[&str] = &[
+const HUB_TRACKED_FILES: &[&str] = &[
     "config.toml",
-    "providers.toml",
     "secrets.toml.enc",
     "agent-keys.toml.enc",
     "a2a-keys.toml",
 ];
 
+/// The agent's own config file and providers file, tracked by the
+/// per-agent config repository — exactly these two, nothing else.
+const AGENT_CONFIG_TRACKED_FILES: &[&str] = &["config.toml", "providers.toml"];
+
 /// Default page size for `list_checkpoints` when the caller doesn't specify
 /// one.
 const DEFAULT_PAGE_LIMIT: usize = 50;
 
-/// The workspace and config checkpoint repositories, and everything needed
-/// to take, list, and act on checkpoints in either.
+/// The workspace, agent-config, and hub-config checkpoint repositories, and
+/// everything needed to take, list, and act on checkpoints in any of them.
 pub struct CheckpointEngine {
     workspace_root: PathBuf,
     workspace_repo: Arc<Mutex<GitRepo>>,
     workspace_git_dir: PathBuf,
-    config_dir: PathBuf,
-    config_repo: Arc<Mutex<GitRepo>>,
-    config_git_dir: PathBuf,
+    agent_config_dir: PathBuf,
+    agent_config_repo: Arc<Mutex<GitRepo>>,
+    agent_config_git_dir: PathBuf,
+    hub_dir: PathBuf,
+    hub_repo: Arc<Mutex<GitRepo>>,
+    hub_git_dir: PathBuf,
     publisher: Option<Publisher>,
     /// Keeps a test fixture's backing temp directory alive (and cleaned up
     /// on drop) for as long as this engine is in use, instead of leaking it
@@ -54,34 +60,38 @@ pub struct CheckpointEngine {
 }
 
 impl CheckpointEngine {
-    /// Open (or create) both checkpoint repositories.
+    /// Open (or create) all three checkpoint repositories.
     ///
-    /// `checkpoints_dir` is typically `~/.residuum/checkpoints`; the
-    /// workspace repository's git-dir is `checkpoints_dir/workspace.git`
-    /// and the config repository's is `checkpoints_dir/config.git`. Neither
-    /// git-dir lives inside `workspace_root`, so a `.git` the user keeps
-    /// there is never touched.
+    /// `checkpoints_dir` is typically `~/.residuum/hub/checkpoints`. None of
+    /// the three git-dirs live inside `workspace_root` (the agent
+    /// directory), so a `.git` the user keeps there is never touched.
     ///
     /// # Errors
-    /// Returns [`CheckpointError`] if either repository can't be opened or
+    /// Returns [`CheckpointError`] if any repository can't be opened or
     /// initialized.
     pub fn new(
         workspace_root: PathBuf,
-        config_dir: PathBuf,
+        agent_config_dir: PathBuf,
+        hub_dir: PathBuf,
         checkpoints_dir: &Path,
         publisher: Option<Publisher>,
     ) -> Result<Self, CheckpointError> {
         let workspace_git_dir = checkpoints_dir.join(RepoKind::Workspace.dir_name());
-        let config_git_dir = checkpoints_dir.join(RepoKind::Config.dir_name());
+        let agent_config_git_dir = checkpoints_dir.join(RepoKind::AgentConfig.dir_name());
+        let hub_git_dir = checkpoints_dir.join(RepoKind::Hub.dir_name());
         let workspace_repo = GitRepo::open_or_init(&workspace_git_dir)?;
-        let config_repo = GitRepo::open_or_init(&config_git_dir)?;
+        let agent_config_repo = GitRepo::open_or_init(&agent_config_git_dir)?;
+        let hub_repo = GitRepo::open_or_init(&hub_git_dir)?;
         Ok(Self {
             workspace_root,
             workspace_repo: Arc::new(Mutex::new(workspace_repo)),
             workspace_git_dir,
-            config_dir,
-            config_repo: Arc::new(Mutex::new(config_repo)),
-            config_git_dir,
+            agent_config_dir,
+            agent_config_repo: Arc::new(Mutex::new(agent_config_repo)),
+            agent_config_git_dir,
+            hub_dir,
+            hub_repo: Arc::new(Mutex::new(hub_repo)),
+            hub_git_dir,
             publisher,
             #[cfg(test)]
             tempdir_guard: None,
@@ -100,8 +110,9 @@ impl CheckpointEngine {
     /// Open the checkpoint repositories for a one-off CLI invocation
     /// (`residuum secret`/`residuum agent-keys`/`residuum a2a keys`),
     /// sharing the same on-disk repositories the gateway commits to.
-    /// `workspace_dir` defaults to `config_dir/workspace` since these CLI
-    /// commands never touch the workspace repo, so it need not be exact.
+    /// `workspace_root`/`agent_config_dir` default to placeholders under
+    /// `hub_dir` since these CLI commands only ever touch the hub config
+    /// repository, so they need not be exact.
     ///
     /// Commits from this instance and the running gateway (or another CLI
     /// invocation) are safe to interleave — see [`Self::checkpoint_config_now`].
@@ -110,11 +121,12 @@ impl CheckpointEngine {
     /// command's own operation must never fail just because checkpointing
     /// couldn't be set up.
     #[must_use]
-    pub fn open_for_cli(config_dir: &Path) -> Option<Self> {
-        let checkpoints_dir = config_dir.join("checkpoints");
+    pub fn open_for_cli(hub_dir: &Path) -> Option<Self> {
+        let checkpoints_dir = crate::config::HubPaths::new(hub_dir).checkpoints_dir();
         match Self::new(
-            config_dir.join("workspace"),
-            config_dir.to_path_buf(),
+            hub_dir.join("_unused-workspace"),
+            hub_dir.join("_unused-agent-config"),
+            hub_dir.to_path_buf(),
             &checkpoints_dir,
             None,
         ) {
@@ -133,21 +145,24 @@ impl CheckpointEngine {
     fn repo(&self, kind: RepoKind) -> Arc<Mutex<GitRepo>> {
         match kind {
             RepoKind::Workspace => Arc::clone(&self.workspace_repo),
-            RepoKind::Config => Arc::clone(&self.config_repo),
+            RepoKind::AgentConfig => Arc::clone(&self.agent_config_repo),
+            RepoKind::Hub => Arc::clone(&self.hub_repo),
         }
     }
 
     fn dest_root(&self, kind: RepoKind) -> PathBuf {
         match kind {
             RepoKind::Workspace => self.workspace_root.clone(),
-            RepoKind::Config => self.config_dir.clone(),
+            RepoKind::AgentConfig => self.agent_config_dir.clone(),
+            RepoKind::Hub => self.hub_dir.clone(),
         }
     }
 
     fn git_dir(&self, kind: RepoKind) -> PathBuf {
         match kind {
             RepoKind::Workspace => self.workspace_git_dir.clone(),
-            RepoKind::Config => self.config_git_dir.clone(),
+            RepoKind::AgentConfig => self.agent_config_git_dir.clone(),
+            RepoKind::Hub => self.hub_git_dir.clone(),
         }
     }
 
@@ -223,7 +238,7 @@ impl CheckpointEngine {
         id
     }
 
-    /// Checkpoint the config repository now (root config files and
+    /// Checkpoint the hub config repository now (`hub/config.toml` and the
     /// encrypted key stores). Synchronous — this does no `.await`ing of its
     /// own, so it's safe to call from a blocking context too. Serializes
     /// against every other process committing to this same repository (the
@@ -238,16 +253,28 @@ impl CheckpointEngine {
         &self,
         ctx: &CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
-        let files = collect_config_files(&self.config_dir);
-        let guard = self
-            .config_repo
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        self.checkpoint_config_kind_now(RepoKind::Hub, ctx)
+    }
+
+    /// [`Self::checkpoint_config_now`], generalized to either the hub config
+    /// repository or the agent's own config repository (`config.toml` and
+    /// `providers.toml` in the agent's `config/` directory).
+    ///
+    /// # Errors
+    /// Returns [`CheckpointError`] on failure.
+    pub fn checkpoint_config_kind_now(
+        &self,
+        kind: RepoKind,
+        ctx: &CheckpointContext,
+    ) -> Result<Option<String>, CheckpointError> {
+        let files = collect_config_files(kind, &self.dest_root(kind))?;
+        let guard = self.repo(kind);
+        let guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
         guard.commit_snapshot(&files, Utc::now(), ctx)
     }
 
-    /// Before a write to a root config file or an encrypted key store:
-    /// checkpoint the config repository first. Never fails or blocks the
+    /// Before a write to the hub `config.toml` or an encrypted key store:
+    /// checkpoint the hub config repository first. Never fails or blocks the
     /// write. Used by the Settings-UI web handlers, the agent's own
     /// agent-key tools, and the `residuum secret`/`agent-keys`/`a2a keys`
     /// CLI commands (via [`Self::open_for_cli`]) alike.
@@ -267,17 +294,31 @@ impl CheckpointEngine {
         &self,
         ctx: CheckpointContext,
     ) -> Option<String> {
-        let (report, id) = id_and_report(self.config_snapshot(&ctx));
-        report_outcome(self.publisher.as_ref(), "config", &ctx, &report).await;
+        self.checkpoint_config_kind_id_before_write(RepoKind::Hub, ctx)
+            .await
+    }
+
+    /// [`Self::checkpoint_config_id_before_write`], generalized to either
+    /// the hub config repository or the agent's own config repository.
+    #[must_use]
+    pub async fn checkpoint_config_kind_id_before_write(
+        &self,
+        kind: RepoKind,
+        ctx: CheckpointContext,
+    ) -> Option<String> {
+        let (report, id) = id_and_report(self.config_snapshot(kind, &ctx));
+        report_outcome(self.publisher.as_ref(), kind.dir_name(), &ctx, &report).await;
         id
     }
 
-    fn config_snapshot(&self, ctx: &CheckpointContext) -> Result<SnapshotCommit, CheckpointError> {
-        let files = collect_config_files(&self.config_dir);
-        let guard = self
-            .config_repo
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    fn config_snapshot(
+        &self,
+        kind: RepoKind,
+        ctx: &CheckpointContext,
+    ) -> Result<SnapshotCommit, CheckpointError> {
+        let files = collect_config_files(kind, &self.dest_root(kind))?;
+        let guard = self.repo(kind);
+        let guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
         guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
     }
 
@@ -548,7 +589,7 @@ impl CheckpointEngine {
                     )))
                 })
             }
-            RepoKind::Config => self.checkpoint_config_now(&ctx),
+            RepoKind::AgentConfig | RepoKind::Hub => self.checkpoint_config_kind_now(kind, &ctx),
         };
         report_outcome(self.publisher.as_ref(), kind.dir_name(), &ctx, &result).await;
         if let Ok(Some(id)) = &result {
@@ -706,8 +747,20 @@ fn is_executable(_path: &Path) -> bool {
 
 /// Build the config repository's file list: every tracked file that
 /// currently exists.
-fn collect_config_files(config_dir: &Path) -> Vec<SnapshotFile> {
-    CONFIG_TRACKED_FILES
+///
+/// # Errors
+/// Returns [`CheckpointError::NotAConfigRepo`] for [`RepoKind::Workspace`],
+/// which has no fixed file list.
+fn collect_config_files(
+    kind: RepoKind,
+    config_dir: &Path,
+) -> Result<Vec<SnapshotFile>, CheckpointError> {
+    let tracked: &[&str] = match kind {
+        RepoKind::Hub => HUB_TRACKED_FILES,
+        RepoKind::AgentConfig => AGENT_CONFIG_TRACKED_FILES,
+        RepoKind::Workspace => return Err(CheckpointError::NotAConfigRepo),
+    };
+    Ok(tracked
         .iter()
         .filter_map(|name| {
             let abs_path = config_dir.join(name);
@@ -717,7 +770,7 @@ fn collect_config_files(config_dir: &Path) -> Vec<SnapshotFile> {
                 executable: false,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Total size on disk of every file under `dir`, symlinks not followed.
@@ -847,7 +900,8 @@ mod tests {
     fn new_engine(dir: &Path) -> CheckpointEngine {
         CheckpointEngine::new(
             dir.join("workspace"),
-            dir.join("config"),
+            dir.join("agent-config"),
+            dir.join("hub"),
             &dir.join("checkpoints"),
             None,
         )
@@ -872,6 +926,15 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("expected {count} checkpoint(s) within the timeout");
+    }
+
+    #[test]
+    fn collect_config_files_rejects_the_workspace_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            collect_config_files(RepoKind::Workspace, dir.path()),
+            Err(CheckpointError::NotAConfigRepo)
+        ));
     }
 
     #[tokio::test]
@@ -980,7 +1043,8 @@ mod tests {
         let checkpoints_dir = dir.path().join("checkpoints");
         let engine = CheckpointEngine::new(
             workspace.clone(),
-            dir.path().join("config"),
+            dir.path().join("agent-config"),
+            dir.path().join("hub"),
             &checkpoints_dir,
             None,
         )
@@ -1116,9 +1180,9 @@ mod tests {
     #[tokio::test]
     async fn config_repo_never_configures_a_remote() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
         let engine = new_engine(dir.path());
 
         engine
@@ -1131,7 +1195,7 @@ mod tests {
         let config_git_dir = dir
             .path()
             .join("checkpoints")
-            .join(RepoKind::Config.dir_name());
+            .join(RepoKind::Hub.dir_name());
         let config_text =
             std::fs::read_to_string(config_git_dir.join("config")).unwrap_or_default();
         assert!(
@@ -1143,19 +1207,19 @@ mod tests {
     #[tokio::test]
     async fn config_snapshot_never_includes_machine_key_files() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
-        std::fs::write(config_dir.join("secrets.toml.enc"), b"ciphertext").unwrap();
-        std::fs::write(config_dir.join("secrets.key"), [0_u8; 32]).unwrap();
-        std::fs::write(config_dir.join("agent-keys.key"), [0_u8; 32]).unwrap();
+        let hub_dir = dir.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).unwrap();
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"").unwrap();
+        std::fs::write(hub_dir.join("secrets.toml.enc"), b"ciphertext").unwrap();
+        std::fs::write(hub_dir.join("secrets.key"), [0_u8; 32]).unwrap();
+        std::fs::write(hub_dir.join("agent-keys.key"), [0_u8; 32]).unwrap();
         let engine = new_engine(dir.path());
 
         let id = engine
             .checkpoint_config_now(&ctx(CheckpointTrigger::PreConfigWrite, "test"))
             .unwrap()
             .unwrap();
-        let detail = engine.show_checkpoint(RepoKind::Config, id).await.unwrap();
+        let detail = engine.show_checkpoint(RepoKind::Hub, id).await.unwrap();
         let paths: Vec<&str> = detail
             .changed_paths
             .iter()
@@ -1168,6 +1232,75 @@ mod tests {
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("key"))),
             "machine key files must never be checkpointed: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_config_repo_tracks_exactly_config_and_providers_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_config_dir = dir.path().join("agent-config");
+        std::fs::create_dir_all(&agent_config_dir).unwrap();
+        std::fs::write(agent_config_dir.join("config.toml"), "temperature = 0.5").unwrap();
+        std::fs::write(agent_config_dir.join("providers.toml"), "[models]").unwrap();
+        let engine = new_engine(dir.path());
+
+        let id = engine
+            .checkpoint_config_kind_now(
+                RepoKind::AgentConfig,
+                &ctx(CheckpointTrigger::PreConfigWrite, "test"),
+            )
+            .unwrap()
+            .unwrap();
+        let detail = engine
+            .show_checkpoint(RepoKind::AgentConfig, id)
+            .await
+            .unwrap();
+        let paths: Vec<&str> = detail
+            .changed_paths
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&"config.toml"));
+        assert!(paths.contains(&"providers.toml"));
+    }
+
+    #[tokio::test]
+    async fn workspace_repo_excludes_the_agents_own_config_and_providers_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("config")).unwrap();
+        std::fs::write(workspace.join("SOUL.md"), "hello").unwrap();
+        std::fs::write(workspace.join("config").join("config.toml"), "x = 1").unwrap();
+        std::fs::write(workspace.join("config").join("providers.toml"), "x = 1").unwrap();
+        std::fs::write(workspace.join("config").join("mcp.json"), "{}").unwrap();
+        let engine = new_engine(dir.path());
+
+        engine
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::PreAction, "test"))
+            .await;
+        let page = engine
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        let detail = engine
+            .show_checkpoint(RepoKind::Workspace, page.items.first().unwrap().id.clone())
+            .await
+            .unwrap();
+        let paths: Vec<&str> = detail
+            .changed_paths
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect();
+        assert!(paths.contains(&"SOUL.md"));
+        assert!(paths.contains(&"config/mcp.json"));
+        assert!(
+            !paths.contains(&"config/config.toml"),
+            "the agent's own config.toml belongs to the AgentConfig repo, not the workspace repo: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&"config/providers.toml"),
+            "the agent's own providers.toml belongs to the AgentConfig repo, not the workspace repo: {paths:?}"
         );
     }
 

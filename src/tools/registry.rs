@@ -91,10 +91,13 @@ pub struct SubagentToolDeps {
     /// `config/channels.toml`, `config/mcp.json`, `config/a2a.json`,
     /// `HEARTBEAT.yml`, and skill `SKILL.md` files for diagnostics.
     pub workspace_dir: PathBuf,
-    /// The app config directory (`~/.residuum/`), for `write_file`/
-    /// `edit_file` to recognize `config.toml`/`providers.toml` for
-    /// diagnostics.
+    /// The agent's own `config/` directory (`<agent>/config`), for
+    /// `write_file`/`edit_file` to recognize `config.toml`/`providers.toml`
+    /// for diagnostics.
     pub config_dir: PathBuf,
+    /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
+    /// config those diagnostics run against.
+    pub hub_dir: PathBuf,
     pub episodes_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub agent_inbox_dir: PathBuf,
@@ -212,6 +215,33 @@ impl ToolRegistry {
         let before = self.tools.len();
         self.tools.retain(|t| t.name() != name);
         self.tools.len() != before
+    }
+
+    /// Re-register every tool that captured the user's timezone at
+    /// construction (`schedule_action`, `list_actions`, `user_inbox_add`)
+    /// with a new one, so a timezone edit reaches them without a restart.
+    pub fn reload_timezone_tools(
+        &mut self,
+        store: Arc<Mutex<ActionStore>>,
+        notify: Arc<Notify>,
+        user_inbox_dir: PathBuf,
+        user_inbox_attachments_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) {
+        for name in ["schedule_action", "list_actions", "user_inbox_add"] {
+            self.remove(name);
+        }
+        self.register(Box::new(actions::ScheduleActionTool::new(
+            Arc::clone(&store),
+            notify,
+            tz,
+        )));
+        self.register(Box::new(actions::ListActionsTool::new(store, tz)));
+        self.register(Box::new(inbox::UserInboxAddTool::new(
+            user_inbox_dir,
+            user_inbox_attachments_dir,
+            tz,
+        )));
     }
 
     /// Get tool definitions for sending to the model.
@@ -533,6 +563,7 @@ impl ToolRegistry {
             hybrid_searcher,
             workspace_dir,
             config_dir,
+            hub_dir,
             episodes_dir,
             sessions_dir,
             agent_inbox_dir,
@@ -573,6 +604,7 @@ impl ToolRegistry {
         let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
             config_dir,
             workspace_dir: workspace_dir.clone(),
+            hub_dir,
         };
         registry.register_defaults(tracker, path_policy, diagnostics_paths, None);
         registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
@@ -770,6 +802,33 @@ mod tests {
     }
 
     #[test]
+    fn reload_timezone_tools_replaces_without_duplicating() {
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            std::path::PathBuf::from("/tmp/residuum-test-actions.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry.register_action_tools(Arc::clone(&store), Arc::clone(&notify), chrono_tz::UTC);
+        for _ in 0..2 {
+            registry.reload_timezone_tools(
+                Arc::clone(&store),
+                Arc::clone(&notify),
+                std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+                std::path::PathBuf::from("/tmp/residuum-test-inbox/attachments"),
+                chrono_tz::America::New_York,
+            );
+        }
+        let names: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        for tool in ["schedule_action", "list_actions", "user_inbox_add"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == tool).count(),
+                1,
+                "{tool} must be registered exactly once"
+            );
+        }
+    }
+
+    #[test]
     fn registry_definitions_empty() {
         let registry = ToolRegistry::new();
         assert!(
@@ -788,6 +847,7 @@ mod tests {
             crate::diagnostics::DiagnosticsPaths {
                 config_dir: std::path::PathBuf::from("/tmp/residuum-test-config"),
                 workspace_dir: std::path::PathBuf::from("/tmp/residuum-test-workspace"),
+                hub_dir: std::path::PathBuf::from("/tmp/residuum-test-hub"),
             },
             None,
         );
