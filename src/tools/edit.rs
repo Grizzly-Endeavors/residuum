@@ -1034,6 +1034,7 @@ mod tests {
         let diagnostics_paths = DiagnosticsPaths {
             config_dir: workspace.path().join("config-unused"),
             workspace_dir: workspace.path().to_path_buf(),
+            hub_dir: workspace.path().join("hub-unused"),
         };
         let tool = EditTool::new(tracker, PathPolicy::new_shared(), diagnostics_paths);
 
