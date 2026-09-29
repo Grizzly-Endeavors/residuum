@@ -2,11 +2,11 @@
 
 The memory pipeline converts conversation turns into searchable long-term memory through three stages: observation, reflection, and search.
 
-## USER.md
+## team/USER.md
 
-Core facts only: durable identity/standing preferences, hard-capped at ~15 entries, replace-don't-append. Longer-form, evolving knowledge about the user lives in wiki pages instead — see the `wiki` skill.
+Core facts only: durable identity/standing preferences, hard-capped at ~15 entries, replace-don't-append. `team/USER.md` is shared by every agent on the team. Longer-form, evolving knowledge about the user lives in team wiki pages (`team/wiki/`) instead — see the `wiki` skill.
 
-**Promotion rule**: knowledge supported by a single episode becomes a wiki page with `status: draft`. It becomes `stable` — and, if it is a core fact, earns a `USER.md` entry — once a second, independent episode supports it; each supporting episode is listed in the page's `sources`. Both the `wiki` and `learner` skills apply this rule.
+**Promotion rule**: knowledge supported by a single episode becomes a wiki page with `status: draft`. It becomes `stable` — and, if it is a core fact, earns a `team/USER.md` entry — once a second, independent episode supports it; each supporting episode is listed in the page's `sources`. Both the `wiki` and `learner` skills apply this rule.
 
 ## Observer
 

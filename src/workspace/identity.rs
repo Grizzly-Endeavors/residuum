@@ -4,25 +4,27 @@ use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
 
-/// Loaded identity files from the workspace.
+/// Loaded identity files: the agent's own `SOUL.md` and `BOOTSTRAP.md`, plus
+/// the team layer's `AGENTS.md`, `USER.md` and wiki index.
 ///
 /// Each field holds the file content if the file exists, or `None` if absent.
 #[derive(Debug, Clone, Default)]
 pub struct IdentityFiles {
     /// SOUL.md -- core agent identity and personality.
     pub soul: Option<String>,
-    /// AGENTS.md -- agent capabilities and behavior rules.
+    /// `team/AGENTS.md` -- team-wide rules shared by every agent.
     pub agents: Option<String>,
-    /// USER.md -- user preferences and context.
+    /// `team/USER.md` -- the user's core facts, shared by every agent.
     pub user: Option<String>,
-    /// `wiki/index.md` -- the knowledge wiki's root catalog. Pages are read on demand.
+    /// `team/wiki/index.md` -- the team wiki's root catalog. Pages are read on demand.
     pub wiki_index: Option<String>,
     /// BOOTSTRAP.md -- first-run guidance (present only on first conversation).
     pub bootstrap: Option<String>,
 }
 
 impl IdentityFiles {
-    /// Load all identity files from the workspace.
+    /// Load the identity files: SOUL.md and BOOTSTRAP.md from the agent's
+    /// directory, AGENTS.md, USER.md and the wiki index from the team layer.
     ///
     /// Missing files are silently treated as `None`. This runs on every turn
     /// (main agent and sub-agent spawn), so it stays quiet — call
@@ -33,9 +35,10 @@ impl IdentityFiles {
     #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, FatalError> {
         let soul_result = read_optional(&layout.soul_md()).await?;
-        let agents_result = read_optional(&layout.agents_md()).await?;
-        let user_result = read_optional(&layout.user_md()).await?;
-        let wiki_index_result = read_optional(&layout.wiki_index_md()).await?;
+        let team = layout.team();
+        let agents_result = read_optional(&team.agents_md()).await?;
+        let user_result = read_optional(&team.user_md()).await?;
+        let wiki_index_result = read_optional(&team.wiki_index_md()).await?;
 
         let bootstrap = read_optional(&layout.bootstrap_md()).await?.into_option();
 
@@ -57,14 +60,15 @@ impl IdentityFiles {
         if self.soul.is_none() {
             tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
         }
+        let team = layout.team();
         if self.agents.is_none() {
-            tracing::warn!(path = %layout.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
+            tracing::warn!(path = %team.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
         }
         if self.user.is_none() {
-            tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
+            tracing::warn!(path = %team.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
         }
         if self.wiki_index.is_none() {
-            tracing::warn!(path = %layout.wiki_index_md().display(), "wiki/index.md is missing or empty; expected after bootstrap");
+            tracing::warn!(path = %team.wiki_index_md().display(), "team/wiki/index.md is missing or empty; expected after bootstrap");
         }
     }
 }
@@ -129,8 +133,11 @@ mod tests {
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         ensure_workspace(&layout, None, None).await.unwrap();
+        tokio::fs::create_dir_all(layout.team().wiki_dir())
+            .await
+            .unwrap();
         tokio::fs::write(
-            layout.wiki_index_md(),
+            layout.team().wiki_index_md(),
             "# Wiki\n\n- [Homelab](/homelab/index.md): the user's k8s cluster\n",
         )
         .await
@@ -169,5 +176,51 @@ mod tests {
             identity.soul.is_none(),
             "whitespace-only file should be treated as absent"
         );
+    }
+
+    #[tokio::test]
+    async fn load_reads_team_files_and_agent_soul() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
+        let team = layout.team();
+        tokio::fs::create_dir_all(layout.root()).await.unwrap();
+        tokio::fs::create_dir_all(team.wiki_dir()).await.unwrap();
+        tokio::fs::write(layout.soul_md(), "soul text")
+            .await
+            .unwrap();
+        tokio::fs::write(layout.bootstrap_md(), "bootstrap text")
+            .await
+            .unwrap();
+        tokio::fs::write(team.agents_md(), "team rules")
+            .await
+            .unwrap();
+        tokio::fs::write(team.user_md(), "team user").await.unwrap();
+        tokio::fs::write(team.wiki_index_md(), "team index")
+            .await
+            .unwrap();
+
+        let identity = IdentityFiles::load(&layout).await.unwrap();
+        assert_eq!(identity.soul.as_deref(), Some("soul text"));
+        assert_eq!(identity.bootstrap.as_deref(), Some("bootstrap text"));
+        assert_eq!(identity.agents.as_deref(), Some("team rules"));
+        assert_eq!(identity.user.as_deref(), Some("team user"));
+        assert_eq!(identity.wiki_index.as_deref(), Some("team index"));
+    }
+
+    #[tokio::test]
+    async fn load_ignores_agent_dir_copies_of_team_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
+        tokio::fs::create_dir_all(layout.root()).await.unwrap();
+        tokio::fs::write(layout.root().join("AGENTS.md"), "stale")
+            .await
+            .unwrap();
+        tokio::fs::write(layout.root().join("USER.md"), "stale")
+            .await
+            .unwrap();
+
+        let identity = IdentityFiles::load(&layout).await.unwrap();
+        assert!(identity.agents.is_none(), "agent-dir AGENTS.md is not read");
+        assert!(identity.user.is_none(), "agent-dir USER.md is not read");
     }
 }

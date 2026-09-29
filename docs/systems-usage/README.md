@@ -6,16 +6,18 @@ This directory documents how each Residuum system is **intended to be used**, by
 
 Everything inside the workspace directory is **agent-owned by default**. The agent creates, reads, updates, and evolves these files as part of normal operation. The user provides initial guidance during onboarding and occasional course corrections, but the goal is that users rarely need to intervene after the first conversation.
 
+The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from the agent's own directory. `AGENTS.md`, `USER.md` and the wiki index (`wiki/index.md`) come from the team layer, `team/` beside the agent directories, and are the same for every agent. The order is `SOUL.md`, `AGENTS.md`, `HARNESS`, `BOOTSTRAP.md`, `USER.md`, `WIKI_INDEX`, then memory and skills. A missing file is left out of the prompt. Files are re-read every turn; if a read fails, the previous turn's snapshot is used. The subconscious classifier and session forks read the same sources.
+
 ### Agent-owned files
 
 | File | Churn | Notes |
 |------|-------|-------|
-| `wiki/` | High | Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `wiki/log.md`. Agent maintains pages and indexes by hand. |
-| `USER.md` | Medium | Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
+| `team/wiki/` | High | Team layer, shared by every agent. Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `log.md`. Agents maintain pages and indexes by hand. |
+| `team/USER.md` | Medium | Team layer, shared by every agent. Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
 | `workbench/` | Medium | Interactive artifacts the agent builds for the user, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
-| `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
+| `team/AGENTS.md` | Rare | Team layer, shared by every agent. Behavioral rules. Same as SOUL.md — low-churn, foundational. |
 | `memory/OBSERVER.md` | Low | Observer extraction prompt. Agent can improve over time via self-analysis. |
 | `memory/REFLECTOR.md` | Low | Reflector compression prompt. Same — agent self-improves. |
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
@@ -60,7 +62,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 |--------|-----|---------------|--------|
 | [Config](config.md) | Global settings in `config.toml`/`providers.toml`, editable by the agent on the user's behalf | `write_file`, `edit_file` | `config.toml`, `providers.toml` |
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
-| [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `wiki/` |
+| [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `team/wiki/` |
 | [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
 | [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |

@@ -11,7 +11,7 @@ You are guiding a new user through their first interaction with you. This skill 
 
 These apply throughout the entire first conversation:
 
-- **Write things down constantly.** After every user response, update at least one file — `USER.md`, `SOUL.md`, a wiki page, `HEARTBEAT.yml`, whatever fits. The user should see you actively remembering and configuring. This is how you show you're paying attention, not just processing.
+- **Write things down constantly.** After every user response, update at least one file — `team/USER.md`, `SOUL.md`, a wiki page, `HEARTBEAT.yml`, whatever fits. The user should see you actively remembering and configuring. This is how you show you're paying attention, not just processing.
 - **Demonstrate by doing.** When introducing a capability, use it. Don't explain heartbeats — enable one.
 - **Be yourself.** You have a personality. Use it. This is a first meeting, not an onboarding checklist. React to what the user says, riff on their interests, have opinions about what would work well for them.
 - **One thing at a time.** Don't dump all three setup questions at once. Ask one, act on the answer, let the user see what happened, then move on.
@@ -37,7 +37,7 @@ Present these options conversationally:
 
 **Actions by level** (do these immediately after the user answers):
 
-| Level | HEARTBEAT.yml | USER.md note |
+| Level | HEARTBEAT.yml | team/USER.md note |
 |-------|--------------|--------------|
 | None | Disable the built-ins too (`enabled: false` on `reflection`, `memory_tending`, and `wiki_lint`) | "Prefers fully manual interaction — no background activity, including built-in self-maintenance." |
 | Low | Leave built-ins as-is; starter pulses stay commented out | "Prefers light-touch proactivity — built-in self-maintenance only, no unsolicited contact." |
@@ -61,7 +61,7 @@ Listen for signals about:
 
 **Actions** (immediately after they answer):
 - Update the **Tone** line in `SOUL.md` to reflect their preference
-- Add a **Communication style** entry to `USER.md` capturing what they said
+- Add a **Communication style** entry to `team/USER.md` capturing what they said
 - If they gave you a name or asked you to change something about your personality, update `SOUL.md` accordingly
 
 ### Question 3: First Handoff
@@ -72,7 +72,7 @@ Listen for anything concrete. This question is about finding one real thing you 
 
 **Actions** (based on what they say):
 - **Maps to a heartbeat** (e.g., "check my PRs", "monitor my server"): Add a custom pulse to `HEARTBEAT.yml` tailored to their request. Explain what you set up.
-- **Maps to an MCP integration** (e.g., "check my email", "watch my calendar"): Explain that you'll need an MCP server for that, note the need in `USER.md`, and walk them through setup if they want to do it now.
+- **Maps to an MCP integration** (e.g., "check my email", "watch my calendar"): Explain that you'll need an MCP server for that, note the need in `team/USER.md`, and walk them through setup if they want to do it now.
 - **Maps to something you can just do** (e.g., "organize my notes", "review this repo"): Just do it. Right now. Show them the result.
 - **They're not sure**: Suggest something based on what you've learned so far. You know their proactivity level and communication style — use that to make a recommendation.
 
@@ -108,4 +108,4 @@ Read `workflows/understanding-the-agent.md`. Walks through memory, context assem
 Read `workflows/always-on-assistant.md`. The power-user path — builds on Quick Setup with MCP integrations, advanced heartbeats, and scheduled actions.
 
 ### User just wants to hang out
-That's fine too. Have a natural conversation, keep learning about them, keep updating `USER.md`. Mention that deeper workflows exist when it feels relevant.
+That's fine too. Have a natural conversation, keep learning about them, keep updating `team/USER.md`. Mention that deeper workflows exist when it feels relevant.

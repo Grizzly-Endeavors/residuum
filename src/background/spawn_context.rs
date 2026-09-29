@@ -205,8 +205,8 @@ fn log_dropped_fallbacks(tier: BackgroundModelTier, dropped: &[crate::inference:
 
 /// Load identity fresh per fork and snapshot memory at fork time.
 ///
-/// Identity (SOUL.md/AGENTS.md/etc.) is loaded fresh per fork so sessions
-/// see the current files; a read failure here fails the spawn — the caller
+/// Identity (the agent's SOUL.md, the team's AGENTS.md/USER.md/wiki index) is
+/// loaded fresh per fork so sessions see the current files; a read failure here fails the spawn — the caller
 /// logs it loudly. The observation log and recent-context narrative are
 /// snapshotted at fork time per the design's "Fork contents": a session
 /// never sees merges that happen after it forked. A read failure snapshotting
@@ -214,22 +214,20 @@ fn log_dropped_fallbacks(tier: BackgroundModelTier, dropped: &[crate::inference:
 /// than failing the spawn: an agent missing background is better than no
 /// background work at all.
 async fn load_fork_identity_and_memory(
-    ctx: &SpawnContext,
+    layout: &WorkspaceLayout,
 ) -> Result<(IdentityFiles, Option<String>, Option<String>), anyhow::Error> {
-    let identity = IdentityFiles::load(&ctx.layout)
+    let identity = IdentityFiles::load(layout)
         .await
         .context("failed to load identity files for session fork")?;
 
-    let observations = match load_observations(&ctx.layout.observations_json()).await {
+    let observations = match load_observations(&layout.observations_json()).await {
         Ok(obs) => obs,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load observation snapshot for session fork");
             None
         }
     };
-    let recent_context = match load_recent_context_narrative(&ctx.layout.recent_context_json())
-        .await
-    {
+    let recent_context = match load_recent_context_narrative(&layout.recent_context_json()).await {
         Ok(narrative) => narrative,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load recent-context snapshot for session fork");
@@ -288,7 +286,8 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
-    let (identity, observations, recent_context) = load_fork_identity_and_memory(ctx).await?;
+    let (identity, observations, recent_context) =
+        load_fork_identity_and_memory(&ctx.layout).await?;
 
     let build_config = SubAgentBuildConfig {
         workspace_layout: ctx.layout.clone(),
@@ -362,5 +361,28 @@ mod tests {
         // Different tiers never share a counter.
         assert_eq!(medium.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(large.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fork_identity_reads_team_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
+        let team = layout.team();
+        tokio::fs::create_dir_all(layout.root()).await.unwrap();
+        tokio::fs::create_dir_all(team.wiki_dir()).await.unwrap();
+        tokio::fs::write(layout.soul_md(), "soul").await.unwrap();
+        tokio::fs::write(team.agents_md(), "team rules")
+            .await
+            .unwrap();
+        tokio::fs::write(team.user_md(), "team user").await.unwrap();
+        tokio::fs::write(team.wiki_index_md(), "team index")
+            .await
+            .unwrap();
+
+        let (identity, _, _) = load_fork_identity_and_memory(&layout).await.unwrap();
+        assert_eq!(identity.soul.as_deref(), Some("soul"));
+        assert_eq!(identity.agents.as_deref(), Some("team rules"));
+        assert_eq!(identity.user.as_deref(), Some("team user"));
+        assert_eq!(identity.wiki_index.as_deref(), Some("team index"));
     }
 }

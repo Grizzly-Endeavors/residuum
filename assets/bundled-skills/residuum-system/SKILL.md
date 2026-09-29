@@ -14,7 +14,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Config | `write_file`, `edit_file` | `config.toml`, `providers.toml` | [config](references/config.md) |
 | Memory | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` | [memory-system](references/memory-system.md) |
 | Checkpoints | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` (outside the workspace) | [checkpoints](references/checkpoints.md) |
-| Wiki | `read_file`, `write_file`, `edit_file` | `wiki/` | the `wiki` skill |
+| Wiki | `read_file`, `write_file`, `edit_file` | `team/wiki/` | the `wiki` skill |
 | Workbench | `read_file`, `write_file`, `edit_file` | `workbench/` | the `workbench` skill |
 | Heartbeats | *(none — runs automatically)* | `HEARTBEAT.yml` | [heartbeats](references/heartbeats.md) |
 | Inbox | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* | [inbox](references/inbox.md) |
@@ -33,14 +33,9 @@ This skill provides reference documentation for every major workspace system. Ac
 ```
 workspace/
 ├── SOUL.md                  # Core identity and personality
-├── AGENTS.md                # Agent behavior rules
-├── USER.md                  # User preferences (core facts only)
 ├── BOOTSTRAP.md             # First-run guidance (deleted after first conversation)
 ├── HEARTBEAT.yml            # Pulse scheduling
 ├── scheduled_actions.json   # Persisted one-off actions
-├── wiki/                    # Open Knowledge Format knowledge base (agent-maintained)
-│   ├── index.md             # Root index — the only page injected into prompts
-│   └── log.md               # Append-only change log
 ├── memory/
 │   ├── observations.json    # Flat observation log
 │   ├── recent_messages.json # Unobserved messages buffer
@@ -57,4 +52,15 @@ workspace/
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
 └── inbox/                   # Active inbox items
+```
+
+The team layer sits beside the agent directory and is shared by every agent. Reach it from file tools with the `team/` prefix:
+
+```
+team/
+├── AGENTS.md                # Team-wide behavior rules
+├── USER.md                  # User preferences (core facts only)
+└── wiki/                    # Open Knowledge Format knowledge base (agent-maintained)
+    ├── index.md             # Root index — the only page injected into prompts
+    └── log.md               # Append-only change log
 ```

@@ -102,7 +102,7 @@ Check `residuum.features.includes("artifact-sessions")` before relying on it.
 
 ```js
 const session = await residuum.sessions.start({
-  prompt: `Write a wiki page about ${topic} in wiki/${slug}.md, then reply with one sentence saying what you wrote.`,
+  prompt: `Write a wiki page about ${topic} in team/wiki/${slug}.md, then reply with one sentence saying what you wrote.`,
 });
 session.on("session_state_changed", (f) => showStatus(f.state)); // "running", "idle", …
 session.on("session_response", (f) => showResult(f.content));
