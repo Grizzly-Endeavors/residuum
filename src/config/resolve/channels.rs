@@ -18,8 +18,8 @@ use super::super::types::{
 /// Resolve a bot token from the raw TOML value, with `${ENV_VAR}` / `secret:name`
 /// expansion. There are no agent-scoped env var overrides (such as
 /// `RESIDUUM_DISCORD_TOKEN`): in a multi-agent hub they would apply the same
-/// value to every agent. A still-set one produces a startup notice — see
-/// `warn_removed_agent_env_overrides`.
+/// value to every agent. A set one gets a startup notice — see
+/// `removed_agent_env_override_notices`.
 pub(super) fn resolve_bot_token(raw_token: Option<&str>, secrets: &SecretStore) -> Option<String> {
     raw_token
         .and_then(|t| super::resolve_secret_value(t, secrets))
