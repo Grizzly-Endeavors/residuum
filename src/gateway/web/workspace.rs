@@ -293,12 +293,14 @@ async fn nearest_existing_ancestor(
     Ok((canonical, missing))
 }
 
-/// Returns true if the path refers to a workspace identity file.
+/// Returns true if the path names one of the agent's own identity files.
 ///
 /// Checks the file name only (ignores any leading directory components) so that
-/// identity files nested inside subdirectories are also recognised.
+/// identity files nested inside subdirectories are also recognised. The team
+/// layer's `AGENTS.md` and `USER.md` are identified by resolved path instead,
+/// see [`is_identity_target`].
 fn is_identity_file(relative: &str) -> bool {
-    const IDENTITY_FILES: &[&str] = &["SOUL.md", "AGENTS.md", "USER.md", "HEARTBEAT.yml"];
+    const IDENTITY_FILES: &[&str] = &["SOUL.md", "HEARTBEAT.yml"];
 
     let file_name = Path::new(relative)
         .file_name()
@@ -306,6 +308,26 @@ fn is_identity_file(relative: &str) -> bool {
         .unwrap_or("");
 
     IDENTITY_FILES.contains(&file_name)
+}
+
+/// Returns true if `resolved` (an absolute path a write, delete or move
+/// touched) is an identity file: one of the agent's own, or the team's
+/// `AGENTS.md` / `USER.md`, whatever path they were reached through.
+async fn is_identity_target(state: &ConfigApiState, relative: &str, resolved: &Path) -> bool {
+    if is_identity_file(relative) {
+        return true;
+    }
+    let layout = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir);
+    let team = layout.team();
+    let Some(team_root) = tokio::fs::canonicalize(team.root()).await.ok() else {
+        return [team.agents_md(), team.user_md()]
+            .iter()
+            .any(|file| file == resolved);
+    };
+    [team.agents_md(), team.user_md()]
+        .iter()
+        .filter_map(|file| file.file_name().map(|name| team_root.join(name)))
+        .any(|file| file == resolved)
 }
 
 /// `GET /api/workspace/files` — list directory contents inside the workspace.
@@ -598,12 +620,12 @@ pub(super) async fn api_workspace_validate(
     Json(ValidateFileResponse { diagnostics })
 }
 
-/// Send the workspace reload signal if `relative` names an identity file.
-/// Every write path that can leave an identity file's content changed —
+/// Send the workspace reload signal if `resolved` (reached as `relative`) is
+/// an identity file. Every write path that can leave an identity file's content changed —
 /// text write, raw write, delete, and either side of a move — applies this
 /// one function rather than repeating the check.
-fn signal_identity_reload(relative: &str, state: &ConfigApiState) {
-    if is_identity_file(relative)
+async fn signal_identity_reload(relative: &str, resolved: &Path, state: &ConfigApiState) {
+    if is_identity_target(state, relative, resolved).await
         && let Some(tx) = &state.reload_tx
     {
         // Best-effort: receiver may have been dropped during shutdown.
@@ -670,7 +692,7 @@ async fn write_workspace_bytes(
     })?;
     let version = version_token(&metadata);
 
-    signal_identity_reload(relative, state);
+    signal_identity_reload(relative, &target_path, state).await;
 
     Ok(Json(WriteResponse {
         saved: true,
@@ -923,7 +945,7 @@ pub(super) async fn api_workspace_delete(
         })?;
     }
 
-    signal_identity_reload(relative, &state);
+    signal_identity_reload(relative, &path, &state).await;
 
     Ok(Json(DeleteResponse {
         deleted: true,
@@ -1224,8 +1246,8 @@ pub(super) async fn api_workspace_move(
         None
     };
 
-    signal_identity_reload(from_relative, &state);
-    signal_identity_reload(to_relative, &state);
+    signal_identity_reload(from_relative, &from_path, &state).await;
+    signal_identity_reload(to_relative, &to_path, &state).await;
 
     Ok(Json(MoveResponse {
         moved: true,
@@ -1242,7 +1264,11 @@ mod tests {
     #[test]
     fn identity_files() {
         assert!(is_identity_file("SOUL.md"));
-        assert!(is_identity_file("AGENTS.md"));
+        assert!(is_identity_file("HEARTBEAT.yml"));
+        assert!(
+            !is_identity_file("AGENTS.md"),
+            "team files are matched by resolved path"
+        );
         assert!(is_identity_file("subdir/SOUL.md"));
         assert!(!is_identity_file("skills/research.md"));
         assert!(!is_identity_file("random.txt"));
@@ -1682,6 +1708,63 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn team_identity_files_are_identified_by_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = tokio::fs::canonicalize(dir.path()).await.unwrap();
+        let ws_dir = root.join("scout");
+        let team_dir = root.join("team");
+        tokio::fs::create_dir_all(&ws_dir).await.unwrap();
+        tokio::fs::create_dir_all(team_dir.join("wiki"))
+            .await
+            .unwrap();
+        tokio::fs::write(team_dir.join("USER.md"), "u")
+            .await
+            .unwrap();
+        tokio::fs::write(team_dir.join("AGENTS.md"), "a")
+            .await
+            .unwrap();
+        tokio::fs::write(team_dir.join("notes.md"), "n")
+            .await
+            .unwrap();
+
+        let state = make_state(ws_dir.clone());
+
+        for name in ["USER.md", "AGENTS.md"] {
+            assert!(
+                is_identity_target(&state, &format!("team/{name}"), &team_dir.join(name)).await,
+                "team/{name} should trigger an identity reload"
+            );
+        }
+        assert!(
+            !is_identity_target(&state, "team/notes.md", &team_dir.join("notes.md")).await,
+            "other team files are not identity files"
+        );
+        assert!(
+            !is_identity_target(&state, "USER.md", &ws_dir.join("USER.md")).await,
+            "an agent-dir USER.md is no longer an identity file"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_identity_move_sends_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = tokio::fs::canonicalize(dir.path()).await.unwrap();
+        let team_dir = root.join("team");
+        tokio::fs::create_dir_all(&team_dir).await.unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
+        let mut state = make_state(root.join("scout"));
+        state.reload_tx = Some(tx);
+
+        signal_identity_reload("team/USER.md", &team_dir.join("USER.md"), &state).await;
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
+
+        signal_identity_reload("team/notes.md", &team_dir.join("notes.md"), &state).await;
+        assert!(rx.try_recv().is_err(), "non-identity file sends nothing");
     }
 
     #[tokio::test]

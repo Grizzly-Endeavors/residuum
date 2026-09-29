@@ -385,16 +385,18 @@ impl Subconscious {
         }
     }
 
-    /// Load the agent's instruction files the classifier checks against.
+    /// Load the instruction files the classifier checks against: the agent's
+    /// `SOUL.md` and the team layer's `AGENTS.md`, `USER.md` and wiki index.
     ///
     /// Missing files are skipped silently — a fresh workspace may not have
     /// all of them yet, and the classifier degrades gracefully.
     async fn load_identity_context(&self) -> String {
+        let team = self.layout.team();
         let sources = [
             ("SOUL.md", self.layout.soul_md()),
-            ("AGENTS.md", self.layout.agents_md()),
-            ("USER.md", self.layout.user_md()),
-            ("wiki/index.md", self.layout.wiki_index_md()),
+            ("team/AGENTS.md", team.agents_md()),
+            ("team/USER.md", team.user_md()),
+            ("team/wiki/index.md", team.wiki_index_md()),
         ];
 
         let mut sections = Vec::new();
@@ -605,6 +607,43 @@ mod tests {
         assert!(
             !identity.contains("AGENTS.md"),
             "missing files should be skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_identity_context_reads_team_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
+        let team = layout.team();
+        tokio::fs::create_dir_all(layout.root()).await.unwrap();
+        tokio::fs::create_dir_all(team.wiki_dir()).await.unwrap();
+        tokio::fs::write(layout.soul_md(), "Be kind.")
+            .await
+            .unwrap();
+        tokio::fs::write(team.agents_md(), "Team rule.")
+            .await
+            .unwrap();
+        tokio::fs::write(team.user_md(), "Sam likes tea.")
+            .await
+            .unwrap();
+        tokio::fs::write(team.wiki_index_md(), "Wiki catalog.")
+            .await
+            .unwrap();
+        tokio::fs::write(layout.root().join("USER.md"), "stale agent copy")
+            .await
+            .unwrap();
+
+        let sub = Subconscious::disabled(layout);
+        let identity = sub.load_identity_context().await;
+        assert!(identity.contains("Team rule."), "team AGENTS.md included");
+        assert!(identity.contains("Sam likes tea."), "team USER.md included");
+        assert!(
+            identity.contains("Wiki catalog."),
+            "team wiki index included"
+        );
+        assert!(
+            !identity.contains("stale agent copy"),
+            "agent-dir USER.md is not read"
         );
     }
 

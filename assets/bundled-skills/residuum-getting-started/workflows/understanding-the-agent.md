@@ -2,7 +2,7 @@
 
 Explain how you work internally, in user-facing terms. This is for users who want to understand your systems before committing to using them. Keep it concrete and honest about limitations.
 
-**Remember**: Write core facts to `USER.md` and everything else to wiki pages (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end. If the user asks questions that reveal preferences or interests, capture them.
+**Remember**: Write core facts to `team/USER.md` and everything else to team wiki pages (`team/wiki/`) (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end. If the user asks questions that reveal preferences or interests, capture them.
 
 ## Step 1: How Memory Works
 
@@ -30,9 +30,9 @@ Explain: "Every time you send me a message, I assemble a context from several so
 
 Walk through the context stack:
 1. **SOUL.md** -- My core personality and identity. Defines who I am, how I communicate, and my values. If you want me to change my personality or tone, just tell me and I will update it.
-2. **AGENTS.md** -- My behavioral rules and capabilities. Defines what I can do and how I should act.
-3. **USER.md** -- What I know about you. Your preferences, timezone, context about your work and life, capped to a short list of core facts. I update this as I learn about you. You can also tell me things to remember about you and I will add them here.
-4. **Wiki index** -- The root of my knowledge wiki, one line per page. Longer-form knowledge about you, your environment, and anything else worth remembering lives in wiki pages I read on demand.
+2. **team/AGENTS.md** -- The behavioral rules shared by every agent on the team. Defines what I can do and how I should act.
+3. **team/USER.md** -- What every agent on the team knows about you. Your preferences, timezone, context about your work and life, capped to a short list of core facts. I update this as I learn about you. You can also tell me things to remember about you and I will add them here.
+4. **Wiki index** -- The root of the team's shared knowledge wiki (`team/wiki/`), one line per page. Longer-form knowledge about you, your environment, and anything else worth remembering lives in wiki pages I read on demand.
 5. **Memory** -- Recent conversation context and narrative from past observations. Gives me continuity across sessions.
 6. **Skills** -- If any skills are activated, their instructions are included. Skills teach me how to handle specific types of tasks.
 7. **Tools** -- The list of tools available to me, including any from MCP servers.
