@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { WorkspaceEntry } from "../lib/types";
   import { focusOnMount } from "../lib/actions/focusOnMount";
+  import { isPinnedFile } from "../lib/pinned-files";
 
   interface TreeItem {
     entry: WorkspaceEntry;
@@ -27,18 +28,6 @@
     onRenameFile: (path: string, newName: string) => void;
     onShowHistory: (path: string) => void;
   } = $props();
-
-  const IDENTITY_FILES = new Set([
-    "SOUL.md",
-    "AGENTS.md",
-    "USER.md",
-    "HEARTBEAT.yml",
-    "CHANNELS.yml",
-  ]);
-
-  function isIdentity(name: string): boolean {
-    return IDENTITY_FILES.has(name);
-  }
 
   // Renaming one file at a time, by path.
   let renamingPath = $state<string | null>(null);
@@ -98,7 +87,7 @@
         <button
           class="tree-entry"
           class:active={selectedFile === item.path}
-          class:identity={isIdentity(item.entry.name)}
+          class:identity={isPinnedFile(item.path)}
           style="padding-left: {12 + item.depth * 16}px"
           onclick={() => onSelectFile(item.path)}
         >

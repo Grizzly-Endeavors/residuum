@@ -80,6 +80,8 @@ The web UI has no login of its own (the relay authenticates remote access), so a
 
 One watcher covers the whole workspace recursively, using the operating system's file notifications (inotify, FSEvents, ReadDirectoryChangesW through the `notify` crate). If native notifications can't start (the Linux inotify watch limit, an unusual filesystem), Residuum logs a `warn` naming the cause and polls the workspace every 2 seconds instead; hitting the watch limit later, as new folders appear, switches to polling the same way. If neither can start, Residuum logs an `error` and any view that starts watching is told live updates are off, which the web UI shows as an error notice. Symlinks are not followed.
 
+A second watcher, built the same way, covers the team directory and publishes its changes with `team/`-prefixed paths (`team/workbench/tool.html`, `team/wiki/a.md`); see [Team files](team-files.md). Everything below applies to both.
+
 Notifications are debounced into batches: a batch closes once 300 ms pass with no new notification, or 2 s after its first one while writes continue. Each changed path appears once per batch as `created`, `modified`, or `removed`, decided from what the batch saw and what is at the path when the batch closes:
 
 - A rename is `removed` for the old path and `created` for the new one. Residuum's own atomic writes (a temporary file renamed over the target) show up as `created` or `modified` for the target, never as the temporary file.
@@ -93,6 +95,7 @@ When the OS reports lost notifications (queue overflow, rescan), notifications b
 Each WebSocket connection has its own watch set of prefixes, empty by default, so the main chat never receives change frames:
 
 - The client frame `{ "type": "watch_workspace", "prefixes": ["wiki", "inbox/user", "team/workbench"] }` replaces the set. Prefixes are in the file API's namespace, so team files are watched, and reported, with a `team/` prefix. `[]` stops watching; `""` watches the whole workspace. A prefix that is absolute or contains `..` is refused with an `error` frame and the set is left unchanged. There is no limit on how many prefixes a connection watches or how long one is.
+- A `team/...` prefix (`team/workbench`, `team/wiki`) receives changes to the team directory; a plain prefix receives changes to the agent's own directory; `""` receives both.
 - Prefixes match by path segment: `wiki` matches `wiki` and anything under `wiki/`, never `wikipedia/`. A prefix naming a file matches only that file, and a prefix that doesn't exist yet matches once it appears. A change to a folder that contains a prefix (for example `projects` for the prefix `projects/alpha`) matches too, since renaming or removing that folder carries the prefix with it.
 - `{ "type": "workspace_changed", "changes": [{ "path": "wiki/a.md", "kind": "created" }] }` carries a batch's changes under the connection's prefixes, sorted by path. A connection with no matching changes gets nothing.
 - `{ "type": "workspace_resync", "reason": "overflow" | "watcher_restarted" }` means the connection's view may be stale. It replaces `workspace_changed` when more than 500 of a batch's changes match the connection, and goes to every watching connection when the watcher loses notifications (`overflow`) or restarts (`watcher_restarted`).
