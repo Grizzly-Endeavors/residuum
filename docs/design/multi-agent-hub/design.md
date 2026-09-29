@@ -1,6 +1,6 @@
 # Multi-Agent Hub — Design
 
-**Status:** Draft, not built. Tracks issue #205. The implementation phases are in [phases.md](phases.md).
+**Status:** Accepted, not built. Tracks issue #205. The implementation phases are in [phases.md](phases.md).
 
 > Systems level only. This document stands on its own: it is implemented in fresh sessions that have only this doc, `phases.md`, and the codebase.
 
@@ -404,7 +404,7 @@ Compatibility: no released Residuum client has used A2A, so the relay's A2A rout
 
 ### Other clients
 
-- **Mac app.** It reads a registry file that no longer exists and assumes one port per agent. See Open questions.
+- **Mac app.** Its multi-agent code is removed: the registry file it reads no longer exists, and so do its per-port agent tabs. It keeps one connection, pointed at one agent's `/api/agents/<name>/ws`. Agent switching lives in the web UI.
 - **Docker.** The volume still mounts `~/.residuum`. Docker documentation changes for the removed environment overrides and the new layout.
 - **OTEL export.** It carries the `agent` attribute on every span.
 
@@ -440,7 +440,6 @@ Compatibility: no released Residuum client has used A2A, so the relay's A2A rout
 - The bundled `residuum-system` skill references are updated to match.
 - This design moves to `docs/archive/` once built.
 
-## Open questions
+## Pulses on a shared wiki
 
-1. **Mac app.** Update it to list agents from `/api/hub/agents` and use the `/api/agents/<name>/` paths? Or remove its multi-agent code and point it at the web UI's switcher? The Mac app is Swift, which the repository's quality gate cannot check.
-2. **The weekly `wiki_lint` pulse.** With one shared wiki, one agent should run it, not all of them. The design gives new agents the `memory_tending` pulse but not `wiki_lint`, which stays with whichever agent has it (the first agent). Alternatively, `wiki_lint` could become a team-level pulse the hub runs on a chosen agent.
+The weekly `wiki_lint` pulse checks the shared wiki, so only one agent runs it. The onboarded first agent's `HEARTBEAT.yml` includes it. The blank template for created agents includes `memory_tending`, which files an agent's own memory into the wiki, but not `wiki_lint`. Moving `wiki_lint` to another agent is a matter of editing both agents' `HEARTBEAT.yml`.

@@ -1,6 +1,6 @@
 # Multi-Agent Hub — Implementation Phases
 
-**Status:** Draft, not built. Read with [design.md](design.md).
+**Status:** Accepted, not built. Read with [design.md](design.md).
 
 > Module level only. Each phase is self-contained, depends only on phases before it, and leaves `main` in a working, releasable state. Each phase is implemented in its own session, on its own branch, with its own PR.
 
@@ -44,6 +44,7 @@
 - **Preconditions:** Phase 1.
 - **Shape when done:**
   - **Team directory.** `team/` exists with `AGENTS.md`, `USER.md`, `wiki/` (including `wiki/agents/`), `workbench/` and `skills/`.
+  - **Pulses.** The first agent's `HEARTBEAT.yml` includes `wiki_lint`. The created-agent template (used from Phase 3) omits it.
   - **Bootstrap.** Onboarding writes the team layer's defaults and the first agent's role page. Bundled skills are installed into `team/skills/`, not the agent's directory.
   - **Prompt.** Prompt assembly reads SOUL from the agent and AGENTS, USER and the wiki index from the team, in the order the design gives.
   - **The `team/` namespace.** It works in file tools, the web file API, and change-feed watches.
@@ -74,7 +75,8 @@
   - the hub-level bus, hub notices and the hub WebSocket;
   - agent-key creator attribution (`agent:<name>`);
   - the A2A listener (per-agent routing on the local port, per-agent cards, public URLs and visibility);
-  - the web UI's API and WebSocket base paths, plus a minimal agent picker.
+  - the web UI's API and WebSocket base paths, plus a minimal agent picker;
+  - the Mac app (remove the agent registry and agent tabs; its single connection uses an agent's prefixed WebSocket path).
 - **Preconditions:** Phase 2.
 - **Shape when done:**
   - **Discovery and startup.** The hub scans for agent directories and starts `autostart` agents, each in its own runtime with its own bus, event loop, adapters and pulse.
@@ -88,6 +90,7 @@
   - **A2A.** Each agent is reachable locally at `/agents/<name>/` on the A2A port with its own card and visibility, and can call out with `a2a:` addresses. The tunnel stops declaring the `a2a` capability until Phase 6 teaches the relay per-agent routing, so there's no remote inbound A2A in between (A2A isn't in a release yet).
   - **Hub notices.** Created, deleted and failed notices reach the hub WebSocket and the acting or affected agent's inbox.
   - **Web UI.** It works against the prefixed API with a basic picker (the full UI is Phase 5).
+  - **Mac app.** No multi-agent code remains, and it chats with one agent over the prefixed path. Swift can't be built on Linux, so this is verified on a Mac.
 - **Verification:**
   - Integration test: a hub with two agents. Chat with each over its WebSocket, and confirm memory and sessions stay separate.
   - Stopping one agent leaves the other serving.
@@ -169,13 +172,11 @@
   - `docs/systems-usage/` (a new hub and teams document, plus updates to config, background tasks, A2A, wiki, workbench, skills and cloud tunnel);
   - bundled `residuum-system` skill references;
   - Docker docs;
-  - Mac app (per the open-question outcome);
   - archiving this design.
 - **Preconditions:** Phases 1–6.
 - **Shape when done:**
   - Systems-usage docs and bundled references describe the hub as built.
   - Docker docs match.
-  - The Mac app matches the chosen outcome.
   - This design and its phases live in `docs/archive/`.
   - Issue #205 is closed.
 - **Verification:**
