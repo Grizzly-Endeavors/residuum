@@ -283,13 +283,17 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
     out
 }
 
-/// Write bundled skill trees to the workspace skills directory.
+/// Write bundled skill trees to the team skills directory.
+///
+/// Bundled skills are team skills: every agent finds them through the team
+/// layer, and the agent's own `skills/` starts empty.
 ///
 /// Each file is written with `write_if_missing`, so user edits are preserved
 /// and files are only recreated if deleted.
 async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError> {
+    let skills_root = layout.team().skills_dir();
     // residuum-system skill
-    let system_dir = layout.skills_dir().join("residuum-system");
+    let system_dir = skills_root.join("residuum-system");
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
         FatalError::Workspace(format!(
@@ -312,7 +316,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
         ("memory-analyst", MEMORY_ANALYST_SKILL_MD),
         ("wiki", WIKI_SKILL_MD),
     ] {
-        let dir = layout.skills_dir().join(name);
+        let dir = skills_root.join(name);
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
             FatalError::Workspace(format!(
                 "failed to create skill directory {}: {e}",
@@ -323,7 +327,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     }
 
     // residuum-getting-started skill
-    let started_dir = layout.skills_dir().join("residuum-getting-started");
+    let started_dir = skills_root.join("residuum-getting-started");
     let started_workflows = started_dir.join("workflows");
     tokio::fs::create_dir_all(&started_workflows)
         .await
@@ -362,7 +366,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     .await?;
 
     // skill-authoring skill
-    let authoring_dir = layout.skills_dir().join("skill-authoring");
+    let authoring_dir = skills_root.join("skill-authoring");
     let authoring_refs = authoring_dir.join("references");
     tokio::fs::create_dir_all(&authoring_refs)
         .await
@@ -381,7 +385,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     .await?;
 
     // workbench skill
-    let workbench_dir = layout.skills_dir().join("workbench");
+    let workbench_dir = skills_root.join("workbench");
     let workbench_refs = workbench_dir.join("references");
     tokio::fs::create_dir_all(&workbench_refs)
         .await
@@ -473,7 +477,7 @@ mod tests {
         ensure_workspace(&layout, None, None).await.unwrap();
 
         for name in ["introspection", "learner", "memory-analyst", "wiki"] {
-            let skill_path = layout.skills_dir().join(name).join("SKILL.md");
+            let skill_path = layout.team().skills_dir().join(name).join("SKILL.md");
             assert!(skill_path.exists(), "{name}/SKILL.md should be created");
 
             let content = tokio::fs::read_to_string(&skill_path).await.unwrap();
@@ -485,13 +489,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bundled_skills_land_in_team_and_agent_skills_start_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        assert!(
+            layout
+                .team()
+                .skills_dir()
+                .join("residuum-system")
+                .join("SKILL.md")
+                .exists(),
+            "bundled skills belong to the team layer"
+        );
+        let mut agent_skills = tokio::fs::read_dir(layout.skills_dir()).await.unwrap();
+        assert!(
+            agent_skills.next_entry().await.unwrap().is_none(),
+            "a fresh agent's own skills/ starts empty"
+        );
+    }
+
+    #[tokio::test]
     async fn bootstrap_does_not_overwrite_existing_role_skill() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        let skill_path = layout.skills_dir().join("introspection").join("SKILL.md");
+        let skill_path = layout
+            .team()
+            .skills_dir()
+            .join("introspection")
+            .join("SKILL.md");
         tokio::fs::write(&skill_path, "user-edited skill")
             .await
             .unwrap();
@@ -513,7 +544,7 @@ mod tests {
         ensure_workspace(&layout, None, None).await.unwrap();
 
         // residuum-system skill tree
-        let system_dir = layout.skills_dir().join("residuum-system");
+        let system_dir = layout.team().skills_dir().join("residuum-system");
         assert!(system_dir.join("SKILL.md").exists(), "system SKILL.md");
         for (file_name, _) in SYSTEM_REFS {
             assert!(
@@ -523,7 +554,7 @@ mod tests {
         }
 
         // residuum-getting-started skill tree
-        let started_dir = layout.skills_dir().join("residuum-getting-started");
+        let started_dir = layout.team().skills_dir().join("residuum-getting-started");
         assert!(
             started_dir.join("SKILL.md").exists(),
             "getting-started SKILL.md"
@@ -556,7 +587,7 @@ mod tests {
         );
 
         // skill-authoring skill tree
-        let authoring_dir = layout.skills_dir().join("skill-authoring");
+        let authoring_dir = layout.team().skills_dir().join("skill-authoring");
         assert!(
             authoring_dir.join("SKILL.md").exists(),
             "skill-authoring SKILL.md"
@@ -569,7 +600,7 @@ mod tests {
         );
 
         // workbench skill tree
-        let workbench_dir = layout.skills_dir().join("workbench");
+        let workbench_dir = layout.team().skills_dir().join("workbench");
         let workbench_skill = tokio::fs::read_to_string(workbench_dir.join("SKILL.md"))
             .await
             .unwrap();
@@ -626,7 +657,7 @@ mod tests {
         );
         assert!(layout.wiki_log_md().exists(), "wiki/log.md should exist");
         assert!(
-            layout.skills_dir().join("wiki/SKILL.md").exists(),
+            layout.team().skills_dir().join("wiki/SKILL.md").exists(),
             "wiki skill should be bundled"
         );
     }
@@ -688,7 +719,11 @@ mod tests {
             .unwrap();
 
         // Modify a skill file
-        let system_skill = layout.skills_dir().join("residuum-system").join("SKILL.md");
+        let system_skill = layout
+            .team()
+            .skills_dir()
+            .join("residuum-system")
+            .join("SKILL.md");
         tokio::fs::write(&system_skill, "user-edited skill")
             .await
             .unwrap();

@@ -20,14 +20,19 @@ Editing a `SKILL.md` via `write_file`/`edit_file`, the workspace editor, or `POS
 
 ## Skill Sources
 
-Skills are discovered from multiple locations, scanned in priority order:
+Skills are discovered from three layers, scanned in priority order:
 
-| Source | Directory | Priority |
-|--------|-----------|----------|
-| Workspace | `skills/` | High |
-| User Global | Extra directories from config (`[skills]` section) | Middle |
+| Layer | Directory | Priority |
+|-------|-----------|----------|
+| Agent | your own `skills/` | High |
+| Team | `team/skills/`, shared by every agent in the hub | Middle |
+| Configured | Extra directories from config (`[skills]` section) | Low |
 
-**Deduplication**: If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
+Put a skill in your own `skills/` when only you should have it, and in `team/skills/` when every agent should.
+
+**Deduplication**: If multiple skills share the same name, the highest-priority layer wins. Lookup is case-insensitive by name. The `<available_skills>` index shows each skill's layer in a `<layer>` element.
+
+Skills used as session roles (`subagent_spawn`'s `skill`, a pulse's `agent`) resolve through the same layers, so a team skill works as a role.
 
 A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories.
 
@@ -69,7 +74,7 @@ Detailed instructions, workflows, and reference material.
 ## Gotchas
 
 - The skill body is injected verbatim — there is no templating or variable substitution.
-- Bundled skills (`residuum-system`, `residuum-getting-started`, `skill-authoring`) are written to `skills/` during workspace creation and follow the same format.
-- Skill names must be unique across all sources. Workspace skills override user-global skills of the same name.
+- Bundled skills (`residuum-system`, `residuum-getting-started`, `skill-authoring`) are written to `team/skills/` when missing and follow the same format.
+- Skill names must be unique across all layers. Your own skills override team skills, which override configured-directory skills, of the same name.
 
-When a pattern keeps recurring across conversations, the agent is expected to author a new workspace skill itself rather than re-explaining the same instructions every time. Before authoring or editing a skill, activate the bundled **`skill-authoring`** skill — it holds the full doctrine (create-vs-patch decision, class-level shape, what not to capture, description-length limits) and is not repeated here.
+When a pattern keeps recurring across conversations, the agent is expected to author a new skill itself rather than re-explaining the same instructions every time. Before authoring or editing a skill, activate the bundled **`skill-authoring`** skill — it holds the full doctrine (create-vs-patch decision, class-level shape, what not to capture, description-length limits) and is not repeated here.

@@ -1070,9 +1070,10 @@ mod tests {
             "---\nname: researcher\ndescription: Researches things carefully.\n---\nDo research.\n",
         )
         .unwrap();
-        let index = crate::skills::SkillIndex::scan(&[skills_root.path().to_path_buf()])
-            .await
-            .unwrap();
+        let index =
+            crate::skills::SkillIndex::scan(&[crate::skills::SkillDir::agent(skills_root.path())])
+                .await
+                .unwrap();
         let (state, fx) = state_with_skills(index);
         let mut spawns = subscribe_spawns(&fx).await;
         let headers = || artifact_headers("wiki");

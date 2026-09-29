@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::inference::retry::RetryConfig;
+use crate::skills::SkillDir;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_EPISODE_SKIP_TOKEN_FLOOR,
@@ -339,8 +340,9 @@ pub struct WebhookEntry {
 /// Validated skills subsystem configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillsConfig {
-    /// Directories to scan for skills (resolved, expanded paths).
-    pub dirs: Vec<PathBuf>,
+    /// Directories to scan for skills, in priority order (agent, team,
+    /// then configured), each tagged with its layer.
+    pub dirs: Vec<SkillDir>,
 }
 
 /// Validated runtime tool PATH configuration.

@@ -1560,7 +1560,7 @@ mod tests {
         new.max_tokens = 8192;
         new.memory.observer_threshold_tokens = 999;
         new.pulse_enabled = true;
-        new.skills.dirs = vec![std::path::PathBuf::from("/new/skills")];
+        new.skills.dirs = vec![crate::skills::SkillDir::configured("/new/skills")];
         new.agent.modify_mcp = false;
         new.background.max_concurrent = 10;
         new.idle.timeout = std::time::Duration::from_mins(5);

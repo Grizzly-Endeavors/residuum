@@ -1,9 +1,12 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 
-use super::{index::SkillIndex, parser::parse_skill_md, types::ActiveSkill};
+use super::{
+    index::SkillIndex,
+    parser::parse_skill_md,
+    types::{ActiveSkill, SkillDir},
+};
 
 /// Shared skill state, guarded by a mutex for concurrent access.
 pub type SharedSkillState = Arc<tokio::sync::Mutex<SkillState>>;
@@ -12,13 +15,13 @@ pub type SharedSkillState = Arc<tokio::sync::Mutex<SkillState>>;
 pub struct SkillState {
     index: SkillIndex,
     active: Vec<ActiveSkill>,
-    dirs: Vec<PathBuf>,
+    dirs: Vec<SkillDir>,
 }
 
 impl SkillState {
     /// Create a new skill state with a pre-built index.
     #[must_use]
-    pub fn new(index: SkillIndex, dirs: Vec<PathBuf>) -> Self {
+    pub fn new(index: SkillIndex, dirs: Vec<SkillDir>) -> Self {
         Self {
             index,
             active: Vec::new(),
@@ -28,7 +31,7 @@ impl SkillState {
 
     /// Create a new shared skill state.
     #[must_use]
-    pub fn new_shared(index: SkillIndex, dirs: Vec<PathBuf>) -> SharedSkillState {
+    pub fn new_shared(index: SkillIndex, dirs: Vec<SkillDir>) -> SharedSkillState {
         Arc::new(tokio::sync::Mutex::new(Self::new(index, dirs)))
     }
 
@@ -97,7 +100,7 @@ impl SkillState {
     ///
     /// Removes any active skills whose names no longer appear in the new index.
     /// For an active skill whose name still resolves but whose backing source
-    /// directory changed (e.g. a workspace skill now shadows a user-global
+    /// directory changed (e.g. a agent skill now shadows a team
     /// skill of the same name), refreshes its body from the new source, or
     /// deactivates it with a warning if the new source can't be loaded.
     ///
@@ -119,8 +122,8 @@ impl SkillState {
 
         // Reconcile active skills against the new index. A name surviving the
         // rescan is not enough on its own: the *same name* can now resolve to
-        // a different physical skill (e.g. a workspace `skills/notes/` now
-        // shadows what used to be a user-global `notes` skill). An
+        // a different physical skill (e.g. an agent `skills/notes/` now
+        // shadows what used to be a team `notes` skill). An
         // already-active skill's body was captured at activation time, so if
         // we only checked the name we'd keep serving stale instructions under
         // a name the index now attributes to a different source, with no
@@ -218,7 +221,7 @@ impl SkillState {
 
     /// Get the skill scan directories (used when building isolated subagent state).
     #[must_use]
-    pub fn dirs(&self) -> &[PathBuf] {
+    pub fn dirs(&self) -> &[SkillDir] {
         &self.dirs
     }
 }
@@ -226,6 +229,7 @@ impl SkillState {
 #[cfg(test)]
 mod tests {
     use super::super::index::SkillIndex;
+    use super::super::types::SkillDir;
     use super::SkillState;
 
     // ── SkillState ───────────────────────────────────────────────────────────
@@ -242,8 +246,10 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
-        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
 
         assert!(
             state.active_skill_names().is_empty(),
@@ -283,8 +289,10 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
-        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
 
         state.activate("test-skill").await.unwrap();
         let result = state.activate("test-skill").await;
@@ -312,8 +320,10 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
-        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
 
         state.activate("test-skill").await.unwrap();
         assert_eq!(state.active_skill_names().len(), 1);
@@ -340,8 +350,10 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
-        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
 
         state.activate("test-skill").await.unwrap();
         state.rescan().await.unwrap();
@@ -367,7 +379,10 @@ mod tests {
         .await
         .unwrap();
 
-        let dirs = vec![ws_dir.path().to_path_buf(), user_dir.path().to_path_buf()];
+        let dirs = vec![
+            SkillDir::agent(ws_dir.path()),
+            SkillDir::configured(user_dir.path()),
+        ];
         let index = SkillIndex::scan(&dirs).await.unwrap();
         let mut state = SkillState::new(index, dirs);
 
@@ -422,8 +437,10 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
-        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
 
         state.activate("test-skill").await.unwrap();
         state.deactivate("TEST-SKILL").unwrap();
@@ -461,8 +478,10 @@ mod tests {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
-        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![SkillDir::agent(dir.path())]);
 
         state.activate("skill-a").await.unwrap();
         state.activate("skill-b").await.unwrap();

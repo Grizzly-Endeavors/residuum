@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::inference::retry::RetryConfig;
+use crate::skills::SkillDir;
 use crate::util::FatalError;
 
 use super::super::deserialize::{
@@ -12,19 +13,22 @@ use super::super::types::{AgentAbilitiesConfig, SkillsConfig, ToolsConfig};
 
 /// Resolve skills configuration from TOML section.
 ///
-/// Defaults to the workspace `skills/` directory. Additional directories
-/// from the config are expanded and appended.
+/// Layers in priority order: the agent's own `skills/`, the shared
+/// `team/skills/`, then the directories from `[skills].dirs` (expanded).
 pub(super) fn resolve_skills_config(
     section: Option<&SkillsConfigFile>,
     workspace_dir: &Path,
 ) -> SkillsConfig {
     let layout = crate::workspace::layout::WorkspaceLayout::new(workspace_dir);
-    let mut dirs = vec![layout.skills_dir()];
+    let mut dirs = vec![
+        SkillDir::agent(layout.skills_dir()),
+        SkillDir::team(layout.team().skills_dir()),
+    ];
 
     if let Some(extra) = section.and_then(|s| s.dirs.as_ref()) {
         for raw in extra {
             let expanded = shellexpand::tilde(raw);
-            dirs.push(PathBuf::from(expanded.as_ref()));
+            dirs.push(SkillDir::configured(PathBuf::from(expanded.as_ref())));
         }
     }
 

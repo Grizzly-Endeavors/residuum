@@ -75,7 +75,7 @@ A key name is lowercase letters, digits, and underscores, starting with a letter
 ```
 
 - **`name`**, **`description`**: required, non-empty.
-- **`skills`**: an array of `{ "id", "name", "description", "tags": [], "examples"?: [] }`. Every `id` must be unique. An empty list is valid. A skill `id` that also names a workspace skill (`skills/<name>/SKILL.md`) is a skill a caller can ask for — see [Skill mapping](#skill-mapping).
+- **`skills`**: an array of `{ "id", "name", "description", "tags": [], "examples"?: [] }`. Every `id` must be unique. An empty list is valid. A skill `id` that also names an available skill is a skill a caller can ask for — see [Skill mapping](#skill-mapping).
 - **`default_input_modes`**, **`default_output_modes`**: optional; default to `["text/plain"]` when omitted.
 
 Everything else in the wire Agent Card — the JSON-RPC and REST interface URLs, capabilities, version, and security scheme — is filled in by the server from the file plus runtime facts (the configured base URL and visibility), never edited in the file directly.
@@ -156,7 +156,7 @@ A part that fails to save or download doesn't drop the message — it adds the s
 
 ### Skill mapping
 
-`message.metadata.skill`, a string, starts a brand-new session with that skill activated as its role — the same mechanism `subagent_spawn`'s `skill` parameter uses (see [Session Roles](background-tasks.md#session-roles)) — when it names both a skill `id` in the Agent Card and a workspace skill (`skills/<name>/SKILL.md`) of the same name. If it's present but doesn't map to anything runnable (unknown id, or a card skill with no matching workspace skill), the session still starts, with a one-line note (`[Requested skill: <name>]`) prepended to its content instead of silently ignoring the request. Metadata on a follow-up message to an already-running or already-completed session has no effect — a skill only applies at the moment a session starts.
+`message.metadata.skill`, a string, starts a brand-new session with that skill activated as its role — the same mechanism `subagent_spawn`'s `skill` parameter uses (see [Session Roles](background-tasks.md#session-roles)) — when it names both a skill `id` in the Agent Card and a skill (agent or team) of the same name. If it's present but doesn't map to anything runnable (unknown id, or a card skill with no matching skill), the session still starts, with a one-line note (`[Requested skill: <name>]`) prepended to its content instead of silently ignoring the request. Metadata on a follow-up message to an already-running or already-completed session has no effect — a skill only applies at the moment a session starts.
 
 ### Restarts
 

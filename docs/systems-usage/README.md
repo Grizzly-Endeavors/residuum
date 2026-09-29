@@ -72,7 +72,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json` |
 | [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` |
 | [Idle](idle.md) | Deactivates skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
-| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in `config.toml` (per-agent) and `hub/config.toml` (shared budget, hop limits), role skills in `skills/` |
+| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in `config.toml` (per-agent) and `hub/config.toml` (shared budget, hop limits), role skills in `skills/` or `team/skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
 | [Self-Update, Rollback, and Startup Health](self-update.md) | Self-update with automatic rollback, and the readiness signal `residuum serve`/the rollback watchdog wait on | `residuum update`, `residuum serve`, `residuum stop` | *(none)* |

@@ -11,7 +11,7 @@
 mod skills_integration {
     use std::sync::Arc;
 
-    use residuum::skills::{SkillIndex, SkillSource, SkillState};
+    use residuum::skills::{SkillDir, SkillIndex, SkillSource, SkillState};
     use residuum::tools::Tool;
     use residuum::tools::skills::{SkillActivateTool, SkillDeactivateTool};
     use residuum::workspace::bootstrap::ensure_workspace;
@@ -23,6 +23,14 @@ mod skills_integration {
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
         ensure_workspace(&layout, None, None).await.unwrap();
         (dir, layout)
+    }
+
+    /// The agent and team skill layers, in discovery order.
+    fn layered_dirs(layout: &WorkspaceLayout) -> Vec<SkillDir> {
+        vec![
+            SkillDir::agent(layout.skills_dir()),
+            SkillDir::team(layout.team().skills_dir()),
+        ]
     }
 
     /// Create a valid skill directory with SKILL.md.
@@ -57,7 +65,7 @@ mod skills_integration {
     #[tokio::test]
     async fn scan_empty_workspace() {
         let (_dir, layout) = setup_workspace().await;
-        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
+        let index = SkillIndex::scan(&layered_dirs(&layout)).await.unwrap();
         assert_eq!(
             index.entries().len(),
             bundled_skill_count(),
@@ -77,16 +85,13 @@ mod skills_integration {
         )
         .await;
 
-        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
+        let index = SkillIndex::scan(&layered_dirs(&layout)).await.unwrap();
         assert_eq!(index.entries().len(), bundled_skill_count() + 1);
         assert!(
             index.find_by_name("code-review").is_some(),
             "should discover code-review skill"
         );
-        assert_eq!(
-            index.entries().first().unwrap().source,
-            SkillSource::Workspace
-        );
+        assert_eq!(index.entries().first().unwrap().source, SkillSource::Agent);
     }
 
     #[tokio::test]
@@ -120,7 +125,7 @@ mod skills_integration {
         .await
         .unwrap();
 
-        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
+        let index = SkillIndex::scan(&layered_dirs(&layout)).await.unwrap();
         assert_eq!(
             index.entries().len(),
             bundled_skill_count() + 1,
@@ -144,7 +149,7 @@ mod skills_integration {
         )
         .await;
 
-        let index = SkillIndex::scan(&[layout.skills_dir()]).await.unwrap();
+        let index = SkillIndex::scan(&layered_dirs(&layout)).await.unwrap();
         let output = index.format_for_prompt();
         assert!(output.contains("<available_skills>"));
         assert!(output.contains("</available_skills>"));
@@ -166,7 +171,7 @@ mod skills_integration {
         )
         .await;
 
-        let dirs = vec![layout.skills_dir()];
+        let dirs = layered_dirs(&layout);
         let index = SkillIndex::scan(&dirs).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 
@@ -230,7 +235,7 @@ mod skills_integration {
         )
         .await;
 
-        let dirs = vec![layout.skills_dir()];
+        let dirs = layered_dirs(&layout);
         let index = SkillIndex::scan(&dirs).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 
@@ -273,7 +278,7 @@ mod skills_integration {
         )
         .await;
 
-        let dirs = vec![layout.skills_dir()];
+        let dirs = layered_dirs(&layout);
         let index = SkillIndex::scan(&dirs).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 

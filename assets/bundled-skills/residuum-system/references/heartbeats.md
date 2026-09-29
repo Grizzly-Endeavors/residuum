@@ -12,7 +12,7 @@ Three pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
 | `memory_tending` | `24h`, active `02:00-06:00` | `wiki` | Ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md` — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` core-facts list (≤15 entries, replace-don't-append, ≥2 episodes to promote a page from `draft` to `stable`). |
 | `wiki_lint` | `7d`, active `02:00-06:00` | `wiki` | Audits the wiki for index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links; fixes each problem in place; its summary is filed like any pulse result. |
 
-`reflection` routes to the `introspection` skill (see `skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md/AGENTS.md in its system message now, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only *propose* SOUL.md/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `skills/wiki/SKILL.md`) with `model_tier: large`, and may edit wiki pages and `USER.md` directly.
+`reflection` routes to the `introspection` skill (see `team/skills/introspection/SKILL.md`) with `model_tier: large`. Every session fork carries SOUL.md/AGENTS.md in its system message now, so `introspection` has the identity context it needs to judge what's worth surfacing without any special option — it can only *propose* SOUL.md/AGENTS.md changes via its inbox delivery, never edit them directly. `memory_tending` and `wiki_lint` route to the `wiki` skill (see `team/skills/wiki/SKILL.md`) with `model_tier: large`, and may edit wiki pages and `USER.md` directly.
 
 To disable either, set `enabled: false` on the pulse (don't delete it — the block documents what it does). To tune frequency or scope, edit the `schedule`, `active_hours`, or task prompts directly. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) follows the built-ins in the default file — optional add-ons, not enabled by default.
 
@@ -32,7 +32,7 @@ pulses:
   - name: monitor-deploys
     enabled: true
     schedule: 1h
-    agent: deploy-watcher    # Any string names a skill from skills/, at the pulse's model_tier
+    agent: deploy-watcher    # Any string names a skill (yours or the team's), at the pulse's model_tier
     tasks:
       - name: check_status
         prompt: "Check deployment status."
@@ -73,7 +73,7 @@ The `agent` field controls how the pulse executes:
 | Value | Execution | Model Tier |
 |-------|-----------|------------|
 | `~` (null) | Session with no skill | Small |
-| `"<skill-name>"` | Session with that skill from `skills/` | The pulse's `model_tier` (default: small) |
+| `"<skill-name>"` | Session with that skill (agent or team) | The pulse's `model_tier` (default: small) |
 
 `agent: "main"` is removed: every session fork already carries the main agent's identity and a memory snapshot, so there is no separate "run on main" mode. A pulse still using `agent: "main"`, or setting `include_identity` (also removed), fails to load with an error naming the pulse. Rejection is also raised as an owner-facing notice (a web UI toast and the same message on any chat interface) naming every currently rejected pulse, the field to remove, and a link to `migrating-to-agent-sessions.md` — fired once when a pulse first becomes rejected, and again if the rejected set changes, not on every tick.
 
