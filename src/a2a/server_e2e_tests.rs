@@ -25,7 +25,8 @@ use crate::a2a::card::{CardRuntime, CardState, SharedCardState};
 use crate::a2a::executor::SessionExecutor;
 use crate::a2a::handler::{ResiduumA2aHandler, resume_in_progress_tasks};
 use crate::a2a::keys_runtime::{A2aKeys, SharedA2aKeys};
-use crate::a2a::listener::A2aListener;
+use crate::a2a::listener::{A2aListener, agent_handler_router};
+use crate::a2a::static_directory::StaticAgentDirectory;
 use crate::a2a::task_store::{CALLER_METADATA_KEY, FileTaskStore, SharedTaskStore};
 use crate::actions::store::ActionStore;
 use crate::agent::HopCounter;
@@ -49,6 +50,9 @@ use crate::skills::{SkillIndex, SkillState};
 use crate::tools::{SubagentToolDeps, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
+
+/// The name of the one agent the harness serves.
+const AGENT_NAME: &str = "solo";
 
 /// Shared queue of scripted model responses, consumed in order by
 /// [`ScriptedProvider`] across every session run a harness spawns.
@@ -153,7 +157,8 @@ fn test_config(dir: &std::path::Path) -> Config {
 /// A live A2A server stack: a real `SessionRuntime` driven by a scripted
 /// provider, the real session executor/task store/handler, and the real
 /// `A2aListener` bound to a loopback port — everything Stream E built,
-/// wired together the same way `build_a2a_listener` wires it in production.
+/// wired together the same way `build_a2a_listener` wires it in production,
+/// with the one agent served at `/agents/solo`.
 struct Harness {
     base_url: String,
     keys: SharedA2aKeys,
@@ -377,17 +382,17 @@ async fn start_a2a_listener(
     let handler = Arc::new(ResiduumA2aHandler::new(inner, Arc::clone(task_store)));
     let keys = A2aKeys::new_shared(workspace_dir);
 
+    let directory = StaticAgentDirectory::new().with_agent(
+        AGENT_NAME,
+        crate::hub::A2aVisibility::Public,
+        agent_handler_router(handler, Arc::clone(card_state)),
+    );
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let listener = A2aListener::new(
-        A2aConfig {
-            enabled: true,
-            port,
-            public_url: None,
-            visibility: A2aVisibility::Public,
-        },
         "127.0.0.1".to_string(),
-        handler,
-        Arc::clone(card_state),
+        port,
+        Arc::new(directory),
         Arc::clone(&keys),
         Arc::new(NoTunnel),
         shutdown_rx,
@@ -438,6 +443,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
             visibility: A2aVisibility::Public,
         },
         "127.0.0.1",
+        AGENT_NAME,
     );
     let card_state = CardState::load(&layout.agent_card_json(), &card_runtime).unwrap();
 
@@ -514,7 +520,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
         start_a2a_listener(&workspace_dir, &card_state, &task_store, executor, port).await;
 
     Harness {
-        base_url: format!("http://127.0.0.1:{port}"),
+        base_url: format!("http://127.0.0.1:{port}/agents/{AGENT_NAME}"),
         keys,
         task_store,
         session_registry,
