@@ -16,7 +16,7 @@ const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
 describe("checkArtifactRequest", () => {
   it.each([
     ["GET", "/api/status"],
-    ["GET", "/api/workspace/file?path=workbench/chart.state.json"],
+    ["GET", "/api/workspace/file?path=team/workbench/chart.state.json"],
     ["PUT", "/api/workspace/file"],
     ["GET", "/api/secrets"],
     ["GET", "/api/agent-keys"],

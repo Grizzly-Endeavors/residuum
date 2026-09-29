@@ -10,7 +10,7 @@
   import { relativeTime } from "../lib/time";
   import { Icon } from "../lib/icons";
   import type { ArtifactSummary } from "../lib/types";
-  import { notifyWithUndo } from "../lib/undo";
+  import { toast } from "../lib/toast.svelte";
   import WorkbenchArtifact from "./WorkbenchArtifact.svelte";
 
   let { artifact, full, onClose }: { artifact: string | null; full: boolean; onClose: () => void } =
@@ -90,15 +90,9 @@
   async function remove(item: ArtifactSummary) {
     deleting.add(item.name);
     try {
-      const checkpointId = await deleteWorkbenchArtifact(item.name);
+      await deleteWorkbenchArtifact(item.name);
       artifacts = artifacts.filter((a) => a.name !== item.name);
-      notifyWithUndo(
-        `Deleted "${item.title}".`,
-        "workspace",
-        `workbench/${item.name}`,
-        checkpointId,
-        load,
-      );
+      toast.success(`Deleted "${item.title}".`);
     } catch (err) {
       notifications.surface(
         "error",

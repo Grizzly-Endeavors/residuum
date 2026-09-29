@@ -14,7 +14,7 @@ The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from 
 |------|-------|-------|
 | `team/wiki/` | High | Team layer, shared by every agent. Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `log.md`. Agents maintain pages and indexes by hand. |
 | `team/USER.md` | Medium | Team layer, shared by every agent. Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
-| `workbench/` | Medium | Interactive artifacts the agent builds for the user, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
+| `team/workbench/` | Medium | Interactive artifacts the agents build for the user, shared by every agent, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
 | `team/AGENTS.md` | Rare | Team layer, shared by every agent. Behavioral rules. Same as SOUL.md — low-churn, foundational. |

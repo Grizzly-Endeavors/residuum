@@ -581,10 +581,6 @@ mod tests {
             workbench_dir.join("references/api.md").exists(),
             "workbench api.md"
         );
-        assert!(
-            layout.workbench_dir().is_dir(),
-            "the workbench folder exists for artifacts"
-        );
 
         let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))
             .await
