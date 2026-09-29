@@ -26,6 +26,7 @@ pub(crate) struct WorkbenchApiState {
     pub dir: PathBuf,
     pub serving: WorkbenchServing,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    pub checkpoints: std::sync::Arc<crate::checkpoints::CheckpointEngine>,
 }
 
 /// Response from `DELETE /api/workbench/artifacts/{name}`.
@@ -33,6 +34,10 @@ pub(crate) struct WorkbenchApiState {
 struct DeleteArtifactResponse {
     /// Entries removed: the page or folder (`name/`) and any `<name>.*` data files.
     removed: Vec<String>,
+    /// Checkpoint holding the team directory as it was before this delete.
+    /// `None` when that checkpoint could not be recorded; the delete still
+    /// succeeded, and the UI should not offer Undo.
+    checkpoint_id: Option<String>,
 }
 
 pub(crate) fn workbench_api_router(state: WorkbenchApiState) -> axum::Router {
@@ -96,10 +101,20 @@ async fn api_workbench_artifact_delete(
     State(state): State<WorkbenchApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteArtifactResponse>, (StatusCode, String)> {
+    let checkpoint_id = state
+        .checkpoints
+        .checkpoint_team_id_before_action(crate::checkpoints::CheckpointContext::system(
+            crate::checkpoints::CheckpointTrigger::PreAction,
+            format!("delete workbench artifact {name}"),
+        ))
+        .await;
     match workbench::delete_artifact(&state.dir, &name).await {
         Ok(removed) => {
             tracing::info!(artifact = %name, files = ?removed, "deleted workbench artifact");
-            Ok(Json(DeleteArtifactResponse { removed }))
+            Ok(Json(DeleteArtifactResponse {
+                removed,
+                checkpoint_id,
+            }))
         }
         Err(e @ ArtifactDeleteError::InvalidName(_)) => {
             Err((StatusCode::BAD_REQUEST, e.to_string()))
@@ -133,6 +148,7 @@ mod tests {
             dir: dir.to_path_buf(),
             serving,
             tunnel_status_rx: rx,
+            checkpoints: crate::checkpoints::test_engine(),
         })
     }
 
@@ -279,6 +295,78 @@ mod tests {
         assert!(
             !workbench.join("chart.html").exists() && !workbench.join("chart.state.json").exists(),
             "the artifact and its state file are gone from team/workbench"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_returns_the_team_checkpoint_taken_before_the_delete() {
+        let root = tempfile::tempdir().unwrap();
+        let workbench = root.path().join("team").join("workbench");
+        std::fs::create_dir_all(&workbench).unwrap();
+        std::fs::write(workbench.join("chart.html"), "<title>My Chart</title>").unwrap();
+        let checkpoints = std::sync::Arc::new(
+            crate::checkpoints::CheckpointEngine::new(
+                root.path().join("scout"),
+                root.path().join("scout").join("config"),
+                root.path().join("hub"),
+                &root.path().join("hub").join("checkpoints"),
+                None,
+            )
+            .unwrap(),
+        );
+        let (_tx, rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
+        let router = workbench_api_router(WorkbenchApiState {
+            dir: workbench.clone(),
+            serving: WorkbenchServing::Running { port: 7702 },
+            tunnel_status_rx: rx,
+            checkpoints: std::sync::Arc::clone(&checkpoints),
+        });
+
+        let deleted = router
+            .oneshot(
+                Request::delete("/api/workbench/artifacts/chart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::OK, "delete should succeed");
+        let body = body_json(deleted).await;
+        let id = body
+            .get("checkpoint_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("delete should name the checkpoint taken before it")
+            .to_string();
+
+        let stored = checkpoints
+            .file_content_at(
+                crate::checkpoints::RepoKind::Team,
+                id.clone(),
+                "workbench/chart.html".to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "the returned team checkpoint must still contain the artifact"
+        );
+        assert!(!workbench.join("chart.html").exists());
+
+        checkpoints
+            .restore_path(
+                crate::checkpoints::RepoKind::Team,
+                id,
+                "workbench/chart.html".to_string(),
+                crate::checkpoints::CheckpointContext::system(
+                    crate::checkpoints::CheckpointTrigger::Restore,
+                    "undo delete",
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(
+            workbench.join("chart.html").exists(),
+            "restoring from the team repo brings the artifact back"
         );
     }
 }

@@ -52,4 +52,27 @@ describe("notifyWithUndo", () => {
       expect(followUp?.kind).toBe("error");
     });
   });
+
+  it("restores every listed path from the same checkpoint", async () => {
+    undoLastAction.mockResolvedValue({ checkpoint_id: "abc123", restored_paths: [] });
+    notifyWithUndo(
+      'Deleted "Chart".',
+      "team",
+      ["workbench/chart.html", "workbench/chart.state.json"],
+      "action-cp",
+    );
+
+    [...toast.toasts.values()].at(-1)?.action?.onClick();
+    await vi.waitFor(() => {
+      expect(undoLastAction).toHaveBeenCalledTimes(2);
+    });
+
+    expect(undoLastAction).toHaveBeenNthCalledWith(1, "action-cp", "team", "workbench/chart.html");
+    expect(undoLastAction).toHaveBeenNthCalledWith(
+      2,
+      "action-cp",
+      "team",
+      "workbench/chart.state.json",
+    );
+  });
 });

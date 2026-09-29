@@ -254,9 +254,18 @@ impl CheckpointEngine {
     /// directory: awaited before a destructive team action, never failing
     /// or blocking it.
     pub async fn checkpoint_team_before_action(&self, ctx: CheckpointContext) {
-        let _checkpoint_id = self
-            .checkpoint_tree_id_before_action(RepoKind::Team, ctx)
-            .await;
+        let _checkpoint_id = self.checkpoint_team_id_before_action(ctx).await;
+    }
+
+    /// [`Self::checkpoint_team_before_action`], plus the id of the checkpoint
+    /// that holds the pre-action tree: a new checkpoint's id when the tree
+    /// changed, the existing tip's when it already matched. `None` when
+    /// recording failed (logged and notified; the action must still proceed)
+    /// or when there was nothing to record.
+    #[must_use]
+    pub async fn checkpoint_team_id_before_action(&self, ctx: CheckpointContext) -> Option<String> {
+        self.checkpoint_tree_id_before_action(RepoKind::Team, ctx)
+            .await
     }
 
     /// Snapshot a work-tree repository ([`RepoKind::Workspace`] or

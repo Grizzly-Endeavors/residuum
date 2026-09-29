@@ -436,11 +436,17 @@ mod tests {
             "the agent's role page should exist"
         );
         assert!(
-            !layout.agents_md().exists(),
+            !layout.root().join("AGENTS.md").exists(),
             "AGENTS.md belongs to the team"
         );
-        assert!(!layout.user_md().exists(), "USER.md belongs to the team");
-        assert!(!layout.wiki_dir().exists(), "the wiki belongs to the team");
+        assert!(
+            !layout.root().join("USER.md").exists(),
+            "USER.md belongs to the team"
+        );
+        assert!(
+            !layout.root().join("wiki").exists(),
+            "the wiki belongs to the team"
+        );
         assert!(layout.bootstrap_md().exists(), "BOOTSTRAP.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
         assert!(layout.reflector_md().exists(), "REFLECTOR.md should exist");

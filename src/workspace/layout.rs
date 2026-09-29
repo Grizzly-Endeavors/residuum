@@ -68,36 +68,6 @@ impl WorkspaceLayout {
         self.root.join("SOUL.md")
     }
 
-    /// Path to AGENTS.md -- agent capabilities and behavior rules.
-    #[must_use]
-    pub fn agents_md(&self) -> PathBuf {
-        self.root.join("AGENTS.md")
-    }
-
-    /// Path to USER.md -- user preferences and context.
-    #[must_use]
-    pub fn user_md(&self) -> PathBuf {
-        self.root.join("USER.md")
-    }
-
-    /// Path to the knowledge wiki -- an OKF bundle of agent-maintained concept pages.
-    #[must_use]
-    pub fn wiki_dir(&self) -> PathBuf {
-        self.root.join("wiki")
-    }
-
-    /// Path to the wiki's root `index.md` -- the catalog injected into every prompt.
-    #[must_use]
-    pub fn wiki_index_md(&self) -> PathBuf {
-        self.root.join("wiki/index.md")
-    }
-
-    /// Path to the wiki's root `log.md` -- append-only history of wiki changes.
-    #[must_use]
-    pub fn wiki_log_md(&self) -> PathBuf {
-        self.root.join("wiki/log.md")
-    }
-
     /// Path to the memory directory for episodes and persistent state.
     #[must_use]
     pub fn memory_dir(&self) -> PathBuf {
@@ -371,16 +341,6 @@ mod tests {
             "soul_md path"
         );
         assert_eq!(
-            layout.agents_md(),
-            PathBuf::from("/tmp/ws/AGENTS.md"),
-            "agents_md path"
-        );
-        assert_eq!(
-            layout.user_md(),
-            PathBuf::from("/tmp/ws/USER.md"),
-            "user_md path"
-        );
-        assert_eq!(
             layout.memory_dir(),
             PathBuf::from("/tmp/ws/memory"),
             "memory_dir path"
@@ -487,26 +447,20 @@ mod tests {
     }
 
     #[test]
-    fn layout_wiki_paths() {
-        let layout = WorkspaceLayout::new("/tmp/ws");
+    fn team_files_are_not_part_of_the_agent_layout() {
+        let layout = WorkspaceLayout::new(Path::new("res").join("scout"));
+        let team = layout.team();
+        assert_eq!(team.root(), Path::new("res").join("team"));
         assert_eq!(
-            layout.wiki_dir(),
-            PathBuf::from("/tmp/ws/wiki"),
-            "wiki_dir path"
-        );
-        assert_eq!(
-            layout.wiki_index_md(),
-            PathBuf::from("/tmp/ws/wiki/index.md"),
-            "wiki_index_md path"
-        );
-        assert_eq!(
-            layout.wiki_log_md(),
-            PathBuf::from("/tmp/ws/wiki/log.md"),
-            "wiki_log_md path"
+            team.wiki_index_md(),
+            Path::new("res").join("team").join("wiki").join("index.md")
         );
         assert!(
-            !layout.required_dirs().contains(&layout.wiki_dir()),
-            "the wiki lives in the team directory, not the agent's"
+            !layout
+                .required_dirs()
+                .iter()
+                .any(|dir| dir.starts_with(team.root()) || dir.ends_with("wiki")),
+            "the agent layout creates no team or wiki directories"
         );
     }
 

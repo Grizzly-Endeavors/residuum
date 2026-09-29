@@ -19,13 +19,16 @@ import type { RepoKind } from "./types";
  * Undo for that checkpoint. When it is null — the checkpoint failed, so
  * there is nothing correct to restore — the toast has no Undo.
  *
+ * `path` may list several paths (an artifact's page and its data files); Undo
+ * restores each from the same checkpoint.
+ *
  * `onRestored` runs after a successful undo, so the caller can refresh
  * whatever list or view showed the now-gone item.
  */
 export function notifyWithUndo(
   message: string,
   repo: RepoKind,
-  path: string,
+  path: string | string[],
   checkpointId: string | null,
   onRestored?: () => void | Promise<void>,
 ): void {
@@ -44,11 +47,13 @@ export function notifyWithUndo(
 async function runUndo(
   checkpointId: string,
   repo: RepoKind,
-  path: string,
+  path: string | string[],
   onRestored?: () => void | Promise<void>,
 ): Promise<void> {
   try {
-    await undoLastAction(checkpointId, repo, path);
+    for (const each of Array.isArray(path) ? path : [path]) {
+      await undoLastAction(checkpointId, repo, each);
+    }
     toast.success("Restored.");
     await onRestored?.();
   } catch (err) {
