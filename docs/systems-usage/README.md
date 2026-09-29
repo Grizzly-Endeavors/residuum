@@ -6,16 +6,20 @@ This directory documents how each Residuum system is **intended to be used**, by
 
 Everything inside the workspace directory is **agent-owned by default**. The agent creates, reads, updates, and evolves these files as part of normal operation. The user provides initial guidance during onboarding and occasional course corrections, but the goal is that users rarely need to intervene after the first conversation.
 
+The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from the agent's own directory. `AGENTS.md`, `USER.md` and the wiki index (`team/wiki/index.md`) come from the team layer, `team/` beside the agent directories, and are the same for every agent. The order is `SOUL.md`, `AGENTS.md`, `HARNESS`, `BOOTSTRAP.md`, `USER.md`, `WIKI_INDEX`, then memory and skills. A missing file is left out of the prompt. Files are re-read every turn; if a read fails, the previous turn's snapshot is used. The subconscious classifier and session forks read the same sources.
+
+Every agent's file tools and the web file API see the team layer under a `team/` prefix, and writes to team files are checked so agents and the user can't silently overwrite each other. See [Team files](team-files.md).
+
 ### Agent-owned files
 
 | File | Churn | Notes |
 |------|-------|-------|
-| `wiki/` | High | Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `wiki/log.md`. Agent maintains pages and indexes by hand. |
-| `USER.md` | Medium | Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
-| `workbench/` | Medium | Interactive artifacts the agent builds for the user, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
+| `team/wiki/` | High | Team layer, shared by every agent. Open Knowledge Format bundle — one concept per page, plus `index.md` files, an append-only `log.md`, and a role page per agent in `agents/`. Agents maintain pages and indexes by hand. See [Team Directory](team-directory.md). |
+| `team/USER.md` | Medium | Team layer, shared by every agent. Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
+| `team/workbench/` | Medium | Interactive artifacts the agents build for the user, shared by every agent, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
-| `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
+| `team/AGENTS.md` | Rare | Team layer, shared by every agent. Behavioral rules. Same as SOUL.md — low-churn, foundational. |
 | `memory/OBSERVER.md` | Low | Observer extraction prompt. Agent can improve over time via self-analysis. |
 | `memory/REFLECTOR.md` | Low | Reflector compression prompt. Same — agent self-improves. |
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
@@ -60,9 +64,10 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 |--------|-----|---------------|--------|
 | [Config](config.md) | Global settings in `config.toml`/`providers.toml`, editable by the agent on the user's behalf | `write_file`, `edit_file` | `config.toml`, `providers.toml` |
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
-| [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `wiki/` |
-| [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
-| [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
+| [Team Directory](team-directory.md) | The `team/` directory every agent shares: team rules, user profile, wiki, and each agent's role page | `read_file`, `write_file`, `edit_file` | `team/` |
+| [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `team/wiki/` |
+| [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the shared team directory, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
+| [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `team/workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
 | [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
@@ -72,7 +77,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json` |
 | [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` |
 | [Idle](idle.md) | Deactivates skills, switches notification channel, and injects a continuity message after user inactivity | *(automatic — no tools)* | `[idle]` in `config.toml` |
-| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in `config.toml` (per-agent) and `hub/config.toml` (shared budget, hop limits), role skills in `skills/` |
+| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in `config.toml` (per-agent) and `hub/config.toml` (shared budget, hop limits), role skills in `skills/` or `team/skills/` |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
 | [Turn Control](turn-control.md) | Stop the running main-agent turn from any interface | *(no tools — a protocol/command control, not a tool)* | *(none)* |
 | [Self-Update, Rollback, and Startup Health](self-update.md) | Self-update with automatic rollback, and the readiness signal `residuum serve`/the rollback watchdog wait on | `residuum update`, `residuum serve`, `residuum stop` | *(none)* |

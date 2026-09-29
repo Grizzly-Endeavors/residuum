@@ -17,9 +17,10 @@ use anyhow::Context;
 use crate::config::SearchConfig;
 use crate::inference::EmbeddingProvider;
 use crate::memory::chunk_extractor::read_idx_jsonl;
+use crate::memory::team_wiki::TeamWikiIndex;
 use crate::memory::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
-use crate::memory::wiki_index::{WikiIndexer, WikiPage};
+use crate::memory::wiki_index::WikiPage;
 
 /// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
@@ -56,6 +57,9 @@ pub struct SearchOutcome {
     /// actually retrieved — but enough to tell the caller there's more to
     /// see with a lower threshold rather than reporting a flat "no results".
     pub below_threshold: usize,
+    /// Whether vector similarity contributed to the ranking on any side that was
+    /// searched. `false` means every searched side fell back to BM25 alone.
+    pub semantic: bool,
 }
 
 /// Filters for narrowing search results.
@@ -331,6 +335,34 @@ impl MemoryIndex {
                 .with_context(|| format!("failed to add wiki page {} to search index", page.id))?;
         }
         self.commit_and_reload(writer)
+    }
+
+    /// Delete every wiki document, returning how many were removed.
+    ///
+    /// Wiki pages are indexed in the team wiki's own index; this clears any
+    /// wiki documents an agent's index holds. It commits only when there is
+    /// something to remove.
+    ///
+    /// # Errors
+    /// Returns an error if counting or deleting fails.
+    pub fn purge_wiki_documents(&self) -> anyhow::Result<usize> {
+        let wiki_term = Term::from_field_text(self.source_type_field, DocSource::Wiki.as_str());
+        let wiki_query = tantivy::query::TermQuery::new(
+            wiki_term.clone(),
+            tantivy::schema::IndexRecordOption::Basic,
+        );
+        let count = self
+            .reader
+            .searcher()
+            .search(&wiki_query, &tantivy::collector::Count)
+            .context("failed to count wiki documents")?;
+        if count == 0 {
+            return Ok(0);
+        }
+        let writer = self.writer()?;
+        writer.delete_term(wiki_term);
+        self.commit_and_reload(writer)?;
+        Ok(count)
     }
 
     /// Search the index with a query string and optional filters.
@@ -845,20 +877,136 @@ fn report_interrupted_episodes(episodes_dir: &Path) {
 
 // ── Hybrid searcher ─────────────────────────────────────────────────────────
 
-/// Orchestrates BM25 + vector search with score normalization and merging.
+/// One index's ranked candidates from the hybrid pipeline.
+pub(crate) struct SideOutcome {
+    /// Results at or above the min-score threshold, decayed and sorted, capped at
+    /// the search limit.
+    pub(crate) results: Vec<SearchResult>,
+    /// Candidates that scored below the min-score threshold and were dropped.
+    pub(crate) below_threshold: usize,
+    /// Whether vector similarity contributed to this side's ranking.
+    pub(crate) semantic: bool,
+}
+
+/// A vector store paired with the provider that embeds queries into it.
+pub(crate) type VectorPair<'a> = (&'a Arc<VectorStore>, &'a Arc<dyn EmbeddingProvider>);
+
+/// Run the hybrid pipeline against a single index: BM25, optional vector
+/// search, weighted merge, temporal decay, and `min_score`.
 ///
-/// When no vector store or embedding provider is configured, delegates
-/// entirely to BM25 (existing behavior, no score filtering).
+/// With no vector store or embedding provider it is BM25 alone.
+pub(crate) async fn search_side(
+    bm25: &MemoryIndex,
+    vector: Option<VectorPair<'_>>,
+    cfg: &SearchConfig,
+    query: &str,
+    limit: usize,
+    filters: &SearchFilters,
+    min_score: f32,
+) -> anyhow::Result<SideOutcome> {
+    let candidates = limit * cfg.candidate_multiplier;
+    let bm25_results = bm25.search(query, candidates, filters)?;
+
+    // If no vector search available, use BM25 results directly
+    let Some((vs, ep)) = vector else {
+        tracing::trace!("vector search unavailable, using BM25-only search");
+        // BM25-only: apply temporal decay if enabled, re-sort, then truncate
+        let mut results = bm25_results;
+        if cfg.temporal_decay {
+            let today = chrono::Utc::now().date_naive();
+            apply_temporal_decay(&mut results, cfg.temporal_decay_half_life_days, today);
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        // Apply min_score the same way merge_hybrid_results does (on normalized
+        // scores), so the setting has consistent meaning whether or not vector
+        // search ran.
+        let scores: Vec<f32> = results.iter().map(|r| r.score).collect();
+        let normalized = normalize_scores(&scores);
+        let total = results.len();
+        let mut results: Vec<SearchResult> = results
+            .into_iter()
+            .zip(normalized)
+            .filter(|(_, norm)| *norm >= min_score)
+            .map(|(r, _)| r)
+            .collect();
+        let below_threshold = total - results.len();
+        results.truncate(limit);
+        return Ok(SideOutcome {
+            results,
+            below_threshold,
+            semantic: false,
+        });
+    };
+
+    // Embed the query
+    let embed_response = ep
+        .embed(&[query])
+        .await
+        .context("failed to embed search query")?;
+    let query_vec = embed_response
+        .embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("embedding provider returned no embeddings"))?;
+
+    // Vector search (sync, so use spawn_blocking)
+    let vs_clone = Arc::clone(vs);
+    let vec_filters = VectorSearchFilters {
+        date_from: filters.date_from.clone(),
+        date_to: filters.date_to.clone(),
+        episode_ids: filters.episode_ids.clone(),
+        source: filters.source,
+    };
+    let vec_limit = candidates;
+    let vec_results =
+        tokio::task::spawn_blocking(move || vs_clone.search(&query_vec, vec_limit, &vec_filters))
+            .await
+            .context("vector search task failed")??;
+
+    // Merge results
+    let (mut merged, below_threshold) =
+        merge_hybrid_results(&bm25_results, &vec_results, cfg, min_score, candidates);
+
+    // Apply temporal decay after merge if enabled
+    if cfg.temporal_decay {
+        let today = chrono::Utc::now().date_naive();
+        apply_temporal_decay(&mut merged, cfg.temporal_decay_half_life_days, today);
+        merged.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    merged.truncate(limit);
+    Ok(SideOutcome {
+        results: merged,
+        below_threshold,
+        semantic: true,
+    })
+}
+
+/// Orchestrates BM25 + vector search over an agent's memory index and the
+/// team wiki index, with score normalization and merging.
+///
+/// Each index runs the full pipeline separately with this searcher's
+/// settings; the two ranked lists are then merged by score and limited once.
+/// When no vector store or embedding provider is configured for an index,
+/// that index is BM25 only.
 pub struct HybridSearcher {
     bm25: Arc<MemoryIndex>,
     vector: Option<Arc<VectorStore>>,
     embedding: Option<Arc<dyn EmbeddingProvider>>,
     cfg: SearchConfig,
-    wiki: Option<WikiIndexer>,
+    team_wiki: Option<Arc<TeamWikiIndex>>,
 }
 
 impl HybridSearcher {
-    /// Create a new hybrid searcher.
+    /// Create a new hybrid searcher over an agent's memory index.
     #[must_use]
     pub fn new(
         bm25: Arc<MemoryIndex>,
@@ -871,38 +1019,35 @@ impl HybridSearcher {
             vector,
             embedding,
             cfg,
-            wiki: None,
+            team_wiki: None,
         }
     }
 
-    /// Keep the knowledge wiki's pages in the index, resynced before each search.
+    /// Also search the shared team wiki index. The handle may be shared with
+    /// other searchers; the index serializes its own writes.
     #[must_use]
-    pub fn with_wiki(mut self, wiki: WikiIndexer) -> Self {
-        self.wiki = Some(wiki);
+    pub fn with_team_wiki(mut self, team_wiki: Arc<TeamWikiIndex>) -> Self {
+        self.team_wiki = Some(team_wiki);
         self
     }
 
-    /// Bring wiki pages in the index up to date with the files on disk.
-    ///
-    /// A failed sync leaves the previous wiki documents searchable, so it is
-    /// logged rather than failing the search; the next search retries it.
-    async fn sync_wiki(&self) {
-        let Some(wiki) = &self.wiki else {
-            return;
-        };
-        let vector = self.vector.as_ref().zip(self.embedding.as_ref());
-        if let Err(e) = wiki.sync(&self.bm25, vector).await {
-            tracing::warn!(error = %format!("{e:#}"), "failed to sync wiki pages into the search index; wiki results may be stale");
-        }
-    }
-
-    /// Whether vector search is available (both store and provider configured).
+    /// Whether vector search is available on either index (both store and
+    /// provider configured).
     #[must_use]
     pub fn has_vector(&self) -> bool {
-        self.vector.is_some() && self.embedding.is_some()
+        self.memory_vector().is_some() || self.team_wiki.as_ref().is_some_and(|t| t.has_vector())
+    }
+
+    fn memory_vector(&self) -> Option<VectorPair<'_>> {
+        self.vector.as_ref().zip(self.embedding.as_ref())
     }
 
     /// Search using hybrid BM25 + vector scoring, or BM25-only fallback.
+    ///
+    /// The agent's memory index and the team wiki index are searched
+    /// separately, then merged by score with the limit applied once.
+    /// `source = wiki` searches only the team index; `observations` and
+    /// `episodes` only the agent's own.
     ///
     /// `min_score_override`, when given, replaces the configured
     /// `[search].min_score` threshold for this call only — e.g. so a caller
@@ -919,104 +1064,55 @@ impl HybridSearcher {
         filters: &SearchFilters,
         min_score_override: Option<f64>,
     ) -> anyhow::Result<SearchOutcome> {
-        let candidates = limit * self.cfg.candidate_multiplier;
         #[expect(
             clippy::cast_possible_truncation,
             reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
         )]
         let min_score = min_score_override.unwrap_or(self.cfg.min_score) as f32;
 
-        if filters.source.is_none_or(|s| s == DocSource::Wiki) {
-            self.sync_wiki().await;
+        let mut results = Vec::new();
+        let mut below_threshold = 0_usize;
+        let mut semantic = false;
+
+        if filters.source != Some(DocSource::Wiki) {
+            let side = search_side(
+                &self.bm25,
+                self.memory_vector(),
+                &self.cfg,
+                query,
+                limit,
+                filters,
+                min_score,
+            )
+            .await?;
+            results.extend(side.results);
+            below_threshold += side.below_threshold;
+            semantic |= side.semantic;
         }
 
-        // BM25 search
-        let bm25_results = self.bm25.search(query, candidates, filters)?;
-
-        // If no vector search available, return BM25 results directly
-        let (Some(vs), Some(ep)) = (&self.vector, &self.embedding) else {
-            tracing::trace!("vector search unavailable, using BM25-only search");
-            // BM25-only: apply temporal decay if enabled, re-sort, then truncate
-            let mut results = bm25_results;
-            if self.cfg.temporal_decay {
-                let today = chrono::Utc::now().date_naive();
-                apply_temporal_decay(&mut results, self.cfg.temporal_decay_half_life_days, today);
-                results.sort_by(|a, b| {
-                    b.score
-                        .partial_cmp(&a.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-            // Apply min_score the same way merge_hybrid_results does (on normalized
-            // scores), so the setting has consistent meaning whether or not vector
-            // search ran.
-            let scores: Vec<f32> = results.iter().map(|r| r.score).collect();
-            let normalized = normalize_scores(&scores);
-            let total = results.len();
-            let mut results: Vec<SearchResult> = results
-                .into_iter()
-                .zip(normalized)
-                .filter(|(_, norm)| *norm >= min_score)
-                .map(|(r, _)| r)
-                .collect();
-            let below_threshold = total - results.len();
-            results.truncate(limit);
-            return Ok(SearchOutcome {
-                results,
-                below_threshold,
-            });
-        };
-
-        // Embed the query
-        let embed_response = ep
-            .embed(&[query])
-            .await
-            .context("failed to embed search query")?;
-        let query_vec = embed_response
-            .embeddings
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("embedding provider returned no embeddings"))?;
-
-        // Vector search (sync, so use spawn_blocking)
-        let vs_clone = Arc::clone(vs);
-        let vec_filters = VectorSearchFilters {
-            date_from: filters.date_from.clone(),
-            date_to: filters.date_to.clone(),
-            episode_ids: filters.episode_ids.clone(),
-            source: filters.source,
-        };
-        let vec_limit = candidates;
-        let vec_results = tokio::task::spawn_blocking(move || {
-            vs_clone.search(&query_vec, vec_limit, &vec_filters)
-        })
-        .await
-        .context("vector search task failed")??;
-
-        // Merge results
-        let (mut merged, below_threshold) = merge_hybrid_results(
-            &bm25_results,
-            &vec_results,
-            &self.cfg,
-            min_score,
-            candidates,
-        );
-
-        // Apply temporal decay after merge if enabled
-        if self.cfg.temporal_decay {
-            let today = chrono::Utc::now().date_naive();
-            apply_temporal_decay(&mut merged, self.cfg.temporal_decay_half_life_days, today);
-            merged.sort_by(|a, b| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+        // Wiki pages belong to no episode, so an episode filter rules them out.
+        if let Some(team_wiki) = &self.team_wiki
+            && filters.source.is_none_or(|s| s == DocSource::Wiki)
+            && filters.episode_ids.is_none()
+        {
+            let side = team_wiki
+                .search(query, limit, filters, &self.cfg, min_score)
+                .await?;
+            results.extend(side.results);
+            below_threshold += side.below_threshold;
+            semantic |= side.semantic;
         }
 
-        merged.truncate(limit);
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(limit);
         Ok(SearchOutcome {
-            results: merged,
+            results,
             below_threshold,
+            semantic,
         })
     }
 
@@ -2215,6 +2311,236 @@ mod tests {
             (results[0].score - expected).abs() < 0.01,
             "score at half-life should be ~0.5, got {}",
             results[0].score
+        );
+    }
+
+    // ── Merged agent-memory + team-wiki search ───────────────────────────
+
+    /// Two indexes: an agent's memory (three observations) and a team wiki
+    /// (three pages), all matching "cluster" with different strengths.
+    async fn merged_fixture() -> (tempfile::TempDir, HybridSearcher) {
+        let dir = tempfile::tempdir().unwrap();
+        let index = MemoryIndex::open_or_create(&dir.path().join("memory-index")).unwrap();
+        let observations = [
+            "cluster cluster cluster cluster cluster cluster cluster cluster upgrade notes",
+            "cluster maintenance window",
+            "a passing mention of the cluster in a long unrelated sentence about lunch plans",
+        ]
+        .map(sample_observation);
+        index
+            .index_observations("ep-001", "2026-02-19", &observations)
+            .unwrap();
+
+        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        for (name, body) in [
+            ("alpha", "cluster cluster cluster nodes"),
+            (
+                "beta",
+                "the cluster topology diagram is described below in some detail for readers",
+            ),
+            (
+                "gamma",
+                "a tangential reference to the cluster amid filler words about weather",
+            ),
+        ] {
+            let page = team.wiki_dir().join(format!("{name}.md"));
+            std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+            std::fs::write(&page, format!("---\ntitle: {name}\n---\n{body}\n")).unwrap();
+        }
+        let team_wiki = TeamWikiIndex::open(&team, None).await.unwrap();
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default())
+            .with_team_wiki(team_wiki);
+        (dir, searcher)
+    }
+
+    async fn search_source(
+        searcher: &HybridSearcher,
+        source: Option<DocSource>,
+        limit: usize,
+        min_score: Option<f64>,
+    ) -> SearchOutcome {
+        let filters = SearchFilters {
+            source,
+            ..SearchFilters::default()
+        };
+        searcher
+            .search("cluster", limit, &filters, min_score)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn merged_ranking_interleaves_by_score_and_applies_limit_once() {
+        let (_dir, searcher) = merged_fixture().await;
+        let all = search_source(&searcher, None, 10, Some(0.0)).await;
+
+        assert_eq!(
+            all.results.len(),
+            6,
+            "both indexes contribute all their matches"
+        );
+        assert!(
+            all.results.windows(2).all(|w| w[0].score >= w[1].score),
+            "one ranking by score across both indexes, got {:?}",
+            all.results
+                .iter()
+                .map(|r| (&r.id, r.score))
+                .collect::<Vec<_>>()
+        );
+        let source_switches = all
+            .results
+            .windows(2)
+            .filter(|w| w[0].source_type != w[1].source_type)
+            .count();
+        assert!(
+            source_switches >= 2,
+            "wiki and memory results should interleave rather than group, got {:?}",
+            all.results.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+
+        let limited = search_source(&searcher, None, 4, Some(0.0)).await;
+        let limited_ids: Vec<&str> = limited.results.iter().map(|r| r.id.as_str()).collect();
+        let top_ids: Vec<&str> = all.results.iter().take(4).map(|r| r.id.as_str()).collect();
+        assert_eq!(limited_ids, top_ids, "the limit applies to the merged list");
+    }
+
+    #[tokio::test]
+    async fn min_score_applies_per_index_and_below_threshold_sums() {
+        let (_dir, searcher) = merged_fixture().await;
+        // A threshold of 1.0 keeps only the best match of each index.
+        let strict = search_source(&searcher, None, 10, Some(1.0)).await;
+        assert_eq!(strict.results.len(), 2, "one survivor per index");
+        assert_eq!(
+            strict.below_threshold, 4,
+            "two weaker matches from each index are counted together"
+        );
+        let sources: Vec<DocSource> = strict.results.iter().map(|r| r.source_type).collect();
+        assert!(sources.contains(&DocSource::Wiki) && sources.contains(&DocSource::Observation));
+    }
+
+    #[tokio::test]
+    async fn source_filters_pick_which_index_is_searched() {
+        let (_dir, searcher) = merged_fixture().await;
+        let wiki = search_source(&searcher, Some(DocSource::Wiki), 10, Some(0.0)).await;
+        assert!(
+            wiki.results
+                .iter()
+                .all(|r| r.source_type == DocSource::Wiki && r.id.starts_with("team/wiki/")),
+            "source=wiki hits only the team index, got {:?}",
+            wiki.results
+        );
+        for source in [DocSource::Observation, DocSource::Chunk] {
+            let memory = search_source(&searcher, Some(source), 10, Some(0.0)).await;
+            assert!(
+                memory.results.iter().all(|r| r.source_type == source),
+                "{source} searches only the agent's index, got {:?}",
+                memory.results
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn episode_filter_skips_the_team_wiki() {
+        let (_dir, searcher) = merged_fixture().await;
+        let filters = SearchFilters {
+            episode_ids: Some(vec!["ep-001".to_string()]),
+            ..SearchFilters::default()
+        };
+        let outcome = searcher
+            .search("cluster", 10, &filters, Some(0.0))
+            .await
+            .unwrap();
+        assert!(
+            !outcome.results.is_empty()
+                && outcome
+                    .results
+                    .iter()
+                    .all(|r| r.source_type == DocSource::Observation)
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_reports_vectors_from_either_side() {
+        use crate::inference::{EmbeddingResponse, InferenceError};
+
+        struct Flat;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for Flat {
+            async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
+                Ok(EmbeddingResponse {
+                    embeddings: texts.iter().map(|_| vec![0.5, 0.5, 0.5, 0.5]).collect(),
+                    dimensions: 4,
+                })
+            }
+            fn model_name(&self) -> &'static str {
+                "flat"
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        std::fs::create_dir_all(team.wiki_dir()).unwrap();
+        std::fs::write(team.wiki_dir().join("a.md"), "cluster page\n").unwrap();
+        let provider: Arc<dyn EmbeddingProvider> = Arc::new(Flat);
+        let vectored_team = TeamWikiIndex::open(&team, Some(provider)).await.unwrap();
+        let text_only_team = TeamWikiIndex::open(
+            &crate::config::paths::TeamPaths::new(dir.path().join("other-team")),
+            None,
+        )
+        .await
+        .unwrap();
+        let memory = || Arc::new(MemoryIndex::empty().unwrap());
+
+        // Text-only memory, vector wiki: wiki search is semantic, memory search is not.
+        let searcher = HybridSearcher::new(memory(), None, None, SearchConfig::default())
+            .with_team_wiki(vectored_team);
+        assert!(searcher.has_vector());
+        assert!(
+            search_source(&searcher, Some(DocSource::Wiki), 5, Some(0.0))
+                .await
+                .semantic
+        );
+        assert!(
+            !search_source(&searcher, Some(DocSource::Observation), 5, Some(0.0))
+                .await
+                .semantic
+        );
+        assert!(search_source(&searcher, None, 5, Some(0.0)).await.semantic);
+
+        // Text-only on both sides.
+        let text_only = HybridSearcher::new(memory(), None, None, SearchConfig::default())
+            .with_team_wiki(text_only_team);
+        assert!(!text_only.has_vector());
+        assert!(!search_source(&text_only, None, 5, Some(0.0)).await.semantic);
+    }
+
+    #[test]
+    fn purge_wiki_documents_removes_only_wiki_documents() {
+        let (_dir, index) = create_test_index();
+        index
+            .index_observations(
+                "ep-001",
+                "2026-02-19",
+                &[sample_observation("cluster notes")],
+            )
+            .unwrap();
+        let page = |id: &str| WikiPage {
+            id: id.to_string(),
+            date: "2026-02-19".to_string(),
+            content: "cluster page".to_string(),
+        };
+        index
+            .replace_wiki_documents(&[page("wiki/a.md"), page("wiki/b.md")], &[], true)
+            .unwrap();
+
+        assert_eq!(index.purge_wiki_documents().unwrap(), 2);
+        let hits = index.search("cluster", 10, &no_filters()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_type, DocSource::Observation);
+        assert_eq!(
+            index.purge_wiki_documents().unwrap(),
+            0,
+            "second purge is a no-op"
         );
     }
 }

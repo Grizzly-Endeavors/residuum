@@ -3,14 +3,11 @@
 use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
+use super::team_files::TeamWriteCoordinator;
 
 // ── Workspace bootstrap content (embedded at compile time from assets/) ──────
 
 const DEFAULT_SOUL: &str = include_str!("../../assets/workspace-bootstrap/SOUL.md");
-const DEFAULT_AGENTS: &str = include_str!("../../assets/workspace-bootstrap/AGENTS.md");
-const DEFAULT_USER: &str = include_str!("../../assets/workspace-bootstrap/USER.md");
-const DEFAULT_WIKI_INDEX: &str = include_str!("../../assets/workspace-bootstrap/wiki/index.md");
-const DEFAULT_WIKI_LOG: &str = include_str!("../../assets/workspace-bootstrap/wiki/log.md");
 
 /// Default content for BOOTSTRAP.md -- first-run guidance.
 ///
@@ -32,8 +29,6 @@ const DEFAULT_OBSERVER_PROMPT: &str =
 /// always injected by the Rust code and cannot be lost by editing this file.
 const DEFAULT_REFLECTOR_PROMPT: &str =
     include_str!("../../assets/workspace-bootstrap/memory/REFLECTOR.md");
-
-const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/HEARTBEAT.yml");
 
 /// Default `config/agent-card.json` -- what this agent advertises to other
 /// agents reaching it over A2A. See `docs/systems-usage/a2a.md`.
@@ -139,6 +134,10 @@ const SYSTEM_REFS: &[(&str, &str)] = &[
         "a2a.md",
         include_str!("../../assets/bundled-skills/residuum-system/references/a2a.md"),
     ),
+    (
+        "team-files.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/team-files.md"),
+    ),
 ];
 
 // residuum-getting-started skill
@@ -166,13 +165,21 @@ const SKILL_AUTHORING_SKILL_MD: &str =
 const SKILL_AUTHORING_REF_STANDARDS: &str =
     include_str!("../../assets/bundled-skills/skill-authoring/references/authoring-standards.md");
 
-/// Ensure the workspace directory structure exists with default identity files.
+/// Ensure the agent's workspace directory structure exists with default
+/// identity files, and that the shared team layer it belongs to exists.
 ///
-/// When `user_name` is provided and `USER.md` does not yet exist, the default
-/// content is personalised with the user's name. When `timezone` is provided,
-/// it is included in `USER.md`.
+/// The agent directory gets `SOUL.md`, `HEARTBEAT.yml`, `SUBCONSCIOUS.md`,
+/// the memory prompts, its A2A card, and (once) `BOOTSTRAP.md`. The team
+/// directory (see [`super::team::ensure_team`]) gets the shared `AGENTS.md`,
+/// `USER.md` and wiki skeleton, and the agent gets a role page in the team
+/// wiki. When `user_name` is provided and the team's `USER.md` does not yet
+/// exist, the default content is personalised with the user's name; when
+/// `timezone` is provided, it is included as well.
 ///
 /// This is idempotent: existing files and directories are not modified.
+///
+/// `coordinator` is the team write coordinator for `layout.team()`; the role
+/// page and the roster files are written under its locks.
 ///
 /// # Errors
 /// Returns `FatalError::Workspace` if directories cannot be created or
@@ -180,6 +187,7 @@ const SKILL_AUTHORING_REF_STANDARDS: &str =
 #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
+    coordinator: &TeamWriteCoordinator,
     user_name: Option<&str>,
     timezone: Option<&str>,
 ) -> Result<(), FatalError> {
@@ -213,13 +221,19 @@ pub async fn ensure_workspace(
 
     // Create default identity files if they don't exist
     write_if_missing(&layout.soul_md(), DEFAULT_SOUL).await?;
-    write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
 
-    let user_content = build_user_content(user_name, timezone);
-    write_if_missing(&layout.user_md(), &user_content).await?;
-
-    write_if_missing(&layout.wiki_index_md(), DEFAULT_WIKI_INDEX).await?;
-    write_if_missing(&layout.wiki_log_md(), DEFAULT_WIKI_LOG).await?;
+    super::team::ensure_team(layout.team(), user_name, timezone).await?;
+    match layout.agent_name() {
+        Some(name) => {
+            super::team::ensure_agent_role_page(layout.team(), coordinator, name, None).await?;
+        }
+        None => {
+            return Err(FatalError::Workspace(format!(
+                "workspace {} has no directory name to use as the agent's name",
+                layout.root().display()
+            )));
+        }
+    }
 
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
@@ -245,7 +259,11 @@ pub async fn ensure_workspace(
 
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
-    write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
+    write_if_missing(
+        &layout.heartbeat_yml(),
+        super::team::first_agent_heartbeat(),
+    )
+    .await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
     write_if_missing(&layout.agent_card_json(), DEFAULT_AGENT_CARD).await?;
 
@@ -261,35 +279,17 @@ pub async fn ensure_workspace(
     Ok(())
 }
 
-/// Build USER.md content from optional name and timezone.
-fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String {
-    let name = user_name.filter(|n| !n.is_empty());
-    let tz = timezone.filter(|t| !t.is_empty());
-
-    if name.is_none() && tz.is_none() {
-        return DEFAULT_USER.to_string();
-    }
-
-    let mut out = DEFAULT_USER.to_string();
-    if let Some(name) = name {
-        out.push_str("\n**Name**: ");
-        out.push_str(name);
-    }
-    if let Some(tz) = tz {
-        out.push_str("\n**Timezone**: ");
-        out.push_str(tz);
-    }
-    out.push('\n');
-    out
-}
-
-/// Write bundled skill trees to the workspace skills directory.
+/// Write bundled skill trees to the team skills directory.
+///
+/// Bundled skills are team skills: every agent finds them through the team
+/// layer, and the agent's own `skills/` starts empty.
 ///
 /// Each file is written with `write_if_missing`, so user edits are preserved
 /// and files are only recreated if deleted.
 async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError> {
+    let skills_root = layout.team().skills_dir();
     // residuum-system skill
-    let system_dir = layout.skills_dir().join("residuum-system");
+    let system_dir = skills_root.join("residuum-system");
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
         FatalError::Workspace(format!(
@@ -312,7 +312,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
         ("memory-analyst", MEMORY_ANALYST_SKILL_MD),
         ("wiki", WIKI_SKILL_MD),
     ] {
-        let dir = layout.skills_dir().join(name);
+        let dir = skills_root.join(name);
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
             FatalError::Workspace(format!(
                 "failed to create skill directory {}: {e}",
@@ -323,7 +323,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     }
 
     // residuum-getting-started skill
-    let started_dir = layout.skills_dir().join("residuum-getting-started");
+    let started_dir = skills_root.join("residuum-getting-started");
     let started_workflows = started_dir.join("workflows");
     tokio::fs::create_dir_all(&started_workflows)
         .await
@@ -362,7 +362,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     .await?;
 
     // skill-authoring skill
-    let authoring_dir = layout.skills_dir().join("skill-authoring");
+    let authoring_dir = skills_root.join("skill-authoring");
     let authoring_refs = authoring_dir.join("references");
     tokio::fs::create_dir_all(&authoring_refs)
         .await
@@ -381,7 +381,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     .await?;
 
     // workbench skill
-    let workbench_dir = layout.skills_dir().join("workbench");
+    let workbench_dir = skills_root.join("workbench");
     let workbench_refs = workbench_dir.join("references");
     tokio::fs::create_dir_all(&workbench_refs)
         .await
@@ -419,24 +419,49 @@ async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), F
 mod tests {
     use super::*;
 
+    const DEFAULT_TEAM_USER: &str = include_str!("../../assets/team-bootstrap/USER.md");
+
     #[tokio::test]
     async fn bootstrap_creates_structure() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert!(layout.root().exists(), "root should exist");
         assert!(layout.memory_dir().exists(), "memory dir should exist");
         assert!(layout.episodes_dir().exists(), "episodes dir should exist");
         assert!(layout.skills_dir().exists(), "skills dir should exist");
         assert!(layout.soul_md().exists(), "SOUL.md should exist");
-        assert!(layout.agents_md().exists(), "AGENTS.md should exist");
-        assert!(layout.user_md().exists(), "USER.md should exist");
-        assert!(layout.wiki_dir().exists(), "wiki dir should exist");
+        let team = layout.team();
+        assert!(team.agents_md().exists(), "team AGENTS.md should exist");
+        assert!(team.user_md().exists(), "team USER.md should exist");
         assert!(
-            layout.wiki_index_md().exists(),
-            "wiki/index.md should exist"
+            team.wiki_index_md().exists(),
+            "team wiki/index.md should exist"
+        );
+        assert!(
+            team.agent_role_page("workspace").exists(),
+            "the agent's role page should exist"
+        );
+        assert!(
+            !layout.root().join("AGENTS.md").exists(),
+            "AGENTS.md belongs to the team"
+        );
+        assert!(
+            !layout.root().join("USER.md").exists(),
+            "USER.md belongs to the team"
+        );
+        assert!(
+            !layout.root().join("wiki").exists(),
+            "the wiki belongs to the team"
         );
         assert!(layout.bootstrap_md().exists(), "BOOTSTRAP.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
@@ -461,7 +486,9 @@ mod tests {
 
         let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
         assert!(!soul.is_empty(), "SOUL.md should have default content");
-        let user = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let user = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert!(!user.is_empty(), "USER.md should have default content");
     }
 
@@ -470,10 +497,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         for name in ["introspection", "learner", "memory-analyst", "wiki"] {
-            let skill_path = layout.skills_dir().join(name).join("SKILL.md");
+            let skill_path = layout.team().skills_dir().join(name).join("SKILL.md");
             assert!(skill_path.exists(), "{name}/SKILL.md should be created");
 
             let content = tokio::fs::read_to_string(&skill_path).await.unwrap();
@@ -485,18 +519,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bundled_skills_land_in_team_and_agent_skills_start_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            layout
+                .team()
+                .skills_dir()
+                .join("residuum-system")
+                .join("SKILL.md")
+                .exists(),
+            "bundled skills belong to the team layer"
+        );
+        let mut agent_skills = tokio::fs::read_dir(layout.skills_dir()).await.unwrap();
+        assert!(
+            agent_skills.next_entry().await.unwrap().is_none(),
+            "a fresh agent's own skills/ starts empty"
+        );
+    }
+
+    #[tokio::test]
     async fn bootstrap_does_not_overwrite_existing_role_skill() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let skill_path = layout.skills_dir().join("introspection").join("SKILL.md");
+        let skill_path = layout
+            .team()
+            .skills_dir()
+            .join("introspection")
+            .join("SKILL.md");
         tokio::fs::write(&skill_path, "user-edited skill")
             .await
             .unwrap();
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(&skill_path).await.unwrap();
         assert_eq!(
@@ -510,10 +592,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // residuum-system skill tree
-        let system_dir = layout.skills_dir().join("residuum-system");
+        let system_dir = layout.team().skills_dir().join("residuum-system");
         assert!(system_dir.join("SKILL.md").exists(), "system SKILL.md");
         for (file_name, _) in SYSTEM_REFS {
             assert!(
@@ -523,7 +612,7 @@ mod tests {
         }
 
         // residuum-getting-started skill tree
-        let started_dir = layout.skills_dir().join("residuum-getting-started");
+        let started_dir = layout.team().skills_dir().join("residuum-getting-started");
         assert!(
             started_dir.join("SKILL.md").exists(),
             "getting-started SKILL.md"
@@ -556,7 +645,7 @@ mod tests {
         );
 
         // skill-authoring skill tree
-        let authoring_dir = layout.skills_dir().join("skill-authoring");
+        let authoring_dir = layout.team().skills_dir().join("skill-authoring");
         assert!(
             authoring_dir.join("SKILL.md").exists(),
             "skill-authoring SKILL.md"
@@ -569,7 +658,7 @@ mod tests {
         );
 
         // workbench skill tree
-        let workbench_dir = layout.skills_dir().join("workbench");
+        let workbench_dir = layout.team().skills_dir().join("workbench");
         let workbench_skill = tokio::fs::read_to_string(workbench_dir.join("SKILL.md"))
             .await
             .unwrap();
@@ -580,10 +669,6 @@ mod tests {
         assert!(
             workbench_dir.join("references/api.md").exists(),
             "workbench api.md"
-        );
-        assert!(
-            layout.workbench_dir().is_dir(),
-            "the workbench folder exists for artifacts"
         );
 
         let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))
@@ -611,24 +696,110 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_seeds_wiki() {
+    async fn bootstrap_seeds_team_wiki() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let index = tokio::fs::read_to_string(layout.wiki_index_md())
+        let index = tokio::fs::read_to_string(layout.team().wiki_index_md())
             .await
             .unwrap();
         assert!(
             index.contains("okf_version"),
             "root wiki index should declare its OKF version"
         );
-        assert!(layout.wiki_log_md().exists(), "wiki/log.md should exist");
         assert!(
-            layout.skills_dir().join("wiki/SKILL.md").exists(),
+            layout.team().wiki_log_md().exists(),
+            "team wiki/log.md should exist"
+        );
+        assert!(
+            layout.team().skills_dir().join("wiki/SKILL.md").exists(),
             "wiki skill should be bundled"
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_writes_team_defaults_only_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        let team = layout.team();
+        tokio::fs::create_dir_all(team.root()).await.unwrap();
+        tokio::fs::write(team.agents_md(), "shared rules")
+            .await
+            .unwrap();
+
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some("Alex"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(team.agents_md()).await.unwrap(),
+            "shared rules",
+            "an existing team AGENTS.md is kept"
+        );
+        assert!(team.user_md().exists(), "missing team files are written");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_gives_the_first_agent_the_wiki_lint_pulse() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let heartbeat = tokio::fs::read_to_string(layout.heartbeat_yml())
+            .await
+            .unwrap();
+        assert!(heartbeat.contains("name: memory_tending"));
+        assert!(heartbeat.contains("name: wiki_lint"));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_recreates_a_missing_role_page_without_touching_the_agent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::fs::remove_file(layout.team().agent_role_page("workspace"))
+            .await
+            .unwrap();
+
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(layout.team().agent_role_page("workspace").exists());
     }
 
     #[tokio::test]
@@ -636,7 +807,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let card = crate::a2a::AgentCardFile::load(&layout.agent_card_json()).unwrap();
         assert!(!card.name.trim().is_empty());
@@ -650,7 +828,14 @@ mod tests {
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         // First run: BOOTSTRAP.md and sentinel are created
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(
             layout.bootstrap_md().exists(),
             "BOOTSTRAP.md should exist on first run"
@@ -668,7 +853,14 @@ mod tests {
         );
 
         // Second run: BOOTSTRAP.md should NOT be recreated
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(
             !layout.bootstrap_md().exists(),
             "BOOTSTRAP.md should not be recreated after sentinel exists"
@@ -680,7 +872,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Modify SOUL.md
         tokio::fs::write(layout.soul_md(), "custom soul content")
@@ -688,13 +887,24 @@ mod tests {
             .unwrap();
 
         // Modify a skill file
-        let system_skill = layout.skills_dir().join("residuum-system").join("SKILL.md");
+        let system_skill = layout
+            .team()
+            .skills_dir()
+            .join("residuum-system")
+            .join("SKILL.md");
         tokio::fs::write(&system_skill, "user-edited skill")
             .await
             .unwrap();
 
         // Run again
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Custom content should be preserved
         let content = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
@@ -715,9 +925,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, Some("Alex"), None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some("Alex"),
+            None,
+        )
+        .await
+        .unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert!(
             content.contains("**Name**: Alex"),
             "USER.md should contain the user's name"
@@ -729,11 +948,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, Some("Alex"), Some("America/New_York"))
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some("Alex"),
+            Some("America/New_York"),
+        )
+        .await
+        .unwrap();
+
+        let content = tokio::fs::read_to_string(layout.team().user_md())
             .await
             .unwrap();
-
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
         assert!(
             content.contains("**Name**: Alex"),
             "USER.md should contain the user's name"
@@ -749,11 +975,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert_eq!(
-            content, DEFAULT_USER,
+            content, DEFAULT_TEAM_USER,
             "USER.md should use default content when no name is provided"
         );
     }
@@ -763,11 +998,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, Some("America/New_York"))
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            Some("America/New_York"),
+        )
+        .await
+        .unwrap();
+
+        let content = tokio::fs::read_to_string(layout.team().user_md())
             .await
             .unwrap();
-
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
         assert!(content.contains("**Timezone**: America/New_York"));
         assert!(!content.contains("**Name**"));
     }
@@ -777,11 +1019,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, Some(""), Some("")).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some(""),
+            Some(""),
+        )
+        .await
+        .unwrap();
 
-        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        let content = tokio::fs::read_to_string(layout.team().user_md())
+            .await
+            .unwrap();
         assert_eq!(
-            content, DEFAULT_USER,
+            content, DEFAULT_TEAM_USER,
             "empty strings should produce default USER.md"
         );
     }

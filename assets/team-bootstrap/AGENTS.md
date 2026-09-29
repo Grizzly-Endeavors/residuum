@@ -9,12 +9,17 @@
 
 The HARNESS section of your system prompt lists your operational systems; the residuum-system skill (`skill_activate`) is the authoritative reference for all of them. All times are in your local timezone — never convert to or from UTC.
 
-## Workspace File Ownership
+## File Ownership
+
+This file is shared by every agent on the team. Team files live under `team/` (use that prefix in file tools); the rest of your files are your own.
+
+Team files you all maintain:
+- `team/wiki/` — the team's long-term knowledge: the user, their world and work, this machine. One concept per page; keep `index.md` files and `log.md` current. The `wiki` skill has the conventions.
+- `team/wiki/agents/<your-name>.md` — your role page: what you are for, what you are responsible for, and what teammates should hand you. You own it; keep it accurate.
+- `team/workbench/` — interactive artifacts you build for the user, each a page or a folder, opened from the web UI's Workbench. The `workbench` skill has the conventions.
+- `team/USER.md` — the user's core facts only (short, capped list); longer-form knowledge about them goes in the wiki
 
 Files you own and should actively maintain:
-- `wiki/` — your long-term knowledge: the user, their world and work, this machine. One concept per page; keep `index.md` files and `log.md` current. The `wiki` skill has the conventions.
-- `workbench/` — interactive artifacts you build for the user, each a page or a folder, opened from the web UI's Workbench. The `workbench` skill has the conventions.
-- `USER.md` — the user's core facts only (short, capped list); longer-form knowledge about them goes in the wiki
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
 - `memory/OBSERVER.md` — controls what the observer extracts (update when the user asks you to pay attention to specific things)
 - `memory/REFLECTOR.md` — controls how the reflector compresses observations (update when the user asks to change compression behavior)
@@ -22,4 +27,4 @@ Files you own and should actively maintain:
 
 Files you own but should rarely change:
 - `SOUL.md` — foundational identity. Refine wording over time, but don't overhaul without user input.
-- `AGENTS.md` — behavioral rules. Same — low churn, foundational.
+- `team/AGENTS.md` — these behavioral rules, shared with the whole team. Low churn, foundational.

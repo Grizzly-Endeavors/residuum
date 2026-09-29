@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, Once};
 
 use rusqlite::Connection;
 use zerocopy::IntoBytes;
@@ -68,13 +68,22 @@ pub struct VectorStore {
     dim: usize,
 }
 
-/// Register the sqlite-vec extension globally. Must be called once before
-/// opening any connections.
+/// Register the sqlite-vec extension globally, exactly once per process.
+///
+/// `sqlite3_auto_extension` is process-global and applies to every connection
+/// opened afterwards, so several stores (an agent's and the team wiki's) share
+/// the one registration. The `Once` keeps the extension from being registered
+/// again on every store open.
+fn register_sqlite_vec_extension() {
+    static REGISTER: Once = Once::new();
+    REGISTER.call_once(register_sqlite_vec_extension_unchecked);
+}
+
 #[expect(
     unsafe_code,
     reason = "sqlite-vec C FFI registration — no safe wrapper exists"
 )]
-fn register_sqlite_vec_extension() {
+fn register_sqlite_vec_extension_unchecked() {
     // Safety: sqlite3_vec_init is a valid sqlite3 extension entry point
     // provided by the sqlite-vec crate. transmute converts it to the function
     // pointer type expected by sqlite3_auto_extension.
@@ -411,6 +420,52 @@ impl VectorStore {
         Ok(())
     }
 
+    /// Delete every wiki page embedding, returning how many rows were removed.
+    ///
+    /// Wiki pages live in the team wiki's own store; this clears any
+    /// wiki rows an agent's store holds.
+    ///
+    /// # Errors
+    /// Returns an error if the delete fails.
+    pub fn purge_wiki_vectors(&self) -> anyhow::Result<usize> {
+        let conn = self.lock_conn()?;
+        conn.execute("DELETE FROM wiki_vectors", [])
+            .context("failed to purge wiki vectors")
+    }
+
+    /// The embedding model whose vectors this store holds, if one was recorded.
+    ///
+    /// # Errors
+    /// Returns an error if the lookup fails.
+    pub fn embedding_model(&self) -> anyhow::Result<Option<String>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT value FROM store_meta WHERE key = 'embedding_model'")
+            .context("failed to prepare embedding model lookup")?;
+        let mut rows = stmt.query([]).context("embedding model lookup failed")?;
+        match rows.next().context("failed to read embedding model row")? {
+            Some(row) => Ok(Some(
+                row.get(0).context("failed to read embedding model value")?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Record the embedding model whose vectors this store holds.
+    ///
+    /// # Errors
+    /// Returns an error if the write fails.
+    pub fn set_embedding_model(&self, model: &str) -> anyhow::Result<()> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO store_meta(key, value) VALUES ('embedding_model', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [model],
+        )
+        .context("failed to record embedding model")?;
+        Ok(())
+    }
+
     /// Check if an observation vector exists by its doc ID.
     ///
     /// # Errors
@@ -501,6 +556,11 @@ fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
             date TEXT,
             +content TEXT,
             embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
+        );
+
+        CREATE TABLE IF NOT EXISTS store_meta(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );"
     ))
     .context("failed to create vector tables")?;
@@ -940,6 +1000,56 @@ mod tests {
             .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
             .unwrap();
         assert!(store.has_observation("ep-001-o0").unwrap());
+    }
+
+    #[test]
+    fn purge_wiki_vectors_removes_only_wiki_rows() {
+        let (_dir, store) = create_test_store();
+        let emb = sample_embedding(0.2);
+        store
+            .upsert_wiki_pages(&[wiki_vector("wiki/a.md", "a page", &emb)])
+            .unwrap();
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            line_start: 1,
+            line_end: 2,
+            content: "chunk".to_string(),
+        }];
+        store.insert_chunks(&chunks, &[emb]).unwrap();
+
+        assert_eq!(store.purge_wiki_vectors().unwrap(), 1);
+        assert!(store.wiki_page_contents().unwrap().is_empty());
+        assert!(store.has_chunk("ep-001-c0").unwrap());
+        assert_eq!(store.purge_wiki_vectors().unwrap(), 0);
+    }
+
+    #[test]
+    fn embedding_model_round_trips_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.db");
+        {
+            let store = VectorStore::open_or_create(&path, TEST_DIM).unwrap();
+            assert_eq!(store.embedding_model().unwrap(), None);
+            store.set_embedding_model("model-a").unwrap();
+            store.set_embedding_model("model-b").unwrap();
+        }
+        let store = VectorStore::open_or_create(&path, TEST_DIM).unwrap();
+        assert_eq!(store.embedding_model().unwrap().as_deref(), Some("model-b"));
+    }
+
+    #[test]
+    fn two_stores_in_one_process_stay_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = VectorStore::open_or_create(&dir.path().join("first.db"), TEST_DIM).unwrap();
+        let second = VectorStore::open_or_create(&dir.path().join("second.db"), TEST_DIM).unwrap();
+        let emb = sample_embedding(0.4);
+        first
+            .upsert_wiki_pages(&[wiki_vector("wiki/only-first.md", "first", &emb)])
+            .unwrap();
+        assert!(second.wiki_page_contents().unwrap().is_empty());
+        assert_eq!(first.wiki_page_contents().unwrap().len(), 1);
     }
 
     #[test]

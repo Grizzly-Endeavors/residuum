@@ -239,7 +239,7 @@ async fn setup_workspace(
         .await
         .unwrap();
 
-    let mut skill_dirs = vec![layout.skills_dir()];
+    let skill_dirs = vec![crate::skills::SkillDir::agent(layout.skills_dir())];
     if let Some((name, description)) = opts.workspace_skill {
         let skill_dir = layout.skills_dir().join(name);
         tokio::fs::create_dir_all(&skill_dir).await.unwrap();
@@ -251,8 +251,7 @@ async fn setup_workspace(
         .unwrap();
     }
     let skill_index = SkillIndex::scan(&skill_dirs).await.unwrap();
-    skill_dirs.clear();
-    let skill_state = SkillState::new_shared(skill_index, vec![layout.skills_dir()]);
+    let skill_state = SkillState::new_shared(skill_index, skill_dirs);
 
     let card_file = crate::a2a::card::AgentCardFile {
         name: "Test Agent".to_string(),
@@ -458,6 +457,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             layout.root().to_path_buf(),
+            &crate::config::paths::TeamPaths::new(workspace_dir.clone().join("team")),
             workspace_dir.join("config"),
             workspace_dir.clone(),
             &workspace_dir.join("checkpoints"),

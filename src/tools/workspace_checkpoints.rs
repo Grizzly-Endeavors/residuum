@@ -1,9 +1,10 @@
 //! `workspace_history` / `workspace_restore`: agent-facing access to the
 //! workspace checkpoint history (see `crate::checkpoints`).
 //!
-//! Scoped to the workspace checkpoint repository only — the config
-//! repository (root `config.toml`, `providers.toml`, and the encrypted
-//! secret/agent-key/A2A-key stores) is never reachable from either tool, so
+//! Scoped to the workspace and team checkpoint repositories (the optional
+//! `repo` argument picks one; the default is the workspace) — the config
+//! repositories (`config.toml`, `providers.toml`, and the encrypted
+//! secret/agent-key/A2A-key stores) are never reachable from either tool, so
 //! these tools can't be used to read or restore something `PathPolicy`
 //! already blocks the agent from touching directly.
 
@@ -14,10 +15,31 @@ use serde_json::Value;
 
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
 use crate::inference::ToolDefinition;
+use crate::workspace::team_files::TeamWriter;
 
 use super::{Tool, ToolError, ToolResult, require_str};
 
-const REPO: RepoKind = RepoKind::Workspace;
+/// The checkpoint repository a tool call targets: the `repo` argument
+/// (`"workspace"`, the default, or `"team"`). Config repositories are not
+/// selectable.
+fn repo_arg(arguments: &Value) -> Result<RepoKind, ToolError> {
+    match arguments.get("repo").and_then(Value::as_str) {
+        None | Some("workspace") => Ok(RepoKind::Workspace),
+        Some("team") => Ok(RepoKind::Team),
+        Some(other) => Err(ToolError::InvalidArguments(format!(
+            "unknown repo '{other}': expected 'workspace' or 'team'"
+        ))),
+    }
+}
+
+/// JSON-schema fragment for the `repo` argument both tools accept.
+fn repo_schema() -> Value {
+    serde_json::json!({
+        "type": "string",
+        "enum": ["workspace", "team"],
+        "description": "which checkpoint history: 'workspace' (your own files, the default) or 'team' (the shared team/ directory: team rules, user profile, wiki, skills, workbench). Paths are relative to that root."
+    })
+}
 
 /// Rejects a caller-supplied relative path that could escape the workspace
 /// root (`..` components or an absolute path).
@@ -64,6 +86,7 @@ impl WorkspaceHistoryTool {
         if let Some(path) = &path {
             validate_relative_path(path)?;
         }
+        let repo = repo_arg(arguments)?;
         let limit = arguments
             .get("limit")
             .and_then(Value::as_u64)
@@ -71,7 +94,7 @@ impl WorkspaceHistoryTool {
 
         let page = self
             .engine
-            .list_checkpoints(REPO, path, None, None, limit)
+            .list_checkpoints(repo, path, None, None, limit)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
@@ -95,9 +118,10 @@ impl WorkspaceHistoryTool {
 
     async fn show(&self, arguments: &Value) -> Result<ToolResult, ToolError> {
         let id = require_str(arguments, "checkpoint_id")?.to_string();
+        let repo = repo_arg(arguments)?;
         let detail = self
             .engine
-            .show_checkpoint(REPO, id.clone())
+            .show_checkpoint(repo, id.clone())
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
@@ -127,10 +151,11 @@ impl Tool for WorkspaceHistoryTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List workspace checkpoints (recovery snapshots of workspace files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.".to_string(),
+            description: "List checkpoints (recovery snapshots of workspace or team files, taken automatically at turn boundaries and before destructive actions), optionally filtered to those that changed a given path, or show what a specific checkpoint changed.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "repo": repo_schema(),
                     "action": {
                         "type": "string",
                         "enum": ["list", "show"],
@@ -171,30 +196,46 @@ impl Tool for WorkspaceHistoryTool {
 /// changes.
 pub struct WorkspaceRestoreTool {
     engine: Arc<CheckpointEngine>,
+    /// Supplies the agent's team identity, which a restore into the team
+    /// repository is recorded under.
+    policy: super::SharedPathPolicy,
 }
 
 impl WorkspaceRestoreTool {
     /// Create a new `WorkspaceRestoreTool`.
     #[must_use]
-    pub fn new(engine: Arc<CheckpointEngine>) -> Self {
-        Self { engine }
+    pub fn new(engine: Arc<CheckpointEngine>, policy: super::SharedPathPolicy) -> Self {
+        Self { engine, policy }
+    }
+
+    /// The identity a restore is recorded under: the agent's team identity,
+    /// or a generic agent label when it has no team view (the team
+    /// repository is then never restored into a coordinated directory).
+    async fn writer(&self) -> TeamWriter {
+        self.policy.read().await.team().map_or_else(
+            || TeamWriter::Agent("agent".to_string()),
+            |team| team.writer().clone(),
+        )
     }
 
     async fn restore_path(&self, arguments: &Value) -> Result<ToolResult, ToolError> {
         let id = require_str(arguments, "checkpoint_id")?.to_string();
         let path = require_str(arguments, "path")?.to_string();
         validate_relative_path(&path)?;
+        let repo = repo_arg(arguments)?;
+        let writer = self.writer().await;
 
         let outcome = self
             .engine
             .restore_path(
-                REPO,
+                repo,
                 id.clone(),
                 path.clone(),
                 agent_context(
                     CheckpointTrigger::Restore,
                     format!("agent restored {path} from checkpoint {}", short_id(&id)),
                 ),
+                &writer,
             )
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -209,16 +250,19 @@ impl WorkspaceRestoreTool {
 
     async fn undo_turn(&self, arguments: &Value) -> Result<ToolResult, ToolError> {
         let id = require_str(arguments, "checkpoint_id")?.to_string();
+        let repo = repo_arg(arguments)?;
+        let writer = self.writer().await;
 
         let outcome = self
             .engine
             .undo_checkpoint(
-                REPO,
+                repo,
                 id.clone(),
                 agent_context(
                     CheckpointTrigger::Undo,
                     format!("agent undid checkpoint {}", short_id(&id)),
                 ),
+                &writer,
             )
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -251,10 +295,11 @@ impl Tool for WorkspaceRestoreTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Restore a workspace file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.".to_string(),
+            description: "Restore a workspace or team file or directory to its content at a checkpoint (from workspace_history), or undo a checkpoint's own changes -- reverting each path it changed back to its content just before it, skipping any path that was changed again since so a later edit is never clobbered. Both actions checkpoint the result first, so a restore or undo can itself be undone.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "repo": repo_schema(),
                     "action": {
                         "type": "string",
                         "enum": ["restore_path", "undo_turn"],
@@ -300,6 +345,7 @@ mod tests {
         Arc::new(
             CheckpointEngine::new(
                 workspace,
+                &crate::config::paths::TeamPaths::new(dir.join("team")),
                 dir.join("agent-config"),
                 dir.join("hub"),
                 &dir.join("checkpoints"),
@@ -307,6 +353,28 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn repo_arg_defaults_to_workspace_and_accepts_team() {
+        assert_eq!(
+            repo_arg(&serde_json::json!({})).unwrap(),
+            RepoKind::Workspace
+        );
+        assert_eq!(
+            repo_arg(&serde_json::json!({"repo": "team"})).unwrap(),
+            RepoKind::Team
+        );
+    }
+
+    #[test]
+    fn repo_arg_rejects_config_repositories() {
+        for repo in ["hub", "agent_config", "nope"] {
+            assert!(matches!(
+                repo_arg(&serde_json::json!({"repo": repo})),
+                Err(ToolError::InvalidArguments(_))
+            ));
+        }
     }
 
     #[test]
@@ -345,7 +413,8 @@ mod tests {
     #[tokio::test]
     async fn restore_path_rejects_traversal_before_touching_the_engine() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = WorkspaceRestoreTool::new(engine(dir.path()));
+        let tool =
+            WorkspaceRestoreTool::new(engine(dir.path()), crate::tools::PathPolicy::new_shared());
         let result = tool
             .execute(serde_json::json!({
                 "action": "restore_path",
@@ -364,6 +433,7 @@ mod tests {
         let checkpoints_engine = Arc::new(
             CheckpointEngine::new(
                 ws.clone(),
+                &crate::config::paths::TeamPaths::new(dir.path().join("team")),
                 dir.path().join("agent-config"),
                 dir.path().join("hub"),
                 &dir.path().join("checkpoints"),
@@ -385,7 +455,10 @@ mod tests {
         assert!(list.output.contains("checkpoint(s)"));
 
         std::fs::write(ws.join("notes.md"), "v2").unwrap();
-        let restore = WorkspaceRestoreTool::new(Arc::clone(&checkpoints_engine));
+        let restore = WorkspaceRestoreTool::new(
+            Arc::clone(&checkpoints_engine),
+            crate::tools::PathPolicy::new_shared(),
+        );
         let page = checkpoints_engine
             .list_checkpoints(RepoKind::Workspace, None, None, None, None)
             .await

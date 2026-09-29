@@ -1,11 +1,11 @@
 ---
 name: workbench
-description: Build interactive artifacts (charts, dashboards, calculators, explorers) as HTML pages or folders in workbench/. Activate before creating or editing anything in workbench/, or when the user asks for something visual or interactive to open in a browser.
+description: Build interactive artifacts (charts, dashboards, calculators, explorers) as HTML pages or folders in team/workbench/. Activate before creating or editing anything in team/workbench/, or when the user asks for something visual or interactive to open in a browser.
 ---
 
 # Workbench
 
-The workbench holds artifacts you build for the user: each artifact is one HTML page or a folder of files, shown in the web UI at `/workbench/<name>`. An artifact can read Residuum's API, save its own data, stay current as workspace files change, stream live events, make one-shot calls to a small model, and run agent sessions whose results come back to the page. This skill does not cover files meant for download or chat attachments; send those as normal files.
+The workbench is the team's, shared by every agent, and lives in `team/workbench/`. It holds artifacts you build for the user: each artifact is one HTML page or a folder of files, shown in the web UI at `/workbench/<name>`. An artifact can read Residuum's API, save its own data, stay current as workspace files change, stream live events, make one-shot calls to a small model, and run agent sessions whose results come back to the page. This skill does not cover files meant for download or chat attachments; send those as normal files.
 
 ## When to Use
 
@@ -17,8 +17,8 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 1. **Pick a name.** Lowercase letters, digits, and single hyphens, at most 64 characters: `pricing-explorer`, `sleep-chart`. Any other name is ignored by the workbench. To change an existing artifact, `read_file` the files you'll change (for a folder artifact, start with `index.html`) and edit them in place.
 
 2. **Pick a shape.**
-   - **Page:** `workbench/<name>.html`, everything inline. Use it for anything that fits comfortably in one file.
-   - **Folder:** `workbench/<name>/index.html` plus the files it loads, referenced by relative URLs (`<script src="app.js">`, `import "./graph.js"`, `fetch("./data.json")`). Use it when the artifact has several scripts or modules, a web worker, or bundled data files.
+   - **Page:** `team/workbench/<name>.html`, everything inline. Use it for anything that fits comfortably in one file.
+   - **Folder:** `team/workbench/<name>/index.html` plus the files it loads, referenced by relative URLs (`<script src="app.js">`, `import "./graph.js"`, `fetch("./data.json")`). Use it when the artifact has several scripts or modules, a web worker, or bundled data files.
 
 3. **Write the artifact** with `write_file`:
    - Give the page a `<title>`: the workbench lists the artifact by it.
@@ -27,7 +27,7 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
    - Keep each file under 8 MiB; larger files are refused.
    - Use the global `residuum` object for anything that talks to Residuum. It is injected into every page; do not add a script for it.
 
-4. **Keep the artifact's own state** with `residuum.state.get()`/`residuum.state.set(value)` rather than hand-writing the state file path: it reads and writes `workbench/<name>.state.json` for you, beside the artifact (not inside its folder, where each save would reload the artifact). `get()` resolves to `null` before the first `set()`. Files with the artifact's name as prefix are deleted along with the artifact. For anything that doesn't fit that one file — other data files, conditional writes — use `residuum.fetch` against the workspace file API directly. `localStorage` works for view preferences, but it lives in one browser (the user won't see it on another device, and you can't read it) and every artifact shares it: prefix keys with the artifact's name, and keep anything private to the artifact in the workspace instead.
+4. **Keep the artifact's own state** with `residuum.state.get()`/`residuum.state.set(value)` rather than hand-writing the state file path: it reads and writes `team/workbench/<name>.state.json` for you, beside the artifact (not inside its folder, where each save would reload the artifact). `get()` resolves to `null` before the first `set()`. Files with the artifact's name as prefix are deleted along with the artifact. For anything that doesn't fit that one file — other data files, conditional writes — use `residuum.fetch` against the workspace file API directly. `localStorage` works for view preferences, but it lives in one browser (the user won't see it on another device, and you can't read it) and every artifact shares it: prefix keys with the artifact's name, and keep anything private to the artifact in the workspace instead.
 
    ```js
    async function load() {
@@ -47,13 +47,13 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
    const isPage = (path) => path.endsWith(".md");
 
    async function loadAll() {
-     const r = await residuum.fetch("/api/workspace/tree?path=wiki&content=true&glob=*.md");
+     const r = await residuum.fetch("/api/workspace/tree?path=team/wiki&content=true&glob=*.md");
      pages.clear();
      for (const e of (await r.json()).entries) if (e.content !== undefined) pages.set(e.path, e.content);
      render();
    }
 
-   residuum.watch("wiki", async (frame) => {
+   residuum.watch("team/wiki", async (frame) => {
      if (frame.type === "workspace_resync" || frame.changes.some((c) => !isPage(c.path))) {
        return loadAll();
      }
@@ -83,13 +83,13 @@ The workbench holds artifacts you build for the user: each artifact is one HTML 
 | `await residuum.fetch(path, { method, headers, body })` | Calls Residuum's API and returns a standard `Response`. `path` starts with `/api/`. A plain object `body` is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent as-is. |
 | `await residuum.ask(promptOrRequest)` | One-shot call to a small model. A string is shorthand for `{ prompt: text }`. Resolves to `{ content, json?, model, usage }`; rejects with an `Error` on failure. |
 | `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all), including `{ type: "connection", state: "connected" \| "disconnected" }` when Residuum's connection drops or returns. Returns an unsubscribe function. |
-| `residuum.watch(prefix, handler)` | Calls `handler(frame)` when workspace files under `prefix` (a workspace-relative path like `"wiki"`, or `""` for everything) change: `{ type: "workspace_changed", changes: [{ path, kind: "created" \| "modified" \| "removed" }] }`, or `{ type: "workspace_resync", reason }` when changes were missed. Returns an unsubscribe function. |
+| `residuum.watch(prefix, handler)` | Calls `handler(frame)` when workspace files under `prefix` (a path in the file API's namespace: `"team/wiki"` is the team wiki, `"team/workbench/<name>.state.json"` is a single team file, and `""` is everything) change: `{ type: "workspace_changed", changes: [{ path, kind: "created" \| "modified" \| "removed" }] }`, or `{ type: "workspace_resync", reason }` when changes were missed. Returns an unsubscribe function. |
 | `await residuum.sessions.start({ prompt, context, skill, model })` | Starts an agent session for the artifact and returns a handle: `address`, `on(type, handler)` for that session's frames only, `send(text)`, `stop()`. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch`, `ask`, and `sessions.start` reject. |
 | `residuum.artifact` | This artifact's own name. |
 | `residuum.version` | Residuum's version. |
 | `residuum.features` | Frozen array of feature ids this build supports. |
-| `await residuum.state.get()` | The artifact's own saved state (`workbench/<name>.state.json`), parsed, or `null` before the first `set()`. Rejects if the saved content isn't valid JSON. |
+| `await residuum.state.get()` | The artifact's own saved state (`team/workbench/<name>.state.json`), parsed, or `null` before the first `set()`. Rejects if the saved content isn't valid JSON. |
 | `await residuum.state.set(value)` | Saves `value` as the artifact's state, overwriting whatever was there. |
 
 Read `references/api.md` for the endpoints worth calling, the event types, and which routes are blocked.
@@ -102,7 +102,7 @@ Check `residuum.features.includes("artifact-sessions")` before relying on it.
 
 ```js
 const session = await residuum.sessions.start({
-  prompt: `Write a wiki page about ${topic} in wiki/${slug}.md, then reply with one sentence saying what you wrote.`,
+  prompt: `Write a wiki page about ${topic} in team/wiki/${slug}.md, then reply with one sentence saying what you wrote.`,
 });
 session.on("session_state_changed", (f) => showStatus(f.state)); // "running", "idle", …
 session.on("session_response", (f) => showResult(f.content));
@@ -143,6 +143,6 @@ After writing an artifact, `read_file` it back and confirm:
 - Every `residuum.fetch` path starts with `/api/` and appears in `references/api.md` as allowed.
 - Every `residuum.sessions.start` result shows its `session_response` and `session_error` frames in the page, and the page can stop the session.
 - Every `residuum.ask` prompt includes whatever context the model needs to answer — it sees nothing beyond what's in the call.
-- Every data file the artifact writes is `workbench/<name>.<anything>`, beside the artifact, never a path under `workbench/<name>/`.
+- Every data file the artifact writes is `team/workbench/<name>.<anything>`, beside the artifact, never a path under `team/workbench/<name>/`.
 - An artifact that shows workspace files that can change calls `residuum.watch` before its first load and loads everything again on `workspace_resync`.
 - Every relative URL names a file that exists in the artifact's folder (a page artifact has no other files), and no path starts with `/`, which would leave the artifact.

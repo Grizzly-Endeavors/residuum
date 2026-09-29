@@ -347,6 +347,120 @@ impl HubPaths {
     }
 }
 
+/// `~/.residuum/team` under `root`: the shared team layer.
+#[must_use]
+pub fn team_dir(root: &Path) -> PathBuf {
+    root.join(TEAM_DIR_NAME)
+}
+
+/// Path helpers for the shared team layer (`~/.residuum/team`): the files
+/// every agent in the hub shares — team rules, the user's core facts, the
+/// OKF wiki (with one role page per agent), the workbench, team skills, and
+/// the team wiki's search index.
+#[derive(Debug, Clone)]
+pub struct TeamPaths {
+    root: PathBuf,
+}
+
+impl TeamPaths {
+    /// Path helpers rooted at `root` (typically `~/.residuum/team`).
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// The team layer's root directory.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `team/AGENTS.md` — team-wide rules.
+    #[must_use]
+    pub fn agents_md(&self) -> PathBuf {
+        self.root.join("AGENTS.md")
+    }
+
+    /// `team/USER.md` — the user's core facts.
+    #[must_use]
+    pub fn user_md(&self) -> PathBuf {
+        self.root.join("USER.md")
+    }
+
+    /// `team/wiki/` — the shared OKF wiki.
+    #[must_use]
+    pub fn wiki_dir(&self) -> PathBuf {
+        self.root.join("wiki")
+    }
+
+    /// `team/wiki/index.md` — the wiki's root catalog.
+    #[must_use]
+    pub fn wiki_index_md(&self) -> PathBuf {
+        self.wiki_dir().join("index.md")
+    }
+
+    /// `team/wiki/log.md` — append-only history of wiki changes.
+    #[must_use]
+    pub fn wiki_log_md(&self) -> PathBuf {
+        self.wiki_dir().join("log.md")
+    }
+
+    /// `team/wiki/agents/` — one role page per agent.
+    #[must_use]
+    pub fn wiki_agents_dir(&self) -> PathBuf {
+        self.wiki_dir().join("agents")
+    }
+
+    /// `team/wiki/agents/index.md` — the team roster catalog.
+    #[must_use]
+    pub fn wiki_agents_index_md(&self) -> PathBuf {
+        self.wiki_agents_dir().join("index.md")
+    }
+
+    /// `team/wiki/agents/<name>.md` — an agent's role page.
+    #[must_use]
+    pub fn agent_role_page(&self, agent: &str) -> PathBuf {
+        self.wiki_agents_dir().join(format!("{agent}.md"))
+    }
+
+    /// `team/workbench/` — shared workbench artifacts.
+    #[must_use]
+    pub fn workbench_dir(&self) -> PathBuf {
+        self.root.join("workbench")
+    }
+
+    /// `team/skills/` — team skills, including the bundled ones.
+    #[must_use]
+    pub fn skills_dir(&self) -> PathBuf {
+        self.root.join("skills")
+    }
+
+    /// `team/.index/` — the team wiki's full-text index (hidden from file
+    /// APIs like an agent's memory index).
+    #[must_use]
+    pub fn search_index_dir(&self) -> PathBuf {
+        self.root.join(".index")
+    }
+
+    /// `team/vectors.db` — the team wiki's vector store.
+    #[must_use]
+    pub fn vectors_db(&self) -> PathBuf {
+        self.root.join("vectors.db")
+    }
+
+    /// Directories the team layer needs on disk, parents first.
+    #[must_use]
+    pub fn required_dirs(&self) -> Vec<PathBuf> {
+        vec![
+            self.root.clone(),
+            self.wiki_dir(),
+            self.wiki_agents_dir(),
+            self.workbench_dir(),
+            self.skills_dir(),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +627,41 @@ mod tests {
             discover_single_agent(root).unwrap(),
             Some("alpha".to_string())
         );
+    }
+
+    #[test]
+    fn team_paths_live_under_the_team_root() {
+        let root = Path::new("res");
+        let team = TeamPaths::new(team_dir(root));
+        assert_eq!(team.root(), root.join("team"));
+        assert_eq!(team.agents_md(), root.join("team").join("AGENTS.md"));
+        assert_eq!(team.user_md(), root.join("team").join("USER.md"));
+        assert_eq!(
+            team.wiki_index_md(),
+            root.join("team").join("wiki").join("index.md")
+        );
+        assert_eq!(
+            team.agent_role_page("scout"),
+            root.join("team")
+                .join("wiki")
+                .join("agents")
+                .join("scout.md")
+        );
+        assert_eq!(team.workbench_dir(), root.join("team").join("workbench"));
+        assert_eq!(team.skills_dir(), root.join("team").join("skills"));
+        assert_eq!(team.search_index_dir(), root.join("team").join(".index"));
+    }
+
+    #[test]
+    fn team_required_dirs_list_parents_first() {
+        let team = TeamPaths::new(Path::new("t"));
+        let dirs = team.required_dirs();
+        let wiki = dirs.iter().position(|d| *d == team.wiki_dir()).unwrap();
+        let agents = dirs
+            .iter()
+            .position(|d| *d == team.wiki_agents_dir())
+            .unwrap();
+        assert_eq!(dirs.first().map(PathBuf::as_path), Some(team.root()));
+        assert!(wiki < agents);
     }
 }

@@ -882,6 +882,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 checkpoints: std::sync::Arc::clone(&rt.checkpoints),
+                team: Some(rt.team.view_for_user(rt.layout.root())),
             };
             let update_api_state = crate::gateway::web::update::UpdateApiState {
                 update_status: std::sync::Arc::clone(&rt.update_status),
@@ -1560,7 +1561,7 @@ mod tests {
         new.max_tokens = 8192;
         new.memory.observer_threshold_tokens = 999;
         new.pulse_enabled = true;
-        new.skills.dirs = vec![std::path::PathBuf::from("/new/skills")];
+        new.skills.dirs = vec![crate::skills::SkillDir::configured("/new/skills")];
         new.agent.modify_mcp = false;
         new.background.max_concurrent = 10;
         new.idle.timeout = std::time::Duration::from_mins(5);

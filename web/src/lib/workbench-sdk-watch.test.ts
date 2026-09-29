@@ -77,6 +77,24 @@ describe("residuum.watch", () => {
     expect(watches).toEqual([["wiki"], ["wiki", "inbox/user"], ["inbox/user"]]);
   });
 
+  it("watches the artifact's own team files by their namespace path", () => {
+    const sdk = loadSdk();
+    const seen: Frame[] = [];
+    sdk.residuum.watch("team/workbench/chart.state.json", (frame) => seen.push(frame));
+    expect(sdk.posted.filter((m) => m.kind === "watch").map((m) => m.prefixes)).toEqual([
+      ["team/workbench/chart.state.json"],
+    ]);
+    sdk.deliver({
+      kind: "event",
+      frame: changed(
+        "team/workbench/chart.state.json",
+        "team/workbench/other.state.json",
+        "workbench/chart.state.json",
+      ),
+    });
+    expect(seen).toEqual([changed("team/workbench/chart.state.json")]);
+  });
+
   it("refuses a prefix outside the workspace", () => {
     const sdk = loadSdk();
     // The SDK runs in its own realm, so its TypeError is matched by message.

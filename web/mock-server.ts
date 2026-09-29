@@ -567,12 +567,10 @@ function createState(): MockState {
     workspaceFiles: {
       "": [
         { name: "SOUL.md", entry_type: "file", size: 847 },
-        { name: "AGENTS.md", entry_type: "file", size: 523 },
-        { name: "USER.md", entry_type: "file", size: 312 },
         { name: "PRESENCE.toml", entry_type: "file", size: 245 },
         { name: "HEARTBEAT.yml", entry_type: "file", size: 178 },
         { name: "CHANNELS.yml", entry_type: "file", size: 392 },
-        { name: "wiki", entry_type: "directory", size: null },
+        { name: "team", entry_type: "directory", size: null },
         { name: "memory", entry_type: "directory", size: null },
         { name: "skills", entry_type: "directory", size: null },
         { name: "config", entry_type: "directory", size: null },
@@ -594,12 +592,19 @@ function createState(): MockState {
         { name: "channels.toml", entry_type: "file", size: 834 },
         { name: "agent-card.json", entry_type: "file", size: 356 },
       ],
-      wiki: [
+      team: [
+        { name: "AGENTS.md", entry_type: "file", size: 523 },
+        { name: "USER.md", entry_type: "file", size: 312 },
+        { name: "wiki", entry_type: "directory", size: null },
+        { name: "workbench", entry_type: "directory", size: null },
+      ],
+      "team/workbench": [],
+      "team/wiki": [
         { name: "index.md", entry_type: "file", size: 512 },
         { name: "log.md", entry_type: "file", size: 340 },
         { name: "projects", entry_type: "directory", size: null },
       ],
-      "wiki/projects": [
+      "team/wiki/projects": [
         { name: "index.md", entry_type: "file", size: 210 },
         { name: "residuum.md", entry_type: "file", size: 486 },
       ],
@@ -614,9 +619,9 @@ function createState(): MockState {
     workspaceFileContents: {
       "SOUL.md":
         "# Soul\n\nI am Residuum, a personal AI agent framework designed for long-running autonomous operation.\n\n## Core Identity\n\n- I maintain persistent memory across conversations\n- I operate with genuine agency, not just reactivity\n- I respect my operator's preferences and working style\n- I am transparent about my capabilities and limitations\n\n## Values\n\n- **Honesty**: I never fabricate information or hide errors\n- **Autonomy**: I take initiative when appropriate\n- **Memory**: I remember and build on past interactions\n- **Craft**: I strive for quality in everything I produce\n",
-      "AGENTS.md":
+      "team/AGENTS.md":
         "# Agents\n\n## Active Agents\n\n### Observer\nMonitors context window usage and triggers memory extraction.\n- Threshold: 30,000 tokens\n- Frequency: Checked after each turn\n\n### Reflector\nSynthesizes observations into higher-level reflections.\n- Threshold: 40,000 tokens\n- Minimum observations: 5\n\n### Pulse\nRuns periodic system health checks.\n- Interval: 5 minutes\n- Reports: memory stats, token usage, active tasks\n",
-      "USER.md":
+      "team/USER.md":
         "# User Profile\n\n- **Name**: Bear\n- **Timezone**: America/New_York\n- **Preferred communication**: Direct and concise\n- **Working hours**: Flexible, mostly evenings\n",
       "PRESENCE.toml":
         '[presence]\nstatus = "active"\nlast_seen = "2026-03-10T14:30:00Z"\n\n[presence.channels]\nweb = true\ndiscord = false\ntelegram = true\n',
@@ -650,13 +655,13 @@ function createState(): MockState {
         null,
         2,
       ),
-      "wiki/index.md":
+      "team/wiki/index.md":
         '---\nokf_version: "0.1"\n---\n\n# Wiki Index\n\n- [projects](projects/index.md) — active projects and their status\n',
-      "wiki/log.md":
+      "team/wiki/log.md":
         "# Wiki Log\n\n- 2026-03-09: ingest — filed 3 pages from episodes ep-041..ep-043\n- 2026-03-05: lint — fixed stale frontmatter on projects/residuum.md\n",
-      "wiki/projects/index.md":
+      "team/wiki/projects/index.md":
         "---\ntype: index\ntitle: Projects\n---\n\n# Projects\n\n- [residuum](residuum.md) — personal agent framework\n",
-      "wiki/projects/residuum.md":
+      "team/wiki/projects/residuum.md":
         "---\ntype: concept\ntitle: Residuum\ndescription: Personal agent framework the user is building.\ntags: [project, rust]\nstatus: stable\nsources:\n  - episode: ep-041\nlast_modified: 2026-03-09\nstale_after: 2026-06-09\n---\n\n# Residuum\n\nA personal AI agent framework focused on genuine autonomy and persistent memory.\n",
       "memory/observations.jsonl":
         '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
@@ -844,7 +849,7 @@ function sampleRecentMessages() {
         "2. **Cascade** to the next channel in the priority list.\n" +
         "3. **Park** the notification in the inbox and surface it on next contact.\n\n" +
         "Cascade is what most setups expect; parking is the safest default when every channel is down. " +
-        "Sources and notes are in `wiki/notification-fallbacks.md`.",
+        "Sources and notes are in `team/wiki/notification-fallbacks.md`.",
       timestamp: daysAgoAt(0, 10, 41),
       visibility: "background",
       agent_sender: { address: "spawned-research-3f9a", category: "spawned" },
@@ -1772,7 +1777,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
             text(res, 404, "That artifact no longer exists. It may already have been deleted.");
             return;
           }
-          json(res, 200, { removed: [`${name}.html`], checkpoint_id: null });
+          json(res, 200, { removed: [`${name}.html`] });
           return;
         }
       }

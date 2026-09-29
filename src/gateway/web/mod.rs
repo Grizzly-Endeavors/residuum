@@ -31,6 +31,8 @@ pub mod update;
 pub(crate) mod workbench;
 pub mod workspace;
 pub(crate) mod workspace_bulk;
+#[cfg(test)]
+mod workspace_team_tests;
 
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
@@ -71,9 +73,61 @@ pub(crate) struct ConfigApiState {
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
     /// Workspace and config checkpoint repositories.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// The `team/` namespace and write coordination for the workspace file
+    /// API, with writes attributed to the user. `None` in setup mode, where
+    /// there is no agent and `team/` is an ordinary name.
+    pub team: Option<crate::workspace::team_files::TeamFiles>,
 }
 
 impl ConfigApiState {
+    /// Bootstrap `layout`'s workspace and team directory under the running
+    /// gateway's team write coordinator, or a fresh one when this state has
+    /// no team (setup, before any gateway runs).
+    async fn bootstrap_workspace(
+        &self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+        user_name: Option<&str>,
+        timezone: &str,
+    ) -> Result<(), crate::util::FatalError> {
+        let coordinator = self.team.as_ref().map_or_else(
+            || crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            |team| team.coordinator().clone(),
+        );
+        crate::workspace::bootstrap::ensure_workspace(
+            layout,
+            &coordinator,
+            user_name,
+            Some(timezone),
+        )
+        .await
+    }
+
+    /// Place a client-supplied path in the logical tree: `team/...` is the
+    /// team directory, anything else is relative to the workspace.
+    fn locate(&self, relative: &str) -> workspace::Located {
+        if let Some(team) = &self.team
+            && let Some(rest) = crate::workspace::team_files::team_relative_path(relative)
+        {
+            let rel = rest
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            return workspace::Located {
+                base: team.team_root().to_path_buf(),
+                rel,
+                label: relative.to_string(),
+                team: Some(team.clone()),
+            };
+        }
+        workspace::Located {
+            base: self.workspace_dir.clone(),
+            rel: relative.to_string(),
+            label: relative.to_string(),
+            team: None,
+        }
+    }
+
     /// The current hub config, reloaded fresh from `hub_dir` (these are
     /// validation/diagnostic paths, not hot paths, so a fresh load is
     /// simpler than threading the running gateway's cached `HubConfig`
@@ -229,6 +283,23 @@ impl ConfigApiState {
     ) -> Option<String> {
         self.checkpoints
             .checkpoint_workspace_id_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                summary,
+            ))
+            .await
+    }
+
+    /// [`Self::checkpoint_workspace_id_before_write`] for the shared team
+    /// repository: the checkpoint for a destructive action on a `team/...`
+    /// path, which the workspace repository does not contain. `None` when it
+    /// could not be recorded; the action still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_team_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
+        self.checkpoints
+            .checkpoint_team_id_before_action(crate::checkpoints::CheckpointContext::system(
                 crate::checkpoints::CheckpointTrigger::PreAction,
                 summary,
             ))
@@ -489,6 +560,7 @@ mod tests {
         use axum::extract::{Query, State};
 
         let state = ConfigApiState {
+            team: None,
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -525,6 +597,7 @@ mod tests {
         use axum::extract::State;
 
         let state = ConfigApiState {
+            team: None,
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -561,6 +634,7 @@ mod tests {
         .await;
 
         let state = ConfigApiState {
+            team: None,
             config_dir: dir.path().to_path_buf(),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -581,6 +655,7 @@ mod tests {
         use axum::extract::{Query, State};
 
         let state = ConfigApiState {
+            team: None,
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -651,6 +726,7 @@ mod tests {
         }
 
         let state = ConfigApiState {
+            team: None,
             config_dir: tmp.path().to_path_buf(),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -720,6 +796,7 @@ mod tests {
         }
 
         let state = ConfigApiState {
+            team: None,
             config_dir: tmp.path().to_path_buf(),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -770,6 +847,7 @@ mod tests {
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
 
         let state = ConfigApiState {
+            team: None,
             config_dir: tmp.path().to_path_buf(),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -814,6 +892,7 @@ mod tests {
             .unwrap();
 
         let state = ConfigApiState {
+            team: None,
             config_dir: tmp.path().to_path_buf(),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -845,6 +924,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let state = ConfigApiState {
+            team: None,
             config_dir: dir.path().to_path_buf(),
             hub_dir: PathBuf::from("/tmp/residuum-test-nonexistent-hub"),
             agent_name: "test-agent".to_string(),
@@ -904,6 +984,7 @@ pub(super) mod test_support {
         let checkpoints = std::sync::Arc::new(
             crate::checkpoints::CheckpointEngine::new(
                 workspace_dir.clone(),
+                &crate::config::paths::TeamPaths::new(hub_dir.clone().join("team")),
                 config_dir.clone(),
                 hub_dir.clone(),
                 &hub_dir.join("checkpoints"),
@@ -912,6 +993,7 @@ pub(super) mod test_support {
             .unwrap(),
         );
         ConfigApiState {
+            team: None,
             hub_dir,
             config_dir,
             agent_name: "test-agent".to_string(),

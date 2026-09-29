@@ -344,7 +344,7 @@ export async function storeSecret(name: string, value: string): Promise<SecretRe
 export interface CompleteSetupPayload {
   hubConfig: string;
   agentName: string;
-  /** The user's name, written to USER.md. Empty when they skipped it. */
+  /** The user's name, written to the team's USER.md. Empty when they skipped it. */
   userName: string;
   config: string;
   providers: string;
@@ -668,12 +668,31 @@ export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
-/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone).
- * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
-export async function deleteWorkbenchArtifact(name: string): Promise<string | null> {
-  return readCheckpointId(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
+/** What deleting an artifact removed, and the team checkpoint that can bring it back. */
+export interface ArtifactDeletion {
+  /** Team-relative paths of everything removed (`workbench/chart.html`, `workbench/graph`). */
+  paths: string[];
+  /** The pre-delete team checkpoint, or `null` when none was recorded. */
+  checkpointId: string | null;
+}
+
+/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
+export async function deleteWorkbenchArtifact(name: string): Promise<ArtifactDeletion> {
+  const body = await apiFetch<{ removed?: unknown; checkpoint_id?: unknown }>(
+    `/api/workbench/artifacts/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  const removed = Array.isArray(body.removed)
+    ? body.removed.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return {
+    // A folder artifact is reported as `name/`; the checkpoint stores it as `name`.
+    paths: removed.map((entry) => `workbench/${entry.replace(/\/$/, "")}`),
+    checkpointId:
+      typeof body.checkpoint_id === "string" && body.checkpoint_id.length > 0
+        ? body.checkpoint_id
+        : null,
+  };
 }
 
 // ── Workspace API wrappers ──────────────────────────────────────────
@@ -734,12 +753,46 @@ export async function validateWorkspaceFile(path: string, content: string): Prom
   }
 }
 
-/** Delete a workspace file. Throws `ApiError` (404 if already gone).
- * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
-export async function deleteWorkspaceFile(path: string): Promise<string | null> {
-  return readCheckpointId(`/api/workspace/file?path=${encodeURIComponent(path)}`, {
-    method: "DELETE",
-  });
+/** A pre-action checkpoint and the repository that holds it. */
+export interface WorkspaceCheckpoint {
+  id: string;
+  repo: RepoKind;
+}
+
+interface CheckpointFields {
+  checkpoint_id?: unknown;
+  checkpoint_repo?: unknown;
+}
+
+/**
+ * The checkpoints a workspace-API response names: `checkpoint_id` +
+ * `checkpoint_repo` for one, or a `checkpoints` list when the action spanned
+ * the agent and team directories. Empty when none was recorded. A response
+ * without `checkpoint_repo` came from an agent-only path, so the workspace
+ * repository holds it.
+ */
+export function parseWorkspaceCheckpoints(
+  body: CheckpointFields & { checkpoints?: unknown },
+): WorkspaceCheckpoint[] {
+  const repoOf = (value: unknown): RepoKind => (value === "team" ? "team" : "workspace");
+  const one = (entry: CheckpointFields): WorkspaceCheckpoint[] =>
+    typeof entry.checkpoint_id === "string" && entry.checkpoint_id.length > 0
+      ? [{ id: entry.checkpoint_id, repo: repoOf(entry.checkpoint_repo) }]
+      : [];
+  if (Array.isArray(body.checkpoints)) {
+    return (body.checkpoints as CheckpointFields[]).flatMap(one);
+  }
+  return one(body);
+}
+
+/** Delete a workspace file or `team/...` file. Throws `ApiError` (404 if already gone).
+ * Returns the pre-delete checkpoint(s), empty when none was recorded. */
+export async function deleteWorkspaceFile(path: string): Promise<WorkspaceCheckpoint[]> {
+  const body = await apiFetch<Parameters<typeof parseWorkspaceCheckpoints>[0]>(
+    `/api/workspace/file?path=${encodeURIComponent(path)}`,
+    { method: "DELETE" },
+  );
+  return parseWorkspaceCheckpoints(body);
 }
 
 /** Move or rename a workspace file. Throws `ApiError` (409 if `to` exists and `overwrite` isn't set). */

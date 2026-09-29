@@ -520,7 +520,7 @@ mod tests {
     use crate::agent::interrupt::dead_interrupt_rx;
     use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::skills::{SkillIndex, SkillState};
+    use crate::skills::{SkillDir, SkillIndex, SkillState};
     use async_trait::async_trait;
 
     /// A turn identity with no broker behind it: these tests exercise the
@@ -587,6 +587,50 @@ mod tests {
             episode_skip_token_floor: 2000,
             hop_counter: crate::agent::HopCounter::new(0),
         }
+    }
+
+    /// A skill that lives only in `team/skills/` resolves as a session role:
+    /// sub-agent spawns, pulses (`agent: <skill>`), and artifact sessions all
+    /// build their skill state here.
+    #[tokio::test]
+    async fn team_skill_activates_as_session_role() {
+        let agent_skills = tempfile::tempdir().unwrap();
+        let team_skills = tempfile::tempdir().unwrap();
+        let role_dir = team_skills.path().join("team-role");
+        tokio::fs::create_dir_all(&role_dir).await.unwrap();
+        tokio::fs::write(
+            role_dir.join("SKILL.md"),
+            "---\nname: team-role\ndescription: shared role\n---\n\nTeam role instructions.\n",
+        )
+        .await
+        .unwrap();
+
+        let dirs = vec![
+            SkillDir::agent(agent_skills.path()),
+            SkillDir::team(team_skills.path()),
+        ];
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+        let main_state = SkillState::new_shared(index, dirs);
+
+        let (session_state, skills_index) =
+            prepare_session_skill_state(&main_state, Some("team-role"))
+                .await
+                .unwrap();
+
+        let active = session_state
+            .lock()
+            .await
+            .format_active_for_prompt()
+            .unwrap();
+        assert!(
+            active.contains("Team role instructions."),
+            "team skill body should be the session's role: {active}"
+        );
+        let skills_index = skills_index.unwrap();
+        assert!(
+            skills_index.contains("<layer>team</layer>"),
+            "index should label the team skill: {skills_index}"
+        );
     }
 
     #[tokio::test]

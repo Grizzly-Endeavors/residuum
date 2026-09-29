@@ -395,6 +395,9 @@ pub(crate) struct GatewayRuntime {
     pub hub_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// The workspace change feed (one recursive watcher over the workspace).
     pub change_feed_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The change feed over the team directory, published with `team/`
+    /// paths.
+    pub team_change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     /// Whether the change feed is running; handed to the HTTP server's state
     /// again on a gateway rebind.
     pub workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
@@ -412,6 +415,8 @@ pub(crate) struct GatewayRuntime {
     pub file_registry: crate::gateway::file_server::FileRegistry,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// The hub's team write coordinator.
+    pub team: crate::workspace::team_files::TeamWriteCoordinator,
     /// Shared tracing service for observability API.
     pub tracing_service: Arc<TracingService>,
     /// Shared update status for periodic version checking.

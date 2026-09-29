@@ -4,7 +4,7 @@ A2A is how other agents — including the user's own other Residuum instances �
 
 ## What you control
 
-`config/agent-card.json` is what you advertise to other agents that discover you over A2A: your name, description, and a list of skills (`id`, `name`, `description`, `tags`, optional `examples`). Edit it like any other workspace file — `write_if_missing` seeded it with a generic placeholder and no skills on first run, so an empty `skills` list is normal until you or the user fill it in. A skill `id` here that also names one of your workspace skills starts an inbound A2A session with that skill activated as its role, when the caller asks for it by name; treat the file as the callers'-eye view of what you can do.
+`config/agent-card.json` is what you advertise to other agents that discover you over A2A: your name, description, and a list of skills (`id`, `name`, `description`, `tags`, optional `examples`). Edit it like any other workspace file — `write_if_missing` seeded it with a generic placeholder and no skills on first run, so an empty `skills` list is normal until you or the user fill it in. A skill `id` here that also names one of your skills starts an inbound A2A session with that skill activated as its role, when the caller asks for it by name; treat the file as the callers'-eye view of what you can do.
 
 Keep `name` and `description` non-empty and every skill `id` unique — an invalid file makes the listener fall back to serving the last good card (or a minimal generic one, at startup) rather than your edit, so a broken edit doesn't quietly do nothing.
 

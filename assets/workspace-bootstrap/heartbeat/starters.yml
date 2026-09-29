@@ -1,0 +1,35 @@
+# ── Starter pulses ──────────────────────────────────────────────
+# Optional add-ons. Uncomment during first setup if the user wants
+# more proactive check-ins. They are generic and should be customized
+# based on the user's preferences.
+#
+#  - name: inbox_check
+#    enabled: true
+#    schedule: "3h"
+#    tasks:
+#      - name: check_inbox
+#        prompt: "Check your inbox for unread items. If any need action, handle them or note what is needed. Report HEARTBEAT_OK if nothing new."
+#
+#  - name: morning_briefing
+#    enabled: true
+#    schedule: "24h"
+#    active_hours: "07:00-09:00"
+#    tasks:
+#      - name: inbox_review
+#        prompt: "Check the inbox for anything that arrived overnight. Summarize items that need attention and archive anything purely informational."
+#      - name: todays_agenda
+#        prompt: "Check for any scheduled actions firing today. Give the user a brief rundown of what is on the plate."
+#      - name: greet
+#        prompt: "Write a short, conversational good-morning summary with the highlights from the above tasks. End with HEARTBEAT_URGENT so it reaches the user now instead of waiting in the inbox. If nothing needs attention, just say good morning and skip the urgent marker."
+#
+#  - name: nightly_review
+#    enabled: true
+#    schedule: "24h"
+#    active_hours: "20:00-22:00"
+#    tasks:
+#      - name: progress_check
+#        prompt: "Review what the user worked on today based on conversation history. Note what got done and what is still open."
+#      - name: loose_ends
+#        prompt: "Check for unread inbox items, unfinished tasks, or anything that was mentioned but not resolved. Flag anything the user should know about before tomorrow."
+#      - name: wrap_up
+#        prompt: "Write a brief end-of-day summary. Mention accomplishments, anything left open, and what might need attention tomorrow. Keep it short and human, and ask if there is anything to be aware of for tomorrow (e.g., meetings, deadlines, or tasks). End with HEARTBEAT_URGENT so it reaches the user now instead of waiting in the inbox."

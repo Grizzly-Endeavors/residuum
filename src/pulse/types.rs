@@ -907,10 +907,8 @@ pulses:
 
     #[test]
     fn bundled_heartbeat_asset_parses_with_builtin_pulses() {
-        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(include_str!(
-            "../../assets/workspace-bootstrap/HEARTBEAT.yml"
-        ))
-        .unwrap();
+        let cfg: HeartbeatConfig =
+            serde_yaml_ng::from_str(crate::workspace::team::first_agent_heartbeat()).unwrap();
         let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["reflection", "memory_tending", "wiki_lint"]);
         let agents: Vec<Option<&str>> = cfg.pulses.iter().map(|p| p.agent.as_deref()).collect();

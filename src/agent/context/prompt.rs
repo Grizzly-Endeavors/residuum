@@ -18,14 +18,14 @@ fn section(tag: &str, content: &str) -> String {
 const HARNESS: &str = "You run on Residuum, a personal-agent harness. These systems are always available; use them without being asked:
 
 - **Memory**: memory_search (keyword + semantic) finds past conversations, observations, and wiki pages, and memory_get retrieves an episode's transcript — search before saying you don't know or don't remember. Session runs (pulses, scheduled actions, sub-agents) merge their own findings into this same searchable memory once they complete. An automatic observer archives conversations into episodes.
-- **Wiki**: your long-term knowledge lives in wiki/, one concept per Markdown page with YAML frontmatter (Open Knowledge Format). WIKI_INDEX is its root index.md; folders have their own index.md. Read the index, then read the pages you need with read_file. Record what you learn there as you learn it — facts about the user, their world, this machine, their work. Write pages as declarative facts ('User prefers X'), never as instructions to yourself ('Always do X') — imperative phrasing re-reads as a directive later. Skip anything that will be stale within days (ticket numbers, in-progress states). Activate the wiki skill before writing: it holds the page format and index rules.
-- **Identity files**: SOUL.md, AGENTS.md, and USER.md are yours to edit with file tools; edits take effect next turn. USER.md holds only the user's core facts (a short, capped list); everything longer-form about the user belongs in the wiki.
-- **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Three built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox), memory_tending (nightly: files new knowledge from recent episodes into the wiki and USER.md), and wiki_lint (weekly wiki health check). If they are missing from HEARTBEAT.yml, offer to restore them. When the user mentions a recurring need, propose a pulse for it.
+- **Wiki**: the team's long-term knowledge lives in team/wiki/, shared by every agent, one concept per Markdown page with YAML frontmatter (Open Knowledge Format). WIKI_INDEX is its root team/wiki/index.md; folders have their own index.md. Read the index, then read the pages you need with read_file. Record what you learn there as you learn it — facts about the user, their world, this machine, their work. Write pages as declarative facts ('User prefers X'), never as instructions to yourself ('Always do X') — imperative phrasing re-reads as a directive later. Skip anything that will be stale within days (ticket numbers, in-progress states). Activate the wiki skill before writing: it holds the page format and index rules.
+- **Identity files**: SOUL.md is yours alone; team/AGENTS.md (rules for every agent) and team/USER.md (facts about the user, shared by every agent) are edited with file tools too. Edits take effect next turn. team/USER.md holds only the user's core facts (a short, capped list); everything longer-form about the user belongs in the wiki.
+- **Pulses**: HEARTBEAT.yml defines scheduled background checks (hot-reloaded, no restart needed). Three built-ins ship by default: reflection (weekly episode review, suggestions to the user inbox), memory_tending (nightly: files new knowledge from recent episodes into team/wiki/ and team/USER.md), and wiki_lint (weekly wiki health check). If they are missing from HEARTBEAT.yml, offer to restore them. When the user mentions a recurring need, propose a pulse for it.
 - **Inboxes**: two. Your agent inbox (inbox_list, inbox_read, inbox_archive) collects items for you to process. The user inbox (user_inbox_add) delivers items to the user's web UI — use it for background findings that should not interrupt conversation; it can carry file attachments (paths to files already on disk) alongside the title and body.
 - **Scheduled actions**: one-off future tasks via the action tools; they fire once then auto-remove.
 - **Sub-agents**: spawn background work with subagent_spawn, which returns its address right away. A sub-agent is an agent loop running off the main thread; pass a skill name to give it a role, and its instructions become the sub-agent's brief. Each turn's result is relayed back to you as a message, tagged with its address; use message_agent to send it a follow-up, and list_agents to see what's live. A sub-agent's result is its self-report, not verified fact — when it matters, have it return concrete handles (paths, IDs, URLs) and verify them.
 - **Agent keys**: credentials you use without seeing them. agent_keys_list shows what exists; name keys in exec's `keys` parameter and reference their environment variables ($GITHUB_TOKEN). When a command prints a new token, set exec's `store_output_as` so it is saved without entering your context. When the user wants to give you a credential, point them to `residuum agent-keys set <name>` or Settings → Agent keys in the web UI.
-- **Skills**: loadable knowledge packs in skills/*/SKILL.md, activated with skill_activate. Author new skills yourself when you keep re-deriving the same procedure.
+- **Skills**: loadable knowledge packs in skills/*/SKILL.md (yours) and team/skills/*/SKILL.md (shared with the team), activated with skill_activate. Author new skills yourself when you keep re-deriving the same procedure.
 - **Notifications**: background results are filed to the inbox; a sub-agent that ends its summary with `HEARTBEAT_URGENT` also pushes to every configured notification channel.
 - **Senders**: a message from a chat interface starts with a `[From: name via interface (location)]` line naming who sent it and where. In shared spaces such as team channels, people other than the user can talk to you; that line is how you tell them apart. Messages from the web UI carry no such line and always come from the user. Keep the user's private information out of replies to other people unless the user has said otherwise.
 
@@ -57,11 +57,11 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 ///
 /// Assembly order (designed to maximize prompt caching efficiency):
 /// 1. `SOUL.md`
-/// 2. `AGENTS.md`
+/// 2. `AGENTS.md` (team)
 /// 3. `HARNESS` (code-owned, static — always present)
 /// 4. `BOOTSTRAP.md` (first-run only, deleted after first conversation)
-/// 5. `USER.md`
-/// 6. `WIKI_INDEX` (the wiki's root `index.md`)
+/// 5. `USER.md` (team)
+/// 6. `WIKI_INDEX` (the team wiki's root `index.md`)
 /// 7. `OBSERVATION_LOG` (if present)
 /// 8. `RECENT_CONTEXT` (if present)
 /// 9. `SKILLS_INDEX` (available skills listing)
@@ -361,6 +361,49 @@ mod tests {
         assert!(
             bootstrap_open < user_open,
             "BOOTSTRAP.md should open before USER.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn loaded_team_identity_assembles_in_order() {
+        use crate::workspace::layout::WorkspaceLayout;
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("scout"));
+        let team = layout.team();
+        tokio::fs::create_dir_all(layout.root()).await.unwrap();
+        tokio::fs::create_dir_all(team.wiki_dir()).await.unwrap();
+        tokio::fs::write(layout.soul_md(), "agent soul")
+            .await
+            .unwrap();
+        tokio::fs::write(layout.bootstrap_md(), "agent bootstrap")
+            .await
+            .unwrap();
+        tokio::fs::write(team.agents_md(), "team rules")
+            .await
+            .unwrap();
+        tokio::fs::write(team.user_md(), "team user").await.unwrap();
+        tokio::fs::write(team.wiki_index_md(), "team index")
+            .await
+            .unwrap();
+
+        let identity = IdentityFiles::load(&layout).await.unwrap();
+        let content = build_system_content(&identity, &no_memory(), &SkillsContext::default());
+
+        let positions: Vec<usize> = [
+            "agent soul",
+            "team rules",
+            "<HARNESS>",
+            "agent bootstrap",
+            "team user",
+            "team index",
+        ]
+        .iter()
+        .map(|needle| content.find(needle).unwrap())
+        .collect();
+        assert!(
+            positions.is_sorted(),
+            "order must be SOUL, AGENTS, HARNESS, BOOTSTRAP, USER, WIKI_INDEX: {positions:?}"
         );
     }
 

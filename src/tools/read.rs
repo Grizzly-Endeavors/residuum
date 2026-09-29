@@ -11,12 +11,23 @@ use super::file_tracker::SharedFileTracker;
 use super::{Tool, ToolError, ToolResult};
 use crate::inference::{ImageData, ToolDefinition};
 use crate::interfaces::attachment::MAX_IMAGE_INLINE_SIZE;
+use crate::tools::path_policy::SharedPathPolicy;
+use crate::workspace::team_files::{FileStamp, TeamFiles};
 
 /// Default maximum lines returned when no explicit offset/limit is given.
 const DEFAULT_MAX_LINES: usize = 2000;
 
 /// Maximum characters per output line before truncation.
 const MAX_CHARS_PER_LINE: usize = 2000;
+
+/// How a completed read is recorded in the tracker.
+enum ReadRecord {
+    /// An agent-private file: only that it was read.
+    Private,
+    /// A team file, with its stamp from just before the read (`None` when it
+    /// couldn't be taken).
+    Team(Option<FileStamp>),
+}
 
 /// Tool that reads file contents with numbered lines.
 pub struct ReadTool {
@@ -25,6 +36,8 @@ pub struct ReadTool {
     /// against this rather than the process's current directory, which is
     /// shared across every agent hosted in the same process.
     workspace_root: PathBuf,
+    /// Supplies the `team/` namespace, when the agent belongs to a team.
+    policy: Option<SharedPathPolicy>,
 }
 
 impl ReadTool {
@@ -35,6 +48,62 @@ impl ReadTool {
         Self {
             tracker,
             workspace_root,
+            policy: None,
+        }
+    }
+
+    /// Resolve `team/...` paths through the team namespace held by `policy`,
+    /// and record the version of each team file read so a later write can
+    /// detect a change made since.
+    #[must_use]
+    pub fn with_policy(mut self, policy: SharedPathPolicy) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    /// The agent's view of the team namespace, if it has one.
+    async fn team(&self) -> Option<TeamFiles> {
+        match &self.policy {
+            Some(policy) => policy.read().await.team().cloned(),
+            None => None,
+        }
+    }
+
+    /// Resolve a `path` argument, and for a team file take its stamp. The
+    /// stamp is taken before the file is read, so a write that lands
+    /// mid-read shows up as a conflict on the next write instead of going
+    /// unnoticed.
+    async fn locate(&self, path: &str) -> (PathBuf, ReadRecord) {
+        let Some(team) = self.team().await else {
+            return (self.workspace_root.join(path), ReadRecord::Private);
+        };
+        let resolved = team.resolve(path);
+        if !team.is_team_path(&resolved) {
+            return (resolved, ReadRecord::Private);
+        }
+        let stamp = team.coordinator().stamp(&resolved).await.ok();
+        (resolved, ReadRecord::Team(stamp))
+    }
+
+    /// Record a completed read.
+    async fn record_read(&self, resolved: &Path, record: ReadRecord) {
+        let key = resolved.to_string_lossy();
+        let mut tracker = self.tracker.lock().await;
+        match record {
+            ReadRecord::Team(stamp) => tracker.record_team_read(&key, stamp),
+            ReadRecord::Private => tracker.record_read(&key),
+        }
+    }
+
+    /// Record that a team file was found missing: the stamp taken before the
+    /// read (version `None`) becomes the file's known-absent state. Ignored
+    /// when the stamp shows the file existed a moment ago, or for private
+    /// files.
+    async fn record_absent(&self, resolved: &Path, record: ReadRecord) {
+        if let ReadRecord::Team(Some(stamp)) = &record
+            && stamp.version.is_none()
+        {
+            self.record_read(resolved, record).await;
         }
     }
 
@@ -46,6 +115,7 @@ impl ReadTool {
         resolved_path: &Path,
         size: u64,
         mime: &str,
+        record: ReadRecord,
     ) -> Result<ToolResult, ToolError> {
         let bytes = match tokio::fs::read(resolved_path).await {
             Ok(b) => b,
@@ -65,10 +135,7 @@ impl ReadTool {
         let size_kb = size as f64 / 1024.0;
         let summary = format!("[Image: {filename}, {size_kb:.1} KB]");
 
-        self.tracker
-            .lock()
-            .await
-            .record_read(&resolved_path.to_string_lossy());
+        self.record_read(resolved_path, record).await;
 
         Ok(ToolResult::success_with_images(
             summary,
@@ -105,7 +172,7 @@ impl Tool for ReadTool {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Absolute or relative path to the file to read"
+                        "description": "Absolute or relative path to the file to read. A path starting with \"team/\" is in the shared team folder"
                     },
                     "offset": {
                         "type": "integer",
@@ -137,11 +204,20 @@ impl Tool for ReadTool {
         // use `resolved`, which resolves against the workspace root instead
         // of the process's current directory — see `workspace_root`'s doc
         // comment.
-        let resolved = self.workspace_root.join(path);
+        let (resolved, record) = self.locate(path).await;
 
         let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
-            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+            Err(e) => {
+                // A read that finds a team file gone still tells the tracker
+                // so: the agent has now seen the deletion, and its next write
+                // recreating the file must not conflict with the version it
+                // read before the file was removed.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    self.record_absent(&resolved, record).await;
+                }
+                return Ok(ToolResult::error(format!("failed to read {path}: {e}")));
+            }
         };
         let total_size = metadata.len();
 
@@ -155,7 +231,9 @@ impl Tool for ReadTool {
                      {MAX_IMAGE_INLINE_SIZE} bytes — this is a model API limit)"
                 )));
             }
-            return self.read_image(path, &resolved, total_size, mime).await;
+            return self
+                .read_image(path, &resolved, total_size, mime, record)
+                .await;
         }
 
         // Text files have no size limit: page through by offset/limit rather
@@ -240,10 +318,7 @@ impl Tool for ReadTool {
         // Record read in tracker, keyed by the resolved path so it matches
         // what write_file/edit_file check against regardless of how this
         // call's path argument was spelled.
-        self.tracker
-            .lock()
-            .await
-            .record_read(&resolved.to_string_lossy());
+        self.record_read(&resolved, record).await;
 
         let header = warnings.join("\n");
         let body = selected.join("\n");

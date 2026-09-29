@@ -6,7 +6,7 @@ use residuum::util::FatalError;
 
 #[derive(clap::Args)]
 pub(super) struct SetupArgs {
-    /// What the agent should call you (written to USER.md)
+    /// What the agent should call you (written to the team's USER.md)
     #[arg(long)]
     pub user_name: Option<String>,
     /// Name of the first agent (defaults to "assistant")
@@ -160,10 +160,12 @@ mod tests {
         assert!(dir.path().join("hub/config.toml").exists());
         assert!(dir.path().join("scout/config/config.toml").exists());
         assert!(dir.path().join("scout/config/providers.toml").exists());
-        let user_md = std::fs::read_to_string(dir.path().join("scout/USER.md")).unwrap();
+        let team =
+            residuum::config::paths::TeamPaths::new(residuum::config::paths::team_dir(dir.path()));
+        let user_md = std::fs::read_to_string(team.user_md()).unwrap();
         assert!(
             user_md.contains("Sam"),
-            "USER.md should carry the user's name: {user_md}"
+            "team USER.md should carry the user's name: {user_md}"
         );
     }
 

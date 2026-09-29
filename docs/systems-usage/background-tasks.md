@@ -7,7 +7,7 @@ Background tasks let the agent run work without blocking the main conversation. 
 A session is a fork of the main agent with its own identity, memory snapshot, and tool registry, running off the main thread. Its tools share the main agent's live tool `PATH`, write policy (the same config and credential files are blocked), and [agent key](agent-keys.md) store.
 
 **What's included in a session's fork:**
-- The main agent's full identity and system prompt content — `SOUL.md`, `AGENTS.md`, `HARNESS`, `USER.md`, the wiki root index, the skills index — assembled once in the system message, exactly as it is for the main agent.
+- The main agent's full identity and system prompt content — `SOUL.md`, the team's `AGENTS.md`, `HARNESS`, the team's `USER.md`, the team wiki root index, the skills index — assembled once in the system message, exactly as it is for the main agent.
 - A snapshot of the global observation log and the recent-context narrative, taken at fork time. A session never sees observations merged after it forked.
 - Its source-specific input as the user message: the task prompt (spawned), the pulse or action prompt (scheduled), the webhook payload (webhook), the inbound message — images included — plus any buffered chatter since the conversation's last mention (conversation — see [Conversation Routing](#conversation-routing)), or the artifact's prompt, preceded by a line naming the workbench artifact that started the session and saying its responses go to that artifact, plus any context the artifact sent (artifact — see [Artifact Sessions](#artifact-sessions)). A session resumed by a message to a completed address (see [Messaging](#messaging)) gets that message instead, plus a pointer back to its previous run's episode; any images on that resuming message carry over the same way.
 - The requested skill activated, when one was given. A resumed session keeps the skill its previous run used.
@@ -167,7 +167,7 @@ Model tiers are configured in `[background]` config section (`models.small`, `mo
 
 The only thing that distinguishes one spawned session from another is what the caller passes at fork time: a prompt, a model tier, and optionally a **skill** whose body becomes the session's role instructions.
 
-There is no separate preset format. A role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn by the main agent or handed to a session as its brief.
+There is no separate preset format. A role is an ordinary skill (in the agent's `skills/<name>/SKILL.md` or the shared `team/skills/<name>/SKILL.md`), so the same file can be activated in-turn by the main agent or handed to a session as its brief.
 
 ```yaml
 ---
@@ -194,7 +194,7 @@ A spawn naming a skill that does not resolve fails loudly rather than running a 
 | Skill | Spawned by |
 |-------|------------|
 | `introspection` | The built-in `reflection` pulse, at `large`. |
-| `wiki` | The built-in `memory_tending` and `wiki_lint` pulses, at `large`. `memory_tending` ingests episodes since the last `ingest` entry in `wiki/log.md` into wiki pages and `USER.md`; `wiki_lint` fixes index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links. |
+| `wiki` | The built-in `memory_tending` and `wiki_lint` pulses, at `large`. `memory_tending` ingests episodes since the last `ingest` entry in `team/wiki/log.md` into team wiki pages and `team/USER.md`; `wiki_lint` fixes index drift, missing frontmatter, stale pages, old drafts, duplicates, contradictions, and missing links. |
 | `learner` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, files it as a wiki page — `status: draft` for a single episode, promoted to `stable` once a second independent episode supports it — and adds only corroborated core facts to `USER.md`. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
 | `memory-analyst` | The main agent, when it needs a synthesized answer about the user or past history rather than raw search results. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates instead of silently picking one, abstains rather than fabricating when the record is silent, and cites episode IDs. |
 

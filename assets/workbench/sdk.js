@@ -95,7 +95,7 @@
   }
 
   function statePath() {
-    return `workbench/${__RESIDUUM_ARTIFACT__}.state.json`;
+    return `team/workbench/${__RESIDUUM_ARTIFACT__}.state.json`;
   }
 
   async function errorFromResponse(res, fallback) {
@@ -317,15 +317,18 @@
 
   // ── Workspace change feed ──────────────────────────────────────────
 
-  // Normalizes like the gateway: `/`-separated, no empty or `.` segments,
-  // "" for the whole workspace. Throws for paths outside the workspace.
+  // Prefixes are in the file API's namespace, the same one `residuum.state`
+  // uses: the agent's own files are unprefixed ("memory") and the team's carry
+  // `team/` ("team/workbench/chart.state.json"). Normalizes like the gateway:
+  // `/`-separated, no empty or `.` segments, "" for the whole namespace.
+  // Throws for paths outside it.
   function normalizePrefix(prefix) {
     if (typeof prefix !== "string") {
-      throw new TypeError("residuum.watch prefix must be a workspace path like 'wiki', or '' for everything");
+      throw new TypeError("residuum.watch prefix must be a workspace path like 'team/wiki', or '' for everything");
     }
     const segments = prefix.split("/");
     if (prefix.includes("\\") || prefix.startsWith("/") || segments[0].includes(":")) {
-      throw new TypeError(`residuum.watch can't watch "${prefix}": use a path relative to the workspace, like "wiki"`);
+      throw new TypeError(`residuum.watch can't watch "${prefix}": use a path relative to the workspace, like "team/wiki"`);
     }
     const kept = [];
     for (const segment of segments) {

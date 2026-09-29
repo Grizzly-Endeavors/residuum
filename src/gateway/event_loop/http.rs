@@ -199,10 +199,12 @@ fn build_feature_routers(
 
     let workbench = web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
         dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
+            .team()
             .workbench_dir(),
         serving: workbench_serving,
         tunnel_status_rx: state.tunnel_status_rx.clone(),
         checkpoints: Arc::clone(&config_api_state.checkpoints),
+        team: config_api_state.team.clone(),
     });
 
     let checkpoints =

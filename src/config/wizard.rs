@@ -236,8 +236,9 @@ pub fn from_flags(flags: &WizardFlags<'_>) -> Result<WizardAnswers, FatalError> 
 }
 
 /// Write `hub/config.toml`, bootstrap and write the first agent's full
-/// workspace (`SOUL.md`, wiki, bundled skills, `USER.md` personalized with
-/// [`WizardAnswers::user_name`]), and write its `config.toml`/
+/// workspace (`SOUL.md`, bundled skills), the shared team directory
+/// (`AGENTS.md`, wiki, `USER.md` personalized with
+/// [`WizardAnswers::user_name`]) with its role page, and write its `config.toml`/
 /// `providers.toml` from the wizard answers.
 ///
 /// `residuum_root` is `~/.residuum` (or an override, e.g. for tests/the
@@ -266,12 +267,14 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
             ))
         })?;
 
-    // The agent's full workspace: identity files, wiki, bundled skills, and
-    // USER.md personalized with the user's name.
+    // The agent's full workspace and the shared team directory: identity
+    // files, bundled skills, the wiki, and the team's USER.md personalized
+    // with the user's name.
     let agent_dir = residuum_root.join(&answers.agent_name);
     let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
     crate::workspace::bootstrap::ensure_workspace(
         &layout,
+        &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
         answers.user_name.as_deref(),
         Some(&answers.timezone),
     )
@@ -849,11 +852,19 @@ mod tests {
 
         write_config(dir.path(), &answers).await.unwrap();
 
-        let user_md =
-            std::fs::read_to_string(dir.path().join("assistant").join("USER.md")).unwrap();
+        let team = crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(dir.path()));
+        let user_md = std::fs::read_to_string(team.user_md()).unwrap();
         assert!(
             user_md.contains("Sam"),
-            "USER.md should be personalized with the user's name: {user_md}"
+            "team USER.md should be personalized with the user's name: {user_md}"
+        );
+        assert!(
+            !dir.path().join("assistant").join("USER.md").exists(),
+            "USER.md belongs to the team, not the agent"
+        );
+        assert!(
+            team.agent_role_page("assistant").is_file(),
+            "the first agent gets a role page"
         );
     }
 

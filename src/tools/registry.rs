@@ -330,10 +330,10 @@ impl ToolRegistry {
         // current directory, which is shared across every agent hosted in
         // the same process.
         let workspace_root = diagnostics_paths.workspace_dir.clone();
-        self.register(Box::new(read::ReadTool::new(
-            Arc::clone(&tracker),
-            workspace_root.clone(),
-        )));
+        self.register(Box::new(
+            read::ReadTool::new(Arc::clone(&tracker), workspace_root.clone())
+                .with_policy(Arc::clone(&policy)),
+        ));
         let mut write_tool = write::WriteTool::new(
             Arc::clone(&tracker),
             Arc::clone(&policy),
@@ -606,7 +606,7 @@ impl ToolRegistry {
             workspace_dir: workspace_dir.clone(),
             hub_dir,
         };
-        registry.register_defaults(tracker, path_policy, diagnostics_paths, None);
+        registry.register_defaults(tracker, Arc::clone(&path_policy), diagnostics_paths, None);
         registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
 
         // Skill tools: activate, deactivate
@@ -653,6 +653,7 @@ impl ToolRegistry {
             own_address.clone(),
             publisher.clone(),
             workspace_dir,
+            Arc::clone(&path_policy),
         );
 
         // Messaging tools
@@ -671,7 +672,7 @@ impl ToolRegistry {
         registry.register_web_fetch_tool();
 
         // Workspace checkpoint history (workspace repository only)
-        registry.register_workspace_checkpoint_tools(checkpoints);
+        registry.register_workspace_checkpoint_tools(checkpoints, path_policy);
 
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
@@ -690,13 +691,13 @@ impl ToolRegistry {
         own_address: SessionAddress,
         publisher: crate::bus::Publisher,
         workspace_dir: PathBuf,
+        policy: SharedPathPolicy,
     ) {
         if conversation_target.is_some_and(|target| target.endpoint == "a2a") {
-            self.register(Box::new(a2a_task_update::A2aTaskUpdateTool::new(
-                own_address,
-                publisher,
-                workspace_dir,
-            )));
+            self.register(Box::new(
+                a2a_task_update::A2aTaskUpdateTool::new(own_address, publisher, workspace_dir)
+                    .with_policy(policy),
+            ));
         }
     }
 
@@ -729,12 +730,14 @@ impl ToolRegistry {
     pub fn register_workspace_checkpoint_tools(
         &mut self,
         checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+        path_policy: SharedPathPolicy,
     ) {
         self.register(Box::new(workspace_checkpoints::WorkspaceHistoryTool::new(
             Arc::clone(&checkpoints),
         )));
         self.register(Box::new(workspace_checkpoints::WorkspaceRestoreTool::new(
             checkpoints,
+            path_policy,
         )));
     }
 

@@ -1,20 +1,20 @@
 # Workbench
 
-The workbench is where the agent builds interactive artifacts for the user: charts, dashboards, calculators, explorers, and pages for choosing between options. Each artifact is an HTML page (`workbench/<name>.html`) or a folder (`workbench/<name>/index.html` plus the files it loads) in the workspace. The web UI lists artifacts at `/workbench` and shows one at `/workbench/<name>`.
+The workbench is where the agent builds interactive artifacts for the user: charts, dashboards, calculators, explorers, and pages for choosing between options. The workbench belongs to the team, so every agent sees the same artifacts. Each artifact is an HTML page (`team/workbench/<name>.html`) or a folder (`team/workbench/<name>/index.html` plus the files it loads) in the team layer. The web UI lists artifacts at `/workbench` and shows one at `/workbench/<name>`.
 
 ## Intended use
 
 **Agent:** activates the bundled `workbench` skill, writes a page or a folder with `write_file`, and tells the user the artifact's title and path. Editing an existing artifact is `read_file` then `edit_file`; an open artifact reloads by itself when any of its files change. An artifact talks to Residuum only through the `residuum` object injected into every HTML page it serves (see below).
 
-**User:** opens **Workbench** from the header menu. The list shows every artifact by its `<title>`, newest edit first; an artifact's seam glows while the agent writes to it. Opening an artifact shows it under a slim bar with back, full view, and reload. **Full view** (the bar's button, or `F`) hides the Residuum UI so the artifact fills the window; `Esc` or the corner button returns. Full view is part of the URL (`/workbench/<name>?full`), so it survives reloads and bookmarks. Deleting an artifact from the list removes its page or folder and its data files.
+**User:** opens **Workbench** from the header menu. The list shows every artifact by its `<title>`, newest edit first; an artifact's seam glows while the agent writes to it. Opening an artifact shows it under a slim bar with back, full view, and reload. **Full view** (the bar's button, or `F`) hides the Residuum UI so the artifact fills the window; `Esc` or the corner button returns. Full view is part of the URL (`/workbench/<name>?full`), so it survives reloads and bookmarks. Deleting an artifact from the list removes its page or folder and its data files immediately, with no Undo.
 
 ## Files
 
 | Path | Holds |
 |------|-------|
-| `workbench/<name>.html` | A single-page artifact. |
-| `workbench/<name>/` | A folder artifact: `index.html` is its page, and any other files are loaded by relative URL. When both a page and a folder share a name, the folder wins. |
-| `workbench/<name>.<anything>` | That artifact's saved data (for example `<name>.state.json`), written through the workspace file API. Not part of the artifact, not watched for reloads, deleted with the artifact. |
+| `team/workbench/<name>.html` | A single-page artifact. |
+| `team/workbench/<name>/` | A folder artifact: `index.html` is its page, and any other files are loaded by relative URL. When both a page and a folder share a name, the folder wins. |
+| `team/workbench/<name>.<anything>` | That artifact's saved data (for example `<name>.state.json`), written through the workspace file API. Not part of the artifact, not watched for reloads, deleted with the artifact. |
 
 `<name>` is lowercase letters, digits, and single hyphens, at most 64 characters; anything else is ignored. Files over 8 MiB are refused. Symlinks are ignored, and a file must resolve inside its artifact's folder; names starting with `.` are never served.
 
@@ -31,13 +31,13 @@ Artifacts are served by their own listener, never by the gateway's main listener
 | `residuum.fetch(path, init)` | Calls Residuum's API (`/api/...`) and returns a `Response`. A plain-object body is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent unchanged, not JSON-encoded. |
 | `residuum.ask(promptOrRequest)` | One-shot call to the background small model: `POST /api/model/complete`. A string is shorthand for `{ prompt }`. Resolves to the response body; rejects with an `Error` on any non-2xx. |
 | `residuum.on(type, handler)` | Streams the same live frames the web UI receives (`"*"` for all), except keepalives and the change feed's own frames, plus the bridge's `{ "type": "connection", "state": "connected" \| "disconnected" }` when the web UI's socket drops or returns. |
-| `residuum.watch(prefix, handler)` | Follows workspace changes under `prefix` (see [Change feed](#change-feed)). The handler receives `workspace_changed` frames holding only the changes under its prefix, and every `workspace_resync`. Returns a function that stops watching. Throws a `TypeError` for an absolute path or one with `..`. |
+| `residuum.watch(prefix, handler)` | Follows file changes under `prefix`, a path in the file API's namespace: unprefixed paths are the agent's own workspace, `team/`-prefixed paths are the team layer (see [Change feed](#change-feed)). The handler receives `workspace_changed` frames holding only the changes under its prefix, and every `workspace_resync`. Returns a function that stops watching. Throws a `TypeError` for an absolute path or one with `..`. |
 | `residuum.sessions.start({ prompt, context?, skill?, model? })` | Starts an agent session for this artifact (see [Agent sessions](#agent-sessions)) and resolves to a handle `{ address, on(type, handler), send(text), stop() }`. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI; `fetch`, `ask`, and `sessions.start` then reject. |
 | `residuum.artifact` | This artifact's own name, embedded when the artifacts listener serves the page. |
 | `residuum.version` | Residuum's version, embedded the same way. Matches `GET /api/status`'s `version`. |
 | `residuum.features` | A frozen array of feature ids this build supports, embedded the same way. Matches `GET /api/status`'s `features`. |
-| `residuum.state.get()` / `residuum.state.set(value)` | Sugar over the workspace file API for the artifact's own `workbench/<name>.state.json`: `get()` resolves to the parsed value or `null` before the first `set()` and rejects on invalid JSON; `set(value)` writes `JSON.stringify(value)` unconditionally. |
+| `residuum.state.get()` / `residuum.state.set(value)` | Sugar over the workspace file API for the artifact's own `team/workbench/<name>.state.json`: `get()` resolves to the parsed value or `null` before the first `set()` and rejects on invalid JSON; `set(value)` writes `JSON.stringify(value)` unconditionally. |
 
 The endpoint and event catalogue the agent works from is the skill's `references/api.md`.
 
@@ -80,6 +80,8 @@ The web UI has no login of its own (the relay authenticates remote access), so a
 
 One watcher covers the whole workspace recursively, using the operating system's file notifications (inotify, FSEvents, ReadDirectoryChangesW through the `notify` crate). If native notifications can't start (the Linux inotify watch limit, an unusual filesystem), Residuum logs a `warn` naming the cause and polls the workspace every 2 seconds instead; hitting the watch limit later, as new folders appear, switches to polling the same way. If neither can start, Residuum logs an `error` and any view that starts watching is told live updates are off, which the web UI shows as an error notice. Symlinks are not followed.
 
+A second watcher, built the same way, covers the team directory and publishes its changes with `team/`-prefixed paths (`team/workbench/tool.html`, `team/wiki/a.md`); see [Team files](team-files.md). Everything below applies to both.
+
 Notifications are debounced into batches: a batch closes once 300 ms pass with no new notification, or 2 s after its first one while writes continue. Each changed path appears once per batch as `created`, `modified`, or `removed`, decided from what the batch saw and what is at the path when the batch closes:
 
 - A rename is `removed` for the old path and `created` for the new one. Residuum's own atomic writes (a temporary file renamed over the target) show up as `created` or `modified` for the target, never as the temporary file.
@@ -90,11 +92,12 @@ Notifications are debounced into batches: a batch closes once 300 ms pass with n
 
 When the OS reports lost notifications (queue overflow, rescan), notifications back up past Residuum's buffer, or one batch touches more than 10,000 paths, the batch becomes a resync instead of a change list. Restarting the watcher (after the watch limit, or when the workspace folder itself disappears) sends a resync too.
 
-Each WebSocket connection has its own watch set of workspace-relative prefixes, empty by default, so the main chat never receives change frames:
+Each WebSocket connection has its own watch set of prefixes, empty by default, so the main chat never receives change frames:
 
-- The client frame `{ "type": "watch_workspace", "prefixes": ["wiki", "inbox/user"] }` replaces the set. `[]` stops watching; `""` watches the whole workspace. A prefix that is absolute or contains `..` is refused with an `error` frame and the set is left unchanged. There is no limit on how many prefixes a connection watches or how long one is.
-- Prefixes match by path segment: `wiki` matches `wiki` and anything under `wiki/`, never `wikipedia/`. A prefix naming a file matches only that file, and a prefix that doesn't exist yet matches once it appears. A change to a folder that contains a prefix (for example `projects` for the prefix `projects/alpha`) matches too, since renaming or removing that folder carries the prefix with it.
-- `{ "type": "workspace_changed", "changes": [{ "path": "wiki/a.md", "kind": "created" }] }` carries a batch's changes under the connection's prefixes, sorted by path. A connection with no matching changes gets nothing.
+- The client frame `{ "type": "watch_workspace", "prefixes": ["team/wiki", "inbox/user", "team/workbench"] }` replaces the set. Prefixes are in the file API's namespace, so team files are watched, and reported, with a `team/` prefix. `[]` stops watching; `""` watches the whole workspace. A prefix that is absolute or contains `..` is refused with an `error` frame and the set is left unchanged. There is no limit on how many prefixes a connection watches or how long one is.
+- A `team/...` prefix (`team/workbench`, `team/wiki`) receives changes to the team directory; a plain prefix receives changes to the agent's own directory; `""` receives both.
+- Prefixes match by path segment: `team/wiki` matches `team/wiki` and anything under `team/wiki/`, never `team/wikipedia/`. A prefix naming a file matches only that file, and a prefix that doesn't exist yet matches once it appears. A change to a folder that contains a prefix (for example `projects` for the prefix `projects/alpha`) matches too, since renaming or removing that folder carries the prefix with it.
+- `{ "type": "workspace_changed", "changes": [{ "path": "team/wiki/a.md", "kind": "created" }] }` carries a batch's changes under the connection's prefixes, sorted by path. A connection with no matching changes gets nothing.
 - `{ "type": "workspace_resync", "reason": "overflow" | "watcher_restarted" }` means the connection's view may be stale. It replaces `workspace_changed` when more than 500 of a batch's changes match the connection, and goes to every watching connection when the watcher loses notifications (`overflow`) or restarts (`watcher_restarted`).
 - `{ "type": "workspace_watch_unavailable", "message": "..." }` tells a watching connection no watcher is running.
 
@@ -102,7 +105,7 @@ The web UI shows one artifact at a time, so its connection's watch set is the op
 
 ## Live reload
 
-Artifact reloads come from the same change feed. When a batch touches `workbench/`, or the feed asks for a resync, the gateway rescans the workbench; an artifact counts as changed when its page, or any file in its folder, changed. Web UI clients receive `artifact_updated` and `artifact_removed` frames, whatever they watch. An open artifact reloads in place, keeping full view. Saved data files sit beside artifacts and are not part of them, so an artifact saving its own state never reloads itself.
+Artifact reloads come from the same change feed. When a batch touches `team/workbench/`, or the feed asks for a resync, the gateway rescans the team workbench; a file named `workbench/...` in an agent's own workspace does not count; an artifact counts as changed when its page, or any file in its folder, changed. Web UI clients receive `artifact_updated` and `artifact_removed` frames, whatever they watch. An open artifact reloads in place, keeping full view. Saved data files sit beside artifacts and are not part of them, so an artifact saving its own state never reloads itself.
 
 When a page loads in the artifact's frame, the bridge forgets what the previous page subscribed to and watched: a page with the SDK announces itself before its own scripts run, so what it sets up while loading is kept, and a page without the SDK starts with nothing.
 

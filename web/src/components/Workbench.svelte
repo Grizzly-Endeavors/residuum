@@ -90,15 +90,9 @@
   async function remove(item: ArtifactSummary) {
     deleting.add(item.name);
     try {
-      const checkpointId = await deleteWorkbenchArtifact(item.name);
+      const { paths, checkpointId } = await deleteWorkbenchArtifact(item.name);
       artifacts = artifacts.filter((a) => a.name !== item.name);
-      notifyWithUndo(
-        `Deleted "${item.title}".`,
-        "workspace",
-        `workbench/${item.name}`,
-        checkpointId,
-        load,
-      );
+      notifyWithUndo(`Deleted "${item.title}".`, "team", paths, checkpointId, load);
     } catch (err) {
       notifications.surface(
         "error",

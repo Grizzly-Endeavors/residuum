@@ -18,7 +18,7 @@ use crate::workspace::access::is_blocked_path;
 use crate::workspace::version::{modified_unix_ms, version_token};
 
 use super::ConfigApiState;
-use super::workspace::{canonicalize_workspace_root, validate_workspace_path};
+use super::workspace::canonicalize_workspace_root;
 
 /// Maximum content size embedded in a tree or batch-read entry, per file
 /// (1 MiB). Larger files still get their metadata, with `skipped`/`error`
@@ -427,11 +427,39 @@ fn attach_tree_content(
     (out, content_truncated)
 }
 
+/// Add the team directory to a walk of the whole workspace, as a `team`
+/// folder at the top of the tree. Nothing is added when the team directory
+/// doesn't exist yet.
+fn walk_team_mount(team_root: &Path, state: &mut WalkState<'_>) -> anyhow::Result<()> {
+    let metadata = match std::fs::metadata(team_root) {
+        Ok(metadata) if metadata.is_dir() => metadata,
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let name = crate::workspace::team_files::TEAM_PREFIX;
+    if state.globs.is_none() {
+        state.entries.push(RawEntry {
+            path: name.to_string(),
+            entry_type: "directory",
+            size: None,
+            modified: modified_unix_ms(&metadata),
+            version: version_token(&metadata),
+            disk_path: None,
+        });
+    }
+    if state.depth_limit.is_none_or(|limit| limit >= 2) {
+        walk_dir(team_root, name, 2, state)?;
+    }
+    Ok(())
+}
+
 /// Walk the directory at `root_disk` (workspace-relative path
 /// `root_relative`) and build the tree response.
 fn build_tree(
     root_disk: &Path,
     root_relative: &str,
+    team_mount: Option<&Path>,
     depth_limit: Option<u32>,
     globs: Option<&CompiledGlobs>,
     content_requested: bool,
@@ -446,6 +474,9 @@ fn build_tree(
 
     if state.depth_limit.is_none_or(|limit| limit >= 1) {
         walk_dir(root_disk, "", 1, &mut state)?;
+        if let Some(team_root) = team_mount {
+            walk_team_mount(team_root, &mut state)?;
+        }
     }
 
     let listing_truncated = state.listing_truncated;
@@ -485,11 +516,18 @@ pub(super) async fn api_workspace_tree(
         ));
     }
 
+    let located = state.locate(&params.path);
     let root_disk = if params.path.is_empty() {
         canonicalize_workspace_root(&state.workspace_dir).await?
     } else {
-        validate_workspace_path(&state.workspace_dir, &params.path).await?
+        located.existing().await?
     };
+    // A walk of the whole workspace also covers the team directory.
+    let team_mount = state
+        .team
+        .as_ref()
+        .filter(|_| params.path.is_empty())
+        .map(|team| team.team_root().to_path_buf());
 
     let root_metadata = tokio::fs::metadata(&root_disk).await.map_err(|e| {
         (
@@ -511,6 +549,7 @@ pub(super) async fn api_workspace_tree(
         build_tree(
             &root_disk,
             &root_relative,
+            team_mount.as_deref(),
             params.depth,
             globs.as_ref(),
             params.content,
@@ -618,72 +657,72 @@ fn classify_batch_path(
     workspace_dir: &Path,
     canonical_root: &Path,
     relative: &str,
+    label: &str,
 ) -> BatchFileResult {
-    if is_blocked_path(relative) {
-        return BatchFileResult::structural_error(relative.to_string(), "blocked");
+    if is_blocked_path(label) {
+        return BatchFileResult::structural_error(label.to_string(), "blocked");
     }
 
     let target = workspace_dir.join(relative);
     let canonical_target = match std::fs::canonicalize(&target) {
         Ok(p) => p,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return BatchFileResult::structural_error(relative.to_string(), "not_found");
+            return BatchFileResult::structural_error(label.to_string(), "not_found");
         }
         Err(e) => {
             tracing::warn!(
-                path = %relative,
+                path = %label,
                 error = %e,
                 "failed to resolve workspace path for batch read"
             );
-            return BatchFileResult::structural_error(relative.to_string(), "not_found");
+            return BatchFileResult::structural_error(label.to_string(), "not_found");
         }
     };
 
     if !canonical_target.starts_with(canonical_root) {
-        return BatchFileResult::structural_error(relative.to_string(), "blocked");
+        return BatchFileResult::structural_error(label.to_string(), "blocked");
     }
 
     let metadata = match std::fs::metadata(&canonical_target) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(
-                path = %relative,
+                path = %label,
                 error = %e,
                 "failed to stat workspace path for batch read"
             );
-            return BatchFileResult::structural_error(relative.to_string(), "not_found");
+            return BatchFileResult::structural_error(label.to_string(), "not_found");
         }
     };
 
     if metadata.is_dir() {
-        return BatchFileResult::structural_error(relative.to_string(), "is_directory");
+        return BatchFileResult::structural_error(label.to_string(), "is_directory");
     }
 
     let size = metadata.len();
     let modified = modified_unix_ms(&metadata);
     let version = version_token(&metadata);
 
-    let (content, skipped) = read_file_content(&canonical_target, relative, size);
+    let (content, skipped) = read_file_content(&canonical_target, label, size);
     match (content, skipped) {
-        (Some(text), _) => BatchFileResult::ok(relative.to_string(), size, modified, version, text),
+        (Some(text), _) => BatchFileResult::ok(label.to_string(), size, modified, version, text),
         (None, Some(reason)) => {
-            BatchFileResult::content_error(relative.to_string(), size, modified, version, reason)
+            BatchFileResult::content_error(label.to_string(), size, modified, version, reason)
         }
         // The read itself raced with a concurrent delete: no content, no
         // specific reason. Report it as gone rather than inventing a
         // status outside the documented error set.
-        (None, None) => BatchFileResult::structural_error(relative.to_string(), "not_found"),
+        (None, None) => BatchFileResult::structural_error(label.to_string(), "not_found"),
     }
 }
 
 /// Resolve, read, and budget one requested path.
 fn resolve_and_read_one(
-    workspace_dir: &Path,
-    canonical_root: &Path,
-    relative: &str,
+    root: &BatchRoot<'_>,
+    label: &str,
     used_bytes: &mut usize,
 ) -> BatchFileResult {
-    let mut result = classify_batch_path(workspace_dir, canonical_root, relative);
+    let mut result = classify_batch_path(root.dir, root.canonical, root.relative(label), label);
 
     if result.content.is_some() {
         let with_content_len = json_len(&result);
@@ -697,8 +736,34 @@ fn resolve_and_read_one(
     result
 }
 
+/// The directory a batch-read path is relative to, with its canonical form.
+struct BatchRoot<'a> {
+    dir: &'a Path,
+    canonical: &'a Path,
+    /// Whether the paths it serves carry a `team/` prefix to strip.
+    is_team: bool,
+}
+
+impl BatchRoot<'_> {
+    /// `label` (the path as requested) relative to this root.
+    fn relative<'l>(&self, label: &'l str) -> &'l str {
+        if self.is_team {
+            label
+                .strip_prefix(crate::workspace::team_files::TEAM_PREFIX)
+                .map_or(label, |rest| rest.trim_start_matches('/'))
+        } else {
+            label
+        }
+    }
+}
+
 /// Read every path in `paths`, in order, within the shared response budget.
-fn batch_read(workspace_dir: &Path, paths: &[String]) -> (Vec<BatchFileResult>, bool) {
+/// `team_root` is the team directory, when `team/...` paths address it.
+fn batch_read(
+    workspace_dir: &Path,
+    team_root: Option<&Path>,
+    paths: &[String],
+) -> (Vec<BatchFileResult>, bool) {
     let canonical_root = match std::fs::canonicalize(workspace_dir) {
         Ok(p) => p,
         Err(e) => {
@@ -714,14 +779,49 @@ fn batch_read(workspace_dir: &Path, paths: &[String]) -> (Vec<BatchFileResult>, 
             return (files, false);
         }
     };
+    let canonical_team = team_root.and_then(|root| match std::fs::canonicalize(root) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                team = %root.display(),
+                "failed to resolve the team directory for batch read; team paths will report not found"
+            );
+            None
+        }
+    });
 
     let mut used_bytes = 0_usize;
     let mut content_truncated = false;
     let mut results = Vec::with_capacity(paths.len());
 
-    for relative in paths {
-        let result =
-            resolve_and_read_one(workspace_dir, &canonical_root, relative, &mut used_bytes);
+    for label in paths {
+        let addresses_team = team_root.is_some()
+            && crate::workspace::team_files::team_relative_path(label).is_some();
+        let result = if addresses_team {
+            match (team_root, canonical_team.as_deref()) {
+                (Some(dir), Some(canonical)) => resolve_and_read_one(
+                    &BatchRoot {
+                        dir,
+                        canonical,
+                        is_team: true,
+                    },
+                    label,
+                    &mut used_bytes,
+                ),
+                _ => BatchFileResult::structural_error(label.clone(), "not_found"),
+            }
+        } else {
+            resolve_and_read_one(
+                &BatchRoot {
+                    dir: workspace_dir,
+                    canonical: &canonical_root,
+                    is_team: false,
+                },
+                label,
+                &mut used_bytes,
+            )
+        };
         if result.error == Some("budget") {
             content_truncated = true;
         }
@@ -748,15 +848,20 @@ pub(super) async fn api_workspace_read(
     Json(req): Json<BatchReadRequest>,
 ) -> Result<Json<BatchReadResponse>, (StatusCode, String)> {
     let workspace_dir = state.workspace_dir.clone();
-    let (files, content_truncated) =
-        tokio::task::spawn_blocking(move || batch_read(&workspace_dir, &req.paths))
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("batch read task failed: {e}"),
-                )
-            })?;
+    let team_root = state
+        .team
+        .as_ref()
+        .map(|team| team.team_root().to_path_buf());
+    let (files, content_truncated) = tokio::task::spawn_blocking(move || {
+        batch_read(&workspace_dir, team_root.as_deref(), &req.paths)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("batch read task failed: {e}"),
+        )
+    })?;
 
     Ok(Json(BatchReadResponse {
         files,
@@ -766,10 +871,12 @@ pub(super) async fn api_workspace_read(
 
 #[cfg(test)]
 mod tests {
+    use super::super::workspace::validate_workspace_path;
     use super::*;
 
     fn make_state(ws_dir: PathBuf) -> ConfigApiState {
         super::super::ConfigApiState {
+            team: None,
             hub_dir: ws_dir.clone(),
             config_dir: ws_dir.clone(),
             agent_name: "test-agent".to_string(),
@@ -789,7 +896,7 @@ mod tests {
                 .await
                 .unwrap()
         } else {
-            validate_workspace_path(&state.workspace_dir, &params.path)
+            validate_workspace_path(&state.workspace_dir, &params.path, &params.path)
                 .await
                 .unwrap()
         };
@@ -797,6 +904,7 @@ mod tests {
         build_tree(
             &root_disk,
             &params.path,
+            None,
             params.depth,
             globs.as_ref(),
             params.content,

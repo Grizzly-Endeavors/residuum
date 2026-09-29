@@ -13,7 +13,9 @@ use super::config_reload_tracker::ConfigWriteWatch;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::read::format_numbered_line;
-use super::write::{append_diagnostics, resolve};
+use super::write::{
+    append_diagnostics, check_reserved_target, commit_team_write, lock_team_target, resolve,
+};
 use super::{Tool, ToolError, ToolResult};
 use crate::diagnostics::DiagnosticsPaths;
 use crate::inference::ToolDefinition;
@@ -452,15 +454,17 @@ impl Tool for EditTool {
                           the ones before it, and the file is only written if every edit \
                           succeeds. Copy old_string from read_file output without the \
                           line-number prefix. To delete text, use an empty new_string. The file \
-                          must have been read with read_file first. Use this over write_file \
-                          when changing part of an existing file."
+                          must have been read with read_file first. Files under team/ are shared \
+                          with teammates: if one changed after you read it, nothing is written and \
+                          the error names who changed it, so read it again and redo your change. \
+                          Use this over write_file when changing part of an existing file."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to edit"
+                        "description": "Path to the file to edit. A path starting with \"team/\" is in the shared team folder"
                     },
                     "edits": {
                         "type": "array",
@@ -495,8 +499,14 @@ impl Tool for EditTool {
 
         // `path` (the model's argument) resolves against the workspace
         // root, not the process's current directory — see `resolve`'s doc
-        // comment in `write.rs`.
-        let file_path = resolve(&self.diagnostics_paths, path);
+        // comment in `write.rs`. A `team/` prefix resolves into the shared
+        // team directory.
+        let team = self.policy.read().await.team().cloned();
+        let file_path = resolve(&self.diagnostics_paths, team.as_ref(), path);
+
+        if let Err(reason) = check_reserved_target(team.as_ref(), &file_path) {
+            return Ok(ToolResult::error(reason));
+        }
 
         if let Err(reason) = self.policy.read().await.check_write(&file_path) {
             return Ok(ToolResult::error(reason));
@@ -514,6 +524,13 @@ impl Tool for EditTool {
                 "file {path} has not been read; use read_file before editing"
             )));
         }
+
+        // A team file is edited under its per-path lock, only if nobody
+        // changed it since this tool set read it.
+        let team_lock = match lock_team_target(team.as_ref(), &self.tracker, &file_path).await {
+            Ok(lock) => lock,
+            Err(message) => return Ok(ToolResult::error(message)),
+        };
 
         let original = match tokio::fs::read_to_string(&file_path).await {
             Ok(text) => text,
@@ -537,8 +554,23 @@ impl Tool for EditTool {
             );
         }
 
-        if let Err(e) = tokio::fs::write(&file_path, &outcome.text).await {
-            return Ok(ToolResult::error(format!("failed to write {path}: {e}")));
+        let written = match &team_lock {
+            Some((team_view, guard)) => {
+                commit_team_write(
+                    &self.tracker,
+                    team_view,
+                    guard,
+                    &file_path,
+                    outcome.text.as_bytes(),
+                )
+                .await
+            }
+            None => tokio::fs::write(&file_path, &outcome.text)
+                .await
+                .map_err(anyhow::Error::from),
+        };
+        if let Err(e) = written {
+            return Ok(ToolResult::error(format!("failed to write {path}: {e:#}")));
         }
         if let Some(watch) = &self.config_watch {
             watch.note_write(&file_path);

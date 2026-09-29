@@ -122,6 +122,7 @@ mod tests {
 
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
+            team: None,
             hub_dir: dir.to_path_buf(),
             config_dir: dir.to_path_buf(),
             agent_name: "test-agent".to_string(),
