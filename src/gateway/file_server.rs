@@ -130,7 +130,7 @@ impl FileRegistry {
     /// Spawn a background task that periodically sweeps expired entries.
     pub fn spawn_cleanup_task(&self) {
         let registry = self.clone();
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
             loop {

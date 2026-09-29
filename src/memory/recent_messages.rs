@@ -387,7 +387,7 @@ mod tests {
 
         let appends = (0..20).map(|i| {
             let path = path.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 append_recent_messages(
                     &path,
                     &[sample_message(&format!("later-{i}"))],
@@ -401,7 +401,9 @@ mod tests {
         });
         let removal = {
             let path = path.clone();
-            tokio::spawn(async move { remove_observed_recent_messages(&path, 1).await.unwrap() })
+            crate::util::spawn_in_span(async move {
+                remove_observed_recent_messages(&path, 1).await.unwrap();
+            })
         };
         let handles: Vec<_> = appends.collect();
         removal.await.unwrap();

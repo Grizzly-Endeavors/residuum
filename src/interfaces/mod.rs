@@ -466,7 +466,7 @@ mod tests {
             )
             .unwrap();
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let req = stop_rx.recv().await.unwrap();
             req.result_tx.unwrap().send(true).ok();
         });
@@ -491,7 +491,7 @@ mod tests {
     async fn web_ui_stop_with_no_conversation_reaches_main() {
         let registry = SessionRegistry::new();
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<StopRequest>(1);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let req = stop_rx.recv().await.unwrap();
             req.result_tx.unwrap().send(true).ok();
         });

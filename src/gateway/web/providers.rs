@@ -55,7 +55,7 @@ pub(super) async fn api_provider_models(
     {
         let dir = state.config_dir.clone();
         let name_owned = name.to_owned();
-        tokio::task::spawn_blocking(move || -> Option<String> {
+        crate::util::spawn_blocking_in_span(move || -> Option<String> {
             SecretStore::load(&dir)
                 .ok()
                 .and_then(|s| s.get(&name_owned).map(String::from))

@@ -1033,7 +1033,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
             .await
             .unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await });
+        crate::util::spawn_in_span(async move { axum::serve(listener, router).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let status = api_a2a_status(State(status_state(state))).await.0;

@@ -1060,21 +1060,22 @@ async fn refuse_if_dir_holds_internal_data(
 ) -> Result<(), (StatusCode, String)> {
     let owned = dir.to_path_buf();
     let owned_relative = relative.to_string();
-    let holds =
-        tokio::task::spawn_blocking(move || dir_holds_internal_data(&owned, &owned_relative))
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to check {relative} for internal data: {e}"),
-                )
-            })?
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to check {relative} for internal data: {e}"),
-                )
-            })?;
+    let holds = crate::util::spawn_blocking_in_span(move || {
+        dir_holds_internal_data(&owned, &owned_relative)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to check {relative} for internal data: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to check {relative} for internal data: {e}"),
+        )
+    })?;
     if holds {
         return Err((
             StatusCode::FORBIDDEN,

@@ -75,7 +75,7 @@ impl AgentExecutor for TestExecutor {
             .unwrap_or_default()
             .to_string();
         let (task_id, ctx_id) = (ctx.task_id.clone(), ctx.context_id.clone());
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             if text.contains("direct") {
                 // Answer with a bare message: no task is ever opened.
                 let reply = Message::new(Role::Agent, vec![Part::text("direct answer")]);
@@ -204,7 +204,7 @@ async fn spawn_agent_server(streaming: bool) -> std::io::Result<String> {
         .merge(a2a_server::agent_card::agent_card_router(Arc::new(
             StaticAgentCard::new(card),
         )));
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         axum::serve(listener, app).await.ok();
     });
     Ok(base)

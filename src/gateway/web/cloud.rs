@@ -117,7 +117,7 @@ pub(crate) async fn cloud_callback(
         let _guard = secret_lock.lock().await;
         let dir = hub_dir.clone();
         let tok = token.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let mut store = SecretStore::load(&dir)?;
             store.set("cloud_token", &tok, &dir)?;
             Ok::<(), crate::util::FatalError>(())

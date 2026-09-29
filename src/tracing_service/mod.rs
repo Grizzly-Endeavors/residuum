@@ -453,7 +453,7 @@ impl TracingService {
         let service_state = Arc::clone(&self.state);
         let agent_keys = self.agent_keys.clone();
 
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             tracing::info!("trace streaming task started");
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {

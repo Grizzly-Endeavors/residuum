@@ -338,7 +338,7 @@ mod tests {
             .with_state(Arc::clone(&relay));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             axum::serve(listener, app).await.ok();
         });
         (format!("http://{addr}"), relay)
@@ -375,7 +375,7 @@ mod tests {
         let (origin, relay) = spawn_fake_relay(vec!["alpha", "beta", "gamma"]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = tokio::spawn(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
 
         tx.send(connected(&origin, "alpha", "tok1")).ok();
 
@@ -406,7 +406,7 @@ mod tests {
         let (origin, relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = tokio::spawn(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
 
         tx.send(connected(&origin, "alpha", "tok1")).ok();
         wait_for(&hub, |snap| {
@@ -458,7 +458,7 @@ mod tests {
         .await;
 
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = tokio::spawn(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
         tx.send(connected(&origin, "alpha", "tok1")).ok();
 
         wait_for(&hub, |snap| {
@@ -485,7 +485,7 @@ mod tests {
     async fn directory_failure_does_not_panic_and_retries() {
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = tokio::spawn(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
 
         // An address nothing listens on: every fetch fails immediately.
         tx.send(connected("http://127.0.0.1:1", "alpha", "tok1"))
@@ -509,7 +509,7 @@ mod tests {
         let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = tokio::spawn(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
 
         tx.send(connected(&origin, "alpha", "tok1")).ok();
         wait_for(&hub, |snap| !snap.is_empty()).await;

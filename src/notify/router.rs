@@ -52,7 +52,7 @@ pub(crate) async fn spawn_notification_router(
         publisher,
     };
 
-    Some(tokio::spawn(router_loop(subscriber, router)))
+    Some(crate::util::spawn_in_span(router_loop(subscriber, router)))
 }
 
 /// The notification router state.

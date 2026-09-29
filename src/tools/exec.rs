@@ -474,7 +474,7 @@ async fn kill_process_tree(pid: Option<u32>) {
         };
         // The kill syscall itself is synchronous; run it on a blocking-pool
         // thread rather than the async worker thread that's awaiting this.
-        let result = tokio::task::spawn_blocking(move || {
+        let result = crate::util::spawn_blocking_in_span(move || {
             use nix::sys::signal::{Signal, killpg};
             use nix::unistd::Pid;
             // Safe: `shell_command` puts the shell in its own process
@@ -681,7 +681,7 @@ fn spawn_pipe_reader<R>(mut pipe: R) -> tokio::task::JoinHandle<io::Result<Vec<u
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut buf = Vec::new();
         pipe.read_to_end(&mut buf).await?;
         Ok(buf)

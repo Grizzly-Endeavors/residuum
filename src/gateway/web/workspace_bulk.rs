@@ -545,7 +545,7 @@ pub(super) async fn api_workspace_tree(
     let globs = compile_globs(&params.glob)?;
 
     let root_relative = params.path.clone();
-    let response = tokio::task::spawn_blocking(move || {
+    let response = crate::util::spawn_blocking_in_span(move || {
         build_tree(
             &root_disk,
             &root_relative,
@@ -852,7 +852,7 @@ pub(super) async fn api_workspace_read(
         .team
         .as_ref()
         .map(|team| team.team_root().to_path_buf());
-    let (files, content_truncated) = tokio::task::spawn_blocking(move || {
+    let (files, content_truncated) = crate::util::spawn_blocking_in_span(move || {
         batch_read(&workspace_dir, team_root.as_deref(), &req.paths)
     })
     .await

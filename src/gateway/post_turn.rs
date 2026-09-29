@@ -234,7 +234,7 @@ impl ObserveWorker {
     fn spawn_or_coalesce(self: &Arc<Self>) {
         let this = Arc::clone(self);
         self.coalescer
-            .trigger(|| tokio::spawn(async move { this.run_loop().await }));
+            .trigger(|| crate::util::spawn_in_span(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
@@ -348,7 +348,7 @@ impl SubconsciousWorker {
         }
         let this = Arc::clone(self);
         self.coalescer
-            .trigger(|| tokio::spawn(async move { this.run_loop().await }));
+            .trigger(|| crate::util::spawn_in_span(async move { this.run_loop().await }));
     }
 
     async fn run_loop(&self) {
@@ -768,7 +768,7 @@ mod tests {
         let spawned = AtomicUsize::new(0);
         let spawn = || {
             spawned.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(async {})
+            crate::util::spawn_in_span(async {})
         };
 
         coalescer.trigger(spawn);
@@ -796,7 +796,7 @@ mod tests {
         let spawned = AtomicUsize::new(0);
         coalescer.trigger(|| {
             spawned.fetch_add(1, Ordering::SeqCst);
-            tokio::spawn(async {})
+            crate::util::spawn_in_span(async {})
         });
         assert_eq!(spawned.load(Ordering::SeqCst), 0);
     }

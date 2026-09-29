@@ -71,7 +71,7 @@ pub(super) async fn api_secrets_set(
     let name = req.name;
     let value = req.value;
 
-    tokio::task::spawn_blocking(move || {
+    crate::util::spawn_blocking_in_span(move || {
         let mut store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -103,7 +103,7 @@ pub(super) async fn api_secrets_list(
 ) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
     let hub_dir = state.hub_dir.clone();
 
-    tokio::task::spawn_blocking(move || {
+    crate::util::spawn_blocking_in_span(move || {
         let store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -132,7 +132,7 @@ pub(super) async fn api_secrets_delete(
         .await;
     let hub_dir = state.hub_dir.clone();
 
-    tokio::task::spawn_blocking(move || {
+    crate::util::spawn_blocking_in_span(move || {
         let mut store = SecretStore::load(&hub_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

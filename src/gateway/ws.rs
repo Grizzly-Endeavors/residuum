@@ -68,7 +68,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let verbose_fwd = Arc::clone(&verbose);
 
     // Forwarding task: bus subscribers + local channel → WebSocket client
-    let fwd_handle = tokio::spawn(async move {
+    let fwd_handle = crate::util::spawn_in_span(async move {
         loop {
             let msg = tokio::select! {
                 bus_msg = subs.recv() => {
@@ -233,7 +233,7 @@ async fn handle_client_message(
             // broadcast (e.g. Notice/InlineOutput); only a rejection needs
             // routing back here, scoped to this connection only.
             let err_tx = local_tx.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 if let Ok(Err(reason)) = reply_rx.await {
                     err_tx
                         .send(ServerMessage::Error {
@@ -283,7 +283,7 @@ async fn handle_client_message(
             let dir = state.agent_inbox_dir.clone();
             let tz = state.tz;
             let tx = local_tx.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 let title = crate::inbox::derive_title(&body);
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {

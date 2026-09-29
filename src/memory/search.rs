@@ -962,10 +962,11 @@ pub(crate) async fn search_side(
         source: filters.source,
     };
     let vec_limit = candidates;
-    let vec_results =
-        tokio::task::spawn_blocking(move || vs_clone.search(&query_vec, vec_limit, &vec_filters))
-            .await
-            .context("vector search task failed")??;
+    let vec_results = crate::util::spawn_blocking_in_span(move || {
+        vs_clone.search(&query_vec, vec_limit, &vec_filters)
+    })
+    .await
+    .context("vector search task failed")??;
 
     // Merge results
     let (mut merged, below_threshold) =

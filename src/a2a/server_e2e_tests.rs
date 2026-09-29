@@ -392,7 +392,7 @@ async fn start_a2a_listener(
         Arc::new(NoTunnel),
         shutdown_rx,
     );
-    tokio::spawn(listener.start());
+    crate::util::spawn_in_span(listener.start());
     tokio::time::sleep(Duration::from_millis(50)).await;
     (keys, shutdown_tx)
 }
@@ -561,7 +561,7 @@ struct MiniListenerDeps {
 }
 
 fn spawn_mini_background_listener(bus_handle: BusHandle, deps: MiniListenerDeps) {
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let mut sub: crate::bus::Subscriber<SpawnRequestEvent> =
             bus_handle.subscribe(topics::Background).await.unwrap();
         loop {

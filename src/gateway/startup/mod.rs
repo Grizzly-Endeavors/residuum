@@ -714,7 +714,7 @@ pub(crate) async fn spawn_notify_subscribers(
         let topic = topics::Notification(NotifyName::from(name.as_str()));
         match bus_handle.subscribe(topic).await {
             Ok(subscriber) => {
-                let handle = tokio::spawn(run_notify_subscriber(subscriber, channel));
+                let handle = crate::util::spawn_in_span(run_notify_subscriber(subscriber, channel));
                 handles.push(handle);
                 tracing::info!(channel = %name, "notify subscriber spawned");
             }
@@ -728,7 +728,10 @@ pub(crate) async fn spawn_notify_subscribers(
     let inbox_channel = InboxChannel::new(layout.agent_inbox_dir(), tz);
     match bus_handle.subscribe(topics::Inbox).await {
         Ok(subscriber) => {
-            let handle = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
+            let handle = crate::util::spawn_in_span(run_notify_subscriber(
+                subscriber,
+                Box::new(inbox_channel),
+            ));
             handles.push(handle);
             tracing::info!("inbox notify subscriber spawned");
         }

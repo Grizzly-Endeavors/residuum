@@ -455,7 +455,7 @@ fn spawn_a2a_forward(
     let done_tx = tracker.done_tx.clone();
     let request_id = request.request_id.clone();
     let request_id_for_task = request_id.clone();
-    let handle = tokio::spawn(async move {
+    let handle = crate::util::spawn_in_span(async move {
         match forward_port(targets, Some(Surface::A2a)) {
             Ok(port) => {
                 forward_a2a::stream_forward(&client, port, request, &write).await;
@@ -492,7 +492,7 @@ fn spawn_buffered_forward(
         headers,
         body,
     } = request;
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let response = match forward_port(targets, surface) {
             Ok(port) => {
                 forward_http::forward(&client, port, request_id, method, path, headers, body).await
@@ -517,7 +517,7 @@ fn spawn_ws_open(
 ) {
     let write = Arc::clone(write);
     let ws_open_tx = ws_open_tx.clone();
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         let ch_id = channel_id.clone();
         let sender =
             forward_ws::handle_ws_open(targets.main, channel_id, path, headers, write).await;
@@ -910,7 +910,7 @@ mod tests {
     ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let accept = tokio::spawn(async move {
+        let accept = crate::util::spawn_in_span(async move {
             let (stream, _) = listener.accept().await.unwrap();
             tokio_tungstenite::accept_async(stream).await.unwrap()
         });
@@ -1020,7 +1020,8 @@ mod tests {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let server =
+            crate::util::spawn_in_span(async move { axum::serve(listener, app).await.unwrap() });
 
         let (write, _relay) = loopback_ws().await;
         let client = forward_http::forwarding_client().unwrap();

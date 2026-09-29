@@ -1493,7 +1493,7 @@ mod tests {
 
         let waiter_registry = std::sync::Arc::clone(&registry);
         let address = info.address.clone();
-        let waiter = tokio::spawn(async move {
+        let waiter = crate::util::spawn_in_span(async move {
             waiter_registry.wait_until_clear(&address).await;
         });
 
@@ -1626,7 +1626,7 @@ mod tests {
 
         let recordings = (0..32).map(|i| {
             let registry = std::sync::Arc::clone(&registry);
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 let address = SessionAddress::from(format!("external-concurrent-{i}"));
                 registry
                     .record_resume_point(&address, sample_resume_point(&format!("run-{i}")))

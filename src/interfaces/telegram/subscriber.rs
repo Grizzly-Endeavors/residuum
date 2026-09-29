@@ -85,7 +85,7 @@ impl ChatOutbound for TelegramOutbound {
     fn start_typing(&self, chat_id: ChatId) -> tokio::sync::watch::Sender<()> {
         let bot = self.bot.clone();
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             loop {
                 if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
                     tracing::trace!(error = %e, "telegram typing indicator failed");

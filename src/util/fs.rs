@@ -83,7 +83,7 @@ mod tests {
 
         let writes = (0..16).map(|i| {
             let target = target.clone();
-            tokio::spawn(async move { atomic_write(&target, format!("{i}")).await })
+            crate::util::spawn_in_span(async move { atomic_write(&target, format!("{i}")).await })
         });
         for write in writes {
             write.await.unwrap().unwrap();

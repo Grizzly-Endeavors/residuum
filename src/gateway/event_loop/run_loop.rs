@@ -1316,7 +1316,7 @@ async fn handle_bus_event(
                 // (a completing target's teardown) never holds up the main
                 // event loop.
                 let router = Arc::clone(&rt.conversation_router);
-                tokio::spawn(async move { router.route(message).await });
+                crate::util::spawn_in_span(async move { router.route(message).await });
                 BusEventAction::Continue
             }
         }

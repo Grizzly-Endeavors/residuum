@@ -244,7 +244,7 @@ impl SessionRuntime {
         };
         let config = req.subagent_config;
 
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             publish_session_event(
                 &env.publisher,
                 &info.address,
@@ -422,7 +422,7 @@ fn deliver_losing_spawn_input(
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
             let address = info.address.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 super::messaging::retry_race_guard_user_message(
                     registry,
                     publisher,

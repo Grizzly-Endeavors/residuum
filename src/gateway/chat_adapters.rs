@@ -149,7 +149,7 @@ mod tests {
     async fn next_exit_reports_a_finished_adapter_once() {
         let mut adapters = ChatAdapters::new();
         let (tx, _rx) = tokio::sync::watch::channel(false);
-        adapters.insert("discord", tokio::spawn(async {}), tx);
+        adapters.insert("discord", crate::util::spawn_in_span(async {}), tx);
 
         let (name, result) = adapters.next_exit().await;
         assert_eq!(name, "discord");
@@ -163,7 +163,7 @@ mod tests {
     async fn reload_stops_the_running_adapter_and_starts_the_replacement() {
         let mut adapters = ChatAdapters::new();
         let (tx, mut rx) = tokio::sync::watch::channel(false);
-        let handle = tokio::spawn(async move {
+        let handle = crate::util::spawn_in_span(async move {
             let _changed = rx.changed().await;
         });
         adapters.insert("telegram", handle, tx);
@@ -179,7 +179,11 @@ mod tests {
     async fn signal_shutdown_flips_the_watch() {
         let mut adapters = ChatAdapters::new();
         let (tx, mut rx) = tokio::sync::watch::channel(false);
-        adapters.insert("teams", tokio::spawn(std::future::pending()), tx);
+        adapters.insert(
+            "teams",
+            crate::util::spawn_in_span(std::future::pending()),
+            tx,
+        );
 
         adapters.signal_shutdown();
 

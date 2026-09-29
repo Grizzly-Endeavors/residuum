@@ -47,7 +47,7 @@ pub(crate) async fn spawn_listener(
 
     tracing::info!("spawn listener subscribed to Background topic");
 
-    Some(tokio::spawn(listener_loop(ctx, subscriber)))
+    Some(crate::util::spawn_in_span(listener_loop(ctx, subscriber)))
 }
 
 /// Main loop: reads spawn requests and executes them.
@@ -189,7 +189,7 @@ fn handle_spawn_request<'a>(
                         "spawn target is completing; deferring until it clears the registry"
                     );
                     let ctx = Arc::clone(ctx);
-                    tokio::spawn(async move {
+                    crate::util::spawn_in_span(async move {
                         ctx.session_registry.wait_until_clear(&event.address).await;
                         // Re-run the full guard rather than forking directly:
                         // by the time the wait ends, another spawn/resume for
@@ -296,7 +296,7 @@ fn deliver_race_guard_content(
             );
             let registry = Arc::clone(registry);
             let publisher = publisher.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_in_span(async move {
                 super::messaging::retry_race_guard_user_message(
                     registry, publisher, address, inbound, event,
                 )

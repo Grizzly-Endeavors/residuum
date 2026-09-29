@@ -255,7 +255,7 @@ fn handle_mid_turn_message(
                 // conversation's session instead, off the turn's own select
                 // loop so a completing target's teardown can't stall main.
                 let router = Arc::clone(conversation_router);
-                tokio::spawn(async move { router.route(inbound).await });
+                crate::util::spawn_in_span(async move { router.route(inbound).await });
             }
         }
         Ok(None) => {
@@ -1272,7 +1272,7 @@ mod tests {
 
         let turn_messenger = Arc::clone(&messenger);
         let turn_conversation_router = Arc::clone(&conversation_router);
-        let turn_task = tokio::spawn(async move {
+        let turn_task = crate::util::spawn_in_span(async move {
             let (turn_result, _leftovers, _scratch, _shutdown) = run_agent_turn_with_interrupts(
                 &mut agent,
                 &turn_messenger,
@@ -1486,7 +1486,7 @@ mod tests {
 
         let turn_messenger = Arc::clone(&messenger);
         let turn_conversation_router = Arc::clone(&conversation_router);
-        let turn_task = tokio::spawn(async move {
+        let turn_task = crate::util::spawn_in_span(async move {
             let (turn_result, _leftovers, _scratch, _shutdown) = run_agent_turn_with_interrupts(
                 &mut agent,
                 &turn_messenger,
@@ -1712,7 +1712,7 @@ mod tests {
             },
         };
 
-        let turn_task = tokio::spawn(async move {
+        let turn_task = crate::util::spawn_in_span(async move {
             run_agent_turn_with_interrupts(
                 &mut agent,
                 &messenger,

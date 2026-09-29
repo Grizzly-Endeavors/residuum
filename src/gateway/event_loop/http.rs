@@ -332,7 +332,7 @@ pub(crate) fn spawn_server_with_listener(
     http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
 ) -> tokio::task::JoinHandle<()> {
     let mut shutdown_rx = http_shutdown_tx.subscribe();
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 shutdown_rx.wait_for(|v| *v).await.ok();
@@ -537,7 +537,7 @@ pub(crate) async fn build_a2a_listener(
     let resume_handler = Arc::clone(&handler);
     let resume_store = Arc::clone(&task_store);
     let mut sessions_ready = deps.sessions_ready.clone();
-    tokio::spawn(async move {
+    crate::util::spawn_in_span(async move {
         if sessions_ready.wait_for(|ready| *ready).await.is_err() {
             tracing::error!(
                 "session spawner never became ready; a2a tasks left in progress were not resumed"

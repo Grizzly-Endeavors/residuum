@@ -138,7 +138,7 @@ impl AgentExecutor for SessionExecutor {
     ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         let executor = self.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(32);
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             run_execution(executor, ctx, tx).await;
         });
         Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {

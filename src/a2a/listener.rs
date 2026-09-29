@@ -269,7 +269,7 @@ mod tests {
             Arc::new(NoTunnel),
             shutdown_rx,
         );
-        tokio::spawn(listener.start());
+        crate::util::spawn_in_span(listener.start());
         // Give the listener a moment to bind before the test issues requests.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         (keys, shutdown_tx, dir)

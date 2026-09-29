@@ -479,13 +479,13 @@ mod tests {
                 "capabilities":{{"streaming":true}},"defaultInputModes":["text/plain"],
                 "defaultOutputModes":["text/plain"],"skills":[]}}"#
         );
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
                 let body = body.clone();
-                tokio::spawn(async move {
+                crate::util::spawn_in_span(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut buf = [0_u8; 4096];
                     let _read_result = socket.read(&mut buf).await;

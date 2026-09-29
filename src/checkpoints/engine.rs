@@ -209,9 +209,9 @@ impl CheckpointEngine {
         let repo = self.repo(kind);
         let root = self.dest_root(kind);
         let publisher = self.publisher.clone();
-        tokio::spawn(async move {
+        crate::util::spawn_in_span(async move {
             let task_ctx = ctx.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = crate::util::spawn_blocking_in_span(move || {
                 commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
             })
             .await
@@ -281,7 +281,7 @@ impl CheckpointEngine {
         let root = self.dest_root(kind);
         let task_ctx = ctx.clone();
         let outcome =
-            tokio::task::spawn_blocking(move || commit_tree(kind, &repo, &root, &task_ctx))
+            crate::util::spawn_blocking_in_span(move || commit_tree(kind, &repo, &root, &task_ctx))
                 .await
                 .unwrap_or_else(|e| {
                     Err(CheckpointError::Git(format!(
@@ -398,7 +398,7 @@ impl CheckpointEngine {
     ) -> Result<CheckpointPage, CheckpointError> {
         let repo = self.repo(kind);
         let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT).max(1);
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let before_id = before
                 .map(|id| guard.resolve_commit(&id))
@@ -446,7 +446,7 @@ impl CheckpointEngine {
         id: String,
     ) -> Result<CheckpointDetail, CheckpointError> {
         let repo = self.repo(kind);
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             let fields = guard.commit_fields(oid)?;
@@ -482,7 +482,7 @@ impl CheckpointEngine {
         path: String,
     ) -> Result<Option<String>, CheckpointError> {
         let repo = self.repo(kind);
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             guard.file_diff(oid, &path)
@@ -504,7 +504,7 @@ impl CheckpointEngine {
         path: String,
     ) -> Result<Option<Vec<u8>>, CheckpointError> {
         let repo = self.repo(kind);
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
             guard.file_content_at(oid, &path)
@@ -520,7 +520,7 @@ impl CheckpointEngine {
     pub async fn stats(&self, kind: RepoKind) -> Result<RepoStats, CheckpointError> {
         let repo = self.repo(kind);
         let git_dir = self.git_dir(kind);
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking_in_span(move || {
             let (checkpoint_count, oldest) = {
                 let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
                 guard.stats()?
@@ -558,7 +558,7 @@ impl CheckpointEngine {
             let repo = Arc::clone(&repo);
             let id = id.clone();
             let path = path.clone();
-            tokio::task::spawn_blocking(move || {
+            crate::util::spawn_blocking_in_span(move || {
                 let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
                 let oid = guard.resolve_commit(&id)?;
                 guard.restore_paths(oid, &path, &dest_root)
@@ -604,9 +604,11 @@ impl CheckpointEngine {
         let (reverted_paths, skipped_paths) = {
             let repo = Arc::clone(&repo);
             let id = id.clone();
-            tokio::task::spawn_blocking(move || undo_checkpoint_paths(&repo, &id, &dest_root))
-                .await
-                .unwrap_or_else(|e| Err(CheckpointError::Git(format!("undo task panicked: {e}"))))?
+            crate::util::spawn_blocking_in_span(move || {
+                undo_checkpoint_paths(&repo, &id, &dest_root)
+            })
+            .await
+            .unwrap_or_else(|e| Err(CheckpointError::Git(format!("undo task panicked: {e}"))))?
         };
 
         let checkpoint_id = self.checkpoint_after_mutation(kind, ctx).await;
@@ -634,7 +636,7 @@ impl CheckpointEngine {
                 let repo = self.repo(kind);
                 let root = self.dest_root(kind);
                 let task_ctx = ctx.clone();
-                tokio::task::spawn_blocking(move || {
+                crate::util::spawn_blocking_in_span(move || {
                     commit_tree(kind, &repo, &root, &task_ctx).map(|commit| commit.recorded_id())
                 })
                 .await
