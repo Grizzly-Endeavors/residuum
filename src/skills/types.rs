@@ -12,21 +12,65 @@ pub(super) struct SkillFrontmatter {
     pub(super) description: String,
 }
 
-/// Where a skill was discovered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Which layer a skill was discovered in.
+///
+/// Layers are searched in the order agent, team, configured; the first skill
+/// with a given name wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
-    /// From the workspace `skills/` directory.
-    Workspace,
+    /// From the agent's own `skills/` directory.
+    Agent,
+    /// From the shared `team/skills/` directory.
+    Team,
     /// From an extra directory configured in `[skills].dirs`.
-    UserGlobal,
+    Configured,
 }
 
 impl fmt::Display for SkillSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Workspace => write!(f, "workspace"),
-            Self::UserGlobal => write!(f, "user-global"),
+            Self::Agent => write!(f, "agent"),
+            Self::Team => write!(f, "team"),
+            Self::Configured => write!(f, "configured"),
         }
+    }
+}
+
+/// A directory to scan for skills, tagged with the layer it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillDir {
+    /// Directory holding one subfolder per skill.
+    pub path: PathBuf,
+    /// Layer skills found here are attributed to.
+    pub source: SkillSource,
+}
+
+impl SkillDir {
+    /// A directory in the given layer.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, source: SkillSource) -> Self {
+        Self {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// The agent's own skills directory.
+    #[must_use]
+    pub fn agent(path: impl Into<PathBuf>) -> Self {
+        Self::new(path, SkillSource::Agent)
+    }
+
+    /// The shared team skills directory.
+    #[must_use]
+    pub fn team(path: impl Into<PathBuf>) -> Self {
+        Self::new(path, SkillSource::Team)
+    }
+
+    /// A directory from `[skills].dirs`.
+    #[must_use]
+    pub fn configured(path: impl Into<PathBuf>) -> Self {
+        Self::new(path, SkillSource::Configured)
     }
 }
 
@@ -53,8 +97,8 @@ pub struct ActiveSkill {
     /// Absolute path to the skill directory this body was read from.
     ///
     /// Names alone aren't stable identity: a rescan can make the same name
-    /// resolve to a different physical skill (e.g. a user-global skill
-    /// shadowed by a workspace skill of the same name). This field lets
+    /// resolve to a different physical skill (e.g. a team skill
+    /// shadowed by an agent skill of the same name). This field lets
     /// `rescan` detect that the backing source changed even though the name
     /// still matches.
     pub skill_dir: PathBuf,

@@ -34,7 +34,7 @@ The fallback chain walks up tiers. If no background model is configured at any t
 
 ## Session Roles
 
-Pass a **skill** name at spawn time and that skill's body becomes the session's role instructions. There is no separate preset format — a role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn or handed to a session.
+Pass a **skill** name at spawn time and that skill's body becomes the session's role instructions. There is no separate preset format — a role is an ordinary skill in your `skills/<name>/SKILL.md` or the shared `team/skills/<name>/SKILL.md`, so the same file can be activated in-turn or handed to a session.
 
 Four role skills ship bundled:
 

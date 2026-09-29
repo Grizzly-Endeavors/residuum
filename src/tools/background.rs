@@ -558,6 +558,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_accepts_a_team_skill_as_the_role() {
+        let agent_skills = tempfile::tempdir().unwrap();
+        let team_skills = tempfile::tempdir().unwrap();
+        let skill_dir = team_skills.path().join("shared-researcher");
+        tokio::fs::create_dir_all(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: shared-researcher\ndescription: researches for the team\n---\nBody.",
+        )
+        .await
+        .unwrap();
+        let dirs = vec![
+            crate::skills::SkillDir::agent(agent_skills.path()),
+            crate::skills::SkillDir::team(team_skills.path()),
+        ];
+        let index = SkillIndex::scan(&dirs).await.unwrap();
+
+        let bus_handle = crate::bus::spawn_broker();
+        let tool = SubagentSpawnTool::new(
+            bus_handle.publisher(),
+            SkillState::new_shared(index, dirs),
+            SessionAddress::from(MAIN_ADDRESS),
+            0,
+            2,
+            HopCounter::new(0),
+        );
+
+        let res = tool
+            .execute(serde_json::json!({
+                "task": "research the thing",
+                "skill": "shared-researcher"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!res.is_error, "got: {}", res.output);
+        assert!(res.output.contains("spawned-shared-researcher-"));
+    }
+
+    #[tokio::test]
     async fn spawn_with_skill_returns_address_and_skill_name() {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("researcher");
@@ -568,11 +608,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let index = SkillIndex::scan(&[dir.path().to_path_buf()]).await.unwrap();
+        let index = SkillIndex::scan(&[crate::skills::SkillDir::agent(dir.path())])
+            .await
+            .unwrap();
 
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let skill_state = SkillState::new_shared(index, vec![dir.path().to_path_buf()]);
+        let skill_state =
+            SkillState::new_shared(index, vec![crate::skills::SkillDir::agent(dir.path())]);
         let tool = SubagentSpawnTool::new(
             publisher,
             skill_state,

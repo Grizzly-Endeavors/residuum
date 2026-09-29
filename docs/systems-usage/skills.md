@@ -19,16 +19,23 @@ Editing a `SKILL.md` through the agent's `write_file`/`edit_file` tools, the wor
 
 ## Skill Sources
 
-Skills are discovered from multiple locations, scanned in priority order:
+Skills are discovered from three layers, scanned in priority order:
 
-| Source | Directory | Priority |
-|--------|-----------|----------|
-| Workspace | `skills/` | High |
-| User Global | Extra dirs from `[skills]` config section | Middle |
+| Layer | Directory | Priority |
+|-------|-----------|----------|
+| Agent | the agent's own `skills/` | High |
+| Team | `team/skills/`, shared by every agent in the hub | Middle |
+| Configured | Extra dirs from the agent's `[skills]` config section | Low |
 
-Skills shipped with the binary are written into `skills/` during workspace creation, so they are scanned as workspace skills.
+Put a skill in the agent's `skills/` when only that agent should have it, and in `team/skills/` when every agent should. A fresh agent's `skills/` starts empty.
 
-If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
+If multiple skills share the same name, the highest-priority layer wins and the others are hidden (logged at debug with both paths). Lookup is case-insensitive by name.
+
+Each indexed skill records the layer it came from. The `<available_skills>` block shows it in a `<layer>` element (`agent`, `team`, or `configured`).
+
+The index is rebuilt at startup, after a reload of the config, and on `skill_activate`, so changes to `team/skills/` are picked up on the same triggers as changes to the agent's own `skills/`.
+
+Skills used as session roles (`subagent_spawn`'s `skill`, a pulse's `agent`, artifact sessions, an inbound A2A `metadata.skill`) resolve through the same layered index, so a team skill works as a role for any agent.
 
 A directory that can't be read (a permissions problem, not a missing directory) is skipped with a notice naming it, rather than discarding every skill already found in the other configured directories.
 
@@ -48,13 +55,13 @@ A directory that can't be read (a permissions problem, not a missing directory) 
 
 ## Bundled Skills
 
-Three skills are bundled with every workspace:
+Three skills are bundled with the team:
 
 - **`residuum-system`**: Quick reference for all systems — tool names, config files, workspace layout. The agent activates this when it needs to look up operational details.
 - **`residuum-getting-started`**: First-conversation onboarding. Routes the user into one of several guided workflows. Deactivates itself after the first conversation.
 - **`skill-authoring`**: The agent's doctrine for creating and maintaining its own skills — when to create a new skill versus patch an existing one, what shape a skill should take, what not to capture in a skill, and description-length discipline (descriptions stay under ~60 characters so the skill index stays scannable). The agent should activate this skill whenever it's about to author or edit a skill, rather than improvising the format.
 
-Bundled skills live under `skills/` in the workspace and follow the same format. They are written once during workspace creation and are not overwritten if the user (or agent) edits them.
+Bundled skills live under `team/skills/` and follow the same format, so every agent sees them as team skills. They are written when missing and are not overwritten if the user (or an agent) edits them.
 
 ### Create vs. Patch
 

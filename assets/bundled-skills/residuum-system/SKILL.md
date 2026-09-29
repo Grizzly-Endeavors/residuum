@@ -47,7 +47,7 @@ workspace/
 │   ├── .index_manifest.json # Index file tracking
 │   ├── episodes/            # Episode transcripts (YYYY-MM/DD/)
 │   └── sessions/            # Agent session run records and transcripts (YYYY-MM/DD/), created on first run
-├── skills/                  # Workspace-level skills (also sub-agent roles)
+├── skills/                  # This agent's own skills (also sub-agent roles); team-wide skills live in team/skills/
 ├── archive/                 # Archived items
 │   └── inbox/               # Archived inbox items
 └── inbox/                   # Active inbox items

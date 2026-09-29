@@ -167,7 +167,7 @@ Model tiers are configured in `[background]` config section (`models.small`, `mo
 
 The only thing that distinguishes one spawned session from another is what the caller passes at fork time: a prompt, a model tier, and optionally a **skill** whose body becomes the session's role instructions.
 
-There is no separate preset format. A role is an ordinary skill in `skills/<name>/SKILL.md`, so the same file can be activated in-turn by the main agent or handed to a session as its brief.
+There is no separate preset format. A role is an ordinary skill (in the agent's `skills/<name>/SKILL.md` or the shared `team/skills/<name>/SKILL.md`), so the same file can be activated in-turn by the main agent or handed to a session as its brief.
 
 ```yaml
 ---
