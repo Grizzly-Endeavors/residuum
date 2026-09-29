@@ -69,7 +69,7 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
 
 /// Default an inbox item's title from its body: the first line, in full.
 /// Shared by every caller that lets a title be omitted — the WS `/inbox`
-/// command, chat-interface inbox commands, and the `POST /api/agent-inbox`
+/// command, chat-interface inbox commands, and the `POST /api/agents/{name}/agent-inbox`
 /// endpoint — so the rule stays in one place. The generated filename bounds
 /// its own length (see [`generate_filename`]); the title itself is never
 /// truncated.

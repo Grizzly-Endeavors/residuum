@@ -64,7 +64,7 @@ pub enum GatewayExit {
 pub(crate) enum ShutdownReason {
     /// SIGTERM (Unix) or the platform termination signal.
     Sigterm,
-    /// Shutdown requested via the HTTP `/api/shutdown` endpoint.
+    /// Shutdown requested via the HTTP `/api/hub/shutdown` endpoint.
     GatewayShutdown,
     /// Restart requested (binary updated, re-exec needed).
     Restart,
@@ -73,7 +73,7 @@ pub(crate) enum ShutdownReason {
 /// Platform-aware termination signal.
 ///
 /// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
-/// pends forever — graceful shutdown is handled via the HTTP `/api/shutdown` endpoint
+/// pends forever — graceful shutdown is handled via the HTTP `/api/hub/shutdown` endpoint
 /// or the cross-platform Ctrl+C handler instead.
 pub struct TermSignal {
     #[cfg(unix)]
@@ -309,7 +309,7 @@ pub(crate) struct GatewayRuntime {
     pub spawn_context: Arc<SpawnContext>,
     /// Pushes a fresh `ModelCallResources` to the model-call HTTP endpoint on
     /// every config reload, alongside `spawn_context`, so `POST
-    /// /api/model/complete` resolves providers from the current config
+    /// /api/agents/{name}/model/complete` resolves providers from the current config
     /// without the HTTP router being rebuilt.
     pub model_call_resources_tx:
         tokio::sync::watch::Sender<Arc<crate::gateway::web::model::ModelCallResources>>,

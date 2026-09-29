@@ -1736,7 +1736,7 @@ mod tests {
         });
 
         // The turn is now blocked on the gated model call; request a
-        // shutdown the way the HTTP `/api/shutdown` endpoint does.
+        // shutdown the way the HTTP `/api/hub/shutdown` endpoint does.
         gateway_shutdown_tx.send(()).await.unwrap();
 
         let (turn_result, _leftovers, _scratch, shutdown_reason) =

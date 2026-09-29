@@ -14,7 +14,7 @@ use crate::memory::types::Visibility;
 
 use super::ConfigApiState;
 
-/// Query parameters for `GET /api/chat/history`.
+/// Query parameters for `GET /api/agents/{name}/chat/history`.
 #[derive(Debug, Deserialize)]
 pub(super) struct ChatHistoryQuery {
     /// If set, fetch this specific episode instead of the live recent messages.
@@ -22,7 +22,7 @@ pub(super) struct ChatHistoryQuery {
     pub(super) episode: Option<String>,
 }
 
-/// One segment of chat history returned by `GET /api/chat/history`.
+/// One segment of chat history returned by `GET /api/agents/{name}/chat/history`.
 ///
 /// `next_cursor`, if present, is the episode ID the client should pass back
 /// as `?episode=<id>` to load the next-older segment.
@@ -44,7 +44,7 @@ pub(super) enum ChatHistorySegment {
     },
 }
 
-/// `GET /api/chat/history` — return a segment of chat history.
+/// `GET /api/agents/{name}/chat/history` — return a segment of chat history.
 ///
 /// With no query params, returns the live `Recent` segment plus a cursor
 /// pointing at the newest episode on disk (for the frontend's lazy-load).
@@ -132,13 +132,13 @@ pub(super) async fn api_chat_history(
     }
 }
 
-/// `GET /api/usage` — the main agent's cumulative session token usage, for
+/// `GET /api/agents/{name}/usage` — the main agent's cumulative session token usage, for
 /// the chat footer to render correctly on load or reconnect without
 /// waiting for the next model call.
 ///
 /// Reads the same on-disk totals the running agent writes through to after
 /// every model call (see `crate::agent::usage::MainUsageSink`), the same
-/// way `GET /api/chat/history` reads `recent_messages.json` rather than
+/// way `GET /api/agents/{name}/chat/history` reads `recent_messages.json` rather than
 /// reaching into the live agent — this HTTP layer never holds a reference
 /// to it. Returns the zero default in setup mode (no memory dir yet).
 pub(super) async fn api_usage(State(state): State<ConfigApiState>) -> Json<SessionUsageTotals> {

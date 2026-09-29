@@ -9,32 +9,32 @@ use crate::config::secrets::{SecretStore, is_reference};
 
 use super::HubApiState;
 
-/// Request body for `POST /api/secrets`.
+/// Request body for `POST /api/hub/secrets`.
 #[derive(Deserialize)]
 pub(super) struct SetSecretRequest {
     pub name: String,
     pub value: String,
 }
 
-/// Response from `POST /api/secrets`.
+/// Response from `POST /api/hub/secrets`.
 #[derive(Serialize)]
 pub(super) struct SetSecretResponse {
     pub reference: String,
 }
 
-/// Response from `GET /api/secrets`.
+/// Response from `GET /api/hub/secrets`.
 #[derive(Serialize)]
 pub(super) struct ListSecretsResponse {
     pub names: Vec<String>,
 }
 
-/// Response from `DELETE /api/secrets/:name`.
+/// Response from `DELETE /api/hub/secrets/:name`.
 #[derive(Serialize)]
 pub(super) struct DeleteSecretResponse {
     pub deleted: bool,
 }
 
-/// `POST /api/secrets` — store a named secret in the encrypted store.
+/// `POST /api/hub/secrets` — store a named secret in the encrypted store.
 ///
 /// Rejects a value that is itself a reference (`secret:<name>` or
 /// `${ENV_VAR}`) rather than a literal to store — storing a reference
@@ -97,7 +97,7 @@ pub(super) async fn api_secrets_set(
     })?
 }
 
-/// `GET /api/secrets` — list stored secret names (not values).
+/// `GET /api/hub/secrets` — list stored secret names (not values).
 pub(super) async fn api_secrets_list(
     State(state): State<HubApiState>,
 ) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
@@ -122,7 +122,7 @@ pub(super) async fn api_secrets_list(
     })?
 }
 
-/// `DELETE /api/secrets/{name}` — remove a named secret.
+/// `DELETE /api/hub/secrets/{name}` — remove a named secret.
 pub(super) async fn api_secrets_delete(
     State(state): State<HubApiState>,
     Path(name): Path<String>,

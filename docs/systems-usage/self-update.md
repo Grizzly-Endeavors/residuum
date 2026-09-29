@@ -1,6 +1,6 @@
 # Self-Update, Rollback, and Startup Health
 
-Residuum can update its own binary and restart itself, from the web UI's Settings → Version page (`GET /api/update/status`, `POST /api/update/check`, `POST /api/update/apply`) or the CLI (`residuum update`, `residuum update -y`). Both paths funnel through `update::download_and_install`. This page covers what happens after that call, including how a bad update rolls itself back and how `residuum serve`/`residuum stop` know whether the gateway is actually healthy rather than merely running.
+Residuum can update its own binary and restart itself, from the web UI's Settings → Version page (`GET /api/hub/update/status`, `POST /api/hub/update/check`, `POST /api/hub/update/apply`) or the CLI (`residuum update`, `residuum update -y`). Both paths funnel through `update::download_and_install`. This page covers what happens after that call, including how a bad update rolls itself back and how `residuum serve`/`residuum stop` know whether the gateway is actually healthy rather than merely running.
 
 ## Readiness: What "Healthy" Means
 
@@ -22,7 +22,7 @@ If a last-known-good config fallback is in play elsewhere in the startup path, i
 The release workflow (`.github/workflows/release.yml`) publishes a `SHA256SUMS` asset next to the binaries: one SHA-256 hash per uploaded file, in `sha256sum` form (`hash  filename`, filename the asset's basename). Before the running binary is moved, the updater downloads that manifest and compares it to a hash of the bytes it just downloaded.
 
 - **Hash mismatch.** The install stops. The running binary stays where it is, nothing is renamed to `.prev`, and both `residuum update` and the Settings → Version page say the download was corrupt or incomplete and to try again. The expected and actual hashes are in the log.
-- **No `SHA256SUMS` asset** (HTTP 404 — releases published before checksums). The binary is still installed. `GET /api/update/status` includes `unverified_update` (version and timestamp, from `residuum.update-unverified.json`) until a later update whose checksum matches, and the Version page says this update couldn't be verified. `residuum update` prints the same note.
+- **No `SHA256SUMS` asset** (HTTP 404 — releases published before checksums). The binary is still installed. `GET /api/hub/update/status` includes `unverified_update` (version and timestamp, from `residuum.update-unverified.json`) until a later update whose checksum matches, and the Version page says this update couldn't be verified. `residuum update` prints the same note.
 - **Checksum couldn't be fetched, or the manifest doesn't list this binary, or it has no usable lines.** The install stops the same way a mismatch does: the running binary is untouched, and the message says the download couldn't be verified and to try again. A 404 is the only "no manifest" case; any other failure still means a checksum may exist for this release.
 
 A verified install clears `unverified_update`. A rollback clears it too, since the version it described is no longer the one running. An unverified install still leaves a `PendingRollback` marker, so the watchdog below restores the previous binary if the new one doesn't become healthy.
@@ -31,7 +31,7 @@ A successful install leaves a `PendingRollback` marker (`residuum.update-pending
 
 ## Two Restart Paths
 
-**Plain restart** — no `PendingRollback` marker present, e.g. `POST /api/update/restart` on its own. The binary didn't change, so there's nothing to roll back to if it fails: Unix `exec()`s the same process image in place (the PID and PID file stay valid); Windows starts a new process and this one exits, since Windows can't replace a running process image.
+**Plain restart** — no `PendingRollback` marker present, e.g. `POST /api/hub/update/restart` on its own. The binary didn't change, so there's nothing to roll back to if it fails: Unix `exec()`s the same process image in place (the PID and PID file stay valid); Windows starts a new process and this one exits, since Windows can't replace a running process image.
 
 **Rollback-capable restart** — a `PendingRollback` marker is present. Rather than exec'ing directly into the new (possibly broken) binary, the current process hands off to the update-rollback watchdog (`commands::update_watchdog`, invoked as the hidden `residuum update-watchdog` subcommand) and exits. Critically, the watchdog runs *from the preserved previous binary*, not the new one — so even a new binary that can't execute at all (wrong platform, truncated download, corrupted file) still gets supervised and rolled back, instead of taking the supervisor down with it.
 
@@ -44,6 +44,6 @@ The watchdog:
 
 ## Surfacing a Rollback
 
-`GET /api/update/status` includes `rollback_notice` whenever one is on disk — read fresh on every call, so it's visible even to someone who opens Settings well after the rollback happened, not just whoever was watching the update in progress. It's cleared automatically at the start of the next successful `download_and_install`, so it only ever describes the most recent attempt. The same response includes `unverified_update` when the installed version had no checksum, including for someone who opens Settings later.
+`GET /api/hub/update/status` includes `rollback_notice` whenever one is on disk — read fresh on every call, so it's visible even to someone who opens Settings well after the rollback happened, not just whoever was watching the update in progress. It's cleared automatically at the start of the next successful `download_and_install`, so it only ever describes the most recent attempt. The same response includes `unverified_update` when the installed version had no checksum, including for someone who opens Settings later.
 
-The Settings → Version page in the web UI reflects this instead of claiming an update in progress will "reconnect automatically" forever: while restarting, it polls `/api/update/status` and shows elapsed time; once the gateway answers again it shows one of three outcomes — updated to the new version, rolled back with the recorded reason, or (past a 90-second client-side window with no response at all) a prompt to check the logs on the machine running Residuum.
+The Settings → Version page in the web UI reflects this instead of claiming an update in progress will "reconnect automatically" forever: while restarting, it polls `/api/hub/update/status` and shows elapsed time; once the gateway answers again it shows one of three outcomes — updated to the new version, rolled back with the recorded reason, or (past a 90-second client-side window with no response at all) a prompt to check the logs on the machine running Residuum.

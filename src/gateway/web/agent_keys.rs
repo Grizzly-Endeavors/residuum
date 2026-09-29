@@ -13,7 +13,7 @@ use crate::agent_keys::{AgentKeyError, AgentKeyInfo, AgentKeys, KeyCreator, env_
 
 use super::HubApiState;
 
-/// Request body for `POST /api/agent-keys`.
+/// Request body for `POST /api/hub/agent-keys`.
 #[derive(Deserialize)]
 pub(super) struct SetAgentKeyRequest {
     pub name: String,
@@ -22,7 +22,7 @@ pub(super) struct SetAgentKeyRequest {
     pub description: Option<String>,
 }
 
-/// Response from `POST /api/agent-keys`.
+/// Response from `POST /api/hub/agent-keys`.
 #[derive(Serialize)]
 pub(super) struct SetAgentKeyResponse {
     pub name: String,
@@ -33,13 +33,13 @@ pub(super) struct SetAgentKeyResponse {
     pub warning: Option<String>,
 }
 
-/// Response from `GET /api/agent-keys`.
+/// Response from `GET /api/hub/agent-keys`.
 #[derive(Serialize)]
 pub(super) struct ListAgentKeysResponse {
     pub keys: Vec<AgentKeyInfo>,
 }
 
-/// Response from `DELETE /api/agent-keys/{name}`.
+/// Response from `DELETE /api/hub/agent-keys/{name}`.
 #[derive(Serialize)]
 pub(super) struct DeleteAgentKeyResponse {
     pub deleted: bool,
@@ -61,7 +61,7 @@ fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
     (status, e.to_string())
 }
 
-/// `GET /api/agent-keys` — list keys (metadata only, never values).
+/// `GET /api/hub/agent-keys` — list keys (metadata only, never values).
 pub(super) async fn api_agent_keys_list(
     State(state): State<HubApiState>,
 ) -> Result<Json<ListAgentKeysResponse>, (StatusCode, String)> {
@@ -74,7 +74,7 @@ pub(super) async fn api_agent_keys_list(
     }))
 }
 
-/// `POST /api/agent-keys` — store a key as user-created.
+/// `POST /api/hub/agent-keys` — store a key as user-created.
 pub(super) async fn api_agent_keys_set(
     State(state): State<HubApiState>,
     Json(req): Json<SetAgentKeyRequest>,
@@ -98,7 +98,7 @@ pub(super) async fn api_agent_keys_set(
     }))
 }
 
-/// `DELETE /api/agent-keys/{name}` — remove a key.
+/// `DELETE /api/hub/agent-keys/{name}` — remove a key.
 pub(super) async fn api_agent_keys_delete(
     State(state): State<HubApiState>,
     Path(name): Path<String>,

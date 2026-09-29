@@ -25,7 +25,7 @@ pub(super) struct StatusResponse {
     checkpoints: CheckpointsStatus,
 }
 
-/// Per-repository checkpoint stats shown in `/api/status`.
+/// Per-repository checkpoint stats shown in `/api/agents/{name}/status`.
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
     workspace: Option<crate::checkpoints::RepoStats>,
@@ -125,7 +125,7 @@ pub(super) struct CompleteSetupRequest {
     mcp_json: Option<String>,
 }
 
-/// `GET /api/status` — returns `{ mode, version, features, checkpoints }`.
+/// `GET /api/agents/{name}/status` — returns `{ mode, version, features, checkpoints }`.
 pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<StatusResponse> {
     Json(StatusResponse {
         mode: "running",
@@ -146,7 +146,7 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
 }
 
 /// A repo's checkpoint stats, or `None` (logged) if they couldn't be read —
-/// `/api/status` degrades rather than failing over a checkpoint read.
+/// `/api/agents/{name}/status` degrades rather than failing over a checkpoint read.
 async fn checkpoint_stats_or_log(
     state: &ConfigApiState,
     kind: crate::checkpoints::RepoKind,
@@ -296,7 +296,7 @@ pub(super) async fn api_hub_config_validate(
     ))
 }
 
-/// `GET /api/config/raw` — return raw `config.toml` contents as text.
+/// `GET /api/agents/{name}/config/raw` — return raw `config.toml` contents as text.
 pub(super) async fn api_config_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -318,7 +318,7 @@ pub(super) async fn api_config_raw_get(
         })
 }
 
-/// `PUT /api/config/raw` — write TOML body, save unconditionally, trigger
+/// `PUT /api/agents/{name}/config/raw` — write TOML body, save unconditionally, trigger
 /// reload if running, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation: a config
@@ -360,7 +360,7 @@ pub(super) async fn api_config_raw_put(
     )))
 }
 
-/// `PATCH /api/config/patch` — merge a JSON diff into the existing
+/// `PATCH /api/agents/{name}/config/patch` — merge a JSON diff into the existing
 /// `config.toml`, validate, save, trigger reload if running.
 ///
 /// The diff's shape mirrors `config.toml`'s section/key layout, carrying
@@ -447,7 +447,7 @@ pub(super) async fn api_config_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/config/validate` — validate TOML body without saving.
+/// `POST /api/agents/{name}/config/validate` — validate TOML body without saving.
 pub(super) async fn api_config_validate(
     State(state): State<ConfigApiState>,
     body: String,
@@ -459,7 +459,7 @@ pub(super) async fn api_config_validate(
     ))
 }
 
-/// `GET /api/mcp/raw` — return raw `mcp.json` contents as JSON.
+/// `GET /api/agents/{name}/mcp/raw` — return raw `mcp.json` contents as JSON.
 ///
 /// Returns `{"mcpServers":{}}` if the file doesn't exist yet.
 pub(super) async fn api_mcp_raw_get(
@@ -489,7 +489,7 @@ pub(super) async fn api_mcp_raw_get(
         })
 }
 
-/// `PUT /api/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
+/// `PUT /api/agents/{name}/mcp/raw` — write `mcp.json`, save unconditionally, trigger a
 /// workspace reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation: the loader
@@ -535,7 +535,7 @@ pub(super) async fn api_mcp_raw_put(
     )))
 }
 
-/// `PATCH /api/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
+/// `PATCH /api/agents/{name}/mcp/patch` — merge a JSON diff into the existing `mcp.json`.
 ///
 /// The diff's shape mirrors `mcp.json`: `{"mcpServers": {"<name>": {...}}}`.
 /// Only the fields the Settings form actually changed need to be present —
@@ -802,13 +802,13 @@ pub(super) async fn api_complete_setup(
     }))
 }
 
-/// `GET /api/system/timezone` — auto-detect system timezone.
+/// `GET /api/hub/system/timezone` — auto-detect system timezone.
 pub(super) async fn api_system_timezone() -> Json<TimezoneResponse> {
     let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
     Json(TimezoneResponse { timezone: tz })
 }
 
-/// `GET /api/mcp-catalog` — serve the embedded MCP catalog JSON.
+/// `GET /api/hub/mcp-catalog` — serve the embedded MCP catalog JSON.
 pub(super) async fn api_mcp_catalog() -> Response {
     use axum::http::StatusCode;
 

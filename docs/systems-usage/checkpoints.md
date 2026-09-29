@@ -14,13 +14,13 @@ The workspace repository never includes data Residuum rebuilds itself (the searc
 
 The agent-config repository is a fixed allowlist relative to the agent's `config/` directory: `config.toml` and `providers.toml`, each included only when it currently exists. The hub-config repository is a fixed allowlist relative to `~/.residuum/hub/`: `config.toml`, `secrets.toml.enc`, `agent-keys.toml.enc`, and `a2a-keys.toml`, each included only when it currently exists. The machine key files these encrypted stores are decrypted with (`secrets.key`, `agent-keys.key`) are never in that list and are never checkpointed — restoring an encrypted store's `.enc` file only works because its machine key is untouched.
 
-There is no retention or pruning. Every checkpoint stays forever; `GET /api/checkpoints/stats` and `/api/status` show each repository's on-disk size and checkpoint count so its growth is visible.
+There is no retention or pruning. Every checkpoint stays forever; `GET /api/hub/checkpoints/stats` (hub and team), `GET /api/agents/{name}/checkpoints/stats` (workspace and agent config), and `/api/agents/{name}/status` show each repository's on-disk size and checkpoint count so its growth is visible.
 
 ## When checkpoints are taken
 
 The workspace repository and the team repository are checkpointed at the start of every agent turn — main's and every background/session turn — if the tree changed since the last checkpoint, attributed as an outside edit; and at the end of every turn, attributed with a short summary of what the turn did. Each repository is also checkpointed immediately before a destructive workspace API action that touches it: deleting a file or directory, overwriting via raw PUT, and moving or renaming (with or without overwrite). A `team/...` path is checkpointed in the team repository and any other path in the workspace repository, so a move between the agent directory and `team/` checkpoints both. The team repository is also checkpointed immediately before deleting a workbench artifact (the workbench lives in `team/workbench/`). Writes an agent's file tools make under `team/` are covered by the team repository's turn-start and turn-end checkpoints.
 
-The workspace API responses that carry a checkpoint (`DELETE /api/workspace/file`, `PUT /api/workspace/raw`, `POST /api/workspace/move`) name the repository that holds it: `checkpoint_id` with `checkpoint_repo` (`workspace` or `team`) for one checkpoint, or a `checkpoints` list of `{ checkpoint_id, checkpoint_repo }` entries (workspace first, then team) with a null `checkpoint_id` when a move spanned both directories. Paths to restore are relative to the named repository's root, so a `team/wiki/a.md` path restores as `wiki/a.md` from the team checkpoint.
+The workspace API responses that carry a checkpoint (`DELETE /api/agents/{name}/workspace/file`, `PUT /api/agents/{name}/workspace/raw`, `POST /api/agents/{name}/workspace/move`) name the repository that holds it: `checkpoint_id` with `checkpoint_repo` (`workspace` or `team`) for one checkpoint, or a `checkpoints` list of `{ checkpoint_id, checkpoint_repo }` entries (workspace first, then team) with a null `checkpoint_id` when a move spanned both directories. Paths to restore are relative to the named repository's root, so a `team/wiki/a.md` path restores as `wiki/a.md` from the team checkpoint.
 
 The agent-config repository is checkpointed immediately before any write to the agent's own `config.toml` or `providers.toml`: a raw PUT or a settings-patch save, or the setup wizard's writes. The hub-config repository is checkpointed immediately before any write to the hub's `config.toml` or an encrypted key store: every set/delete of a secret, an agent key (from the Settings UI), or an A2A caller key, the agent's own `agent_key_delete` tool and the `exec` tool's `store_output_as` parameter, and the equivalent `residuum secret`, `residuum agent-keys`, `residuum a2a keys`, and `residuum setup` CLI commands. The CLI commands open their own short-lived `CheckpointEngine` against the same on-disk repositories the gateway uses, rather than sharing the running gateway's instance.
 
@@ -45,19 +45,22 @@ A restore or undo in the team repository (from this tool or from the web UI) goe
 
 ## HTTP API
 
-Backs the web UI's history view: every route takes `repo` (`workspace`, `team`, `agent_config`, or `hub`) as a query parameter or request-body field.
+Backs the web UI's history view: every route takes `repo` (`workspace`, `team`, `agent_config`, or `hub`) as a query parameter or request-body field. The routes are served twice, and each scope answers `400` for a repository that is not its own:
 
-| Route | Does |
+- `/api/hub/checkpoints...` serves the `hub` and `team` repositories, which exist once per process.
+- `/api/agents/{name}/checkpoints...` serves that agent's `workspace` and `agent_config` repositories. It works whether or not the agent is running.
+
+| Route (under either prefix) | Does |
 |-------|------|
-| `GET /api/checkpoints` | One page of checkpoints, newest first. `path` restricts to checkpoints that changed it; `turn_id` restricts to the checkpoints recorded against one turn (its turn-start/turn-end pair — how the UI finds a turn's checkpoints for "undo this turn"); `before` and `limit` page. |
-| `GET /api/checkpoints/stats` | On-disk size, checkpoint count, and oldest checkpoint for a repository. |
-| `GET /api/checkpoints/{id}` | A checkpoint's metadata plus the paths it changed. |
-| `GET /api/checkpoints/{id}/diff` | Unified diff for one `path` at a checkpoint, relative to the checkpoint before it. |
-| `GET /api/checkpoints/{id}/file` | A file's raw content at a checkpoint. |
-| `POST /api/checkpoints/{id}/restore` | Restores `path` to this checkpoint. |
-| `POST /api/checkpoints/{id}/undo` | Undoes this checkpoint's changes. |
+| `GET /checkpoints` | One page of checkpoints, newest first. `path` restricts to checkpoints that changed it; `turn_id` restricts to the checkpoints recorded against one turn (its turn-start/turn-end pair — how the UI finds a turn's checkpoints for "undo this turn"); `before` and `limit` page. |
+| `GET /checkpoints/stats` | On-disk size, checkpoint count, and oldest checkpoint for a repository. |
+| `GET /checkpoints/{id}` | A checkpoint's metadata plus the paths it changed. |
+| `GET /checkpoints/{id}/diff` | Unified diff for one `path` at a checkpoint, relative to the checkpoint before it. |
+| `GET /checkpoints/{id}/file` | A file's raw content at a checkpoint. |
+| `POST /checkpoints/{id}/restore` | Restores `path` to this checkpoint. |
+| `POST /checkpoints/{id}/undo` | Undoes this checkpoint's changes. |
 
-`/api/status` additionally carries a `checkpoints` field with each repository's stats, so size is visible without the routes above.
+`/api/agents/{name}/status` additionally carries a `checkpoints` field with each repository's stats, so size is visible without the routes above.
 
 ## Web UI
 
@@ -67,4 +70,4 @@ The Workspace file browser opens the same history, filtered to one file, from a 
 
 A turn's own checkpoint pair is exposed as "Undo this turn" on the user message that started it, in both the main chat and a session view, once it's confirmed the turn changed the workspace — hidden while that's still being checked or once it's confirmed the turn changed nothing. This is only available for a turn observed live in the current connection: checkpoints don't persist a turn's id into chat history, so an older turn is only undoable from Settings → History (find its checkpoint, undo it there).
 
-Every other destructive action reachable from Settings or the workspace browser fires on a single click. Agent key delete, A2A key revoke, workbench artifact delete, and workspace file delete each return `checkpoint_id`: the checkpoint that holds the tree from just before the action (in the team repository for a workbench artifact delete, which restores each of the artifact's removed page, folder, and data files; a workspace file delete also returns `checkpoint_repo`, `team` for a `team/...` path). The workspace browser's Undo restores a `team/...` path from the team checkpoint, relative to `team/`, and any other path from the workspace checkpoint. The result toast's Undo restores that checkpoint's copy of the affected path, even if a newer checkpoint was taken in the meantime. When the checkpoint could not be recorded the field is null, the action still completes, and the toast has no Undo. Removals from the Settings form (an MCP server, a provider, a webhook) autosave a moment later through `PATCH /api/config/patch`, `/api/hub/config/patch`, `/api/providers/patch`, or `/api/mcp/patch`, and each of those returns the same `checkpoint_id` for its write. Their Undo depends on whether that save has written the removal yet: before it has, Undo cancels the pending save and puts the entry back in the form; once it has, Undo restores the file from the checkpoint that save reported, which brings back the whole entry, including fields the form doesn't show. If that save's checkpoint failed, Undo says so instead of rebuilding the entry from the form.
+Every other destructive action reachable from Settings or the workspace browser fires on a single click. Agent key delete, A2A key revoke, workbench artifact delete, and workspace file delete each return `checkpoint_id`: the checkpoint that holds the tree from just before the action (in the team repository for a workbench artifact delete, which restores each of the artifact's removed page, folder, and data files; a workspace file delete also returns `checkpoint_repo`, `team` for a `team/...` path). The workspace browser's Undo restores a `team/...` path from the team checkpoint, relative to `team/`, and any other path from the workspace checkpoint. The result toast's Undo restores that checkpoint's copy of the affected path, even if a newer checkpoint was taken in the meantime. When the checkpoint could not be recorded the field is null, the action still completes, and the toast has no Undo. Removals from the Settings form (an MCP server, a provider, a webhook) autosave a moment later through `PATCH /api/agents/{name}/config/patch`, `/api/hub/config/patch`, `/api/agents/{name}/providers/patch`, or `/api/agents/{name}/mcp/patch`, and each of those returns the same `checkpoint_id` for its write. Their Undo depends on whether that save has written the removal yet: before it has, Undo cancels the pending save and puts the entry back in the form; once it has, Undo restores the file from the checkpoint that save reported, which brings back the whole entry, including fields the form doesn't show. If that save's checkpoint failed, Undo says so instead of rebuilding the entry from the form.

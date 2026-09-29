@@ -46,7 +46,7 @@ Actions are checked on a 30-second tick. When `run_at` has passed:
 
 ## Scheduled View
 
-The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/scheduled/actions` and `DELETE /api/scheduled/actions/{id}`.
+The web UI's Scheduled view (hamburger menu, `/scheduled`) lists every pending action — what it does, when it's due, its agent/skill, and whether it's currently running — with a cancel button for each, backed by `GET /api/agents/<agent>/scheduled/actions` and `DELETE /api/agents/<agent>/scheduled/actions/{id}`.
 
 ## Gotchas
 

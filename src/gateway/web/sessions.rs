@@ -1,13 +1,13 @@
 //! Agent sessions HTTP API: the sessions sidebar's listing and transcripts,
 //! and the start, stop, and message endpoints workbench artifacts use.
 //!
-//! - `GET /api/sessions` — live sessions plus a page of completed runs.
-//! - `GET /api/sessions/runs/{run_id}/transcript` — one run's transcript in
+//! - `GET /api/agents/{name}/sessions` — live sessions plus a page of completed runs.
+//! - `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` — one run's transcript in
 //!   the chat-history message shape.
-//! - `POST /api/sessions` — start an `artifact` session for the artifact
+//! - `POST /api/agents/{name}/sessions` — start an `artifact` session for the artifact
 //!   named by the request's identity header.
-//! - `POST /api/sessions/{address}/stop` — stop a live session.
-//! - `POST /api/sessions/{address}/messages` — send a session a message.
+//! - `POST /api/agents/{name}/sessions/{address}/stop` — stop a live session.
+//! - `POST /api/agents/{name}/sessions/{address}/messages` — send a session a message.
 //!
 //! Live updates arrive over the WebSocket as `session_*` frames; these
 //! endpoints give the sidebar its starting state and a finished run's
@@ -88,7 +88,7 @@ pub(crate) fn sessions_api_router(state: SessionsApiState) -> axum::Router {
 /// An API failure: a status code and a plain-language explanation.
 type ApiError = (StatusCode, String);
 
-/// Query parameters for `GET /api/sessions`.
+/// Query parameters for `GET /api/agents/{name}/sessions`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct SessionListQuery {
     /// Only sessions in this category (`scheduled`, `external`, `spawned`).
@@ -108,7 +108,7 @@ pub(crate) struct SessionListQuery {
     limit: Option<usize>,
 }
 
-/// `GET /api/sessions` — every live session plus one page of completed runs,
+/// `GET /api/agents/{name}/sessions` — every live session plus one page of completed runs,
 /// both newest first and both filtered by `category`, `address`, and
 /// `artifact` when given. `artifact` keeps only the sessions that artifact
 /// started (trigger `Artifact(<name>)`), not sessions those spawned in turn.
@@ -215,18 +215,18 @@ pub(crate) async fn api_sessions_list(
     }))
 }
 
-/// `GET /api/sessions/runs/{run_id}/transcript` response.
+/// `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionTranscriptResponse {
     /// The run, with its current state when it is still live.
     session: SessionSummary,
-    /// Its transcript so far, in the same shape `GET /api/chat/history`
+    /// Its transcript so far, in the same shape `GET /api/agents/{name}/chat/history`
     /// returns. Runs don't record per-message times, so every message
     /// carries the run's start time.
     messages: Vec<RecentMessage>,
 }
 
-/// `GET /api/sessions/runs/{run_id}/transcript` — one run's transcript.
+/// `GET /api/agents/{name}/sessions/runs/{run_id}/transcript` — one run's transcript.
 ///
 /// A live run's transcript is read from its incremental transcript (current
 /// to the last message produced); a completed run's from its final record.
@@ -326,7 +326,7 @@ fn command_error_response(e: SessionCommandError) -> Response {
         .into_response()
 }
 
-/// `POST /api/sessions` request body.
+/// `POST /api/agents/{name}/sessions` request body.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionStartRequest {
@@ -343,7 +343,7 @@ pub(crate) struct SessionStartRequest {
     model: Option<String>,
 }
 
-/// `POST /api/sessions` response.
+/// `POST /api/agents/{name}/sessions` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionStartResponse {
     /// The new session's address. Its run id arrives in the
@@ -351,7 +351,7 @@ pub(crate) struct SessionStartResponse {
     address: String,
 }
 
-/// `POST /api/sessions` — start an `artifact` session for the artifact named
+/// `POST /api/agents/{name}/sessions` — start an `artifact` session for the artifact named
 /// by the request's identity header.
 ///
 /// The session is a fork of the main agent like a spawned one, at depth 1
@@ -496,14 +496,14 @@ fn artifact_session_context(artifact: &str, extra: Option<&str>) -> String {
     }
 }
 
-/// `POST /api/sessions/{address}/stop` response.
+/// `POST /api/agents/{name}/sessions/{address}/stop` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionStopResponse {
     /// The session being stopped.
     address: String,
 }
 
-/// `POST /api/sessions/{address}/stop` — stop a live session, as the
+/// `POST /api/agents/{name}/sessions/{address}/stop` — stop a live session, as the
 /// WebSocket's `session_stop` command does. Serves any session, not only
 /// artifact sessions.
 ///
@@ -520,7 +520,7 @@ pub(crate) async fn api_session_stop(
     }
 }
 
-/// `POST /api/sessions/{address}/messages` request body.
+/// `POST /api/agents/{name}/sessions/{address}/messages` request body.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionMessageRequest {
@@ -528,14 +528,14 @@ pub(crate) struct SessionMessageRequest {
     content: String,
 }
 
-/// `POST /api/sessions/{address}/messages` response.
+/// `POST /api/agents/{name}/sessions/{address}/messages` response.
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionMessageResponse {
     /// Where the message landed.
     outcome: SessionDeliveryOutcome,
 }
 
-/// `POST /api/sessions/{address}/messages` — send a session a message, with
+/// `POST /api/agents/{name}/sessions/{address}/messages` — send a session a message, with
 /// the WebSocket's `session_send_message` delivery rules. With an artifact
 /// identity header the session sees the message as that artifact's;
 /// without one, as the owner's. Serves any session, not only artifact

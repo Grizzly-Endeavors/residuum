@@ -14,7 +14,7 @@ use crate::inference::providers::anthropic::is_oauth_key;
 use super::config::{PatchSavedResponse, ValidateResponse};
 use super::{ConfigApiState, HubDir};
 
-/// Request body for `POST /api/providers/models`.
+/// Request body for `POST /api/hub/providers/models` (and the same route under an agent).
 #[derive(Deserialize)]
 pub(super) struct ModelsRequest {
     provider: String,
@@ -382,7 +382,7 @@ async fn fetch_ollama_models(
         .collect())
 }
 
-/// `GET /api/providers/raw` — return raw `providers.toml` contents as text.
+/// `GET /api/agents/{name}/providers/raw` — return raw `providers.toml` contents as text.
 pub(super) async fn api_providers_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -406,7 +406,7 @@ pub(super) async fn api_providers_raw_get(
         })
 }
 
-/// `PUT /api/providers/raw` — write `providers.toml` unconditionally, save,
+/// `PUT /api/agents/{name}/providers/raw` — write `providers.toml` unconditionally, save,
 /// trigger reload, and report diagnostics.
 ///
 /// The save always succeeds, even when `body` fails validation — see
@@ -445,7 +445,7 @@ pub(super) async fn api_providers_raw_put(
     )))
 }
 
-/// `PATCH /api/providers/patch` — merge a JSON diff into the existing
+/// `PATCH /api/agents/{name}/providers/patch` — merge a JSON diff into the existing
 /// `providers.toml`, validate, save, trigger reload if running.
 ///
 /// The diff's shape mirrors `providers.toml`'s section/key layout, carrying
@@ -528,7 +528,7 @@ pub(super) async fn api_providers_patch(
     Ok(Json(PatchSavedResponse::saved(checkpoint_id)))
 }
 
-/// `POST /api/providers/validate` — validate providers TOML body without saving.
+/// `POST /api/agents/{name}/providers/validate` — validate providers TOML body without saving.
 pub(super) async fn api_providers_validate(
     State(state): State<ConfigApiState>,
     body: String,

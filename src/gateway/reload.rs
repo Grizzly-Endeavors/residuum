@@ -601,7 +601,7 @@ async fn rebuild_cheap_components(rt: &mut GatewayRuntime, new_cfg: &Config) {
     reload_providers(rt, new_cfg, http_client.clone()).await;
     rt.spawn_context = build_spawn_context(rt, new_cfg, http_client.clone());
     // Pushes to the model-call HTTP endpoint's watch receiver, so `POST
-    // /api/model/complete` resolves providers from this reload without the
+    // /api/agents/{name}/model/complete` resolves providers from this reload without the
     // HTTP router being rebuilt. `.ok()`: the only way this fails is no
     // receiver remaining, which can't happen while the server is running.
     rt.model_call_resources_tx

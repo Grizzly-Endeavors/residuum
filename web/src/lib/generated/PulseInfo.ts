@@ -3,7 +3,7 @@ import type { ScheduledCurrentRun } from "./ScheduledCurrentRun";
 import type { ScheduledRunOutcome } from "./ScheduledRunOutcome";
 
 /**
- * One pulse, as listed by `GET /api/scheduled/pulses`.
+ * One pulse, as listed by `GET /api/agents/{name}/scheduled/pulses`.
  */
 export type PulseInfo = { name: string, 
 /**

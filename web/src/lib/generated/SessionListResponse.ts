@@ -2,7 +2,7 @@
 import type { SessionSummary } from "./SessionSummary";
 
 /**
- * `GET /api/sessions` response: live sessions plus one page of completed
+ * `GET /api/agents/{name}/sessions` response: live sessions plus one page of completed
  * runs.
  */
 export type SessionListResponse = { 

@@ -2,6 +2,6 @@
 import type { ScheduledCurrentRun } from "./ScheduledCurrentRun";
 
 /**
- * One pending scheduled action, as listed by `GET /api/scheduled/actions`.
+ * One pending scheduled action, as listed by `GET /api/agents/{name}/scheduled/actions`.
  */
 export type ActionInfo = { id: string, name: string, run_at: string, agent: string | null, model_tier: string | null, current_run: ScheduledCurrentRun | null, };

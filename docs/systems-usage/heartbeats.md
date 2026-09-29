@@ -96,7 +96,7 @@ Every pulse-triggered session run is framed in its prompt as autonomous: no user
 
 ## Diagnostics
 
-Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/workspace/validate` reports the same problems `load_heartbeat` would reject or drop, one diagnostic per problem: a whole-document YAML syntax error (with the parser's line/column), a non-list top-level `pulses` key, a pulse entry that fails to deserialize on its own (e.g. a `schedule` given as something other than a string), a pulse using a removed option (`agent: "main"`, `include_identity`), or a duplicate pulse name. One bad pulse doesn't hide problems in the others — each gets its own diagnostic naming that pulse. The save always goes through — a diagnostic names the problem instead of the write being rejected, so a mistake is visible immediately rather than only showing up as a scheduler warning after the fact.
+Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the workspace editor, or `POST /api/agents/{name}/workspace/validate` reports the same problems `load_heartbeat` would reject or drop, one diagnostic per problem: a whole-document YAML syntax error (with the parser's line/column), a non-list top-level `pulses` key, a pulse entry that fails to deserialize on its own (e.g. a `schedule` given as something other than a string), a pulse using a removed option (`agent: "main"`, `include_identity`), or a duplicate pulse name. One bad pulse doesn't hide problems in the others — each gets its own diagnostic naming that pulse. The save always goes through — a diagnostic names the problem instead of the write being rejected, so a mistake is visible immediately rather than only showing up as a scheduler warning after the fact.
 
 ## Scheduling Behavior
 
@@ -111,7 +111,7 @@ Editing `HEARTBEAT.yml` through the agent's `write_file`/`edit_file` tools, the 
 
 The web UI's Scheduled view (opened from the hamburger menu, and at `/scheduled`) lists every pulse: its schedule, active hours, agent/skill, enabled flag, estimated next fire time, last outcome (with the time and, for a failure, the error), whether it's currently running (and whether that run is overlapping the previous one), and any HEARTBEAT.yml loading problems naming it. Toggling a pulse's enabled switch flips the `enabled` value for that one pulse in HEARTBEAT.yml in place — the rest of the file, including comments and formatting, is left byte-for-byte untouched. The same view lists pending scheduled actions (see [scheduled-actions.md](scheduled-actions.md)) with a cancel button for each.
 
-Backed by `GET /api/scheduled/pulses`, `PUT /api/scheduled/pulses/{name}/enabled`, `GET /api/scheduled/actions`, and `DELETE /api/scheduled/actions/{id}`. The view refetches on a `workspace_changed` frame naming `HEARTBEAT.yml` or `scheduled_actions.json`, and on any `scheduled`-category session lifecycle frame, rather than polling.
+Backed by `GET /api/agents/{name}/scheduled/pulses`, `PUT /api/agents/{name}/scheduled/pulses/{pulse}/enabled`, `GET /api/agents/{name}/scheduled/actions`, and `DELETE /api/agents/{name}/scheduled/actions/{id}`. The view refetches on a `workspace_changed` frame naming `HEARTBEAT.yml` or `scheduled_actions.json`, and on any `scheduled`-category session lifecycle frame, rather than polling.
 
 ## Result Routing
 

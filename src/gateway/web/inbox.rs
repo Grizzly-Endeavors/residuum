@@ -95,7 +95,7 @@ async fn to_api_item(
     }
 }
 
-/// `GET /api/inbox` — List all user inbox items.
+/// `GET /api/agents/{name}/inbox` — List all user inbox items.
 pub(super) async fn api_inbox_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
@@ -120,7 +120,7 @@ pub(super) async fn api_inbox_list(
     Ok(Json(api_items))
 }
 
-/// `GET /api/inbox/archive` — List all archived user inbox items.
+/// `GET /api/agents/{name}/inbox/archive` — List all archived user inbox items.
 pub(super) async fn api_inbox_archive_list(
     State(state): State<ConfigApiState>,
 ) -> Result<Json<Vec<ApiInboxItem>>, (StatusCode, String)> {
@@ -143,7 +143,7 @@ pub(super) async fn api_inbox_archive_list(
     Ok(Json(api_items))
 }
 
-/// `PUT /api/inbox/:id/read` — Mark an inbox item as read.
+/// `PUT /api/agents/{name}/inbox/:id/read` — Mark an inbox item as read.
 pub(super) async fn api_inbox_read(
     Path(id): Path<String>,
     State(state): State<ConfigApiState>,
@@ -164,7 +164,7 @@ pub(super) async fn api_inbox_read(
     Ok(Json(to_api_item(id, item, &attachments_root).await))
 }
 
-/// `POST /api/inbox/:id/archive` — Archive an inbox item.
+/// `POST /api/agents/{name}/inbox/:id/archive` — Archive an inbox item.
 pub(super) async fn api_inbox_archive(
     Path(id): Path<String>,
     State(state): State<ConfigApiState>,
@@ -185,7 +185,7 @@ pub(super) async fn api_inbox_archive(
     Ok(Json(()))
 }
 
-/// `POST /api/inbox/:id/restore` — Restore an archived inbox item back to
+/// `POST /api/agents/{name}/inbox/:id/restore` — Restore an archived inbox item back to
 /// the active inbox — the one way to undo `api_inbox_archive`.
 pub(super) async fn api_inbox_restore(
     Path(id): Path<String>,
@@ -236,7 +236,7 @@ async fn confine(
         .then_some(candidate_canon)
 }
 
-/// `GET /api/inbox/:id/attachments/:index` — Serve one of a user inbox item's
+/// `GET /api/agents/{name}/inbox/:id/attachments/:index` — Serve one of a user inbox item's
 /// attachments by its position in the item's attachment list.
 ///
 /// Checks the active inbox first, then the archive, so a link handed out before
@@ -294,7 +294,7 @@ pub(super) async fn api_inbox_attachment(
     response
 }
 
-/// Build the agent-inbox API router (`POST /api/agent-inbox`).
+/// Build the agent-inbox API router (`POST /api/agents/{name}/agent-inbox`).
 ///
 /// A workbench artifact's only way to hand the agent something to triage
 /// later — there is no equivalent write endpoint for the user inbox, which
@@ -305,7 +305,7 @@ pub(crate) fn agent_inbox_api_router(state: GatewayState) -> axum::Router {
         .with_state(state)
 }
 
-/// Request body for `POST /api/agent-inbox`.
+/// Request body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Deserialize)]
 pub(super) struct AgentInboxAddRequest {
     /// Defaults to the body's first line, in full, when absent or blank.
@@ -314,7 +314,7 @@ pub(super) struct AgentInboxAddRequest {
     pub body: String,
 }
 
-/// Response body for `POST /api/agent-inbox`.
+/// Response body for `POST /api/agents/{name}/agent-inbox`.
 #[derive(Debug, Serialize)]
 pub(super) struct AgentInboxAddResponse {
     /// The new item's ID (its filename stem), as used by `inbox_read` and
@@ -322,7 +322,7 @@ pub(super) struct AgentInboxAddResponse {
     pub id: String,
 }
 
-/// `POST /api/agent-inbox` — add an item to the agent's inbox, the same
+/// `POST /api/agents/{name}/agent-inbox` — add an item to the agent's inbox, the same
 /// place the WS `/inbox` command and the notification router's `inbox`
 /// target write to. The source is `artifact:<name>` when the request carries
 /// the artifact identity header (set by the workbench bridge), `"web"`

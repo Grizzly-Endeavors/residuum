@@ -1,4 +1,4 @@
-//! Model call API: `POST /api/model/complete`, a one-shot request/response
+//! Model call API: `POST /api/agents/{name}/model/complete`, a one-shot request/response
 //! call to the background `small` model on behalf of an artifact (design
 //! §7). No agent, no tools, no memory, no identity files — the model sees
 //! only what the caller sends.
@@ -25,7 +25,7 @@ use crate::inference::{
 /// header (a direct `web-ui` caller, not relayed through an artifact frame).
 const WEB_UI_IDENTITY: &str = "web-ui";
 
-/// The subset of `SpawnContext` `POST /api/model/complete` needs: enough to
+/// The subset of `SpawnContext` `POST /api/agents/{name}/model/complete` needs: enough to
 /// resolve the small tier's provider chain and its `bg_small` overrides,
 /// kept separate from `SpawnContext` so the HTTP layer doesn't carry every
 /// session-fork dependency (session registries, MCP, action store, ...)
@@ -86,7 +86,7 @@ pub(crate) fn model_api_router(state: ModelApiState) -> axum::Router {
         .with_state(state)
 }
 
-/// One message in a `POST /api/model/complete` request.
+/// One message in a `POST /api/agents/{name}/model/complete` request.
 #[derive(Deserialize)]
 struct RequestMessage {
     role: String,
@@ -95,7 +95,7 @@ struct RequestMessage {
     images: Vec<ImageData>,
 }
 
-/// Body for `POST /api/model/complete` (design §7): either `{ "prompt" }`
+/// Body for `POST /api/agents/{name}/model/complete` (design §7): either `{ "prompt" }`
 /// shorthand for one user message, or `system`/`messages` for a full
 /// conversation, plus optional `schema`, `max_tokens`, and `temperature`.
 #[derive(Deserialize)]
@@ -131,7 +131,7 @@ impl From<Usage> for UsageResponse {
     }
 }
 
-/// Response from `POST /api/model/complete`.
+/// Response from `POST /api/agents/{name}/model/complete`.
 #[derive(Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 struct ModelCompleteResponse {
@@ -334,7 +334,7 @@ async fn run_completion(
     }
 }
 
-/// `POST /api/model/complete` — a one-shot small-model call on an
+/// `POST /api/agents/{name}/model/complete` — a one-shot small-model call on an
 /// artifact's behalf (design §7).
 pub(super) async fn api_model_complete(
     State(state): State<ModelApiState>,
