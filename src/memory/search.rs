@@ -249,7 +249,7 @@ impl MemoryIndex {
             doc_ids.push(doc_id);
         }
 
-        self.commit_and_reload(&mut writer)?;
+        self.commit_and_reload(writer)?;
         Ok(doc_ids)
     }
 
@@ -272,7 +272,7 @@ impl MemoryIndex {
             doc_ids.push(chunk.chunk_id.clone());
         }
 
-        self.commit_and_reload(&mut writer)?;
+        self.commit_and_reload(writer)?;
         Ok(doc_ids)
     }
 
@@ -285,12 +285,12 @@ impl MemoryIndex {
             return Ok(());
         }
 
-        let mut writer = self.writer()?;
+        let writer = self.writer()?;
         for id in ids {
             let term = Term::from_field_text(self.id_field, id);
             writer.delete_term(term);
         }
-        self.commit_and_reload(&mut writer)
+        self.commit_and_reload(writer)
     }
 
     /// Replace wiki page documents in one commit.
@@ -307,7 +307,7 @@ impl MemoryIndex {
         removed_ids: &[String],
         replace_all: bool,
     ) -> anyhow::Result<()> {
-        let mut writer = self.writer()?;
+        let writer = self.writer()?;
         if replace_all {
             writer.delete_term(Term::from_field_text(
                 self.source_type_field,
@@ -330,7 +330,7 @@ impl MemoryIndex {
                 .add_document(doc)
                 .with_context(|| format!("failed to add wiki page {} to search index", page.id))?;
         }
-        self.commit_and_reload(&mut writer)
+        self.commit_and_reload(writer)
     }
 
     /// Search the index with a query string and optional filters.
@@ -483,7 +483,7 @@ impl MemoryIndex {
             ));
         }
 
-        self.commit_and_reload(&mut writer)?;
+        self.commit_and_reload(writer)?;
         tracing::info!(
             obs_count = result.obs_count,
             chunk_count = result.chunk_count,
@@ -569,7 +569,7 @@ impl MemoryIndex {
             );
         }
 
-        self.commit_and_reload(&mut writer)?;
+        self.commit_and_reload(writer)?;
         tracing::info!(
             added = stats.added,
             updated = stats.updated,
@@ -587,12 +587,25 @@ impl MemoryIndex {
             .context("failed to create index writer")
     }
 
-    /// Commit the writer and reload the reader.
-    fn commit_and_reload(&self, writer: &mut IndexWriter) -> anyhow::Result<()> {
+    /// Commit the writer, reload the reader, and wait for the writer's
+    /// background merge threads to exit.
+    ///
+    /// `IndexWriter::commit` returns as soon as the new segment is durable;
+    /// any merge it schedules keeps running on the writer's own thread pool
+    /// after that. Dropping the writer without waiting on those threads lets
+    /// them outlive this call, which in tests races the `TempDir` guard: the
+    /// still-running thread can recreate `.tantivy-meta.lock` after the
+    /// guard has already removed the directory, leaving a lock-only leftover
+    /// under the OS temp dir. Taking `writer` by value and waiting here
+    /// keeps the index fully shut down before this function returns.
+    fn commit_and_reload(&self, mut writer: IndexWriter) -> anyhow::Result<()> {
         writer.commit().context("failed to commit search index")?;
         self.reader
             .reload()
             .context("failed to reload search index reader")?;
+        writer
+            .wait_merging_threads()
+            .context("failed to wait for search index merge threads to finish")?;
         Ok(())
     }
 
