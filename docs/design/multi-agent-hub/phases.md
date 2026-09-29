@@ -4,7 +4,7 @@
 
 > Module level only. Each phase is self-contained, depends only on phases before it, and leaves `main` in a working, releasable state. Each phase is implemented in its own session, on its own branch, with its own PR.
 
-## Phase 1 — Hub split: layout, config, migration (single agent)
+## Phase 1 — Hub split: layout and config (single agent)
 
 - **Modules:**
   - config (bootstrap, loading, resolution, validation, last-known-good, environment overrides);
@@ -13,24 +13,20 @@
   - daemon and process files, tracing init, update and update-watchdog;
   - agent-key and A2A-key stores (location);
   - setup wizards (CLI and web);
-  - the new layout-migration module;
   - gateway startup.
 - **Preconditions:** none.
 - **Shape when done:**
   - **Layout.** `~/.residuum/` has `hub/` plus exactly one agent directory. Hub config and agent config are separate schemas, loaded from their new locations and hot-reloaded independently, each with its own last-known-good.
   - **Config fields.** `name` and `workspace_dir` are gone. Agent-scoped environment overrides are removed, and a startup notice names any that are still set. Hub-level overrides still work.
-  - **Hub files.** Secrets, key stores, logs, bin, checkpoints, pid, lock, ready and update markers all live in `hub/`. No path is hard-coded to the legacy root.
+  - **Hub files.** Secrets, key stores, logs, bin, checkpoints, pid, lock, ready and update markers all live in `hub/`. No path is hard-coded to the old root.
   - **Checkpoints.** A local-only hub config repo, plus per agent a workspace repo and a local-only config repo, as the design specifies.
-  - **A2A.** Hop limits and `[a2a] legacy_alias` are hub-level, and the alias is set by onboarding and migration.
-  - **Agent names.** Validation exists (relay slug rules plus the reserved names) and is used by onboarding and migration.
+  - **Hub-level limits.** Hop limits and the session budget are read from hub config.
+  - **Agent names.** Validation exists (relay slug rules plus the reserved names) and is used by onboarding.
   - **Onboarding.** It asks for the user's name and the first agent's name.
-  - **Migration.** The layout migration framework exists: a layout version marker, a journal, rollback, and backups. Its *hub split* step converts a legacy install, including the `residuum migrate --agent-name` entry point and the interactive and headless naming paths.
   - **Unchanged.** The process still runs exactly one agent. The HTTP API, web UI, tunnel and A2A behave as before.
 - **Verification:**
   - A fresh install onboards into the new layout.
-  - A copied legacy `~/.residuum` fixture migrates, and the agent starts with its memory, sessions, skills, adapters and checkpoints intact.
-  - An injected failure mid-migration rolls back to the legacy layout, and startup reports it.
-  - Rerunning migration is a no-op.
+  - The agent runs normally from the new layout: memory, sessions, skills, adapters and checkpoints all work.
   - Config hot reload works for both files.
   - The existing test suite passes.
 
@@ -44,12 +40,11 @@
   - wiki search indexing and memory search;
   - skills discovery;
   - workbench server and artifact paths;
-  - checkpoints;
-  - layout migration (new step).
+  - checkpoints.
 - **Preconditions:** Phase 1.
 - **Shape when done:**
   - **Team directory.** `team/` exists with `AGENTS.md`, `USER.md`, `wiki/` (including `wiki/agents/`), `workbench/` and `skills/`.
-  - **Migration.** The *team layer* step moves those files out of the agent, relocates skills that match bundled skills, and creates the agent's role page.
+  - **Bootstrap.** Onboarding writes the team layer's defaults and the first agent's role page. Bundled skills are installed into `team/skills/`, not the agent's directory.
   - **Prompt.** Prompt assembly reads SOUL from the agent and AGENTS, USER and the wiki index from the team, in the order the design gives.
   - **The `team/` namespace.** It works in file tools, the web file API, and change-feed watches.
   - **Team write coordination.** Version recorded at read, per-path lock, conflict error naming the other writer, atomic writes, web `If-Match` under the same lock.
@@ -59,7 +54,7 @@
   - **Checkpoints.** A team checkpoint repo (workspace-style).
   - **Unchanged.** Still one agent in the process, and the API paths are unchanged.
 - **Verification:**
-  - A migrated Phase 1 install gains `team/`, and the agent's prompt contains the same content as before.
+  - A fresh install has `team/`, and the agent's prompt carries the team `AGENTS.md`, `USER.md` and wiki index.
   - Wiki search finds team pages.
   - Two concurrent writers to one team file (tests with two tool instances, and a tool plus the web API) produce exactly one success and one conflict error that names the writer.
   - An agent skill shadows a team skill of the same name.
@@ -78,7 +73,7 @@
   - artifact session start (required agent);
   - the hub-level bus, hub notices and the hub WebSocket;
   - agent-key creator attribution (`agent:<name>`);
-  - the A2A listener and tunnel, bound to the `legacy_alias` agent;
+  - the A2A listener (per-agent routing on the local port, per-agent cards, public URLs and visibility);
   - the web UI's API and WebSocket base paths, plus a minimal agent picker.
 - **Preconditions:** Phase 2.
 - **Shape when done:**
@@ -90,7 +85,7 @@
   - **Logs.** Every log line carries `agent`.
   - **HTTP.** Agent-scoped routes live under `/api/agents/<name>/`, with `404` for an unknown agent and `409` for one that isn't running (except config and file routes).
   - **Artifacts.** Artifact session start requires an agent.
-  - **A2A.** It behaves exactly as today on behalf of the `legacy_alias` agent. Other agents can call out but have no inbound entry. Sibling discovery results reach every agent.
+  - **A2A.** Each agent is reachable locally at `/agents/<name>/` on the A2A port with its own card and visibility, and can call out with `a2a:` addresses. The tunnel stops declaring the `a2a` capability until Phase 6 teaches the relay per-agent routing, so there's no remote inbound A2A in between (A2A isn't in a release yet).
   - **Hub notices.** Created, deleted and failed notices reach the hub WebSocket and the acting or affected agent's inbox.
   - **Web UI.** It works against the prefixed API with a basic picker (the full UI is Phase 5).
 - **Verification:**
@@ -100,7 +95,7 @@
   - With a budget of one, sessions from both agents queue against it.
   - Create through the CLI produces a running agent with a role page and no bootstrap interview, and the description arrives as its first message.
   - Delete removes the directory and the role page, and the agent can be restored from its checkpoint.
-  - An external A2A caller that worked before this phase still reaches the alias agent at the same URL.
+  - A local A2A caller with a key reaches each agent's card and can run a task on it. A private agent returns `404` to that caller.
 
 ## Phase 4 — Teamwork: addressing, messaging, agent tools
 
@@ -155,17 +150,16 @@
 ## Phase 6 — A2A per agent and relay protocol
 
 - **Modules:**
-  - **relay repository:** tunnel protocol (the `agents` capability and `AgentsUpdate` frame), database schema for instance agents, A2A routing by instance and agent, legacy alias, directory entries, compatibility gating;
-  - **residuum:** tunnel client (declaring the capability, sending `AgentsUpdate` on changes), A2A listener routing by agent, per-agent cards and public URLs, per-agent visibility, sibling discovery filtering and `<instance>/<agent>` sibling names;
-  - migration step (legacy alias).
-- **Preconditions:** Phase 4. It is independent of Phase 5.
+  - **relay repository:** tunnel protocol (the `agents` capability and `AgentsUpdate` frame), database schema for instance agents, A2A routing by instance and agent (replacing the per-instance route), directory entries;
+  - **residuum:** tunnel client (declaring `agents` and `a2a` again, sending `AgentsUpdate` on changes), dispatch of relay-forwarded A2A requests by the frame's `agent` field, relay-based public URLs, sibling discovery (once per hub, fanned out to every agent, excluding teammates, `<instance>/<agent>` names).
+- **Preconditions:** Phase 3. It is independent of Phases 4 and 5.
 - **Shape when done:**
-  - **Relay.** Relay changes are deployed first and are no-ops for clients without `agents`.
+  - **Relay.** Relay changes are deployed first. Released clients' web UI tunneling is unaffected.
   - **Declaring agents.** A hub declares `agents` and keeps the relay's agent list current across create, delete and visibility changes, and after every reconnect.
-  - **Routing.** Each agent is reachable at `{origin}/a2a/{instance}/{agent}` with its own card and visibility. The legacy instance path reaches the alias agent.
-  - **Discovery.** The directory lists per-agent entries to `agents`-capable callers only. Sibling discovery excludes teammates.
+  - **Routing.** Each agent is reachable at `{origin}/a2a/{instance}/{agent}` with its own card and visibility. The old per-instance A2A route is gone.
+  - **Discovery.** The directory lists per-agent entries. Sibling discovery excludes teammates.
 - **Verification:**
-  - Relay tests: a legacy client is unaffected, including directory output; `AgentsUpdate` replaces the list idempotently; routing by instance and agent works; private agents are hidden from non-siblings; the legacy alias routes correctly.
+  - Relay tests: a client without `agents` still tunnels the web UI; `AgentsUpdate` replaces the list idempotently; routing by instance and agent works; private agents are hidden from non-siblings.
   - Residuum integration test against a local relay: two agents in one hub, each reachable by URL with its own card, one set private and hidden from a non-sibling key holder.
   - A second hub discovers both agents as siblings. The hub's own agents never list each other as siblings.
 
@@ -174,19 +168,16 @@
 - **Modules:**
   - `docs/systems-usage/` (a new hub and teams document, plus updates to config, background tasks, A2A, wiki, workbench, skills and cloud tunnel);
   - bundled `residuum-system` skill references;
-  - migration guide;
   - Docker docs;
   - Mac app (per the open-question outcome);
   - archiving this design.
 - **Preconditions:** Phases 1–6.
 - **Shape when done:**
   - Systems-usage docs and bundled references describe the hub as built.
-  - The migration guide covers the layout change, the removed environment overrides, and the A2A URL change and alias.
   - Docker docs match.
   - The Mac app matches the chosen outcome.
   - This design and its phases live in `docs/archive/`.
   - Issue #205 is closed.
 - **Verification:**
   - Run doc-sync and find no drift between code and docs.
-  - A reader following only the migration guide upgrades a legacy install.
   - The design doc's goals hold end to end on a real install: switch agents, hand work off, agent-created agent, shared wiki and workbench, per-agent A2A entries.

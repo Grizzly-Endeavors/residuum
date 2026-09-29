@@ -76,7 +76,6 @@ Each agent's file tools, the web file browser and the change feed see one logica
 - `[a2a]`: listener `enabled`, `port`, `public_url`
 - `[tracing]`: log level, OTEL, error reporting
 - `[update]`
-- `[a2a] legacy_alias`: the agent that answers the instance-level A2A address (see A2A below). Written by onboarding and migration.
 - `[background] max_concurrent`: the hub-wide session budget
 - `[background]` hop soft and hard limits. These are hub-level because one message chain can cross several agents and needs one limit.
 
@@ -89,7 +88,7 @@ Each agent's file tools, the web file browser and the change feed see one logica
 - `[a2a] visibility` (`public` or `private`). A2A visibility is per agent.
   - An agent-created agent copies its creator's visibility.
   - A user-created agent gets the visibility the user picks, defaulting to `private`.
-  - The onboarded first agent defaults to `public`, as today, and a migrated agent keeps its setting.
+  - The onboarded first agent defaults to `public`, as today.
   - Either way the only unauthenticated thing a public agent exposes is its Agent Card. Every other A2A route requires a caller key or a sibling attestation.
 
 **Other agent files:** each agent's `providers.toml` (providers and model assignments, including background tiers) lives in its `config/` directory. `channels.toml`, `mcp.json`, `agent-card.json` and `a2a.json` stay there too.
@@ -110,7 +109,7 @@ Each agent's file tools, the web file browser and the change feed see one logica
 
 **Secrets** are hub-level and shared. Every agent resolves `secret:<name>` references against the one store. Per-agent credentials are separate secrets with separate names.
 
-**Agent keys** (credentials injected into the commands and MCP servers an agent runs) are hub-level and shared the same way. One store in `hub/`, visible to every agent. A key's `creator` becomes `user` or `agent:<name>`. Keys created before the hub read as `agent:<migrated agent>`. When a notice fires on an overwrite or delete, it names the acting agent.
+**Agent keys** (credentials injected into the commands and MCP servers an agent runs) are hub-level and shared the same way. One store in `hub/`, visible to every agent. A key's `creator` becomes `user` or `agent:<name>`. When a notice fires on an overwrite or delete, it names the acting agent.
 
 ### Runtime components
 
@@ -242,7 +241,7 @@ Whether an agent starts with the hub is controlled by its `autostart` flag.
 | 7 | OBSERVATION_LOG, RECENT_CONTEXT | the agent |
 | 8 | SKILLS_INDEX, ACTIVE_SKILLS | layered, see Skills |
 
-`BOOTSTRAP.md` is read from the agent's directory while it exists. The migrated or onboarded first agent can have one; created agents never do. The subconscious classifier reads the same sources.
+`BOOTSTRAP.md` is read from the agent's directory while it exists. The onboarded first agent has one until its interview finishes; created agents never do. The subconscious classifier reads the same sources.
 
 **Wiki.**
 - There is one OKF wiki, at `team/wiki/`, and no per-agent wikis. Every agent keeps all its durable knowledge there, including specialist knowledge. OKF's index structure lets each agent read only what it needs.
@@ -366,26 +365,27 @@ Teammate delivery failures and team write conflicts are not notices. They are to
 
 ### Relay (separate repository, in production)
 
-The relay's instance stays the hub. The relay gains **agents within an instance**. Every change is gated on a new tunnel capability (`agents`), so older Residuum clients keep today's behavior exactly.
+The relay's instance stays the hub. The relay gains **agents within an instance**.
+
+Compatibility: no released Residuum client has used A2A, so the relay's A2A routes and directory change shape outright, with no legacy path. Released clients do use the tunnel for web UI access. That proxying (HTTP and WebSocket forwarding, the `Connected` frame, token auth) is unchanged, and the new frame is only sent by clients that declare the new capability.
 
 - **Handshake.** A hub declares the `agents` capability in `x-residuum-capabilities`, next to the existing ones.
-- **New frame, client to relay: `AgentsUpdate`.** It carries `agents: [{ name, display_name, a2a_enabled, a2a_private, legacy_alias }]`, with the full list each time.
+- **New frame, client to relay: `AgentsUpdate`.** It carries `agents: [{ name, display_name, a2a_enabled, a2a_private }]`, with the full list each time.
   - Sent after `Connected`, and again whenever an agent is created or deleted, or changes A2A visibility or enablement.
   - The relay replaces its stored list for that instance in one transaction.
   - It is idempotent, so resending after a reconnect is always safe.
 - **Storage.** A per-instance agent table (instance, name, display name, A2A enabled, A2A private), unique on instance plus name.
 - **A2A routing.**
-  - `ANY /a2a/{instance}/{agent}[/{rest}]` routes to that instance's tunnel. The `HttpRequest` frame gains an optional `agent` field, set by the relay for this route, and the hub's A2A listener dispatches on it.
+  - `ANY /a2a/{instance}/{agent}[/{rest}]` replaces the per-instance `/a2a/{slug}` route and routes to that instance's tunnel. The `HttpRequest` frame gains an optional `agent` field, set by the relay for this route, and the hub's A2A listener dispatches on it.
   - An agent that isn't in the stored list, or has A2A disabled, gets `404`. Private-agent semantics mirror today's private instances: `404` to anyone who is not a sibling.
-- **The legacy path.** `/a2a/{instance}` for an `agents`-capable instance routes to the agent flagged `legacy_alias: true` in the most recent `AgentsUpdate`, if there is one. Otherwise it returns `404`. The hub sets the flag from `[a2a] legacy_alias`, so external callers configured before the hub keep working (see Open questions).
 - **Directory (`GET /a2a/agents`).**
-  - For an `agents`-capable instance it lists one entry per agent: `{ slug: "<instance>/<agent>", instance, agent, display_name, card_url, online }`, applying each agent's privacy the way instance privacy is applied today.
-  - Entries for multi-agent instances are returned only to callers whose own tunnel declared `agents`. Older clients, which validate sibling names against the plain slug shape, never see them.
+  - It lists one entry per agent: `{ slug: "<instance>/<agent>", instance, agent, display_name, card_url, online }`, applying each agent's privacy the way instance privacy is applied today.
 - **Sibling attestation.** It stays per connection, meaning per hub. `x-residuum-sibling` names the calling *instance*, and callers are attributed as "your own other Residuum instance," as today.
 - **Browser and workbench proxying.** No change. They follow the active instance, which is the hub.
 - **Errors and ordering.**
   - An A2A request that arrives before the first `AgentsUpdate` gets `503` with a retry hint.
   - An `AgentsUpdate` from a client that didn't declare `agents` is ignored and logged.
+  - An instance that never sent `AgentsUpdate` (a released client without A2A) has no A2A entries, and its A2A paths return `404`.
 
 ### Residuum's A2A server and client
 
@@ -399,7 +399,7 @@ The relay's instance stays the hub. The relay gains **agents within an instance*
 - **Caller keys and the tunnel.** Caller keys stay in one hub-level store, and a valid key can reach every non-private agent. The tunnel nonce stays per process.
 - **Remote tasks.** An inbound A2A task becomes a conversation session on the target agent.
 - **Siblings.** Discovery runs once per hub, and every agent's A2A client registry gets the result. Discovery filters out the hub's own agents, since those are teammates and reachable directly. Remote siblings are named `<instance>/<agent>` in `a2a:` addresses.
-- **Before per-agent routing exists.** Until the listener and tunnel learn per-agent routing (Phase 6 in phases.md), A2A behaves exactly as it does today, on behalf of the `legacy_alias` agent only. The listener's root paths, the Agent Card, the tunnel's single instance identity and sibling attestation all belong to that agent. Other agents have no inbound A2A entry, though they can still call out with `a2a:` addresses. After per-agent routing lands, the listener's root paths keep serving the alias agent.
+- **Root paths.** The listener has no root-level agent. Anything outside `/agents/<name>/` gets `404`.
 - **Per-agent client config.** `config/a2a.json`, the remote task tracker and outbound tasks stay per agent.
 
 ### Other clients
@@ -432,37 +432,15 @@ The relay's instance stays the hub. The relay gains **agents within an instance*
 - last-known-good;
 - the existing WebSocket protocol, now served per agent.
 
-**Migration.** Layout changes are ordered migration steps, recorded by a layout version marker in `hub/`. Each step is idempotent and runs once at startup, before the hub starts anything else. The steps are:
-
-1. **Hub split.**
-   - The legacy config root becomes `hub/` plus one agent directory.
-   - The migrated agent becomes `[a2a] legacy_alias`.
-   - The user names that agent: interactively in the foreground CLI, through the web setup page when headless, or with `residuum migrate --agent-name <name>` for scripts.
-   - `config.toml` is split into hub config and agent config. `providers.toml`, `channels.toml` and the other workspace config files move into `<agent>/config/`.
-   - Hub files (secrets, key stores, logs, bin, checkpoints, process and update markers, last-known-good files) move into `hub/`. The workspace becomes `<agent>/`.
-   - The existing config checkpoint history becomes the hub config repo and seeds the agent's config repo. The workspace history becomes the agent's workspace repo.
-2. **Team layer.**
-   - `AGENTS.md`, `USER.md`, `wiki/` and `workbench/` move from the agent into `team/`.
-   - Skills whose names match bundled skills move to `team/skills/`. All other skills stay with the agent.
-   - The agent's role page is created.
-   - The agent's memory index drops its wiki documents, and the team wiki index is built on first start.
-
-**Migration safety:**
-- Every step writes a journal before moving anything and uses renames within the same filesystem, never copies of large data.
-- A failed step rolls back using its journal and leaves the previous layout in place.
-- The error explains what failed and what to do. The hub refuses to start rather than run on a half-migrated tree.
-- Config files are copied to a timestamped backup inside `hub/` before they are split.
-- There is no dual-mode period. After an update the hub runs only on the new layout, and the migration guide documents the change.
+**Existing installs.** There is no migration. The hub reads only the new layout, and an install with nothing under `hub/` goes through onboarding. Any files from the old single-agent layout are ignored.
 
 **Documentation.**
 - `docs/systems-usage/` gains a hub and teams document.
 - `config.md`, `background-tasks.md`, `a2a.md`, `wiki.md`, `workbench.md`, `skills.md` and `cloud-tunnel.md` are updated.
 - The bundled `residuum-system` skill references are updated to match.
-- A migration guide is added for the breaking layout change.
 - This design moves to `docs/archive/` once built.
 
 ## Open questions
 
-1. **The relay legacy alias.** Keep `/a2a/{instance}` routing to the migrated agent, so external A2A callers set up before the hub keep working? Or drop it and let those callers get `404` until they update their URL? The design currently includes the alias.
-2. **Mac app.** Update it to list agents from `/api/hub/agents` and use the `/api/agents/<name>/` paths? Or remove its multi-agent code and point it at the web UI's switcher? The Mac app is Swift, which the repository's quality gate cannot check.
-3. **The weekly `wiki_lint` pulse.** With one shared wiki, one agent should run it, not all of them. The design gives new agents the `memory_tending` pulse but not `wiki_lint`, which stays with whichever agent has it (the first agent). Alternatively, `wiki_lint` could become a team-level pulse the hub runs on a chosen agent.
+1. **Mac app.** Update it to list agents from `/api/hub/agents` and use the `/api/agents/<name>/` paths? Or remove its multi-agent code and point it at the web UI's switcher? The Mac app is Swift, which the repository's quality gate cannot check.
+2. **The weekly `wiki_lint` pulse.** With one shared wiki, one agent should run it, not all of them. The design gives new agents the `memory_tending` pulse but not `wiki_lint`, which stays with whichever agent has it (the first agent). Alternatively, `wiki_lint` could become a team-level pulse the hub runs on a chosen agent.
