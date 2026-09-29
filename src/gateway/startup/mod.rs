@@ -89,13 +89,14 @@ pub(crate) struct GatewayComponents {
 /// Returns `FatalError` if workspace bootstrapping fails.
 pub(super) async fn init_workspace(
     cfg: &Config,
+    team: &TeamWriteCoordinator,
 ) -> Result<(WorkspaceLayout, chrono_tz::Tz), FatalError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
     // USER.md is personalized once, at onboarding time
     // (`gateway::web::config::api_complete_setup`). Every later call here is
     // idempotent (write-if-missing).
-    ensure_workspace(&layout, None, Some(cfg.timezone.name())).await?;
+    ensure_workspace(&layout, team, None, Some(cfg.timezone.name())).await?;
 
     Ok((layout, tz))
 }
@@ -111,16 +112,18 @@ fn init_checkpoints(
     cfg: &Config,
     hub: &HubConfig,
     publisher: &crate::bus::Publisher,
+    team: &TeamWriteCoordinator,
 ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, FatalError> {
     let checkpoints_dir = crate::config::HubPaths::new(&hub.config_dir).checkpoints_dir();
     crate::checkpoints::CheckpointEngine::new(
         layout.root().to_path_buf(),
+        layout.team(),
         cfg.config_dir.clone(),
         hub.config_dir.clone(),
         &checkpoints_dir,
         Some(publisher.clone()),
     )
-    .map(Arc::new)
+    .map(|engine| Arc::new(engine.with_team_coordinator(team.clone())))
     .map_err(|e| {
         FatalError::Config(format!(
             "failed to open checkpoint repositories at {}: {e}",
@@ -1070,6 +1073,7 @@ async fn init_workspace_and_checkpoints(
     cfg: &Config,
     hub: &HubConfig,
     publisher: &crate::bus::Publisher,
+    team: &TeamWriteCoordinator,
 ) -> Result<
     (
         WorkspaceLayout,
@@ -1078,8 +1082,8 @@ async fn init_workspace_and_checkpoints(
     ),
     FatalError,
 > {
-    let (layout, tz) = init_workspace(cfg).await?;
-    let checkpoints = init_checkpoints(&layout, cfg, hub, publisher)?;
+    let (layout, tz) = init_workspace(cfg, team).await?;
+    let checkpoints = init_checkpoints(&layout, cfg, hub, publisher, team)?;
     publish_load_notices(publisher, cfg, hub).await;
     Ok((layout, tz, checkpoints))
 }
@@ -1265,7 +1269,8 @@ pub(crate) async fn initialize(
     publisher: &crate::bus::Publisher,
     team: &TeamWriteCoordinator,
 ) -> Result<GatewayComponents, FatalError> {
-    let (layout, tz, checkpoints) = init_workspace_and_checkpoints(cfg, hub, publisher).await?;
+    let (layout, tz, checkpoints) =
+        init_workspace_and_checkpoints(cfg, hub, publisher, team).await?;
 
     // Collects a plain-language line for every subsystem that degrades
     // along the way (rather than failing startup outright), so the whole

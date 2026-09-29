@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::checkpoints::{CheckpointContext, CheckpointEngine, CheckpointTrigger, RepoKind};
 use crate::inference::ToolDefinition;
+use crate::workspace::team_files::TeamWriter;
 
 use super::{Tool, ToolError, ToolResult, require_str};
 
@@ -195,13 +196,26 @@ impl Tool for WorkspaceHistoryTool {
 /// changes.
 pub struct WorkspaceRestoreTool {
     engine: Arc<CheckpointEngine>,
+    /// Supplies the agent's team identity, which a restore into the team
+    /// repository is recorded under.
+    policy: super::SharedPathPolicy,
 }
 
 impl WorkspaceRestoreTool {
     /// Create a new `WorkspaceRestoreTool`.
     #[must_use]
-    pub fn new(engine: Arc<CheckpointEngine>) -> Self {
-        Self { engine }
+    pub fn new(engine: Arc<CheckpointEngine>, policy: super::SharedPathPolicy) -> Self {
+        Self { engine, policy }
+    }
+
+    /// The identity a restore is recorded under: the agent's team identity,
+    /// or a generic agent label when it has no team view (the team
+    /// repository is then never restored into a coordinated directory).
+    async fn writer(&self) -> TeamWriter {
+        self.policy.read().await.team().map_or_else(
+            || TeamWriter::Agent("agent".to_string()),
+            |team| team.writer().clone(),
+        )
     }
 
     async fn restore_path(&self, arguments: &Value) -> Result<ToolResult, ToolError> {
@@ -209,6 +223,7 @@ impl WorkspaceRestoreTool {
         let path = require_str(arguments, "path")?.to_string();
         validate_relative_path(&path)?;
         let repo = repo_arg(arguments)?;
+        let writer = self.writer().await;
 
         let outcome = self
             .engine
@@ -220,6 +235,7 @@ impl WorkspaceRestoreTool {
                     CheckpointTrigger::Restore,
                     format!("agent restored {path} from checkpoint {}", short_id(&id)),
                 ),
+                &writer,
             )
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -235,6 +251,7 @@ impl WorkspaceRestoreTool {
     async fn undo_turn(&self, arguments: &Value) -> Result<ToolResult, ToolError> {
         let id = require_str(arguments, "checkpoint_id")?.to_string();
         let repo = repo_arg(arguments)?;
+        let writer = self.writer().await;
 
         let outcome = self
             .engine
@@ -245,6 +262,7 @@ impl WorkspaceRestoreTool {
                     CheckpointTrigger::Undo,
                     format!("agent undid checkpoint {}", short_id(&id)),
                 ),
+                &writer,
             )
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
@@ -327,6 +345,7 @@ mod tests {
         Arc::new(
             CheckpointEngine::new(
                 workspace,
+                &crate::config::paths::TeamPaths::new(dir.join("team")),
                 dir.join("agent-config"),
                 dir.join("hub"),
                 &dir.join("checkpoints"),
@@ -394,7 +413,8 @@ mod tests {
     #[tokio::test]
     async fn restore_path_rejects_traversal_before_touching_the_engine() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = WorkspaceRestoreTool::new(engine(dir.path()));
+        let tool =
+            WorkspaceRestoreTool::new(engine(dir.path()), crate::tools::PathPolicy::new_shared());
         let result = tool
             .execute(serde_json::json!({
                 "action": "restore_path",
@@ -413,6 +433,7 @@ mod tests {
         let checkpoints_engine = Arc::new(
             CheckpointEngine::new(
                 ws.clone(),
+                &crate::config::paths::TeamPaths::new(dir.path().join("team")),
                 dir.path().join("agent-config"),
                 dir.path().join("hub"),
                 &dir.path().join("checkpoints"),
@@ -434,7 +455,10 @@ mod tests {
         assert!(list.output.contains("checkpoint(s)"));
 
         std::fs::write(ws.join("notes.md"), "v2").unwrap();
-        let restore = WorkspaceRestoreTool::new(Arc::clone(&checkpoints_engine));
+        let restore = WorkspaceRestoreTool::new(
+            Arc::clone(&checkpoints_engine),
+            crate::tools::PathPolicy::new_shared(),
+        );
         let page = checkpoints_engine
             .list_checkpoints(RepoKind::Workspace, None, None, None, None)
             .await

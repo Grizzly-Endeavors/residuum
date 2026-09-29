@@ -1319,6 +1319,7 @@ mod tests {
             let engine = std::sync::Arc::new(
                 crate::checkpoints::CheckpointEngine::new(
                     dir.path().join("workspace"),
+                    &crate::config::paths::TeamPaths::new(dir.path().to_path_buf().join("team")),
                     dir.path().join("agent-config"),
                     dir.path().to_path_buf(),
                     &checkpoints_dir,
