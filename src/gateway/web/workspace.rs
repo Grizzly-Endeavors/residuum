@@ -607,7 +607,7 @@ fn signal_identity_reload(relative: &str, state: &ConfigApiState) {
         && let Some(tx) = &state.reload_tx
     {
         // Best-effort: receiver may have been dropped during shutdown.
-        drop(tx.send(ReloadSignal::Workspace));
+        tx.send(ReloadSignal::Workspace).ok();
     }
 }
 
@@ -1690,7 +1690,8 @@ mod tests {
         let ws_dir = dir.path().join("workspace");
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
 
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
             hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
@@ -1714,8 +1715,7 @@ mod tests {
         .await
         .unwrap();
 
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow(), ReloadSignal::Workspace);
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
     #[tokio::test]
@@ -2293,7 +2293,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
             hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
@@ -2317,8 +2318,7 @@ mod tests {
         .await
         .unwrap();
 
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow(), ReloadSignal::Workspace);
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
     // ── Mkdir ────────────────────────────────────────────────────────
@@ -2889,7 +2889,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
             hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
@@ -2914,8 +2915,7 @@ mod tests {
         .await
         .unwrap();
 
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow(), ReloadSignal::Workspace);
+        assert_eq!(rx.recv().await, Some(ReloadSignal::Workspace));
     }
 
     #[tokio::test]

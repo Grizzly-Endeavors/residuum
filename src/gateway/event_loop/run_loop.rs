@@ -1311,6 +1311,31 @@ fn handle_idle_stop_request(stop_req: Option<crate::gateway::types::StopRequest>
     }
 }
 
+/// Collect `first` plus every signal already queued behind it, one entry per
+/// kind, hub before agent before workspace (the agent reload resolves against
+/// the hub config, so the hub goes first). Duplicates of a kind coalesce
+/// because one reload of that kind picks up every edit made so far.
+fn drain_pending_reloads(
+    first: ReloadSignal,
+    rx: &mut crate::gateway::types::ReloadReceiver,
+) -> Vec<ReloadSignal> {
+    let mut pending = vec![first];
+    while let Ok(next) = rx.try_recv() {
+        pending.push(next);
+    }
+    let mut ordered = Vec::with_capacity(3);
+    for kind in [
+        ReloadSignal::Hub,
+        ReloadSignal::Agent,
+        ReloadSignal::Workspace,
+    ] {
+        if pending.contains(&kind) {
+            ordered.push(kind);
+        }
+    }
+    ordered
+}
+
 /// Apply one config reload signal: an agent config reload (which may put the
 /// agent back to idle), a hub config reload, or a workspace file reload.
 async fn dispatch_reload(
@@ -1320,7 +1345,6 @@ async fn dispatch_reload(
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
     match signal {
-        ReloadSignal::None => {}
         ReloadSignal::Agent => {
             let idle_action = reload::handle_root_reload(rt).await;
             apply_idle_action(idle_action, idle_deadline, rt, observe_deadline).await;
@@ -1354,9 +1378,12 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 break;
             }
 
-            _ = rt.reload_rx.changed() => {
-                let signal = rt.reload_rx.borrow_and_update().clone();
-                dispatch_reload(signal, &mut rt, &mut idle_deadline, &mut observe_deadline).await;
+            first = rt.reload_rx.recv() => {
+                if let Some(first) = first {
+                    for signal in drain_pending_reloads(first, &mut rt.reload_rx) {
+                        dispatch_reload(signal, &mut rt, &mut idle_deadline, &mut observe_deadline).await;
+                    }
+                }
             }
 
             event = rt.agent_subscriber.recv() => {
@@ -1547,23 +1574,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn consecutive_reload_signals_both_received() {
-        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+    async fn back_to_back_hub_and_agent_signals_are_both_processed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
 
-        // First send
         tx.send(ReloadSignal::Agent).unwrap();
-        rx.changed().await.unwrap();
-        let val = rx.borrow_and_update().clone();
-        assert_eq!(val, ReloadSignal::Agent);
+        tx.send(ReloadSignal::Hub).unwrap();
 
-        // Second send of the same value — should still wake the receiver
-        tx.send(ReloadSignal::Agent).unwrap();
-        rx.changed().await.unwrap();
-        let val2 = rx.borrow_and_update().clone();
+        let first = rx.recv().await.unwrap();
+        let processed = super::drain_pending_reloads(first, &mut rx);
         assert_eq!(
-            val2,
-            ReloadSignal::Agent,
-            "second identical send should still be received"
+            processed,
+            vec![ReloadSignal::Hub, ReloadSignal::Agent],
+            "both signals must be processed, hub first"
+        );
+        assert!(rx.try_recv().is_err(), "queue should be empty afterwards");
+    }
+
+    #[tokio::test]
+    async fn repeated_signals_of_one_kind_coalesce() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
+        for _ in 0..3 {
+            tx.send(ReloadSignal::Agent).unwrap();
+        }
+        let first = rx.recv().await.unwrap();
+        assert_eq!(
+            super::drain_pending_reloads(first, &mut rx),
+            vec![ReloadSignal::Agent]
         );
     }
 }

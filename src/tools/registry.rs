@@ -217,6 +217,33 @@ impl ToolRegistry {
         self.tools.len() != before
     }
 
+    /// Re-register every tool that captured the user's timezone at
+    /// construction (`schedule_action`, `list_actions`, `user_inbox_add`)
+    /// with a new one, so a timezone edit reaches them without a restart.
+    pub fn reload_timezone_tools(
+        &mut self,
+        store: Arc<Mutex<ActionStore>>,
+        notify: Arc<Notify>,
+        user_inbox_dir: PathBuf,
+        user_inbox_attachments_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) {
+        for name in ["schedule_action", "list_actions", "user_inbox_add"] {
+            self.remove(name);
+        }
+        self.register(Box::new(actions::ScheduleActionTool::new(
+            Arc::clone(&store),
+            notify,
+            tz,
+        )));
+        self.register(Box::new(actions::ListActionsTool::new(store, tz)));
+        self.register(Box::new(inbox::UserInboxAddTool::new(
+            user_inbox_dir,
+            user_inbox_attachments_dir,
+            tz,
+        )));
+    }
+
     /// Get tool definitions for sending to the model.
     #[must_use]
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -772,6 +799,33 @@ mod tests {
             matches!(result.unwrap_err(), ToolError::NotFound(_)),
             "should be NotFound"
         );
+    }
+
+    #[test]
+    fn reload_timezone_tools_replaces_without_duplicating() {
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            std::path::PathBuf::from("/tmp/residuum-test-actions.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry.register_action_tools(Arc::clone(&store), Arc::clone(&notify), chrono_tz::UTC);
+        for _ in 0..2 {
+            registry.reload_timezone_tools(
+                Arc::clone(&store),
+                Arc::clone(&notify),
+                std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+                std::path::PathBuf::from("/tmp/residuum-test-inbox/attachments"),
+                chrono_tz::America::New_York,
+            );
+        }
+        let names: Vec<String> = registry.definitions().into_iter().map(|d| d.name).collect();
+        for tool in ["schedule_action", "list_actions", "user_inbox_add"] {
+            assert_eq!(
+                names.iter().filter(|n| n.as_str() == tool).count(),
+                1,
+                "{tool} must be registered exactly once"
+            );
+        }
     }
 
     #[test]

@@ -1049,6 +1049,11 @@ async fn publish_load_notices(publisher: &crate::bus::Publisher, cfg: &Config, h
     for notice in hub.load_notices.iter().chain(&cfg.load_notices) {
         super::helpers::publish_notice(publisher, notice.clone()).await;
     }
+    // Startup only: these come from the process environment, which a config
+    // reload cannot change, so reloads must not repeat them.
+    for notice in crate::config::resolve::removed_agent_env_override_notices() {
+        super::helpers::publish_notice(publisher, notice).await;
+    }
 }
 
 /// Bootstrap the workspace, open the checkpoint repositories, and publish

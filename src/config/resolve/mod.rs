@@ -77,7 +77,6 @@ pub(crate) fn from_file_and_env(
     hub: &HubConfig,
 ) -> Result<Config, FatalError> {
     let mut notices: Vec<String> = Vec::new();
-    warn_removed_agent_env_overrides(&mut notices);
     let secrets = load_secrets_degraded(&hub.config_dir, &mut notices);
     let providers_map = providers_file.and_then(|f| f.providers.as_ref());
     let models_section = providers_file.and_then(|f| f.models.as_ref());
@@ -288,11 +287,11 @@ pub(super) mod test_helpers {
     }
 }
 
-/// Agent-scoped environment variables that no longer have any effect: in a
-/// multi-agent process each would silently apply the same value to every
-/// agent (e.g. one Discord token for all), so none of them are read. One that
-/// is still set in the environment produces a startup notice naming it,
-/// rather than silently doing nothing.
+/// Agent-scoped environment variables the loader never reads. Each would
+/// apply the same value to every agent in the process (e.g. one Discord token
+/// for all), so an agent's values come only from its own
+/// `config.toml`/`providers.toml`. One that is set in the environment gets a
+/// notice at startup, see [`removed_agent_env_override_notices`].
 const REMOVED_AGENT_ENV_OVERRIDES: &[&str] = &[
     "RESIDUUM_WORKSPACE",
     "RESIDUUM_MODEL",
@@ -307,20 +306,24 @@ const REMOVED_AGENT_ENV_OVERRIDES: &[&str] = &[
     "RESIDUUM_TEAMS_APP_PASSWORD",
 ];
 
-/// Warn (log + startup notice) on any agent-scoped environment override that
-/// is still set — see [`REMOVED_AGENT_ENV_OVERRIDES`].
-fn warn_removed_agent_env_overrides(notices: &mut Vec<String>) {
+/// One notice (also logged at `warn`) per agent-scoped environment variable
+/// from [`REMOVED_AGENT_ENV_OVERRIDES`] that is set in the process
+/// environment. Called once at startup, not on config load, so a config
+/// reload does not repeat it.
+pub(crate) fn removed_agent_env_override_notices() -> Vec<String> {
+    let mut notices = Vec::new();
     for var in REMOVED_AGENT_ENV_OVERRIDES {
         if std::env::var(var).is_ok() {
             tracing::warn!(
                 %var,
-                "agent-scoped env override has no effect; set it in this agent's config.toml/providers.toml instead"
+                "environment variable is set but ignored; set the value in the agent's config.toml or providers.toml instead"
             );
             notices.push(format!(
-                "{var} is set but has no effect: agent-scoped environment overrides are not supported (a multi-agent hub can't tell which agent they'd apply to). Set the equivalent value in this agent's config.toml/providers.toml instead."
+                "The environment variable {var} is set, but Residuum ignores it. Put the value in the agent's config.toml or providers.toml instead."
             ));
         }
     }
+    notices
 }
 
 #[cfg(test)]
@@ -475,17 +478,35 @@ observer_threshold_tokens = 30000
     #[test]
     fn removed_agent_env_overrides_produce_a_startup_notice() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        // SAFETY: test-only, single-threaded test environment
+        // SAFETY: test-only, serialized by ENV_MUTEX.
         unsafe { std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o") };
-        let cfg = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        let notices = removed_agent_env_override_notices();
         unsafe { std::env::remove_var("RESIDUUM_MODEL") };
-        assert!(
-            cfg.load_notices
-                .iter()
-                .any(|n| n.contains("RESIDUUM_MODEL")),
-            "a removed override that is still set should produce a notice: {:?}",
-            cfg.load_notices
-        );
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("RESIDUUM_MODEL"));
+        assert!(notices[0].contains("ignores it"));
+    }
+
+    #[test]
+    fn loading_a_config_does_not_re_emit_removed_env_override_notices() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: test-only, serialized by ENV_MUTEX.
+        unsafe { std::env::set_var("RESIDUUM_MODEL", "openai/gpt-4o") };
+        // Every reload goes through this same loader, so two loads stand in
+        // for a startup followed by a reload.
+        let first = resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        let second =
+            resolve_test("", "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n").unwrap();
+        unsafe { std::env::remove_var("RESIDUUM_MODEL") };
+        for cfg in [first, second] {
+            assert!(
+                cfg.load_notices
+                    .iter()
+                    .all(|n| !n.contains("RESIDUUM_MODEL")),
+                "a config load must not carry the env override notice: {:?}",
+                cfg.load_notices
+            );
+        }
     }
 
     #[test]

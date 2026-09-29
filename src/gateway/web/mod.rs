@@ -12,8 +12,6 @@ use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::watch;
 
-use super::ReloadSignal;
-
 pub(crate) mod a2a;
 mod agent_keys;
 pub(crate) mod artifact_identity;
@@ -66,7 +64,7 @@ pub(crate) struct ConfigApiState {
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
     /// Signal the running gateway to reload (None in setup mode).
-    pub reload_tx: Option<watch::Sender<ReloadSignal>>,
+    pub reload_tx: Option<crate::gateway::types::ReloadSender>,
     /// Signal the setup server that config is saved (None in running mode).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
     /// Serializes secret store writes to prevent lost-update races.

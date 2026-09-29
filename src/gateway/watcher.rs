@@ -52,7 +52,7 @@ pub(super) fn spawn_workspace_watcher(
     channels_path: PathBuf,
     agent_card_path: PathBuf,
     a2a_agents_path: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut mcp_file = WatchedFile::new(mcp_path);
@@ -110,7 +110,7 @@ pub(super) fn spawn_workspace_watcher(
 pub(super) fn spawn_root_config_watcher(
     config_toml_path: PathBuf,
     providers_toml_path: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut config_file = WatchedFile::new(config_toml_path);
@@ -156,7 +156,7 @@ pub(super) fn spawn_root_config_watcher(
 /// sends `ReloadSignal::Hub`.
 pub(super) fn spawn_hub_config_watcher(
     hub_config_toml_path: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: crate::gateway::types::ReloadSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut hub_config_file = WatchedFile::new(hub_config_toml_path);

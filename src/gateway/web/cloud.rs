@@ -17,7 +17,7 @@ use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
 #[derive(Clone)]
 pub(crate) struct CloudApiState {
     pub hub_dir: PathBuf,
-    pub reload_tx: watch::Sender<ReloadSignal>,
+    pub reload_tx: crate::gateway::types::ReloadSender,
     pub tunnel_status_rx: watch::Receiver<TunnelStatus>,
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -405,7 +405,7 @@ token = "secret:discord"
     }
 
     fn test_state() -> CloudApiState {
-        let (reload_tx, _reload_rx) = watch::channel(ReloadSignal::None);
+        let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel::<ReloadSignal>();
         let (_status_tx, tunnel_status_rx) = watch::channel(TunnelStatus::Disconnected);
         CloudApiState {
             hub_dir: std::env::temp_dir(),

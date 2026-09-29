@@ -17,7 +17,7 @@ use teloxide::types::{
 use crate::background::registry::SessionRegistry;
 use crate::bus::{EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
-use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::gateway::types::{ServerCommand, StopRequest};
 use crate::inference::{ImageData, MessageSender};
 use crate::interfaces::chat_state::{ChatRef, Owner, Standing};
 use crate::interfaces::commands::all_commands;
@@ -35,7 +35,7 @@ struct TelegramContext<'a> {
     bot_id: UserId,
     publisher: &'a Publisher,
     inbox_dir: &'a Path,
-    reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
+    reload_tx: &'a crate::gateway::types::ReloadSender,
     command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     stop_tx: &'a tokio::sync::mpsc::Sender<StopRequest>,
     session_registry: &'a SessionRegistry,
@@ -803,7 +803,7 @@ mod tests {
         user_messages: Subscriber<MessageEvent>,
         publisher: Publisher,
         inbox_dir: PathBuf,
-        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+        reload_tx: crate::gateway::types::ReloadSender,
         command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
         stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
         session_registry: Arc<SessionRegistry>,
@@ -830,7 +830,9 @@ mod tests {
             user_messages,
             publisher: bus.publisher(),
             inbox_dir: dir.path().to_path_buf(),
-            reload_tx: tokio::sync::watch::channel(ReloadSignal::Agent).0,
+            reload_tx: tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>(
+            )
+            .0,
             command_tx: tokio::sync::mpsc::channel(1).0,
             stop_tx: tokio::sync::mpsc::channel(1).0,
             session_registry: Arc::new(SessionRegistry::new()),
