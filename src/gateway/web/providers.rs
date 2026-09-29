@@ -551,6 +551,7 @@ mod tests {
         std::fs::create_dir_all(&hub_dir).unwrap();
         std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
         ConfigApiState {
+            team: None,
             hub_dir,
             config_dir: dir.to_path_buf(),
             agent_name: "test-agent".to_string(),

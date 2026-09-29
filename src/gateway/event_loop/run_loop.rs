@@ -13,6 +13,7 @@ use crate::gateway::types::{
 };
 use crate::pulse::scheduler::PulseScheduler;
 use crate::util::FatalError;
+use crate::workspace::team_files::TeamWriteCoordinator;
 
 use super::commands::handle_server_command;
 use super::http::{
@@ -43,8 +44,9 @@ pub async fn run_gateway(
     hub_dir: &std::path::Path,
 ) -> Result<GatewayExit, FatalError> {
     let (core, receivers) = GatewayCore::new(agent_dir.join("config"), hub_dir.to_path_buf());
+    let team = team_coordinator_for(agent_dir);
     let (cfg, hub_cfg, parts, fallback_problem) =
-        load_and_initialize(agent_dir, hub_dir, &core.publisher).await?;
+        load_and_initialize(agent_dir, hub_dir, &core.publisher, &team).await?;
     Box::pin(run_gateway_from_parts(
         cfg,
         hub_cfg,
@@ -73,11 +75,19 @@ pub async fn run_gateway_with_config(
     hub_cfg: HubConfig,
 ) -> Result<GatewayExit, FatalError> {
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone(), hub_cfg.config_dir.clone());
-    let parts = crate::gateway::startup::initialize(&cfg, &hub_cfg, &core.publisher).await?;
+    let team = team_coordinator_for(&cfg.workspace_dir);
+    let parts = crate::gateway::startup::initialize(&cfg, &hub_cfg, &core.publisher, &team).await?;
     Box::pin(run_gateway_from_parts(
         cfg, hub_cfg, parts, core, receivers, None,
     ))
     .await
+}
+
+/// The team write coordinator for the team directory beside `agent_dir`.
+/// Built once per gateway run and handed to everything that writes team files.
+fn team_coordinator_for(agent_dir: &std::path::Path) -> TeamWriteCoordinator {
+    let layout = crate::workspace::layout::WorkspaceLayout::new(agent_dir);
+    TeamWriteCoordinator::new(layout.team().root())
 }
 
 /// Load the hub config and the agent's config, initializing the gateway on
@@ -90,6 +100,7 @@ async fn load_and_initialize(
     agent_dir: &std::path::Path,
     hub_dir: &std::path::Path,
     publisher: &crate::bus::Publisher,
+    team: &TeamWriteCoordinator,
 ) -> Result<
     (
         Config,
@@ -101,7 +112,8 @@ async fn load_and_initialize(
 > {
     let (hub_cfg, hub_fallback_problem) = load_hub_with_fallback(hub_dir)?;
     match Config::load_agent_at(agent_dir, &hub_cfg) {
-        Ok(cfg) => match crate::gateway::startup::initialize(&cfg, &hub_cfg, publisher).await {
+        Ok(cfg) => match crate::gateway::startup::initialize(&cfg, &hub_cfg, publisher, team).await
+        {
             Ok(parts) => Ok((cfg, hub_cfg, parts, hub_fallback_problem)),
             Err(err) => {
                 agent_last_known_good_fallback(
@@ -109,14 +121,22 @@ async fn load_and_initialize(
                     hub_cfg,
                     hub_fallback_problem,
                     publisher,
+                    team,
                     err,
                 )
                 .await
             }
         },
         Err(err) => {
-            agent_last_known_good_fallback(agent_dir, hub_cfg, hub_fallback_problem, publisher, err)
-                .await
+            agent_last_known_good_fallback(
+                agent_dir,
+                hub_cfg,
+                hub_fallback_problem,
+                publisher,
+                team,
+                err,
+            )
+            .await
         }
     }
 }
@@ -148,6 +168,7 @@ async fn agent_last_known_good_fallback(
     hub_cfg: HubConfig,
     hub_fallback_problem: Option<String>,
     publisher: &crate::bus::Publisher,
+    team: &TeamWriteCoordinator,
     original_err: FatalError,
 ) -> Result<
     (
@@ -161,7 +182,7 @@ async fn agent_last_known_good_fallback(
     let Ok(lkg_cfg) = last_known_good::load(agent_dir, &hub_cfg) else {
         return Err(original_err);
     };
-    match crate::gateway::startup::initialize(&lkg_cfg, &hub_cfg, publisher).await {
+    match crate::gateway::startup::initialize(&lkg_cfg, &hub_cfg, publisher, team).await {
         Ok(parts) => {
             let problem = match hub_fallback_problem {
                 Some(hub_problem) => format!("{original_err}; also: {hub_problem}"),
@@ -259,6 +280,7 @@ struct SpawnedHandles {
     hub_config_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     workbench_watcher_handle: Option<tokio::task::JoinHandle<()>>,
     change_feed_handle: Option<tokio::task::JoinHandle<()>>,
+    team_change_feed_handle: Option<tokio::task::JoinHandle<()>>,
     workspace_watch_health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
     workbench_serving: crate::workbench::server::WorkbenchServing,
     workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
@@ -323,6 +345,7 @@ fn build_api_states(
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: Arc::clone(&parts.checkpoints),
+            team: Some(parts.team.view_for_user(parts.layout.root())),
         },
         update,
         tracing: web::tracing_api::TracingApiState {
@@ -459,8 +482,12 @@ async fn spawn_server_and_adapters(
         .with_workspace_root(parts.layout.root().to_path_buf());
     file_registry.spawn_cleanup_task();
     let webhooks = crate::interfaces::webhook::WebhookTable::from_config(&cfg.webhooks);
-    let (workbench_watcher_handle, change_feed_handle, workspace_watch_health) =
-        spawn_change_feed_tasks(core, &parts.layout).await;
+    let ChangeFeeds {
+        workbench_watcher: workbench_watcher_handle,
+        workspace: change_feed_handle,
+        team: team_change_feed_handle,
+        health: workspace_watch_health,
+    } = spawn_change_feed_tasks(core, &parts.layout).await;
     let state = build_gateway_state(
         core,
         parts,
@@ -530,6 +557,7 @@ async fn spawn_server_and_adapters(
         hub_config_watcher_handle,
         workbench_watcher_handle,
         change_feed_handle,
+        team_change_feed_handle,
         workspace_watch_health,
         workbench_serving,
         workbench_listener_shutdown_tx,
@@ -537,17 +565,24 @@ async fn spawn_server_and_adapters(
     })
 }
 
-/// Start the workspace change feed and the artifact reload watcher that
-/// follows it. Returns their handles (reload watcher first) and the feed's
-/// health.
+/// The running change-feed tasks.
+struct ChangeFeeds {
+    /// The artifact reload watcher that follows the feeds.
+    workbench_watcher: Option<tokio::task::JoinHandle<()>>,
+    /// The feed over the agent's directory.
+    workspace: Option<tokio::task::JoinHandle<()>>,
+    /// The feed over the team directory, published with `team/` paths.
+    team: Option<tokio::task::JoinHandle<()>>,
+    /// Whether the agent-directory feed is running.
+    health: tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
+}
+
+/// Start the workspace change feeds (agent directory and team directory) and
+/// the artifact reload watcher that follows them.
 async fn spawn_change_feed_tasks(
     core: &GatewayCore,
     layout: &crate::workspace::layout::WorkspaceLayout,
-) -> (
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::task::JoinHandle<()>>,
-    tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
-) {
+) -> ChangeFeeds {
     let (health_tx, health) =
         tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
     let workbench_watcher = match crate::workbench::watcher::spawn_workbench_watcher(
@@ -565,10 +600,31 @@ async fn spawn_change_feed_tasks(
     };
     let change_feed = crate::workspace::watch::spawn_change_feed(
         layout.root().to_path_buf(),
+        None,
         core.publisher.clone(),
         health_tx,
     );
-    (workbench_watcher, Some(change_feed), health)
+    // The team feed's health is not surfaced separately: a watcher that
+    // can't start announces `Unavailable` on the shared topic, which turns
+    // live updates off for every watching client.
+    let team_root = layout.team().root().to_path_buf();
+    if let Err(e) = tokio::fs::create_dir_all(&team_root).await {
+        tracing::warn!(error = %e, path = %team_root.display(), "failed to create the team directory; changes to team files may not appear live");
+    }
+    let (team_health_tx, _team_health) =
+        tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
+    let team_feed = crate::workspace::watch::spawn_change_feed(
+        team_root,
+        Some(crate::workspace::team_files::TEAM_PREFIX),
+        core.publisher.clone(),
+        team_health_tx,
+    );
+    ChangeFeeds {
+        workbench_watcher,
+        workspace: Some(change_feed),
+        team: Some(team_feed),
+        health,
+    }
 }
 
 /// Update, lifecycle, and model-call channels bundled to reduce argument
@@ -754,6 +810,7 @@ async fn build_runtime(
         hub_config_watcher_handle: spawned.hub_config_watcher_handle,
         workbench_watcher_handle: spawned.workbench_watcher_handle,
         change_feed_handle: spawned.change_feed_handle,
+        team_change_feed_handle: spawned.team_change_feed_handle,
         workspace_watch_health: spawned.workspace_watch_health,
         workbench_listener_shutdown_tx: spawned.workbench_listener_shutdown_tx,
         workbench_serving: spawned.workbench_serving,
@@ -762,6 +819,7 @@ async fn build_runtime(
         stop_tx: core.stop_tx,
         file_registry: spawned.file_registry,
         path_policy: parts.path_policy,
+        team: parts.team,
         tracing_service: spawned.tracing_service,
         update_status: channels.status,
         restart_tx: channels.restart_tx,
@@ -1055,6 +1113,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(h) = rt.change_feed_handle.take() {
         h.abort();
     }
+    if let Some(h) = rt.team_change_feed_handle.take() {
+        h.abort();
+    }
     if let Some(tx) = rt.workbench_listener_shutdown_tx.take() {
         tx.send(true).ok();
     }
@@ -1180,6 +1241,7 @@ async fn next_log_only_task_exit(
     hub_config_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     workbench_watcher: &mut Option<tokio::task::JoinHandle<()>>,
     change_feed: &mut Option<tokio::task::JoinHandle<()>>,
+    team_change_feed: &mut Option<tokio::task::JoinHandle<()>>,
 ) -> (&'static str, Result<(), tokio::task::JoinError>) {
     tokio::select! {
         result = poll_handle(watcher) => ("workspace config watcher", result),
@@ -1187,6 +1249,7 @@ async fn next_log_only_task_exit(
         result = poll_handle(hub_config_watcher) => ("hub config watcher", result),
         result = poll_handle(workbench_watcher) => ("artifact reload watcher", result),
         result = poll_handle(change_feed) => ("workspace change feed", result),
+        result = poll_handle(team_change_feed) => ("team change feed", result),
     }
 }
 
@@ -1471,6 +1534,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 &mut rt.hub_config_watcher_handle,
                 &mut rt.workbench_watcher_handle,
                 &mut rt.change_feed_handle,
+                &mut rt.team_change_feed_handle,
             ) => {
                 log_adapter_task_exit(&rt, task_name, &result).await;
             }
@@ -1486,6 +1550,7 @@ mod tests {
     use crate::config::HubConfig;
     use crate::gateway::types::{GatewayCore, ReloadSignal};
     use crate::util::FatalError;
+    use crate::workspace::team_files::TeamWriteCoordinator;
 
     fn hub_config(dir: &std::path::Path) -> HubConfig {
         std::fs::create_dir_all(dir).unwrap();
@@ -1501,8 +1566,15 @@ mod tests {
         let (core, _receivers) = GatewayCore::new(agent_dir.join("config"), dir.path().join("hub"));
         let original = FatalError::Config("original problem".to_string());
 
-        let result =
-            agent_last_known_good_fallback(&agent_dir, hub, None, &core.publisher, original).await;
+        let result = agent_last_known_good_fallback(
+            &agent_dir,
+            hub,
+            None,
+            &core.publisher,
+            &TeamWriteCoordinator::new(dir.path().join("team")),
+            original,
+        )
+        .await;
 
         match result {
             Err(FatalError::Config(msg)) => assert_eq!(msg, "original problem"),
@@ -1537,8 +1609,15 @@ mod tests {
         let (core, _receivers) = GatewayCore::new(agent_config_dir, dir.path().join("hub"));
         let original = FatalError::Config("original problem".to_string());
 
-        let result =
-            agent_last_known_good_fallback(&agent_dir, hub, None, &core.publisher, original).await;
+        let result = agent_last_known_good_fallback(
+            &agent_dir,
+            hub,
+            None,
+            &core.publisher,
+            &TeamWriteCoordinator::new(dir.path().join("team")),
+            original,
+        )
+        .await;
 
         match result {
             Err(FatalError::Config(msg)) => assert_eq!(msg, "original problem"),

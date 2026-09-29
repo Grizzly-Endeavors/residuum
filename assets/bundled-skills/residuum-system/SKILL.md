@@ -21,6 +21,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Scheduled Actions | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` | [scheduled-actions](references/scheduled-actions.md) |
 | Skills | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` | [skills](references/skills.md) |
 | Agent Keys | `agent_keys_list`, `agent_key_delete`, `exec` (`keys`, `store_output_as`) | `residuum agent-keys` CLI, Settings → Agent keys | [agent-keys](references/agent-keys.md) |
+| Team files | `read_file`, `write_file`, `edit_file` (`team/...` paths) | `team/` (shared by every agent) | [team-files](references/team-files.md) |
 | Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/hub/bin` | [tools](references/tools.md) |
 | MCP | *(none — surfaced as regular tools)* | `config/mcp.json` | [mcp](references/mcp.md) |
 | Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |

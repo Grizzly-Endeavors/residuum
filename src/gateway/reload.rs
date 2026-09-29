@@ -882,6 +882,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 checkpoints: std::sync::Arc::clone(&rt.checkpoints),
+                team: Some(rt.team.view_for_user(rt.layout.root())),
             };
             let update_api_state = crate::gateway::web::update::UpdateApiState {
                 update_status: std::sync::Arc::clone(&rt.update_status),

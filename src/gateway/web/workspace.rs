@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gateway::ReloadSignal;
 use crate::workspace::access::{dir_holds_internal_data, is_blocked_path};
+use crate::workspace::team_files::{TeamFiles, TeamPathGuard};
 use crate::workspace::version::{modified_unix_ms, version_token};
 
 use super::ConfigApiState;
@@ -163,16 +164,21 @@ pub(super) async fn canonicalize_workspace_root(
 /// Canonicalizes both the workspace root and the joined path, then verifies
 /// the result is still inside the workspace. Returns 403 if the path
 /// escapes the workspace boundary, 404 if it doesn't exist.
+///
+/// `label` is the path as the client addressed it, which differs from
+/// `relative` for a `team/...` path (relative to the team directory), so
+/// errors name what the client sent.
 pub(super) async fn validate_workspace_path(
     workspace_dir: &Path,
     relative: &str,
+    label: &str,
 ) -> Result<PathBuf, (StatusCode, String)> {
     let canonical_root = canonicalize_workspace_root(workspace_dir).await?;
 
     let target = workspace_dir.join(relative);
     let canonical_target = tokio::fs::canonicalize(&target).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            (StatusCode::NOT_FOUND, format!("path not found: {relative}"))
+            (StatusCode::NOT_FOUND, format!("path not found: {label}"))
         } else {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -184,11 +190,66 @@ pub(super) async fn validate_workspace_path(
     if !canonical_target.starts_with(&canonical_root) {
         return Err((
             StatusCode::FORBIDDEN,
-            format!("path traversal rejected: {relative}"),
+            format!("path traversal rejected: {label}"),
         ));
     }
 
     Ok(canonical_target)
+}
+
+/// A namespace path placed on disk: the directory it is relative to, the
+/// remainder, and, for a path in the team directory, the team view its
+/// writes go through.
+pub(super) struct Located {
+    /// The workspace directory, or the team directory for a `team/...` path.
+    pub base: PathBuf,
+    /// The path relative to `base`, `/`-separated. Empty for `base` itself.
+    pub rel: String,
+    /// The path as the client addressed it (`team/...` for team files).
+    pub label: String,
+    /// `Some` when the path is in the team directory.
+    pub team: Option<TeamFiles>,
+}
+
+impl Located {
+    /// Resolve the path for reading: it must exist and stay inside its base.
+    pub(super) async fn existing(&self) -> Result<PathBuf, (StatusCode, String)> {
+        validate_workspace_path(&self.base, &self.rel, &self.label).await
+    }
+
+    /// Resolve the path for writing (it need not exist yet). Refuses the team
+    /// directory itself, and any spot inside a `team` entry of the workspace
+    /// directory, which the namespace reserves for the team prefix.
+    async fn for_write(&self, state: &ConfigApiState) -> Result<PathBuf, (StatusCode, String)> {
+        self.refuse_team_root()?;
+        let resolved = resolve_labeled_path_for_write(&self.base, &self.rel, &self.label).await?;
+        if self.team.is_none()
+            && let Some(team) = &state.team
+        {
+            team.check_no_agent_team_entry(&resolved)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        }
+        Ok(resolved)
+    }
+
+    /// The team directory itself can't be written, moved, or deleted through
+    /// the file API.
+    fn refuse_team_root(&self) -> Result<(), (StatusCode, String)> {
+        if self.team.is_some() && self.rel.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "team is the shared team folder; it can't be replaced, moved, or deleted"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Take the team write lock for `path` when it is a team path.
+    async fn lock(&self, path: &Path) -> Option<(TeamFiles, TeamPathGuard)> {
+        let team = self.team.as_ref()?;
+        Some((team.clone(), team.coordinator().lock(path).await))
+    }
 }
 
 /// Resolve a path relative to the workspace directory for writing.
@@ -201,9 +262,13 @@ pub(super) async fn validate_workspace_path(
 /// disk, so a symlink planted inside the workspace can't walk a
 /// still-nonexistent path outside it — while letting the caller create the
 /// missing parent directories afterward.
-async fn resolve_workspace_path_for_write(
+///
+/// `label` is the path as the client addressed it, used in errors (see
+/// [`validate_workspace_path`]).
+async fn resolve_labeled_path_for_write(
     workspace_dir: &Path,
     relative: &str,
+    label: &str,
 ) -> Result<PathBuf, (StatusCode, String)> {
     let canonical_root = canonicalize_workspace_root(workspace_dir).await?;
 
@@ -211,23 +276,22 @@ async fn resolve_workspace_path_for_write(
     let file_name = target.file_name().map(OsString::from).ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
-            format!("path has no file name: {relative}"),
+            format!("path has no file name: {label}"),
         )
     })?;
     let parent = target.parent().ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
-            format!("path has no parent directory: {relative}"),
+            format!("path has no parent directory: {label}"),
         )
     })?;
 
-    let (canonical_existing, missing_segments) =
-        nearest_existing_ancestor(parent, relative).await?;
+    let (canonical_existing, missing_segments) = nearest_existing_ancestor(parent, label).await?;
 
     if !canonical_existing.starts_with(&canonical_root) {
         return Err((
             StatusCode::FORBIDDEN,
-            format!("path traversal rejected: {relative}"),
+            format!("path traversal rejected: {label}"),
         ));
     }
 
@@ -349,11 +413,13 @@ pub(super) async fn api_workspace_files(
         ));
     }
 
+    let located = state.locate(&relative);
     let dir_path = if relative.is_empty() {
         state.workspace_dir.clone()
     } else {
-        validate_workspace_path(&state.workspace_dir, &relative).await?
+        located.existing().await?
     };
+    let relative = relative.trim_end_matches('/').to_string();
 
     let mut read_dir = tokio::fs::read_dir(&dir_path).await.map_err(|e| {
         (
@@ -383,6 +449,24 @@ pub(super) async fn api_workspace_files(
         if let Some(item) = workspace_entry(name, &entry).await? {
             entries.push(item);
         }
+    }
+
+    // The team directory appears as a `team` folder at the top of the tree.
+    if relative.is_empty()
+        && let Some(team) = &state.team
+        && !entries
+            .iter()
+            .any(|e| e.name == crate::workspace::team_files::TEAM_PREFIX)
+        && let Ok(metadata) = tokio::fs::metadata(team.team_root()).await
+        && metadata.is_dir()
+    {
+        entries.push(WorkspaceEntry {
+            name: crate::workspace::team_files::TEAM_PREFIX.to_string(),
+            entry_type: "directory".to_string(),
+            size: None,
+            modified: modified_unix_ms(&metadata),
+            version: version_token(&metadata),
+        });
     }
 
     // Sort: directories first, then alphabetically within each group.
@@ -449,7 +533,7 @@ pub(super) async fn api_workspace_file_read(
         ));
     }
 
-    let path = validate_workspace_path(&state.workspace_dir, relative).await?;
+    let path = state.locate(relative).existing().await?;
 
     let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -578,7 +662,14 @@ fn diagnose_write_content(
     relative: &str,
     bytes: &[u8],
 ) -> Vec<crate::diagnostics::Diagnostic> {
-    let path = Path::new(relative);
+    // A team file is recognized by where it really is, which the workspace-
+    // relative spelling can't say.
+    let located = state.locate(relative);
+    let team_path = located
+        .team
+        .is_some()
+        .then(|| located.base.join(&located.rel));
+    let path = team_path.as_deref().unwrap_or_else(|| Path::new(relative));
     let paths = crate::diagnostics::DiagnosticsPaths {
         config_dir: state.config_dir.clone(),
         workspace_dir: state.workspace_dir.clone(),
@@ -656,33 +747,47 @@ async fn write_workspace_bytes(
 
     let diagnostics = diagnose_write_content(state, relative, bytes);
 
-    let target_path = resolve_workspace_path_for_write(&state.workspace_dir, relative).await?;
+    let located = state.locate(relative);
+    let target_path = located.for_write(state).await?;
+
+    // A team file is written under its per-path lock, so the precondition
+    // below and the write can't interleave with an agent's write.
+    let team_lock = located.lock(&target_path).await;
 
     if let Some(conflict) = check_conditional_write(&target_path, headers).await? {
         return Ok(conflict);
     }
 
-    let parent = target_path.parent().ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("path has no parent directory: {relative}"),
-        )
-    })?;
-    tokio::fs::create_dir_all(parent).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to create parent directory: {e}"),
-        )
-    })?;
-
-    crate::util::fs::atomic_write(&target_path, bytes)
-        .await
-        .map_err(|e| {
+    if let Some((team, guard)) = &team_lock {
+        guard.commit(team.writer(), bytes).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to write file: {e}"),
+                format!("failed to write file: {e:#}"),
             )
         })?;
+    } else {
+        let parent = target_path.parent().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("path has no parent directory: {relative}"),
+            )
+        })?;
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to create parent directory: {e}"),
+            )
+        })?;
+
+        crate::util::fs::atomic_write(&target_path, bytes)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to write file: {e}"),
+                )
+            })?;
+    }
 
     let metadata = tokio::fs::metadata(&target_path).await.map_err(|e| {
         (
@@ -756,7 +861,7 @@ pub(super) async fn api_workspace_raw_read(
         ));
     }
 
-    let path = validate_workspace_path(&state.workspace_dir, relative).await?;
+    let path = state.locate(relative).existing().await?;
 
     let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -898,14 +1003,20 @@ pub(super) async fn api_workspace_delete(
         ));
     }
 
-    let path = validate_workspace_path(&state.workspace_dir, relative).await?;
-    let canonical_root = canonicalize_workspace_root(&state.workspace_dir).await?;
+    let located = state.locate(relative);
+    let path = located.existing().await?;
+    let canonical_root = canonicalize_workspace_root(&located.base).await?;
     if path == canonical_root {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "the workspace root cannot be deleted".to_string(),
-        ));
+        let what = if located.team.is_some() {
+            "the team folder"
+        } else {
+            "the workspace root"
+        };
+        return Err((StatusCode::BAD_REQUEST, format!("{what} cannot be deleted")));
     }
+    // A team path is deleted under its per-path lock, and the deletion is
+    // recorded so an agent that wrote there earlier learns who removed it.
+    let team_lock = located.lock(&path).await;
 
     let metadata = tokio::fs::metadata(&path).await.map_err(|e| {
         (
@@ -931,6 +1042,9 @@ pub(super) async fn api_workspace_delete(
                 format!("failed to delete directory: {e}"),
             )
         })?;
+        if let Some((team, guard)) = &team_lock {
+            guard.record_tree_removed(team.writer());
+        }
     } else {
         if let Some(conflict) = check_conditional_write(&path, &headers).await? {
             return Ok(conflict);
@@ -943,6 +1057,9 @@ pub(super) async fn api_workspace_delete(
                 format!("failed to delete file: {e}"),
             )
         })?;
+        if let Some((team, guard)) = &team_lock {
+            guard.record_removed(team.writer());
+        }
     }
 
     signal_identity_reload(relative, &path, &state).await;
@@ -974,7 +1091,7 @@ pub(super) async fn api_workspace_mkdir(
         return Err((StatusCode::BAD_REQUEST, "path is required".to_string()));
     }
 
-    let target = resolve_workspace_path_for_write(&state.workspace_dir, relative).await?;
+    let target = state.locate(relative).for_write(&state).await?;
 
     match tokio::fs::metadata(&target).await {
         Ok(meta) if meta.is_dir() => {}
@@ -1140,6 +1257,58 @@ async fn restore_aside(aside: &Path, to_path: &Path) {
     }
 }
 
+/// Take the write locks for the team paths a move touches. When the move's
+/// source and destination are both team paths they are locked in path order
+/// (and once, if they are the same path).
+async fn lock_move_paths(
+    from: &Located,
+    from_path: &Path,
+    to: &Located,
+    to_path: &Path,
+) -> (
+    Option<(TeamFiles, TeamPathGuard)>,
+    Option<(TeamFiles, TeamPathGuard)>,
+) {
+    if from.team.is_some() && to.team.is_some() {
+        if from_path == to_path {
+            return (from.lock(from_path).await, None);
+        }
+        if from_path < to_path {
+            let first = from.lock(from_path).await;
+            let second = to.lock(to_path).await;
+            return (first, second);
+        }
+        let second = to.lock(to_path).await;
+        let first = from.lock(from_path).await;
+        return (first, second);
+    }
+    (from.lock(from_path).await, to.lock(to_path).await)
+}
+
+/// Record a completed move against the coordinator: the source is gone
+/// (removed by the user), and a file now sits at the destination (written by
+/// the user), so an agent whose view of either path is stale learns who
+/// changed it.
+async fn record_team_move(
+    from: Option<&(TeamFiles, TeamPathGuard)>,
+    to: Option<&(TeamFiles, TeamPathGuard)>,
+    moved_a_directory: bool,
+) {
+    if let Some((team, guard)) = from {
+        if moved_a_directory {
+            guard.record_tree_removed(team.writer());
+        } else {
+            guard.record_removed(team.writer());
+        }
+    }
+    if let Some((team, guard)) = to
+        && !moved_a_directory
+        && let Err(e) = guard.record_written(team.writer()).await
+    {
+        tracing::warn!(error = %e, "failed to record a moved team file's new version; a stale writer may be reported as unknown");
+    }
+}
+
 /// `POST /api/workspace/move` — move or rename a workspace file or
 /// directory.
 ///
@@ -1164,7 +1333,15 @@ pub(super) async fn api_workspace_move(
         ));
     }
 
-    let from_path = validate_workspace_path(&state.workspace_dir, from_relative).await?;
+    let from_located = state.locate(from_relative);
+    from_located.refuse_team_root()?;
+    let from_path = from_located.existing().await?;
+    let to_located = state.locate(to_relative);
+    let to_path = to_located.for_write(&state).await?;
+    // Team paths on either side are held under their per-path locks for the
+    // whole move, taken in a fixed order so two moves can't deadlock.
+    let (from_lock, to_lock) =
+        lock_move_paths(&from_located, &from_path, &to_located, &to_path).await;
     let from_metadata = tokio::fs::metadata(&from_path).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1185,8 +1362,6 @@ pub(super) async fn api_workspace_move(
         })?;
         diagnostics = diagnose_write_content(&state, to_relative, &bytes);
     }
-
-    let to_path = resolve_workspace_path_for_write(&state.workspace_dir, to_relative).await?;
 
     // Moving a path onto itself is a no-op success, not a 409: the
     // "destination already exists" check would otherwise see the source
@@ -1233,6 +1408,7 @@ pub(super) async fn api_workspace_move(
     if let Some(aside) = &aside {
         cleanup_aside(aside).await;
     }
+    record_team_move(from_lock.as_ref(), to_lock.as_ref(), from_metadata.is_dir()).await;
 
     let version = if from_metadata.is_file() {
         let metadata = tokio::fs::metadata(&to_path).await.map_err(|e| {
@@ -1278,17 +1454,17 @@ mod tests {
     async fn path_traversal_rejected() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
-            validate_workspace_path(dir.path(), "../etc/passwd")
+            validate_workspace_path(dir.path(), "../etc/passwd", "../etc/passwd")
                 .await
                 .is_err()
         );
         assert!(
-            validate_workspace_path(dir.path(), "/etc/passwd")
+            validate_workspace_path(dir.path(), "/etc/passwd", "/etc/passwd")
                 .await
                 .is_err()
         );
         assert!(
-            validate_workspace_path(dir.path(), "foo/../../etc/passwd")
+            validate_workspace_path(dir.path(), "foo/../../etc/passwd", "foo/../../etc/passwd")
                 .await
                 .is_err()
         );
@@ -1301,13 +1477,13 @@ mod tests {
         tokio::fs::create_dir_all(&ws_dir).await.unwrap();
 
         assert!(
-            resolve_workspace_path_for_write(&ws_dir, "../etc/shadow")
+            resolve_labeled_path_for_write(&ws_dir, "../etc/shadow", "../etc/shadow")
                 .await
                 .is_err(),
             "escaping via a relative .. should be rejected"
         );
         assert!(
-            resolve_workspace_path_for_write(&ws_dir, "/etc/shadow")
+            resolve_labeled_path_for_write(&ws_dir, "/etc/shadow", "/etc/shadow")
                 .await
                 .is_err(),
             "an absolute path should be rejected"
@@ -1320,12 +1496,13 @@ mod tests {
         tokio::fs::write(dir.path().join("test.md"), "hello")
             .await
             .unwrap();
-        let result = validate_workspace_path(dir.path(), "test.md").await;
+        let result = validate_workspace_path(dir.path(), "test.md", "test.md").await;
         assert!(result.is_ok());
     }
 
     fn make_state(ws_dir: PathBuf) -> ConfigApiState {
         super::super::ConfigApiState {
+            team: None,
             hub_dir: ws_dir.clone(),
             config_dir: ws_dir.clone(),
             agent_name: "test-agent".to_string(),
@@ -1776,6 +1953,7 @@ mod tests {
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
+            team: None,
             hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
             agent_name: "test-agent".to_string(),
@@ -2379,6 +2557,7 @@ mod tests {
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
+            team: None,
             hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
             agent_name: "test-agent".to_string(),
@@ -2975,6 +3154,7 @@ mod tests {
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let state = super::super::ConfigApiState {
+            team: None,
             hub_dir: dir.path().to_path_buf(),
             config_dir: dir.path().to_path_buf(),
             agent_name: "test-agent".to_string(),

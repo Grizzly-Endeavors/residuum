@@ -133,6 +133,10 @@ const SYSTEM_REFS: &[(&str, &str)] = &[
         "a2a.md",
         include_str!("../../assets/bundled-skills/residuum-system/references/a2a.md"),
     ),
+    (
+        "team-files.md",
+        include_str!("../../assets/bundled-skills/residuum-system/references/team-files.md"),
+    ),
 ];
 
 // residuum-getting-started skill

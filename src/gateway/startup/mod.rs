@@ -29,6 +29,7 @@ use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
+use crate::workspace::team_files::TeamWriteCoordinator;
 
 use crate::background::spawn_context::SpawnContext;
 
@@ -60,6 +61,9 @@ pub(crate) struct GatewayComponents {
     pub conversation_router: Arc<ConversationRouter>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// The hub's team write coordinator, shared with every agent's file tools
+    /// and the web file API.
+    pub team: TeamWriteCoordinator,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
     /// Shared tracing service. Owned here so feedback tools can register
     /// against it during agent construction; downstream consumers (web
@@ -1026,9 +1030,11 @@ fn build_path_policy(
     cfg: &Config,
     layout: &WorkspaceLayout,
     hub: &HubConfig,
+    team: &TeamWriteCoordinator,
 ) -> crate::tools::path_policy::SharedPathPolicy {
-    crate::tools::PathPolicy::new_shared_with_blocked(
+    crate::tools::PathPolicy::new_shared_with_team(
         crate::tools::path_policy::blocked_write_paths(cfg, layout, &hub.config_dir),
+        team.view_for_agent(&cfg.agent_name, layout.root()),
     )
 }
 
@@ -1177,10 +1183,11 @@ async fn init_supporting_infra(
     layout: &WorkspaceLayout,
     degradations: &mut Vec<String>,
     agent_messenger: Arc<AgentMessenger>,
+    team: &TeamWriteCoordinator,
 ) -> SupportingInfra {
     let net = init_networking(cfg, hub, layout, degradations).await;
     let (tracing_service, tracing_client_context) = init_tracing_service(cfg, &net.agent_keys);
-    let path_policy = build_path_policy(cfg, layout, hub);
+    let path_policy = build_path_policy(cfg, layout, hub, team);
     let (a2a_hub, a2a_tracker) = init_a2a_client(layout, &net.agent_keys, agent_messenger).await;
     SupportingInfra {
         net,
@@ -1191,6 +1198,13 @@ async fn init_supporting_infra(
         a2a_tracker,
         config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
     }
+}
+
+/// Services the agent shares with the rest of the hub, threaded into infra
+/// setup.
+struct SharedServices<'a> {
+    checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    team: &'a TeamWriteCoordinator,
 }
 
 /// Build supporting infra and, once its tracing service exists, the session
@@ -1204,7 +1218,7 @@ async fn init_infra_and_session_runtime(
     degradations: &mut Vec<String>,
     publisher: &crate::bus::Publisher,
     sess: &SessionSubsystems,
-    checkpoints: &Arc<crate::checkpoints::CheckpointEngine>,
+    shared: &SharedServices<'_>,
 ) -> (SupportingInfra, Arc<SessionRuntime>) {
     let infra = init_supporting_infra(
         cfg,
@@ -1212,6 +1226,7 @@ async fn init_infra_and_session_runtime(
         layout,
         degradations,
         Arc::clone(&sess.agent_messenger),
+        shared.team,
     )
     .await;
     let session_runtime = build_session_runtime(&SessionRuntimeInputs {
@@ -1220,7 +1235,7 @@ async fn init_infra_and_session_runtime(
         registry: &sess.session_registry,
         store: &sess.session_store,
         messenger: &sess.agent_messenger,
-        checkpoints,
+        checkpoints: shared.checkpoints,
         tracing_service: &infra.tracing_service,
         tracing_client_context: &infra.tracing_client_context,
     });
@@ -1239,6 +1254,7 @@ pub(crate) async fn initialize(
     cfg: &Config,
     hub: &HubConfig,
     publisher: &crate::bus::Publisher,
+    team: &TeamWriteCoordinator,
 ) -> Result<GatewayComponents, FatalError> {
     let (layout, tz, checkpoints) = init_workspace_and_checkpoints(cfg, hub, publisher).await?;
 
@@ -1275,7 +1291,10 @@ pub(crate) async fn initialize(
         &mut degradations,
         publisher,
         &sess,
-        &checkpoints,
+        &SharedServices {
+            checkpoints: &checkpoints,
+            team,
+        },
     )
     .await;
 
@@ -1338,6 +1357,7 @@ pub(crate) async fn initialize(
         conversation_router: sess.conversation_router,
         spawn_context,
         path_policy: infra.path_policy,
+        team: team.clone(),
         output_topic_override_tx,
         tracing_service: infra.tracing_service,
         tracing_client_context: infra.tracing_client_context,

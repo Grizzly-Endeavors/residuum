@@ -77,6 +77,7 @@ pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, Fa
         setup_done: Some(Arc::clone(&setup_done_tx)),
         secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         checkpoints,
+        team: None,
     };
 
     let app = web::config_api_router(api_state)

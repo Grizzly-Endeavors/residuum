@@ -15,7 +15,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 | Parameter | Type    | Required | Description                                      |
 |-----------|---------|----------|--------------------------------------------------|
-| `path`    | string  | yes      | Absolute or relative path to the file to read    |
+| `path`    | string  | yes      | Absolute or relative path to the file to read. A path starting with "team/" is in the shared team folder |
 | `offset`  | integer | no       | Line number to start reading from (0-based, default: 0) |
 | `limit`   | integer | no       | Maximum number of lines to read (default: 2000)  |
 
@@ -29,9 +29,9 @@ On error (returned as `is_error = true`):
 - File does not exist or cannot be read
 - Image exceeds the model API's inline size limit
 
-**Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
+**Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`). For a file under `team/`, the tracker also records the file's version (the mtime-based token the web file API uses, plus the number of writes the team write coordinator has recorded for it), taken just before the file is read.
 
-A relative `path` resolves against the agent's workspace root, not the process's current directory.
+A relative `path` resolves against the agent's workspace root, not the process's current directory. A relative `path` starting with `team/` (or exactly `team`) resolves in the shared team directory instead; see [Team files](../../docs/systems-usage/team-files.md).
 
 ---
 
@@ -40,13 +40,13 @@ A relative `path` resolves against the agent's workspace root, not the process's
 **Source:** `write.rs` · `WriteTool`
 
 **Description sent to LLM:**
-> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting.
+> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                   |
 |-----------|--------|----------|-----------------------------------------------|
-| `path`    | string | yes      | Absolute or relative path to the file to write |
+| `path`    | string | yes      | Absolute or relative path to the file to write. A path starting with "team/" is in the shared team folder |
 | `content` | string | yes      | The content to write to the file              |
 
 ### Output
@@ -56,14 +56,16 @@ On success: `"wrote {N} bytes to {path}"`, followed by one line per diagnostic i
 On error:
 - `PathPolicy` rejects the write path (targets a protected config or credential-store file)
 - File already exists but has not been read via `read_file` first
+- The path is inside a `team` entry of the agent's own directory (`team` is reserved for the shared team folder)
+- The file is under `team/` and changed since this tool set read it (or was created since, when the write meant to create it). Nothing is written. The error names the path (as `team/...`), says who changed it (`teammate {name}`, `the user`, `another session of yours`, or `an unknown writer (a change made outside Residuum)`), and tells the agent to read it again and reapply its change
 - Directory creation fails
 - Write fails
 
-**Side effect:** Records the path in the `FileTracker` after a successful write.
+**Side effect:** Records the path in the `FileTracker` after a successful write. A write under `team/` takes that path's lock, compares the file's current version with the one recorded at the last read or write, writes atomically only when they match, and records the agent as the path's last writer.
 
 **Note:** `config.toml` and `providers.toml` are writable (the agent may edit them on the user's behalf); `config.example.toml`/`providers.example.toml` are always blocked — Residuum regenerates them from its own defaults on every startup. See the `residuum-system` skill's [config reference](../../assets/bundled-skills/residuum-system/references/config.md) for which file holds what and how to edit them.
 
-A relative `path` resolves against the agent's workspace root, not the process's current directory.
+A relative `path` resolves against the agent's workspace root, not the process's current directory. A relative `path` starting with `team/` resolves in the shared team directory; see [Team files](../../docs/systems-usage/team-files.md).
 
 ---
 
@@ -72,13 +74,13 @@ A relative `path` resolves against the agent's workspace root, not the process's
 **Source:** `edit.rs` · `EditTool`
 
 **Description sent to LLM:**
-> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Use this over write_file when changing part of an existing file.
+> Edit an existing file by replacing exact text. Each entry in 'edits' replaces old_string with new_string; old_string must match the file exactly once (include surrounding lines to make it unique) unless replace_all is true. Edits apply in order, each seeing the result of the ones before it, and the file is only written if every edit succeeds. Copy old_string from read_file output without the line-number prefix. To delete text, use an empty new_string. The file must have been read with read_file first. Files under team/ are shared with teammates: if one changed after you read it, nothing is written and the error names who changed it, so read it again and redo your change. Use this over write_file when changing part of an existing file.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                          |
 |-----------|--------|----------|------------------------------------------------------|
-| `path`    | string | yes      | Path to the file to edit                             |
+| `path`    | string | yes      | Path to the file to edit. A path starting with "team/" is in the shared team folder |
 | `edits`   | array  | yes      | Replacements to apply, in order (at least one entry) |
 
 Each `edits` entry:
@@ -104,6 +106,8 @@ On error (returned as `is_error = true`; nothing is written):
 - `PathPolicy` rejects the path (targets a protected config or credential-store file)
 - File does not exist (points to `write_file`)
 - File has not been read via `read_file` first
+- The path is inside a `team` entry of the agent's own directory (reserved for the shared team folder)
+- The file is under `team/` and changed since this tool set read it: same refusal and message as `write_file`; nothing is written
 - An edit fails, reported as `"edit {i} of {n}: {reason}. No changes were written to {path}"`, where the reason is one of:
   - `old_string` matches several places without `replace_all` (lists up to 10 line numbers)
   - `old_string` is not found (with a hint when it includes `read_file`'s line-number prefix)
@@ -111,7 +115,7 @@ On error (returned as `is_error = true`; nothing is written):
 
 Malformed arguments (missing `path` or `edits`, an empty `edits` list, an entry missing `old_string`/`new_string`, an empty `old_string`, or identical `old_string` and `new_string`) return a `ToolError::InvalidArguments`.
 
-A relative `path` resolves against the agent's workspace root, not the process's current directory.
+A relative `path` resolves against the agent's workspace root, not the process's current directory. A relative `path` starting with `team/` resolves in the shared team directory, and the edit runs under that file's write lock exactly as `write_file` does; see [Team files](../../docs/systems-usage/team-files.md).
 
 ---
 
@@ -986,7 +990,7 @@ On submission failure: `is_error = true` with the upstream error message; for 42
 |-------------|---------------|----------|-----------------------------------------------------------------------------------------------------------------|
 | `state`     | string (enum) | yes      | `"completed"` when the work is done, `"input_required"` when you need more information before continuing, `"failed"` when the task cannot be completed. |
 | `message`   | string        | yes      | The message the caller sees: your final answer for `"completed"`, the question for `"input_required"`, or an explanation for `"failed"`. |
-| `artifacts` | array<string> | no       | Workspace-relative paths of files to attach as artifacts.                                                       |
+| `artifacts` | array<string> | no       | Workspace-relative paths of files to attach as artifacts. A path starting with "team/" is in the shared team folder. |
 
 ### Output
 

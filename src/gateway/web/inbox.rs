@@ -383,6 +383,7 @@ mod tests {
 
     fn make_state(workspace_dir: std::path::PathBuf) -> ConfigApiState {
         ConfigApiState {
+            team: None,
             hub_dir: workspace_dir.clone(),
             config_dir: workspace_dir.clone(),
             agent_name: "test-agent".to_string(),
