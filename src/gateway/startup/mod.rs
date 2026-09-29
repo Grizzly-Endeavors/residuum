@@ -1207,6 +1207,15 @@ struct SharedServices<'a> {
     team: &'a TeamWriteCoordinator,
 }
 
+impl<'a> SharedServices<'a> {
+    fn new(
+        checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+        team: &'a TeamWriteCoordinator,
+    ) -> Self {
+        Self { checkpoints, team }
+    }
+}
+
 /// Build supporting infra and, once its tracing service exists, the session
 /// runtime that needs it — split out of `initialize` purely to keep that
 /// function's line count down. See [`init_session_registry_and_messenger`]
@@ -1291,10 +1300,7 @@ pub(crate) async fn initialize(
         &mut degradations,
         publisher,
         &sess,
-        &SharedServices {
-            checkpoints: &checkpoints,
-            team,
-        },
+        &SharedServices::new(&checkpoints, team),
     )
     .await;
 

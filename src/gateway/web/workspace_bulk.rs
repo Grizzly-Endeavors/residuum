@@ -796,8 +796,8 @@ fn batch_read(
     let mut results = Vec::with_capacity(paths.len());
 
     for label in paths {
-        let addresses_team =
-            team_root.is_some() && crate::workspace::team_files::team_relative_path(label).is_some();
+        let addresses_team = team_root.is_some()
+            && crate::workspace::team_files::team_relative_path(label).is_some();
         let result = if addresses_team {
             match (team_root, canonical_team.as_deref()) {
                 (Some(dir), Some(canonical)) => resolve_and_read_one(
