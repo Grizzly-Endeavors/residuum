@@ -575,7 +575,9 @@ impl CheckpointEngine {
     ) -> Result<RestoreOutcome, CheckpointError> {
         let repo = self.repo(kind);
         let dest_root = self.dest_root(kind);
-        let team_locks = self.lock_restore_targets(kind, &id, &path).await?;
+        let team_locks = self
+            .lock_restore_targets(kind, &id, std::slice::from_ref(&path))
+            .await?;
         let restored_paths = {
             let repo = Arc::clone(&repo);
             let id = id.clone();
@@ -595,6 +597,75 @@ impl CheckpointEngine {
             self.publisher.as_ref(),
             format!(
                 "Restored {path} ({} path(s)) from checkpoint {}.",
+                restored_paths.len(),
+                short_id(&id)
+            ),
+        )
+        .await;
+
+        Ok(RestoreOutcome {
+            checkpoint_id,
+            restored_paths,
+        })
+    }
+
+    /// Restore the whole tree checkpoint `id` recorded into the repository's
+    /// root directory, then checkpoint the result so the restore itself can
+    /// be undone. Entries already on disk that the checkpoint doesn't have
+    /// are left alone. This is how a deleted agent's directory comes back
+    /// from its workspace repository.
+    ///
+    /// # Errors
+    /// Returns [`CheckpointError::NotFound`] if `id` doesn't name a
+    /// checkpoint.
+    ///
+    /// Locking and writer attribution in the team repository work as for
+    /// [`Self::restore_path`], over every top-level entry the checkpoint has.
+    pub async fn restore_tree(
+        &self,
+        kind: RepoKind,
+        id: String,
+        ctx: CheckpointContext,
+        writer: &TeamWriter,
+    ) -> Result<RestoreOutcome, CheckpointError> {
+        let repo = self.repo(kind);
+        let dest_root = self.dest_root(kind);
+        let team_locks = if self.team_coordinator_for(kind).is_some() {
+            let top_level = {
+                let repo = Arc::clone(&repo);
+                let id = id.clone();
+                tokio::task::spawn_blocking(move || {
+                    let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
+                    let oid = guard.resolve_commit(&id)?;
+                    guard.root_entry_names(oid)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    Err(CheckpointError::Git(format!("restore task panicked: {e}")))
+                })?
+            };
+            self.lock_restore_targets(kind, &id, &top_level).await?
+        } else {
+            Vec::new()
+        };
+        let restored_paths = {
+            let repo = Arc::clone(&repo);
+            let id = id.clone();
+            tokio::task::spawn_blocking(move || {
+                let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
+                let oid = guard.resolve_commit(&id)?;
+                guard.restore_root(oid, &dest_root)
+            })
+            .await
+            .unwrap_or_else(|e| Err(CheckpointError::Git(format!("restore task panicked: {e}"))))?
+        };
+        record_team_writes(team_locks, writer, None).await;
+
+        let checkpoint_id = self.checkpoint_after_mutation(kind, ctx).await;
+        notice::publish(
+            self.publisher.as_ref(),
+            format!(
+                "Restored {} path(s) from checkpoint {}.",
                 restored_paths.len(),
                 short_id(&id)
             ),
@@ -670,7 +741,7 @@ impl CheckpointEngine {
         &self,
         kind: RepoKind,
         id: &str,
-        path: &str,
+        paths: &[String],
     ) -> Result<Vec<(String, TeamPathGuard)>, CheckpointError> {
         let Some(coordinator) = self.team_coordinator_for(kind) else {
             return Ok(Vec::new());
@@ -678,7 +749,7 @@ impl CheckpointEngine {
         let mut wanted: BTreeSet<String> = BTreeSet::new();
         let mut held: Vec<(String, TeamPathGuard)> = Vec::new();
         for _ in 0..RESTORE_LOCK_ATTEMPTS {
-            let planned = self.plan_restore(kind, id, path).await?;
+            let planned = self.plan_restore(kind, id, paths).await?;
             if planned.is_empty() {
                 return Ok(Vec::new());
             }
@@ -690,7 +761,8 @@ impl CheckpointEngine {
             held = self.lock_relative(coordinator, kind, &wanted).await;
         }
         Err(CheckpointError::Io(format!(
-            "team files under {path} kept changing while the restore waited for them; try again"
+            "team files under {} kept changing while the restore waited for them; try again",
+            paths.join(", ")
         )))
     }
 
@@ -747,18 +819,21 @@ impl CheckpointEngine {
         &self,
         kind: RepoKind,
         id: &str,
-        path: &str,
+        paths: &[String],
     ) -> Result<BTreeSet<String>, CheckpointError> {
         let repo = self.repo(kind);
         let dest_root = self.dest_root(kind);
         let id = id.to_string();
-        let path = path.to_string();
+        let paths = paths.to_vec();
         tokio::task::spawn_blocking(move || {
             let guard = repo.lock().unwrap_or_else(PoisonError::into_inner);
             let oid = guard.resolve_commit(&id)?;
-            let mut files: BTreeSet<String> = guard.files_under(oid, &path)?.into_iter().collect();
-            if super::is_root_relative(&path) {
-                collect_disk_files(&dest_root, &path, &mut files);
+            let mut files = BTreeSet::new();
+            for path in &paths {
+                files.extend(guard.files_under(oid, path)?);
+                if super::is_root_relative(path) {
+                    collect_disk_files(&dest_root, path, &mut files);
+                }
             }
             Ok(files)
         })
@@ -1596,6 +1671,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn restore_tree_brings_back_a_deleted_root_and_keeps_extra_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(workspace.join("memory")).unwrap();
+        std::fs::write(workspace.join("SOUL.md"), "soul").unwrap();
+        std::fs::write(workspace.join("memory").join("notes.md"), "notes").unwrap();
+        let engine = new_engine(dir.path());
+        let id = engine
+            .checkpoint_workspace_id_before_action(ctx(CheckpointTrigger::PreAction, "before"))
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("newer.md"), "kept").unwrap();
+
+        let outcome = engine
+            .restore_tree(
+                RepoKind::Workspace,
+                id,
+                ctx(CheckpointTrigger::Restore, "restore tree"),
+                &TeamWriter::User,
+            )
+            .await
+            .unwrap();
+
+        assert!(outcome.restored_paths.contains(&"SOUL.md".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("SOUL.md")).unwrap(),
+            "soul"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("memory").join("notes.md")).unwrap(),
+            "notes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("newer.md")).unwrap(),
+            "kept"
+        );
+    }
+
     fn write_team_file(team_root: &Path, rel: &str, content: &str) {
         let path = rel
             .split('/')
@@ -1793,5 +1909,42 @@ mod tests {
             .map(|c| c.path.as_str())
             .collect();
         assert_eq!(paths, ["USER.md"]);
+    }
+
+    #[tokio::test]
+    async fn team_restore_tree_records_the_writer_of_each_restored_file() {
+        use crate::workspace::team_files::{CheckError, TeamWriteCoordinator, TeamWriter};
+
+        let dir = tempfile::tempdir().unwrap();
+        let team = crate::config::paths::TeamPaths::new(dir.path().join("team"));
+        write_team_file(team.root(), "wiki/agents/scout.md", "role");
+        let coordinator = TeamWriteCoordinator::new(&team);
+        let engine = new_engine(dir.path()).with_team_coordinator(coordinator.clone());
+        let id = engine
+            .checkpoint_team_id_before_action(ctx(CheckpointTrigger::PreAction, "team"))
+            .await
+            .unwrap();
+        let page = team.root().join("wiki").join("agents").join("scout.md");
+        std::fs::remove_file(&page).unwrap();
+        let seen = coordinator.stamp(&page).await.unwrap();
+        let creator = TeamWriter::Agent("creator".to_string());
+
+        engine
+            .restore_tree(
+                RepoKind::Team,
+                id,
+                ctx(CheckpointTrigger::Restore, "restore team"),
+                &creator,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&page).unwrap(), "role");
+        let Err(CheckError::Conflict(conflict)) =
+            coordinator.lock(&page).await.check(Some(&seen)).await
+        else {
+            panic!("a reader who saw the file missing should see a conflict");
+        };
+        assert_eq!(conflict.changed_by, Some(creator));
     }
 }
