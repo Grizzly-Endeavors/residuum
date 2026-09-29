@@ -4,10 +4,6 @@ use std::path::{Path, PathBuf};
 
 use crate::config::paths::{TeamPaths, team_dir};
 
-/// The workbench directory's name inside the workspace, which is also its
-/// workspace-relative path.
-pub const WORKBENCH_DIR: &str = "workbench";
-
 /// Workspace directory layout with path helpers for identity files and storage.
 #[derive(Debug, Clone)]
 pub struct WorkspaceLayout {
@@ -169,13 +165,6 @@ impl WorkspaceLayout {
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
-    }
-
-    /// Path to the workbench directory: the artifacts the agent builds for the
-    /// user (single pages or folders), served in the web UI at `/workbench/{name}`.
-    #[must_use]
-    pub fn workbench_dir(&self) -> PathBuf {
-        self.root.join(WORKBENCH_DIR)
     }
 
     /// Path to BOOTSTRAP.md -- first-run guidance, deleted after first conversation.
@@ -359,7 +348,6 @@ impl WorkspaceLayout {
             self.episodes_dir(),
             self.search_index_dir(),
             self.skills_dir(),
-            self.workbench_dir(),
             self.agent_inbox_dir(),
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),

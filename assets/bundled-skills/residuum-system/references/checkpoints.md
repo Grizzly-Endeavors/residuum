@@ -2,7 +2,7 @@
 
 Checkpoints are a hidden git history of the workspace, used for recovery. Not a user-facing version control system — there's no staging, no branches, no commit messages to write.
 
-Residuum takes a checkpoint automatically at the start and end of every turn (start captures edits made outside Residuum since the last checkpoint; end captures what the turn itself did) and before a destructive workspace action (delete, overwrite, move/rename with overwrite, workbench artifact delete). Checkpointing never blocks or fails a turn or action — a failure is logged and surfaces as a notice, then things proceed normally.
+Residuum takes a checkpoint automatically at the start and end of every turn (start captures edits made outside Residuum since the last checkpoint; end captures what the turn itself did) and before a destructive workspace action (delete, overwrite, move/rename with overwrite). Checkpointing never blocks or fails a turn or action — a failure is logged and surfaces as a notice, then things proceed normally.
 
 There are two more, separate checkpoint repositories: one for your own `config/config.toml` and `config/providers.toml`, and one for the hub's config (`hub/config.toml`) and the encrypted key stores. Each is checkpointed before writes to those files, is local-only, and is never reachable from either tool below.
 

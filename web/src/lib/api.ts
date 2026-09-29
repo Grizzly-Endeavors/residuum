@@ -668,10 +668,9 @@ export async function fetchWorkbenchInfo(): Promise<WorkbenchInfo> {
   return apiFetch<WorkbenchInfo>("/api/workbench/info");
 }
 
-/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone).
- * Returns the pre-delete checkpoint id, or `null` when none was recorded. */
-export async function deleteWorkbenchArtifact(name: string): Promise<string | null> {
-  return readCheckpointId(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
+/** Delete an artifact and its data files. Throws `ApiError` (404 if already gone). */
+export async function deleteWorkbenchArtifact(name: string): Promise<void> {
+  await apiFetch<unknown>(`/api/workbench/artifacts/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }

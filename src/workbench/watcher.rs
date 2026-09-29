@@ -1,5 +1,5 @@
 //! Derives artifact reloads from the workspace change feed: whenever a batch
-//! touches the workbench folder (or the feed asks watchers to resync), the
+//! touches `team/workbench/` (or the feed asks watchers to resync), the
 //! workbench is rescanned and a [`WorkbenchEvent`] is published for each
 //! artifact that was added, changed, or removed, so open artifact views reload
 //! live.
@@ -15,7 +15,11 @@ use std::time::SystemTime;
 use tokio::task::JoinHandle;
 
 use crate::bus::{BusError, BusHandle, Publisher, WorkbenchEvent, WorkspaceEvent, topics};
-use crate::workspace::layout::WORKBENCH_DIR;
+
+/// Where the workbench sits in the change feed's namespace: the team layer's
+/// `workbench/` folder, whose events carry `team/`-prefixed paths. An agent's
+/// own files never count, whatever they are named.
+const WORKBENCH_FEED_PREFIX: &str = "team/workbench";
 
 /// What identifies one version of an artifact: newest file time, total size, and
 /// file count (so adding or removing a file registers even when times don't
@@ -69,7 +73,7 @@ fn affects_workbench(event: &WorkspaceEvent) -> bool {
     match event {
         WorkspaceEvent::Changed(changes) => changes.iter().any(|c| {
             c.path
-                .strip_prefix(WORKBENCH_DIR)
+                .strip_prefix(WORKBENCH_FEED_PREFIX)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         }),
         // Changes were missed, so any artifact may have changed.
@@ -149,6 +153,7 @@ mod tests {
 
     use super::*;
     use crate::bus::Subscriber;
+    use crate::config::paths::TeamPaths;
     use crate::workspace::watch::{WorkspaceChange, WorkspaceChangeKind, WorkspaceResyncReason};
 
     fn stamp(secs: u64, len: u64) -> PageStamp {
@@ -211,14 +216,30 @@ mod tests {
 
     #[test]
     fn only_workbench_changes_and_resyncs_trigger_a_rescan() {
-        assert!(affects_workbench(&changed(&["workbench/chart.html"])));
-        assert!(affects_workbench(&changed(&["wiki/a.md", "workbench"])));
-        assert!(!affects_workbench(&changed(&["workbenches/x.html"])));
+        assert!(affects_workbench(&changed(&["team/workbench/chart.html"])));
+        assert!(affects_workbench(&changed(&[
+            "wiki/a.md",
+            "team/workbench"
+        ])));
+        assert!(!affects_workbench(&changed(&["team/workbenches/x.html"])));
+        assert!(!affects_workbench(&changed(&["team/wiki/a.md"])));
         assert!(!affects_workbench(&changed(&["wiki/a.md"])));
+        assert!(
+            !affects_workbench(&changed(&["workbench/chart.html"])),
+            "an agent's own workbench-named folder is not the team workbench"
+        );
         assert!(affects_workbench(&WorkspaceEvent::Resync(
             WorkspaceResyncReason::Overflow
         )));
         assert!(!affects_workbench(&WorkspaceEvent::Unavailable));
+    }
+
+    #[test]
+    fn feed_prefix_names_the_team_workbench() {
+        assert_eq!(
+            WORKBENCH_FEED_PREFIX,
+            format!("{}/workbench", crate::config::paths::TEAM_DIR_NAME)
+        );
     }
 
     struct Harness {
@@ -230,13 +251,13 @@ mod tests {
 
     async fn harness() -> Harness {
         let workspace = tempfile::tempdir().unwrap();
-        std::fs::create_dir(workspace.path().join("workbench")).unwrap();
+        let workbench = TeamPaths::new(workspace.path().join("team")).workbench_dir();
+        std::fs::create_dir_all(&workbench).unwrap();
         let bus = crate::bus::spawn_broker();
         let reloads = bus.subscribe(topics::Workbench).await.unwrap();
-        let task =
-            spawn_workbench_watcher(workspace.path().join("workbench"), &bus, bus.publisher())
-                .await
-                .unwrap();
+        let task = spawn_workbench_watcher(workbench, &bus, bus.publisher())
+            .await
+            .unwrap();
         Harness {
             workspace,
             bus,
@@ -246,8 +267,14 @@ mod tests {
     }
 
     impl Harness {
+        /// Write a file under the team workbench, given its path there.
         fn write(&self, relative: &str, content: &str) {
-            let path = self.workspace.path().join(relative);
+            let path = self
+                .workspace
+                .path()
+                .join("team")
+                .join("workbench")
+                .join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();
         }
@@ -272,10 +299,10 @@ mod tests {
     #[tokio::test]
     async fn page_changes_reload_the_artifact_and_data_files_do_not() {
         let mut h = harness().await;
-        h.write("workbench/chart.state.json", "{}");
-        h.feed(changed(&["workbench/chart.state.json"])).await;
-        h.write("workbench/chart.html", "<p>v1</p>");
-        h.feed(changed(&["workbench/chart.html"])).await;
+        h.write("chart.state.json", "{}");
+        h.feed(changed(&["team/workbench/chart.state.json"])).await;
+        h.write("chart.html", "<p>v1</p>");
+        h.feed(changed(&["team/workbench/chart.html"])).await;
         // The data file's batch came first; had it reloaded anything, that
         // reload would arrive before this one.
         assert_eq!(
@@ -285,8 +312,15 @@ mod tests {
             }
         );
 
-        std::fs::remove_file(h.workspace.path().join("workbench/chart.html")).unwrap();
-        h.feed(changed(&["workbench/chart.html"])).await;
+        std::fs::remove_file(
+            h.workspace
+                .path()
+                .join("team")
+                .join("workbench")
+                .join("chart.html"),
+        )
+        .unwrap();
+        h.feed(changed(&["team/workbench/chart.html"])).await;
         assert_eq!(
             h.next_reload().await,
             WorkbenchEvent::Removed {
@@ -299,8 +333,8 @@ mod tests {
     #[tokio::test]
     async fn any_file_in_a_folder_artifact_reloads_it() {
         let mut h = harness().await;
-        h.write("workbench/graph/index.html", "<p>graph</p>");
-        h.feed(changed(&["workbench/graph/index.html"])).await;
+        h.write("graph/index.html", "<p>graph</p>");
+        h.feed(changed(&["team/workbench/graph/index.html"])).await;
         assert_eq!(
             h.next_reload().await,
             WorkbenchEvent::Updated {
@@ -308,8 +342,9 @@ mod tests {
             }
         );
 
-        h.write("workbench/graph/data/points.json", "[]");
-        h.feed(changed(&["workbench/graph/data/points.json"])).await;
+        h.write("graph/data/points.json", "[]");
+        h.feed(changed(&["team/workbench/graph/data/points.json"]))
+            .await;
         assert_eq!(
             h.next_reload().await,
             WorkbenchEvent::Updated {
@@ -317,8 +352,15 @@ mod tests {
             }
         );
 
-        std::fs::remove_dir_all(h.workspace.path().join("workbench/graph")).unwrap();
-        h.feed(changed(&["workbench/graph"])).await;
+        std::fs::remove_dir_all(
+            h.workspace
+                .path()
+                .join("team")
+                .join("workbench")
+                .join("graph"),
+        )
+        .unwrap();
+        h.feed(changed(&["team/workbench/graph"])).await;
         assert_eq!(
             h.next_reload().await,
             WorkbenchEvent::Removed {
@@ -331,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn a_resync_catches_up_on_missed_artifact_changes() {
         let mut h = harness().await;
-        h.write("workbench/missed.html", "x");
+        h.write("missed.html", "x");
         h.feed(WorkspaceEvent::Resync(WorkspaceResyncReason::Overflow))
             .await;
         assert_eq!(

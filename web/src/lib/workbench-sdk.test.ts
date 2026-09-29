@@ -26,6 +26,7 @@ interface SessionHandle {
 }
 
 interface Sdk {
+  state: { get(): Promise<unknown>; set(value: unknown): Promise<void> };
   sessions: { start(options: { prompt: string; model?: string }): Promise<SessionHandle> };
 }
 
@@ -188,5 +189,45 @@ describe("residuum.sessions.start", () => {
     await settle();
     reply(lastFetch(posted).id ?? "", 400, { error: "unknown skill" });
     await expect(started).rejects.toThrow("unknown skill");
+  });
+});
+
+describe("residuum.state", () => {
+  it("reads the artifact's state file from the team workbench", async () => {
+    const { sdk, posted, reply } = loadSdk();
+    const loaded = sdk.state.get();
+    await settle();
+
+    const request = lastFetch(posted);
+    expect(request.method).toBe("GET");
+    expect(request.path).toBe("/api/workspace/file?path=team%2Fworkbench%2Fwiki.state.json");
+
+    reply(request.id ?? "", 200, { picked: 3 });
+    expect(await loaded).toEqual({ picked: 3 });
+  });
+
+  it("resolves to null before the first set", async () => {
+    const { sdk, posted, reply } = loadSdk();
+    const loaded = sdk.state.get();
+    await settle();
+    reply(lastFetch(posted).id ?? "", 404, "");
+    expect(await loaded).toBeNull();
+  });
+
+  it("writes the state file into the team workbench", async () => {
+    const { sdk, posted, reply } = loadSdk();
+    const saved = sdk.state.set({ picked: 4 });
+    await settle();
+
+    const request = lastFetch(posted);
+    expect(request.method).toBe("PUT");
+    expect(request.path).toBe("/api/workspace/file");
+    expect(JSON.parse(request.body ?? "")).toEqual({
+      path: "team/workbench/wiki.state.json",
+      content: JSON.stringify({ picked: 4 }),
+    });
+
+    reply(request.id ?? "", 200, {});
+    await saved;
   });
 });

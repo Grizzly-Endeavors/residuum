@@ -12,7 +12,7 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 |------|-------|-------|
 | `wiki/` | High | Open Knowledge Format bundle — one concept per page, plus `index.md` files and an append-only `wiki/log.md`. Agent maintains pages and indexes by hand. |
 | `USER.md` | Medium | Core facts only (capped list, replace-don't-append) — user preferences, communication style, active interests. Longer-form knowledge lives in wiki pages. |
-| `workbench/` | Medium | Interactive artifacts the agent builds for the user, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
+| `team/workbench/` | Medium | Interactive artifacts the agents build for the user, shared by every agent, each a page or a folder, plus each artifact's `<name>.*` data files. See [Workbench](workbench.md). |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
 | `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
