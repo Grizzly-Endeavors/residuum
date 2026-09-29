@@ -10,6 +10,7 @@ pub mod daemon;
 pub mod diagnostics;
 pub(crate) mod features;
 pub mod gateway;
+pub mod hub;
 pub mod inbox;
 pub mod inference;
 pub mod interfaces;

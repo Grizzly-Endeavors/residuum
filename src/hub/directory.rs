@@ -1,0 +1,101 @@
+//! The interface to the set of hosted agents.
+//!
+//! The agent host implements it; the hub HTTP API, the hub WebSocket, the
+//! A2A listener, and agent tools that create or delete teammates use it, so
+//! each can be built and tested against a fake.
+
+use async_trait::async_trait;
+use tokio::sync::broadcast;
+
+use super::types::{
+    Actor, AgentActivity, AgentPatch, AgentSummary, CreateAgentRequest, DeleteOutcome, HubEvent,
+    LifecycleError,
+};
+
+/// The hub's hosted agents: lookup, per-agent routing, and lifecycle.
+#[async_trait]
+pub trait AgentDirectory: Send + Sync {
+    /// Every agent, sorted by name.
+    fn list(&self) -> Vec<AgentSummary>;
+
+    /// One agent's summary.
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`] when no agent has this name.
+    fn summary(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
+
+    /// The agent's HTTP router: today's agent-scoped routes (including its
+    /// WebSocket at `/ws`), rooted at `/` with its state applied. The hub
+    /// serves it under `/api/agents/{name}/` by stripping that prefix.
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`] for an unknown agent;
+    /// [`LifecycleError::NotRunning`] when it isn't running.
+    fn agent_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
+
+    /// The agent's config, file, and checkpoint routes, which also work on a
+    /// stopped or failed agent so the user can repair it. Same rooting as
+    /// [`Self::agent_router`].
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`] for an unknown agent.
+    fn agent_repair_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
+
+    /// The agent's A2A server router (card, JSON-RPC, REST), rooted at `/`.
+    /// The A2A listener serves it under `/agents/{name}/`.
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`] for an unknown agent;
+    /// [`LifecycleError::NotRunning`] when it isn't running.
+    fn agent_a2a_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
+
+    /// Main-conversation activity for every agent.
+    fn activity(&self) -> Vec<(String, AgentActivity)>;
+
+    /// Create an agent (see the design's creation order) and start it.
+    ///
+    /// # Errors
+    /// Name, request, or existence problems, or a failure writing or
+    /// starting the agent.
+    async fn create(
+        &self,
+        request: CreateAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError>;
+
+    /// Stop, checkpoint, and remove an agent and its role page.
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`], or a failure removing it.
+    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError>;
+
+    /// Start a stopped or failed agent.
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`], or the start-up failure.
+    async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
+
+    /// Stop a running agent: its adapters and event loop end, and its live
+    /// sessions are recorded as interrupted.
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`], or a failure stopping it.
+    async fn stop(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
+
+    /// Stop then start an agent.
+    ///
+    /// # Errors
+    /// As [`Self::stop`] and [`Self::start`].
+    async fn restart(&self, name: &str) -> Result<AgentSummary, LifecycleError>;
+
+    /// Change autostart and/or A2A visibility (writes the agent's config).
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`]; [`LifecycleError::InvalidRequest`] for
+    /// an empty patch; or a failure writing the config.
+    async fn patch(&self, name: &str, patch: AgentPatch) -> Result<AgentSummary, LifecycleError>;
+
+    /// Subscribe to hub events (state changes, created, deleted, activity,
+    /// notices), in publish order.
+    fn subscribe(&self) -> broadcast::Receiver<HubEvent>;
+}
