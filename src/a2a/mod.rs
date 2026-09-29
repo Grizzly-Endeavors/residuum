@@ -22,6 +22,7 @@ mod listener_tests;
 pub mod public_url;
 #[cfg(test)]
 mod server_e2e_tests;
+#[cfg(test)]
 pub mod static_directory;
 pub mod task_store;
 
@@ -43,6 +44,7 @@ pub use handler::{ResiduumA2aHandler, resume_in_progress_tasks};
 pub use keys::{A2aKeyError, A2aKeyInfo, A2aKeyStore};
 pub use keys_runtime::{A2aKeys, SharedA2aKeys};
 pub use listener::{A2aListener, StubHandler, agent_handler_router, hub_a2a_app};
+#[cfg(test)]
 pub use static_directory::StaticAgentDirectory;
 pub use task_store::{FileTaskStore, SharedTaskStore};
 

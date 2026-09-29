@@ -44,6 +44,7 @@ pub(crate) struct AgentStartInputs {
 }
 
 /// How the hub reaches a started agent.
+#[derive(Clone)]
 pub(crate) struct AgentControl {
     /// The agent's HTTP routes, rooted at `/`.
     pub router: axum::Router,
@@ -60,6 +61,52 @@ pub(crate) struct AgentControl {
     /// What the hub cleans up when the event loop dies without shutting the
     /// agent down.
     pub cleanup: AgentCleanup,
+    /// The agent's bus publisher, for handing the agent a message.
+    publisher: crate::bus::Publisher,
+}
+
+impl AgentControl {
+    /// Deliver `content` to the agent's main conversation as a message from
+    /// `from`: the owner's own message for the user, or a message from the
+    /// creating agent's address. An idle main starts a turn on it.
+    ///
+    /// # Errors
+    /// Returns a plain-language reason when the message could not be
+    /// published on the agent's bus.
+    pub(crate) async fn deliver_to_main(
+        &self,
+        from: &crate::hub::Actor,
+        content: String,
+        tz: chrono_tz::Tz,
+    ) -> Result<(), String> {
+        let event = match from {
+            crate::hub::Actor::User => crate::bus::MessageEvent {
+                id: format!("hub-{}", uuid::Uuid::new_v4()),
+                content,
+                origin: crate::interfaces::types::MessageOrigin {
+                    endpoint: "ws".to_string(),
+                    sender: None,
+                    conversation: None,
+                    agent_sender: None,
+                },
+                timestamp: crate::time::now_local(tz),
+                images: Vec::new(),
+                context: None,
+            },
+            crate::hub::Actor::Agent(creator) => {
+                crate::bus::MessageEvent::from_agent(&crate::bus::AgentMessageEvent {
+                    from: crate::bus::SessionAddress::from(format!("agent:{creator}")),
+                    from_category: "agent".to_string(),
+                    content,
+                    hop_count: 0,
+                })
+            }
+        };
+        self.publisher
+            .publish(crate::bus::topics::UserMessage, event)
+            .await
+            .map_err(|e| format!("the agent's message channel is closed: {e}"))
+    }
 }
 
 /// The parts of an agent that outlive a crashed event loop and must be
@@ -165,6 +212,7 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
             sessions: Arc::clone(&parts.session_runtime),
             mcp_registry: Arc::clone(&parts.mcp_registry),
         },
+        publisher: core.publisher.clone(),
     };
     let runtime = build_runtime(
         parts,

@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use axum::Router;
 use chrono::Utc;
 use serde::Deserialize;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, watch};
 use tokio::task::AbortHandle;
 use tracing::Instrument;
 
@@ -41,6 +41,7 @@ use super::types::{
     A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
     CreateAgentRequest, DeleteOutcome, HubEvent, LifecycleError, NoticeLevel,
 };
+use crate::workspace::team_files::TeamWriter;
 
 /// Capacity of the hub bus. A subscriber that falls this far behind loses the
 /// oldest events and is told so; the hub WebSocket resends a snapshot then.
@@ -125,11 +126,9 @@ fn role_line(team: &TeamPaths, name: &str) -> Option<String> {
 
 /// Everything the host keeps for an agent that is running.
 struct RunningAgent {
-    router: Router,
-    a2a_router: watch::Receiver<Option<Router>>,
-    reload_tx: crate::gateway::types::ReloadSender,
-    reload_done: watch::Receiver<u64>,
-    stop_tx: mpsc::Sender<()>,
+    /// The routers, reload and stop channels, and cleanup the agent started
+    /// with.
+    control: AgentControl,
     /// Set before the stop signal is sent, so the supervisor can tell a
     /// requested stop from a failure.
     stop_requested: Arc<AtomicBool>,
@@ -175,6 +174,9 @@ pub struct AgentHost {
     hub_cfg: RwLock<HubConfig>,
     slots: RwLock<BTreeMap<String, Arc<AgentSlot>>>,
     events: broadcast::Sender<HubEvent>,
+    /// Serializes creating agents, so two requests for one name can't both
+    /// write its directory.
+    creation_lock: tokio::sync::Mutex<()>,
 }
 
 impl AgentHost {
@@ -189,6 +191,7 @@ impl AgentHost {
             hub_cfg: RwLock::new(hub_cfg),
             slots: RwLock::new(BTreeMap::new()),
             events,
+            creation_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -317,7 +320,7 @@ impl AgentHost {
         *self.hub_cfg.write().unwrap_or_else(PoisonError::into_inner) = hub_cfg;
         for slot in self.slots() {
             if let Some(running) = &slot.lock().running
-                && running.reload_tx.send(ReloadSignal::Hub).is_err()
+                && running.control.reload_tx.send(ReloadSignal::Hub).is_err()
             {
                 tracing::warn!(agent = %slot.name, "couldn't tell a running agent about the hub config change: its reload channel is closed");
             }
@@ -528,11 +531,7 @@ impl AgentHost {
             let mut guard = slot.lock();
             guard.generation += 1;
             guard.running = Some(RunningAgent {
-                router: control.router.clone(),
-                a2a_router: control.a2a_router.clone(),
-                reload_tx: control.reload_tx.clone(),
-                reload_done: control.reload_done.clone(),
-                stop_tx: control.stop_tx.clone(),
+                control: control.clone(),
                 stop_requested: Arc::clone(&stop_requested),
                 forced: Arc::clone(&forced),
                 done: done_rx,
@@ -620,7 +619,7 @@ impl AgentHost {
         let Some((stop_tx, stop_requested, forced, mut done, abort)) =
             slot.lock().running.as_ref().map(|running| {
                 (
-                    running.stop_tx.clone(),
+                    running.control.stop_tx.clone(),
                     Arc::clone(&running.stop_requested),
                     Arc::clone(&running.forced),
                     running.done.clone(),
@@ -649,6 +648,131 @@ impl AgentHost {
             tracing::error!(agent = %slot.name, "agent task still not finished after being aborted");
             self.set_state(slot, AgentState::Stopped, None);
         }
+    }
+
+    // ─── Create and delete ────────────────────────────────────────────
+
+    /// Create an agent from the blank template, start it, and hand it its
+    /// role description as a first message.
+    ///
+    /// A creation whose start-up fails still creates the agent: it is
+    /// returned in the `failed` state with its error, and the user can fix
+    /// its settings and start it.
+    async fn create_agent(
+        &self,
+        request: CreateAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        let providers_toml = match (&request.models_from, &request.providers_toml) {
+            (Some(from), _) => super::provision::copy_providers_from(&self.services.root, from)?,
+            (None, Some(raw)) => raw.clone(),
+            (None, None) => {
+                return Err(LifecycleError::InvalidRequest(
+                    "a new agent needs model settings: name an existing agent in models_from, or include providers_toml".to_string(),
+                ));
+            }
+        };
+        let spec = super::provision::AgentSpec {
+            name: request.name.clone(),
+            providers_toml,
+            a2a_visibility: request.a2a_visibility.unwrap_or(A2aVisibility::Private),
+            description: request.description.clone(),
+        };
+        {
+            let _creating = self.creation_lock.lock().await;
+            super::provision::provision_agent(
+                &self.services.root,
+                &self.team_paths(),
+                &self.services.team,
+                &team_writer(&by),
+                &spec,
+            )
+            .await?;
+            self.adopt(&request.name);
+        }
+
+        let slot = self.slot(&request.name)?;
+        let started = {
+            let _op = slot.op_lock.lock().await;
+            self.start_locked(&slot).await
+        };
+        // The agent exists either way; a failed start is its `failed` state.
+        if started.is_ok() {
+            self.hand_over_role(&slot, &by, request.description.as_deref())
+                .await;
+        }
+        let summary = self.summary_of(&slot);
+        self.publish(HubEvent::AgentCreated {
+            agent: summary.clone(),
+            by,
+        });
+        Ok(summary)
+    }
+
+    /// Deliver a new agent's role description to its main conversation, from
+    /// its creator. A delivery failure is logged and told to the user; the
+    /// agent is still created and can be given its role by hand.
+    async fn hand_over_role(&self, slot: &AgentSlot, by: &Actor, description: Option<&str>) {
+        let Some(description) = description.map(str::trim).filter(|text| !text.is_empty()) else {
+            return;
+        };
+        let control = slot
+            .lock()
+            .running
+            .as_ref()
+            .map(|running| running.control.clone());
+        let Some(control) = control else {
+            return;
+        };
+        let message = super::provision::first_message(description);
+        if let Err(reason) = control
+            .deliver_to_main(by, message, self.hub_config().timezone)
+            .await
+        {
+            tracing::warn!(agent = %slot.name, error = %reason, "couldn't deliver the new agent's role description");
+            self.notice(
+                NoticeLevel::Warn,
+                format!(
+                    "{} was created, but its role description couldn't be delivered ({reason}). Send it your description of its role yourself.",
+                    slot.name
+                ),
+                Some(slot.name.clone()),
+            );
+        }
+    }
+
+    /// Stop the agent, checkpoint its directory, and remove the directory,
+    /// its role page, and its roster entry.
+    async fn delete_agent(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
+        let slot = self.slot(name)?;
+        let checkpoint_id = {
+            let _op = slot.op_lock.lock().await;
+            self.stop_locked(&slot).await;
+            let engine = self.checkpoint_engine(&slot).map_err(|e| {
+                tracing::error!(agent = %name, error = %e, "couldn't open the agent's checkpoint repositories to delete it");
+                LifecycleError::Failed(format!(
+                    "couldn't open {name}'s checkpoint history, so it was not deleted: {e}"
+                ))
+            })?;
+            super::provision::deprovision_agent(
+                &self.services.root,
+                &self.team_paths(),
+                &self.services.team,
+                &team_writer(&by),
+                name,
+                &engine,
+            )
+            .await?
+        };
+        self.forget(name);
+        self.publish(HubEvent::AgentDeleted {
+            name: name.to_string(),
+            by,
+        });
+        Ok(DeleteOutcome {
+            deleted: true,
+            checkpoint_id,
+        })
     }
 
     // ─── Patch ────────────────────────────────────────────────────────
@@ -700,11 +824,12 @@ impl AgentHost {
                 ))
             })?;
 
-        let waiting = slot
-            .lock()
-            .running
-            .as_ref()
-            .map(|running| (running.reload_tx.clone(), running.reload_done.clone()));
+        let waiting = slot.lock().running.as_ref().map(|running| {
+            (
+                running.control.reload_tx.clone(),
+                running.control.reload_done.clone(),
+            )
+        });
         if let Some((reload_tx, mut reload_done)) = waiting {
             let before = *reload_done.borrow();
             if reload_tx.send(ReloadSignal::Agent).is_err() {
@@ -781,7 +906,7 @@ impl AgentHost {
             .lock()
             .running
             .as_ref()
-            .map(|running| running.reload_tx.clone());
+            .map(|running| running.control.reload_tx.clone());
         let state = crate::gateway::web::ConfigApiState {
             hub_dir: self.services.hub_dir.clone(),
             config_dir: slot.dir.join("config"),
@@ -818,6 +943,14 @@ fn describe_join_error(error: tokio::task::JoinError) -> String {
     }
 }
 
+/// Who a lifecycle action counts as writing the team files it touches.
+fn team_writer(by: &Actor) -> TeamWriter {
+    match by {
+        Actor::User => TeamWriter::User,
+        Actor::Agent(name) => TeamWriter::Agent(name.clone()),
+    }
+}
+
 fn visibility_wire(visibility: A2aVisibility) -> &'static str {
     match visibility {
         A2aVisibility::Public => "public",
@@ -842,7 +975,9 @@ impl AgentDirectory for AgentHost {
         let slot = self.slot(name)?;
         let guard = slot.lock();
         match &guard.running {
-            Some(running) if guard.state == AgentState::Running => Ok(running.router.clone()),
+            Some(running) if guard.state == AgentState::Running => {
+                Ok(running.control.router.clone())
+            }
             _ => Err(LifecycleError::NotRunning {
                 name: name.to_string(),
                 state: guard.state,
@@ -860,7 +995,7 @@ impl AgentDirectory for AgentHost {
         let guard = slot.lock();
         match &guard.running {
             Some(running) if guard.state == AgentState::Running => {
-                running.a2a_router.borrow().clone().ok_or_else(|| {
+                running.control.a2a_router.borrow().clone().ok_or_else(|| {
                     LifecycleError::Failed(format!(
                         "{name}'s A2A interface isn't available; check its log"
                     ))
@@ -882,18 +1017,14 @@ impl AgentDirectory for AgentHost {
 
     async fn create(
         &self,
-        _request: CreateAgentRequest,
-        _by: Actor,
+        request: CreateAgentRequest,
+        by: Actor,
     ) -> Result<AgentSummary, LifecycleError> {
-        Err(LifecycleError::Failed(
-            "agent creation isn't available yet".to_string(),
-        ))
+        self.create_agent(request, by).await
     }
 
-    async fn delete(&self, _name: &str, _by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        Err(LifecycleError::Failed(
-            "agent deletion isn't available yet".to_string(),
-        ))
+    async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
+        self.delete_agent(name, by).await
     }
 
     async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError> {

@@ -466,7 +466,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
     let reloads_before = {
         let slot = hub.host.slot("scout").unwrap();
         let guard = slot.lock();
-        *guard.running.as_ref().unwrap().reload_done.borrow()
+        *guard.running.as_ref().unwrap().control.reload_done.borrow()
     };
 
     let summary = hub
@@ -496,7 +496,7 @@ async fn patch_persists_to_the_config_and_reloads_the_agent() {
     let reloads_after = {
         let slot = hub.host.slot("scout").unwrap();
         let guard = slot.lock();
-        *guard.running.as_ref().unwrap().reload_done.borrow()
+        *guard.running.as_ref().unwrap().control.reload_done.borrow()
     };
     assert!(reloads_after > reloads_before, "the agent reloaded");
     assert_eq!(hub.state_of("scout"), AgentState::Running);
@@ -873,30 +873,203 @@ async fn discovery_lists_every_agent_and_role_lines_come_from_the_wiki() {
     );
 }
 
+fn create_request(name: &str, description: Option<&str>) -> CreateAgentRequest {
+    CreateAgentRequest {
+        name: name.to_string(),
+        description: description.map(str::to_string),
+        models_from: Some("scout".to_string()),
+        providers_toml: None,
+        a2a_visibility: None,
+    }
+}
+
+/// Whether any request the model server got so far mentions `needle`.
+async fn model_was_told(server: &MockServer, needle: &str) -> bool {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|request| String::from_utf8_lossy(&request.body).contains(needle))
+}
+
 #[tokio::test]
-async fn create_and_delete_report_that_they_are_not_available_yet() {
+async fn creating_an_agent_writes_it_starts_it_and_briefs_it() {
+    let hub = Fixture::new(&["scout"], "").await;
+    let mut events = hub.host.subscribe();
+
+    let summary = hub
+        .host
+        .create(
+            create_request("nova", Some("keeps the wiki tidy")),
+            Actor::User,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(summary.name, "nova");
+    assert_eq!(summary.state, AgentState::Running);
+    assert_eq!(summary.a2a_visibility, A2aVisibility::Private);
+    assert_eq!(summary.role.as_deref(), Some("keeps the wiki tidy"));
+    let nova = hub.root.path().join("nova");
+    assert!(nova.join("config").join("config.toml").is_file());
+    assert!(hub.host.team_paths().agent_role_page("nova").is_file());
+    assert!(
+        !nova.join("BOOTSTRAP.md").exists(),
+        "a created agent skips the first-run interview"
+    );
+    assert_eq!(hub.host.list().len(), 2);
+    assert_eq!(hub.chat("nova", "hello nova").await, "scout here");
+
+    // The description reached the new agent's main conversation as its first
+    // message, so it can write its own notes.
+    eventually("the description to reach the model", || async {
+        model_was_told(hub.mock("scout"), "keeps the wiki tidy")
+            .await
+            .then_some(())
+    })
+    .await;
+    assert!(model_was_told(hub.mock("scout"), "You were just created").await);
+
+    let published = drain_events(&mut events);
+    assert_eq!(
+        state_changes(&published),
+        [
+            ("nova".to_string(), AgentState::Starting),
+            ("nova".to_string(), AgentState::Running),
+        ]
+    );
+    assert!(
+        published.iter().any(|event| matches!(
+            event,
+            HubEvent::AgentCreated { agent, by: Actor::User } if agent.name == "nova"
+        )),
+        "the creation is published with who did it"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_created_by_another_agent_is_briefed_in_that_agents_name() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+
+    hub.host
+        .create(
+            create_request("nova", Some("triages the inbox")),
+            Actor::Agent("scout".to_string()),
+        )
+        .await
+        .unwrap();
+
+    eventually("the creator's message to reach the model", || async {
+        model_was_told(hub.mock("scout"), "agent:scout")
+            .await
+            .then_some(())
+    })
+    .await;
+    assert!(model_was_told(hub.mock("scout"), "triages the inbox").await);
+}
+
+#[tokio::test]
+async fn creating_an_agent_refuses_bad_requests_before_writing_anything() {
     let hub = Fixture::new(&["scout"], "").await;
 
-    let created = hub
+    let bad_name = hub
+        .host
+        .create(create_request("Not A Name", None), Actor::User)
+        .await;
+    let taken = hub
+        .host
+        .create(create_request("scout", None), Actor::User)
+        .await;
+    let no_models = hub
         .host
         .create(
             CreateAgentRequest {
-                name: "nova".to_string(),
-                description: None,
-                models_from: Some("scout".to_string()),
-                providers_toml: None,
-                a2a_visibility: None,
+                models_from: None,
+                ..create_request("nova", None)
             },
             Actor::User,
         )
         .await;
-    let deleted = hub.host.delete("scout", Actor::User).await;
+    let unknown_source = hub
+        .host
+        .create(
+            CreateAgentRequest {
+                models_from: Some("nobody".to_string()),
+                ..create_request("nova", None)
+            },
+            Actor::User,
+        )
+        .await;
 
-    assert_eq!(
-        created.unwrap_err(),
-        LifecycleError::Failed("agent creation isn't available yet".to_string())
+    assert!(matches!(bad_name, Err(LifecycleError::InvalidName(_))));
+    assert!(matches!(taken, Err(LifecycleError::AlreadyExists(_))));
+    assert!(matches!(no_models, Err(LifecycleError::InvalidRequest(_))));
+    assert!(matches!(unknown_source, Err(LifecycleError::NotFound(_))));
+    assert_eq!(hub.host.list().len(), 1);
+    assert!(!hub.root.path().join("nova").exists());
+}
+
+#[tokio::test]
+async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    hub.host.start_autostart().await;
+    hub.chat("scout", "remember this").await;
+    let mut events = hub.host.subscribe();
+
+    let outcome = hub.host.delete("scout", Actor::User).await.unwrap();
+
+    assert!(outcome.deleted);
+    let checkpoint_id = outcome
+        .checkpoint_id
+        .expect("the directory was checkpointed");
+    assert!(matches!(
+        hub.host.summary("scout"),
+        Err(LifecycleError::NotFound(_))
+    ));
+    assert!(!hub.root.path().join("scout").exists());
+    assert!(!hub.host.team_paths().agent_role_page("scout").exists());
+    assert_eq!(hub.state_of("atlas"), AgentState::Running);
+    assert_eq!(hub.chat("atlas", "still here?").await, "atlas here");
+    let published = drain_events(&mut events);
+    assert!(
+        published.iter().any(|event| matches!(
+            event,
+            HubEvent::AgentDeleted { name, by: Actor::User } if name == "scout"
+        )),
+        "the deletion is published with who did it"
     );
-    assert!(matches!(deleted, Err(LifecycleError::Failed(_))));
+
+    // The agent's checkpoint history outlived it: an engine rebuilt from its
+    // name and paths restores the directory.
+    let checkpoints_dir = crate::config::HubPaths::new(&hub.services.hub_dir).checkpoints_dir();
+    let engine = crate::checkpoints::CheckpointEngine::with_shared_repos(
+        Arc::clone(&hub.services.checkpoints),
+        "scout",
+        hub.root.path().join("scout"),
+        hub.root.path().join("scout").join("config"),
+        &checkpoints_dir,
+        None,
+    )
+    .unwrap()
+    .with_team_coordinator(hub.services.team.clone());
+    crate::hub::provision::restore_agent(
+        hub.root.path(),
+        &hub.host.team_paths(),
+        &hub.services.team,
+        &TeamWriter::User,
+        "scout",
+        &engine,
+        &checkpoint_id,
+    )
+    .await
+    .unwrap();
+    hub.host.adopt("scout");
+    hub.host.start("scout").await.unwrap();
+    assert_eq!(hub.chat("scout", "am I back?").await, "scout here");
+    let (_, history) = hub.get("/api/agents/scout/api/chat/history").await;
+    assert!(history.contains("remember this"), "{history}");
 }
 
 #[tokio::test]

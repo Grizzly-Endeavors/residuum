@@ -106,10 +106,27 @@ pub async fn ensure_agent_role_page(
     name: &str,
     description: Option<&str>,
 ) -> Result<bool, FatalError> {
+    let writer = TeamWriter::Agent(name.to_string());
+    ensure_agent_role_page_as(team, coordinator, &writer, name, description).await
+}
+
+/// [`ensure_agent_role_page`] with `writer` recorded as the last writer of
+/// the page, the index, and the log instead of the agent itself: the creator
+/// of a new agent, or the user, when they are the one making the page.
+///
+/// # Errors
+/// Returns `FatalError::Workspace` if the page, the index, or the log
+/// cannot be written.
+pub async fn ensure_agent_role_page_as(
+    team: &TeamPaths,
+    coordinator: &TeamWriteCoordinator,
+    writer: &TeamWriter,
+    name: &str,
+    description: Option<&str>,
+) -> Result<bool, FatalError> {
     let page_path = team.agent_role_page(name);
     let index_path = team.wiki_agents_index_md();
     let log_path = team.wiki_log_md();
-    let writer = TeamWriter::Agent(name.to_string());
     let guards = coordinator
         .lock_all(&[page_path.clone(), index_path.clone(), log_path.clone()])
         .await;
@@ -146,16 +163,125 @@ pub async fn ensure_agent_role_page(
     // Index entry first, page second: a crash between the two leaves an
     // index entry that the retry skips (it checks for the link) before
     // writing the page.
-    add_index_entry(index_guard, &writer, name, &role).await?;
+    add_index_entry(index_guard, writer, name, &role).await?;
     page_guard
-        .commit(&writer, role_page_content(name, &role).as_bytes())
+        .commit(writer, role_page_content(name, &role).as_bytes())
         .await
         .map_err(|e| {
             FatalError::Workspace(format!("failed to write {}: {e:#}", page_path.display()))
         })?;
-    append_log_line(log_guard, &writer, name).await?;
+    append_log_line(log_guard, writer, name).await?;
 
     tracing::info!(agent = %name, page = %page_path.display(), "wrote agent role page");
+    Ok(true)
+}
+
+/// Remove the agent's role page `team/wiki/agents/<name>.md` and its entry
+/// in `team/wiki/agents/index.md`, and append a line to `team/wiki/log.md`.
+///
+/// Takes the same `coordinator` path locks as [`ensure_agent_role_page`] and
+/// records `writer` (whoever is deleting the agent) as the last writer of
+/// each file it touches. Every piece that is already gone is skipped, so a
+/// retry after a partial removal finishes the job. Returns whether anything
+/// was removed; nothing is logged when nothing was. `coordinator` must guard
+/// `team`.
+///
+/// # Errors
+/// Returns `FatalError::Workspace` if the page cannot be removed or the
+/// index or log cannot be rewritten.
+pub async fn remove_agent_role_page(
+    team: &TeamPaths,
+    coordinator: &TeamWriteCoordinator,
+    writer: &TeamWriter,
+    name: &str,
+) -> Result<bool, FatalError> {
+    let page_path = team.agent_role_page(name);
+    let index_path = team.wiki_agents_index_md();
+    let log_path = team.wiki_log_md();
+    let guards = coordinator
+        .lock_all(&[page_path.clone(), index_path.clone(), log_path.clone()])
+        .await;
+    let guard_for = |path: &Path| {
+        guards
+            .iter()
+            .find(|guard| guard.path() == path)
+            .ok_or_else(|| {
+                FatalError::Workspace(format!("no write lock held for {}", path.display()))
+            })
+    };
+    let page_guard = guard_for(&page_path)?;
+    let index_guard = guard_for(&index_path)?;
+    let log_guard = guard_for(&log_path)?;
+
+    let page_removed = match tokio::fs::remove_file(&page_path).await {
+        Ok(()) => {
+            page_guard.record_removed(writer);
+            true
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            return Err(FatalError::Workspace(format!(
+                "failed to remove {}: {e}",
+                page_path.display()
+            )));
+        }
+    };
+    let entry_removed = remove_index_entry(index_guard, writer, name).await?;
+    if !page_removed && !entry_removed {
+        return Ok(false);
+    }
+
+    append_log_entry(
+        log_guard,
+        writer,
+        &format!("removed role page agents/{name}.md for deleted agent {name}"),
+    )
+    .await?;
+    tracing::info!(agent = %name, page = %page_path.display(), "removed agent role page");
+    Ok(true)
+}
+
+/// Drop the roster index lines that link to the agent's page. Returns
+/// whether any line was removed.
+async fn remove_index_entry(
+    index: &TeamPathGuard,
+    writer: &TeamWriter,
+    name: &str,
+) -> Result<bool, FatalError> {
+    let index_path = index.path().to_path_buf();
+    let existing = match tokio::fs::read_to_string(&index_path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(FatalError::Workspace(format!(
+                "failed to read agent roster index {}: {e}",
+                index_path.display()
+            )));
+        }
+    };
+
+    let link = format!("(/agents/{name}.md)");
+    let mut removed = false;
+    let mut updated = String::with_capacity(existing.len());
+    for line in existing.split_inclusive('\n') {
+        if line.contains(&link) {
+            removed = true;
+        } else {
+            updated.push_str(line);
+        }
+    }
+    if !removed {
+        return Ok(false);
+    }
+    index
+        .commit(writer, updated.as_bytes())
+        .await
+        .map_err(|e| {
+            FatalError::Workspace(format!(
+                "failed to update agent roster index {}: {e:#}",
+                index_path.display()
+            ))
+        })?;
     Ok(true)
 }
 
@@ -217,9 +343,23 @@ async fn append_log_line(
     writer: &TeamWriter,
     name: &str,
 ) -> Result<(), FatalError> {
+    append_log_entry(
+        log,
+        writer,
+        &format!("added role page agents/{name}.md for agent {name}"),
+    )
+    .await
+}
+
+/// Append an `edit` entry describing `what` to the wiki log.
+async fn append_log_entry(
+    log: &TeamPathGuard,
+    writer: &TeamWriter,
+    what: &str,
+) -> Result<(), FatalError> {
     let log_path = log.path().to_path_buf();
     let date = chrono::Local::now().format("%Y-%m-%d");
-    let line = format!("## [{date}] edit | added role page agents/{name}.md for agent {name}\n");
+    let line = format!("## [{date}] edit | {what}\n");
 
     let mut existing = match tokio::fs::read_to_string(&log_path).await {
         Ok(content) => content,
@@ -551,6 +691,71 @@ mod tests {
 
         let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
         assert_eq!(index.matches("(/agents/scout.md)").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn removing_a_role_page_drops_page_and_index_entry_and_logs_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = team_in(dir.path());
+        let coordinator = TeamWriteCoordinator::new(&team);
+        ensure_agent_role_page(&team, &coordinator, "alpha", None)
+            .await
+            .unwrap();
+        ensure_agent_role_page(&team, &coordinator, "beta", Some("Second"))
+            .await
+            .unwrap();
+
+        assert!(
+            remove_agent_role_page(&team, &coordinator, &TeamWriter::User, "alpha")
+                .await
+                .unwrap()
+        );
+
+        assert!(!team.agent_role_page("alpha").exists());
+        assert!(team.agent_role_page("beta").exists());
+        let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
+        assert!(!index.contains("alpha"));
+        assert!(index.contains("- [beta](/agents/beta.md) — Second"));
+        let log = std::fs::read_to_string(team.wiki_log_md()).unwrap();
+        assert!(log.contains("] edit | removed role page agents/alpha.md for deleted agent alpha"));
+    }
+
+    #[tokio::test]
+    async fn removing_a_missing_role_page_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = team_in(dir.path());
+        ensure_team(&team, None, None).await.unwrap();
+        let log = std::fs::read_to_string(team.wiki_log_md()).unwrap();
+
+        let coordinator = TeamWriteCoordinator::new(&team);
+
+        assert!(
+            !remove_agent_role_page(&team, &coordinator, &TeamWriter::User, "ghost")
+                .await
+                .unwrap()
+        );
+
+        assert_eq!(std::fs::read_to_string(team.wiki_log_md()).unwrap(), log);
+    }
+
+    #[tokio::test]
+    async fn removal_finishes_a_partial_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = team_in(dir.path());
+        let coordinator = TeamWriteCoordinator::new(&team);
+        ensure_agent_role_page(&team, &coordinator, "scout", None)
+            .await
+            .unwrap();
+        std::fs::remove_file(team.agent_role_page("scout")).unwrap();
+
+        assert!(
+            remove_agent_role_page(&team, &coordinator, &TeamWriter::User, "scout")
+                .await
+                .unwrap()
+        );
+
+        let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
+        assert!(!index.contains("scout"));
     }
 
     #[test]
