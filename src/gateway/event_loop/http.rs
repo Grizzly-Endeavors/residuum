@@ -8,7 +8,7 @@ use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::BusHandle;
 use crate::config::Config;
-use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand, StopRequest};
+use crate::gateway::types::{GatewayState, ServerCommand, StopRequest};
 use crate::skills::SharedSkillState;
 use crate::tunnel::TunnelStatus;
 use crate::util::FatalError;
@@ -21,7 +21,7 @@ use crate::gateway::ws::ws_handler;
 pub struct AdapterSenders {
     pub publisher: crate::bus::Publisher,
     pub bus_handle: crate::bus::BusHandle,
-    pub reload: tokio::sync::watch::Sender<ReloadSignal>,
+    pub reload: crate::gateway::types::ReloadSender,
     pub command: mpsc::Sender<ServerCommand>,
     pub stop: mpsc::Sender<StopRequest>,
     /// Looked up when a `/stop` command targets a conversation session

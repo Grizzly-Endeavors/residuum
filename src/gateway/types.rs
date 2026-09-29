@@ -25,11 +25,8 @@ use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Describes what kind of configuration reload was requested.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReloadSignal {
-    /// No reload pending.
-    #[default]
-    None,
     /// Agent config reload (the agent's own `config.toml`/`providers.toml`
     /// changed).
     Agent,
@@ -39,6 +36,13 @@ pub enum ReloadSignal {
     /// `agent-card.json` changed).
     Workspace,
 }
+
+/// Sending half of the reload queue. Every signal sent is delivered, so two
+/// files changing close together each get their own reload.
+pub type ReloadSender = mpsc::UnboundedSender<ReloadSignal>;
+
+/// Receiving half of the reload queue, consumed by the event loop.
+pub type ReloadReceiver = mpsc::UnboundedReceiver<ReloadSignal>;
 
 /// Outcome of the gateway main loop.
 pub enum GatewayExit {
@@ -148,7 +152,7 @@ pub struct StopRequest {
 /// Created once at startup and persists across configuration reloads.
 /// The senders are cloned into adapters, the web server, and event loop state.
 pub(crate) struct GatewayCore {
-    pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    pub reload_tx: crate::gateway::types::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
@@ -163,7 +167,7 @@ pub(crate) struct GatewayCore {
 
 /// Receiver halves consumed by the event loop.
 pub(crate) struct CoreReceivers {
-    pub reload: tokio::sync::watch::Receiver<ReloadSignal>,
+    pub reload: crate::gateway::types::ReloadReceiver,
     pub command: mpsc::Receiver<ServerCommand>,
     pub stop: mpsc::Receiver<StopRequest>,
 }
@@ -174,7 +178,8 @@ impl GatewayCore {
         config_dir: std::path::PathBuf,
         hub_dir: std::path::PathBuf,
     ) -> (Self, CoreReceivers) {
-        let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (reload_tx, reload_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::gateway::types::ReloadSignal>();
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (stop_tx, stop_rx) = mpsc::channel::<StopRequest>(8);
         let http_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
@@ -203,7 +208,7 @@ impl GatewayCore {
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 pub(crate) struct GatewayState {
-    pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    pub reload_tx: crate::gateway::types::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     pub agent_inbox_dir: std::path::PathBuf,
@@ -335,7 +340,7 @@ pub(crate) struct GatewayRuntime {
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<EndpointName>>,
-    pub reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
+    pub reload_rx: crate::gateway::types::ReloadReceiver,
     pub command_rx: mpsc::Receiver<ServerCommand>,
     /// Stop requests for the currently running turn. Watched by the outer
     /// event loop when idle (responds "nothing running") and by the active
@@ -400,7 +405,7 @@ pub(crate) struct GatewayRuntime {
     /// Stops the workbench artifacts listener, when it is running.
     pub workbench_listener_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// Cloned core senders for rebuilding adapters on reload.
-    pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    pub reload_tx: crate::gateway::types::ReloadSender,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub stop_tx: mpsc::Sender<StopRequest>,
     /// File registry for serving attachments to WebSocket clients.
@@ -424,12 +429,6 @@ pub(crate) struct GatewayRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reload_signal_default_is_none() {
-        let signal = ReloadSignal::default();
-        assert_eq!(signal, ReloadSignal::None);
-    }
 
     #[tokio::test]
     async fn core_channels_survive_reload_signal() {
@@ -474,8 +473,7 @@ mod tests {
         core.reload_tx.send(ReloadSignal::Agent).unwrap();
 
         // Verify the reload signal propagated
-        receivers.reload.changed().await.unwrap();
-        let signal = receivers.reload.borrow_and_update().clone();
+        let signal = receivers.reload.recv().await.unwrap();
         assert_eq!(
             signal,
             ReloadSignal::Agent,
