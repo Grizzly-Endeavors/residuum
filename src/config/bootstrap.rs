@@ -10,16 +10,6 @@ const MINIMAL_HUB_CONFIG: &str = "# Hub configuration. See hub-config.example.to
     \n\
     # timezone = \"America/New_York\"  # REQUIRED: IANA timezone name\n";
 
-/// Minimal agent `config.toml` written on first run — user edits this.
-const MINIMAL_AGENT_CONFIG: &str =
-    "# Agent configuration. See config.example.toml for all options.\n";
-
-/// Minimal `providers.toml` written on first run — user edits this.
-const MINIMAL_PROVIDERS: &str = "# Provider and model configuration. See providers.example.toml for all options.\n\
-    \n\
-    [models]\n\
-    main = \"anthropic/claude-sonnet-4-6\"\n";
-
 /// Full reference hub config always regenerated on startup.
 const EXAMPLE_HUB_CONFIG: &str = include_str!("../../assets/hub-config.example.toml");
 
@@ -96,23 +86,16 @@ pub(super) fn bootstrap_hub_at(hub_dir: &Path) -> Result<(), FatalError> {
 /// Write bootstrap files to an agent's `config/` directory
 /// (`~/.residuum/<agent-name>/config`).
 ///
-/// Creates the directory if absent, writes `config.toml`/`providers.toml`
-/// only if absent, and always regenerates the `.example.toml` templates.
+/// Creates the directory if absent and always regenerates the
+/// `.example.toml` templates. It never writes the live `config.toml` or
+/// `providers.toml`: an agent is discovered by its `config/config.toml`, so
+/// that file appears only once the real configuration is complete (see
+/// `gateway::web::config::api_complete_setup` and `config::wizard`).
 ///
 /// # Errors
 /// Returns `FatalError::Config` if the directory or files cannot be written.
 pub(super) fn bootstrap_agent_at(agent_config_dir: &Path) -> Result<(), FatalError> {
     ensure_dir(agent_config_dir, "agent config")?;
-
-    let config_path = agent_config_dir.join("config.toml");
-    if write_if_absent(&config_path, MINIMAL_AGENT_CONFIG)? {
-        tracing::info!(path = %config_path.display(), "wrote initial agent config.toml");
-    }
-
-    let providers_path = agent_config_dir.join("providers.toml");
-    if write_if_absent(&providers_path, MINIMAL_PROVIDERS)? {
-        tracing::info!(path = %providers_path.display(), "wrote initial providers.toml");
-    }
 
     let example_path = agent_config_dir.join("config.example.toml");
     std::fs::write(&example_path, EXAMPLE_CONFIG).map_err(|e| {
@@ -179,19 +162,27 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_agent_creates_config_and_providers() {
+    fn bootstrap_agent_writes_templates_but_never_the_live_files() {
         let base = tempdir().unwrap();
         let dir = base.path().join("sam/config");
         assert!(!dir.exists());
         bootstrap_agent_at(&dir).unwrap();
-        assert!(dir.join("config.toml").exists());
-        let providers = std::fs::read_to_string(dir.join("providers.toml")).unwrap();
-        assert!(providers.contains("[models]"));
-        assert!(providers.contains("main"));
+        assert!(dir.join("config.example.toml").is_file());
+        assert!(dir.join("providers.example.toml").is_file());
+        assert!(
+            !dir.join("config.toml").exists(),
+            "config.toml is the discovery marker and must not be a placeholder"
+        );
+        assert!(!dir.join("providers.toml").exists());
+        assert!(
+            crate::config::discover_agents(base.path())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
-    fn bootstrap_agent_skips_existing_files() {
+    fn bootstrap_agent_leaves_existing_live_files_alone() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "# user customization").unwrap();
         std::fs::write(dir.path().join("providers.toml"), "# user providers").unwrap();

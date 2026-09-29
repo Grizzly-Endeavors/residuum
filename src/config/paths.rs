@@ -14,8 +14,8 @@ use crate::util::FatalError;
 /// Directory name reserved for hub-level state; never a valid agent name.
 pub const HUB_DIR_NAME: &str = "hub";
 
-/// Directory name reserved for the shared team layer (introduced in a later
-/// phase); never a valid agent name, so onboarding can never collide with it.
+/// Directory name reserved for the shared team layer; never a valid agent
+/// name, so onboarding can never collide with it.
 pub const TEAM_DIR_NAME: &str = "team";
 
 /// Every reserved name: not a valid agent name, and skipped when scanning
@@ -103,20 +103,52 @@ fn is_candidate_agent_dir_name(name: &str) -> bool {
 /// Scan `root` (typically `~/.residuum`) for agent directories: any
 /// immediate subdirectory (other than a reserved or hidden name) holding
 /// `config/config.toml`. Returns names sorted alphabetically.
-#[must_use]
-pub fn discover_agents(root: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
+///
+/// A symlink to a directory counts as a directory. A missing `root` is a
+/// fresh install and yields no agents.
+///
+/// # Errors
+/// Returns `FatalError::Config` if `root` exists but cannot be read (or one
+/// of its entries cannot be listed), so an unreadable install is never
+/// mistaken for a fresh one.
+pub fn discover_agents(root: &Path) -> Result<Vec<String>, FatalError> {
+    let unreadable = |err: &std::io::Error| {
+        tracing::error!(root = %root.display(), error = %err, "failed to scan for agent directories");
+        FatalError::Config(format!(
+            "residuum couldn't read its data folder at {}: {err}. Check that the folder exists and that residuum has permission to read it.",
+            root.display()
+        ))
     };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| is_candidate_agent_dir_name(name))
-        .filter(|name| root.join(name).join("config").join("config.toml").is_file())
-        .collect();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(unreadable(&err)),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| unreadable(&err))?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !is_candidate_agent_dir_name(&name) {
+            continue;
+        }
+        let path = entry.path();
+        // `metadata` follows symlinks, so a symlinked agent directory counts.
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => continue,
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "skipping unreadable entry while scanning for agents");
+                continue;
+            }
+        }
+        if path.join("config").join("config.toml").is_file() {
+            names.push(name);
+        }
+    }
     names.sort();
-    names
+    Ok(names)
 }
 
 /// Discover the single agent this process runs: the first (alphabetically)
@@ -125,10 +157,15 @@ pub fn discover_agents(root: &Path) -> Vec<String> {
 /// If more than one agent directory exists (for example one created
 /// out-of-band), the first one runs and a warning names every agent found:
 /// a process hosts exactly one agent.
-#[must_use]
-pub fn discover_single_agent(root: &Path) -> Option<String> {
-    let agents = discover_agents(root);
-    let first = agents.first()?.clone();
+///
+/// # Errors
+/// Returns `FatalError::Config` if `root` cannot be scanned (see
+/// [`discover_agents`]).
+pub fn discover_single_agent(root: &Path) -> Result<Option<String>, FatalError> {
+    let agents = discover_agents(root)?;
+    let Some(first) = agents.first().cloned() else {
+        return Ok(None);
+    };
     if agents.len() > 1 {
         tracing::warn!(
             agents = %agents.join(", "),
@@ -137,7 +174,7 @@ pub fn discover_single_agent(root: &Path) -> Option<String> {
              (a process hosts exactly one agent)"
         );
     }
-    Some(first)
+    Ok(Some(first))
 }
 
 /// An agent directory found under `~/.residuum/`: its name and full path.
@@ -152,12 +189,15 @@ pub struct DiscoveredAgent {
 /// Like [`discover_single_agent`], but returns the full
 /// [`DiscoveredAgent`] (name plus resolved directory) instead of just the
 /// name.
-#[must_use]
-pub fn discover_single_agent_dir(root: &Path) -> Option<DiscoveredAgent> {
-    discover_single_agent(root).map(|name| {
+///
+/// # Errors
+/// Returns `FatalError::Config` if `root` cannot be scanned (see
+/// [`discover_agents`]).
+pub fn discover_single_agent_dir(root: &Path) -> Result<Option<DiscoveredAgent>, FatalError> {
+    Ok(discover_single_agent(root)?.map(|name| {
         let dir = agent_dir(root, &name);
         DiscoveredAgent { name, dir }
-    })
+    }))
 }
 
 /// Path helpers for the hub directory (`~/.residuum/hub`): hub config,
@@ -191,6 +231,22 @@ impl HubPaths {
     #[must_use]
     pub fn config_last_known_good_toml(&self) -> PathBuf {
         self.root.join("config.last-known-good.toml")
+    }
+
+    /// `hub/<agent>.config.last-known-good.toml` — the agent's `config.toml`
+    /// copy. Kept in `hub/` so it never enters the agent's workspace.
+    #[must_use]
+    pub fn agent_config_last_known_good_toml(&self, agent: &str) -> PathBuf {
+        self.root
+            .join(format!("{agent}.config.last-known-good.toml"))
+    }
+
+    /// `hub/<agent>.providers.last-known-good.toml` — the agent's
+    /// `providers.toml` copy (may hold plaintext API keys).
+    #[must_use]
+    pub fn agent_providers_last_known_good_toml(&self, agent: &str) -> PathBuf {
+        self.root
+            .join(format!("{agent}.providers.last-known-good.toml"))
     }
 
     /// `hub/config.example.toml` — regenerated on every startup.
@@ -373,7 +429,10 @@ mod tests {
         std::fs::create_dir_all(root.join(".git").join("config")).unwrap();
         std::fs::write(root.join(".git").join("config").join("config.toml"), "").unwrap();
 
-        assert_eq!(discover_agents(root), vec!["assistant".to_string()]);
+        assert_eq!(
+            discover_agents(root).unwrap(),
+            vec!["assistant".to_string()]
+        );
     }
 
     #[test]
@@ -385,11 +444,56 @@ mod tests {
             std::fs::write(root.join(name).join("config").join("config.toml"), "").unwrap();
         }
         assert_eq!(
-            discover_agents(root),
+            discover_agents(root).unwrap(),
             vec!["alpha".to_string(), "mid".to_string(), "zeta".to_string()]
         );
 
-        assert!(discover_agents(&root.join("does-not-exist")).is_empty());
+        assert!(
+            discover_agents(&root.join("does-not-exist"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_agents_follows_a_symlinked_agent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let elsewhere = dir.path().join("elsewhere").join("real-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(elsewhere.join("config")).unwrap();
+        std::fs::write(elsewhere.join("config").join("config.toml"), "").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("linked")).unwrap();
+
+        assert_eq!(discover_agents(&root).unwrap(), vec!["linked".to_string()]);
+        assert_eq!(
+            discover_single_agent(&root).unwrap(),
+            Some("linked".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_agents_skips_a_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("dangling")).unwrap();
+        assert!(discover_agents(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn discover_agents_reports_an_unreadable_root_instead_of_an_empty_install() {
+        let dir = tempfile::tempdir().unwrap();
+        // A regular file where the root directory should be: read_dir fails
+        // with something other than NotFound.
+        let not_a_dir = dir.path().join("root-file");
+        std::fs::write(&not_a_dir, "").unwrap();
+
+        let err = discover_agents(&not_a_dir).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("couldn't read"), "{message}");
+        assert!(message.contains("root-file"), "{message}");
+        assert!(discover_single_agent(&not_a_dir).is_err());
     }
 
     #[test]
@@ -397,7 +501,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         assert!(
-            discover_single_agent(root).is_none(),
+            discover_single_agent(root).unwrap().is_none(),
             "fresh install has no agent"
         );
 
@@ -405,6 +509,9 @@ mod tests {
             std::fs::create_dir_all(root.join(name).join("config")).unwrap();
             std::fs::write(root.join(name).join("config").join("config.toml"), "").unwrap();
         }
-        assert_eq!(discover_single_agent(root), Some("alpha".to_string()));
+        assert_eq!(
+            discover_single_agent(root).unwrap(),
+            Some("alpha".to_string())
+        );
     }
 }

@@ -10,18 +10,37 @@
 //! The hub and each agent keep independent last-known-good copies, since
 //! the two configs are loaded, validated, and reloaded independently — see
 //! [`hub`] for the hub's counterpart to the agent functions below.
+//!
+//! Every copy lives in `hub/`, never in the agent's workspace: providers
+//! may hold plaintext API keys, and the agent's directory is a checkpointed,
+//! web-browsable workspace. An agent's copies are
+//! `hub/<agent>.config.last-known-good.toml` and
+//! `hub/<agent>.providers.last-known-good.toml`, next to the hub's own
+//! `hub/config.last-known-good.toml`.
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{Config, HubConfig};
+use crate::config::{Config, HubConfig, HubPaths, paths};
 use crate::util::FatalError;
 
-fn config_copy_path(agent_config_dir: &Path) -> PathBuf {
-    agent_config_dir.join("config.last-known-good.toml")
+/// The `hub/` directory and agent name for an agent whose own `config/`
+/// directory is `agent_config_dir`. Agent directories sit beside `hub/`
+/// under the residuum root, so the hub directory is that sibling.
+fn hub_and_agent_name(agent_config_dir: &Path) -> Option<(PathBuf, String)> {
+    let agent_dir = agent_config_dir.parent()?;
+    let name = agent_dir.file_name()?.to_str()?.to_string();
+    let hub_dir = paths::hub_dir(agent_dir.parent()?);
+    Some((hub_dir, name))
 }
 
-fn providers_copy_path(agent_config_dir: &Path) -> PathBuf {
-    agent_config_dir.join("providers.last-known-good.toml")
+fn config_copy_path(agent_config_dir: &Path) -> Option<PathBuf> {
+    let (hub_dir, name) = hub_and_agent_name(agent_config_dir)?;
+    Some(HubPaths::new(hub_dir).agent_config_last_known_good_toml(&name))
+}
+
+fn providers_copy_path(agent_config_dir: &Path) -> Option<PathBuf> {
+    let (hub_dir, name) = hub_and_agent_name(agent_config_dir)?;
+    Some(HubPaths::new(hub_dir).agent_providers_last_known_good_toml(&name))
 }
 
 /// Save an agent's `config.toml` and `providers.toml` as its last-known-good
@@ -39,6 +58,13 @@ pub(crate) fn save(agent_config_dir: &Path) {
         ("config.toml", config_copy_path(agent_config_dir)),
         ("providers.toml", providers_copy_path(agent_config_dir)),
     ] {
+        let Some(dst_path) = dst_path else {
+            tracing::warn!(
+                config_dir = %agent_config_dir.display(),
+                "failed to save last-known-good config copy: config directory is not inside an agent directory"
+            );
+            return;
+        };
         let src = agent_config_dir.join(src_name);
         if !src.exists() {
             continue;
@@ -56,6 +82,9 @@ pub(crate) fn save(agent_config_dir: &Path) {
 /// Copy `src` to `dst` via a temp file in the same directory plus a rename,
 /// so the copy is atomic from any other reader's point of view.
 fn atomic_copy(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let tmp = dst.with_extension("tmp");
     std::fs::copy(src, &tmp)?;
     std::fs::rename(&tmp, dst)
@@ -65,7 +94,8 @@ fn atomic_copy(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// `config/` directory is `agent_config_dir`.
 #[must_use]
 pub fn exists(agent_config_dir: &Path) -> bool {
-    config_copy_path(agent_config_dir).exists() && providers_copy_path(agent_config_dir).exists()
+    config_copy_path(agent_config_dir).is_some_and(|p| p.exists())
+        && providers_copy_path(agent_config_dir).is_some_and(|p| p.exists())
 }
 
 /// Load an agent's `Config` from its last-known-good copies, without
@@ -91,26 +121,29 @@ pub(crate) fn load(agent_dir: &Path, hub: &HubConfig) -> Result<Config, FatalErr
                 agent_dir.display()
             ))
         })?;
-    Config::load_agent_from_paths(
-        agent_dir,
-        &config_copy_path(&agent_config_dir),
-        &providers_copy_path(&agent_config_dir),
-        agent_name,
-        hub,
-    )
+    let (Some(config_copy), Some(providers_copy)) = (
+        config_copy_path(&agent_config_dir),
+        providers_copy_path(&agent_config_dir),
+    ) else {
+        return Err(FatalError::Config(format!(
+            "agent directory {} has no valid location for last-known-good copies",
+            agent_dir.display()
+        )));
+    };
+    Config::load_agent_from_paths(agent_dir, &config_copy, &providers_copy, agent_name, hub)
 }
 
 /// The hub's own last-known-good config, independent of any agent's.
 pub(crate) mod hub {
     use std::path::Path;
 
-    use crate::config::HubConfig;
+    use crate::config::{HubConfig, HubPaths};
     use crate::util::FatalError;
 
     use super::atomic_copy;
 
     fn config_copy_path(hub_dir: &Path) -> std::path::PathBuf {
-        hub_dir.join("config.last-known-good.toml")
+        HubPaths::new(hub_dir).config_last_known_good_toml()
     }
 
     /// Save `hub/config.toml` as its last-known-good copy. See
@@ -141,7 +174,7 @@ pub(crate) mod hub {
     /// # Errors
     /// Returns `FatalError::Config` if no last-known-good copy is saved, or
     /// the saved copy itself fails to load.
-    pub(crate) fn load(hub_dir: &Path) -> Result<HubConfig, FatalError> {
+    pub fn load(hub_dir: &Path) -> Result<HubConfig, FatalError> {
         if !exists(hub_dir) {
             return Err(FatalError::Config(
                 "no last-known-good hub configuration is saved yet".to_string(),
@@ -202,6 +235,40 @@ mod tests {
         assert_eq!(
             cfg.main.first().map(|p| p.model.model.as_str()),
             Some("claude-sonnet-4-6")
+        );
+    }
+
+    #[test]
+    fn copies_live_in_hub_never_in_the_agent_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_agent_dir, agent_config_dir) = agent_dirs(dir.path());
+        std::fs::write(agent_config_dir.join("config.toml"), "").unwrap();
+        std::fs::write(
+            agent_config_dir.join("providers.toml"),
+            "[providers.x]\napi_key = \"sk-plaintext\"\n",
+        )
+        .unwrap();
+        save(&agent_config_dir);
+
+        let hub_dir = dir.path().join("hub");
+        assert!(
+            hub_dir
+                .join("myagent.config.last-known-good.toml")
+                .is_file()
+        );
+        assert!(
+            hub_dir
+                .join("myagent.providers.last-known-good.toml")
+                .is_file()
+        );
+        let leaked: Vec<_> = std::fs::read_dir(&agent_config_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("last-known-good"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "copies leaked into the workspace: {leaked:?}"
         );
     }
 

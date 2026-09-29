@@ -89,6 +89,14 @@ mod tests {
     }
 
     #[test]
+    fn excludes_last_known_good_copies_and_atomic_write_temps_in_config() {
+        assert!(is_excluded("config/config.last-known-good.toml"));
+        assert!(is_excluded("config/providers.last-known-good.toml"));
+        assert!(is_excluded("config/.providers.toml.0badf00d.residuum-tmp"));
+        assert!(is_excluded("config/.config.toml.0badf00d.residuum-tmp"));
+    }
+
+    #[test]
     fn excludes_the_agents_own_config_and_providers_toml() {
         assert!(is_excluded("config/config.toml"));
         assert!(is_excluded("config/providers.toml"));

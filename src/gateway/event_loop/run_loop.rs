@@ -1522,13 +1522,14 @@ mod tests {
         // successful start) still must not surface its own error in place
         // of the live config's -- the live config is what the user needs to
         // fix.
+        std::fs::create_dir_all(dir.path().join("hub")).unwrap();
         std::fs::write(
-            agent_config_dir.join("config.last-known-good.toml"),
+            dir.path().join("hub/scout.config.last-known-good.toml"),
             "not valid toml [[[",
         )
         .unwrap();
         std::fs::write(
-            agent_config_dir.join("providers.last-known-good.toml"),
+            dir.path().join("hub/scout.providers.last-known-good.toml"),
             "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n",
         )
         .unwrap();

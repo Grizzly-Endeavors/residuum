@@ -240,6 +240,11 @@ pub enum CheckpointError {
     /// A cursor passed to a listing call couldn't be parsed.
     #[error("invalid page cursor")]
     InvalidCursor,
+    /// A config-repository operation was requested for the workspace
+    /// repository, which snapshots a directory tree rather than a fixed
+    /// list of config files.
+    #[error("the workspace repository is not a config repository")]
+    NotAConfigRepo,
     /// The underlying git object database or refs could not be read or
     /// written.
     #[error("checkpoint repository error: {0}")]

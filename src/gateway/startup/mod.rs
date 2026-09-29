@@ -88,9 +88,9 @@ pub(super) async fn init_workspace(
 ) -> Result<(WorkspaceLayout, chrono_tz::Tz), FatalError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
-    // The user's name is no longer a config field — USER.md is personalized
-    // once, at onboarding time (`gateway::web::config::api_complete_setup`).
-    // Every later call here is idempotent (write-if-missing).
+    // USER.md is personalized once, at onboarding time
+    // (`gateway::web::config::api_complete_setup`). Every later call here is
+    // idempotent (write-if-missing).
     ensure_workspace(&layout, None, Some(cfg.timezone.name())).await?;
 
     Ok((layout, tz))

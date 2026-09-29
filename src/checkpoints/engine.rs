@@ -267,7 +267,7 @@ impl CheckpointEngine {
         kind: RepoKind,
         ctx: &CheckpointContext,
     ) -> Result<Option<String>, CheckpointError> {
-        let files = collect_config_files(kind, &self.dest_root(kind));
+        let files = collect_config_files(kind, &self.dest_root(kind))?;
         let guard = self.repo(kind);
         let guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
         guard.commit_snapshot(&files, Utc::now(), ctx)
@@ -316,7 +316,7 @@ impl CheckpointEngine {
         kind: RepoKind,
         ctx: &CheckpointContext,
     ) -> Result<SnapshotCommit, CheckpointError> {
-        let files = collect_config_files(kind, &self.dest_root(kind));
+        let files = collect_config_files(kind, &self.dest_root(kind))?;
         let guard = self.repo(kind);
         let guard = guard.lock().unwrap_or_else(PoisonError::into_inner);
         guard.commit_snapshot_outcome(&files, Utc::now(), ctx)
@@ -747,16 +747,20 @@ fn is_executable(_path: &Path) -> bool {
 
 /// Build the config repository's file list: every tracked file that
 /// currently exists.
-fn collect_config_files(kind: RepoKind, config_dir: &Path) -> Vec<SnapshotFile> {
+///
+/// # Errors
+/// Returns [`CheckpointError::NotAConfigRepo`] for [`RepoKind::Workspace`],
+/// which has no fixed file list.
+fn collect_config_files(
+    kind: RepoKind,
+    config_dir: &Path,
+) -> Result<Vec<SnapshotFile>, CheckpointError> {
     let tracked: &[&str] = match kind {
         RepoKind::Hub => HUB_TRACKED_FILES,
         RepoKind::AgentConfig => AGENT_CONFIG_TRACKED_FILES,
-        RepoKind::Workspace => {
-            debug_assert!(false, "collect_config_files called for the workspace repo");
-            &[]
-        }
+        RepoKind::Workspace => return Err(CheckpointError::NotAConfigRepo),
     };
-    tracked
+    Ok(tracked
         .iter()
         .filter_map(|name| {
             let abs_path = config_dir.join(name);
@@ -766,7 +770,7 @@ fn collect_config_files(kind: RepoKind, config_dir: &Path) -> Vec<SnapshotFile> 
                 executable: false,
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Total size on disk of every file under `dir`, symlinks not followed.
@@ -922,6 +926,15 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("expected {count} checkpoint(s) within the timeout");
+    }
+
+    #[test]
+    fn collect_config_files_rejects_the_workspace_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            collect_config_files(RepoKind::Workspace, dir.path()),
+            Err(CheckpointError::NotAConfigRepo)
+        ));
     }
 
     #[tokio::test]
