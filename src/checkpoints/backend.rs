@@ -437,6 +437,49 @@ impl GitRepo {
         self.blob_at_path(&tree, path)
     }
 
+    /// Every file at or under `path` in checkpoint `id`, as root-relative
+    /// slash paths. Empty when `path` is not present there.
+    pub(super) fn files_under(
+        &self,
+        id: gix::ObjectId,
+        path: &str,
+    ) -> Result<Vec<String>, CheckpointError> {
+        if !super::is_root_relative(path) {
+            return Ok(Vec::new());
+        }
+        let commit = self.repo.find_commit(id).map_err(git_err)?;
+        let tree = commit.tree().map_err(git_err)?;
+        let Some(entry) = tree.lookup_entry(path.split('/')).map_err(git_err)? else {
+            return Ok(Vec::new());
+        };
+        let mut files = Vec::new();
+        if entry.mode().is_tree() {
+            self.collect_files(entry.object_id(), path, &mut files)?;
+        } else {
+            files.push(path.to_string());
+        }
+        Ok(files)
+    }
+
+    fn collect_files(
+        &self,
+        tree_id: gix::ObjectId,
+        rel_prefix: &str,
+        out: &mut Vec<String>,
+    ) -> Result<(), CheckpointError> {
+        let tree = self.repo.find_tree(tree_id).map_err(git_err)?;
+        let decoded = tree.decode().map_err(git_err)?;
+        for entry in &decoded.entries {
+            let rel_path = format!("{rel_prefix}/{}", entry.filename);
+            if entry.mode.is_tree() {
+                self.collect_files(entry.oid.to_owned(), &rel_path, out)?;
+            } else {
+                out.push(rel_path);
+            }
+        }
+        Ok(())
+    }
+
     /// Restore `path` (a file or a directory) from checkpoint `id` onto
     /// disk under `dest_root`, returning the workspace-relative paths that
     /// were written or removed. A directory restore makes the on-disk

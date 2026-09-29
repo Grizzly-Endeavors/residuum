@@ -1505,6 +1505,7 @@ mod tests {
         Arc::new(
             crate::checkpoints::CheckpointEngine::new(
                 dir.join("workspace"),
+                &crate::config::paths::TeamPaths::new(dir.join("team")),
                 dir.join("agent-config"),
                 dir.join("hub"),
                 &dir.join("checkpoints"),

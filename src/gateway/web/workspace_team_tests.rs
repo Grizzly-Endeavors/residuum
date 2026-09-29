@@ -35,12 +35,14 @@ fn fixture() -> Fixture {
     let checkpoints = std::sync::Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             agent_dir.clone(),
+            &crate::config::paths::TeamPaths::new(hub.team()),
             agent_dir.join("config"),
             hub_dir.clone(),
             &hub_dir.join("checkpoints"),
             None,
         )
-        .unwrap(),
+        .unwrap()
+        .with_team_coordinator(hub.coordinator.clone()),
     );
     let state = ConfigApiState {
         team: Some(hub.coordinator.view_for_user(&agent_dir)),
@@ -640,6 +642,7 @@ async fn restore(f: &Fixture, repo: RepoKind, id: &str, path: &str) {
             id.to_string(),
             path.to_string(),
             CheckpointContext::system(CheckpointTrigger::Restore, "test restore"),
+            &crate::workspace::team_files::TeamWriter::User,
         )
         .await
         .unwrap();
@@ -833,4 +836,105 @@ async fn agent_only_actions_keep_the_workspace_checkpoint_shape() {
         text_write.get("checkpoint_id").is_none(),
         "a text write takes no checkpoint: {text_write}"
     );
+}
+
+// ── Restore and undo go through the team write coordinator ──────────
+
+async fn tool_call(
+    tools: &crate::tools::ToolRegistry,
+    name: &str,
+    args: Value,
+) -> crate::tools::ToolResult {
+    tools.execute(name, args).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_restore_into_team_is_recorded_as_the_user_and_conflicts_a_stale_reader() {
+    let f = fixture();
+    write_team(&f, "wiki/a.md", "shared page");
+    let file = f.hub.team().join("wiki").join("a.md");
+    let body = delete(&f, "team/wiki/a.md").await;
+    let (id, _) = single_checkpoint(&body);
+
+    // Sam sees the file gone, then the user restores it.
+    let sam = f.hub.tools_for("sam");
+    let missing = tool_call(&sam, "read_file", json!({ "path": "team/wiki/a.md" })).await;
+    assert!(missing.is_error);
+    restore(&f, RepoKind::Team, &id, "wiki/a.md").await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "shared page");
+
+    let refused = tool_call(
+        &sam,
+        "write_file",
+        json!({ "path": "team/wiki/a.md", "content": "sam" }),
+    )
+    .await;
+    assert!(refused.is_error, "{}", refused.output);
+    assert!(refused.output.contains("the user"), "{}", refused.output);
+}
+
+#[tokio::test]
+async fn a_restore_waits_for_a_write_holding_the_path_lock() {
+    let f = fixture();
+    write_team(&f, "wiki/a.md", "shared page");
+    let file = f.hub.team().join("wiki").join("a.md");
+    let body = delete(&f, "team/wiki/a.md").await;
+    let (id, _) = single_checkpoint(&body);
+
+    let held = f.hub.coordinator.lock(&file).await;
+    let restoring = restore(&f, RepoKind::Team, &id, "wiki/a.md");
+    tokio::pin!(restoring);
+    let early = tokio::time::timeout(std::time::Duration::from_millis(150), &mut restoring).await;
+    assert!(early.is_err(), "the restore must wait for the lock holder");
+    assert!(!file.exists(), "nothing is restored while the lock is held");
+
+    drop(held);
+    restoring.await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "shared page");
+}
+
+#[tokio::test]
+async fn an_undo_in_team_locks_and_names_the_agent_that_ran_it() {
+    let f = fixture();
+    write_team(&f, "wiki/a.md", "one");
+    let ctx = |summary: &str| CheckpointContext::system(CheckpointTrigger::PreAction, summary);
+    f.state
+        .checkpoints
+        .checkpoint_team_before_action(ctx("first"))
+        .await;
+    write_team(&f, "wiki/a.md", "two");
+    let second = f
+        .state
+        .checkpoints
+        .checkpoint_team_id_before_action(ctx("second"))
+        .await
+        .unwrap();
+
+    let sam = f.hub.tools_for("sam");
+    assert!(
+        !tool_call(&sam, "read_file", json!({ "path": "team/wiki/a.md" }))
+            .await
+            .is_error
+    );
+    f.state
+        .checkpoints
+        .undo_checkpoint(
+            RepoKind::Team,
+            second,
+            CheckpointContext::system(CheckpointTrigger::Undo, "undo"),
+            &crate::workspace::team_files::TeamWriter::Agent("robin".to_string()),
+        )
+        .await
+        .unwrap();
+    let file = f.hub.team().join("wiki").join("a.md");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "one");
+
+    let refused = tool_call(
+        &sam,
+        "write_file",
+        json!({ "path": "team/wiki/a.md", "content": "sam" }),
+    )
+    .await;
+    assert!(refused.is_error, "{}", refused.output);
+    assert!(refused.output.contains("robin"), "{}", refused.output);
 }

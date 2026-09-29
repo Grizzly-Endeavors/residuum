@@ -422,8 +422,8 @@ impl VectorStore {
 
     /// Delete every wiki page embedding, returning how many rows were removed.
     ///
-    /// Wiki pages live in the team wiki's own store; this clears the rows an
-    /// agent's store held before wiki indexing moved there.
+    /// Wiki pages live in the team wiki's own store; this clears any
+    /// wiki rows an agent's store holds.
     ///
     /// # Errors
     /// Returns an error if the delete fails.

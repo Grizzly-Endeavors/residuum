@@ -6,7 +6,7 @@ This directory documents how each Residuum system is **intended to be used**, by
 
 Everything inside the workspace directory is **agent-owned by default**. The agent creates, reads, updates, and evolves these files as part of normal operation. The user provides initial guidance during onboarding and occasional course corrections, but the goal is that users rarely need to intervene after the first conversation.
 
-The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from the agent's own directory. `AGENTS.md`, `USER.md` and the wiki index (`wiki/index.md`) come from the team layer, `team/` beside the agent directories, and are the same for every agent. The order is `SOUL.md`, `AGENTS.md`, `HARNESS`, `BOOTSTRAP.md`, `USER.md`, `WIKI_INDEX`, then memory and skills. A missing file is left out of the prompt. Files are re-read every turn; if a read fails, the previous turn's snapshot is used. The subconscious classifier and session forks read the same sources.
+The prompt is assembled from two places. `SOUL.md` and `BOOTSTRAP.md` come from the agent's own directory. `AGENTS.md`, `USER.md` and the wiki index (`team/wiki/index.md`) come from the team layer, `team/` beside the agent directories, and are the same for every agent. The order is `SOUL.md`, `AGENTS.md`, `HARNESS`, `BOOTSTRAP.md`, `USER.md`, `WIKI_INDEX`, then memory and skills. A missing file is left out of the prompt. Files are re-read every turn; if a read fails, the previous turn's snapshot is used. The subconscious classifier and session forks read the same sources.
 
 Every agent's file tools and the web file API see the team layer under a `team/` prefix, and writes to team files are checked so agents and the user can't silently overwrite each other. See [Team files](team-files.md).
 
@@ -67,7 +67,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Team Directory](team-directory.md) | The `team/` directory every agent shares: team rules, user profile, wiki, and each agent's role page | `read_file`, `write_file`, `edit_file` | `team/` |
 | [Wiki](wiki.md) | Curated knowledge base of concept pages, distilled from episodes | `read_file`, `write_file`, `edit_file` | `team/wiki/` |
 | [Checkpoints](checkpoints.md) | Hidden git history of the workspace, the shared team directory, the agent's config, and the hub's config, for recovery | `workspace_history`, `workspace_restore` | `~/.residuum/hub/checkpoints/` |
-| [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `workbench/` |
+| [Workbench](workbench.md) | Interactive artifacts the user opens in the web UI, served from their own origin with an injected SDK | `write_file`, `edit_file` (plus the `workbench` skill) | `team/workbench/` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
 | [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
