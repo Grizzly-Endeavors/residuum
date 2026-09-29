@@ -40,95 +40,160 @@ const AGENT_CONFIG_TRACKED_FILES: &[&str] = &["config.toml", "providers.toml"];
 /// one.
 const DEFAULT_PAGE_LIMIT: usize = 50;
 
-/// The workspace, team, agent-config, and hub-config checkpoint repositories, and
-/// everything needed to take, list, and act on checkpoints in any of them.
+/// One checkpoint repository: the directory it snapshots, its open handle,
+/// and its repository directory on disk.
+struct TreeRepo {
+    root: PathBuf,
+    repo: Arc<Mutex<GitRepo>>,
+    git_dir: PathBuf,
+}
+
+impl TreeRepo {
+    fn open(root: PathBuf, git_dir: PathBuf) -> Result<Self, CheckpointError> {
+        let repo = GitRepo::open_or_init(&git_dir)?;
+        Ok(Self {
+            root,
+            repo: Arc::new(Mutex::new(repo)),
+            git_dir,
+        })
+    }
+}
+
+/// The two checkpoint repositories every agent in a hub shares: the team
+/// directory's (`team.git`) and the hub config's (`hub-config.git`), both at
+/// the top of `hub/checkpoints/`.
+///
+/// Opened once and handed to every agent's [`CheckpointEngine`], so all
+/// agents' turn checkpoints of the one team tree queue on a single in-process
+/// lock instead of contending for the repository's on-disk commit lock.
+pub struct SharedCheckpointRepos {
+    team: TreeRepo,
+    hub: TreeRepo,
+}
+
+impl SharedCheckpointRepos {
+    /// Open (or create) the team and hub-config repositories under
+    /// `checkpoints_dir` (typically `~/.residuum/hub/checkpoints`). The team
+    /// repository's work tree is the `team/` directory beside `hub_dir`.
+    ///
+    /// # Errors
+    /// Returns [`CheckpointError`] if either repository can't be opened or
+    /// initialized.
+    pub fn open(hub_dir: &Path, checkpoints_dir: &Path) -> Result<Arc<Self>, CheckpointError> {
+        let team_root = TeamPaths::new(team_dir(hub_dir.parent().unwrap_or(hub_dir)))
+            .root()
+            .to_path_buf();
+        Ok(Arc::new(Self {
+            team: TreeRepo::open(team_root, checkpoints_dir.join(RepoKind::Team.dir_name()))?,
+            hub: TreeRepo::open(
+                hub_dir.to_path_buf(),
+                checkpoints_dir.join(RepoKind::Hub.dir_name()),
+            )?,
+        }))
+    }
+}
+
+/// Directory under the checkpoints directory holding one subdirectory per
+/// agent, each with that agent's `workspace.git` and `agent-config.git`. A
+/// deleted agent's subdirectory stays, so its history can still be restored.
+const AGENT_REPOS_DIR: &str = "agents";
+
+/// One agent's checkpoint repositories (its workspace and its config), plus
+/// the team and hub-config repositories every agent shares, and everything
+/// needed to take, list, and act on checkpoints in any of them.
 pub struct CheckpointEngine {
-    workspace_root: PathBuf,
-    workspace_repo: Arc<Mutex<GitRepo>>,
-    workspace_git_dir: PathBuf,
-    team_root: PathBuf,
-    team_repo: Arc<Mutex<GitRepo>>,
-    team_git_dir: PathBuf,
-    agent_config_dir: PathBuf,
-    agent_config_repo: Arc<Mutex<GitRepo>>,
-    agent_config_git_dir: PathBuf,
-    hub_dir: PathBuf,
-    hub_repo: Arc<Mutex<GitRepo>>,
-    hub_git_dir: PathBuf,
+    workspace: TreeRepo,
+    agent_config: TreeRepo,
+    shared: Arc<SharedCheckpointRepos>,
     publisher: Option<Publisher>,
-    /// Keeps a test fixture's backing temp directory alive (and cleaned up
-    /// on drop) for as long as this engine is in use, instead of leaking it
-    /// with [`tempfile::TempDir::keep`].
-    #[cfg(test)]
-    tempdir_guard: Option<tempfile::TempDir>,
+    /// Keeps a backing temp directory alive (and cleaned up on drop) for as
+    /// long as this engine is in use: a test fixture's directory, or the
+    /// scratch agent repositories of a hub-config-only CLI engine.
+    scratch_guard: Option<tempfile::TempDir>,
 }
 
 impl CheckpointEngine {
-    /// Open (or create) all four checkpoint repositories.
+    /// Open (or create) an agent's checkpoint repositories under
+    /// `checkpoints_dir`, along with the shared team and hub-config ones.
     ///
-    /// `checkpoints_dir` is typically `~/.residuum/hub/checkpoints`. None of
-    /// the git-dirs live inside `workspace_root` (the agent directory) or
-    /// the team directory, so a `.git` the user keeps there is never
-    /// touched. The team repository's work tree is the `team/` directory
-    /// beside `hub_dir`.
+    /// Use [`Self::with_shared_repos`] when several engines live in one
+    /// process, so they share the team and hub-config handles.
     ///
     /// # Errors
     /// Returns [`CheckpointError`] if any repository can't be opened or
     /// initialized.
     pub fn new(
+        agent_name: &str,
         workspace_root: PathBuf,
         agent_config_dir: PathBuf,
-        hub_dir: PathBuf,
+        hub_dir: impl AsRef<Path>,
         checkpoints_dir: &Path,
         publisher: Option<Publisher>,
     ) -> Result<Self, CheckpointError> {
-        let workspace_git_dir = checkpoints_dir.join(RepoKind::Workspace.dir_name());
-        let team_git_dir = checkpoints_dir.join(RepoKind::Team.dir_name());
-        let team_root = TeamPaths::new(team_dir(hub_dir.parent().unwrap_or(&hub_dir)))
-            .root()
-            .to_path_buf();
-        let agent_config_git_dir = checkpoints_dir.join(RepoKind::AgentConfig.dir_name());
-        let hub_git_dir = checkpoints_dir.join(RepoKind::Hub.dir_name());
-        let workspace_repo = GitRepo::open_or_init(&workspace_git_dir)?;
-        let team_repo = GitRepo::open_or_init(&team_git_dir)?;
-        let agent_config_repo = GitRepo::open_or_init(&agent_config_git_dir)?;
-        let hub_repo = GitRepo::open_or_init(&hub_git_dir)?;
-        Ok(Self {
+        let shared = SharedCheckpointRepos::open(hub_dir.as_ref(), checkpoints_dir)?;
+        Self::with_shared_repos(
+            shared,
+            agent_name,
             workspace_root,
-            workspace_repo: Arc::new(Mutex::new(workspace_repo)),
-            workspace_git_dir,
-            team_root,
-            team_repo: Arc::new(Mutex::new(team_repo)),
-            team_git_dir,
             agent_config_dir,
-            agent_config_repo: Arc::new(Mutex::new(agent_config_repo)),
-            agent_config_git_dir,
-            hub_dir,
-            hub_repo: Arc::new(Mutex::new(hub_repo)),
-            hub_git_dir,
+            checkpoints_dir,
             publisher,
-            #[cfg(test)]
-            tempdir_guard: None,
+        )
+    }
+
+    /// Open (or create) an agent's own repositories at
+    /// `checkpoints_dir/agents/<agent_name>/` and use `shared` for the team
+    /// and hub-config repositories.
+    ///
+    /// None of the repository directories live inside `workspace_root` (the
+    /// agent directory) or the team directory, so a `.git` the user keeps
+    /// there is never touched. The engine can be rebuilt from the agent's
+    /// name and paths at any time, including after the agent's directory is
+    /// gone: the repositories under `checkpoints_dir` outlive it.
+    ///
+    /// # Errors
+    /// Returns [`CheckpointError`] if either agent repository can't be opened
+    /// or initialized.
+    pub fn with_shared_repos(
+        shared: Arc<SharedCheckpointRepos>,
+        agent_name: &str,
+        workspace_root: PathBuf,
+        agent_config_dir: PathBuf,
+        checkpoints_dir: &Path,
+        publisher: Option<Publisher>,
+    ) -> Result<Self, CheckpointError> {
+        let agent_repos_dir = checkpoints_dir.join(AGENT_REPOS_DIR).join(agent_name);
+        Ok(Self {
+            workspace: TreeRepo::open(
+                workspace_root,
+                agent_repos_dir.join(RepoKind::Workspace.dir_name()),
+            )?,
+            agent_config: TreeRepo::open(
+                agent_config_dir,
+                agent_repos_dir.join(RepoKind::AgentConfig.dir_name()),
+            )?,
+            shared,
+            publisher,
+            scratch_guard: None,
         })
     }
 
     /// Attach a temp directory guard so it's dropped (and cleaned up)
     /// together with this engine instead of being leaked.
-    #[cfg(test)]
     #[must_use]
     pub(crate) fn with_tempdir_guard(mut self, dir: tempfile::TempDir) -> Self {
-        self.tempdir_guard = Some(dir);
+        self.scratch_guard = Some(dir);
         self
     }
 
     /// Open the checkpoint repositories for a one-off CLI invocation
     /// (`residuum secret`/`residuum agent-keys`/`residuum a2a keys`),
-    /// sharing the same on-disk repositories the gateway commits to.
-    /// `workspace_root`/`agent_config_dir` default to placeholders under
-    /// `hub_dir` since these CLI commands only ever touch the hub config
-    /// repository, so they need not be exact.
+    /// sharing the same on-disk hub-config repository the hub commits to.
+    /// These CLI commands only ever touch the hub config repository, so the
+    /// agent repositories are throwaway ones in a scratch directory, removed
+    /// when the engine drops.
     ///
-    /// Commits from this instance and the running gateway (or another CLI
+    /// Commits from this instance and the running hub (or another CLI
     /// invocation) are safe to interleave — see [`Self::checkpoint_config_now`].
     ///
     /// Returns `None` (logged) if the repositories can't be opened: a CLI
@@ -137,13 +202,21 @@ impl CheckpointEngine {
     #[must_use]
     pub fn open_for_cli(hub_dir: &Path) -> Option<Self> {
         let checkpoints_dir = crate::config::HubPaths::new(hub_dir).checkpoints_dir();
-        match Self::new(
-            hub_dir.join("_unused-workspace"),
-            hub_dir.join("_unused-agent-config"),
-            hub_dir.to_path_buf(),
-            &checkpoints_dir,
-            None,
-        ) {
+        let opened = SharedCheckpointRepos::open(hub_dir, &checkpoints_dir).and_then(|shared| {
+            let scratch = tempfile::tempdir().map_err(|e| {
+                CheckpointError::Io(format!("failed to create scratch directory: {e}"))
+            })?;
+            let engine = Self::with_shared_repos(
+                shared,
+                "cli",
+                hub_dir.join("_unused-workspace"),
+                hub_dir.join("_unused-agent-config"),
+                scratch.path(),
+                None,
+            )?;
+            Ok(engine.with_tempdir_guard(scratch))
+        });
+        match opened {
             Ok(engine) => Some(engine),
             Err(e) => {
                 tracing::warn!(
@@ -156,31 +229,25 @@ impl CheckpointEngine {
         }
     }
 
-    fn repo(&self, kind: RepoKind) -> Arc<Mutex<GitRepo>> {
+    fn tree(&self, kind: RepoKind) -> &TreeRepo {
         match kind {
-            RepoKind::Workspace => Arc::clone(&self.workspace_repo),
-            RepoKind::Team => Arc::clone(&self.team_repo),
-            RepoKind::AgentConfig => Arc::clone(&self.agent_config_repo),
-            RepoKind::Hub => Arc::clone(&self.hub_repo),
+            RepoKind::Workspace => &self.workspace,
+            RepoKind::Team => &self.shared.team,
+            RepoKind::AgentConfig => &self.agent_config,
+            RepoKind::Hub => &self.shared.hub,
         }
+    }
+
+    fn repo(&self, kind: RepoKind) -> Arc<Mutex<GitRepo>> {
+        Arc::clone(&self.tree(kind).repo)
     }
 
     fn dest_root(&self, kind: RepoKind) -> PathBuf {
-        match kind {
-            RepoKind::Workspace => self.workspace_root.clone(),
-            RepoKind::Team => self.team_root.clone(),
-            RepoKind::AgentConfig => self.agent_config_dir.clone(),
-            RepoKind::Hub => self.hub_dir.clone(),
-        }
+        self.tree(kind).root.clone()
     }
 
     fn git_dir(&self, kind: RepoKind) -> PathBuf {
-        match kind {
-            RepoKind::Workspace => self.workspace_git_dir.clone(),
-            RepoKind::Team => self.team_git_dir.clone(),
-            RepoKind::AgentConfig => self.agent_config_git_dir.clone(),
-            RepoKind::Hub => self.hub_git_dir.clone(),
-        }
+        self.tree(kind).git_dir.clone()
     }
 
     // ─── Automatic checkpoints (never block or fail the caller) ────────
@@ -963,6 +1030,7 @@ mod tests {
 
     fn new_engine(dir: &Path) -> CheckpointEngine {
         CheckpointEngine::new(
+            "test-agent",
             dir.join("workspace"),
             dir.join("agent-config"),
             dir.join("hub"),
@@ -1106,6 +1174,7 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let checkpoints_dir = dir.path().join("checkpoints");
         let engine = CheckpointEngine::new(
+            "test-agent",
             workspace.clone(),
             dir.path().join("agent-config"),
             dir.path().join("hub"),
@@ -1118,6 +1187,8 @@ mod tests {
         // Make the workspace git dir's object store unwritable so the next
         // commit attempt fails with a real I/O error.
         let objects_dir = checkpoints_dir
+            .join(AGENT_REPOS_DIR)
+            .join("test-agent")
             .join(RepoKind::Workspace.dir_name())
             .join("objects");
         std::fs::set_permissions(&objects_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -1447,6 +1518,123 @@ mod tests {
             .await
             .unwrap();
         assert!(workspace_page.items.is_empty(), "repos are independent");
+    }
+
+    /// Two agents' engines over one hub: each has its own workspace history,
+    /// and both record into the one team history.
+    #[tokio::test]
+    async fn agents_get_their_own_repos_and_share_the_team_and_hub_repos() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoints_dir = dir.path().join("hub").join("checkpoints");
+        let shared =
+            SharedCheckpointRepos::open(&dir.path().join("hub"), &checkpoints_dir).unwrap();
+        let engine_for = |name: &str| {
+            let agent_dir = dir.path().join(name);
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            CheckpointEngine::with_shared_repos(
+                Arc::clone(&shared),
+                name,
+                agent_dir.clone(),
+                agent_dir.join("config"),
+                &checkpoints_dir,
+                None,
+            )
+            .unwrap()
+        };
+        let scout = engine_for("scout");
+        let atlas = engine_for("atlas");
+        write_team_file(&dir.path().join("team"), "USER.md", "Bear");
+        std::fs::write(dir.path().join("scout").join("SOUL.md"), "scout soul").unwrap();
+
+        scout
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::PreAction, "scout"))
+            .await;
+        scout
+            .checkpoint_team_before_action(ctx(CheckpointTrigger::PreAction, "scout team"))
+            .await;
+        atlas
+            .checkpoint_team_before_action(ctx(CheckpointTrigger::PreAction, "atlas team"))
+            .await;
+
+        let scout_workspace = scout
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        let atlas_workspace = atlas
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(scout_workspace.items.len(), 1);
+        assert!(
+            atlas_workspace.items.is_empty(),
+            "another agent's workspace history is not shared"
+        );
+        assert!(
+            checkpoints_dir
+                .join("agents")
+                .join("scout")
+                .join("workspace.git")
+                .is_dir()
+        );
+        assert!(
+            checkpoints_dir
+                .join("agents")
+                .join("atlas")
+                .join("agent-config.git")
+                .is_dir()
+        );
+        // The team tree is one tree: the second snapshot found nothing new,
+        // and both engines see the same history.
+        let via_atlas = atlas
+            .list_checkpoints(RepoKind::Team, None, None, None, None)
+            .await
+            .unwrap();
+        let via_scout = scout
+            .list_checkpoints(RepoKind::Team, None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(via_atlas.items.len(), 1);
+        assert_eq!(
+            via_atlas.items.first().map(|c| &c.id),
+            via_scout.items.first().map(|c| &c.id)
+        );
+    }
+
+    /// A deleted agent's history is still there for an engine rebuilt from
+    /// its name and paths.
+    #[tokio::test]
+    async fn an_agents_history_survives_its_directory_and_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoints_dir = dir.path().join("hub").join("checkpoints");
+        let agent_dir = dir.path().join("scout");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("SOUL.md"), "scout soul").unwrap();
+        let open = || {
+            CheckpointEngine::new(
+                "scout",
+                agent_dir.clone(),
+                agent_dir.join("config"),
+                dir.path().join("hub"),
+                &checkpoints_dir,
+                None,
+            )
+            .unwrap()
+        };
+        open()
+            .checkpoint_workspace_before_action(ctx(CheckpointTrigger::PreAction, "before delete"))
+            .await;
+        std::fs::remove_dir_all(&agent_dir).unwrap();
+
+        let rebuilt = open();
+        let page = rebuilt
+            .list_checkpoints(RepoKind::Workspace, None, None, None, None)
+            .await
+            .unwrap();
+        let detail = rebuilt
+            .show_checkpoint(RepoKind::Workspace, page.items.first().unwrap().id.clone())
+            .await
+            .unwrap();
+        assert!(detail.changed_paths.iter().any(|c| c.path == "SOUL.md"));
     }
 
     #[tokio::test]

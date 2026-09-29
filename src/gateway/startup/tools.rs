@@ -422,9 +422,10 @@ mod tests {
         .await;
         let checkpoints = Arc::new(
             crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
                 layout.root().to_path_buf(),
                 dir.join("agent-config"),
-                dir.to_path_buf(),
+                dir,
                 &dir.join("checkpoints"),
                 None,
             )

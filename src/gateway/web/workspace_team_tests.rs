@@ -34,6 +34,7 @@ fn fixture() -> Fixture {
     // the checkpoints the handlers return can be restored from.
     let checkpoints = std::sync::Arc::new(
         crate::checkpoints::CheckpointEngine::new(
+            "test-agent",
             agent_dir.clone(),
             agent_dir.join("config"),
             hub_dir.clone(),

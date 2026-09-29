@@ -456,6 +456,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     };
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
+            "test-agent",
             layout.root().to_path_buf(),
             workspace_dir.join("config"),
             workspace_dir.clone(),

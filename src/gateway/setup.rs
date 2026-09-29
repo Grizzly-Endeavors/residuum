@@ -57,16 +57,16 @@ pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, Fa
     let placeholder_agent_dir = residuum_root.join("_pending-agent");
     let workspace_dir = placeholder_agent_dir.clone();
     let config_dir = placeholder_agent_dir.join("config");
-    let checkpoints = Arc::new(
-        crate::checkpoints::CheckpointEngine::new(
-            workspace_dir.clone(),
-            config_dir.clone(),
-            hub_dir.clone(),
-            &hub.checkpoints_dir(),
-            None,
-        )
-        .map_err(|e| FatalError::Gateway(format!("failed to open checkpoint repositories: {e}")))?,
-    );
+    // Setup only writes hub-level files; the first agent's own repositories
+    // are opened when the hub starts it.
+    let checkpoints = crate::checkpoints::CheckpointEngine::open_for_cli(&hub_dir)
+        .map(Arc::new)
+        .ok_or_else(|| {
+            FatalError::Gateway(format!(
+                "failed to open checkpoint repositories at {}",
+                hub.checkpoints_dir().display()
+            ))
+        })?;
     let api_state = ConfigApiState {
         hub_dir,
         config_dir,

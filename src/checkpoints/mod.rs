@@ -8,7 +8,7 @@ mod exclude;
 mod notice;
 mod types;
 
-pub use engine::CheckpointEngine;
+pub use engine::{CheckpointEngine, SharedCheckpointRepos};
 pub use types::{
     ChangeKind, ChangedPath, CheckpointContext, CheckpointDetail, CheckpointError, CheckpointPage,
     CheckpointSummary, CheckpointTrigger, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,
@@ -36,6 +36,7 @@ pub fn is_root_relative(path: &str) -> bool {
 pub(crate) fn test_engine() -> std::sync::Arc<CheckpointEngine> {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = CheckpointEngine::new(
+        "test-agent",
         dir.path().join("workspace"),
         dir.path().join("agent-config"),
         dir.path().join("hub"),

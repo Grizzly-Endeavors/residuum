@@ -339,9 +339,10 @@ mod tests {
             .unwrap();
         let engine = Arc::new(
             CheckpointEngine::new(
+                "test-agent",
                 dir.path().join("workspace"),
                 dir.path().join("agent-config"),
-                dir.path().to_path_buf(),
+                dir.path(),
                 &dir.path().join("checkpoints"),
                 None,
             )

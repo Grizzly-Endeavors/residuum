@@ -1318,9 +1318,10 @@ mod tests {
             let checkpoints_dir = dir.path().join("checkpoints");
             let engine = std::sync::Arc::new(
                 crate::checkpoints::CheckpointEngine::new(
+                    "test-agent",
                     dir.path().join("workspace"),
                     dir.path().join("agent-config"),
-                    dir.path().to_path_buf(),
+                    dir.path(),
                     &checkpoints_dir,
                     None,
                 )

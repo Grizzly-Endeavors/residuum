@@ -306,6 +306,7 @@ mod tests {
         std::fs::write(workbench.join("chart.html"), "<title>My Chart</title>").unwrap();
         let checkpoints = std::sync::Arc::new(
             crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
                 root.path().join("scout"),
                 root.path().join("scout").join("config"),
                 root.path().join("hub"),

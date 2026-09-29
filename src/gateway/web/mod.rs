@@ -961,6 +961,7 @@ pub(super) mod test_support {
         std::fs::create_dir_all(&hub_dir).unwrap();
         let checkpoints = std::sync::Arc::new(
             crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
                 workspace_dir.clone(),
                 config_dir.clone(),
                 hub_dir.clone(),

@@ -114,6 +114,7 @@ fn init_checkpoints(
 ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, FatalError> {
     let checkpoints_dir = crate::config::HubPaths::new(&hub.config_dir).checkpoints_dir();
     crate::checkpoints::CheckpointEngine::new(
+        &cfg.agent_name,
         layout.root().to_path_buf(),
         cfg.config_dir.clone(),
         hub.config_dir.clone(),

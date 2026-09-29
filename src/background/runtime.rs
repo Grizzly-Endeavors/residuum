@@ -1504,6 +1504,7 @@ mod tests {
     fn test_checkpoints(dir: &std::path::Path) -> Arc<crate::checkpoints::CheckpointEngine> {
         Arc::new(
             crate::checkpoints::CheckpointEngine::new(
+                "test-agent",
                 dir.join("workspace"),
                 dir.join("agent-config"),
                 dir.join("hub"),
