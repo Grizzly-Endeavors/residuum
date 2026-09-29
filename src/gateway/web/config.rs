@@ -29,7 +29,7 @@ pub(super) struct StatusResponse {
 #[derive(Serialize)]
 pub(super) struct CheckpointsStatus {
     workspace: Option<crate::checkpoints::RepoStats>,
-    config: Option<crate::checkpoints::RepoStats>,
+    agent_config: Option<crate::checkpoints::RepoStats>,
     hub: Option<crate::checkpoints::RepoStats>,
 }
 
@@ -138,8 +138,11 @@ pub(super) async fn api_status(State(state): State<ConfigApiState>) -> Json<Stat
         checkpoints: CheckpointsStatus {
             workspace: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Workspace)
                 .await,
-            config: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::AgentConfig)
-                .await,
+            agent_config: checkpoint_stats_or_log(
+                &state,
+                crate::checkpoints::RepoKind::AgentConfig,
+            )
+            .await,
             hub: checkpoint_stats_or_log(&state, crate::checkpoints::RepoKind::Hub).await,
         },
     })
