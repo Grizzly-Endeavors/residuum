@@ -1,7 +1,7 @@
 //! Workbench: interactive artifacts the agent builds for the user.
 //!
-//! An artifact is either a single page, `<workspace>/workbench/<name>.html`, or a
-//! folder, `<workspace>/workbench/<name>/` with an `index.html` and any other
+//! An artifact is either a single page, `team/workbench/<name>.html`, or a
+//! folder, `team/workbench/<name>/` with an `index.html` and any other
 //! files it loads. `<name>` is kebab-case. The artifacts listener
 //! ([`server`]) serves them on their own origin at `/<name>/`; the web UI
 //! lists them at `/workbench` and shows one at `/workbench/<name>`. Files

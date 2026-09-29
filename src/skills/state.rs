@@ -100,7 +100,7 @@ impl SkillState {
     ///
     /// Removes any active skills whose names no longer appear in the new index.
     /// For an active skill whose name still resolves but whose backing source
-    /// directory changed (e.g. a agent skill now shadows a team
+    /// directory changed (e.g. an agent skill shadows a team
     /// skill of the same name), refreshes its body from the new source, or
     /// deactivates it with a warning if the new source can't be loaded.
     ///
@@ -122,8 +122,8 @@ impl SkillState {
 
         // Reconcile active skills against the new index. A name surviving the
         // rescan is not enough on its own: the *same name* can now resolve to
-        // a different physical skill (e.g. an agent `skills/notes/` now
-        // shadows what used to be a team `notes` skill). An
+        // a different physical skill (e.g. an agent `skills/notes/`
+        // shadows a team `notes` skill). An
         // already-active skill's body was captured at activation time, so if
         // we only checked the name we'd keep serving stale instructions under
         // a name the index now attributes to a different source, with no

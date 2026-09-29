@@ -47,13 +47,13 @@ The workbench is the team's, shared by every agent, and lives in `team/workbench
    const isPage = (path) => path.endsWith(".md");
 
    async function loadAll() {
-     const r = await residuum.fetch("/api/workspace/tree?path=wiki&content=true&glob=*.md");
+     const r = await residuum.fetch("/api/workspace/tree?path=team/wiki&content=true&glob=*.md");
      pages.clear();
      for (const e of (await r.json()).entries) if (e.content !== undefined) pages.set(e.path, e.content);
      render();
    }
 
-   residuum.watch("wiki", async (frame) => {
+   residuum.watch("team/wiki", async (frame) => {
      if (frame.type === "workspace_resync" || frame.changes.some((c) => !isPage(c.path))) {
        return loadAll();
      }
@@ -83,7 +83,7 @@ The workbench is the team's, shared by every agent, and lives in `team/workbench
 | `await residuum.fetch(path, { method, headers, body })` | Calls Residuum's API and returns a standard `Response`. `path` starts with `/api/`. A plain object `body` is sent as JSON; an `ArrayBuffer`, typed array, or `Blob` is sent as-is. |
 | `await residuum.ask(promptOrRequest)` | One-shot call to a small model. A string is shorthand for `{ prompt: text }`. Resolves to `{ content, json?, model, usage }`; rejects with an `Error` on failure. |
 | `residuum.on(type, handler)` | Calls `handler(frame)` for each live event of that `type` (`"*"` for all), including `{ type: "connection", state: "connected" \| "disconnected" }` when Residuum's connection drops or returns. Returns an unsubscribe function. |
-| `residuum.watch(prefix, handler)` | Calls `handler(frame)` when workspace files under `prefix` (a path in the file API's namespace: `"wiki"` is your own wiki, `"team/workbench/<name>.state.json"` is a team file, and `""` is everything) change: `{ type: "workspace_changed", changes: [{ path, kind: "created" \| "modified" \| "removed" }] }`, or `{ type: "workspace_resync", reason }` when changes were missed. Returns an unsubscribe function. |
+| `residuum.watch(prefix, handler)` | Calls `handler(frame)` when workspace files under `prefix` (a path in the file API's namespace: `"team/wiki"` is the team wiki, `"team/workbench/<name>.state.json"` is a single team file, and `""` is everything) change: `{ type: "workspace_changed", changes: [{ path, kind: "created" \| "modified" \| "removed" }] }`, or `{ type: "workspace_resync", reason }` when changes were missed. Returns an unsubscribe function. |
 | `await residuum.sessions.start({ prompt, context, skill, model })` | Starts an agent session for the artifact and returns a handle: `address`, `on(type, handler)` for that session's frames only, `send(text)`, `stop()`. |
 | `residuum.embedded` | `false` when the page is opened outside the web UI, where `fetch`, `ask`, and `sessions.start` reject. |
 | `residuum.artifact` | This artifact's own name. |

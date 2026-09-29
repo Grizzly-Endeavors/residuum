@@ -9,6 +9,7 @@
   import { userErrorMessage } from "../lib/errors";
   import { relativeTime } from "../lib/time";
   import { toast } from "../lib/toast.svelte";
+  import { checkpointLocation } from "../lib/undo";
   import type { CheckpointSummary } from "../lib/types";
 
   let {
@@ -20,6 +21,8 @@
     onClose: () => void;
     onRestored: () => void;
   } = $props();
+
+  const target = $derived(checkpointLocation(path));
 
   let checkpoints = $state<CheckpointSummary[]>([]);
   let loading = $state(true);
@@ -35,7 +38,7 @@
     loading = true;
     loadError = "";
     try {
-      const page = await fetchCheckpoints({ repo: "workspace", path, limit: 100 });
+      const page = await fetchCheckpoints({ repo: target.repo, path: target.path, limit: 100 });
       checkpoints = page.items;
       if (checkpoints.length > 0 && checkpoints[0]) void selectCheckpoint(checkpoints[0].id);
     } catch (err: unknown) {
@@ -51,7 +54,7 @@
     diffError = "";
     diffLoading = true;
     try {
-      diff = await fetchCheckpointDiff(id, "workspace", path);
+      diff = await fetchCheckpointDiff(id, target.repo, target.path);
     } catch (err: unknown) {
       diffError = userErrorMessage(err, { action: "Couldn't load this version's diff." });
     } finally {
@@ -61,7 +64,7 @@
 
   async function viewFullContent(id: string): Promise<void> {
     try {
-      const content = await fetchCheckpointFile(id, "workspace", path);
+      const content = await fetchCheckpointFile(id, target.repo, target.path);
       diff = content;
       diffError = "";
     } catch (err: unknown) {
@@ -72,7 +75,7 @@
   async function handleRestore(id: string): Promise<void> {
     restoring = true;
     try {
-      const outcome = await restoreCheckpoint(id, "workspace", path);
+      const outcome = await restoreCheckpoint(id, target.repo, target.path);
       toast.success(`Restored ${path} (${outcome.restored_paths.length} path(s)).`);
       onRestored();
       await load();

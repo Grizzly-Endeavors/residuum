@@ -11,7 +11,7 @@ pub const MAX_CHANGES_PER_FRAME: usize = 500;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidWatchPrefix {
     #[error(
-        "can't watch {0:?}: watch paths are relative to the workspace, like \"wiki\" or \"\" for everything"
+        "can't watch {0:?}: watch paths are relative to the workspace, like \"team/wiki\" or \"\" for everything"
     )]
     Absolute(String),
     #[error("can't watch {0:?}: watch paths must stay inside the workspace (no \"..\")")]
