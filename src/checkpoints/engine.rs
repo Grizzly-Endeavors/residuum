@@ -201,7 +201,7 @@ impl CheckpointEngine {
     }
 
     /// Before a destructive workspace API action (delete, overwrite,
-    /// move/rename with overwrite, workbench artifact delete): checkpoint
+    /// move/rename with overwrite): checkpoint
     /// the current workspace state first. Awaited so the checkpoint
     /// happens-before the action, but never fails or blocks it — any
     /// error is logged and notified, then this returns regardless.

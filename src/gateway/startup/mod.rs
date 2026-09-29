@@ -1250,7 +1250,9 @@ pub(crate) async fn initialize(
 
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone(), publisher, &mut degradations)?;
-    let mem = memory::init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
+    let embedding = providers.embedding_provider.as_ref();
+    let team_wiki = memory::open_team_wiki(&layout, embedding).await?;
+    let mem = memory::init_memory(cfg, &layout, embedding, &team_wiki).await?;
     let subconscious =
         crate::subconscious::Subconscious::build(cfg, &layout, http.clone(), publisher.clone());
 

@@ -1772,7 +1772,7 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
             text(res, 404, "That artifact no longer exists. It may already have been deleted.");
             return;
           }
-          json(res, 200, { removed: [`${name}.html`], checkpoint_id: null });
+          json(res, 200, { removed: [`${name}.html`] });
           return;
         }
       }

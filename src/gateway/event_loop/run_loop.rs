@@ -471,7 +471,7 @@ async fn spawn_server_and_adapters(
     );
     let tracing_service = Arc::clone(&parts.tracing_service);
     let (workbench_serving, workbench_listener_shutdown_tx) =
-        start_workbench_listener(cfg, &parts.layout.workbench_dir()).await;
+        start_workbench_listener(cfg, &parts.layout.team().workbench_dir()).await;
     let update_api_state = web::update::UpdateApiState {
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
@@ -551,7 +551,7 @@ async fn spawn_change_feed_tasks(
     let (health_tx, health) =
         tokio::sync::watch::channel(crate::workspace::watch::WatchHealth::Starting);
     let workbench_watcher = match crate::workbench::watcher::spawn_workbench_watcher(
-        layout.workbench_dir(),
+        layout.team().workbench_dir(),
         &core.bus_handle,
         core.publisher.clone(),
     )

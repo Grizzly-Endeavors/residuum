@@ -8,7 +8,7 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 
 ## Artifact State
 
-`residuum.state.get()` and `residuum.state.set(value)` are sugar over the workspace file API for one file, `workbench/<name>.state.json` — no separate endpoint. `get()` resolves to the parsed value, `null` when the file doesn't exist yet, and rejects with an `Error` if the saved content isn't valid JSON. `set(value)` writes `JSON.stringify(value)` unconditionally (last write wins); use `residuum.fetch` against `/api/workspace/file` directly with `If-Match` for conflict detection.
+`residuum.state.get()` and `residuum.state.set(value)` are sugar over the workspace file API for one file, `team/workbench/<name>.state.json` — no separate endpoint. `get()` resolves to the parsed value, `null` when the file doesn't exist yet, and rejects with an `Error` if the saved content isn't valid JSON. `set(value)` writes `JSON.stringify(value)` unconditionally (last write wins); use `residuum.fetch` against `/api/workspace/file` directly with `If-Match` for conflict detection.
 
 ## Endpoints Worth Calling
 
@@ -41,7 +41,7 @@ Three values are embedded into the page when it loads, not fetched: `residuum.ar
 | `GET /api/system/timezone` | The user's configured timezone. |
 | `POST /api/model/complete` | One-shot small-model call — see "Model Calls" below. |
 
-Paths under `workspace/` are relative to the workspace root, so an artifact's data file is `workbench/<name>.state.json`.
+Workspace file paths are in the file API's namespace: unprefixed paths are your own workspace, and `team/`-prefixed paths are the shared team layer, so an artifact's data file is `team/workbench/<name>.state.json`.
 
 `GET /api/workspace/tree` and `POST /api/workspace/read` load a whole subtree, or a chosen set of paths, in one request instead of one request per file — useful for a large folder, or for refreshing a known list of files. Both share the same budgets: content is dropped (`skipped`/`error`: `"budget"`) once it would push the response past 8 MiB serialized, and any file over 1 MiB never gets content regardless of budget (`"too_large"`); the entry keeps its metadata either way. `GET /api/workspace/tree` also stops at 20,000 entries and sets `listing_truncated`.
 
@@ -75,7 +75,7 @@ Paths outside `/api/` (including `/ws` and webhooks) are refused with `400`.
 
 ## Change Feed
 
-`residuum.watch(prefix, handler)` follows file changes under a workspace-relative `prefix` and returns a function that stops watching. `""` watches the whole workspace. A prefix that is absolute or contains `..` throws a `TypeError`. Needs the `workspace-watch` feature.
+`residuum.watch(prefix, handler)` follows file changes under a `prefix` in the file API's namespace and returns a function that stops watching. `""` watches everything. Your own files are unprefixed (`"wiki"`); team files carry `team/` (`"team/wiki"`, `"team/workbench/<name>.state.json"`), and their change paths carry it too. A prefix that is absolute or contains `..` throws a `TypeError`. Needs the `workspace-watch` feature.
 
 - Prefixes match whole path segments: `"wiki"` covers `wiki` and everything under `wiki/`, never `wikipedia/`. A prefix naming a file covers only that file, and a prefix that doesn't exist yet starts matching once it appears. A change to a folder that contains the prefix (renaming `projects` when watching `projects/alpha`) is delivered too.
 - The handler receives `{ type: "workspace_changed", changes: [{ path, kind }] }` with only the changes under its own prefix, sorted by path. `kind` is `created`, `modified`, or `removed`. Treat `created` and `modified` alike: re-read the path. A rename is `removed` for the old path and `created` for the new one. A folder's `created` or `removed` stands for everything inside it.

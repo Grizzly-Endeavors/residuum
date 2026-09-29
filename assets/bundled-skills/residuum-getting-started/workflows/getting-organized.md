@@ -2,7 +2,7 @@
 
 Walk the user through the inbox and memory. By the end, they should understand how the inbox captures things that need attention and how memory works passively in the background.
 
-**Remember**: Write core facts to `USER.md` and everything else to wiki pages (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end. If the user mentions a preference, a tool they use, or context about their life, write it down immediately.
+**Remember**: Write core facts to `team/USER.md` and everything else to team wiki pages (`team/wiki/`) (activate the `wiki` skill) as you learn things throughout this workflow — don't save it all for the end. If the user mentions a preference, a tool they use, or context about their life, write it down immediately.
 
 ## Step 1: Introduce the Inbox
 
@@ -20,7 +20,7 @@ Key points to convey:
 - Memory is passive. The user does not need to tell you to remember things.
 - Observations are extracted after enough conversation accumulates.
 - You can search past observations with `memory_search` if they want to find something specific.
-- USER.md stores stable preferences (timezone, communication style, context about them). Memory stores episodic information (what happened, what was discussed).
+- team/USER.md stores stable preferences (timezone, communication style, context about them). Memory stores episodic information (what happened, what was discussed).
 
 Do not go deep into observer/reflector internals unless the user asks.
 

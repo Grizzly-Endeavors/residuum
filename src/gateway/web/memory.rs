@@ -128,7 +128,7 @@ pub(super) async fn api_memory_search(
             )
         })?;
 
-    let semantic = state.hybrid_searcher.has_vector();
+    let semantic = outcome.semantic;
     let results = outcome
         .results
         .into_iter()

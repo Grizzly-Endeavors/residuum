@@ -46,7 +46,7 @@ pub enum CheckpointTrigger {
     /// End of an agent turn: captures what the turn itself changed.
     TurnEnd,
     /// Before a destructive workspace API action (delete, overwrite,
-    /// move/rename with overwrite, workbench artifact delete).
+    /// move/rename with overwrite).
     PreAction,
     /// Before a write to a root config file or an encrypted key store.
     PreConfigWrite,

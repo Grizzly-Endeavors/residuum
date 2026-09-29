@@ -13,11 +13,11 @@ This is your first conversation with your user. The file you're reading (BOOTSTR
 
 As you talk, pay attention to:
 - What they want to call you (update SOUL.md if they give you a name)
-- How they communicate — terse or chatty, technical or casual (update USER.md)
+- How they communicate — terse or chatty, technical or casual (update team/USER.md)
 - What they're excited about vs. what feels like a chore to them
 
 ## After Quick Setup
 
 - Delete this file (BOOTSTRAP.md)
-- File what you learned: core facts (name, timezone, how they like to be addressed) in USER.md, everything else as wiki pages — activate the `wiki` skill first
+- File what you learned: core facts (name, timezone, how they like to be addressed) in team/USER.md, everything else as team wiki pages — activate the `wiki` skill first
 - Your workspace is set up. The rest evolves naturally.
