@@ -23,6 +23,8 @@ The backend serves everything under `/api/`. The only exceptions are the relay c
 | `/api/mcp-catalog` | `/api/hub/mcp-catalog` |
 | `/api/checkpoints...` for the hub config repo and the team repo | `/api/hub/checkpoints...?repo=hub\|team` |
 | none | `/api/hub/status`, `/api/hub/agents...`, `/api/hub/ws` (below) |
+| `/api/config/complete-setup` | `/api/hub/config/complete-setup`. Onboarding runs before any agent exists. The body carries the hub config, the first agent's name and config, and the user's name. |
+| provider model listing used by onboarding | `/api/hub/providers/models`, which lists the models a provider offers, given its settings in the request, without needing an agent |
 
 **Team-level (`/api/team/...`)**:
 
@@ -38,7 +40,7 @@ The backend serves everything under `/api/`. The only exceptions are the relay c
 - Agent config and related routes: `/api/config/*`, `/api/providers/*`, `/api/mcp/*`, and channels.
 - Chat and session data: `/api/chat/history`, `/api/usage`, `/api/sessions/*`, `/api/scheduled/*`.
 - Inboxes: `/api/inbox*` and `/api/agent-inbox`.
-- `/api/files/*`, `/api/memory/search`, `/api/model/complete`.
+- `/api/files/*`, `/api/memory/search`, `/api/model/complete`. File URLs the server puts in messages and frames are the agent-scoped form, `/api/agents/{name}/files/...`, so clients use them as given.
 - `/api/workspace/*` (the agent's namespace, including `team/`).
 - `/api/checkpoints...` for the agent's workspace and agent-config repos.
 - `/api/a2a/{agents,agents/raw,status,card}`, which are the agent's own A2A client settings and card.
@@ -76,7 +78,7 @@ Config, providers, MCP, channels, workspace-file and checkpoint routes still wor
 
 | Method | Path | Body | Response |
 |---|---|---|---|
-| `GET` | `/api/hub/agents` | none | `{ "agents": [AgentSummary] }`, sorted by name |
+| `GET` | `/api/hub/agents` | none | `{ "agents": [AgentSummary] }`, sorted by name. An empty list means the hub isn't set up yet, and clients show onboarding. |
 | `POST` | `/api/hub/agents` | `{ "name", "description"?, "models_from"?, "a2a_visibility"? }` | `201 AgentSummary`. `400` for an invalid name, `409` if the name exists. `models_from` names an existing agent whose `providers.toml` is copied; without it the request must include `"providers_toml"` as a raw string. Visibility defaults to `private`. |
 | `DELETE` | `/api/hub/agents/{name}` | none | `{ "deleted": true, "checkpoint_id": "…" \| null }` |
 | `POST` | `/api/hub/agents/{name}/start` | none | `AgentSummary` |
