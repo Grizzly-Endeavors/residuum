@@ -24,22 +24,15 @@
 // the team.
 
 import { agentNameProblem } from "./agent-name";
-import type { SettingsSection } from "./types";
+import {
+  defaultSection,
+  isSectionOf,
+  locateSection,
+  type SettingsScope,
+  type SettingsSection,
+} from "./settings-sections";
 
-// A record, so adding a section to `SettingsSection` fails to compile until
-// it is routable too.
-const SETTINGS_SECTIONS: Record<SettingsSection, true> = {
-  runtime: true,
-  providers: true,
-  memory: true,
-  integrations: true,
-  mcp: true,
-  "agent-keys": true,
-  a2a: true,
-  history: true,
-};
-
-const DEFAULT_SECTION: SettingsSection = "runtime";
+export type { SettingsScope };
 
 /** What the chat side of the app shows. */
 export interface ChatLocation {
@@ -55,9 +48,6 @@ export interface WorkbenchLocation {
   /** The artifact fills the window with the Residuum UI hidden. Only with an artifact. */
   full: boolean;
 }
-
-/** Whose settings a settings page edits: one agent's, or the hub's. */
-export type SettingsScope = "agent" | "hub";
 
 export interface SettingsLocation {
   scope: SettingsScope;
@@ -111,10 +101,6 @@ export function isArtifactName(value: string): boolean {
   return value.length <= 64 && ARTIFACT_NAME.test(value);
 }
 
-function isSettingsSection(value: string): value is SettingsSection {
-  return Object.hasOwn(SETTINGS_SECTIONS, value);
-}
-
 function decodeSegment(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
@@ -127,16 +113,22 @@ function blank(agent: string | null, chat: ChatLocation): AppLocation {
   return { agent, chat, settings: null, workbench: null, scheduled: false, team: null };
 }
 
-/** The settings page for `segment`, and whether the URL needed correcting to reach it. */
+/**
+ * The settings page for `segment`, and whether the URL needed correcting to
+ * reach it. A section that belongs to the other scope, or an older name for
+ * one, resolves to where it lives now.
+ */
 function parseSettings(
   scope: SettingsScope,
   segment: string | undefined,
 ): { settings: SettingsLocation; corrected: boolean } {
   const section = segment === undefined ? null : decodeSegment(segment);
-  if (section !== null && isSettingsSection(section)) {
-    return { settings: { scope, section }, corrected: false };
+  if (section !== null) {
+    if (isSectionOf(scope, section)) return { settings: { scope, section }, corrected: false };
+    const found = locateSection(section, scope);
+    if (found) return { settings: found, corrected: true };
   }
-  return { settings: { scope, section: DEFAULT_SECTION }, corrected: true };
+  return { settings: { scope, section: defaultSection(scope) }, corrected: true };
 }
 
 function parseWorkbench(

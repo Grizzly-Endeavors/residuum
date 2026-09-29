@@ -465,11 +465,16 @@ export async function patchMcp(diff: Record<string, unknown>): Promise<ValidateR
   return patchValidated(agentPath("/mcp/patch"), diff, cacheKeyMcpRaw());
 }
 
+/** The names of the stored secrets (never their values). Throws `ApiError` on failure. */
+export async function fetchSecretNames(): Promise<string[]> {
+  const data = await apiFetch<SecretsListResponse>(hubPath("/secrets"));
+  return data.names;
+}
+
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */
 export async function listSecrets(): Promise<string[]> {
   try {
-    const data = await apiFetch<SecretsListResponse>(hubPath("/secrets"));
-    return data.names;
+    return await fetchSecretNames();
   } catch {
     return [];
   }

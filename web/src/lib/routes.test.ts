@@ -177,9 +177,51 @@ describe("parseLocation: team pages", () => {
     });
   });
 
-  it("sends bare /team/settings to the first section", () => {
+  it("sends bare /team/settings to the first hub section", () => {
     expect(parseLocation("/team/settings", "", ctx())).toEqual({
-      location: at({ settings: { scope: "hub", section: "runtime" } }),
+      location: at({ settings: { scope: "hub", section: "general" } }),
+      corrected: true,
+    });
+  });
+
+  it.each(["providers", "runtime", "mcp", "webhooks", "integrations"])(
+    "moves the agent section %s from hub settings to the agent's settings",
+    (section) => {
+      const { location, corrected } = parseLocation(`/team/settings/${section}`, "", ctx());
+      expect(corrected).toBe(true);
+      expect(location.settings?.scope).toBe("agent");
+    },
+  );
+
+  it("keeps the same section name in the scope the URL named", () => {
+    const hub = parseLocation("/team/settings/a2a", "", ctx());
+    const agent = parseLocation("/agent/scout/settings/a2a", "", ctx());
+    expect(hub.location.settings).toEqual({ scope: "hub", section: "a2a" });
+    expect(agent.location.settings).toEqual({ scope: "agent", section: "a2a" });
+    expect(hub.corrected || agent.corrected).toBe(false);
+  });
+
+  it("moves a hub section named under an agent to hub settings", () => {
+    expect(parseLocation("/agent/scout/settings/secrets", "", ctx())).toEqual({
+      location: at({ settings: { scope: "hub", section: "secrets" } }),
+      corrected: true,
+    });
+  });
+
+  it("sends the old agent-keys page to hub settings", () => {
+    expect(parseLocation("/settings/agent-keys", "", ctx()).location.settings).toEqual({
+      scope: "hub",
+      section: "agent-keys",
+    });
+    expect(parseLocation("/agent/scout/settings/agent-keys", "", ctx()).location.settings).toEqual({
+      scope: "hub",
+      section: "agent-keys",
+    });
+  });
+
+  it("renames the old integrations page to adapters and channels", () => {
+    expect(parseLocation("/settings/integrations", "", ctx())).toEqual({
+      location: at({ settings: { scope: "agent", section: "channels" } }),
       corrected: true,
     });
   });

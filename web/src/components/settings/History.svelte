@@ -19,7 +19,11 @@
   import { toast } from "../../lib/toast.svelte";
   import type { CheckpointDetail, CheckpointSummary, RepoKind, RepoStats } from "../../lib/types";
 
-  let repo = $state<RepoKind>("workspace");
+  // Hub settings show the hub's own history; an agent's show its workspace and config.
+  let { scope }: { scope: "hub" | "agent" } = $props();
+
+  // svelte-ignore state_referenced_locally
+  let repo = $state<RepoKind>(scope === "hub" ? "hub" : "workspace");
   let pathFilter = $state("");
   let stats = $state<Record<RepoKind, RepoStats | null>>({
     workspace: null,
@@ -172,27 +176,30 @@
   <div class="settings-group">
     <div class="history-toolbar">
       <div class="settings-mode-selector">
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "workspace"}
-          onclick={() => switchRepo("workspace")}
-        >
-          Workspace
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "agent_config"}
-          onclick={() => switchRepo("agent_config")}
-        >
-          Agent config
-        </button>
-        <button
-          class="settings-mode-btn"
-          class:active={repo === "hub"}
-          onclick={() => switchRepo("hub")}
-        >
-          Hub config
-        </button>
+        {#if scope === "agent"}
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "workspace"}
+            onclick={() => switchRepo("workspace")}
+          >
+            Workspace
+          </button>
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "agent_config"}
+            onclick={() => switchRepo("agent_config")}
+          >
+            Agent config
+          </button>
+        {:else}
+          <button
+            class="settings-mode-btn"
+            class:active={repo === "hub"}
+            onclick={() => switchRepo("hub")}
+          >
+            Hub config
+          </button>
+        {/if}
       </div>
       <form
         class="history-filter"

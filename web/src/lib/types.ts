@@ -269,15 +269,7 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection =
-  | "runtime"
-  | "providers"
-  | "memory"
-  | "integrations"
-  | "mcp"
-  | "agent-keys"
-  | "a2a"
-  | "history";
+export type { SettingsSection } from "./settings-sections";
 
 export type SettingsMode = "simple" | "advanced" | "raw";
 
