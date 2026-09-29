@@ -24,13 +24,14 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. That's it �
 ```
 [mock] API mock server active
 [mock] Mode: running (set VITE_MOCK_SETUP=1 for setup wizard)
-[mock] WebSocket echo server on /ws
+[mock] Hub WebSocket on /api/hub/ws, agent WebSockets on /api/agents/{name}/ws
 ```
 
 ### What's mocked
 
 - All REST endpoints return realistic fake data
 - WebSocket simulates chat responses with tool calls and delays
+- The multi-agent hub contract: four agents (`scout` and `atlas` running, `drifter` stopped, `brittle` failed), each with its own chat, sessions, inbox and config under `/api/agents/{name}/...`. `/api/hub/agents` lists, creates, deletes, starts, stops and restarts them and toggles autostart, and `/api/hub/ws` sends the agent snapshot, state changes, busy/unread activity and notices. Unscoped `/api/...` paths answer 404. Team files and the workbench are shared under `/api/team/...`. `POST /api/mock/teammate-message?agent=atlas` sends atlas a teammate message and lights its unread indicator until you open it
 - Agent sessions: live sessions (including a Discord conversation session) and a page-able list of finished ones. Messaging a session simulates a turn (include "busy" in the message to see a delivery failure), messaging a finished one resumes it, and a chat message starting with `spawn` starts a spawned session that relays its result to the main chat. Transcripts load after a short delay, so the loading state and anything racing it can be tried by hand
 - The `POST /api/sessions` / `.../stop` / `.../messages` HTTP endpoints an artifact's `residuum.sessions.start` uses: the bundled "Tip Splitter" artifact (`/workbench/tip-splitter`) has "Start a background session" and "Fire 3 calls at once" buttons for trying the artifact bar's activity panel, Cancel calls, and Stop page by hand; model calls are slowed down (`MODEL_CALL_DELAY_MS`) so they're visibly "in flight" long enough to cancel
 - Tasks sent to other agents in the sessions sidebar's External group: stopping `research-buddy`'s task succeeds, while `laptop` is unreachable, so its Stop fails and the row offers "Stop watching"
@@ -80,6 +81,8 @@ web/
 │   │   ├── SessionsSidebar.svelte  # Live and finished agent sessions
 │   │   ├── SessionView.svelte      # One session's transcript, live activity, message box, stop
 │   │   ├── Header.svelte           # Top bar with navigation
+│   │   ├── AgentSwitcher.svelte    # Persistent agent switcher: state, working and unread per agent
+│   │   ├── TeamView.svelte         # Team page: lifecycle controls, autostart, delete, create agent
 │   │   ├── Workbench.svelte        # Workbench artifact list; hosts the open artifact
 │   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
 │   │   ├── settings/               # Settings sub-panels
@@ -116,13 +119,18 @@ The URL is the source of truth for where the user is:
 
 | URL | Shows |
 |-----|-------|
-| `/` | Main chat |
-| `/sessions/:runId` | A session's run in the main pane |
-| `?workspace` (on either of the above) | Workspace panel open beside the main pane |
-| `/settings/:section` | Settings, on one section |
-| `/workbench` | The workbench's artifact list |
-| `/workbench/:artifact` | One workbench artifact |
-| `/workbench/:artifact?full` | The artifact filling the window, Residuum chrome hidden |
+| `/` | Redirects to the last-used agent (or the first) |
+| `/agent/:name` | That agent's main chat |
+| `/agent/:name/sessions/:runId` | A session's run in the main pane |
+| `/agent/:name/workspace` (or `?workspace`) | Workspace panel open beside the main pane |
+| `/agent/:name/scheduled` | Pulses and scheduled actions |
+| `/agent/:name/settings/:section` | Agent settings: runtime, providers, channels, pulses, memory, skills, mcp, a2a, webhooks, history |
+| `/team` | Team view: every agent with lifecycle controls and the create form |
+| `/team/files` | Shared team files |
+| `/team/workbench[/:artifact[?full]]` | The workbench's artifact list, one artifact, or one filling the window |
+| `/team/settings/:section` | Hub settings: general, cloud, a2a, sessions, tracing, update, secrets, agent-keys, history |
+
+The agent switcher under the header is on every page. Older unprefixed links (`/settings/...`, `/workbench/...`, `/scheduled`, `/sessions/:runId`) redirect to the agent or team page they belong to, and a settings section named under the wrong scope redirects to the scope that has it (`/settings/agent-keys` goes to `/team/settings/agent-keys`, `/settings/integrations` to the agent's `channels`).
 
 `App.svelte` derives its layout state from `router` instead of mounting a component per route, so the chat, session view, and workspace stay mounted and every transition is the same CSS transition whether it came from a click or the back button. Navigate through `router` (or `sessions.openRun`), never by setting layout state directly.
 

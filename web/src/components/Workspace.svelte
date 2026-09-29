@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import type { WorkspaceEntry, Diagnostic } from "../lib/types";
+  import type { WorkspaceScope } from "../lib/hub-types";
   import {
     fetchWorkspaceFiles,
     fetchWorkspaceFile,
@@ -20,7 +21,7 @@
   import FileHistoryModal from "./FileHistoryModal.svelte";
   import Modal from "./Modal.svelte";
 
-  let { onClose }: { onClose: () => void } = $props();
+  let { onClose, scope = "agent" }: { onClose: () => void; scope?: WorkspaceScope } = $props();
 
   /** How long to wait after the last keystroke before validating — long
    * enough to not fire on every character, short enough to feel live. */
@@ -87,7 +88,7 @@
       return;
     }
     const timer = setTimeout(() => {
-      void validateWorkspaceFile(path, content).then((result) => {
+      void validateWorkspaceFile(path, content, scope).then((result) => {
         diagnostics = result;
       });
     }, VALIDATE_DEBOUNCE_MS);
@@ -97,7 +98,7 @@
   async function loadDir(path: string) {
     if (treeCache[path]) return;
     try {
-      const entries = await fetchWorkspaceFiles(path || undefined);
+      const entries = await fetchWorkspaceFiles(path || undefined, scope);
       treeCache = { ...treeCache, [path]: entries };
     } catch (e) {
       error = userErrorMessage(e, {
@@ -129,11 +130,14 @@
 
   async function handleDeleteFile(path: string): Promise<void> {
     try {
-      const checkpoints = await deleteWorkspaceFile(path);
+      const checkpoints = await deleteWorkspaceFile(path, scope);
       clearEditorIfOpen(path);
       await refreshDir(parentDir(path));
-      notifyWithWorkspaceUndo(`Deleted ${fileName(path)}.`, path, checkpoints, () =>
-        refreshDir(parentDir(path)),
+      notifyWithWorkspaceUndo(
+        `Deleted ${fileName(path)}.`,
+        scope === "team" ? `team/${path}` : path,
+        checkpoints,
+        () => refreshDir(parentDir(path)),
       );
     } catch (e) {
       toast.error(userErrorMessage(e, { action: `Couldn't delete ${fileName(path)}.` }));
@@ -144,7 +148,7 @@
     const dir = parentDir(path);
     const to = dir ? `${dir}/${newName}` : newName;
     try {
-      await moveWorkspaceFile(path, to);
+      await moveWorkspaceFile(path, to, false, scope);
       if (selectedFile === path) selectedFile = to;
       await refreshDir(dir);
       toast.success(`Renamed to ${newName}.`);
@@ -193,7 +197,7 @@
     error = "";
     diagnostics = [];
     try {
-      const file = await fetchWorkspaceFile(path);
+      const file = await fetchWorkspaceFile(path, scope);
       fileContent = file.content;
       editContent = file.content;
       fileVersion = file.version;
@@ -216,7 +220,7 @@
     saving = true;
     error = "";
     try {
-      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion);
+      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion, scope);
       fileContent = editContent;
       fileVersion = response.version;
       diagnostics = response.diagnostics ?? [];
@@ -251,7 +255,7 @@
     conflictOpen = false;
     saving = true;
     try {
-      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion);
+      const response = await putWorkspaceFile(selectedFile, editContent, fileVersion, scope);
       fileContent = editContent;
       fileVersion = response.version;
       diagnostics = response.diagnostics ?? [];
@@ -369,6 +373,7 @@
 {#if historyPath}
   <FileHistoryModal
     path={historyPath}
+    {scope}
     onClose={() => {
       historyPath = null;
     }}

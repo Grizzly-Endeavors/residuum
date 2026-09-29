@@ -169,11 +169,19 @@ describe("residuum.sessions.start", () => {
     // The run can announce itself before the start request's reply arrives.
     deliver({
       kind: "event",
-      frame: { type: "session_started", session: { address: "artifact-wiki-0001", run_id: "r1" } },
+      frame: {
+        agent: "scout",
+        type: "session_started",
+        session: { address: "artifact-wiki-0001", run_id: "r1" },
+      },
     });
     deliver({
       kind: "event",
-      frame: { type: "session_started", session: { address: "artifact-other-0002", run_id: "r2" } },
+      frame: {
+        agent: "scout",
+        type: "session_started",
+        session: { address: "artifact-other-0002", run_id: "r2" },
+      },
     });
     reply(lastFetch(posted).id ?? "", 202, { address: "artifact-wiki-0001" });
     const handle = await started;
@@ -187,21 +195,78 @@ describe("residuum.sessions.start", () => {
 
     deliver({
       kind: "event",
-      frame: { type: "session_response", address: "artifact-other-0002", content: "not mine" },
+      frame: {
+        agent: "scout",
+        type: "session_response",
+        address: "artifact-other-0002",
+        content: "not mine",
+      },
     });
     deliver({
       kind: "event",
-      frame: { type: "session_response", address: "artifact-wiki-0001", content: "mine" },
+      frame: {
+        agent: "scout",
+        type: "session_response",
+        address: "artifact-wiki-0001",
+        content: "mine",
+      },
     });
     deliver({ kind: "event", frame: { type: "chat_message", content: "main chat" } });
     deliver({
       kind: "event",
-      frame: { type: "session_message_delivered", address: "artifact-wiki-0001" },
+      frame: { agent: "scout", type: "session_message_delivered", address: "artifact-wiki-0001" },
     });
     await settle();
 
     expect(all.map((f) => f.type)).toEqual(["session_started", "session_response"]);
     expect(all.map((f) => f.content ?? f.session?.run_id)).toEqual(["r1", "mine"]);
+  });
+
+  it("keys sessions by agent and address, so a same-address session on another agent is never mixed in", async () => {
+    const { sdk, posted, deliver, reply } = loadSdk();
+    const started = sdk.sessions.start({ agent: "scout", prompt: "go" });
+    await settle();
+    // Another agent's session can hold the very same address.
+    deliver({
+      kind: "event",
+      frame: {
+        agent: "atlas",
+        type: "session_started",
+        session: { address: "artifact-wiki-0001", run_id: "atlas-run" },
+      },
+    });
+    reply(lastFetch(posted).id ?? "", 202, { address: "artifact-wiki-0001" });
+    const handle = await started;
+    const all: Frame[] = [];
+    handle.on("*", (frame) => all.push(frame));
+    await settle();
+    expect(all).toEqual([]);
+
+    deliver({
+      kind: "event",
+      frame: {
+        agent: "atlas",
+        type: "session_response",
+        address: "artifact-wiki-0001",
+        content: "atlas",
+      },
+    });
+    deliver({
+      kind: "event",
+      frame: {
+        agent: "scout",
+        type: "session_response",
+        address: "artifact-wiki-0001",
+        content: "scout",
+      },
+    });
+    // A session frame that names no agent belongs to no handle.
+    deliver({
+      kind: "event",
+      frame: { type: "session_response", address: "artifact-wiki-0001", content: "unattributed" },
+    });
+    await settle();
+    expect(all.map((f) => f.content)).toEqual(["scout"]);
   });
 
   it("sends messages and stops through the session's own endpoints", async () => {

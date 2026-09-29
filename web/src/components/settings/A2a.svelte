@@ -25,8 +25,13 @@
 
   const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
-  let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
-    $props();
+  // Hub scope: the listener and the caller keys, which every agent shares.
+  // Agent scope: this agent's visibility, remote agents and card.
+  let {
+    fields = $bindable(),
+    simple = false,
+    scope,
+  }: { fields: ConfigFields; simple?: boolean; scope: "hub" | "agent" } = $props();
 
   // ── Status ────────────────────────────────────────────────────────────
 
@@ -257,8 +262,11 @@
   }
 
   onMount(() => {
+    if (scope === "hub") {
+      void loadKeys();
+      return;
+    }
     void loadStatus();
-    void loadKeys();
     void loadAgents();
     void loadCard();
   });
@@ -267,9 +275,14 @@
 <div class="settings-section">
   <!-- Status -->
   <div class="settings-group">
-    <div class="settings-group-label">Status</div>
+    <div class="settings-group-label">{scope === "hub" ? "Listener" : "Status"}</div>
 
-    {#if statusLoading}
+    {#if scope === "hub"}
+      <p class="field-hint">
+        One listener serves every agent on this install. Each agent's own visibility is set in its
+        settings.
+      </p>
+    {:else if statusLoading}
       <p class="empty-state">Checking the A2A connection.</p>
     {:else if statusError}
       <p class="empty-state a2a-error">{statusError}</p>
@@ -331,21 +344,23 @@
       {/if}
     {/if}
 
-    <div class="settings-field">
-      <label>
-        <span class="toggle-switch">
-          <input type="checkbox" bind:checked={fields.a2a_enabled} />
-          <span class="toggle-slider"></span>
+    {#if scope === "hub"}
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.a2a_enabled} />
+            <span class="toggle-slider"></span>
+          </span>
+          Let other agents reach this one
+        </label>
+        <span class="field-hint">
+          Off: nothing outside this agent can reach it over A2A. On: other agents can find it, and
+          anyone with a caller key can hand it work.
         </span>
-        Let other agents reach this one
-      </label>
-      <span class="field-hint">
-        Off: nothing outside this agent can reach it over A2A. On: other agents can find it, and
-        anyone with a caller key can hand it work.
-      </span>
-    </div>
+      </div>
+    {/if}
 
-    {#if fields.a2a_enabled}
+    {#if scope === "agent" && fields.a2a_enabled}
       <div class="settings-field">
         <label for="a2a-visibility">Who can see it</label>
         <select id="a2a-visibility" bind:value={fields.a2a_visibility}>
@@ -355,7 +370,7 @@
       </div>
     {/if}
 
-    {#if !simple && fields.a2a_enabled}
+    {#if scope === "hub" && !simple && fields.a2a_enabled}
       <div class="settings-field">
         <label for="a2a-port">Listener port</label>
         <input
@@ -386,240 +401,246 @@
   </div>
 
   <!-- Caller keys -->
-  <div class="settings-group">
-    <div class="settings-group-label">Caller keys</div>
-    <p class="roles-section-hint">
-      Tokens other agents present to reach this one. Give a key to an agent you want to let in;
-      revoking one removes that agent's access right away.
-    </p>
+  {#if scope === "hub"}
+    <div class="settings-group">
+      <div class="settings-group-label">Caller keys</div>
+      <p class="roles-section-hint">
+        Tokens other agents present to reach this one. Give a key to an agent you want to let in;
+        revoking one removes that agent's access right away.
+      </p>
 
-    {#if mintedToken}
-      <div class="a2a-token-reveal emerges" role="status" aria-live="polite">
-        <div class="a2a-token-eyebrow">Key for {mintedToken.name} created</div>
-        <div class="a2a-token-row">
-          <code class="a2a-token-value">{mintedToken.token}</code>
-          <button
-            class="copy-btn"
-            onclick={copyMintedToken}
-            title="Copy token"
-            aria-label="Copy token"
-          >
-            {#if tokenCopied}
-              <Icon name="check" size={14} />
-              <span>Copied</span>
-            {:else}
-              <Icon name="copy" size={14} />
-              <span>Copy</span>
-            {/if}
-          </button>
-        </div>
-        <p class="a2a-token-hint">
-          Copy it now — you won't see this again. Give it to the agent as an
-          <code>Authorization: Bearer</code> header.
-        </p>
-        <button
-          class="btn btn-sm btn-secondary"
-          onclick={() => {
-            mintedToken = null;
-          }}>Done</button
-        >
-      </div>
-    {/if}
-
-    {#if keysLoading}
-      <p class="empty-state">Reading caller keys.</p>
-    {:else if keysError}
-      <p class="empty-state a2a-error">{keysError}</p>
-    {:else if keys.length === 0}
-      <p class="empty-state">No caller keys yet. Add one for each agent you want to let in.</p>
-    {/if}
-
-    {#each keys as key (key.name)}
-      <div class="mcp-server-entry">
-        <div class="mcp-server-info">
-          <span class="mcp-server-name">{key.name}</span>
-          {#if key.description}
-            <span class="agent-key-desc">{key.description}</span>
-          {/if}
-        </div>
-        <button
-          class="btn btn-sm btn-danger"
-          onclick={() => handleRevokeKey(key.name)}
-          title="Revoke {key.name}"
-        >
-          Revoke
-        </button>
-      </div>
-    {/each}
-
-    {#if showAddKeyForm}
-      <form
-        class="mcp-add-form"
-        onsubmit={(e) => {
-          e.preventDefault();
-          void handleCreateKey();
-        }}
-      >
-        <div class="settings-field">
-          <label for="a2a-key-name">Name</label>
-          <input
-            id="a2a-key-name"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            bind:value={newKeyName}
-            class:input-error={trimmedKeyName !== "" && !keyNameValid}
-            placeholder="laptop"
-          />
-          <span class="field-hint">
-            {#if trimmedKeyName !== "" && !keyNameValid}
-              Start with a lowercase letter; use only lowercase letters, digits, and underscores.
-            {:else if keyReplacing}
-              A key named {trimmedKeyName} already exists.
-            {:else}
-              Lowercase letters, digits, and underscores.
-            {/if}
-          </span>
-        </div>
-        <div class="settings-field">
-          <label for="a2a-key-description">Description</label>
-          <input
-            id="a2a-key-description"
-            type="text"
-            bind:value={newKeyDescription}
-            placeholder="What agent this is for"
-          />
-        </div>
-        <div class="mcp-inline-actions">
-          <button
-            type="submit"
-            class="btn btn-primary btn-sm"
-            disabled={!keyNameValid || keyReplacing || creatingKey}
-          >
-            {creatingKey ? "Creating" : "Create key"}
-          </button>
-          <button type="button" class="btn btn-secondary btn-sm" onclick={resetKeyForm}
-            >Cancel</button
-          >
-        </div>
-      </form>
-    {:else}
-      <button
-        class="btn btn-secondary btn-sm"
-        style="margin-top:8px;"
-        onclick={() => {
-          showAddKeyForm = true;
-        }}>+ Add key</button
-      >
-    {/if}
-  </div>
-
-  <!-- Remote agents -->
-  <div class="settings-group">
-    <div class="settings-group-label">Remote agents</div>
-    <p class="roles-section-hint">
-      Agents this one can hand work to. Listed here from <code>config/a2a.json</code>, plus any of
-      your other installs found automatically through the relay.
-    </p>
-
-    {#if rawMode}
-      <textarea class="toml-editor" bind:value={rawAgentsEdit}></textarea>
-      {#if rawAgentsError}
-        <p class="validation-msg error">{rawAgentsError}</p>
-      {/if}
-      <div class="mcp-inline-actions">
-        <button class="btn btn-primary btn-sm" onclick={saveRawAgents} disabled={rawAgentsSaving}>
-          {rawAgentsSaving ? "Saving" : "Save"}
-        </button>
-        <button class="btn btn-secondary btn-sm" onclick={cancelRawMode} disabled={rawAgentsSaving}
-          >Cancel</button
-        >
-      </div>
-    {:else}
-      {#if agentsLoading}
-        <p class="empty-state">Reading remote agents.</p>
-      {:else if agentsError}
-        <p class="empty-state a2a-error">{agentsError}</p>
-      {:else if agents.length === 0}
-        <p class="empty-state">None configured yet. Add one in the raw editor below.</p>
-      {/if}
-
-      {#each agents as agent (agent.name)}
-        <div class="mcp-server-entry a2a-remote-agent">
-          <div class="mcp-server-info">
-            <span class="mcp-server-name">
-              {agent.name}
-              <span class="a2a-source-badge">{agent.source}</span>
-            </span>
-            <span class="mcp-server-cmd">{agent.url}</span>
-            <div class="a2a-status-row">
-              <span
-                class="a2a-status-dot"
-                class:on={agent.status === "ok"}
-                class:off={agent.status === "error"}
-                class:pending={agent.status === "pending"}
-              ></span>
-              <span class="a2a-status-text">{statusLabel(agent)}</span>
-            </div>
-            {#if agent.status === "error" && agent.error}
-              <span class="agent-key-desc a2a-error">{agent.error}</span>
-            {/if}
-            {#if agent.card}
-              <span class="agent-key-desc">{agent.card.description}</span>
-              {#if agent.card.skills.length > 0}
-                <div class="a2a-skill-chips">
-                  {#each agent.card.skills as skill (skill.id)}
-                    <span class="a2a-skill-chip">{skill.name}</span>
-                  {/each}
-                </div>
+      {#if mintedToken}
+        <div class="a2a-token-reveal emerges" role="status" aria-live="polite">
+          <div class="a2a-token-eyebrow">Key for {mintedToken.name} created</div>
+          <div class="a2a-token-row">
+            <code class="a2a-token-value">{mintedToken.token}</code>
+            <button
+              class="copy-btn"
+              onclick={copyMintedToken}
+              title="Copy token"
+              aria-label="Copy token"
+            >
+              {#if tokenCopied}
+                <Icon name="check" size={14} />
+                <span>Copied</span>
+              {:else}
+                <Icon name="copy" size={14} />
+                <span>Copy</span>
               {/if}
+            </button>
+          </div>
+          <p class="a2a-token-hint">
+            Copy it now — you won't see this again. Give it to the agent as an
+            <code>Authorization: Bearer</code> header.
+          </p>
+          <button
+            class="btn btn-sm btn-secondary"
+            onclick={() => {
+              mintedToken = null;
+            }}>Done</button
+          >
+        </div>
+      {/if}
+
+      {#if keysLoading}
+        <p class="empty-state">Reading caller keys.</p>
+      {:else if keysError}
+        <p class="empty-state a2a-error">{keysError}</p>
+      {:else if keys.length === 0}
+        <p class="empty-state">No caller keys yet. Add one for each agent you want to let in.</p>
+      {/if}
+
+      {#each keys as key (key.name)}
+        <div class="mcp-server-entry">
+          <div class="mcp-server-info">
+            <span class="mcp-server-name">{key.name}</span>
+            {#if key.description}
+              <span class="agent-key-desc">{key.description}</span>
             {/if}
           </div>
+          <button
+            class="btn btn-sm btn-danger"
+            onclick={() => handleRevokeKey(key.name)}
+            title="Revoke {key.name}"
+          >
+            Revoke
+          </button>
         </div>
       {/each}
 
-      <button
-        class="btn btn-secondary btn-sm"
-        style="margin-top:8px;"
-        onclick={() => {
-          void enterRawMode();
-        }}>Edit a2a.json</button
-      >
-    {/if}
-  </div>
-
-  <!-- Agent card preview -->
-  <div class="settings-group">
-    <div class="settings-group-label">Agent card</div>
-    <p class="roles-section-hint">
-      What this agent shows to other agents that reach it. Edited in the workspace file
-      <code>config/agent-card.json</code>.
-    </p>
-
-    {#if cardLoading}
-      <p class="empty-state">Reading the agent card.</p>
-    {:else if cardError}
-      <p class="empty-state a2a-error">{cardError}</p>
-    {:else if card}
-      <div class="a2a-card-preview">
-        <div class="a2a-card-name">{card.name}</div>
-        <p class="a2a-card-desc">{card.description}</p>
-        {#if card.skills.length > 0}
-          <div class="a2a-skill-chips">
-            {#each card.skills as skill (skill.id)}
-              <span class="a2a-skill-chip" title={skill.description}>{skill.name}</span>
-            {/each}
+      {#if showAddKeyForm}
+        <form
+          class="mcp-add-form"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void handleCreateKey();
+          }}
+        >
+          <div class="settings-field">
+            <label for="a2a-key-name">Name</label>
+            <input
+              id="a2a-key-name"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              bind:value={newKeyName}
+              class:input-error={trimmedKeyName !== "" && !keyNameValid}
+              placeholder="laptop"
+            />
+            <span class="field-hint">
+              {#if trimmedKeyName !== "" && !keyNameValid}
+                Start with a lowercase letter; use only lowercase letters, digits, and underscores.
+              {:else if keyReplacing}
+                A key named {trimmedKeyName} already exists.
+              {:else}
+                Lowercase letters, digits, and underscores.
+              {/if}
+            </span>
           </div>
-        {:else}
-          <p class="field-hint">No skills listed yet.</p>
-        {/if}
-      </div>
-    {/if}
+          <div class="settings-field">
+            <label for="a2a-key-description">Description</label>
+            <input
+              id="a2a-key-description"
+              type="text"
+              bind:value={newKeyDescription}
+              placeholder="What agent this is for"
+            />
+          </div>
+          <div class="mcp-inline-actions">
+            <button
+              type="submit"
+              class="btn btn-primary btn-sm"
+              disabled={!keyNameValid || keyReplacing || creatingKey}
+            >
+              {creatingKey ? "Creating" : "Create key"}
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick={resetKeyForm}
+              >Cancel</button
+            >
+          </div>
+        </form>
+      {:else}
+        <button
+          class="btn btn-secondary btn-sm"
+          style="margin-top:8px;"
+          onclick={() => {
+            showAddKeyForm = true;
+          }}>+ Add key</button
+        >
+      {/if}
+    </div>
+  {/if}
 
-    <button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick={openWorkspace}>
-      Open workspace
-    </button>
-  </div>
+  {#if scope === "agent"}
+    <!-- Remote agents -->
+    <div class="settings-group">
+      <div class="settings-group-label">Remote agents</div>
+      <p class="roles-section-hint">
+        Agents this one can hand work to. Listed here from <code>config/a2a.json</code>, plus any of
+        your other installs found automatically through the relay.
+      </p>
+
+      {#if rawMode}
+        <textarea class="toml-editor" bind:value={rawAgentsEdit}></textarea>
+        {#if rawAgentsError}
+          <p class="validation-msg error">{rawAgentsError}</p>
+        {/if}
+        <div class="mcp-inline-actions">
+          <button class="btn btn-primary btn-sm" onclick={saveRawAgents} disabled={rawAgentsSaving}>
+            {rawAgentsSaving ? "Saving" : "Save"}
+          </button>
+          <button
+            class="btn btn-secondary btn-sm"
+            onclick={cancelRawMode}
+            disabled={rawAgentsSaving}>Cancel</button
+          >
+        </div>
+      {:else}
+        {#if agentsLoading}
+          <p class="empty-state">Reading remote agents.</p>
+        {:else if agentsError}
+          <p class="empty-state a2a-error">{agentsError}</p>
+        {:else if agents.length === 0}
+          <p class="empty-state">None configured yet. Add one in the raw editor below.</p>
+        {/if}
+
+        {#each agents as agent (agent.name)}
+          <div class="mcp-server-entry a2a-remote-agent">
+            <div class="mcp-server-info">
+              <span class="mcp-server-name">
+                {agent.name}
+                <span class="a2a-source-badge">{agent.source}</span>
+              </span>
+              <span class="mcp-server-cmd">{agent.url}</span>
+              <div class="a2a-status-row">
+                <span
+                  class="a2a-status-dot"
+                  class:on={agent.status === "ok"}
+                  class:off={agent.status === "error"}
+                  class:pending={agent.status === "pending"}
+                ></span>
+                <span class="a2a-status-text">{statusLabel(agent)}</span>
+              </div>
+              {#if agent.status === "error" && agent.error}
+                <span class="agent-key-desc a2a-error">{agent.error}</span>
+              {/if}
+              {#if agent.card}
+                <span class="agent-key-desc">{agent.card.description}</span>
+                {#if agent.card.skills.length > 0}
+                  <div class="a2a-skill-chips">
+                    {#each agent.card.skills as skill (skill.id)}
+                      <span class="a2a-skill-chip">{skill.name}</span>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          </div>
+        {/each}
+
+        <button
+          class="btn btn-secondary btn-sm"
+          style="margin-top:8px;"
+          onclick={() => {
+            void enterRawMode();
+          }}>Edit a2a.json</button
+        >
+      {/if}
+    </div>
+
+    <!-- Agent card preview -->
+    <div class="settings-group">
+      <div class="settings-group-label">Agent card</div>
+      <p class="roles-section-hint">
+        What this agent shows to other agents that reach it. Edited in the workspace file
+        <code>config/agent-card.json</code>.
+      </p>
+
+      {#if cardLoading}
+        <p class="empty-state">Reading the agent card.</p>
+      {:else if cardError}
+        <p class="empty-state a2a-error">{cardError}</p>
+      {:else if card}
+        <div class="a2a-card-preview">
+          <div class="a2a-card-name">{card.name}</div>
+          <p class="a2a-card-desc">{card.description}</p>
+          {#if card.skills.length > 0}
+            <div class="a2a-skill-chips">
+              {#each card.skills as skill (skill.id)}
+                <span class="a2a-skill-chip" title={skill.description}>{skill.name}</span>
+              {/each}
+            </div>
+          {:else}
+            <p class="field-hint">No skills listed yet.</p>
+          {/if}
+        </div>
+      {/if}
+
+      <button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick={openWorkspace}>
+        Open workspace
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>

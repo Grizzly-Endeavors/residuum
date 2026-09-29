@@ -7,15 +7,19 @@
   import { toast } from "../../lib/toast.svelte";
   import { notifyFormUndo } from "../../lib/form-undo";
   import type { PendingSaveTracker } from "../../lib/pending-save";
+  import { router } from "../../lib/router.svelte";
 
   let {
     fields = $bindable(),
     simple = false,
+    part,
     pendingSave,
     onReload,
   }: {
     fields: ConfigFields;
     simple?: boolean;
+    /** Which of this file's groups to show. */
+    part: "channels" | "cloud" | "webhooks" | "tools";
     pendingSave: PendingSaveTracker;
     onReload: () => Promise<void>;
   } = $props();
@@ -193,433 +197,438 @@
 </script>
 
 <div class="settings-section">
-  <!-- Discord -->
-  <div class="settings-group">
-    <div class="settings-group-label">Discord</div>
-    <div class="integration-card">
-      <div class="integration-desc">
-        Connect a Discord bot so your agent can chat in DMs and, when @mentioned, in server
-        channels. Create a bot at <a
-          href="https://discord.com/developers/applications"
-          target="_blank"
-          rel="noopener">discord.com/developers</a
-        >.
-      </div>
-      <div class="settings-field">
-        <label for="integ-discord-token">Bot Token</label>
-        {#if isSecretReference(fields.discord_token)}
-          <div class="secret-stored">
-            <span class="secret-badge">Stored securely</span>
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={() => {
-                fields.discord_token = "";
-              }}>Change</button
-            >
-          </div>
-        {:else if isEnvReference(fields.discord_token)}
-          <div class="secret-stored">
-            <span class="secret-badge"
-              >From environment variable {envReferenceName(fields.discord_token)}</span
-            >
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={() => {
-                fields.discord_token = "";
-              }}>Replace</button
-            >
-          </div>
-        {:else}
-          <input
-            id="integ-discord-token"
-            type="password"
-            bind:value={fields.discord_token}
-            placeholder="Discord bot token"
-          />
-        {/if}
-      </div>
-      <div class="settings-field">
-        <label>
-          <span class="toggle-switch">
-            <input type="checkbox" bind:checked={fields.discord_respond_to_others} />
-            <span class="toggle-slider"></span>
-          </span>
-          Let others use the agent
-        </label>
-        <span class="field-hint"
-          >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
-          use the agent.</span
-        >
-      </div>
-      <div class="settings-field">
-        <label for="integ-discord-context-messages">Context messages</label>
-        <input
-          id="integ-discord-context-messages"
-          type="number"
-          min="0"
-          bind:value={fields.discord_context_messages}
-          placeholder="Default: 20"
-        />
-        <span class="field-hint"
-          >Earlier unmentioned server messages shared with the agent when it's @mentioned.</span
-        >
-      </div>
-    </div>
-  </div>
-
-  <!-- Telegram -->
-  <div class="settings-group">
-    <div class="settings-group-label">Telegram</div>
-    <div class="integration-card">
-      <div class="integration-desc">
-        Connect a Telegram bot to chat privately and, when mentioned, in groups. Create a bot via <a
-          href="https://t.me/BotFather"
-          target="_blank"
-          rel="noopener">@BotFather</a
-        >.
-      </div>
-      <div class="settings-field">
-        <label for="integ-telegram-token">Bot Token</label>
-        {#if isSecretReference(fields.telegram_token)}
-          <div class="secret-stored">
-            <span class="secret-badge">Stored securely</span>
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={() => {
-                fields.telegram_token = "";
-              }}>Change</button
-            >
-          </div>
-        {:else if isEnvReference(fields.telegram_token)}
-          <div class="secret-stored">
-            <span class="secret-badge"
-              >From environment variable {envReferenceName(fields.telegram_token)}</span
-            >
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={() => {
-                fields.telegram_token = "";
-              }}>Replace</button
-            >
-          </div>
-        {:else}
-          <input
-            id="integ-telegram-token"
-            type="password"
-            bind:value={fields.telegram_token}
-            placeholder="Telegram bot token"
-          />
-        {/if}
-      </div>
-      <div class="settings-field">
-        <label>
-          <span class="toggle-switch">
-            <input type="checkbox" bind:checked={fields.telegram_respond_to_others} />
-            <span class="toggle-slider"></span>
-          </span>
-          Let others use the agent
-        </label>
-        <span class="field-hint"
-          >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
-          use the agent.</span
-        >
-      </div>
-      <div class="settings-field">
-        <label for="integ-telegram-context-messages">Context messages</label>
-        <input
-          id="integ-telegram-context-messages"
-          type="number"
-          min="0"
-          bind:value={fields.telegram_context_messages}
-          placeholder="Default: 20"
-        />
-        <span class="field-hint"
-          >Earlier unmentioned group messages shared with the agent when addressed. Requires privacy
-          mode off in BotFather (or the bot made a group admin).</span
-        >
-      </div>
-    </div>
-  </div>
-
-  <!-- Microsoft Teams -->
-  <div class="settings-group">
-    <div class="settings-group-label">Microsoft Teams</div>
-    <div class="integration-card">
-      <div class="integration-desc">
-        Connect a Microsoft Teams bot so your agent can chat in DMs, group chats, and channels.
-        Register a bot in the <a
-          href="https://dev.teams.microsoft.com/bots"
-          target="_blank"
-          rel="noopener">Teams Developer Portal</a
-        >, then point its messaging endpoint at a tunnel to this machine's Teams port. See the Teams
-        setup guide in the docs.
-      </div>
-      <div class="settings-field">
-        <label for="integ-teams-app-id">App ID</label>
-        <input
-          id="integ-teams-app-id"
-          type="text"
-          bind:value={fields.teams_app_id}
-          placeholder="11111111-2222-3333-4444-555555555555"
-        />
-      </div>
-      <div class="settings-field">
-        <label for="integ-teams-tenant-id">Tenant ID</label>
-        <input
-          id="integ-teams-tenant-id"
-          type="text"
-          bind:value={fields.teams_tenant_id}
-          placeholder="Directory (tenant) ID"
-        />
-      </div>
-      <div class="settings-field">
-        <label for="integ-teams-app-password">Client Secret</label>
-        {#if isSecretReference(fields.teams_app_password)}
-          <div class="secret-stored">
-            <span class="secret-badge">Stored securely</span>
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={() => {
-                fields.teams_app_password = "";
-              }}>Change</button
-            >
-          </div>
-        {:else if isEnvReference(fields.teams_app_password)}
-          <div class="secret-stored">
-            <span class="secret-badge"
-              >From environment variable {envReferenceName(fields.teams_app_password)}</span
-            >
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={() => {
-                fields.teams_app_password = "";
-              }}>Replace</button
-            >
-          </div>
-        {:else}
-          <input
-            id="integ-teams-app-password"
-            type="password"
-            bind:value={fields.teams_app_password}
-            placeholder="Client secret"
-          />
-        {/if}
-      </div>
-      {#if teamsPartiallyFilled}
-        <div class="validation-msg error">
-          App ID, Tenant ID, and Client Secret are all required to enable Teams. Fill in all three,
-          or clear them to leave Teams unconfigured.
+  {#if part === "channels"}
+    <!-- Discord -->
+    <div class="settings-group">
+      <div class="settings-group-label">Discord</div>
+      <div class="integration-card">
+        <div class="integration-desc">
+          Connect a Discord bot so your agent can chat in DMs and, when @mentioned, in server
+          channels. Create a bot at <a
+            href="https://discord.com/developers/applications"
+            target="_blank"
+            rel="noopener">discord.com/developers</a
+          >.
         </div>
-      {/if}
-      <div class="settings-field">
-        <label>
-          <span class="toggle-switch">
-            <input type="checkbox" bind:checked={fields.teams_respond_to_others} />
-            <span class="toggle-slider"></span>
-          </span>
-          Let others use the agent
-        </label>
-        <span class="field-hint"
-          >Off: only you (the first person to DM the bot). On: coworkers can @mention or message it
-          too.</span
-        >
-      </div>
-      <div class="settings-field">
-        <label for="integ-teams-context-messages">Context messages</label>
-        <input
-          id="integ-teams-context-messages"
-          type="number"
-          min="0"
-          bind:value={fields.teams_context_messages}
-          placeholder="Default: 20"
-        />
-        <span class="field-hint"
-          >Earlier group chat messages shared with the agent when it's @mentioned.</span
-        >
-      </div>
-      <div class="settings-field">
-        <label for="integ-teams-port">Listener port</label>
-        <input
-          id="integ-teams-port"
-          type="number"
-          bind:value={fields.teams_port}
-          placeholder="Default: 7701"
-        />
-        <span class="field-hint">Expose only this port through your tunnel.</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Residuum Cloud -->
-  <div class="settings-group">
-    <div class="settings-group-label">Residuum Cloud</div>
-    <div class="integration-card">
-      <div class="integration-desc">
-        Connect your agent to <strong>Residuum Cloud</strong> for remote access via a personal subdomain.
-        Your agent becomes accessible from anywhere without port forwarding or VPN setup.
-      </div>
-
-      {#if cloudLoading}
-        <div class="cloud-status-row">
-          <span class="cloud-status-dot cloud-status-loading"></span>
-          <span>Loading status...</span>
-        </div>
-      {:else if cloudStatus?.status === "connected"}
-        <div class="cloud-status-row">
-          <span class="cloud-status-dot cloud-status-connected"></span>
-          <span class="cloud-status-text">Connected</span>
-          {#if cloudStatus.user_id}
-            <span class="cloud-user-id">({cloudStatus.user_id})</span>
+        <div class="settings-field">
+          <label for="integ-discord-token">Bot Token</label>
+          {#if isSecretReference(fields.discord_token)}
+            <div class="secret-stored">
+              <span class="secret-badge">Stored securely</span>
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={() => {
+                  fields.discord_token = "";
+                }}>Change</button
+              >
+            </div>
+          {:else if isEnvReference(fields.discord_token)}
+            <div class="secret-stored">
+              <span class="secret-badge"
+                >From environment variable {envReferenceName(fields.discord_token)}</span
+              >
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={() => {
+                  fields.discord_token = "";
+                }}>Replace</button
+              >
+            </div>
+          {:else}
+            <input
+              id="integ-discord-token"
+              type="password"
+              bind:value={fields.discord_token}
+              placeholder="Discord bot token"
+            />
           {/if}
         </div>
-        {#if cloudStatus.viewed_via_tunnel}
-          <p class="cloud-hint">
-            Disconnecting can't be done remotely, because nothing could bring Residuum back. Do it
-            on the machine running Residuum.
-          </p>
-        {:else}
-          <div class="cloud-actions">
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={handleCloudDisconnect}
-              disabled={cloudAction}
-            >
-              {cloudAction ? "Disconnecting..." : "Disconnect"}
-            </button>
-          </div>
-        {/if}
-      {:else if cloudStatus?.status === "connecting"}
-        <div class="cloud-status-row">
-          <span class="cloud-status-dot cloud-status-connecting"></span>
-          <span class="cloud-status-text">Connecting...</span>
-        </div>
-        {#if cloudStatus.viewed_via_tunnel}
-          <p class="cloud-hint">
-            Cancelling can't be done remotely, because nothing could bring Residuum back. Do it on
-            the machine running Residuum.
-          </p>
-        {:else}
-          <div class="cloud-actions">
-            <button
-              class="btn btn-sm btn-secondary"
-              onclick={handleCloudDisconnect}
-              disabled={cloudAction}
-            >
-              {cloudAction ? "Cancelling..." : "Cancel"}
-            </button>
-          </div>
-        {/if}
-      {:else if cloudStatus?.has_token && !cloudStatus?.enabled}
-        <div class="cloud-status-row">
-          <span class="cloud-status-dot cloud-status-disconnected"></span>
-          <span class="cloud-status-text">Disconnected</span>
-        </div>
-        <div class="cloud-actions">
-          <button
-            class="btn btn-sm btn-primary"
-            onclick={handleCloudReconnect}
-            disabled={cloudAction}
+        <div class="settings-field">
+          <label>
+            <span class="toggle-switch">
+              <input type="checkbox" bind:checked={fields.discord_respond_to_others} />
+              <span class="toggle-slider"></span>
+            </span>
+            Let others use the agent
+          </label>
+          <span class="field-hint"
+            >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
+            use the agent.</span
           >
-            Reconnect
-          </button>
-          <button
-            class="btn btn-sm btn-danger"
-            onclick={handleCloudRemoveAccount}
-            disabled={cloudAction}
+        </div>
+        <div class="settings-field">
+          <label for="integ-discord-context-messages">Context messages</label>
+          <input
+            id="integ-discord-context-messages"
+            type="number"
+            min="0"
+            bind:value={fields.discord_context_messages}
+            placeholder="Default: 20"
+          />
+          <span class="field-hint"
+            >Earlier unmentioned server messages shared with the agent when it's @mentioned.</span
           >
-            Remove Account
-          </button>
         </div>
-        <p class="cloud-hint">Click Reconnect then Save to re-enable the tunnel.</p>
-      {:else}
-        <div class="cloud-status-row">
-          <span class="cloud-status-dot cloud-status-disconnected"></span>
-          <span class="cloud-status-text">Not connected</span>
-        </div>
-        <div class="cloud-actions">
-          <button class="btn btn-primary" onclick={handleCloudConnect}>
-            Connect to Residuum Cloud
-          </button>
-        </div>
-
-        {#if !manualTokenMode}
-          <button
-            class="cloud-manual-toggle"
-            onclick={() => {
-              manualTokenMode = true;
-            }}
-          >
-            Use a token instead
-          </button>
-        {:else}
-          <div class="cloud-manual-token">
-            <label for="cloud-manual-token-input">Tunnel Token</label>
-            <div class="cloud-manual-token-row">
-              <input
-                id="cloud-manual-token-input"
-                type="password"
-                bind:value={manualToken}
-                placeholder="rst_..."
-                onkeydown={(e) => {
-                  if (e.key === "Enter") void handleSaveManualToken();
-                }}
-              />
-              <button
-                class="btn btn-sm btn-primary"
-                onclick={handleSaveManualToken}
-                disabled={cloudAction || !manualToken.trim()}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        {/if}
-      {/if}
+      </div>
     </div>
-  </div>
 
-  <!-- Advanced cloud settings (only show if token exists) -->
-  {#if !simple && (cloudStatus?.has_token === true || fields.cloud_token)}
+    <!-- Telegram -->
     <div class="settings-group">
-      <div class="settings-group-label">Cloud Advanced</div>
+      <div class="settings-group-label">Telegram</div>
       <div class="integration-card">
+        <div class="integration-desc">
+          Connect a Telegram bot to chat privately and, when mentioned, in groups. Create a bot via <a
+            href="https://t.me/BotFather"
+            target="_blank"
+            rel="noopener">@BotFather</a
+          >.
+        </div>
         <div class="settings-field">
-          <label for="cloud-relay-url">Relay URL</label>
+          <label for="integ-telegram-token">Bot Token</label>
+          {#if isSecretReference(fields.telegram_token)}
+            <div class="secret-stored">
+              <span class="secret-badge">Stored securely</span>
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={() => {
+                  fields.telegram_token = "";
+                }}>Change</button
+              >
+            </div>
+          {:else if isEnvReference(fields.telegram_token)}
+            <div class="secret-stored">
+              <span class="secret-badge"
+                >From environment variable {envReferenceName(fields.telegram_token)}</span
+              >
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={() => {
+                  fields.telegram_token = "";
+                }}>Replace</button
+              >
+            </div>
+          {:else}
+            <input
+              id="integ-telegram-token"
+              type="password"
+              bind:value={fields.telegram_token}
+              placeholder="Telegram bot token"
+            />
+          {/if}
+        </div>
+        <div class="settings-field">
+          <label>
+            <span class="toggle-switch">
+              <input type="checkbox" bind:checked={fields.telegram_respond_to_others} />
+              <span class="toggle-slider"></span>
+            </span>
+            Let others use the agent
+          </label>
+          <span class="field-hint"
+            >Off: only you (the first person to DM the bot). On: anyone who can message the bot can
+            use the agent.</span
+          >
+        </div>
+        <div class="settings-field">
+          <label for="integ-telegram-context-messages">Context messages</label>
           <input
-            id="cloud-relay-url"
+            id="integ-telegram-context-messages"
+            type="number"
+            min="0"
+            bind:value={fields.telegram_context_messages}
+            placeholder="Default: 20"
+          />
+          <span class="field-hint"
+            >Earlier unmentioned group messages shared with the agent when addressed. Requires
+            privacy mode off in BotFather (or the bot made a group admin).</span
+          >
+        </div>
+      </div>
+    </div>
+
+    <!-- Microsoft Teams -->
+    <div class="settings-group">
+      <div class="settings-group-label">Microsoft Teams</div>
+      <div class="integration-card">
+        <div class="integration-desc">
+          Connect a Microsoft Teams bot so your agent can chat in DMs, group chats, and channels.
+          Register a bot in the <a
+            href="https://dev.teams.microsoft.com/bots"
+            target="_blank"
+            rel="noopener">Teams Developer Portal</a
+          >, then point its messaging endpoint at a tunnel to this machine's Teams port. See the
+          Teams setup guide in the docs.
+        </div>
+        <div class="settings-field">
+          <label for="integ-teams-app-id">App ID</label>
+          <input
+            id="integ-teams-app-id"
             type="text"
-            bind:value={fields.cloud_relay_url}
-            placeholder="wss://agent-residuum.com/tunnel/register (default)"
+            bind:value={fields.teams_app_id}
+            placeholder="11111111-2222-3333-4444-555555555555"
           />
         </div>
         <div class="settings-field">
-          <label for="cloud-local-port">Local Port</label>
+          <label for="integ-teams-tenant-id">Tenant ID</label>
           <input
-            id="cloud-local-port"
+            id="integ-teams-tenant-id"
             type="text"
-            bind:value={fields.cloud_local_port}
-            placeholder="Same as gateway port (default)"
+            bind:value={fields.teams_tenant_id}
+            placeholder="Directory (tenant) ID"
           />
+        </div>
+        <div class="settings-field">
+          <label for="integ-teams-app-password">Client Secret</label>
+          {#if isSecretReference(fields.teams_app_password)}
+            <div class="secret-stored">
+              <span class="secret-badge">Stored securely</span>
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={() => {
+                  fields.teams_app_password = "";
+                }}>Change</button
+              >
+            </div>
+          {:else if isEnvReference(fields.teams_app_password)}
+            <div class="secret-stored">
+              <span class="secret-badge"
+                >From environment variable {envReferenceName(fields.teams_app_password)}</span
+              >
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={() => {
+                  fields.teams_app_password = "";
+                }}>Replace</button
+              >
+            </div>
+          {:else}
+            <input
+              id="integ-teams-app-password"
+              type="password"
+              bind:value={fields.teams_app_password}
+              placeholder="Client secret"
+            />
+          {/if}
+        </div>
+        {#if teamsPartiallyFilled}
+          <div class="validation-msg error">
+            App ID, Tenant ID, and Client Secret are all required to enable Teams. Fill in all
+            three, or clear them to leave Teams unconfigured.
+          </div>
+        {/if}
+        <div class="settings-field">
+          <label>
+            <span class="toggle-switch">
+              <input type="checkbox" bind:checked={fields.teams_respond_to_others} />
+              <span class="toggle-slider"></span>
+            </span>
+            Let others use the agent
+          </label>
+          <span class="field-hint"
+            >Off: only you (the first person to DM the bot). On: coworkers can @mention or message
+            it too.</span
+          >
+        </div>
+        <div class="settings-field">
+          <label for="integ-teams-context-messages">Context messages</label>
+          <input
+            id="integ-teams-context-messages"
+            type="number"
+            min="0"
+            bind:value={fields.teams_context_messages}
+            placeholder="Default: 20"
+          />
+          <span class="field-hint"
+            >Earlier group chat messages shared with the agent when it's @mentioned.</span
+          >
+        </div>
+        <div class="settings-field">
+          <label for="integ-teams-port">Listener port</label>
+          <input
+            id="integ-teams-port"
+            type="number"
+            bind:value={fields.teams_port}
+            placeholder="Default: 7701"
+          />
+          <span class="field-hint">Expose only this port through your tunnel.</span>
         </div>
       </div>
     </div>
   {/if}
 
-  {#if !simple}
+  {#if part === "cloud"}
+    <!-- Residuum Cloud -->
+    <div class="settings-group">
+      <div class="settings-group-label">Residuum Cloud</div>
+      <div class="integration-card">
+        <div class="integration-desc">
+          Connect your agent to <strong>Residuum Cloud</strong> for remote access via a personal subdomain.
+          Your agent becomes accessible from anywhere without port forwarding or VPN setup.
+        </div>
+
+        {#if cloudLoading}
+          <div class="cloud-status-row">
+            <span class="cloud-status-dot cloud-status-loading"></span>
+            <span>Loading status...</span>
+          </div>
+        {:else if cloudStatus?.status === "connected"}
+          <div class="cloud-status-row">
+            <span class="cloud-status-dot cloud-status-connected"></span>
+            <span class="cloud-status-text">Connected</span>
+            {#if cloudStatus.user_id}
+              <span class="cloud-user-id">({cloudStatus.user_id})</span>
+            {/if}
+          </div>
+          {#if cloudStatus.viewed_via_tunnel}
+            <p class="cloud-hint">
+              Disconnecting can't be done remotely, because nothing could bring Residuum back. Do it
+              on the machine running Residuum.
+            </p>
+          {:else}
+            <div class="cloud-actions">
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={handleCloudDisconnect}
+                disabled={cloudAction}
+              >
+                {cloudAction ? "Disconnecting..." : "Disconnect"}
+              </button>
+            </div>
+          {/if}
+        {:else if cloudStatus?.status === "connecting"}
+          <div class="cloud-status-row">
+            <span class="cloud-status-dot cloud-status-connecting"></span>
+            <span class="cloud-status-text">Connecting...</span>
+          </div>
+          {#if cloudStatus.viewed_via_tunnel}
+            <p class="cloud-hint">
+              Cancelling can't be done remotely, because nothing could bring Residuum back. Do it on
+              the machine running Residuum.
+            </p>
+          {:else}
+            <div class="cloud-actions">
+              <button
+                class="btn btn-sm btn-secondary"
+                onclick={handleCloudDisconnect}
+                disabled={cloudAction}
+              >
+                {cloudAction ? "Cancelling..." : "Cancel"}
+              </button>
+            </div>
+          {/if}
+        {:else if cloudStatus?.has_token && !cloudStatus?.enabled}
+          <div class="cloud-status-row">
+            <span class="cloud-status-dot cloud-status-disconnected"></span>
+            <span class="cloud-status-text">Disconnected</span>
+          </div>
+          <div class="cloud-actions">
+            <button
+              class="btn btn-sm btn-primary"
+              onclick={handleCloudReconnect}
+              disabled={cloudAction}
+            >
+              Reconnect
+            </button>
+            <button
+              class="btn btn-sm btn-danger"
+              onclick={handleCloudRemoveAccount}
+              disabled={cloudAction}
+            >
+              Remove Account
+            </button>
+          </div>
+          <p class="cloud-hint">Click Reconnect then Save to re-enable the tunnel.</p>
+        {:else}
+          <div class="cloud-status-row">
+            <span class="cloud-status-dot cloud-status-disconnected"></span>
+            <span class="cloud-status-text">Not connected</span>
+          </div>
+          <div class="cloud-actions">
+            <button class="btn btn-primary" onclick={handleCloudConnect}>
+              Connect to Residuum Cloud
+            </button>
+          </div>
+
+          {#if !manualTokenMode}
+            <button
+              class="cloud-manual-toggle"
+              onclick={() => {
+                manualTokenMode = true;
+              }}
+            >
+              Use a token instead
+            </button>
+          {:else}
+            <div class="cloud-manual-token">
+              <label for="cloud-manual-token-input">Tunnel Token</label>
+              <div class="cloud-manual-token-row">
+                <input
+                  id="cloud-manual-token-input"
+                  type="password"
+                  bind:value={manualToken}
+                  placeholder="rst_..."
+                  onkeydown={(e) => {
+                    if (e.key === "Enter") void handleSaveManualToken();
+                  }}
+                />
+                <button
+                  class="btn btn-sm btn-primary"
+                  onclick={handleSaveManualToken}
+                  disabled={cloudAction || !manualToken.trim()}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          {/if}
+        {/if}
+      </div>
+    </div>
+
+    <!-- Advanced cloud settings (only show if token exists) -->
+    {#if !simple && (cloudStatus?.has_token === true || fields.cloud_token)}
+      <div class="settings-group">
+        <div class="settings-group-label">Cloud Advanced</div>
+        <div class="integration-card">
+          <div class="settings-field">
+            <label for="cloud-relay-url">Relay URL</label>
+            <input
+              id="cloud-relay-url"
+              type="text"
+              bind:value={fields.cloud_relay_url}
+              placeholder="wss://agent-residuum.com/tunnel/register (default)"
+            />
+          </div>
+          <div class="settings-field">
+            <label for="cloud-local-port">Local Port</label>
+            <input
+              id="cloud-local-port"
+              type="text"
+              bind:value={fields.cloud_local_port}
+              placeholder="Same as gateway port (default)"
+            />
+          </div>
+        </div>
+      </div>
+    {/if}
+  {/if}
+
+  {#if part === "webhooks"}
     <!-- Webhooks -->
     <div class="settings-group">
       <div class="settings-group-label">Webhooks</div>
       <div class="integration-card">
         <div class="integration-desc">
           Named HTTP webhook endpoints for external integrations. Each webhook gets its own
-          <code>/webhook/&lbrace;name&rbrace;</code> route with independent auth and payload handling.
+          <code>/webhook/&lbrace;agent&rbrace;/&lbrace;name&rbrace;</code> route with independent auth
+          and payload handling.
         </div>
 
         {#each fields.webhooks as wh, i (i)}
           <div class="webhook-entry">
             <div class="webhook-entry-header">
               <span class="webhook-entry-label">
-                {wh.name ? `/webhook/${wh.name}` : "New webhook"}
+                {wh.name ? `/webhook/${router.agent ?? "agent"}/${wh.name}` : "New webhook"}
               </span>
               <button class="btn btn-sm btn-danger" onclick={() => removeWebhook(i)}>Remove</button>
             </div>
@@ -707,7 +716,9 @@
         >
       </div>
     </div>
+  {/if}
 
+  {#if part === "tools"}
     <!-- Skills -->
     <div class="settings-group">
       <div class="settings-group-label">Skills</div>

@@ -32,6 +32,25 @@ describe("diffConfigFields", () => {
     expect(diffConfigFields(baseline, current)).toEqual({ gateway: { port: 8080 } });
   });
 
+  it("reads a number the form holds as a number, as a bound number input yields", () => {
+    const baseline = defaultConfigFields();
+    const current = { ...baseline, gateway_port: 8080 as unknown as string };
+    expect(diffConfigFields(baseline, current)).toEqual({ gateway: { port: 8080 } });
+  });
+
+  it("carries the tracing fields to the hub's [tracing] table", () => {
+    const baseline = defaultConfigFields();
+    const current = {
+      ...baseline,
+      tracing_log_level: "trace",
+      tracing_auto_error_reporting: true,
+      tracing_sanitize_content: false,
+    };
+    expect(diffConfigFields(baseline, current)).toEqual({
+      tracing: { log_level: "trace", auto_error_reporting: true, sanitize_content: false },
+    });
+  });
+
   it("emits null to clear a field back to empty", () => {
     const baseline = { ...defaultConfigFields(), discord_token: "abc" };
     const current = { ...baseline, discord_token: "" };

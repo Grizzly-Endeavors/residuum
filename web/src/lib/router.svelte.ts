@@ -6,6 +6,9 @@
 // History holds places, not panel states: opening a session or settings
 // pushes an entry, toggling the workspace replaces the current one, so back
 // moves between places the user visited.
+//
+// The router also owns which agent is current. Changing it points API calls
+// at the new agent and rebinds the agent connection (see `paths.ts`).
 
 import {
   formatLocation,
@@ -13,17 +16,23 @@ import {
   parseLocation,
   type AppLocation,
   type ChatLocation,
+  type SettingsLocation,
+  type SettingsScope,
+  type TeamPage,
   type WorkbenchLocation,
 } from "./routes";
-import type { SettingsSection } from "./types";
+import { readLastAgent, rememberLastAgent, setCurrentAgent } from "./paths";
+import { defaultSection, isSectionOf, type SettingsSection } from "./settings-sections";
 
 type HistoryMode = "push" | "replace";
 
 class Router {
+  agent = $state<string | null>(null);
   chat = $state<ChatLocation>(MAIN_CHAT);
-  settings = $state<SettingsSection | null>(null);
+  settings = $state<SettingsLocation | null>(null);
   workbench = $state<WorkbenchLocation | null>(null);
   scheduled = $state<boolean>(false);
+  team = $state<TeamPage | null>(null);
 
   private started = false;
 
@@ -35,20 +44,61 @@ class Router {
     window.addEventListener("popstate", () => this.syncFromUrl());
   }
 
-  /** Show a run in the main pane, leaving settings or the workbench if open. */
-  openSession(runId: string): void {
+  /** The current location, as one value. */
+  private current(): AppLocation {
+    return {
+      agent: this.agent,
+      chat: this.chat,
+      settings: this.settings,
+      workbench: this.workbench,
+      scheduled: this.scheduled,
+      team: this.team,
+    };
+  }
+
+  /** The chat side, with everything else closed. */
+  private chatSide(chat: ChatLocation): AppLocation {
+    return {
+      agent: this.agent,
+      chat,
+      settings: null,
+      workbench: null,
+      scheduled: false,
+      team: null,
+    };
+  }
+
+  /**
+   * Switch to another agent, on the same kind of page when it exists for
+   * every agent (its settings, its scheduled view), else on its main chat.
+   */
+  openAgent(name: string): void {
+    // Already on this agent's own page; from a team page it still navigates.
+    const onAgentPage =
+      this.team === null && this.workbench === null && this.settings?.scope !== "hub";
+    if (name === this.agent && onAgentPage) return;
+    rememberLastAgent(name);
     this.go(
-      { chat: { ...this.chat, runId }, settings: null, workbench: null, scheduled: false },
+      {
+        agent: name,
+        chat: { runId: null, workspace: this.chat.workspace },
+        settings: this.settings?.scope === "agent" ? this.settings : null,
+        workbench: null,
+        scheduled: this.scheduled,
+        team: null,
+      },
       "push",
     );
   }
 
+  /** Show a run in the main pane, leaving settings or the workbench if open. */
+  openSession(runId: string): void {
+    this.go(this.chatSide({ ...this.chat, runId }), "push");
+  }
+
   /** Return the main pane to the main chat, leaving settings or the workbench if open. */
   openMainChat(): void {
-    this.go(
-      { chat: { ...this.chat, runId: null }, settings: null, workbench: null, scheduled: false },
-      "push",
-    );
+    this.go(this.chatSide({ ...this.chat, runId: null }), "push");
   }
 
   /**
@@ -56,15 +106,7 @@ class Router {
    * the shown session continues in a new run.
    */
   replaceSession(runId: string): void {
-    this.go(
-      {
-        chat: { ...this.chat, runId },
-        settings: this.settings,
-        workbench: this.workbench,
-        scheduled: this.scheduled,
-      },
-      "replace",
-    );
+    this.go({ ...this.current(), chat: { ...this.chat, runId } }, "replace");
   }
 
   /**
@@ -73,39 +115,27 @@ class Router {
    * place.
    */
   setWorkspace(open: boolean): void {
-    const onChatSide = this.settings === null && this.workbench === null && !this.scheduled;
-    this.go(
-      {
-        chat: { ...this.chat, workspace: open },
-        settings: null,
-        workbench: null,
-        scheduled: false,
-      },
-      onChatSide ? "replace" : "push",
-    );
+    const onChatSide =
+      this.settings === null && this.workbench === null && !this.scheduled && this.team === null;
+    this.go(this.chatSide({ ...this.chat, workspace: open }), onChatSide ? "replace" : "push");
   }
 
-  openSettings(section: SettingsSection = "runtime"): void {
-    this.go({ chat: this.chat, settings: section, workbench: null, scheduled: false }, "push");
+  /** Open a settings page: an agent's by default, or the hub's. */
+  openSettings(section?: SettingsSection, scope: SettingsScope = "agent"): void {
+    const target =
+      section !== undefined && isSectionOf(scope, section) ? section : defaultSection(scope);
+    this.go({ ...this.chatSide(this.chat), settings: { scope, section: target } }, "push");
   }
 
   /** Leave settings for the chat side as it was before settings opened. */
   closeSettings(): void {
     if (this.settings === null) return;
-    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: false }, "push");
+    this.go(this.chatSide(this.chat), "push");
   }
 
   /** Open the workbench: an artifact, or the artifact list when `artifact` is null. */
   openWorkbench(artifact: string | null = null): void {
-    this.go(
-      {
-        chat: this.chat,
-        settings: null,
-        workbench: { artifact, full: false },
-        scheduled: false,
-      },
-      "push",
-    );
+    this.go({ ...this.chatSide(this.chat), workbench: { artifact, full: false } }, "push");
   }
 
   /**
@@ -115,36 +145,85 @@ class Router {
   setWorkbenchFull(full: boolean): void {
     const artifact = this.workbench?.artifact ?? null;
     if (artifact === null) return;
-    this.go(
-      { chat: this.chat, settings: null, workbench: { artifact, full }, scheduled: false },
-      "replace",
-    );
+    this.go({ ...this.chatSide(this.chat), workbench: { artifact, full } }, "replace");
   }
 
   /** Leave the workbench for the chat side as it was before it opened. */
   closeWorkbench(): void {
     if (this.workbench === null) return;
-    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: false }, "push");
+    this.go(this.chatSide(this.chat), "push");
   }
 
   /** Open the Scheduled view (pulses and scheduled actions). */
   openScheduled(): void {
-    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: true }, "push");
+    this.go({ ...this.chatSide(this.chat), scheduled: true }, "push");
   }
 
   /** Leave the Scheduled view for the chat side as it was before it opened. */
   closeScheduled(): void {
     if (!this.scheduled) return;
-    this.go({ chat: this.chat, settings: null, workbench: null, scheduled: false }, "push");
+    this.go(this.chatSide(this.chat), "push");
+  }
+
+  /** Open a team page: the overview of every agent, or the shared files. */
+  openTeam(page: TeamPage = "overview"): void {
+    this.go({ ...this.chatSide(this.chat), team: page }, "push");
+  }
+
+  /** Leave the team pages for the chat side as it was before they opened. */
+  closeTeam(): void {
+    if (this.team === null) return;
+    this.go(this.chatSide(this.chat), "push");
+  }
+
+  /**
+   * Settle on an agent that exists, once the list of agents is known. Fills in
+   * the agent when the URL named none (`/`), and moves off an agent that isn't
+   * in the list (a deleted agent, a mistyped URL) to the last-used one, else
+   * the first. Leaves the location alone when it is fine, or when there are no
+   * agents at all.
+   */
+  resolveAgent(names: readonly string[]): void {
+    const first = names[0];
+    if (first === undefined) return;
+    if (this.agent !== null && names.includes(this.agent)) {
+      rememberLastAgent(this.agent);
+      return;
+    }
+    const last = readLastAgent();
+    const target = last !== null && names.includes(last) ? last : first;
+    rememberLastAgent(target);
+    const onAgentPage =
+      this.team === null && this.workbench === null && this.settings?.scope !== "hub";
+    this.go(
+      onAgentPage
+        ? {
+            agent: target,
+            chat: MAIN_CHAT,
+            settings: null,
+            workbench: null,
+            scheduled: false,
+            team: null,
+          }
+        : { ...this.current(), agent: target, chat: MAIN_CHAT },
+      "replace",
+    );
+  }
+
+  private apply(location: AppLocation): void {
+    this.agent = location.agent;
+    this.chat = location.chat;
+    this.settings = location.settings;
+    this.workbench = location.workbench;
+    this.scheduled = location.scheduled;
+    this.team = location.team;
+    setCurrentAgent(location.agent);
   }
 
   private go(location: AppLocation, mode: HistoryMode): void {
     const url = formatLocation(location);
     const current = `${window.location.pathname}${window.location.search}`;
-    this.chat = location.chat;
-    this.settings = location.settings;
-    this.workbench = location.workbench;
-    this.scheduled = location.scheduled;
+    this.apply(location);
     if (url === current) return;
     if (mode === "push") {
       window.history.pushState(null, "", url);
@@ -157,12 +236,9 @@ class Router {
     const { location, corrected } = parseLocation(
       window.location.pathname,
       window.location.search,
-      this.chat,
+      { agent: this.agent, chat: this.chat, fallbackAgent: readLastAgent() },
     );
-    this.chat = location.chat;
-    this.settings = location.settings;
-    this.workbench = location.workbench;
-    this.scheduled = location.scheduled;
+    this.apply(location);
     if (corrected) window.history.replaceState(null, "", formatLocation(location));
   }
 }

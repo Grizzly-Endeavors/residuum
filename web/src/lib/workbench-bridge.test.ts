@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentAgent } from "./paths";
 import {
   BRIDGE_TAG,
   checkArtifactRequest,
@@ -12,6 +13,14 @@ import type { ServerMessage } from "./types";
 
 const ORIGIN = "https://bear.agent-residuum.com";
 const ARTIFACTS = "https://bear.workbench.agent-residuum.com";
+
+beforeEach(() => {
+  setCurrentAgent("scout");
+});
+
+afterEach(() => {
+  setCurrentAgent(null);
+});
 
 describe("checkArtifactRequest", () => {
   it.each([
@@ -30,6 +39,16 @@ describe("checkArtifactRequest", () => {
     ["DELETE", "/api/team/workbench/artifacts/chart"],
     ["POST", "/api/agents/scout/model/complete"],
     ["POST", "/api/agents/scout/sessions"],
+    ["GET", "/api/status"],
+    ["GET", "/api/workspace/file?path=team/workbench/chart.state.json"],
+    ["PUT", "/api/workspace/file"],
+    ["GET", "/api/secrets"],
+    ["GET", "/api/agent-keys"],
+    ["GET", "/api/workbench/artifacts"],
+    ["GET", "/api/tracing/status"],
+    ["POST", "/api/inbox/abc/archive"],
+    ["PUT", "/api/mcp/raw"],
+    ["DELETE", "/api/workbench/artifacts/chart"],
   ])("allows %s %s", (method, path) => {
     expect(checkArtifactRequest(method, path, ORIGIN)).toEqual({ allowed: true, url: path });
   });
@@ -58,6 +77,23 @@ describe("checkArtifactRequest", () => {
     ["DELETE", "/api/hub/agents/scout"],
     ["POST", "/api/hub/agents/scout/stop"],
     ["PATCH", "/api/hub/agents/scout"],
+    ["POST", "/api/secrets"],
+    ["DELETE", "/api/secrets/openai"],
+    ["POST", "/api/agent-keys"],
+    ["GET", "/api/config/raw"],
+    ["PUT", "/api/config/raw"],
+    ["GET", "/api/providers/raw"],
+    ["POST", "/api/config/complete-setup"],
+    ["POST", "/api/shutdown"],
+    ["POST", "/api/shutdown/"],
+    ["POST", "/api/update/apply"],
+    ["POST", "/api/update/restart"],
+    ["POST", "/api/cloud/disconnect"],
+    ["POST", "/api/tracing/sanitize"],
+    ["POST", "/api/tracing/otel/endpoints"],
+    ["PUT", "/api/agents/atlas/providers/raw"],
+    ["POST", "/api/agents/scout/config/complete-setup"],
+    ["POST", "/api/agents/scout/../../hub/secrets"],
   ])("blocks %s %s", (method, path) => {
     const check = checkArtifactRequest(method, path, ORIGIN);
     expect(check.allowed).toBe(false);
@@ -72,6 +108,18 @@ describe("checkArtifactRequest", () => {
   ])("blocks secret writes reached through path tricks: %s", (path) => {
     expect(checkArtifactRequest("POST", path, ORIGIN).allowed).toBe(false);
   });
+
+  it.each(["/api/model/complete", "/api/model/complete/"])(
+    "refuses a model call that names no agent: POST %s",
+    (path) => {
+      const check = checkArtifactRequest("POST", path, ORIGIN);
+      expect(check.allowed).toBe(false);
+      if (!check.allowed) {
+        expect(check.status).toBe(400);
+        expect(check.reason).toContain("residuum.ask");
+      }
+    },
+  );
 
   it.each(["/api/sessions", "/api/sessions/"])(
     "refuses a session start that names no agent: POST %s",
@@ -170,7 +218,8 @@ interface Harness {
   bridge: WorkbenchBridge;
   frame: FrameTarget & { posted: Record<string, unknown>[] };
   deps: BridgeDeps;
-  emit: (msg: ServerMessage) => void;
+  /** Deliver a frame as if `agent`'s connection sent it (`scout` unless given). */
+  emit: (msg: ServerMessage, agent?: string | null) => void;
   escapes: () => number;
   /** Every watch set handed to the coordinator, in order. */
   watchSets: (readonly string[])[];
@@ -183,7 +232,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     posted,
     postMessage: (message: unknown) => posted.push(message as Record<string, unknown>),
   };
-  let listener: ((msg: ServerMessage) => void) | null = null;
+  let listener: ((msg: ServerMessage, agent: string | null) => void) | null = null;
   let connectionListener: ((connected: boolean) => void) | null = null;
   const watchSets: (readonly string[])[] = [];
   let escapes = 0;
@@ -214,7 +263,7 @@ function harness(overrides: Partial<BridgeDeps> = {}): Harness {
     bridge,
     frame,
     deps,
-    emit: (msg) => listener?.(msg),
+    emit: (msg, agent = "scout") => listener?.(msg, agent),
     escapes: () => escapes,
     watchSets,
     setConnected: (connected) => connectionListener?.(connected),
@@ -250,7 +299,7 @@ describe("WorkbenchBridge", () => {
     const h = harness();
     await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/status",
+      "/api/agents/scout/status",
       expect.objectContaining({ method: "GET", headers: { "X-Residuum-Artifact": "chart" } }),
     );
     const reply = h.frame.posted[0];
@@ -268,7 +317,7 @@ describe("WorkbenchBridge", () => {
       body: bytes.buffer,
     });
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/workspace/raw?path=image.bin",
+      "/api/agents/scout/workspace/raw?path=image.bin",
       expect.objectContaining({ method: "PUT", body: bytes.buffer }),
     );
   });
@@ -281,7 +330,7 @@ describe("WorkbenchBridge", () => {
       body: blob,
     });
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/workspace/raw?path=image.bin",
+      "/api/agents/scout/workspace/raw?path=image.bin",
       expect.objectContaining({ method: "PUT", body: blob }),
     );
   });
@@ -293,7 +342,7 @@ describe("WorkbenchBridge", () => {
       headers: { "x-residuum-ARTIFACT": "someone-else", "X-Keep-Me": "yes" },
     });
     expect(h.deps.fetch).toHaveBeenCalledWith(
-      "/api/status",
+      "/api/agents/scout/status",
       expect.objectContaining({
         headers: { "X-Keep-Me": "yes", "X-Residuum-Artifact": "chart" },
       }),
@@ -594,7 +643,9 @@ describe("WorkbenchBridge", () => {
 
     await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "subscribe" });
     h.emit(frame);
-    expect(h.frame.posted).toEqual([{ tag: BRIDGE_TAG, kind: "event", frame }]);
+    expect(h.frame.posted).toEqual([
+      { tag: BRIDGE_TAG, kind: "event", frame: { ...frame, agent: "scout" } },
+    ]);
 
     h.emit({ type: "pong" });
     expect(h.frame.posted).toHaveLength(1);
@@ -602,6 +653,46 @@ describe("WorkbenchBridge", () => {
     h.bridge.documentChanged();
     h.emit(frame);
     expect(h.frame.posted).toHaveLength(1);
+  });
+
+  it("stamps forwarded frames with the agent whose connection sent them", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, { tag: BRIDGE_TAG, kind: "subscribe" });
+    const frame: ServerMessage = { type: "artifact_updated", name: "chart" };
+    h.emit(frame, "scout");
+    h.emit(frame, "atlas");
+    h.emit(frame, null);
+    expect(h.frame.posted.map((m) => m.frame)).toEqual([
+      { ...frame, agent: "scout" },
+      { ...frame, agent: "atlas" },
+      frame,
+    ]);
+  });
+
+  it("answers an unscoped path with a 409 when no agent is open", async () => {
+    setCurrentAgent(null);
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
+    expect(h.deps.fetch).not.toHaveBeenCalled();
+    const result = h.frame.posted[0]?.result as RelayedResponse;
+    expect(result.status).toBe(409);
+    expect(JSON.parse(new TextDecoder().decode(result.body))).toHaveProperty("error");
+
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/agents/scout/status"));
+    expect(h.deps.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps an unscoped path onto the open agent and passes scoped paths through", async () => {
+    const h = harness();
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/status"));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/workbench/artifacts"));
+    await h.bridge.handleMessage(h.frame, ARTIFACTS, fetchMsg("/api/agents/atlas/status"));
+    const urls = vi.mocked(h.deps.fetch).mock.calls.map(([input]) => requestUrl(input));
+    expect(urls).toEqual([
+      "/api/agents/scout/status",
+      "/api/team/workbench/artifacts",
+      "/api/agents/atlas/status",
+    ]);
   });
 
   it("passes an unhandled Esc from the artifact to the page", async () => {
@@ -713,7 +804,10 @@ describe("WorkbenchBridge change feed", () => {
 
     h.emit(changed("wiki/a.md", "old/b.md"));
     h.emit({ type: "artifact_updated", name: "chart" });
-    expect(events(h)).toEqual([changed("wiki/a.md"), { type: "artifact_updated", name: "chart" }]);
+    expect(events(h)).toEqual([
+      changed("wiki/a.md"),
+      { type: "artifact_updated", name: "chart", agent: "scout" },
+    ]);
 
     // A page without the SDK never announces itself: its load clears everything.
     h.bridge.documentChanged();

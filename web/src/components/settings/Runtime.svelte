@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { ConfigFields } from "../../lib/settings-toml";
-  import Update from "./Update.svelte";
 
   let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
     $props();
@@ -9,15 +8,6 @@
 <div class="settings-section">
   <div class="settings-group">
     <div class="settings-group-label">General</div>
-    <div class="settings-field">
-      <label for="rt-timezone">Timezone</label>
-      <input
-        id="rt-timezone"
-        type="text"
-        bind:value={fields.timezone}
-        placeholder="e.g. America/New_York"
-      />
-    </div>
     <div class="settings-field">
       <label for="rt-timeout">Timeout (seconds)</label>
       <input
@@ -62,150 +52,6 @@
   </div>
 
   {#if !simple}
-    <div class="settings-group">
-      <div class="settings-group-label">Gateway</div>
-      <div class="settings-field">
-        <label for="rt-gateway-bind">Bind Address</label>
-        <input
-          id="rt-gateway-bind"
-          type="text"
-          bind:value={fields.gateway_bind}
-          placeholder="Default: 127.0.0.1"
-        />
-      </div>
-      <div class="settings-field">
-        <label for="rt-gateway-port">Port</label>
-        <input
-          id="rt-gateway-port"
-          type="number"
-          bind:value={fields.gateway_port}
-          placeholder="Default: 7700"
-        />
-      </div>
-    </div>
-
-    <div class="settings-group">
-      <div class="settings-group-label">Pulse & Background</div>
-      <div class="settings-field">
-        <label>
-          <span class="toggle-switch">
-            <input type="checkbox" bind:checked={fields.pulse_enabled} />
-            <span class="toggle-slider"></span>
-          </span>
-          Pulse Enabled
-        </label>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-max-concurrent">Max Concurrent Session Turns</label>
-        <input
-          id="rt-bg-max-concurrent"
-          type="number"
-          bind:value={fields.bg_max_concurrent}
-          placeholder="Default: 3"
-        />
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-idle-scheduled">Scheduled Session Idle Timeout (minutes)</label>
-        <input
-          id="rt-bg-idle-scheduled"
-          type="number"
-          bind:value={fields.bg_idle_timeout_scheduled_minutes}
-          placeholder="Default: 2"
-        />
-        <div class="field-hint">
-          How long a pulse or scheduled-action session lingers idle before completing. Webhook
-          sessions use this timeout too.
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-idle-spawned">Spawned Session Idle Timeout (minutes)</label>
-        <input
-          id="rt-bg-idle-spawned"
-          type="number"
-          bind:value={fields.bg_idle_timeout_spawned_minutes}
-          placeholder="Default: 10"
-        />
-        <div class="field-hint">
-          How long a session started by subagent_spawn or the learner lingers idle before
-          completing.
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-idle-external">External Session Idle Timeout (minutes)</label>
-        <input
-          id="rt-bg-idle-external"
-          type="number"
-          bind:value={fields.bg_idle_timeout_external_minutes}
-          placeholder="Default: 30"
-        />
-        <div class="field-hint">Idle timeout for non-webhook external sessions.</div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-idle-artifact">Artifact Session Idle Timeout (minutes)</label>
-        <input
-          id="rt-bg-idle-artifact"
-          type="number"
-          bind:value={fields.bg_idle_timeout_artifact_minutes}
-          placeholder="Default: 10"
-        />
-        <div class="field-hint">
-          How long a session started by a workbench artifact lingers idle before completing.
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-episode-skip-floor">Episode Skip Token Floor</label>
-        <input
-          id="rt-bg-episode-skip-floor"
-          type="number"
-          bind:value={fields.bg_episode_skip_token_floor}
-          placeholder="Default: 2000"
-        />
-        <div class="field-hint">
-          A completed session run below this many transcript tokens, with nothing staged, produces
-          no episode. Its transcript is still kept.
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-subagent-depth-cap">Subagent Nesting Depth Cap</label>
-        <input
-          id="rt-bg-subagent-depth-cap"
-          type="number"
-          bind:value={fields.bg_subagent_depth_cap}
-          placeholder="Default: 3"
-        />
-        <div class="field-hint">
-          Maximum nesting depth for subagent_spawn (main is depth 0). A session at the cap is
-          refused when it tries to spawn further.
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-hop-soft-limit">Hop Soft Limit</label>
-        <input
-          id="rt-bg-hop-soft-limit"
-          type="number"
-          bind:value={fields.bg_hop_soft_limit}
-          placeholder="Default: 8"
-        />
-        <div class="field-hint">
-          At or above this many hops, a delivered agent message carries a note asking the receiver
-          to reply only if a reply is actually needed.
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="rt-bg-hop-hard-limit">Hop Hard Limit</label>
-        <input
-          id="rt-bg-hop-hard-limit"
-          type="number"
-          bind:value={fields.bg_hop_hard_limit}
-          placeholder="Default: 32"
-        />
-        <div class="field-hint">
-          At or above this many hops, agent message delivery is refused outright, to bound message
-          loops.
-        </div>
-      </div>
-    </div>
-
     <div class="settings-group">
       <div class="settings-group-label">Subconscious</div>
       <div class="field-hint">
@@ -438,6 +284,4 @@
       </div>
     </div>
   {/if}
-
-  <Update />
 </div>

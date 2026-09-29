@@ -22,7 +22,11 @@
     type="text"
     bind:value={wizardState.userName}
     placeholder="What should your agent call you?"
+    aria-describedby="welcome-name-hint"
   />
+  <span id="welcome-name-hint" class="field-hint">
+    Optional. Your agents read this from the team's shared notes about you.
+  </span>
 </div>
 
 <div class="settings-field">

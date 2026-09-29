@@ -57,3 +57,21 @@ export async function advance(ms: number): Promise<void> {
     await vi.advanceTimersByTimeAsync(ms);
   });
 }
+
+/**
+ * Replace `WebSocket` with one that never connects. Choosing an agent
+ * (`setCurrentAgent`) opens the agent connection, and a component test has
+ * no server to answer it.
+ */
+export function stubWebSocket(): void {
+  class SilentWebSocket {
+    static readonly OPEN = 1;
+    readonly readyState = 0;
+    onopen: (() => void) | null = null;
+    onmessage: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    send(): void {}
+    close(): void {}
+  }
+  vi.stubGlobal("WebSocket", SilentWebSocket);
+}

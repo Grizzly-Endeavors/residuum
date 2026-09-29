@@ -117,6 +117,10 @@ export interface ConfigFields {
   cloud_token: string;
   cloud_relay_url: string;
   cloud_local_port: string;
+  // tracing
+  tracing_log_level: string;
+  tracing_auto_error_reporting: boolean;
+  tracing_sanitize_content: boolean;
   // skills
   skills_dirs: string[];
   // tools
@@ -203,6 +207,9 @@ export function defaultConfigFields(): ConfigFields {
     cloud_token: "",
     cloud_relay_url: "",
     cloud_local_port: "",
+    tracing_log_level: "",
+    tracing_auto_error_reporting: false,
+    tracing_sanitize_content: true,
     skills_dirs: [],
     tools_path: [],
     ws_backend: "",
@@ -414,6 +421,13 @@ export function parseConfigToml(raw: string, hubRaw = ""): ConfigFields {
     fields.cloud_token = str(cloud.token);
     fields.cloud_relay_url = str(cloud.relay_url);
     fields.cloud_local_port = str(cloud.local_port);
+  }
+
+  const tracing = doc.tracing as Record<string, unknown> | undefined;
+  if (tracing) {
+    fields.tracing_log_level = str(tracing.log_level);
+    fields.tracing_auto_error_reporting = bool(tracing.auto_error_reporting, false);
+    fields.tracing_sanitize_content = bool(tracing.sanitize_content, true);
   }
 
   const skills = doc.skills as Record<string, unknown> | undefined;
@@ -632,6 +646,11 @@ function commaList(raw: string): string[] {
 }
 
 /** Parse a numeric form field the way a bare TOML literal would: a float if it has a decimal point, else an int. */
+function formText(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  return typeof raw === "number" ? String(raw) : "";
+}
+
 function numberLiteral(raw: string): number {
   return raw.includes(".") ? parseFloat(raw) : parseInt(raw, 10);
 }
@@ -676,12 +695,14 @@ function canonField(spec: FieldSpec, raw: unknown): unknown {
       const s = (raw as string | undefined) ?? "";
       return !s || s === spec.default ? null : s;
     }
+    // A number input bound with `bind:value` hands back a number once the user
+    // types in it, so read the field as text either way.
     case "number": {
-      const s = (raw as string | undefined) ?? "";
+      const s = formText(raw);
       return s.trim() ? numberLiteral(s) : null;
     }
     case "numberDefault": {
-      const s = (raw as string | undefined) ?? "";
+      const s = formText(raw);
       return !s || s === spec.default ? null : numberLiteral(s);
     }
     case "bool": {
@@ -885,6 +906,20 @@ const CONFIG_FIELD_MAP: readonly FieldSpec[] = [
   { key: "cloud_token", path: ["cloud", "token"], kind: "string" },
   { key: "cloud_relay_url", path: ["cloud", "relay_url"], kind: "string" },
   { key: "cloud_local_port", path: ["cloud", "local_port"], kind: "number" },
+
+  { key: "tracing_log_level", path: ["tracing", "log_level"], kind: "string" },
+  {
+    key: "tracing_auto_error_reporting",
+    path: ["tracing", "auto_error_reporting"],
+    kind: "bool",
+    default: false,
+  },
+  {
+    key: "tracing_sanitize_content",
+    path: ["tracing", "sanitize_content"],
+    kind: "bool",
+    default: true,
+  },
 
   { key: "skills_dirs", path: ["skills", "dirs"], kind: "stringArray" },
   { key: "tools_path", path: ["tools", "path"], kind: "stringArray" },

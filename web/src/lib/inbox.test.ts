@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentAgent } from "./paths";
 import { userInbox } from "./inbox.svelte";
 import { notifications } from "./notifications.svelte";
 import type { UserInboxItem } from "./types";
@@ -20,7 +21,12 @@ function respond(handler: (url: string) => Response): void {
   );
 }
 
+beforeEach(() => {
+  setCurrentAgent("scout");
+});
+
 afterEach(() => {
+  setCurrentAgent(null);
   vi.unstubAllGlobals();
   userInbox.items = [];
   userInbox.archivedItems = [];

@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../test/component";
+import { setCurrentAgent } from "../lib/paths";
+import type { WorkspaceScope } from "../lib/hub-types";
 import FileHistoryModal from "./FileHistoryModal.svelte";
 
 const PAGE = {
@@ -18,11 +20,19 @@ const PAGE = {
   next_cursor: null,
 };
 
-afterEach(() => {
-  vi.unstubAllGlobals();
+beforeEach(() => {
+  setCurrentAgent("scout");
 });
 
-async function openAndRestore(path: string): Promise<{ urls: string[]; restoreBody: unknown }> {
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setCurrentAgent(null);
+});
+
+async function openAndRestore(
+  path: string,
+  scope?: WorkspaceScope,
+): Promise<{ urls: string[]; restoreBody: unknown }> {
   const urls: string[] = [];
   let restoreBody: unknown = null;
   mockFetch((url, init) => {
@@ -34,7 +44,7 @@ async function openAndRestore(path: string): Promise<{ urls: string[]; restoreBo
     if (url.includes("/diff")) return jsonResponse({ diff: "+hello" });
     return jsonResponse(PAGE);
   });
-  render(FileHistoryModal, { path, onClose: () => {}, onRestored: () => {} });
+  render(FileHistoryModal, { path, scope, onClose: () => {}, onRestored: () => {} });
   await settle();
   await fireEvent.click(await screen.findByText("Restore this version"));
   await settle();
@@ -44,7 +54,7 @@ async function openAndRestore(path: string): Promise<{ urls: string[]; restoreBo
 describe("FileHistoryModal repository routing", () => {
   it("reads and restores a team file from the team repository, relative to team/", async () => {
     const { urls, restoreBody } = await openAndRestore("team/wiki/x.md");
-    const list = urls.find((u) => u.startsWith("/api/checkpoints?"));
+    const list = urls.find((u) => u.startsWith("/api/hub/checkpoints?"));
     expect(list).toContain("repo=team");
     expect(list).toContain(`path=${encodeURIComponent("wiki/x.md")}`);
     const diff = urls.find((u) => u.includes("/diff"));
@@ -53,9 +63,18 @@ describe("FileHistoryModal repository routing", () => {
     expect(restoreBody).toEqual({ repo: "team", path: "wiki/x.md" });
   });
 
+  it("reads a team-scoped file, already relative to team/, from the team repository", async () => {
+    const { urls, restoreBody } = await openAndRestore("wiki/x.md", "team");
+    const list = urls.find((u) => u.startsWith("/api/hub/checkpoints?"));
+    expect(list).toContain("repo=team");
+    expect(list).toContain(`path=${encodeURIComponent("wiki/x.md")}`);
+    expect(urls.some((u) => u.startsWith("/api/agents/"))).toBe(false);
+    expect(restoreBody).toEqual({ repo: "team", path: "wiki/x.md" });
+  });
+
   it("reads and restores an agent file from the workspace repository unchanged", async () => {
     const { urls, restoreBody } = await openAndRestore("memory/notes.md");
-    const list = urls.find((u) => u.startsWith("/api/checkpoints?"));
+    const list = urls.find((u) => u.startsWith("/api/agents/scout/checkpoints?"));
     expect(list).toContain("repo=workspace");
     expect(list).toContain(`path=${encodeURIComponent("memory/notes.md")}`);
     expect(restoreBody).toEqual({ repo: "workspace", path: "memory/notes.md" });

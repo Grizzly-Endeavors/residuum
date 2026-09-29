@@ -206,6 +206,20 @@
     return frame.session && typeof frame.session.address === "string" ? frame.session.address : null;
   }
 
+  // Two agents can hold sessions at the same address, so a session is
+  // identified by (agent, address). The bridge stamps each frame with the
+  // agent whose connection sent it; a session frame without one belongs to no
+  // handle.
+  function sessionKey(agent, address) {
+    return `${agent}\n${address}`;
+  }
+
+  function sessionFrameKey(frame) {
+    const address = sessionFrameAddress(frame);
+    if (address === null || typeof frame.agent !== "string") return null;
+    return sessionKey(frame.agent, address);
+  }
+
   // A session's first frames can arrive before the start request's reply
   // says which address is ours. While any start is in flight, session frames
   // are kept here and handed to the handle that turns out to own them.
@@ -214,9 +228,9 @@
   const sessionRouters = new Map();
 
   function routeSessionFrame(frame) {
-    const address = sessionFrameAddress(frame);
-    if (address === null) return;
-    const route = sessionRouters.get(address);
+    const key = sessionFrameKey(frame);
+    if (key === null) return;
+    const route = sessionRouters.get(key);
     if (route) route(frame);
     else if (startsInFlight > 0) earlyFrames.push(frame);
   }
@@ -241,7 +255,7 @@
   // (which carries the run id) and early output aren't lost.
   function sessionHandle(agent, address, buffered) {
     const own = new Map();
-    sessionRouters.set(address, (frame) => {
+    sessionRouters.set(sessionKey(agent, address), (frame) => {
       for (const key of [frame.type, "*"]) {
         for (const handler of own.get(key) || []) {
           try {
@@ -324,7 +338,8 @@
       // slips past both the buffer and its handle.
       startsInFlight -= 1;
       if (address !== null) {
-        buffered = earlyFrames.filter((frame) => sessionFrameAddress(frame) === address);
+        const key = sessionKey(agent, address);
+        buffered = earlyFrames.filter((frame) => sessionFrameKey(frame) === key);
       }
       if (startsInFlight === 0) earlyFrames = [];
     }
