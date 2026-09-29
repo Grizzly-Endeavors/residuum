@@ -1,6 +1,6 @@
 # Team Directory
 
-Every agent on a hub shares one team directory, `~/.residuum/team/`, next to `hub/` and the agents' own directories. It holds what belongs to the whole team rather than to one agent: the team's behavioral rules, the user's core facts, the knowledge wiki, and the directories reserved for shared workbench artifacts and shared skills.
+Every agent on a hub shares one team directory, `~/.residuum/team/`, next to `hub/` and the agents' own directories. It holds what belongs to the whole team rather than to one agent: the team's behavioral rules, the user's core facts, the knowledge wiki, the shared workbench, and the shared skills.
 
 ```
 team/
@@ -12,8 +12,8 @@ team/
 │   └── agents/
 │       ├── index.md      # Roster: one line per agent
 │       └── <name>.md     # One role page per agent
-├── workbench/            # Reserved for shared workbench artifacts
-└── skills/               # Reserved for shared skills
+├── workbench/            # Workbench artifacts shared by every agent
+└── skills/               # Shared skills, including the bundled ones
 ```
 
 An agent keeps everything else in its own directory: `SOUL.md`, `HEARTBEAT.yml`, `SUBCONSCIOUS.md`, `BOOTSTRAP.md` (the first agent only, until its getting-started interview is done), `memory/`, the inboxes, and `config/`.
@@ -22,7 +22,7 @@ An agent keeps everything else in its own directory: `SOUL.md`, `HEARTBEAT.yml`,
 
 The team directory is created and filled by the same bootstrap that prepares an agent's workspace, so it happens at onboarding (the setup wizard, the CLI `residuum setup`, and the web UI's complete-setup) and again on every start:
 
-- The directories above are created if missing.
+- The directories above are created if missing, and the bundled skills are written into `skills/` when missing.
 - `AGENTS.md`, `USER.md`, `wiki/index.md`, `wiki/log.md` and `wiki/agents/index.md` are written only when missing. A file that exists is never modified, so edits by the user or an agent survive every restart.
 - Onboarding writes the user's name (and the timezone) into `USER.md` when it is first created. Later starts do not touch it.
 - The running agent's role page is written if missing.
