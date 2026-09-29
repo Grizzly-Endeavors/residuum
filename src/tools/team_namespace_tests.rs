@@ -331,7 +331,7 @@ async fn an_agents_own_writes_do_not_conflict_with_each_other() {
 }
 
 #[tokio::test]
-async fn agent_private_files_keep_todays_behavior() {
+async fn agent_private_files_are_overwritten_when_changed_elsewhere() {
     let hub = Hub::new();
     let private = hub.agent_dir("sam").join("notes.md");
     std::fs::write(&private, "start").unwrap();
@@ -339,7 +339,7 @@ async fn agent_private_files_keep_todays_behavior() {
     assert!(!read(&sam, "notes.md").await.is_error);
 
     // Changed behind the agent's back: a private file is still overwritten,
-    // exactly as before team coordination existed.
+    // because only team files are guarded against concurrent edits.
     std::fs::write(&private, "changed elsewhere").unwrap();
     let written = write(&sam, "notes.md", "sam's version").await;
     assert!(!written.is_error, "{}", written.output);

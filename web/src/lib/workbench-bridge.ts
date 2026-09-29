@@ -513,7 +513,7 @@ export class WorkbenchBridge {
       const normalized = normalizeWatchPrefix(prefix);
       if (normalized === null) {
         this.reply(request.id, {
-          error: `Can't watch "${prefix}": watch paths are relative to the workspace, like "wiki", and can't contain "..".`,
+          error: `Can't watch "${prefix}": watch paths are relative to the workspace, like "team/wiki", and can't contain "..".`,
         });
         return;
       }

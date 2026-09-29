@@ -264,9 +264,9 @@ pub(super) async fn init_memory(
 
 /// Remove wiki documents from the agent's own index and vectors.
 ///
-/// Wiki pages are indexed in the team wiki index, not in an agent's memory. An
-/// index built before that holds them; this clears them once and finds nothing
-/// afterwards. A failure is logged and leaves the leftovers in place: they
+/// Wiki pages are indexed in the team wiki index, not in an agent's memory. If
+/// an agent's index holds any, this clears them, and finds nothing on later
+/// starts. A failure is logged and leaves the leftovers in place: they
 /// duplicate team wiki hits until the next start clears them.
 fn purge_wiki_documents(search_index: &MemoryIndex, vector_store: Option<&VectorStore>) {
     match search_index.purge_wiki_documents() {
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_removes_wiki_documents_from_an_older_agent_index() {
+    async fn startup_removes_wiki_documents_from_an_agent_index() {
         use crate::memory::search::SearchFilters;
         use crate::memory::types::DocSource;
 
@@ -695,7 +695,7 @@ mod tests {
             "cluster upgrade planning",
         );
 
-        // An agent index and vector store built before wiki pages moved to the team index.
+        // An agent index and vector store that hold wiki documents alongside episodes.
         let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
         let manifest = IndexManifest::load(&manifest_path).await.unwrap();
         sync_search_index(&index, &manifest, &layout, &manifest_path).await;
