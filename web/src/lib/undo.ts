@@ -71,6 +71,18 @@ export interface RestoreTarget {
 const TEAM_PREFIX = "team/";
 
 /**
+ * Locate a workspace-API tree path in its checkpoint repository: `team/...`
+ * lives in the team repository relative to `team/`; anything else lives in
+ * the workspace repository under its own path.
+ */
+export function checkpointLocation(path: string): { repo: RepoKind; path: string } {
+  if (path.startsWith(TEAM_PREFIX)) {
+    return { repo: "team", path: path.slice(TEAM_PREFIX.length) };
+  }
+  return { repo: "workspace", path };
+}
+
+/**
  * Pick the restores that undo an action on workspace-API `paths`. A
  * `team/...` path lives in the team repository, relative to `team/`; any
  * other path lives in the workspace repository. Each path restores from the
@@ -83,15 +95,10 @@ export function restoreTargets(
 ): RestoreTarget[] {
   const targets: RestoreTarget[] = [];
   for (const path of paths) {
-    const inTeam = path.startsWith(TEAM_PREFIX);
-    const repo: RepoKind = inTeam ? "team" : "workspace";
-    const checkpoint = checkpoints.find((c) => c.repo === repo);
+    const location = checkpointLocation(path);
+    const checkpoint = checkpoints.find((c) => c.repo === location.repo);
     if (!checkpoint) continue;
-    targets.push({
-      checkpointId: checkpoint.id,
-      repo,
-      path: inTeam ? path.slice(TEAM_PREFIX.length) : path,
-    });
+    targets.push({ checkpointId: checkpoint.id, ...location });
   }
   return targets;
 }
