@@ -611,6 +611,12 @@ async fn stopping_an_agent_records_its_live_sessions_as_interrupted() {
     let (live, completed) = hub.sessions("scout").await;
     assert!(live.is_empty(), "no session survived the stop: {live:?}");
     assert_eq!(completed, 1, "the interrupted session was recorded");
+    let (_, body) = hub.get("/api/agents/scout/api/sessions").await;
+    let listing: Value = serde_json::from_str(&body).unwrap();
+    let outcome = array_at(&listing, "completed")
+        .first()
+        .map(|run| str_at(run, "outcome"));
+    assert_eq!(outcome, Some("cancelled"), "the run was stopped, not lost");
 }
 
 /// Collects, for each event, its target and whether it or any span around it

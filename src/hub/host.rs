@@ -581,7 +581,9 @@ impl AgentHost {
                 ),
                 "the event loop ended because its message channel closed".to_string(),
             )),
-            Err(_) if requested => None,
+            // Only an abort after a timed-out stop is a stop; a panic while
+            // shutting down is still a crash.
+            Err(ref join_err) if requested && join_err.is_cancelled() => None,
             Err(join_err) => Some((
                 format!(
                     "{} crashed from an internal error. Restart it from the team view; if it keeps happening, send a bug report.",

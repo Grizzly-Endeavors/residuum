@@ -22,11 +22,11 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
     child_args
 }
 
-/// Spawn the gateway as a background daemon process.
+/// Spawn the hub as a background daemon process.
 ///
 /// Launches `residuum serve --foreground` as a detached child and waits for
-/// it to report itself healthy (providers, workspace, and its HTTP listener
-/// all ready — see `gateway::event_loop::run_loop::run_gateway`) before
+/// it to report itself healthy (its HTTP listener bound and every autostart
+/// agent started or recorded as failed — see `hub::run_hub`) before
 /// reporting success, so a later init failure is caught here instead of
 /// being reported as "started" and then exiting silently. Prints a
 /// first-launch welcome message if no config exists yet.
@@ -130,9 +130,9 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         }
     }
 
-    // Wait for the daemon to report itself healthy: providers and workspace
-    // initialized, and its HTTP listener bound (see
-    // `gateway::event_loop::run_loop::run_gateway`). Reaching the PID lock
+    // Wait for the daemon to report itself healthy: its HTTP listener bound
+    // and every autostart agent started or recorded as failed (see
+    // `hub::run_hub`). Reaching the PID lock
     // alone isn't enough — a later init failure would otherwise be reported
     // as "started" and then exit silently.
     let ready_path = residuum::daemon::ready_file_path(&hub_dir);

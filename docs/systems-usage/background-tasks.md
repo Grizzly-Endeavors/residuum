@@ -200,7 +200,7 @@ A spawn naming a skill that does not resolve fails loudly rather than running a 
 
 ## Concurrency
 
-The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` section of `hub/config.toml`, shared by every category, `artifact` sessions included. The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
+The session runtime uses a semaphore bounded by `max_concurrent` in the `[background]` section of `hub/config.toml`, shared by every category, `artifact` sessions included, and by every agent the hub hosts (one budget for the whole hub; see [Hub](hub.md)). The permit is held only while a turn is actually running — an idle session holds nothing, so lingering sessions cost memory, not throughput. Runs that can't get a permit wait for one.
 
 ## Result Routing
 
