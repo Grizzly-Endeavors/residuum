@@ -6,13 +6,13 @@ The memory system gives the agent persistent recall across conversations. It has
 
 ### Knowledge Wiki
 
-Distilled long-term knowledge — facts about the user, their world, their work, and the machine — lives in the `wiki/` directory as one-concept Markdown pages. Only its root `index.md` is in the prompt; pages are read on demand. The memory pipeline below is the raw material the wiki is built from: the `memory_tending` pulse reads new episodes and files what they teach into wiki pages. See [wiki.md](wiki.md).
+Distilled long-term knowledge — facts about the user, their world, their work, and the machine — lives in the shared team wiki at `team/wiki/` as one-concept Markdown pages. Only its root `index.md` is in the prompt; pages are read on demand. The memory pipeline below is the raw material the wiki is built from: the `memory_tending` pulse reads new episodes and files what they teach into wiki pages. See [wiki.md](wiki.md).
 
-### USER.md — Core Facts
+### team/USER.md — Core Facts
 
-`USER.md` holds only durable identity and standing preferences the agent needs on every turn (name, timezone, how the user likes to be addressed and answered). It is hard-capped at roughly 15 entries and **replace, don't append**: once full, adding an entry means removing one. Everything longer-form about the user lives in wiki pages.
+`team/USER.md` holds only durable identity and standing preferences the agent needs on every turn (name, timezone, how the user likes to be addressed and answered). It is hard-capped at roughly 15 entries and **replace, don't append**: once full, adding an entry means removing one. Everything longer-form about the user lives in wiki pages.
 
-An entry belongs in `USER.md` only once it is corroborated — supported by at least two independent episodes. Knowledge seen in a single episode goes into a `draft` wiki page instead. The `memory_tending` pulse and the `learner` skill both apply this rule.
+An entry belongs in `team/USER.md` only once it is corroborated — supported by at least two independent episodes. Knowledge seen in a single episode goes into a `draft` wiki page instead. The `memory_tending` pulse and the `learner` skill both apply this rule.
 
 ### Observer — Automatic Episode Extraction
 
@@ -55,7 +55,7 @@ Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). Next ID determined
 
 Fires when `memory/observations.json` exceeds a token threshold. Calls the LLM to merge and deduplicate observations, then writes the compressed result back to `observations.json`. The results are identical in structure, just compressed.
 
-**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki or `USER.md`. These are completely separate systems.
+**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch the wiki or `team/USER.md`. These are completely separate systems.
 
 Original observations are backed up before replacement. Empty LLM responses are rejected (the reflector will not destroy existing content).
 
@@ -136,12 +136,12 @@ An unknown run id returns an error pointing at `list_agents` (live sessions) and
 
 ## Context Assembly
 
-Knowledge and memory appear in the agent's context, after `USER.md`, as:
-1. `WIKI_INDEX` — the wiki's root `index.md`
+Knowledge and memory appear in the agent's context, after `team/USER.md`, as:
+1. `WIKI_INDEX` — the team wiki's root `team/wiki/index.md`
 2. `OBSERVATION_LOG` — the formatted observation log from `observations.json`
 3. `RECENT_CONTEXT` — the narrative from the latest observation (`memory/recent_context.json`)
 
-An agent session's fork carries a snapshot of the observation log and the recent-context narrative taken at fork time, alongside `USER.md` and `WIKI_INDEX` — a session never sees observations merged after it forked; it sees them on its next run. See [background-tasks.md](background-tasks.md) for the full fork contents.
+An agent session's fork carries a snapshot of the observation log and the recent-context narrative taken at fork time, alongside `team/USER.md` and `WIKI_INDEX` — a session never sees observations merged after it forked; it sees them on its next run. See [background-tasks.md](background-tasks.md) for the full fork contents.
 
 ## Message Senders
 
