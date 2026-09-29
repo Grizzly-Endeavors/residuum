@@ -21,7 +21,7 @@ pulses:
     enabled: true
     schedule: "7d"
     agent: "introspection"
-    model_tier: "large"
+    model_tier: "small"
     tasks:
       - name: find_patterns
         prompt: "Review the past few weeks of episodes and observations with memory_search and memory_get. Look for: tasks the user does repeatedly by hand, topics they keep returning to, requests mentioned but never finished, and friction they keep hitting. Keep only the few strongest findings."
@@ -33,7 +33,7 @@ pulses:
     schedule: "24h"
     active_hours: "02:00-06:00"
     agent: "wiki"
-    model_tier: "large"
+    model_tier: "small"
     tasks:
       - name: gate
         prompt: "Find the last ingest entry in wiki/log.md and the episode it went through, then try memory_get on the next episode ID. If that episode is not found, respond with exactly HEARTBEAT_OK and skip the remaining tasks."
@@ -45,7 +45,7 @@ pulses:
     schedule: "7d"
     active_hours: "02:00-06:00"
     agent: "wiki"
-    model_tier: "large"
+    model_tier: "small"
     tasks:
       - name: lint
         prompt: "Run the Lint procedure from your instructions across the whole wiki, fixing each problem as you find it. Summarize what you fixed, one line per fix."
