@@ -385,7 +385,6 @@ pub(crate) struct GatewayRuntime {
     /// reaching the user's interfaces.
     pub config_reload_tracker: crate::tools::SharedConfigReloadTracker,
     /// This instance's current A2A public URL, read by the web settings API. `None` when A2A is disabled.
-    pub a2a_public_url: Option<crate::a2a::SharedA2aPublicUrl>,
     pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Polls `config.toml`/`providers.toml` for changes made outside the web
     /// config API (the agent's own `write_file`/`edit_file`, or a manual

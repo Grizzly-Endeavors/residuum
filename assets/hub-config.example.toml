@@ -49,8 +49,9 @@ port = 7700
 # [a2a]
 # enabled = true
 # port = 7702
-# public_url = ""             # this instance's own tunnel/reverse proxy origin;
-#                              # leave empty to let the relay supply one instead
+# public_url = ""             # your own tunnel/reverse proxy origin; each agent's
+#                              # card advertises <public_url>/agents/<name>. Empty
+#                              # uses the local address.
 
 # ── Tracing and observability (optional) ─────────────────────────────────────
 # [tracing]

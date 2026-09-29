@@ -1,17 +1,18 @@
-//! Axum auth middleware for the A2A listener.
+//! Request authentication for the A2A listener.
 //!
 //! Every request is authenticated as either a caller-key holder or a sibling
 //! instance attested by this process's own tunnel connection, per
-//! `docs/systems-usage/a2a.md`. The resolved caller is injected as
-//! [`CALLER_HEADER`] for the handler and executor to read; nothing
-//! downstream of this layer should trust that header from anywhere else.
+//! `docs/systems-usage/a2a.md`. The check runs per request, before the
+//! request is dispatched to an agent, with the target agent's visibility.
+//! The resolved caller is injected as [`CALLER_HEADER`] for the handler and
+//! executor to read; nothing downstream of this layer should trust that
+//! header from anywhere else.
 
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode, header};
-use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use crate::config::A2aVisibility;
@@ -91,15 +92,14 @@ where
     }
 }
 
-/// Shared state for the auth middleware.
+/// Hub-level state for request authentication: the one caller-key store and
+/// the process's tunnel nonce, shared by every agent.
 #[derive(Clone)]
 pub struct AuthState {
     /// Caller-key store, for verifying `Authorization: Bearer` tokens.
     pub keys: SharedA2aKeys,
     /// Source of this process's tunnel nonce, for sibling attestation.
     pub tunnel_nonce: Arc<dyn TunnelNonceSource>,
-    /// Fixed for the listener's lifetime — a visibility change restarts it.
-    pub visibility: A2aVisibility,
 }
 
 /// Whether `req` is the public Agent Card GET, which stays open to everyone
@@ -132,13 +132,28 @@ async fn resolve_caller(
     Some(Caller::Key(name))
 }
 
-/// The auth middleware. Install with
-/// `axum::middleware::from_fn_with_state(state, auth_middleware)`.
-pub async fn auth_middleware(
-    State(state): State<AuthState>,
+/// The result of [`authorize`].
+pub enum Admission {
+    /// The caller may proceed. The request has its credentials replaced by
+    /// the verified [`CALLER_HEADER`].
+    Admitted(Request<Body>),
+    /// The caller is refused, or the request was fully answered here (the
+    /// auth-check probe). Send this response instead of dispatching.
+    Answered(Response),
+}
+
+/// Authenticate `req` against an agent with the given `visibility`.
+///
+/// A caller key or sibling attestation admits the caller to any agent. With
+/// neither, a public agent serves only its Agent Card (everything else is
+/// `401`) and a private agent answers `404` to every route. The
+/// [`AUTH_CHECK_PATH`] probe is answered here: `204` when the caller is
+/// authenticated, `404` otherwise.
+pub async fn authorize(
+    state: &AuthState,
+    visibility: A2aVisibility,
     mut req: Request<Body>,
-    next: Next,
-) -> Response {
+) -> Admission {
     let headers = req.headers_mut();
     // Never trust a client-supplied caller header, in or out.
     headers.remove(CALLER_HEADER);
@@ -161,7 +176,7 @@ pub async fn auth_middleware(
     let card_get = is_card_get(&req);
     let auth_check = is_auth_check(&req);
     let caller = resolve_caller(
-        &state,
+        state,
         tunnel.as_deref(),
         sibling.as_deref(),
         authorization.as_deref(),
@@ -169,14 +184,14 @@ pub async fn auth_middleware(
     .await;
 
     if auth_check {
-        return if caller.is_some() {
+        return Admission::Answered(if caller.is_some() {
             StatusCode::NO_CONTENT.into_response()
         } else {
             StatusCode::NOT_FOUND.into_response()
-        };
+        });
     }
 
-    match (caller, state.visibility) {
+    match (caller, visibility) {
         (Some(caller), _) => {
             // The credential has done its job; keep the raw key out of the
             // SDK's service params, which the handler and executor see.
@@ -184,22 +199,24 @@ pub async fn auth_middleware(
             match HeaderValue::from_str(&caller.header_value()) {
                 Ok(value) => {
                     req.headers_mut().insert(CALLER_HEADER, value);
-                    next.run(req).await
+                    Admission::Admitted(req)
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "a2a caller identity is not a valid header value");
-                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    Admission::Answered(StatusCode::INTERNAL_SERVER_ERROR.into_response())
                 }
             }
         }
-        (None, A2aVisibility::Public) if card_get => next.run(req).await,
+        (None, A2aVisibility::Public) if card_get => Admission::Admitted(req),
         (None, A2aVisibility::Public) => {
             let mut resp = StatusCode::UNAUTHORIZED.into_response();
             resp.headers_mut()
                 .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-            resp
+            Admission::Answered(resp)
         }
-        (None, A2aVisibility::Private) => StatusCode::NOT_FOUND.into_response(),
+        (None, A2aVisibility::Private) => {
+            Admission::Answered(StatusCode::NOT_FOUND.into_response())
+        }
     }
 }
 
@@ -238,25 +255,36 @@ mod tests {
         }
     }
 
-    fn app(state: AuthState) -> Router {
-        Router::new()
-            .route("/.well-known/agent-card.json", get(echo_caller))
-            .route(AUTH_CHECK_PATH, get(echo_caller))
-            .route("/", axum::routing::post(echo_caller))
-            .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+    /// The test stand-in for the hub listener: authorize, then hand the
+    /// admitted request to a router that echoes what the handler would see.
+    struct TestApp {
+        state: AuthState,
+        visibility: A2aVisibility,
     }
 
-    async fn state_with_key(
-        dir: &std::path::Path,
-        visibility: A2aVisibility,
-    ) -> (AuthState, String) {
+    impl TestApp {
+        async fn oneshot(self, req: Request<Body>) -> Result<Response, std::convert::Infallible> {
+            let inner = Router::new()
+                .route("/.well-known/agent-card.json", get(echo_caller))
+                .route("/", axum::routing::post(echo_caller));
+            match authorize(&self.state, self.visibility, req).await {
+                Admission::Admitted(req) => inner.oneshot(req).await,
+                Admission::Answered(resp) => Ok(resp),
+            }
+        }
+    }
+
+    fn app(state: AuthState, visibility: A2aVisibility) -> TestApp {
+        TestApp { state, visibility }
+    }
+
+    async fn state_with_key(dir: &std::path::Path) -> (AuthState, String) {
         let keys = A2aKeys::new(dir);
         let token = keys.create("laptop", None).await.unwrap();
         (
             AuthState {
                 keys: Arc::new(keys),
                 tunnel_nonce: Arc::new(NoTunnel),
-                visibility,
             },
             token,
         )
@@ -273,14 +301,15 @@ mod tests {
     #[tokio::test]
     async fn valid_key_is_authenticated_and_header_injected() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, token) = state_with_key(dir.path(), A2aVisibility::Public).await;
+        let (state, token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Public;
         let req = Request::builder()
             .method("POST")
             .uri("/")
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, visibility).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = String::from_utf8(
             axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -295,14 +324,15 @@ mod tests {
     #[tokio::test]
     async fn bad_key_is_401_in_public_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, _token) = state_with_key(dir.path(), A2aVisibility::Public).await;
+        let (state, _token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Public;
         let req = Request::builder()
             .method("POST")
             .uri("/")
             .header(header::AUTHORIZATION, "Bearer rsdm_a2a_totallywrongtoken")
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, visibility).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
@@ -313,13 +343,14 @@ mod tests {
     #[tokio::test]
     async fn bad_key_is_404_in_private_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, _token) = state_with_key(dir.path(), A2aVisibility::Private).await;
+        let (state, _token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Private;
         let req = Request::builder()
             .method("POST")
             .uri("/")
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, visibility).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert!(resp.headers().get(header::WWW_AUTHENTICATE).is_none());
     }
@@ -327,8 +358,9 @@ mod tests {
     #[tokio::test]
     async fn card_get_is_open_in_public_mode_without_a_key() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, _token) = state_with_key(dir.path(), A2aVisibility::Public).await;
-        let resp = app(state)
+        let (state, _token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Public;
+        let resp = app(state, visibility)
             .oneshot(get_req("/.well-known/agent-card.json", None))
             .await
             .unwrap();
@@ -338,8 +370,9 @@ mod tests {
     #[tokio::test]
     async fn card_get_is_404_in_private_mode_without_a_key() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, _token) = state_with_key(dir.path(), A2aVisibility::Private).await;
-        let resp = app(state)
+        let (state, _token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Private;
+        let resp = app(state, visibility)
             .oneshot(get_req("/.well-known/agent-card.json", None))
             .await
             .unwrap();
@@ -349,8 +382,9 @@ mod tests {
     #[tokio::test]
     async fn card_get_succeeds_in_private_mode_with_a_valid_key() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, token) = state_with_key(dir.path(), A2aVisibility::Private).await;
-        let resp = app(state)
+        let (state, token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Private;
+        let resp = app(state, visibility)
             .oneshot(get_req("/.well-known/agent-card.json", Some(&token)))
             .await
             .unwrap();
@@ -364,7 +398,6 @@ mod tests {
         let state = AuthState {
             keys: Arc::new(keys),
             tunnel_nonce: Arc::new(FixedNonce("real-nonce")),
-            visibility: A2aVisibility::Public,
         };
         let req = Request::builder()
             .method("POST")
@@ -373,7 +406,10 @@ mod tests {
             .header(SIBLING_HEADER, "alpha")
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, A2aVisibility::Public)
+            .oneshot(req)
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -384,7 +420,6 @@ mod tests {
         let state = AuthState {
             keys: Arc::new(keys),
             tunnel_nonce: Arc::new(NoTunnel),
-            visibility: A2aVisibility::Public,
         };
         let req = Request::builder()
             .method("POST")
@@ -393,7 +428,10 @@ mod tests {
             .header(SIBLING_HEADER, "alpha")
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, A2aVisibility::Public)
+            .oneshot(req)
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -404,7 +442,6 @@ mod tests {
         let state = AuthState {
             keys: Arc::new(keys),
             tunnel_nonce: Arc::new(FixedNonce("real-nonce")),
-            visibility: A2aVisibility::Public,
         };
         let req = Request::builder()
             .method("POST")
@@ -413,7 +450,10 @@ mod tests {
             .header(SIBLING_HEADER, "alpha")
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, A2aVisibility::Public)
+            .oneshot(req)
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = String::from_utf8(
             axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -431,7 +471,8 @@ mod tests {
     #[tokio::test]
     async fn client_supplied_caller_header_is_stripped_and_never_trusted() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, token) = state_with_key(dir.path(), A2aVisibility::Public).await;
+        let (state, token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Public;
         let req = Request::builder()
             .method("POST")
             .uri("/")
@@ -439,7 +480,7 @@ mod tests {
             .header(CALLER_HEADER, "key:someone-else")
             .body(Body::empty())
             .unwrap();
-        let resp = app(state).oneshot(req).await.unwrap();
+        let resp = app(state, visibility).oneshot(req).await.unwrap();
         let body = String::from_utf8(
             axum::body::to_bytes(resp.into_body(), usize::MAX)
                 .await
@@ -460,15 +501,16 @@ mod tests {
     #[tokio::test]
     async fn auth_check_is_204_when_authenticated_and_404_otherwise() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, token) = state_with_key(dir.path(), A2aVisibility::Public).await;
+        let (state, token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Public;
 
-        let ok = app(state.clone())
+        let ok = app(state.clone(), visibility)
             .oneshot(get_req(AUTH_CHECK_PATH, Some(&token)))
             .await
             .unwrap();
         assert_eq!(ok.status(), StatusCode::NO_CONTENT);
 
-        let denied = app(state)
+        let denied = app(state, visibility)
             .oneshot(get_req(AUTH_CHECK_PATH, None))
             .await
             .unwrap();
@@ -478,15 +520,16 @@ mod tests {
     #[tokio::test]
     async fn auth_check_behaves_the_same_in_private_mode() {
         let dir = tempfile::tempdir().unwrap();
-        let (state, token) = state_with_key(dir.path(), A2aVisibility::Private).await;
+        let (state, token) = state_with_key(dir.path()).await;
+        let visibility = A2aVisibility::Private;
 
-        let ok = app(state.clone())
+        let ok = app(state.clone(), visibility)
             .oneshot(get_req(AUTH_CHECK_PATH, Some(&token)))
             .await
             .unwrap();
         assert_eq!(ok.status(), StatusCode::NO_CONTENT);
 
-        let denied = app(state)
+        let denied = app(state, visibility)
             .oneshot(get_req(AUTH_CHECK_PATH, None))
             .await
             .unwrap();
