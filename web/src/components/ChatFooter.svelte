@@ -58,6 +58,11 @@
     return tokens == null ? null : formatTokenCount(tokens);
   });
 
+  let toolCallsLabel = $derived.by(() => {
+    const calls = usage?.tool_calls;
+    return calls ? `${calls} tool call${calls === 1 ? "" : "s"}` : null;
+  });
+
   // Background, non-blocking housekeeping — never a reason to interrupt or
   // alarm, so it reads as one quiet phrase rather than a status per kind.
   let activityLabel = $derived.by(() => {
@@ -78,6 +83,10 @@
       <span class="chat-footer-item">
         ↑ {formatTokenCount(usage.input_tokens)} ↓ {formatTokenCount(usage.output_tokens)}
       </span>
+      {#if toolCallsLabel}
+        <span class="chat-footer-sep">·</span>
+        <span class="chat-footer-item">{toolCallsLabel}</span>
+      {/if}
       {#if contextLabel}
         <span class="chat-footer-sep">·</span>
         <span class="chat-footer-item">{contextLabel} context</span>

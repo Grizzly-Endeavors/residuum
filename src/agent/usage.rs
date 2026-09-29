@@ -30,6 +30,10 @@ pub struct TurnUsage {
     /// `false`, the web UI shows elapsed time alone rather than a
     /// misleading zero-token count.
     pub has_usage: bool,
+    /// Tool calls executed so far this turn. Every tool call an executed
+    /// batch carries counts individually, including calls made in parallel
+    /// within the same model response.
+    pub tool_calls: u32,
 }
 
 impl TurnUsage {
@@ -42,6 +46,11 @@ impl TurnUsage {
         };
         self.has_usage = true;
         self.output_tokens += usage.output_tokens;
+    }
+
+    /// Fold `n` more executed tool calls into this turn's running count.
+    pub fn record_tool_calls(&mut self, n: u32) {
+        self.tool_calls += n;
     }
 }
 
@@ -65,6 +74,16 @@ pub struct SessionUsageTotals {
     /// size known to the codebase, so this is shown as an absolute count
     /// rather than a percentage.
     pub context_tokens: Option<u32>,
+    /// Tool calls executed across every turn this session has run. Every
+    /// tool call an executed batch carries counts individually, including
+    /// calls made in parallel within the same model response.
+    ///
+    /// `#[serde(default)]` so a totals file or run record persisted before
+    /// this field existed still deserializes, showing zero rather than
+    /// failing to load.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub tool_calls: u64,
 }
 
 impl SessionUsageTotals {
@@ -82,6 +101,11 @@ impl SessionUsageTotals {
                 + usage.cache_read_tokens.unwrap_or(0),
         );
     }
+
+    /// Fold `n` more executed tool calls into these running totals.
+    pub fn record_tool_calls(&mut self, n: u32) {
+        self.tool_calls += u64::from(n);
+    }
 }
 
 /// Where a turn's session-level usage totals are durably accumulated: the
@@ -96,6 +120,11 @@ pub trait UsageSink: Send + Sync {
     /// return the updated totals, for publishing alongside this turn's own
     /// progress.
     async fn accumulate(&self, usage: Option<Usage>) -> SessionUsageTotals;
+
+    /// Fold `n` more executed tool calls into the durable running totals
+    /// and return the updated totals, for publishing alongside this turn's
+    /// own progress.
+    async fn record_tool_calls(&self, n: u32) -> SessionUsageTotals;
 }
 
 /// Load previously persisted session usage totals.
@@ -182,6 +211,18 @@ impl UsageSink for MainUsageSink {
         }
         snapshot
     }
+
+    async fn record_tool_calls(&self, n: u32) -> SessionUsageTotals {
+        let snapshot = {
+            let mut guard = self.totals.lock().await;
+            guard.record_tool_calls(n);
+            *guard
+        };
+        if let Some(path) = &self.persist_path {
+            save_session_usage_totals(path, &snapshot).await;
+        }
+        snapshot
+    }
 }
 
 #[cfg(test)]
@@ -233,6 +274,20 @@ mod tests {
     }
 
     #[test]
+    fn turn_usage_record_tool_calls_accumulates_across_batches() {
+        let mut turn = TurnUsage::default();
+        turn.record_tool_calls(3);
+        turn.record_tool_calls(2);
+        assert_eq!(turn.tool_calls, 5);
+    }
+
+    #[test]
+    fn turn_usage_with_zero_tool_calls_stays_zero() {
+        let turn = TurnUsage::default();
+        assert_eq!(turn.tool_calls, 0);
+    }
+
+    #[test]
     fn session_usage_totals_accumulate_input_and_output() {
         let mut totals = SessionUsageTotals::default();
         totals.accumulate(Some(usage(100, 20)));
@@ -267,6 +322,31 @@ mod tests {
         assert_eq!(totals.input_tokens, 100);
         assert_eq!(totals.output_tokens, 20);
         assert_eq!(totals.context_tokens, Some(100));
+    }
+
+    #[test]
+    fn session_usage_totals_record_tool_calls_accumulates() {
+        let mut totals = SessionUsageTotals::default();
+        totals.record_tool_calls(4);
+        totals.record_tool_calls(6);
+        assert_eq!(totals.tool_calls, 10);
+    }
+
+    #[test]
+    fn session_usage_totals_deserializes_a_payload_persisted_before_tool_calls_existed() {
+        let old_payload = serde_json::json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "context_tokens": 100,
+        });
+        let totals: SessionUsageTotals = serde_json::from_value(old_payload).unwrap();
+        assert_eq!(totals.input_tokens, 100);
+        assert_eq!(totals.output_tokens, 20);
+        assert_eq!(totals.context_tokens, Some(100));
+        assert_eq!(
+            totals.tool_calls, 0,
+            "a payload persisted before tool_calls existed should default to zero, not fail to parse"
+        );
     }
 
     #[tokio::test]
@@ -331,5 +411,29 @@ mod tests {
             totals.input_tokens, 20,
             "in-memory accumulation must work without a persist path"
         );
+    }
+
+    #[tokio::test]
+    async fn main_usage_sink_record_tool_calls_persists_after_every_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage_totals.json");
+        let shared = Arc::new(Mutex::new(SessionUsageTotals::default()));
+        let sink = MainUsageSink::new(Arc::clone(&shared), Some(path.clone()));
+
+        let first = sink.record_tool_calls(3).await;
+        assert_eq!(first.tool_calls, 3);
+        let persisted_after_first = load_session_usage_totals(&path).await;
+        assert_eq!(
+            persisted_after_first, first,
+            "every tool-call batch should write through to disk"
+        );
+
+        let second = sink.record_tool_calls(2).await;
+        assert_eq!(
+            second.tool_calls, 5,
+            "tool call counts accumulate across batches on the shared Arc"
+        );
+        let persisted_after_second = load_session_usage_totals(&path).await;
+        assert_eq!(persisted_after_second, second);
     }
 }

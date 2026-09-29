@@ -36,6 +36,10 @@ output_tokens: number,
  */
 has_usage: boolean, 
 /**
+ * Tool calls executed so far this turn.
+ */
+tool_calls: number, 
+/**
  * Updated cumulative session totals, once known.
  */
 session_totals: SessionUsageTotals | null, } | { "type": "post_turn_activity", kind: PostTurnActivityKind, active: boolean, } | { "type": "tool_call", 
@@ -251,6 +255,10 @@ output_tokens: number,
  * Whether any model call so far this turn reported usage.
  */
 has_usage: boolean, 
+/**
+ * Tool calls executed so far this turn.
+ */
+tool_calls: number, 
 /**
  * Updated cumulative session totals, once known.
  */

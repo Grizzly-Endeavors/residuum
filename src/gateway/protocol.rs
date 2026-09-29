@@ -397,11 +397,12 @@ pub enum ServerMessage {
         /// Correlation ID of the message whose turn just completed.
         reply_to: String,
     },
-    /// Token usage progress for the main agent's turn still running: this
-    /// turn's own output tokens so far (for the running-turn indicator)
-    /// and, once at least one call has reported usage, the updated
-    /// cumulative session totals (for the chat footer). Never delivered
-    /// to the agent itself. See `docs/systems-usage/turn-control.md`.
+    /// Token usage and tool-call progress for the main agent's turn still
+    /// running: this turn's own output tokens and executed tool calls so
+    /// far (for the running-turn indicator) and, once at least one call
+    /// has reported usage, the updated cumulative session totals (for the
+    /// chat footer). Never delivered to the agent itself. See
+    /// `docs/systems-usage/turn-control.md`.
     TurnUsage {
         /// Correlation ID of the message being processed.
         reply_to: String,
@@ -409,6 +410,9 @@ pub enum ServerMessage {
         output_tokens: u32,
         /// Whether any model call so far this turn reported usage.
         has_usage: bool,
+        /// Tool calls executed so far this turn.
+        #[serde(default)]
+        tool_calls: u32,
         /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
@@ -580,8 +584,8 @@ pub enum ServerMessage {
         /// Whether the tool returned an error.
         is_error: bool,
     },
-    /// Token usage progress for a session's turn still running — the
-    /// session counterpart of `TurnUsage`.
+    /// Token usage and tool-call progress for a session's turn still
+    /// running — the session counterpart of `TurnUsage`.
     SessionTurnUsage {
         /// Session address.
         address: String,
@@ -591,6 +595,9 @@ pub enum ServerMessage {
         output_tokens: u32,
         /// Whether any model call so far this turn reported usage.
         has_usage: bool,
+        /// Tool calls executed so far this turn.
+        #[serde(default)]
+        tool_calls: u32,
         /// Updated cumulative session totals, once known.
         #[serde(skip_serializing_if = "Option::is_none")]
         session_totals: Option<SessionUsageTotals>,
@@ -1151,6 +1158,7 @@ mod tests {
             reply_to: "id-1".to_string(),
             output_tokens: 42,
             has_usage: true,
+            tool_calls: 3,
             session_totals: None,
         };
         assert_eq!(
@@ -1160,6 +1168,7 @@ mod tests {
                 "reply_to": "id-1",
                 "output_tokens": 42,
                 "has_usage": true,
+                "tool_calls": 3,
             }),
             "session_totals should be omitted, not serialized as null"
         );
@@ -1171,10 +1180,12 @@ mod tests {
             reply_to: "id-1".to_string(),
             output_tokens: 42,
             has_usage: true,
+            tool_calls: 3,
             session_totals: Some(SessionUsageTotals {
                 input_tokens: 100,
                 output_tokens: 42,
                 context_tokens: Some(100),
+                tool_calls: 3,
             }),
         };
         assert_eq!(
@@ -1184,13 +1195,38 @@ mod tests {
                 "reply_to": "id-1",
                 "output_tokens": 42,
                 "has_usage": true,
+                "tool_calls": 3,
                 "session_totals": {
                     "input_tokens": 100,
                     "output_tokens": 42,
                     "context_tokens": 100,
+                    "tool_calls": 3,
                 },
             })
         );
+    }
+
+    /// A `turn_usage` frame received without a `tool_calls` field (e.g.
+    /// from a client built against an older protocol version) still
+    /// deserializes, defaulting the count to zero rather than failing.
+    #[test]
+    fn server_message_deserialize_turn_usage_without_tool_calls_field() {
+        let old_payload = serde_json::json!({
+            "type": "turn_usage",
+            "reply_to": "id-1",
+            "output_tokens": 42,
+            "has_usage": true,
+        });
+        let msg: ServerMessage = serde_json::from_value(old_payload).unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::TurnUsage {
+                tool_calls: 0,
+                output_tokens: 42,
+                has_usage: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1200,6 +1236,7 @@ mod tests {
             run_id: "run-1".into(),
             output_tokens: 7,
             has_usage: true,
+            tool_calls: 2,
             session_totals: None,
         };
         assert_eq!(
@@ -1210,6 +1247,7 @@ mod tests {
                 "run_id": "run-1",
                 "output_tokens": 7,
                 "has_usage": true,
+                "tool_calls": 2,
             })
         );
     }

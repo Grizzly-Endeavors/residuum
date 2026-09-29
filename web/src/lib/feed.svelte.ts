@@ -136,6 +136,8 @@ export class FeedStore {
   turnOutputTokens = $state(0);
   /** Whether any model call so far this turn reported usage. */
   turnHasUsage = $state(false);
+  /** Tool calls executed so far this turn. */
+  turnToolCalls = $state(0);
   /**
    * Cumulative session token totals for the chat footer, or `null` before
    * the first value arrives (a `turn_usage` frame, or the initial
@@ -201,6 +203,7 @@ export class FeedStore {
         this.turnStartedAt = Date.now();
         this.turnOutputTokens = 0;
         this.turnHasUsage = false;
+        this.turnToolCalls = 0;
         break;
 
       case "turn_ended":
@@ -217,6 +220,7 @@ export class FeedStore {
       case "turn_usage":
         this.turnOutputTokens = msg.output_tokens;
         this.turnHasUsage = msg.has_usage;
+        this.turnToolCalls = msg.tool_calls;
         if (msg.session_totals) this.sessionUsage = msg.session_totals;
         break;
 

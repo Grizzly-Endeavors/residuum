@@ -82,7 +82,7 @@ Discord/Telegram/Teams also show a typing indicator while the session's own turn
 |------|---------------|-------------|
 | `message_agent` | `to`, `message`, `skill` | Send text to `main`, a session address, or `a2a:<name>` for a remote agent (see a2a.md). Refused for `main` from an artifact session. A remote agent's reply arrives later as an agent message, not synchronously. |
 | `subagent_spawn` | `task`, `skill`, `model` | Fork a session. Returns its address immediately. Each turn's result relays to its direct spawner via the agent-messaging path, tagged with the address. |
-| `list_agents` | *(none)* | List main plus every live session, with category, state, depth, spawner, elapsed time, and purpose. Also lists every remote agent from `config/a2a.json`, with status and your open tasks with each. |
+| `list_agents` | *(none)* | List main plus every live session, with category, state, depth, spawner, elapsed time, tool calls executed, and purpose. Also lists every remote agent from `config/a2a.json`, with status and your open tasks with each. |
 | `stop_agent` | `address` | Stop a live session by address, or cancel your open task with `a2a:<name>`. |
 
 ### `subagent_spawn` Details

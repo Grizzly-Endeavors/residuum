@@ -725,7 +725,7 @@ pub enum SessionEventKind {
         /// The intermediate content.
         content: String,
     },
-    /// Token usage progress for a turn still running — see
+    /// Token usage and tool-call progress for a turn still running — see
     /// [`TurnUsageEvent`], which the main agent's own turns publish
     /// instead of this variant.
     TurnUsage {
@@ -733,6 +733,8 @@ pub enum SessionEventKind {
         output_tokens: u32,
         /// Whether any model call so far this turn reported usage.
         has_usage: bool,
+        /// Tool calls executed so far this turn.
+        tool_calls: u32,
         /// Updated cumulative session totals, when the caller tracks them.
         session_totals: Option<crate::agent::usage::SessionUsageTotals>,
     },
@@ -791,10 +793,11 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-/// Token usage progress for a turn still running: this turn's own output
-/// tokens so far (for the running-turn indicator) and, when the caller
-/// tracks cumulative session totals, the updated totals (for the chat
-/// footer). Published after every model call; never delivered to the
+/// Token usage and tool-call progress for a turn still running: this
+/// turn's own output tokens and executed tool calls so far (for the
+/// running-turn indicator) and, when the caller tracks cumulative session
+/// totals, the updated totals (for the chat footer). Published after every
+/// model call and after every tool-call batch; never delivered to the
 /// agent itself. See `docs/systems-usage/turn-control.md`.
 #[derive(Debug, Clone)]
 pub struct TurnUsageEvent {
@@ -804,6 +807,8 @@ pub struct TurnUsageEvent {
     pub output_tokens: u32,
     /// Whether any model call so far this turn reported usage.
     pub has_usage: bool,
+    /// Tool calls executed so far this turn.
+    pub tool_calls: u32,
     /// Updated cumulative session totals, when the caller tracks them.
     pub session_totals: Option<crate::agent::usage::SessionUsageTotals>,
 }

@@ -165,12 +165,14 @@ pub(crate) fn session_event_to_server_message(event: SessionEvent) -> ServerMess
         SessionEventKind::TurnUsage {
             output_tokens,
             has_usage,
+            tool_calls,
             session_totals,
         } => ServerMessage::SessionTurnUsage {
             address,
             run_id,
             output_tokens,
             has_usage,
+            tool_calls,
             session_totals,
         },
         SessionEventKind::Response { turn_id, content } => ServerMessage::SessionResponse {
@@ -663,6 +665,7 @@ mod tests {
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "context_tokens": null,
+                        "tool_calls": 0,
                     },
                     "outcome": null,
                     "error": null,

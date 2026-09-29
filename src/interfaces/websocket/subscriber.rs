@@ -61,6 +61,7 @@ fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
         reply_to: usage.correlation_id,
         output_tokens: usage.output_tokens,
         has_usage: usage.has_usage,
+        tool_calls: usage.tool_calls,
         session_totals: usage.session_totals,
     }
 }
@@ -582,6 +583,7 @@ mod tests {
                 correlation_id: "c1".into(),
                 output_tokens: 20,
                 has_usage: true,
+                tool_calls: 4,
                 session_totals: Some(totals),
             },
         )
@@ -592,7 +594,7 @@ mod tests {
         assert!(
             matches!(
                 &msg,
-                ServerMessage::TurnUsage { reply_to, output_tokens: 20, has_usage: true, session_totals: Some(t) }
+                ServerMessage::TurnUsage { reply_to, output_tokens: 20, has_usage: true, tool_calls: 4, session_totals: Some(t) }
                     if reply_to == "c1" && *t == totals
             ),
             "TurnUsageEvent should map to ServerMessage::TurnUsage: {msg:?}"

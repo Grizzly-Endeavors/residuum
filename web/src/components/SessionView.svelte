@@ -206,6 +206,7 @@
     turnStartedAt={view.turnStartedAt}
     turnOutputTokens={view.turnOutputTokens}
     turnHasUsage={view.turnHasUsage}
+    turnToolCalls={view.turnToolCalls}
     loading={view.loading}
     loadError={view.loadError}
     onRetry={() => void view.load()}
