@@ -34,9 +34,9 @@ mod ts_export {
         // HTTP response type for `GET /api/sessions` (its `SessionSummary`
         // items are also carried by the `session_started` frame).
         SessionListResponse::export_all(&cfg).unwrap();
-        // HTTP response items for `GET /api/workbench/artifacts`.
+        // HTTP response items for `GET /api/team/workbench/artifacts`.
         ArtifactSummary::export_all(&cfg).unwrap();
-        // `GET /api/workbench/info` (its relay origins are exported with it).
+        // `GET /api/team/workbench/info` (its relay origins are exported with it).
         WorkbenchInfo::export_all(&cfg).unwrap();
         // The checkpoints API: `GET /api/checkpoints` (its `CheckpointSummary`
         // items and `CheckpointTrigger` are exported with it), `GET

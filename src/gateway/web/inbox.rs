@@ -429,7 +429,7 @@ mod tests {
             tunnel_status_rx,
             publisher: core.publisher,
             bus_handle: core.bus_handle,
-            file_registry: crate::gateway::file_server::FileRegistry::new(),
+            file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
             webhooks: crate::interfaces::webhook::WebhookTable::default(),
             session_registry,
             session_store,

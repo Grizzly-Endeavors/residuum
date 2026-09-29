@@ -307,7 +307,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -342,7 +342,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -376,7 +376,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -411,7 +411,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -443,7 +443,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep,
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -474,7 +474,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep,
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -505,7 +505,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -536,7 +536,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -566,7 +566,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep.clone(),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -612,7 +612,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             ep,
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -644,7 +644,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -682,7 +682,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             no_watch_set(),
         )
         .await
@@ -812,7 +812,7 @@ mod tests {
         let mut subs = WsSubscribers::new(
             &handle,
             EndpointName::from("ws"),
-            crate::gateway::file_server::FileRegistry::new(),
+            crate::gateway::file_server::FileRegistry::new("scout"),
             watch_rx,
         )
         .await
