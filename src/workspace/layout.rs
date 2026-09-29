@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::paths::{TeamPaths, team_dir};
+
 /// The workbench directory's name inside the workspace, which is also its
 /// workspace-relative path.
 pub const WORKBENCH_DIR: &str = "workbench";
@@ -10,6 +12,10 @@ pub const WORKBENCH_DIR: &str = "workbench";
 #[derive(Debug, Clone)]
 pub struct WorkspaceLayout {
     root: PathBuf,
+    /// The shared team layer. Always the `team/` directory beside the
+    /// agent's own directory, since every agent lives directly under the
+    /// residuum root.
+    team: TeamPaths,
     /// Keeps a test fixture's backing temp directory alive (and cleaned up
     /// on drop) for as long as any clone of this layout is in use. `Arc`
     /// so the guard survives every clone, not just the first owner.
@@ -21,8 +27,12 @@ impl WorkspaceLayout {
     /// Create a new workspace layout rooted at the given directory.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root: PathBuf = root.into();
+        let residuum_root = root.parent().unwrap_or(&root);
+        let team = TeamPaths::new(team_dir(residuum_root));
         Self {
-            root: root.into(),
+            root,
+            team,
             #[cfg(test)]
             tempdir_guard: None,
         }
@@ -42,6 +52,18 @@ impl WorkspaceLayout {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The shared team layer this agent belongs to.
+    #[must_use]
+    pub fn team(&self) -> &TeamPaths {
+        &self.team
+    }
+
+    /// The agent's name: its directory's name.
+    #[must_use]
+    pub fn agent_name(&self) -> Option<&str> {
+        self.root.file_name().and_then(|n| n.to_str())
     }
 
     /// Path to SOUL.md -- core agent identity and personality.
@@ -571,5 +593,12 @@ mod tests {
                 dir.display()
             );
         }
+    }
+
+    #[test]
+    fn team_layer_sits_beside_the_agent_dir() {
+        let layout = WorkspaceLayout::new(Path::new("res").join("scout"));
+        assert_eq!(layout.team().root(), Path::new("res").join("team"));
+        assert_eq!(layout.agent_name(), Some("scout"));
     }
 }
