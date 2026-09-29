@@ -309,11 +309,14 @@
             </button>
           </div>
         {:else}
-          <p class="field-hint">
-            No address yet. Connect to the relay, or set an address of your own below, so other
-            agents have a way to reach this one.
-          </p>
+          <div class="a2a-address-row">
+            <code class="a2a-address">{status.local_url}</code>
+          </div>
         {/if}
+        <p class="field-hint">
+          {status.relay_access_note}
+          {#if !status.public_url}Set an address of your own below if you run your own tunnel.{/if}
+        </p>
 
         {#if !status.listener_running}
           <p class="validation-msg error">
@@ -373,7 +376,11 @@
           bind:value={fields.a2a_public_url}
           placeholder="https://your-own-tunnel.example/a2a (optional)"
         />
-        <span class="field-hint">Only needed if you run your own tunnel instead of the relay.</span>
+        <span class="field-hint"
+          >Only needed if you run your own tunnel. Each agent is served under <code
+            >/agents/name</code
+          > at this address.</span
+        >
       </div>
     {/if}
   </div>
@@ -512,7 +519,7 @@
     <div class="settings-group-label">Remote agents</div>
     <p class="roles-section-hint">
       Agents this one can hand work to. Listed here from <code>config/a2a.json</code>, plus any of
-      your other agents found automatically once connected to the relay.
+      your other installs found automatically through the relay.
     </p>
 
     {#if rawMode}
@@ -534,10 +541,7 @@
       {:else if agentsError}
         <p class="empty-state a2a-error">{agentsError}</p>
       {:else if agents.length === 0}
-        <p class="empty-state">
-          None configured yet. Add one in the raw editor below, or connect to the relay to find your
-          other agents automatically.
-        </p>
+        <p class="empty-state">None configured yet. Add one in the raw editor below.</p>
       {/if}
 
       {#each agents as agent (agent.name)}

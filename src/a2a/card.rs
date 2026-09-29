@@ -123,9 +123,10 @@ pub struct CardRuntime {
     /// Base URL other agents reach this instance's A2A interfaces at: JSON-RPC
     /// is served at this exact URL, HTTP+JSON (REST) at `{base}/rest`.
     ///
-    /// This is `[a2a] public_url` when set, or a local fallback
-    /// (`http://{bind}:{port}`) otherwise — good for same-host and
-    /// same-network callers, not for callers over the public internet.
+    /// This is `[a2a] public_url` plus `/agents/<name>` when set, or a local
+    /// fallback (`http://{bind}:{port}/agents/<name>`) otherwise — good for
+    /// same-host and same-network callers, not for callers over the public
+    /// internet.
     pub interfaces_base_url: String,
     /// Who may reach this agent without a caller key. Not reflected in the
     /// card's content — a private agent's card is simply never served to an
@@ -135,35 +136,20 @@ pub struct CardRuntime {
 }
 
 impl CardRuntime {
-    /// Build runtime facts from the resolved `[a2a]` config and the
-    /// gateway's bind address: `public_url` when set, otherwise a local
-    /// fallback pointing at this instance's own A2A port.
+    /// Build runtime facts for `agent_name` from the resolved `[a2a]` config
+    /// and the gateway's bind address: `public_url` plus `/agents/<name>`
+    /// when set, otherwise the local listener address plus `/agents/<name>`.
     #[must_use]
-    pub fn from_config(a2a: &crate::config::A2aConfig, gateway_bind: &str) -> Self {
-        let interfaces_base_url = a2a
-            .public_url
-            .clone()
-            .unwrap_or_else(|| format!("http://{gateway_bind}:{}", a2a.port));
-        Self {
-            interfaces_base_url,
-            visibility: a2a.visibility,
-        }
-    }
-
-    /// [`Self::from_config`], but preferring the relay tunnel's origin over
-    /// the local fallback when it's connected and `public_url` isn't set —
-    /// see [`super::public_url::resolve_a2a_public_url`].
-    #[must_use]
-    pub(crate) fn from_config_and_tunnel(
+    pub fn from_config(
         a2a: &crate::config::A2aConfig,
         gateway_bind: &str,
-        tunnel_status: &crate::tunnel::TunnelStatus,
+        agent_name: &str,
     ) -> Self {
         Self {
             interfaces_base_url: super::public_url::resolve_a2a_public_url(
                 a2a,
                 gateway_bind,
-                tunnel_status,
+                agent_name,
             ),
             visibility: a2a.visibility,
         }
@@ -401,10 +387,10 @@ mod tests {
             public_url: Some("https://example.com/a2a/laptop".to_string()),
             visibility: A2aVisibility::Private,
         };
-        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1");
+        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1", "laptop");
         assert_eq!(
             runtime.interfaces_base_url,
-            "https://example.com/a2a/laptop"
+            "https://example.com/a2a/laptop/agents/laptop"
         );
         assert_eq!(runtime.visibility, A2aVisibility::Private);
     }
@@ -417,8 +403,11 @@ mod tests {
             public_url: None,
             visibility: A2aVisibility::Public,
         };
-        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1");
-        assert_eq!(runtime.interfaces_base_url, "http://127.0.0.1:7702");
+        let runtime = CardRuntime::from_config(&a2a, "127.0.0.1", "laptop");
+        assert_eq!(
+            runtime.interfaces_base_url,
+            "http://127.0.0.1:7702/agents/laptop"
+        );
     }
 
     #[test]

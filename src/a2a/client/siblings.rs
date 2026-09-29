@@ -1,15 +1,20 @@
 //! Sibling discovery: on every tunnel (re)connect, and every
 //! [`REFRESH_INTERVAL`] while it stays connected, fetch the relay's per-user
 //! A2A directory (`GET {origin}/a2a/agents`) and register every *other*
-//! instance of the same user in [`A2aClientHub`] as a `Sibling`-sourced
-//! agent, per `docs/systems-usage/a2a.md`.
+//! instance of the same user as a `Sibling`-sourced agent in every hosted
+//! agent's [`A2aClientHub`], per `docs/systems-usage/a2a.md`.
+//!
+//! Discovery runs once per hub process. [`SiblingFanout`] is the registry of
+//! the per-agent client hubs it fans each result out to. The hub's own
+//! agents are teammates, reachable directly, so they never appear as
+//! siblings: the process's own instance is filtered out of every result.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 
 use crate::tunnel::TunnelStatus;
 
@@ -108,23 +113,77 @@ fn is_valid_sibling_slug(slug: &str) -> bool {
         && !slug.ends_with('-')
 }
 
-/// Spawn the background task that keeps `hub`'s sibling agents in sync with
-/// the relay directory. Runs for the process lifetime (it exits only if
-/// `tunnel_status_tx` is ever dropped, which happens at process shutdown);
-/// both `hub` and `tunnel_status_rx` survive a config reload, so one
-/// long-lived task spawned at gateway startup stays correct across reloads
-/// without needing to be respawned.
+/// One discovered sibling: name, A2A base URL, and request headers.
+type SiblingEntry = (String, String, HashMap<String, String>);
+
+#[derive(Default)]
+struct FanoutInner {
+    hubs: BTreeMap<String, Arc<A2aClientHub>>,
+    /// The last discovery result, replayed to hubs that register later.
+    last: Option<Vec<SiblingEntry>>,
+}
+
+/// The per-agent [`A2aClientHub`]s that sibling discovery fans its results
+/// out to, keyed by agent name.
+///
+/// The agent host registers an agent's hub when the agent starts and
+/// unregisters it when the agent stops. A hub registered after a discovery
+/// pass receives that pass's result immediately, so a late-starting agent
+/// doesn't wait for the next refresh.
+#[derive(Default)]
+pub struct SiblingFanout {
+    inner: Mutex<FanoutInner>,
+}
+
+impl SiblingFanout {
+    /// An empty registry.
+    #[must_use]
+    pub fn new_shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Add (or replace) `agent`'s client hub, and give it the most recent
+    /// discovery result.
+    pub async fn register(&self, agent: &str, hub: Arc<A2aClientHub>) {
+        let mut inner = self.inner.lock().await;
+        if let Some(last) = inner.last.clone() {
+            hub.set_siblings(last).await;
+        }
+        inner.hubs.insert(agent.to_string(), hub);
+    }
+
+    /// Stop fanning results out to `agent`'s hub.
+    pub async fn unregister(&self, agent: &str) {
+        self.inner.lock().await.hubs.remove(agent);
+    }
+
+    /// Replace the sibling set in every registered hub.
+    async fn set_siblings(&self, siblings: Vec<SiblingEntry>) {
+        let mut inner = self.inner.lock().await;
+        for hub in inner.hubs.values() {
+            hub.set_siblings(siblings.clone()).await;
+        }
+        inner.last = Some(siblings);
+    }
+}
+
+/// Spawn the background task that keeps every registered agent's sibling
+/// entries in sync with the relay directory. Runs for the process lifetime
+/// (it exits only if `tunnel_status_tx` is ever dropped, which happens at
+/// process shutdown); `fanout` and `tunnel_status_rx` survive a config
+/// reload, so one long-lived task spawned at gateway startup stays correct
+/// across reloads without needing to be respawned.
 pub(crate) fn spawn_sibling_discovery(
-    hub: Arc<A2aClientHub>,
+    fanout: Arc<SiblingFanout>,
     tunnel_status_rx: watch::Receiver<TunnelStatus>,
 ) {
     crate::util::spawn_monitored("a2a-sibling-discovery", async move {
-        run(hub, tunnel_status_rx, DiscoveryTimings::default()).await;
+        run(fanout, tunnel_status_rx, DiscoveryTimings::default()).await;
     });
 }
 
 async fn run(
-    hub: Arc<A2aClientHub>,
+    fanout: Arc<SiblingFanout>,
     mut tunnel_status_rx: watch::Receiver<TunnelStatus>,
     timings: DiscoveryTimings,
 ) {
@@ -148,7 +207,7 @@ async fn run(
     loop {
         let current_connection = connection_from(&tunnel_status_rx.borrow());
         let wait = if let Some(conn) = current_connection {
-            match discover_once(&client, &hub, &conn).await {
+            match discover_once(&client, &fanout, &conn).await {
                 Ok(()) => {
                     if failing {
                         tracing::info!(origin = %conn.origin, "a2a sibling discovery recovered");
@@ -189,11 +248,11 @@ async fn run(
 }
 
 /// One fetch-and-register pass: `GET {origin}/a2a/agents` with the sibling
-/// bearer token, then replace the hub's sibling set with every entry except
-/// this instance's own slug.
+/// bearer token, then replace every registered hub's sibling set with every
+/// entry except this instance's own slug (this hub's agents are teammates).
 async fn discover_once(
     client: &reqwest::Client,
-    hub: &A2aClientHub,
+    fanout: &SiblingFanout,
     conn: &Connection,
 ) -> Result<(), String> {
     let url = format!("{}/a2a/agents", conn.origin);
@@ -239,7 +298,7 @@ async fn discover_once(
         })
         .collect();
 
-    hub.set_siblings(siblings).await;
+    fanout.set_siblings(siblings).await;
     Ok(())
 }
 
@@ -258,6 +317,13 @@ mod tests {
     use crate::a2a::client::hub::{AgentSnapshot, AgentSource, AgentStatus};
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// A fanout with `hub` registered as agent `solo`.
+    async fn fanout_of(hub: &Arc<A2aClientHub>) -> Arc<SiblingFanout> {
+        let fanout = SiblingFanout::new_shared();
+        fanout.register("solo", Arc::clone(hub)).await;
+        fanout
+    }
     const FAST_TIMINGS: DiscoveryTimings = DiscoveryTimings {
         refresh: Duration::from_millis(300),
         min_backoff: Duration::from_millis(20),
@@ -375,7 +441,7 @@ mod tests {
         let (origin, relay) = spawn_fake_relay(vec!["alpha", "beta", "gamma"]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
 
         tx.send(connected(&origin, "alpha", "tok1")).ok();
 
@@ -406,7 +472,7 @@ mod tests {
         let (origin, relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
 
         tx.send(connected(&origin, "alpha", "tok1")).ok();
         wait_for(&hub, |snap| {
@@ -458,7 +524,7 @@ mod tests {
         .await;
 
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
         tx.send(connected(&origin, "alpha", "tok1")).ok();
 
         wait_for(&hub, |snap| {
@@ -485,7 +551,7 @@ mod tests {
     async fn directory_failure_does_not_panic_and_retries() {
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
 
         // An address nothing listens on: every fetch fails immediately.
         tx.send(connected("http://127.0.0.1:1", "alpha", "tok1"))
@@ -509,7 +575,7 @@ mod tests {
         let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
         let hub = Arc::new(A2aClientHub::new());
         let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
-        let task = crate::util::spawn_in_span(run(Arc::clone(&hub), rx, FAST_TIMINGS));
+        let task = crate::util::spawn_in_span(run(fanout_of(&hub).await, rx, FAST_TIMINGS));
 
         tx.send(connected(&origin, "alpha", "tok1")).ok();
         wait_for(&hub, |snap| !snap.is_empty()).await;
@@ -522,6 +588,71 @@ mod tests {
             "siblings registered before a disconnect must stay registered"
         );
 
+        task.abort();
+    }
+
+    fn sibling_names(snap: &[AgentSnapshot]) -> Vec<&str> {
+        let mut names: Vec<&str> = snap.iter().map(|a| a.name.as_str()).collect();
+        names.sort_unstable();
+        names
+    }
+
+    #[tokio::test]
+    async fn discovery_fans_out_to_every_agent_and_excludes_the_hubs_own_instance() {
+        // "alpha" is this hub's own instance, so its agents are teammates.
+        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta", "gamma"]).await;
+        let scout = Arc::new(A2aClientHub::new());
+        let writer = Arc::new(A2aClientHub::new());
+        let fanout = SiblingFanout::new_shared();
+        fanout.register("scout", Arc::clone(&scout)).await;
+        fanout.register("writer", Arc::clone(&writer)).await;
+
+        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
+        let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
+        tx.send(connected(&origin, "alpha", "tok1")).ok();
+
+        wait_for(&scout, |snap| snap.len() == 2).await;
+        wait_for(&writer, |snap| snap.len() == 2).await;
+        assert_eq!(sibling_names(&scout.snapshot().await), ["beta", "gamma"]);
+        assert_eq!(sibling_names(&writer.snapshot().await), ["beta", "gamma"]);
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_hub_registered_after_discovery_gets_the_last_result() {
+        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let early = Arc::new(A2aClientHub::new());
+        let fanout = fanout_of(&early).await;
+
+        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
+        let task = crate::util::spawn_in_span(run(Arc::clone(&fanout), rx, FAST_TIMINGS));
+        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        wait_for(&early, |snap| snap.len() == 1).await;
+
+        let late = Arc::new(A2aClientHub::new());
+        fanout.register("late", Arc::clone(&late)).await;
+        assert_eq!(sibling_names(&late.snapshot().await), ["beta"]);
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn an_unregistered_hub_stops_receiving_results() {
+        let (origin, _relay) = spawn_fake_relay(vec!["alpha", "beta"]).await;
+        let stopped = Arc::new(A2aClientHub::new());
+        let running = Arc::new(A2aClientHub::new());
+        let fanout = SiblingFanout::new_shared();
+        fanout.register("stopped", Arc::clone(&stopped)).await;
+        fanout.register("running", Arc::clone(&running)).await;
+        fanout.unregister("stopped").await;
+
+        let (tx, rx) = watch::channel(TunnelStatus::Disconnected);
+        let task = crate::util::spawn_in_span(run(fanout, rx, FAST_TIMINGS));
+        tx.send(connected(&origin, "alpha", "tok1")).ok();
+        wait_for(&running, |snap| snap.len() == 1).await;
+
+        assert!(stopped.snapshot().await.is_empty());
         task.abort();
     }
 
