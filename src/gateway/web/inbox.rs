@@ -39,12 +39,14 @@ pub(super) struct ApiInboxItem {
 }
 
 /// Resolve an item's attachments into servable metadata by statting each file
-/// under `attachments_root/<id>/`.
+/// under `attachments_root/<id>/`. Each URL is under the owning agent's routes,
+/// so a client uses it as given.
 ///
 /// An attachment whose file can't be found on disk is dropped from the listing
 /// (rather than shown as a broken link) and logged — this can happen if a
 /// workspace was hand-edited, but should not happen in normal operation.
 async fn resolve_attachments(
+    agent: &str,
     id: &str,
     item: &InboxItem,
     attachments_root: &std::path::Path,
@@ -61,7 +63,7 @@ async fn resolve_attachments(
                 filename: file_name.to_string(),
                 mime_type: crate::interfaces::attachment::detect_mime_type(&path),
                 size: meta.len(),
-                url: format!("/api/inbox/{id}/attachments/{index}"),
+                url: format!("/api/agents/{agent}/inbox/{id}/attachments/{index}"),
             }),
             Err(e) => {
                 tracing::warn!(
@@ -79,11 +81,12 @@ async fn resolve_attachments(
 /// Build the API-facing representation of an inbox item, resolving its
 /// attachments against `attachments_root`.
 async fn to_api_item(
+    agent: &str,
     id: String,
     item: InboxItem,
     attachments_root: &std::path::Path,
 ) -> ApiInboxItem {
-    let attachments = resolve_attachments(&id, &item, attachments_root).await;
+    let attachments = resolve_attachments(agent, &id, &item, attachments_root).await;
     ApiInboxItem {
         id,
         title: item.title,
@@ -114,7 +117,7 @@ pub(super) async fn api_inbox_list(
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
-        api_items.push(to_api_item(id, item, &attachments_root).await);
+        api_items.push(to_api_item(&state.agent_name, id, item, &attachments_root).await);
     }
 
     Ok(Json(api_items))
@@ -137,7 +140,7 @@ pub(super) async fn api_inbox_archive_list(
 
     let mut api_items = Vec::with_capacity(items.len());
     for (id, item) in items {
-        api_items.push(to_api_item(id, item, &attachments_root).await);
+        api_items.push(to_api_item(&state.agent_name, id, item, &attachments_root).await);
     }
 
     Ok(Json(api_items))
@@ -161,7 +164,9 @@ pub(super) async fn api_inbox_read(
             )
         })?;
 
-    Ok(Json(to_api_item(id, item, &attachments_root).await))
+    Ok(Json(
+        to_api_item(&state.agent_name, id, item, &attachments_root).await,
+    ))
 }
 
 /// `POST /api/agents/{name}/inbox/:id/archive` — Archive an inbox item.
@@ -587,6 +592,35 @@ mod tests {
         let response = api_inbox_attachment(Path(("item1".to_string(), 0)), State(state)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn listed_attachment_urls_are_under_the_owning_agents_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        let attachments_dir = layout.user_inbox_attachments_dir().join("item1");
+        tokio::fs::create_dir_all(&attachments_dir).await.unwrap();
+        tokio::fs::write(attachments_dir.join("note.txt"), b"hello")
+            .await
+            .unwrap();
+        write_active_item(
+            &layout,
+            "item1",
+            vec![std::path::PathBuf::from(
+                "inbox/user/attachments/item1/note.txt",
+            )],
+        )
+        .await;
+
+        let state = make_state(dir.path().to_path_buf());
+        let Json(items) = api_inbox_list(State(state)).await.unwrap();
+
+        let item = items.first().expect("the seeded item is listed");
+        let attachment = item.attachments.first().expect("its attachment is listed");
+        assert_eq!(
+            attachment.url,
+            "/api/agents/test-agent/inbox/item1/attachments/0"
+        );
     }
 
     #[tokio::test]
