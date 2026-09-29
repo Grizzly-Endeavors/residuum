@@ -38,6 +38,7 @@ pub(crate) fn test_engine() -> std::sync::Arc<CheckpointEngine> {
     let engine = CheckpointEngine::new(
         "test-agent",
         dir.path().join("workspace"),
+        &crate::config::paths::TeamPaths::new(dir.path().join("team")),
         dir.path().join("agent-config"),
         dir.path().join("hub"),
         &dir.path().join("checkpoints"),

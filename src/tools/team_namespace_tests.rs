@@ -20,7 +20,9 @@ impl Hub {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("team")).unwrap();
-        let coordinator = TeamWriteCoordinator::new(dir.path().join("team"));
+        let coordinator = TeamWriteCoordinator::new(&crate::config::paths::TeamPaths::new(
+            dir.path().join("team"),
+        ));
         Self { dir, coordinator }
     }
 
@@ -331,7 +333,7 @@ async fn an_agents_own_writes_do_not_conflict_with_each_other() {
 }
 
 #[tokio::test]
-async fn agent_private_files_keep_todays_behavior() {
+async fn agent_private_files_are_overwritten_when_changed_elsewhere() {
     let hub = Hub::new();
     let private = hub.agent_dir("sam").join("notes.md");
     std::fs::write(&private, "start").unwrap();
@@ -339,7 +341,7 @@ async fn agent_private_files_keep_todays_behavior() {
     assert!(!read(&sam, "notes.md").await.is_error);
 
     // Changed behind the agent's back: a private file is still overwritten,
-    // exactly as before team coordination existed.
+    // because only team files are guarded against concurrent edits.
     std::fs::write(&private, "changed elsewhere").unwrap();
     let written = write(&sam, "notes.md", "sam's version").await;
     assert!(!written.is_error, "{}", written.output);
@@ -365,4 +367,136 @@ async fn team_files_get_the_same_diagnostics_as_agent_files() {
         "a malformed team skill should be reported: {}",
         result.output
     );
+}
+
+/// Delete `path` under the coordinator as the user, the way the web file API
+/// does.
+async fn delete_as_user(hub: &Hub, path: &Path) {
+    let guard = hub.coordinator.lock(path).await;
+    std::fs::remove_file(path).unwrap();
+    guard.record_removed(&TeamWriter::User);
+}
+
+#[tokio::test]
+async fn a_write_after_a_deletion_conflicts_once_then_recreates() {
+    let hub = Hub::new();
+    let path = hub.team().join("x.md");
+    std::fs::write(&path, "start").unwrap();
+    let sam = hub.tools_for("sam");
+    assert!(!read(&sam, "team/x.md").await.is_error);
+
+    delete_as_user(&hub, &path).await;
+
+    let refused = write(&sam, "team/x.md", "again").await;
+    assert!(refused.is_error);
+    assert!(refused.output.contains("the user"), "{}", refused.output);
+    assert!(
+        refused.output.contains("no longer exists"),
+        "{}",
+        refused.output
+    );
+    assert!(!path.exists());
+
+    let missing = read(&sam, "team/x.md").await;
+    assert!(missing.is_error);
+
+    let created = write(&sam, "team/x.md", "again").await;
+    assert!(!created.is_error, "{}", created.output);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "again");
+}
+
+#[tokio::test]
+async fn a_deletion_outside_residuum_clears_after_a_reread() {
+    let hub = Hub::new();
+    let path = hub.team().join("x.md");
+    std::fs::write(&path, "start").unwrap();
+    let sam = hub.tools_for("sam");
+    assert!(!read(&sam, "team/x.md").await.is_error);
+
+    std::fs::remove_file(&path).unwrap();
+
+    let refused = write(&sam, "team/x.md", "again").await;
+    assert!(refused.is_error);
+    assert!(read(&sam, "team/x.md").await.is_error);
+    let created = write(&sam, "team/x.md", "again").await;
+    assert!(!created.is_error, "{}", created.output);
+}
+
+#[tokio::test]
+async fn an_edit_after_a_deletion_and_recreation_is_still_checked() {
+    let hub = Hub::new();
+    let path = hub.team().join("x.md");
+    std::fs::write(&path, "one two").unwrap();
+    let sam = hub.tools_for("sam");
+    let robin = hub.tools_for("robin");
+    assert!(!read(&sam, "team/x.md").await.is_error);
+
+    delete_as_user(&hub, &path).await;
+
+    let missing_edit = edit(&sam, "team/x.md", "two", "three").await;
+    assert!(missing_edit.is_error);
+    assert!(read(&sam, "team/x.md").await.is_error);
+
+    // A teammate recreates the file after sam saw it gone: sam's edit must
+    // refuse rather than apply to contents sam never read.
+    assert!(!write(&robin, "team/x.md", "one two").await.is_error);
+    let refused = edit(&sam, "team/x.md", "two", "three").await;
+    assert!(refused.is_error);
+    assert!(refused.output.contains("robin"), "{}", refused.output);
+
+    assert!(!read(&sam, "team/x.md").await.is_error);
+    let edited = edit(&sam, "team/x.md", "two", "three").await;
+    assert!(!edited.is_error, "{}", edited.output);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one three");
+}
+
+#[tokio::test]
+async fn concurrent_role_pages_keep_every_index_entry() {
+    use crate::config::paths::TeamPaths;
+    use crate::workspace::team::{ensure_agent_role_page, ensure_team};
+
+    let hub = Hub::new();
+    let team = TeamPaths::new(hub.team());
+    ensure_team(&team, None, None).await.unwrap();
+
+    let names: Vec<String> = (0..8).map(|n| format!("agent{n}")).collect();
+    let mut tasks = tokio::task::JoinSet::new();
+    for name in names.clone() {
+        let (team, coordinator) = (team.clone(), hub.coordinator.clone());
+        tasks.spawn(async move {
+            ensure_agent_role_page(&team, &coordinator, &name, None)
+                .await
+                .unwrap()
+        });
+    }
+    while let Some(created) = tasks.join_next().await {
+        assert!(created.unwrap());
+    }
+
+    let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
+    let log = std::fs::read_to_string(team.wiki_log_md()).unwrap();
+    for name in &names {
+        assert_eq!(index.matches(&format!("(/agents/{name}.md)")).count(), 1);
+        assert_eq!(log.matches(&format!("agents/{name}.md")).count(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_role_page_write_conflicts_a_reader_of_the_roster_index() {
+    use crate::config::paths::TeamPaths;
+    use crate::workspace::team::{ensure_agent_role_page, ensure_team};
+
+    let hub = Hub::new();
+    let team = TeamPaths::new(hub.team());
+    ensure_team(&team, None, None).await.unwrap();
+    let sam = hub.tools_for("sam");
+    assert!(!read(&sam, "team/wiki/agents/index.md").await.is_error);
+
+    ensure_agent_role_page(&team, &hub.coordinator, "robin", None)
+        .await
+        .unwrap();
+
+    let refused = write(&sam, "team/wiki/agents/index.md", "overwritten").await;
+    assert!(refused.is_error, "{}", refused.output);
+    assert!(refused.output.contains("robin"), "{}", refused.output);
 }

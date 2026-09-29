@@ -87,7 +87,7 @@ pub async fn run_gateway_with_config(
 /// Built once per gateway run and handed to everything that writes team files.
 fn team_coordinator_for(agent_dir: &std::path::Path) -> TeamWriteCoordinator {
     let layout = crate::workspace::layout::WorkspaceLayout::new(agent_dir);
-    TeamWriteCoordinator::new(layout.team().root())
+    TeamWriteCoordinator::new(layout.team())
 }
 
 /// Load the hub config and the agent's config, initializing the gateway on
@@ -1552,6 +1552,17 @@ mod tests {
     use crate::util::FatalError;
     use crate::workspace::team_files::TeamWriteCoordinator;
 
+    #[test]
+    fn the_gateways_coordinator_guards_the_layouts_team_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("scout");
+        let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
+        assert_eq!(
+            super::team_coordinator_for(&agent_dir).root(),
+            layout.team().root()
+        );
+    }
+
     fn hub_config(dir: &std::path::Path) -> HubConfig {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join("config.toml"), "timezone = \"UTC\"\n").unwrap();
@@ -1571,7 +1582,9 @@ mod tests {
             hub,
             None,
             &core.publisher,
-            &TeamWriteCoordinator::new(dir.path().join("team")),
+            &TeamWriteCoordinator::new(&crate::config::paths::TeamPaths::new(
+                dir.path().join("team"),
+            )),
             original,
         )
         .await;
@@ -1614,7 +1627,9 @@ mod tests {
             hub,
             None,
             &core.publisher,
-            &TeamWriteCoordinator::new(dir.path().join("team")),
+            &TeamWriteCoordinator::new(&crate::config::paths::TeamPaths::new(
+                dir.path().join("team"),
+            )),
             original,
         )
         .await;

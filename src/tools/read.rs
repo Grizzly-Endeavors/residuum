@@ -95,6 +95,18 @@ impl ReadTool {
         }
     }
 
+    /// Record that a team file was found missing: the stamp taken before the
+    /// read (version `None`) becomes the file's known-absent state. Ignored
+    /// when the stamp shows the file existed a moment ago, or for private
+    /// files.
+    async fn record_absent(&self, resolved: &Path, record: ReadRecord) {
+        if let ReadRecord::Team(Some(stamp)) = &record
+            && stamp.version.is_none()
+        {
+            self.record_read(resolved, record).await;
+        }
+    }
+
     /// Read an image file, base64-encode it, and return as a tool result with inline image data.
     #[expect(clippy::cast_precision_loss, reason = "file size in KB display only")]
     async fn read_image(
@@ -196,7 +208,16 @@ impl Tool for ReadTool {
 
         let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
-            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+            Err(e) => {
+                // A read that finds a team file gone still tells the tracker
+                // so: the agent has now seen the deletion, and its next write
+                // recreating the file must not conflict with the version it
+                // read before the file was removed.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    self.record_absent(&resolved, record).await;
+                }
+                return Ok(ToolResult::error(format!("failed to read {path}: {e}")));
+            }
         };
         let total_size = metadata.len();
 

@@ -170,7 +170,10 @@ pub(super) fn init_tool_registry(
     );
 
     // Workspace checkpoint history (workspace repository only)
-    tools.register_workspace_checkpoint_tools(Arc::clone(deps.checkpoints));
+    tools.register_workspace_checkpoint_tools(
+        Arc::clone(deps.checkpoints),
+        Arc::clone(deps.path_policy),
+    );
 
     // Register Ollama Cloud web search tool if configured
     if let Some(backend) = &cfg.web_search.standalone_backend
@@ -424,6 +427,7 @@ mod tests {
             crate::checkpoints::CheckpointEngine::new(
                 "test-agent",
                 layout.root().to_path_buf(),
+                &crate::config::paths::TeamPaths::new(dir.to_path_buf().join("team")),
                 dir.join("agent-config"),
                 dir,
                 &dir.join("checkpoints"),

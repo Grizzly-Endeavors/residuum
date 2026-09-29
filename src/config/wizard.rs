@@ -274,6 +274,7 @@ pub async fn write_config(residuum_root: &Path, answers: &WizardAnswers) -> Resu
     let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
     crate::workspace::bootstrap::ensure_workspace(
         &layout,
+        &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
         answers.user_name.as_deref(),
         Some(&answers.timezone),
     )

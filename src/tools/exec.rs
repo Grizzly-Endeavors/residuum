@@ -1320,6 +1320,7 @@ mod tests {
                 crate::checkpoints::CheckpointEngine::new(
                     "test-agent",
                     dir.path().join("workspace"),
+                    &crate::config::paths::TeamPaths::new(dir.path().to_path_buf().join("team")),
                     dir.path().join("agent-config"),
                     dir.path(),
                     &checkpoints_dir,

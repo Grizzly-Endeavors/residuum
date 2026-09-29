@@ -339,9 +339,9 @@ impl MemoryIndex {
 
     /// Delete every wiki document, returning how many were removed.
     ///
-    /// Wiki pages are indexed in the team wiki's own index; this clears the
-    /// documents an agent's index held before wiki indexing moved there. It
-    /// commits only when there is something to remove.
+    /// Wiki pages are indexed in the team wiki's own index; this clears any
+    /// wiki documents an agent's index holds. It commits only when there is
+    /// something to remove.
     ///
     /// # Errors
     /// Returns an error if counting or deleting fails.

@@ -204,6 +204,7 @@ fn build_feature_routers(
         serving: workbench_serving,
         tunnel_status_rx: state.tunnel_status_rx.clone(),
         checkpoints: Arc::clone(&config_api_state.checkpoints),
+        team: config_api_state.team.clone(),
     });
 
     let checkpoints =
