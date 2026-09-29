@@ -12,7 +12,7 @@ Every agent sees one logical file tree: its own directory, plus a `team/` prefix
 
 The prefix applies in `read_file`, `write_file`, `edit_file`, the artifact paths of `a2a_task_update`, and the workspace file HTTP API (`/api/workspace/files`, `file`, `raw`, `tree`, `read`, `validate`, `dir`, `move`, and `DELETE /api/workspace/file`). A path is judged the way it is written: diagnostics for a strictly-parsed file (a team skill's `SKILL.md`, say) apply to its real location, and the write-scoping policy checks the real path.
 
-In the web API the workspace root listing shows a `team` folder, a whole-workspace `tree` includes it, and a `team/...` path is read, written, moved and deleted like any other. The `team` folder itself can't be replaced, moved or deleted. Paths in errors are shown as the client wrote them. What the access policy hides stays hidden under `team/`: `team/.index/`, `team/vectors.db` and its `-wal`/`-shm`/`-journal` sidecars, and atomic-write temp files.
+In the web API the workspace root listing shows a `team` folder, a whole-workspace `tree` includes it, and a `team/...` path is read, written, moved and deleted like any other. The `team` folder itself can't be replaced, moved or deleted. Deleting, raw-overwriting, or moving a `team/...` path checkpoints the team repository first (a move between the agent directory and `team/` checkpoints both repositories), and the response names each checkpoint with its `checkpoint_repo` so Undo restores from the right one; see `checkpoints.md`. Paths in errors are shown as the client wrote them. What the access policy hides stays hidden under `team/`: `team/.index/`, `team/vectors.db` and its `-wal`/`-shm`/`-journal` sidecars, and atomic-write temp files.
 
 ## Write coordination
 

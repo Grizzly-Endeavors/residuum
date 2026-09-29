@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { parseWorkspaceCheckpoints } from "./api";
 import type * as ApiModule from "./api";
 import { toast } from "./toast.svelte";
-import { notifyWithUndo } from "./undo";
+import { notifyWithUndo, notifyWithWorkspaceUndo, restoreTargets } from "./undo";
 
 const { undoLastAction } = vi.hoisted(() => ({ undoLastAction: vi.fn() }));
 vi.mock("./api", async (importOriginal) => ({
@@ -74,5 +75,94 @@ describe("notifyWithUndo", () => {
       "team",
       "workbench/chart.state.json",
     );
+  });
+});
+
+describe("restoreTargets", () => {
+  const workspaceCp = { id: "ws-cp", repo: "workspace" as const };
+  const teamCp = { id: "team-cp", repo: "team" as const };
+
+  it("restores an agent path from the workspace checkpoint", () => {
+    expect(restoreTargets(["notes/a.md"], [workspaceCp])).toEqual([
+      { checkpointId: "ws-cp", repo: "workspace", path: "notes/a.md" },
+    ]);
+  });
+
+  it("restores a team path from the team checkpoint, relative to team/", () => {
+    expect(restoreTargets(["team/wiki/a.md"], [teamCp])).toEqual([
+      { checkpointId: "team-cp", repo: "team", path: "wiki/a.md" },
+    ]);
+  });
+
+  it("picks each path's own repo when both checkpoints exist", () => {
+    expect(restoreTargets(["draft.md", "team/wiki/page.md"], [workspaceCp, teamCp])).toEqual([
+      { checkpointId: "ws-cp", repo: "workspace", path: "draft.md" },
+      { checkpointId: "team-cp", repo: "team", path: "wiki/page.md" },
+    ]);
+  });
+
+  it("leaves out a path whose repo recorded no checkpoint", () => {
+    expect(restoreTargets(["team/a.md"], [workspaceCp])).toEqual([]);
+  });
+
+  it("does not treat a path merely starting with team as a team path", () => {
+    expect(restoreTargets(["teamwork.md"], [workspaceCp])).toEqual([
+      { checkpointId: "ws-cp", repo: "workspace", path: "teamwork.md" },
+    ]);
+  });
+});
+
+describe("parseWorkspaceCheckpoints", () => {
+  it("reads the flat single-checkpoint shape", () => {
+    expect(parseWorkspaceCheckpoints({ checkpoint_id: "c1", checkpoint_repo: "team" })).toEqual([
+      { id: "c1", repo: "team" },
+    ]);
+  });
+
+  it("treats a response with no repo as the workspace repo", () => {
+    expect(parseWorkspaceCheckpoints({ checkpoint_id: "c1" })).toEqual([
+      { id: "c1", repo: "workspace" },
+    ]);
+  });
+
+  it("reads the two-checkpoint list", () => {
+    expect(
+      parseWorkspaceCheckpoints({
+        checkpoint_id: null,
+        checkpoints: [
+          { checkpoint_id: "w", checkpoint_repo: "workspace" },
+          { checkpoint_id: "t", checkpoint_repo: "team" },
+        ],
+      }),
+    ).toEqual([
+      { id: "w", repo: "workspace" },
+      { id: "t", repo: "team" },
+    ]);
+  });
+
+  it("is empty when none was recorded", () => {
+    expect(parseWorkspaceCheckpoints({ checkpoint_id: null })).toEqual([]);
+  });
+});
+
+describe("notifyWithWorkspaceUndo", () => {
+  beforeEach(() => {
+    for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
+    undoLastAction.mockReset();
+  });
+
+  it("restores a team path from the team repo, relative to team/", async () => {
+    undoLastAction.mockResolvedValue({ checkpoint_id: "x", restored_paths: [] });
+    notifyWithWorkspaceUndo("Deleted a.md.", "team/wiki/a.md", [{ id: "team-cp", repo: "team" }]);
+    [...toast.toasts.values()].at(-1)?.action?.onClick();
+    await vi.waitFor(() => {
+      expect(undoLastAction).toHaveBeenCalledTimes(1);
+    });
+    expect(undoLastAction).toHaveBeenCalledWith("team-cp", "team", "wiki/a.md");
+  });
+
+  it("offers no Undo when no checkpoint applies to the path", () => {
+    notifyWithWorkspaceUndo("Deleted a.md.", "team/a.md", []);
+    expect([...toast.toasts.values()].at(-1)?.action).toBeUndefined();
   });
 });

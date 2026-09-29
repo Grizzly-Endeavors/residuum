@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use axum::body::Bytes;
 use axum::extract::{Query, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
@@ -12,7 +13,7 @@ use super::ConfigApiState;
 use super::workspace::{
     DeleteFileQuery, FileQuery, FilesQuery, MkdirRequest, MoveRequest, WriteFileRequest,
     api_workspace_delete, api_workspace_file_read, api_workspace_file_write, api_workspace_files,
-    api_workspace_mkdir, api_workspace_move, api_workspace_raw_read,
+    api_workspace_mkdir, api_workspace_move, api_workspace_raw_read, api_workspace_raw_write,
 };
 use super::workspace_bulk::{api_workspace_read, api_workspace_tree};
 use crate::tools::team_namespace_tests::Hub;
@@ -27,9 +28,23 @@ struct Fixture {
 fn fixture() -> Fixture {
     let hub = Hub::new();
     let agent_dir = hub.agent_dir("scout");
+    let hub_dir = hub.dir.path().join("hub");
+    std::fs::create_dir_all(&hub_dir).unwrap();
+    // A real engine: its team repository watches the hub's team directory, so
+    // the checkpoints the handlers return can be restored from.
+    let checkpoints = std::sync::Arc::new(
+        crate::checkpoints::CheckpointEngine::new(
+            agent_dir.clone(),
+            agent_dir.join("config"),
+            hub_dir.clone(),
+            &hub_dir.join("checkpoints"),
+            None,
+        )
+        .unwrap(),
+    );
     let state = ConfigApiState {
         team: Some(hub.coordinator.view_for_user(&agent_dir)),
-        hub_dir: hub.dir.path().join("hub"),
+        hub_dir,
         config_dir: agent_dir.join("config"),
         agent_name: "scout".to_string(),
         workspace_dir: agent_dir.clone(),
@@ -37,7 +52,7 @@ fn fixture() -> Fixture {
         reload_tx: None,
         setup_done: None,
         secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-        checkpoints: crate::checkpoints::test_engine(),
+        checkpoints,
     };
     Fixture {
         hub,
@@ -592,4 +607,230 @@ async fn saving_the_team_identity_files_signals_a_workspace_reload() {
     let other = put(&f.state, "team/wiki/other.md", "not identity", None).await;
     assert_eq!(other.status(), StatusCode::OK);
     assert!(rx.try_recv().is_err(), "other team files signal nothing");
+}
+
+// ── Undo: checkpoints for destructive actions on team paths ─────────
+
+use crate::checkpoints::{CheckpointContext, CheckpointTrigger, RepoKind};
+
+async fn json_of(response: Response) -> Value {
+    assert_eq!(response.status(), StatusCode::OK, "action should succeed");
+    serde_json::from_slice(&body_bytes(response).await).unwrap()
+}
+
+/// The `(id, repo)` of the single checkpoint a response names, checking the
+/// response uses the one-checkpoint shape.
+fn single_checkpoint(body: &Value) -> (String, String) {
+    assert!(
+        body.get("checkpoints").is_none(),
+        "one repository means the flat shape: {body}"
+    );
+    (
+        field(body, "checkpoint_id").as_str().unwrap().to_string(),
+        field(body, "checkpoint_repo").as_str().unwrap().to_string(),
+    )
+}
+
+/// Restore `path` (relative to the repository's root) from checkpoint `id`.
+async fn restore(f: &Fixture, repo: RepoKind, id: &str, path: &str) {
+    f.state
+        .checkpoints
+        .restore_path(
+            repo,
+            id.to_string(),
+            path.to_string(),
+            CheckpointContext::system(CheckpointTrigger::Restore, "test restore"),
+        )
+        .await
+        .unwrap();
+}
+
+fn write_team(f: &Fixture, rel: &str, content: &str) {
+    let path = rel
+        .split('/')
+        .fold(f.hub.team(), |acc, part| acc.join(part));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
+
+async fn delete(f: &Fixture, path: &str) -> Value {
+    let response = api_workspace_delete(
+        Query(DeleteFileQuery {
+            path: path.to_string(),
+            recursive: true,
+        }),
+        State(f.state.clone()),
+        HeaderMap::new(),
+    )
+    .await
+    .unwrap();
+    json_of(response).await
+}
+
+async fn move_to(f: &Fixture, from: &str, to: &str, overwrite: bool) -> Value {
+    let response = api_workspace_move(
+        State(f.state.clone()),
+        HeaderMap::new(),
+        Json(MoveRequest {
+            from: from.to_string(),
+            to: to.to_string(),
+            overwrite,
+        }),
+    )
+    .await
+    .unwrap();
+    json_of(response).await
+}
+
+#[tokio::test]
+async fn deleting_a_team_file_returns_a_team_checkpoint_that_restores_it() {
+    let f = fixture();
+    write_team(&f, "wiki/a.md", "shared page");
+    let file = f.hub.team().join("wiki").join("a.md");
+
+    let body = delete(&f, "team/wiki/a.md").await;
+    let (id, repo) = single_checkpoint(&body);
+    assert_eq!(repo, "team");
+    assert!(!file.exists());
+
+    restore(&f, RepoKind::Team, &id, "wiki/a.md").await;
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "shared page");
+}
+
+#[tokio::test]
+async fn deleting_a_team_directory_returns_a_team_checkpoint_that_restores_it() {
+    let f = fixture();
+    write_team(&f, "wiki/people/bear.md", "bear");
+    write_team(&f, "wiki/people/sam.md", "sam");
+
+    let body = delete(&f, "team/wiki/people").await;
+    let (id, repo) = single_checkpoint(&body);
+    assert_eq!(repo, "team");
+
+    restore(&f, RepoKind::Team, &id, "wiki/people").await;
+    let people = f.hub.team().join("wiki").join("people");
+    assert_eq!(
+        std::fs::read_to_string(people.join("bear.md")).unwrap(),
+        "bear"
+    );
+    assert_eq!(
+        std::fs::read_to_string(people.join("sam.md")).unwrap(),
+        "sam"
+    );
+}
+
+#[tokio::test]
+async fn overwriting_a_team_file_with_a_raw_write_returns_a_restorable_team_checkpoint() {
+    let f = fixture();
+    write_team(&f, "USER.md", "original");
+    let file = f.hub.team().join("USER.md");
+
+    let response = api_workspace_raw_write(
+        Query(FileQuery {
+            path: "team/USER.md".to_string(),
+        }),
+        State(f.state.clone()),
+        HeaderMap::new(),
+        Bytes::from_static(b"replacement"),
+    )
+    .await
+    .unwrap();
+    let body = json_of(response).await;
+    let (id, repo) = single_checkpoint(&body);
+    assert_eq!(repo, "team");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "replacement");
+
+    restore(&f, RepoKind::Team, &id, "USER.md").await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "original");
+}
+
+#[tokio::test]
+async fn moving_a_team_file_over_another_returns_a_team_checkpoint_holding_both() {
+    let f = fixture();
+    write_team(&f, "wiki/old.md", "old");
+    write_team(&f, "wiki/new.md", "replaced");
+    let old = f.hub.team().join("wiki").join("old.md");
+    let new = f.hub.team().join("wiki").join("new.md");
+
+    let body = move_to(&f, "team/wiki/old.md", "team/wiki/new.md", true).await;
+    let (id, repo) = single_checkpoint(&body);
+    assert_eq!(repo, "team");
+    assert!(!old.exists());
+
+    restore(&f, RepoKind::Team, &id, "wiki/old.md").await;
+    restore(&f, RepoKind::Team, &id, "wiki/new.md").await;
+    assert_eq!(std::fs::read_to_string(old).unwrap(), "old");
+    assert_eq!(std::fs::read_to_string(new).unwrap(), "replaced");
+}
+
+#[tokio::test]
+async fn a_move_between_the_agent_and_team_directories_checkpoints_both_repos() {
+    let f = fixture();
+    std::fs::write(f.agent_dir.join("draft.md"), "draft").unwrap();
+    write_team(&f, "wiki/page.md", "taken over");
+    let page = f.hub.team().join("wiki").join("page.md");
+
+    let body = move_to(&f, "draft.md", "team/wiki/page.md", true).await;
+    assert!(
+        field(&body, "checkpoint_id").is_null(),
+        "two checkpoints are listed, not flattened: {body}"
+    );
+    let listed = field(&body, "checkpoints").as_array().unwrap();
+    assert_eq!(listed.len(), 2);
+    let id_for = |repo: &str| -> String {
+        let entry = listed
+            .iter()
+            .find(|c| field(c, "checkpoint_repo").as_str() == Some(repo))
+            .unwrap_or_else(|| panic!("no {repo} checkpoint in {body}"));
+        field(entry, "checkpoint_id").as_str().unwrap().to_string()
+    };
+
+    restore(&f, RepoKind::Workspace, &id_for("workspace"), "draft.md").await;
+    restore(&f, RepoKind::Team, &id_for("team"), "wiki/page.md").await;
+    assert_eq!(
+        std::fs::read_to_string(f.agent_dir.join("draft.md")).unwrap(),
+        "draft"
+    );
+    assert_eq!(std::fs::read_to_string(page).unwrap(), "taken over");
+}
+
+#[tokio::test]
+async fn a_move_from_team_to_the_agent_directory_checkpoints_both_repos() {
+    let f = fixture();
+    write_team(&f, "wiki/page.md", "shared");
+    std::fs::write(f.agent_dir.join("mine.md"), "mine").unwrap();
+
+    let body = move_to(&f, "team/wiki/page.md", "mine.md", true).await;
+    let listed = field(&body, "checkpoints").as_array().unwrap();
+    let repos: Vec<&str> = listed
+        .iter()
+        .map(|c| field(c, "checkpoint_repo").as_str().unwrap())
+        .collect();
+    assert_eq!(repos, ["workspace", "team"]);
+}
+
+#[tokio::test]
+async fn agent_only_actions_keep_the_workspace_checkpoint_shape() {
+    let f = fixture();
+    std::fs::write(f.agent_dir.join("gone.md"), "bye").unwrap();
+    std::fs::write(f.agent_dir.join("a.md"), "a").unwrap();
+
+    let deleted = delete(&f, "gone.md").await;
+    let (id, repo) = single_checkpoint(&deleted);
+    assert_eq!(repo, "workspace");
+    restore(&f, RepoKind::Workspace, &id, "gone.md").await;
+    assert_eq!(
+        std::fs::read_to_string(f.agent_dir.join("gone.md")).unwrap(),
+        "bye"
+    );
+
+    let moved = move_to(&f, "a.md", "b.md", false).await;
+    let (_, moved_repo) = single_checkpoint(&moved);
+    assert_eq!(moved_repo, "workspace");
+
+    let text_write = json_of(put(&f.state, "c.md", "text", None).await).await;
+    assert!(
+        text_write.get("checkpoint_id").is_none(),
+        "a text write takes no checkpoint: {text_write}"
+    );
 }

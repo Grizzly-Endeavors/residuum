@@ -15,7 +15,7 @@
   import { Icon } from "../lib/icons";
   import { userErrorMessage } from "../lib/errors";
   import { formatDiagnosticLocation } from "../lib/diagnostics";
-  import { notifyWithUndo } from "../lib/undo";
+  import { notifyWithWorkspaceUndo } from "../lib/undo";
   import FileTree from "./FileTree.svelte";
   import FileHistoryModal from "./FileHistoryModal.svelte";
   import Modal from "./Modal.svelte";
@@ -129,10 +129,10 @@
 
   async function handleDeleteFile(path: string): Promise<void> {
     try {
-      const checkpointId = await deleteWorkspaceFile(path);
+      const checkpoints = await deleteWorkspaceFile(path);
       clearEditorIfOpen(path);
       await refreshDir(parentDir(path));
-      notifyWithUndo(`Deleted ${fileName(path)}.`, "workspace", path, checkpointId, () =>
+      notifyWithWorkspaceUndo(`Deleted ${fileName(path)}.`, path, checkpoints, () =>
         refreshDir(parentDir(path)),
       );
     } catch (e) {

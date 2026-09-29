@@ -266,6 +266,23 @@ impl ConfigApiState {
             ))
             .await
     }
+
+    /// [`Self::checkpoint_workspace_id_before_write`] for the shared team
+    /// repository: the checkpoint for a destructive action on a `team/...`
+    /// path, which the workspace repository does not contain. `None` when it
+    /// could not be recorded; the action still proceeds.
+    #[must_use]
+    pub(super) async fn checkpoint_team_id_before_write(
+        &self,
+        summary: impl Into<String>,
+    ) -> Option<String> {
+        self.checkpoints
+            .checkpoint_team_id_before_action(crate::checkpoints::CheckpointContext::system(
+                crate::checkpoints::CheckpointTrigger::PreAction,
+                summary,
+            ))
+            .await
+    }
 }
 
 /// Build the config API router.

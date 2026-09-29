@@ -79,6 +79,59 @@ pub(super) struct WriteResponse {
     pub version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    /// The checkpoint taken before a raw overwrite. Absent for a text write,
+    /// which takes none.
+    #[serde(default, flatten, skip_serializing_if = "UndoRefs::is_empty")]
+    pub undo: UndoRefs,
+}
+
+/// One checkpoint taken before a destructive action, and the repository
+/// that holds it. Workspace paths live in `workspace`; `team/...` paths in
+/// `team`. Restoring a path from the wrong repository finds nothing.
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct CheckpointRef {
+    pub checkpoint_id: String,
+    pub checkpoint_repo: crate::checkpoints::RepoKind,
+}
+
+/// The checkpoints a destructive action recorded, flattened into its
+/// response. One checkpoint (the common case, including every agent-only
+/// path) is `checkpoint_id` + `checkpoint_repo`. An action that touched both
+/// the agent directory and the team directory (a move between them) lists
+/// both under `checkpoints` instead. `checkpoint_id` is `null` when none
+/// could be recorded; the action still ran and the UI should not offer Undo.
+#[derive(Debug, Default, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+pub(super) struct UndoRefs {
+    pub checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_repo: Option<crate::checkpoints::RepoKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<CheckpointRef>,
+}
+
+impl UndoRefs {
+    fn from_recorded(mut recorded: Vec<CheckpointRef>) -> Self {
+        if recorded.len() == 1
+            && let Some(only) = recorded.pop()
+        {
+            return Self {
+                checkpoint_id: Some(only.checkpoint_id),
+                checkpoint_repo: Some(only.checkpoint_repo),
+                checkpoints: Vec::new(),
+            };
+        }
+        Self {
+            checkpoint_id: None,
+            checkpoint_repo: None,
+            checkpoints: recorded,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.checkpoint_id.is_none() && self.checkpoints.is_empty()
+    }
 }
 
 /// Body for a `412 Precondition Failed` response from a conditional write.
@@ -102,10 +155,11 @@ pub(super) struct DeleteFileQuery {
 #[cfg_attr(test, derive(Deserialize))]
 pub(super) struct DeleteResponse {
     pub deleted: bool,
-    /// Checkpoint holding the workspace as it was before this delete.
-    /// `None` when that checkpoint could not be recorded; the delete still
-    /// succeeded, and the UI should not offer Undo.
-    pub checkpoint_id: Option<String>,
+    /// The checkpoint holding the deleted path as it was, and the repository
+    /// it belongs to. `checkpoint_id` is `None` when it could not be
+    /// recorded; the delete still succeeded, and the UI should not offer Undo.
+    #[serde(flatten)]
+    pub undo: UndoRefs,
 }
 
 /// Request body for `POST /api/workspace/dir`.
@@ -144,6 +198,10 @@ pub(super) struct MoveResponse {
     /// directory or an unrecognized file — the move always succeeds either way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    /// The checkpoint(s) taken before the move: one per repository the move
+    /// touched (the source's and the destination's, when they differ).
+    #[serde(default, flatten, skip_serializing_if = "UndoRefs::is_empty")]
+    pub undo: UndoRefs,
 }
 
 /// Canonicalize the workspace root directory.
@@ -737,6 +795,7 @@ async fn write_workspace_bytes(
     relative: &str,
     bytes: &[u8],
     headers: &HeaderMap,
+    undo: UndoRefs,
 ) -> Result<Response, (StatusCode, String)> {
     if is_blocked_path(relative) {
         return Err((
@@ -803,6 +862,7 @@ async fn write_workspace_bytes(
         saved: true,
         version,
         diagnostics,
+        undo,
     })
     .into_response())
 }
@@ -839,7 +899,14 @@ pub(super) async fn api_workspace_file_write(
         ));
     }
 
-    write_workspace_bytes(&state, &req.path, req.content.as_bytes(), &headers).await
+    write_workspace_bytes(
+        &state,
+        &req.path,
+        req.content.as_bytes(),
+        &headers,
+        UndoRefs::default(),
+    )
+    .await
 }
 
 /// `GET /api/workspace/raw` — read a workspace file as raw bytes.
@@ -931,21 +998,51 @@ pub(super) async fn api_workspace_raw_write(
         ));
     }
 
-    checkpoint_before_destructive_action(&state, &format!("raw write {}", query.path)).await;
-    write_workspace_bytes(&state, &query.path, &body, &headers).await
+    let located = state.locate(&query.path);
+    let undo = checkpoint_before_destructive_action(
+        &state,
+        &[&located],
+        &format!("raw write {}", query.path),
+    )
+    .await;
+    write_workspace_bytes(&state, &query.path, &body, &headers, undo).await
 }
 
-/// Checkpoint the workspace before a destructive workspace API action
-/// (delete, overwrite, move/rename with overwrite). Never blocks or fails
-/// the action — see `crate::checkpoints`. Returns the id of the checkpoint
-/// that holds the pre-action tree, or `None` when it could not be recorded.
+/// Checkpoint the repository each of `paths` lives in before a destructive
+/// workspace API action (delete, overwrite, move/rename): the workspace
+/// repository for an agent path, the team repository for a `team/...` path,
+/// both for an action that spans the two. Never blocks or fails the action —
+/// see `crate::checkpoints`. Names the checkpoints that were recorded and the
+/// repository holding each.
 async fn checkpoint_before_destructive_action(
     state: &ConfigApiState,
+    paths: &[&Located],
     summary: &str,
-) -> Option<String> {
-    state
-        .checkpoint_workspace_id_before_write(summary.to_string())
-        .await
+) -> UndoRefs {
+    let touches_workspace = paths.iter().any(|located| located.team.is_none());
+    let touches_team = paths.iter().any(|located| located.team.is_some());
+    let mut recorded = Vec::new();
+    if touches_workspace
+        && let Some(checkpoint_id) = state
+            .checkpoint_workspace_id_before_write(summary.to_string())
+            .await
+    {
+        recorded.push(CheckpointRef {
+            checkpoint_id,
+            checkpoint_repo: crate::checkpoints::RepoKind::Workspace,
+        });
+    }
+    if touches_team
+        && let Some(checkpoint_id) = state
+            .checkpoint_team_id_before_write(summary.to_string())
+            .await
+    {
+        recorded.push(CheckpointRef {
+            checkpoint_id,
+            checkpoint_repo: crate::checkpoints::RepoKind::Team,
+        });
+    }
+    UndoRefs::from_recorded(recorded)
 }
 
 /// `DELETE /api/workspace/file` — delete a workspace file or directory.
@@ -1025,7 +1122,7 @@ pub(super) async fn api_workspace_delete(
         )
     })?;
 
-    let checkpoint_id;
+    let undo;
     if metadata.is_dir() {
         if !query.recursive {
             return Err((
@@ -1034,8 +1131,12 @@ pub(super) async fn api_workspace_delete(
             ));
         }
         refuse_if_dir_holds_internal_data(&path, relative).await?;
-        checkpoint_id =
-            checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
+        undo = checkpoint_before_destructive_action(
+            &state,
+            &[&located],
+            &format!("delete {relative}"),
+        )
+        .await;
         tokio::fs::remove_dir_all(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1049,8 +1150,12 @@ pub(super) async fn api_workspace_delete(
         if let Some(conflict) = check_conditional_write(&path, &headers).await? {
             return Ok(conflict);
         }
-        checkpoint_id =
-            checkpoint_before_destructive_action(&state, &format!("delete {relative}")).await;
+        undo = checkpoint_before_destructive_action(
+            &state,
+            &[&located],
+            &format!("delete {relative}"),
+        )
+        .await;
         tokio::fs::remove_file(&path).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1066,7 +1171,7 @@ pub(super) async fn api_workspace_delete(
 
     Ok(Json(DeleteResponse {
         deleted: true,
-        checkpoint_id,
+        undo,
     })
     .into_response())
 }
@@ -1375,6 +1480,7 @@ pub(super) async fn api_workspace_move(
             moved: true,
             version,
             diagnostics: Vec::new(),
+            undo: UndoRefs::default(),
         })
         .into_response());
     }
@@ -1394,8 +1500,12 @@ pub(super) async fn api_workspace_move(
         ready_move_destination(&to_path, to_relative, req.overwrite, from_metadata.is_dir())
             .await?;
 
-    checkpoint_before_destructive_action(&state, &format!("move {from_relative} to {to_relative}"))
-        .await;
+    let undo = checkpoint_before_destructive_action(
+        &state,
+        &[&from_located, &to_located],
+        &format!("move {from_relative} to {to_relative}"),
+    )
+    .await;
     if let Err(e) = tokio::fs::rename(&from_path, &to_path).await {
         if let Some(aside) = &aside {
             restore_aside(aside, &to_path).await;
@@ -1429,6 +1539,7 @@ pub(super) async fn api_workspace_move(
         moved: true,
         version,
         diagnostics,
+        undo,
     })
     .into_response())
 }
@@ -2366,6 +2477,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK, "delete should succeed");
         let body: DeleteResponse = response_json(response).await;
         let id = body
+            .undo
             .checkpoint_id
             .expect("delete should name the checkpoint taken before it");
         let stored = state

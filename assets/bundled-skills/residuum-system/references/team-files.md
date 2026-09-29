@@ -9,7 +9,7 @@ You see one file tree: your own directory, plus a `team/` prefix for the folder 
 - Absolute paths work as usual.
 - Your own directory can never contain a `team` entry. A write to a path inside `<your directory>/team/` is refused with an explanation; use `team/...` to work in the shared folder.
 - A teammate's directory is reachable only by absolute path. To share a file, put a copy in the team folder or hand over its absolute path.
-- The `team` folder itself can't be replaced, moved, or deleted through the file API. `team/.index/`, `team/vectors.db` and its sidecars, and atomic-write temp files are hidden, as elsewhere.
+- The `team` folder itself can't be replaced, moved, or deleted through the file API. Deleting, raw-overwriting, or moving a `team/...` path through the file API checkpoints the team repository first (a move between your folder and `team/` checkpoints both), and the response names each checkpoint's repository (`checkpoint_repo`). `team/.index/`, `team/vectors.db` and its sidecars, and atomic-write temp files are hidden, as elsewhere.
 
 ## Shared writes
 
