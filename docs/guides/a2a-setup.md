@@ -6,15 +6,16 @@ A2A is on by default. The steps below are about who can reach your agent, and wh
 
 ## Your agent's address
 
-Other agents reach yours at a public address, which is shown in **Settings → A2A → Status**:
+Every agent in your team has its own address on the A2A port, `http://<bind>:7702/agents/<agent name>`, shown in **Settings → A2A → Status**. That address works from the same machine or network. The Residuum relay doesn't carry A2A yet, so the status page says "Reachable locally; remote access through the relay arrives with relay support." To reach an agent from elsewhere, use your own tunnel:
 
-- **Through the Residuum relay** (when you're signed in to the cloud relay): `https://<your-username>.agent-residuum.com/a2a/<instance>`. You don't need to configure anything.
 - **Through your own tunnel or reverse proxy**: point it at the A2A port (`7702` by default), never at the gateway port (`7700`), which serves the settings API without a login. Then enter the tunnel's URL as **Your own address** in **Settings → A2A** (under the advanced settings), or set it in `hub/config.toml`:
 
   ```toml
   [a2a]
   public_url = "https://agent.example.com"
   ```
+
+  Each agent's address is then `https://agent.example.com/agents/<agent name>`.
 
 Other agents find your agent from its Agent Card at `<address>/.well-known/agent-card.json`.
 
@@ -41,9 +42,9 @@ Each caller's conversations with your agent run as their own sessions, which you
 ### Public or private
 
 - **Public** (the default): anyone can read your Agent Card, but only callers with a key can send tasks.
-- **Private**: without a key, your agent looks like it doesn't exist. Its card is hidden, and the relay's agent listing only shows it to callers holding one of its keys.
+- **Private**: without a key, your agent looks like it doesn't exist. Its card is hidden.
 
-Switch with the **Visibility** setting in **Settings → A2A**, or with `visibility = "private"` under `[a2a]`.
+Visibility is per agent. Switch it with the **Visibility** setting in **Settings → A2A**, or with `visibility = "private"` under `[a2a]` in the agent's own `config/config.toml`.
 
 ## Let your agent reach other agents
 
@@ -64,10 +65,9 @@ Store the key the other agent gave you as an agent key first, for example with `
 
 ## Link your own instances
 
-If you run several Residuum instances on the same relay account (a laptop and a server, for example), they find and trust each other automatically. You don't need keys or `config/a2a.json` entries for them. Each instance appears to the others as `a2a:<instance>`, marked "(your instance)" in `list_agents`. Private instances are included.
+If you run several Residuum installs on the same relay account (a laptop and a server, for example), they find and trust each other automatically once their tunnels carry A2A. You don't need keys or `config/a2a.json` entries for them. Each install appears to the others as `a2a:<instance>`, marked "(your instance)" in `list_agents`. The agents inside one install are teammates and message each other directly, so they never appear as siblings.
 
 ## Check it works
 
-- **Settings → A2A → Status** should show A2A as on, with a public address and no problems.
-- `https://<your-username>.agent-residuum.com/a2a/agents` lists your public instances.
+- **Settings → A2A → Status** should show A2A as on, with the agent's address and no problems.
 - Under **Remote agents**, each configured agent should show as reachable, with its skills.

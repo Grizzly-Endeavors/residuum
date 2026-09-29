@@ -374,11 +374,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     if diff.a2a_changed {
         reload_a2a_adapter(rt, &new_cfg).await;
     }
-    // An `[a2a]` change also respawns the tunnel: its capabilities (whether
-    // `a2a`/`a2a-private` are advertised) are only sent on the tunnel's
-    // upgrade, so the relay never sees a visibility flip or an enable/disable
-    // without a fresh connection.
-    if diff.cloud_changed || diff.a2a_changed {
+    if diff.cloud_changed {
         reload_tunnel(rt, &new_cfg).await;
     }
 
@@ -503,7 +499,7 @@ pub(super) async fn handle_hub_reload(rt: &mut GatewayRuntime) {
     if diff.a2a_changed {
         reload_a2a_adapter(rt, &new_cfg).await;
     }
-    if diff.cloud_changed || diff.a2a_changed {
+    if diff.cloud_changed {
         reload_tunnel(rt, &new_cfg).await;
     }
 
@@ -859,7 +855,6 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 stop_tx: rt.stop_tx.clone(),
                 agent_inbox_dir: rt.layout.agent_inbox_dir(),
                 tz: rt.tz,
-                tunnel_status_rx: rt.tunnel_status_rx.clone(),
                 publisher: rt.publisher.clone(),
                 bus_handle: rt.bus_handle.clone(),
                 file_registry: rt.file_registry.clone(),
@@ -1146,7 +1141,6 @@ async fn reload_teams_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     shutdown_adapter(&mut rt.a2a_shutdown_tx, &mut rt.a2a_handle, "a2a").await;
     rt.a2a_card_state = None;
-    rt.a2a_public_url = None;
 
     if new_cfg.a2a.enabled {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -1156,7 +1150,6 @@ async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             agent_messenger: Arc::clone(&rt.agent_messenger),
             skill_state: Arc::clone(&rt.skill_state),
             bus_handle: rt.bus_handle.clone(),
-            tunnel_status_rx: rt.tunnel_status_rx.clone(),
             // The session spawner has been running since startup.
             sessions_ready: tokio::sync::watch::channel(true).1,
         };
@@ -1164,13 +1157,12 @@ async fn reload_a2a_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             Ok((handle, card_state, public_url)) => {
                 tracing::info!(
                     visibility = %new_cfg.a2a.visibility,
-                    public_url = %public_url.current(),
+                    public_url = %public_url,
                     "a2a interface restarted with new config"
                 );
                 rt.a2a_handle = Some(handle);
                 rt.a2a_shutdown_tx = Some(tx);
                 rt.a2a_card_state = Some(card_state);
-                rt.a2a_public_url = Some(public_url);
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to restart the a2a interface; it will not run until the next successful reload");

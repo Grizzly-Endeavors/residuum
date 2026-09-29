@@ -1,6 +1,6 @@
 # Residuum Cloud Tunnel and Remote Control Safety
 
-Residuum Cloud (`[cloud]` in `hub/config.toml`, Settings → Residuum Cloud) opens a persistent WebSocket tunnel from this gateway to a relay, so the web UI, the workbench, and A2A requests reach it from anywhere without port forwarding. The tunnel client (`tunnel::start_tunnel`) forwards each proxied HTTP request to the appropriate local listener with a real loopback HTTP call — from the gateway's own perspective, a tunnel-forwarded request looks like any other request arriving on its port.
+Residuum Cloud (`[cloud]` in `hub/config.toml`, Settings → Residuum Cloud) opens a persistent WebSocket tunnel from this gateway to a relay, so the web UI and the workbench reach it from anywhere without port forwarding. The tunnel doesn't declare the `a2a` capability, so A2A requests don't arrive over it: the hub serves A2A per agent under `/agents/<name>/`, which the relay can't address. A2A is reachable locally and through the user's own tunnel (see [A2A](a2a.md)). The tunnel client (`tunnel::start_tunnel`) forwards each proxied HTTP request to the appropriate local listener with a real loopback HTTP call — from the gateway's own perspective, a tunnel-forwarded request looks like any other request arriving on its port.
 
 ## Telling a Tunnel-Forwarded Request Apart From a Local One
 

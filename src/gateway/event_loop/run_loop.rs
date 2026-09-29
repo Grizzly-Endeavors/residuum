@@ -348,7 +348,6 @@ fn build_api_states(
 fn build_gateway_state(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
-    tunnel_status_rx: &tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     file_registry: &crate::gateway::file_server::FileRegistry,
     webhooks: &crate::interfaces::webhook::WebhookTable,
     workspace_watch_health: &tokio::sync::watch::Receiver<crate::workspace::watch::WatchHealth>,
@@ -359,7 +358,6 @@ fn build_gateway_state(
         stop_tx: core.stop_tx.clone(),
         agent_inbox_dir: parts.layout.agent_inbox_dir(),
         tz: parts.tz,
-        tunnel_status_rx: tunnel_status_rx.clone(),
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
         file_registry: file_registry.clone(),
@@ -374,12 +372,28 @@ fn build_gateway_state(
     }
 }
 
+/// Start sibling discovery for the hub and register this agent's client hub
+/// with it. Both the registry and the tunnel status receiver survive a config
+/// reload (the tunnel is restarted in place, not rebuilt), so one long-lived
+/// task spawned at cold start stays correct across reloads without being
+/// respawned.
+async fn start_sibling_discovery(
+    cfg: &Config,
+    parts: &crate::gateway::startup::GatewayComponents,
+    tunnel_status_rx: &tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+) {
+    let fanout = crate::a2a::SiblingFanout::new_shared();
+    fanout
+        .register(&cfg.agent_name, Arc::clone(&parts.a2a_hub))
+        .await;
+    crate::a2a::spawn_sibling_discovery(fanout, tunnel_status_rx.clone());
+}
+
 /// The A2A listener's runtime dependencies, plus the sender that marks the
 /// session spawner ready (raised by [`build_runtime`] once it is subscribed).
 fn a2a_listener_deps(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
-    tunnel_status_rx: &tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
 ) -> (A2aListenerDeps, tokio::sync::watch::Sender<bool>) {
     let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
     let deps = A2aListenerDeps {
@@ -388,7 +402,6 @@ fn a2a_listener_deps(
         agent_messenger: Arc::clone(&parts.agent_messenger),
         skill_state: Arc::clone(&parts.skill_state),
         bus_handle: core.bus_handle.clone(),
-        tunnel_status_rx: tunnel_status_rx.clone(),
         sessions_ready: sessions_ready_rx,
     };
     (deps, sessions_ready_tx)
@@ -450,10 +463,7 @@ async fn spawn_server_and_adapters(
     let (tunnel_status_tx, tunnel_status_rx) =
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
     let tunnel_status_tx = Arc::new(tunnel_status_tx);
-    // Both the hub and this receiver survive a config reload (the tunnel is
-    // restarted in place, not rebuilt), so one long-lived task spawned here
-    // at cold start stays correct across reloads without being respawned.
-    crate::a2a::spawn_sibling_discovery(Arc::clone(&parts.a2a_hub), tunnel_status_rx.clone());
+    start_sibling_discovery(cfg, parts, &tunnel_status_rx).await;
 
     let file_registry = crate::gateway::file_server::FileRegistry::new(cfg.agent_name.clone())
         .with_workspace_root(parts.layout.root().to_path_buf());
@@ -468,7 +478,6 @@ async fn spawn_server_and_adapters(
     let state = build_gateway_state(
         core,
         parts,
-        &tunnel_status_rx,
         &file_registry,
         &webhooks,
         &workspace_watch_health,
@@ -490,7 +499,7 @@ async fn spawn_server_and_adapters(
         },
     );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
-    let (a2a_deps, sessions_ready_tx) = a2a_listener_deps(core, parts, &tunnel_status_rx);
+    let (a2a_deps, sessions_ready_tx) = a2a_listener_deps(core, parts);
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, a2a_deps).await;
     let (tunnel_handle, tunnel_shutdown_tx) =
         spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx), workbench_serving.port());
@@ -765,7 +774,6 @@ async fn build_runtime(
         a2a_tracker: parts.a2a_tracker,
         checkpoints: parts.checkpoints,
         config_reload_tracker: parts.config_reload_tracker,
-        a2a_public_url: spawned.adapters.a2a_public_url,
         watcher_handle: spawned.watcher_handle,
         root_config_watcher_handle: spawned.root_config_watcher_handle,
         hub_config_watcher_handle: spawned.hub_config_watcher_handle,
@@ -891,12 +899,8 @@ async fn reload_channels_note(rt: &mut GatewayRuntime) -> String {
 /// know).
 async fn reload_agent_card_note(rt: &mut GatewayRuntime) -> Option<String> {
     let card_state = rt.a2a_card_state.as_ref()?;
-    let tunnel_status = rt.tunnel_status_rx.borrow().clone();
-    let card_runtime = crate::a2a::CardRuntime::from_config_and_tunnel(
-        &rt.cfg.a2a,
-        &rt.cfg.gateway.bind,
-        &tunnel_status,
-    );
+    let card_runtime =
+        crate::a2a::CardRuntime::from_config(&rt.cfg.a2a, &rt.cfg.gateway.bind, &rt.cfg.agent_name);
     let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) else {
         return None;
     };

@@ -407,8 +407,6 @@ mod tests {
             workspace_dir.to_path_buf(),
             workspace_dir.to_path_buf(),
         );
-        let (_tunnel_tx, tunnel_status_rx) =
-            tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
         let session_registry =
             std::sync::Arc::new(crate::background::registry::SessionRegistry::new());
         let session_store = std::sync::Arc::new(crate::background::store::SessionStore::new(
@@ -431,7 +429,6 @@ mod tests {
             stop_tx: core.stop_tx,
             agent_inbox_dir,
             tz: chrono_tz::UTC,
-            tunnel_status_rx,
             publisher: core.publisher,
             bus_handle: core.bus_handle,
             file_registry: crate::gateway::file_server::FileRegistry::new("scout"),
