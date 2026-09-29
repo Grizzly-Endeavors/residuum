@@ -74,7 +74,7 @@ The intended workflow: the agent sets up a heartbeat to periodically review its 
 
 ## Search
 
-Two search backends, used together when both are available. They run over two indexes: the agent's own memory (observations and interaction-pair chunks, in `memory/`) and the team wiki (`team/wiki/`, in `team/.index/` and `team/vectors.db`). The team wiki index holds only wiki pages and is one shared service: every agent in the process searches the same instance, and its writes are serialized. Agent memory indexes hold no wiki pages; an index built before that has its wiki documents and vectors removed at startup.
+Two search backends, used together when both are available. They run over two indexes: the agent's own memory (observations and interaction-pair chunks, in `memory/`) and the team wiki (`team/wiki/`, in `team/.index/` and `team/vectors.db`). The team wiki index holds only wiki pages and is one shared service: every agent in the process searches the same instance, and its writes are serialized. Agent memory indexes hold no wiki pages; any wiki documents and vectors found in one are removed at startup.
 
 ### BM25 (tantivy)
 

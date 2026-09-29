@@ -8,6 +8,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::config::paths::TeamPaths;
 use crate::util::FatalError;
+use crate::workspace::team_files::{TeamPathGuard, TeamWriteCoordinator, TeamWriter};
 
 const DEFAULT_AGENTS: &str = include_str!("../../assets/team-bootstrap/AGENTS.md");
 const DEFAULT_USER: &str = include_str!("../../assets/team-bootstrap/USER.md");
@@ -35,11 +36,6 @@ const CREATED_AGENT_HEARTBEAT: &str = concat!(
 /// Description written to a role page whose agent has not described its
 /// role yet.
 const ROLE_PLACEHOLDER: &str = "Role not described yet; this agent fills it in.";
-
-/// Serializes role-page writes, which read-modify-write the shared roster
-/// index and log, so agents starting together cannot lose each other's
-/// entries.
-static ROLE_PAGE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The `HEARTBEAT.yml` for the first agent (onboarding): the built-in
 /// pulses, including `wiki_lint`.
@@ -99,14 +95,36 @@ pub async fn ensure_team(
 /// # Errors
 /// Returns `FatalError::Workspace` if the page, the index, or the log
 /// cannot be written.
+///
+/// The page, the roster index, and the log are written under `coordinator`'s
+/// path locks, with the agent recorded as their writer, so agents starting
+/// at the same time neither lose each other's entries nor bypass the team
+/// write checks. `coordinator` must guard `team`.
 pub async fn ensure_agent_role_page(
     team: &TeamPaths,
+    coordinator: &TeamWriteCoordinator,
     name: &str,
     description: Option<&str>,
 ) -> Result<bool, FatalError> {
-    let _guard = ROLE_PAGE_LOCK.lock().await;
-
     let page_path = team.agent_role_page(name);
+    let index_path = team.wiki_agents_index_md();
+    let log_path = team.wiki_log_md();
+    let writer = TeamWriter::Agent(name.to_string());
+    let guards = coordinator
+        .lock_all(&[page_path.clone(), index_path.clone(), log_path.clone()])
+        .await;
+    let guard_for = |path: &Path| {
+        guards
+            .iter()
+            .find(|guard| guard.path() == path)
+            .ok_or_else(|| {
+                FatalError::Workspace(format!("no write lock held for {}", path.display()))
+            })
+    };
+    let page_guard = guard_for(&page_path)?;
+    let index_guard = guard_for(&index_path)?;
+    let log_guard = guard_for(&log_path)?;
+
     if exists(&page_path).await? {
         return Ok(false);
     }
@@ -128,9 +146,14 @@ pub async fn ensure_agent_role_page(
     // Index entry first, page second: a crash between the two leaves an
     // index entry that the retry skips (it checks for the link) before
     // writing the page.
-    add_index_entry(team, name, &role).await?;
-    write_new(&page_path, &role_page_content(name, &role)).await?;
-    append_log_line(team, name).await?;
+    add_index_entry(index_guard, &writer, name, &role).await?;
+    page_guard
+        .commit(&writer, role_page_content(name, &role).as_bytes())
+        .await
+        .map_err(|e| {
+            FatalError::Workspace(format!("failed to write {}: {e:#}", page_path.display()))
+        })?;
+    append_log_line(log_guard, &writer, name).await?;
 
     tracing::info!(agent = %name, page = %page_path.display(), "wrote agent role page");
     Ok(true)
@@ -148,8 +171,13 @@ fn role_page_content(name: &str, role: &str) -> String {
 
 /// Append `- [name](/agents/name.md) — role` to the roster index unless a
 /// link to the page is already there.
-async fn add_index_entry(team: &TeamPaths, name: &str, role: &str) -> Result<(), FatalError> {
-    let index_path = team.wiki_agents_index_md();
+async fn add_index_entry(
+    index: &TeamPathGuard,
+    writer: &TeamWriter,
+    name: &str,
+    role: &str,
+) -> Result<(), FatalError> {
+    let index_path = index.path().to_path_buf();
     let existing = match tokio::fs::read_to_string(&index_path).await {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_WIKI_AGENTS_INDEX.to_string(),
@@ -171,8 +199,10 @@ async fn add_index_entry(team: &TeamPaths, name: &str, role: &str) -> Result<(),
         updated.push('\n');
     }
     _ = writeln!(updated, "- [{name}]{link} — {role}");
-    crate::util::fs::atomic_write(&index_path, &updated)
+    index
+        .commit(writer, updated.as_bytes())
         .await
+        .map(drop)
         .map_err(|e| {
             FatalError::Workspace(format!(
                 "failed to update agent roster index {}: {e:#}",
@@ -182,8 +212,12 @@ async fn add_index_entry(team: &TeamPaths, name: &str, role: &str) -> Result<(),
 }
 
 /// Append the role page's `edit` entry to the wiki log.
-async fn append_log_line(team: &TeamPaths, name: &str) -> Result<(), FatalError> {
-    let log_path = team.wiki_log_md();
+async fn append_log_line(
+    log: &TeamPathGuard,
+    writer: &TeamWriter,
+    name: &str,
+) -> Result<(), FatalError> {
+    let log_path = log.path().to_path_buf();
     let date = chrono::Local::now().format("%Y-%m-%d");
     let line = format!("## [{date}] edit | added role page agents/{name}.md for agent {name}\n");
 
@@ -201,8 +235,9 @@ async fn append_log_line(team: &TeamPaths, name: &str) -> Result<(), FatalError>
         existing.push('\n');
     }
     existing.push_str(&line);
-    crate::util::fs::atomic_write(&log_path, &existing)
+    log.commit(writer, existing.as_bytes())
         .await
+        .map(drop)
         .map_err(|e| {
             FatalError::Workspace(format!(
                 "failed to update wiki log {}: {e:#}",
@@ -362,7 +397,10 @@ mod tests {
         let team = team_in(dir.path());
         ensure_team(&team, None, None).await.unwrap();
 
-        let created = ensure_agent_role_page(&team, "scout", None).await.unwrap();
+        let created =
+            ensure_agent_role_page(&team, &TeamWriteCoordinator::new(&team), "scout", None)
+                .await
+                .unwrap();
         assert!(created);
 
         let page = std::fs::read_to_string(team.agent_role_page("scout")).unwrap();
@@ -378,9 +416,14 @@ mod tests {
     async fn role_page_uses_the_description_on_one_line() {
         let dir = tempfile::tempdir().unwrap();
         let team = team_in(dir.path());
-        ensure_agent_role_page(&team, "scout", Some("Watches feeds:\nreports \"news\""))
-            .await
-            .unwrap();
+        ensure_agent_role_page(
+            &team,
+            &TeamWriteCoordinator::new(&team),
+            "scout",
+            Some("Watches feeds:\nreports \"news\""),
+        )
+        .await
+        .unwrap();
 
         let page = std::fs::read_to_string(team.agent_role_page("scout")).unwrap();
         let front: serde_yaml_ng::Value = serde_yaml_ng::from_str(
@@ -404,15 +447,24 @@ mod tests {
     async fn role_page_creation_is_idempotent_and_keeps_agent_edits() {
         let dir = tempfile::tempdir().unwrap();
         let team = team_in(dir.path());
-        assert!(ensure_agent_role_page(&team, "scout", None).await.unwrap());
+        assert!(
+            ensure_agent_role_page(&team, &TeamWriteCoordinator::new(&team), "scout", None)
+                .await
+                .unwrap()
+        );
         std::fs::write(team.agent_role_page("scout"), "agent's own words").unwrap();
         let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
         let log = std::fs::read_to_string(team.wiki_log_md()).unwrap();
 
         assert!(
-            !ensure_agent_role_page(&team, "scout", Some("other"))
-                .await
-                .unwrap()
+            !ensure_agent_role_page(
+                &team,
+                &TeamWriteCoordinator::new(&team),
+                "scout",
+                Some("other")
+            )
+            .await
+            .unwrap()
         );
 
         assert_eq!(
@@ -430,10 +482,17 @@ mod tests {
     async fn role_pages_for_several_agents_share_one_index() {
         let dir = tempfile::tempdir().unwrap();
         let team = team_in(dir.path());
-        ensure_agent_role_page(&team, "alpha", None).await.unwrap();
-        ensure_agent_role_page(&team, "beta", Some("Second"))
+        ensure_agent_role_page(&team, &TeamWriteCoordinator::new(&team), "alpha", None)
             .await
             .unwrap();
+        ensure_agent_role_page(
+            &team,
+            &TeamWriteCoordinator::new(&team),
+            "beta",
+            Some("Second"),
+        )
+        .await
+        .unwrap();
 
         let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
         assert_eq!(index.matches("(/agents/alpha.md)").count(), 1);
@@ -444,10 +503,16 @@ mod tests {
     async fn a_retry_after_a_crash_between_index_and_page_adds_no_duplicate() {
         let dir = tempfile::tempdir().unwrap();
         let team = team_in(dir.path());
-        ensure_agent_role_page(&team, "scout", None).await.unwrap();
+        ensure_agent_role_page(&team, &TeamWriteCoordinator::new(&team), "scout", None)
+            .await
+            .unwrap();
         std::fs::remove_file(team.agent_role_page("scout")).unwrap();
 
-        assert!(ensure_agent_role_page(&team, "scout", None).await.unwrap());
+        assert!(
+            ensure_agent_role_page(&team, &TeamWriteCoordinator::new(&team), "scout", None)
+                .await
+                .unwrap()
+        );
 
         let index = std::fs::read_to_string(team.wiki_agents_index_md()).unwrap();
         assert_eq!(index.matches("(/agents/scout.md)").count(), 1);

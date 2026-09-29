@@ -19,6 +19,7 @@ use tower::ServiceExt;
 
 use super::{HubHttpState, agent_repair_router, hub_router};
 use crate::bus::{WorkspaceEvent, topics};
+use crate::config::paths::TeamPaths;
 use crate::gateway::ReloadSignal;
 use crate::gateway::web::{ConfigApiState, WorkspaceScope};
 use crate::hub::{
@@ -113,7 +114,7 @@ impl FakeDirectory {
 
     fn config_state(&self, name: &str, live: bool) -> ConfigApiState {
         let agent_dir = self.root.join(name);
-        let team = TeamWriteCoordinator::new(self.root.join("team"));
+        let team = TeamWriteCoordinator::new(&TeamPaths::new(self.root.join("team")));
         ConfigApiState {
             hub_dir: self.root.join("hub"),
             config_dir: agent_dir.join("config"),
@@ -362,7 +363,7 @@ impl Harness {
             workbench_serving: crate::workbench::server::WorkbenchServing::Unavailable {
                 reason: "not started in tests".to_string(),
             },
-            team: TeamWriteCoordinator::new(root.path().join("team")),
+            team: TeamWriteCoordinator::new(&TeamPaths::new(root.path().join("team"))),
             team_bus: team_bus.clone(),
             team_watch_health: health_rx,
             started_at: std::time::Instant::now(),

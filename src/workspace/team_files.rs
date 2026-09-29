@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::OwnedMutexGuard;
 
 use super::version::version_token;
+use crate::config::paths::TeamPaths;
 
 /// The name of the directory prefix that addresses the shared team layer.
 pub const TEAM_PREFIX: &str = "team";
@@ -102,12 +103,14 @@ pub struct TeamWriteCoordinator {
 }
 
 impl TeamWriteCoordinator {
-    /// A coordinator for the team directory at `team_root`.
+    /// A coordinator for the team directory `team` names. Callers take
+    /// `team` from their [`crate::workspace::layout::WorkspaceLayout`], so the
+    /// directory is located the same way everywhere.
     #[must_use]
-    pub fn new(team_root: impl Into<PathBuf>) -> Self {
+    pub fn new(team: &TeamPaths) -> Self {
         Self {
             inner: Arc::new(Inner {
-                root: team_root.into(),
+                root: team.root().to_path_buf(),
                 ..Inner::default()
             }),
         }
@@ -186,6 +189,21 @@ impl TeamWriteCoordinator {
             _held: held,
         }
     }
+
+    /// Take the write locks for every path in `paths` at once. Locks are
+    /// taken in a fixed order, so two callers locking overlapping sets can't
+    /// deadlock, and a path listed twice is locked once. The guards come
+    /// back in that same fixed order.
+    pub async fn lock_all(&self, paths: &[PathBuf]) -> Vec<TeamPathGuard> {
+        let mut ordered: Vec<&PathBuf> = paths.iter().collect();
+        ordered.sort_by_key(|path| canonical_key(path));
+        ordered.dedup_by_key(|path| canonical_key(path));
+        let mut guards = Vec::with_capacity(ordered.len());
+        for path in ordered {
+            guards.push(self.lock(path).await);
+        }
+        guards
+    }
 }
 
 /// Exclusive access to one team path. Dropping it releases the lock.
@@ -202,9 +220,17 @@ pub struct TeamConflict {
     /// The writer of the change the caller has not seen, `None` when the file
     /// changed outside Residuum.
     pub changed_by: Option<TeamWriter>,
+    /// Whether the file no longer exists.
+    pub missing: bool,
 }
 
 impl TeamPathGuard {
+    /// The path this guard holds.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The path's current stamp, read under the lock.
     ///
     /// # Errors
@@ -232,6 +258,7 @@ impl TeamPathGuard {
         }
         Err(CheckError::Conflict(TeamConflict {
             changed_by: self.last_writer(&current),
+            missing: current.version.is_none(),
         }))
     }
 
@@ -476,9 +503,15 @@ impl TeamFiles {
             Some(TeamWriter::User) => "the user".to_string(),
             None => "an unknown writer (a change made outside Residuum)".to_string(),
         };
+        let next = if conflict.missing {
+            "It no longer exists. Read it again with read_file to confirm, then write_file can \
+             create it again"
+        } else {
+            "Read it again with read_file, then reapply your change to the current contents"
+        };
         format!(
             "{display} changed since you read it: it was changed by {who}. Nothing was written. \
-             Read it again with read_file, then reapply your change to the current contents"
+             {next}"
         )
     }
 }
@@ -562,7 +595,12 @@ mod tests {
         let agent = dir.path().join("scout");
         std::fs::create_dir_all(&team).unwrap();
         std::fs::create_dir_all(&agent).unwrap();
-        (dir, TeamWriteCoordinator::new(&team), agent, team)
+        (
+            dir,
+            TeamWriteCoordinator::new(&TeamPaths::new(&team)),
+            agent,
+            team,
+        )
     }
 
     /// Write `bytes` to `path` through the coordinator as `writer`.

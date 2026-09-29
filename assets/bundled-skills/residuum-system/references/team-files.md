@@ -17,7 +17,7 @@ Other agents and the user can write the same team file. When you read a team fil
 
 If the file changed since you read it, nothing is written and the error tells you the path, that it changed since you read it, and who changed it: `teammate <name>`, `the user`, `another session of yours`, or `an unknown writer (a change made outside Residuum)`. Read the file again with `read_file`, then reapply your change to its current contents. After your own write you don't need to re-read before your next edit.
 
-Creating a team file that someone else created first is the same conflict. Your private files (everything outside `team/`) are not checked this way.
+Creating a team file that someone else created first is the same conflict. If the file was deleted after you read it, you get one conflict naming who deleted it; read the path again (it reports not found), and `write_file` then creates it. Restores from checkpoints, workbench artifact deletes, and role-page writes count as writes by whoever ran them, so they conflict with your stale read the same way. Your private files (everything outside `team/`) are not checked this way.
 
 The web UI keeps its `If-Match` precondition on saves (`412` when the file changed), checked under the same lock, and a save by the user is recorded as the user's write.
 

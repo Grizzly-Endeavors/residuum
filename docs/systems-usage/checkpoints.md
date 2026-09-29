@@ -41,6 +41,8 @@ The agent has two tools, scoped to the workspace and team repositories (the opti
 | `workspace_history` | Lists checkpoints, optionally filtered to those that changed a given path, or shows what one checkpoint changed. |
 | `workspace_restore` | Restores a path to a checkpoint, or undoes a checkpoint's changes. |
 
+A restore or undo in the team repository (from this tool or from the web UI) goes through the team write coordinator (see `team-files.md`). It takes the path lock of every file it may write or remove (for a directory: the files the checkpoint has there plus the files on disk there), so it waits for any file tool or web save holding one of those paths, and it records the writer afterwards: the calling agent for `workspace_restore`, the user for the HTTP routes. An agent that read a restored file gets a conflict on its next write, naming that writer. An undo records only the paths it reverted, not the ones it skipped.
+
 ## HTTP API
 
 Backs the web UI's history view: every route takes `repo` (`workspace`, `team`, `agent_config`, or `hub`) as a query parameter or request-body field.

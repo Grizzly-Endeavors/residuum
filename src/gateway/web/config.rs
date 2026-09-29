@@ -772,22 +772,19 @@ pub(super) async fn api_complete_setup(
     // Bootstrap the agent's full workspace (identity files, wiki, bundled
     // skills), personalized with the user's name.
     let layout = crate::workspace::layout::WorkspaceLayout::new(&agent_dir);
-    crate::workspace::bootstrap::ensure_workspace(
-        &layout,
-        body.user_name.as_deref(),
-        Some(hub.timezone.name()),
-    )
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("failed to bootstrap agent workspace: {e}")),
-                diagnostics: Vec::new(),
-            }),
-        )
-    })?;
+    state
+        .bootstrap_workspace(&layout, body.user_name.as_deref(), hub.timezone.name())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to bootstrap agent workspace: {e}")),
+                    diagnostics: Vec::new(),
+                }),
+            )
+        })?;
 
     write_first_agent_config_files(&layout, &body).await?;
 

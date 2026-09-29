@@ -103,6 +103,9 @@ pub(crate) struct HubApiState {
     pub secret_lock: Arc<tokio::sync::Mutex<()>>,
     /// Checkpoint repositories; the hub API addresses the hub and team ones.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// Coordinates writes under the team directory, which onboarding
+    /// bootstraps.
+    pub team: crate::workspace::team_files::TeamWriteCoordinator,
 }
 
 /// The hub directory, for routes that only need to resolve `secret:` values
@@ -134,7 +137,22 @@ impl HubApiState {
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
             checkpoints: crate::checkpoints::test_engine(),
+            team: crate::workspace::team_files::TeamWriteCoordinator::new(
+                &crate::config::paths::TeamPaths::new(hub_dir.join("team-for-test")),
+            ),
         }
+    }
+
+    /// Bootstrap `layout`'s workspace and the team directory under the hub's
+    /// team write coordinator.
+    pub(super) async fn bootstrap_workspace(
+        &self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+        user_name: Option<&str>,
+        timezone: &str,
+    ) -> Result<(), crate::util::FatalError> {
+        crate::workspace::bootstrap::ensure_workspace(layout, &self.team, user_name, Some(timezone))
+            .await
     }
 
     /// Checkpoint the hub config repository (hub `config.toml` and the
@@ -1100,6 +1118,7 @@ pub(super) mod test_support {
         let checkpoints = std::sync::Arc::new(
             crate::checkpoints::CheckpointEngine::new(
                 workspace_dir.clone(),
+                &crate::config::paths::TeamPaths::new(hub_dir.clone().join("team")),
                 config_dir.clone(),
                 hub_dir.clone(),
                 &hub_dir.join("checkpoints"),

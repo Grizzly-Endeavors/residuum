@@ -9,7 +9,7 @@
 #   active_hours: optional — "HH:MM-HH:MM" in configured timezone
 #                 supports overnight windows (e.g. "22:00-06:00")
 #   agent: ~ (plain session, no skill) | "skill-name" (session with that
-#          skill activated as its role). "main" is no longer accepted — every
+#          skill activated as its role). "main" is not accepted — every
 #          session fork already carries the main agent's identity and a
 #          memory snapshot.
 #   model_tier: optional — "small" (default) | "medium" | "large"

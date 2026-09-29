@@ -125,6 +125,7 @@ pub(super) fn checkpoint_routes(hub: &HubHttpState) -> Router {
 /// The team's workspace file API and its workbench routes.
 pub(super) fn team_routes(hub: &HubHttpState) -> Router {
     let team_root = hub.team.root().to_path_buf();
+    let team_view = hub.team.view_for_user(&team_root);
     let files = web::ConfigApiState {
         hub_dir: hub.hub_dir.clone(),
         config_dir: hub.hub_dir.clone(),
@@ -133,7 +134,7 @@ pub(super) fn team_routes(hub: &HubHttpState) -> Router {
         memory_dir: None,
         reload_tx: Some(hub.reload_tx.clone()),
         checkpoints: Arc::clone(&hub.checkpoints),
-        team: Some(hub.team.view_for_user(&team_root)),
+        team: Some(team_view.clone()),
         scope: web::WorkspaceScope::Team,
     };
     let workbench = web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
@@ -141,6 +142,7 @@ pub(super) fn team_routes(hub: &HubHttpState) -> Router {
         serving: hub.workbench_serving.clone(),
         tunnel_status_rx: hub.tunnel_status_rx.clone(),
         checkpoints: Arc::clone(&hub.checkpoints),
+        team: Some(team_view),
     });
     web::team_workspace_api_router(files).merge(workbench)
 }
@@ -153,5 +155,6 @@ pub(super) fn hub_config_routes(hub: &HubHttpState) -> Router {
         setup_done: hub.setup_done.clone(),
         secret_lock: Arc::clone(&hub.secret_lock),
         checkpoints: Arc::clone(&hub.checkpoints),
+        team: hub.team.clone(),
     })
 }

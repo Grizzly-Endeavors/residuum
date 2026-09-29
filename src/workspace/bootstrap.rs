@@ -3,6 +3,7 @@
 use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
+use super::team_files::TeamWriteCoordinator;
 
 // ── Workspace bootstrap content (embedded at compile time from assets/) ──────
 
@@ -177,12 +178,16 @@ const SKILL_AUTHORING_REF_STANDARDS: &str =
 ///
 /// This is idempotent: existing files and directories are not modified.
 ///
+/// `coordinator` is the team write coordinator for `layout.team()`; the role
+/// page and the roster files are written under its locks.
+///
 /// # Errors
 /// Returns `FatalError::Workspace` if directories cannot be created or
 /// default files cannot be written.
 #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
+    coordinator: &TeamWriteCoordinator,
     user_name: Option<&str>,
     timezone: Option<&str>,
 ) -> Result<(), FatalError> {
@@ -220,7 +225,7 @@ pub async fn ensure_workspace(
     super::team::ensure_team(layout.team(), user_name, timezone).await?;
     match layout.agent_name() {
         Some(name) => {
-            super::team::ensure_agent_role_page(layout.team(), name, None).await?;
+            super::team::ensure_agent_role_page(layout.team(), coordinator, name, None).await?;
         }
         None => {
             return Err(FatalError::Workspace(format!(
@@ -421,7 +426,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert!(layout.root().exists(), "root should exist");
         assert!(layout.memory_dir().exists(), "memory dir should exist");
@@ -485,7 +497,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         for name in ["introspection", "learner", "memory-analyst", "wiki"] {
             let skill_path = layout.team().skills_dir().join(name).join("SKILL.md");
@@ -504,7 +523,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert!(
             layout
@@ -527,7 +553,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let skill_path = layout
             .team()
@@ -538,7 +571,14 @@ mod tests {
             .await
             .unwrap();
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(&skill_path).await.unwrap();
         assert_eq!(
@@ -552,7 +592,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // residuum-system skill tree
         let system_dir = layout.team().skills_dir().join("residuum-system");
@@ -653,7 +700,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let index = tokio::fs::read_to_string(layout.team().wiki_index_md())
             .await
@@ -682,7 +736,14 @@ mod tests {
             .await
             .unwrap();
 
-        ensure_workspace(&layout, Some("Alex"), None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some("Alex"),
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             tokio::fs::read_to_string(team.agents_md()).await.unwrap(),
@@ -697,7 +758,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let heartbeat = tokio::fs::read_to_string(layout.heartbeat_yml())
             .await
@@ -710,12 +778,26 @@ mod tests {
     async fn bootstrap_recreates_a_missing_role_page_without_touching_the_agent_dir() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         tokio::fs::remove_file(layout.team().agent_role_page("workspace"))
             .await
             .unwrap();
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert!(layout.team().agent_role_page("workspace").exists());
     }
@@ -725,7 +807,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let card = crate::a2a::AgentCardFile::load(&layout.agent_card_json()).unwrap();
         assert!(!card.name.trim().is_empty());
@@ -739,7 +828,14 @@ mod tests {
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
         // First run: BOOTSTRAP.md and sentinel are created
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(
             layout.bootstrap_md().exists(),
             "BOOTSTRAP.md should exist on first run"
@@ -757,7 +853,14 @@ mod tests {
         );
 
         // Second run: BOOTSTRAP.md should NOT be recreated
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(
             !layout.bootstrap_md().exists(),
             "BOOTSTRAP.md should not be recreated after sentinel exists"
@@ -769,7 +872,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Modify SOUL.md
         tokio::fs::write(layout.soul_md(), "custom soul content")
@@ -787,7 +897,14 @@ mod tests {
             .unwrap();
 
         // Run again
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         // Custom content should be preserved
         let content = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
@@ -808,7 +925,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, Some("Alex"), None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some("Alex"),
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(layout.team().user_md())
             .await
@@ -824,9 +948,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, Some("Alex"), Some("America/New_York"))
-            .await
-            .unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some("Alex"),
+            Some("America/New_York"),
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(layout.team().user_md())
             .await
@@ -846,7 +975,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(layout.team().user_md())
             .await
@@ -862,9 +998,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, Some("America/New_York"))
-            .await
-            .unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            Some("America/New_York"),
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(layout.team().user_md())
             .await
@@ -878,7 +1019,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, Some(""), Some("")).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            Some(""),
+            Some(""),
+        )
+        .await
+        .unwrap();
 
         let content = tokio::fs::read_to_string(layout.team().user_md())
             .await

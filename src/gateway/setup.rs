@@ -59,6 +59,7 @@ pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, Fa
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             workspace_dir.clone(),
+            crate::workspace::layout::WorkspaceLayout::new(&placeholder_agent_dir).team(),
             config_dir.clone(),
             hub_dir.clone(),
             &hub.checkpoints_dir(),
@@ -73,6 +74,9 @@ pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, Fa
         setup_done: Some(Arc::clone(&setup_done_tx)),
         secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         checkpoints,
+        team: crate::workspace::team_files::TeamWriteCoordinator::new(
+            &crate::config::paths::TeamPaths::new(crate::config::paths::team_dir(&residuum_root)),
+        ),
     };
 
     let app = web::hub_api_router(api_state)

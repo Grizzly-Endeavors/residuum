@@ -2027,7 +2027,7 @@ mod tests {
         );
         assert!(
             !is_identity_target(&state, "USER.md", &ws_dir.join("USER.md")).await,
-            "an agent-dir USER.md is no longer an identity file"
+            "an agent-dir USER.md is not an identity file"
         );
     }
 
