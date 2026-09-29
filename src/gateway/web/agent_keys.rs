@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent_keys::{AgentKeyError, AgentKeyInfo, AgentKeys, KeyCreator, env_var_for};
 
-use super::ConfigApiState;
+use super::HubApiState;
 
 /// Request body for `POST /api/agent-keys`.
 #[derive(Deserialize)]
@@ -63,7 +63,7 @@ fn error_response(e: &AgentKeyError) -> (StatusCode, String) {
 
 /// `GET /api/agent-keys` — list keys (metadata only, never values).
 pub(super) async fn api_agent_keys_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListAgentKeysResponse>, (StatusCode, String)> {
     let snapshot = AgentKeys::new(state.hub_dir)
         .snapshot()
@@ -76,7 +76,7 @@ pub(super) async fn api_agent_keys_list(
 
 /// `POST /api/agent-keys` — store a key as user-created.
 pub(super) async fn api_agent_keys_set(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<SetAgentKeyRequest>,
 ) -> Result<Json<SetAgentKeyResponse>, (StatusCode, String)> {
     state
@@ -100,7 +100,7 @@ pub(super) async fn api_agent_keys_set(
 
 /// `DELETE /api/agent-keys/{name}` — remove a key.
 pub(super) async fn api_agent_keys_delete(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteAgentKeyResponse>, (StatusCode, String)> {
     let checkpoint_id = state
@@ -120,19 +120,8 @@ pub(super) async fn api_agent_keys_delete(
 mod tests {
     use super::*;
 
-    fn test_state(dir: &std::path::Path) -> ConfigApiState {
-        ConfigApiState {
-            team: None,
-            hub_dir: dir.to_path_buf(),
-            config_dir: dir.to_path_buf(),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: dir.join("workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn test_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
     }
 
     #[tokio::test]
@@ -232,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn delete_returns_the_checkpoint_taken_before_the_delete() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = super::super::test_support::watching_hub_state(dir.path());
         let _created = api_agent_keys_set(
             State(state.clone()),
             Json(SetAgentKeyRequest {
@@ -282,7 +271,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = super::super::test_support::watching_hub_state(dir.path());
         let _created = api_agent_keys_set(
             State(state.clone()),
             Json(SetAgentKeyRequest {

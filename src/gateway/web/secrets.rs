@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::secrets::{SecretStore, is_reference};
 
-use super::ConfigApiState;
+use super::HubApiState;
 
 /// Request body for `POST /api/secrets`.
 #[derive(Deserialize)]
@@ -46,7 +46,7 @@ pub(super) struct DeleteSecretResponse {
 /// Acquires `secret_lock` to serialize concurrent writes and prevent
 /// lost-update races (e.g. setup wizard storing multiple secrets via `Promise.all`).
 pub(super) async fn api_secrets_set(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<SetSecretRequest>,
 ) -> Result<Json<SetSecretResponse>, (StatusCode, String)> {
     if is_reference(&req.value) {
@@ -99,7 +99,7 @@ pub(super) async fn api_secrets_set(
 
 /// `GET /api/secrets` — list stored secret names (not values).
 pub(super) async fn api_secrets_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
     let hub_dir = state.hub_dir.clone();
 
@@ -124,7 +124,7 @@ pub(super) async fn api_secrets_list(
 
 /// `DELETE /api/secrets/{name}` — remove a named secret.
 pub(super) async fn api_secrets_delete(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<DeleteSecretResponse>, (StatusCode, String)> {
     state
@@ -162,21 +162,10 @@ mod tests {
     use axum::extract::State;
 
     use super::{SetSecretRequest, api_secrets_set};
-    use crate::gateway::web::ConfigApiState;
+    use crate::gateway::web::HubApiState;
 
-    fn test_state(dir: &std::path::Path) -> ConfigApiState {
-        ConfigApiState {
-            team: None,
-            hub_dir: dir.to_path_buf(),
-            config_dir: dir.join("config"),
-            agent_name: "test-agent".to_string(),
-            workspace_dir: dir.join("workspace"),
-            memory_dir: None,
-            reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            checkpoints: crate::checkpoints::test_engine(),
-        }
+    fn test_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
     }
 
     #[tokio::test]

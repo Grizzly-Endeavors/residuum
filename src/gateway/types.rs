@@ -421,11 +421,22 @@ pub(crate) struct GatewayRuntime {
     pub tracing_service: Arc<TracingService>,
     /// Shared update status for periodic version checking.
     pub update_status: SharedUpdateStatus,
-    /// Sender half for triggering restart (cloned into API state on rebind).
+    /// Sender half of the restart channel. Holding it keeps `restart_rx`
+    /// open; the HTTP layer that sends on it is built outside the runtime.
+    #[expect(
+        dead_code,
+        reason = "held so the restart channel stays open for restart_rx"
+    )]
     pub restart_tx: mpsc::Sender<()>,
     /// Receives a signal to trigger a graceful restart (binary replaced).
     pub restart_rx: mpsc::Receiver<()>,
-    /// Sender half for triggering graceful shutdown from the HTTP API.
+    /// Sender half of the shutdown channel. Holding it keeps
+    /// `gateway_shutdown_rx` open; the HTTP layer that sends on it is built
+    /// outside the runtime.
+    #[expect(
+        dead_code,
+        reason = "held so the shutdown channel stays open for gateway_shutdown_rx"
+    )]
     pub gateway_shutdown_tx: mpsc::Sender<()>,
     /// Receives a signal to trigger a graceful shutdown from the HTTP API.
     pub gateway_shutdown_rx: mpsc::Receiver<()>,

@@ -13,28 +13,53 @@ use crate::checkpoints::{
     CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger, RepoKind,
 };
 
+/// The repositories an agent's checkpoint routes address.
+pub(crate) const AGENT_REPOS: &[RepoKind] = &[RepoKind::Workspace, RepoKind::AgentConfig];
+
+/// The repositories the hub's checkpoint routes address.
+pub(crate) const HUB_REPOS: &[RepoKind] = &[RepoKind::Hub, RepoKind::Team];
+
 /// Shared state for the checkpoints API.
 #[derive(Clone)]
 pub(crate) struct CheckpointApiState {
     pub checkpoints: Arc<CheckpointEngine>,
+    /// The repositories these routes serve; a request for any other is
+    /// refused, since it belongs to the hub or to an agent, not to this scope.
+    pub repos: &'static [RepoKind],
+}
+
+impl CheckpointApiState {
+    /// Refuse a request for a repository outside this scope.
+    fn allow(&self, repo: RepoKind) -> Result<(), (StatusCode, String)> {
+        if self.repos.contains(&repo) {
+            return Ok(());
+        }
+        let names = self
+            .repos
+            .iter()
+            .map(|kind| format!("{kind:?}").to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" or ");
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("this route serves the {names} checkpoint repositories only"),
+        ))
+    }
 }
 
 /// Build the checkpoints API router.
-pub(crate) fn checkpoints_api_router(state: CheckpointApiState) -> Router {
+pub(crate) fn checkpoints_api_router(state: CheckpointApiState, prefix: &str) -> Router {
     use axum::routing::{get, post};
 
-    Router::new()
-        .route("/api/checkpoints", get(api_checkpoints_list))
-        .route("/api/checkpoints/stats", get(api_checkpoints_stats))
-        .route("/api/checkpoints/{id}", get(api_checkpoints_show))
-        .route("/api/checkpoints/{id}/diff", get(api_checkpoints_diff))
-        .route("/api/checkpoints/{id}/file", get(api_checkpoints_file))
-        .route(
-            "/api/checkpoints/{id}/restore",
-            post(api_checkpoints_restore),
-        )
-        .route("/api/checkpoints/{id}/undo", post(api_checkpoints_undo))
-        .with_state(state)
+    let routes = Router::new()
+        .route("/", get(api_checkpoints_list))
+        .route("/stats", get(api_checkpoints_stats))
+        .route("/{id}", get(api_checkpoints_show))
+        .route("/{id}/diff", get(api_checkpoints_diff))
+        .route("/{id}/file", get(api_checkpoints_file))
+        .route("/{id}/restore", post(api_checkpoints_restore))
+        .route("/{id}/undo", post(api_checkpoints_undo));
+    Router::new().nest(prefix, routes).with_state(state)
 }
 
 /// `repo` query parameter shared by every route: which checkpoint
@@ -77,6 +102,7 @@ async fn api_checkpoints_list(
     State(state): State<CheckpointApiState>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<crate::checkpoints::CheckpointPage>, (StatusCode, String)> {
+    state.allow(query.repo)?;
     let limit = query.limit.map(|n| n.clamp(1, 200));
     state
         .checkpoints
@@ -92,6 +118,7 @@ async fn api_checkpoints_stats(
     State(state): State<CheckpointApiState>,
     Query(query): Query<RepoQuery>,
 ) -> Result<Json<crate::checkpoints::RepoStats>, (StatusCode, String)> {
+    state.allow(query.repo)?;
     state
         .checkpoints
         .stats(query.repo)
@@ -107,6 +134,7 @@ async fn api_checkpoints_show(
     Path(id): Path<String>,
     Query(query): Query<RepoQuery>,
 ) -> Result<Json<crate::checkpoints::CheckpointDetail>, (StatusCode, String)> {
+    state.allow(query.repo)?;
     state
         .checkpoints
         .show_checkpoint(query.repo, id)
@@ -137,6 +165,7 @@ async fn api_checkpoints_diff(
     Path(id): Path<String>,
     Query(query): Query<RepoPathQuery>,
 ) -> Result<Json<DiffResponse>, (StatusCode, String)> {
+    state.allow(query.repo)?;
     state
         .checkpoints
         .file_diff(query.repo, id, query.path)
@@ -153,6 +182,7 @@ async fn api_checkpoints_file(
     Path(id): Path<String>,
     Query(query): Query<RepoPathQuery>,
 ) -> Result<Response, (StatusCode, String)> {
+    state.allow(query.repo)?;
     let content = state
         .checkpoints
         .file_content_at(query.repo, id, query.path.clone())
@@ -191,6 +221,7 @@ async fn api_checkpoints_restore(
     Path(id): Path<String>,
     Json(req): Json<RestoreRequest>,
 ) -> Result<Json<crate::checkpoints::RestoreOutcome>, (StatusCode, String)> {
+    state.allow(req.repo)?;
     let ctx = CheckpointContext::system(
         CheckpointTrigger::Restore,
         format!("restored {} from checkpoint {id}", req.path),
@@ -217,6 +248,7 @@ async fn api_checkpoints_undo(
     Path(id): Path<String>,
     Json(req): Json<UndoRequest>,
 ) -> Result<Json<crate::checkpoints::UndoOutcome>, (StatusCode, String)> {
+    state.allow(req.repo)?;
     let ctx = CheckpointContext::system(CheckpointTrigger::Undo, format!("undid checkpoint {id}"));
     state
         .checkpoints
@@ -235,9 +267,13 @@ mod tests {
     use super::*;
 
     fn app(engine: Arc<CheckpointEngine>) -> Router {
-        checkpoints_api_router(CheckpointApiState {
-            checkpoints: engine,
-        })
+        checkpoints_api_router(
+            CheckpointApiState {
+                checkpoints: engine,
+                repos: &[RepoKind::Workspace, RepoKind::Hub],
+            },
+            "/api/checkpoints",
+        )
     }
 
     async fn body_json(resp: Response) -> serde_json::Value {

@@ -68,7 +68,10 @@ fn turn_usage_frame(usage: TurnUsageEvent) -> ServerMessage {
 
 /// The frame a workspace change-feed event becomes for a connection watching
 /// `watch_set`, if any. A connection watching nothing gets nothing.
-fn workspace_frame(watch_set: &WatchSet, event: WorkspaceEvent) -> Option<ServerMessage> {
+pub(crate) fn workspace_frame(
+    watch_set: &WatchSet,
+    event: WorkspaceEvent,
+) -> Option<ServerMessage> {
     if watch_set.is_empty() {
         return None;
     }

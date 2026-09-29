@@ -70,68 +70,14 @@ pub struct ExtraApiStates {
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
 }
 
-/// Cloud connection routes. Disconnect is refused over the tunnel, since a
-/// remote disconnect leaves no way to reconnect.
-fn cloud_api_router(state: &GatewayState, config_api_state: &web::ConfigApiState) -> axum::Router {
-    use axum::routing::{get, post};
-
-    let cloud_state = web::cloud::CloudApiState {
-        hub_dir: config_api_state.hub_dir.clone(),
-        reload_tx: state.reload_tx.clone(),
-        tunnel_status_rx: state.tunnel_status_rx.clone(),
-        secret_lock: Arc::clone(&config_api_state.secret_lock),
-    };
-    axum::Router::new()
-        .route("/api/cloud/status", get(web::cloud::api_cloud_status))
-        .route("/cloud/callback", get(web::cloud::cloud_callback))
-        .with_state(cloud_state.clone())
-        .merge(
-            axum::Router::new()
-                .route(
-                    "/api/cloud/disconnect",
-                    post(web::cloud::api_cloud_disconnect),
-                )
-                .route_layer(axum::middleware::from_fn(
-                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
-                ))
-                .with_state(cloud_state),
-        )
-}
-
-/// Update and shutdown routes. Shutdown is refused over the tunnel, since a
-/// remote shutdown leaves no way to bring the gateway back.
-fn update_api_router(update_api_state: web::update::UpdateApiState) -> axum::Router {
-    use axum::routing::{get, post};
-
-    axum::Router::new()
-        .route("/api/update/status", get(web::update::api_update_status))
-        .route("/api/update/check", post(web::update::api_update_check))
-        .route("/api/update/apply", post(web::update::api_update_apply))
-        .route("/api/update/restart", post(web::update::api_update_restart))
-        .with_state(update_api_state.clone())
-        .merge(
-            axum::Router::new()
-                .route("/api/shutdown", post(web::update::api_shutdown))
-                .route_layer(axum::middleware::from_fn(
-                    crate::gateway::remote_control_guard::reject_remote_shutdown_and_disconnect,
-                ))
-                .with_state(update_api_state),
-        )
-}
-
-/// The smaller, cross-cutting API routers [`build_gateway_app`] merges in,
-/// built once by [`build_feature_routers`] so the top-level function stays
-/// under the line-count lint.
+/// The agent-scoped routers [`build_gateway_app`] merges in, built once by
+/// [`build_feature_routers`] so the top-level function stays under the
+/// line-count lint.
 struct FeatureRouters {
     webhook: axum::Router,
-    cloud: axum::Router,
-    update: axum::Router,
-    tracing: axum::Router,
     file: axum::Router,
     sessions: axum::Router,
     scheduled: axum::Router,
-    workbench: axum::Router,
-    checkpoints: axum::Router,
     agent_inbox: axum::Router,
     memory: axum::Router,
     model: axum::Router,
@@ -141,18 +87,12 @@ struct FeatureRouters {
 /// Build every feature router [`build_gateway_app`] merges onto the base
 /// `/ws` router. Split out purely to keep that function's line count under
 /// the lint threshold — each router here is independent and self-contained.
-fn build_feature_routers(
-    state: &GatewayState,
-    config_api_state: &web::ConfigApiState,
-    update_api_state: web::update::UpdateApiState,
-    tracing_api_state: web::tracing_api::TracingApiState,
-    workbench_serving: crate::workbench::server::WorkbenchServing,
-    extra: ExtraApiStates,
-) -> FeatureRouters {
+fn build_feature_routers(state: &GatewayState, extra: ExtraApiStates) -> FeatureRouters {
     use axum::routing::get;
 
     // Always mounted: the table is swapped on reload, so webhooks added later
-    // work without rebinding the server. Unknown names get a 404.
+    // work without rebinding the server. Unknown names get a 404. The hub
+    // serves it at `/webhook/{agent}/{name}`.
     let webhook = axum::Router::new()
         .route(
             "/webhook/{name}",
@@ -163,11 +103,6 @@ fn build_feature_routers(
             webhooks: state.webhooks.clone(),
             tz: state.tz,
         });
-
-    let cloud = cloud_api_router(state, config_api_state);
-    let update = update_api_router(update_api_state);
-
-    let tracing = tracing_api_router(tracing_api_state);
 
     let file = axum::Router::new()
         .route(
@@ -197,30 +132,11 @@ fn build_feature_routers(
         tz: state.tz,
     });
 
-    let workbench = web::workbench::workbench_api_router(web::workbench::WorkbenchApiState {
-        dir: crate::workspace::layout::WorkspaceLayout::new(&config_api_state.workspace_dir)
-            .team()
-            .workbench_dir(),
-        serving: workbench_serving,
-        tunnel_status_rx: state.tunnel_status_rx.clone(),
-        checkpoints: Arc::clone(&config_api_state.checkpoints),
-    });
-
-    let checkpoints =
-        web::checkpoints::checkpoints_api_router(web::checkpoints::CheckpointApiState {
-            checkpoints: Arc::clone(&config_api_state.checkpoints),
-        });
-
     FeatureRouters {
         webhook,
-        cloud,
-        update,
-        tracing,
         file,
         sessions,
         scheduled,
-        workbench,
-        checkpoints,
         agent_inbox: web::inbox::agent_inbox_api_router(state.clone()),
         memory: web::memory::memory_api_router(extra.memory),
         model: web::model::model_api_router(extra.model),
@@ -228,26 +144,20 @@ fn build_feature_routers(
     }
 }
 
-/// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
+/// Build one running agent's router, rooted at `/`: its WebSocket, webhooks,
+/// files, sessions, scheduled work, inbox, memory search, model completion,
+/// A2A settings, and status. It carries no hub-level route, no repair route
+/// (see `hub::http::agent_repair_router`), no static assets and no request guards;
+/// the hub router serves it under `/api/agents/{name}/` and applies those.
 pub fn build_gateway_app(
     state: GatewayState,
     config_api_state: web::ConfigApiState,
-    update_api_state: web::update::UpdateApiState,
-    tracing_api_state: web::tracing_api::TracingApiState,
-    workbench_serving: crate::workbench::server::WorkbenchServing,
     extra: ExtraApiStates,
 ) -> axum::Router {
     use axum::routing::get;
 
     let a2a_tunnel_status_rx = state.tunnel_status_rx.clone();
-    let routers = build_feature_routers(
-        &state,
-        &config_api_state,
-        update_api_state,
-        tracing_api_state,
-        workbench_serving,
-        extra,
-    );
+    let routers = build_feature_routers(&state, extra);
 
     axum::Router::new()
         .route("/ws", get(ws_handler))
@@ -256,11 +166,6 @@ pub fn build_gateway_app(
         .merge(routers.file)
         .merge(routers.sessions)
         .merge(routers.scheduled)
-        .merge(routers.cloud)
-        .merge(routers.update)
-        .merge(routers.tracing)
-        .merge(routers.workbench)
-        .merge(routers.checkpoints)
         .merge(routers.agent_inbox)
         .merge(routers.memory)
         .merge(routers.model)
@@ -269,60 +174,7 @@ pub fn build_gateway_app(
             config: config_api_state.clone(),
             tunnel_status_rx: a2a_tunnel_status_rx,
         }))
-        .merge(web::config_api_router(config_api_state))
-        .fallback(web::static_handler)
-        .layer(axum::middleware::from_fn(
-            crate::gateway::cross_site::reject_cross_site_requests,
-        ))
-}
-
-/// Build the tracing API router with all observability endpoints.
-fn tracing_api_router(state: web::tracing_api::TracingApiState) -> axum::Router {
-    use axum::routing::{get, post};
-    axum::Router::new()
-        .route(
-            "/api/tracing/status",
-            get(web::tracing_api::api_tracing_status),
-        )
-        .route(
-            "/api/tracing/error-reporting",
-            post(web::tracing_api::api_tracing_error_reporting),
-        )
-        .route(
-            "/api/tracing/sanitize",
-            post(web::tracing_api::api_tracing_sanitize),
-        )
-        .route(
-            "/api/tracing/otel/endpoints",
-            get(web::tracing_api::api_tracing_otel_list)
-                .post(web::tracing_api::api_tracing_otel_add)
-                .delete(web::tracing_api::api_tracing_otel_remove),
-        )
-        .route(
-            "/api/tracing/otel/test",
-            post(web::tracing_api::api_tracing_otel_test),
-        )
-        .route(
-            "/api/tracing/dump",
-            post(web::tracing_api::api_tracing_dump),
-        )
-        .route(
-            "/api/tracing/stream/start",
-            post(web::tracing_api::api_tracing_stream_start),
-        )
-        .route(
-            "/api/tracing/stream/stop",
-            post(web::tracing_api::api_tracing_stream_stop),
-        )
-        .route(
-            "/api/tracing/bug-report",
-            post(web::tracing_api::api_tracing_bug_report),
-        )
-        .route(
-            "/api/tracing/feedback",
-            post(web::tracing_api::api_tracing_feedback),
-        )
-        .with_state(state)
+        .merge(web::agent_data_api_router(config_api_state))
 }
 
 /// Spawn an axum server on a pre-bound listener with graceful shutdown.

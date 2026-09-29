@@ -879,23 +879,9 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 workspace_dir: rt.layout.root().to_path_buf(),
                 memory_dir: Some(rt.layout.memory_dir()),
                 reload_tx: Some(rt.reload_tx.clone()),
-                setup_done: None,
-                secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                scope: crate::gateway::web::WorkspaceScope::Agent,
                 checkpoints: std::sync::Arc::clone(&rt.checkpoints),
                 team: Some(rt.team.view_for_user(rt.layout.root())),
-            };
-            let update_api_state = crate::gateway::web::update::UpdateApiState {
-                update_status: std::sync::Arc::clone(&rt.update_status),
-                restart_tx: rt.restart_tx.clone(),
-                gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
-                hub_dir: rt.hub_dir.clone(),
-            };
-            let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
-                service: std::sync::Arc::clone(&rt.tracing_service),
-                client_context: std::sync::Arc::new(
-                    crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
-                ),
-                session_registry: std::sync::Arc::clone(&rt.session_registry),
             };
             let memory_api_state = crate::gateway::web::memory::MemoryApiState {
                 hybrid_searcher: std::sync::Arc::clone(&rt.hybrid_searcher),
@@ -910,9 +896,6 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 config_api_state,
-                update_api_state,
-                tracing_api_state,
-                rt.workbench_serving.clone(),
                 crate::gateway::event_loop::ExtraApiStates {
                     memory: memory_api_state,
                     model: model_api_state,

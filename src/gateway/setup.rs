@@ -12,7 +12,7 @@ use axum::routing::get;
 use crate::config::HubPaths;
 use crate::util::FatalError;
 
-use super::web::{self, ConfigApiState};
+use super::web::{self, HubApiState};
 
 /// Outcome of the setup server.
 pub enum SetupExit {
@@ -39,10 +39,9 @@ pub async fn run_setup_server() -> Result<SetupExit, FatalError> {
 /// Run the setup-mode HTTP server. Onboarding writes `hub/config.toml` and
 /// the first agent's directory under `residuum_root`.
 ///
-/// No agent exists yet, so `ConfigApiState`'s agent-scoped fields
-/// (`config_dir`, `workspace_dir`, `agent_name`) are placeholders —
-/// `api_complete_setup` creates the real agent directory itself, from the
-/// name in its request body.
+/// No agent exists yet, so the checkpoint engine's agent-scoped directories
+/// are placeholders — `api_complete_setup` creates the real agent directory
+/// itself, from the name in its request body.
 ///
 /// # Errors
 ///
@@ -67,20 +66,16 @@ pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, Fa
         )
         .map_err(|e| FatalError::Gateway(format!("failed to open checkpoint repositories: {e}")))?,
     );
-    let api_state = ConfigApiState {
+    let (reload_tx, _reload_rx) = tokio::sync::mpsc::unbounded_channel();
+    let api_state = HubApiState {
         hub_dir,
-        config_dir,
-        agent_name: String::new(),
-        workspace_dir,
-        memory_dir: None,
-        reload_tx: None,
+        reload_tx,
         setup_done: Some(Arc::clone(&setup_done_tx)),
         secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         checkpoints,
-        team: None,
     };
 
-    let app = web::config_api_router(api_state)
+    let app = web::hub_api_router(api_state)
         .fallback(get(web::static_handler))
         .layer(axum::middleware::from_fn(
             super::cross_site::reject_cross_site_requests,

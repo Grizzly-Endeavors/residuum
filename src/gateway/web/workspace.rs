@@ -511,11 +511,11 @@ pub(super) async fn api_workspace_files(
 
     // The team directory appears as a `team` folder at the top of the tree.
     if relative.is_empty()
-        && let Some(team) = &state.team
+        && let Some(team_root) = state.team_mount()
         && !entries
             .iter()
             .any(|e| e.name == crate::workspace::team_files::TEAM_PREFIX)
-        && let Ok(metadata) = tokio::fs::metadata(team.team_root()).await
+        && let Ok(metadata) = tokio::fs::metadata(&team_root).await
         && metadata.is_dir()
     {
         entries.push(WorkspaceEntry {
@@ -728,11 +728,7 @@ fn diagnose_write_content(
         .is_some()
         .then(|| located.base.join(&located.rel));
     let path = team_path.as_deref().unwrap_or_else(|| Path::new(relative));
-    let paths = crate::diagnostics::DiagnosticsPaths {
-        config_dir: state.config_dir.clone(),
-        workspace_dir: state.workspace_dir.clone(),
-        hub_dir: state.hub_dir.clone(),
-    };
+    let paths = state.diagnostics_paths();
 
     let Ok(text) = std::str::from_utf8(bytes) else {
         // Every file this module understands is text (YAML/TOML/JSON/MD), so
@@ -1620,8 +1616,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -2071,8 +2066,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 
@@ -2676,8 +2670,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 
@@ -3273,8 +3266,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: Some(tx),
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         };
 

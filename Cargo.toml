@@ -83,6 +83,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 ring = "0.17"
 futures-util = "0.3"
+tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 rust-embed = "8"
@@ -123,7 +124,6 @@ tauri-winrt-notification = "0.8.1"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
-tower = "0.5"
 wiremock = "0.6"
 
 # Lint configuration

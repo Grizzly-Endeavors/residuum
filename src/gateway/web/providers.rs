@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::secrets::SecretStore;
 use crate::inference::providers::anthropic::is_oauth_key;
 
-use super::ConfigApiState;
 use super::config::{PatchSavedResponse, ValidateResponse};
+use super::{ConfigApiState, HubDir};
 
 /// Request body for `POST /api/providers/models`.
 #[derive(Deserialize)]
@@ -39,12 +39,14 @@ pub(super) struct ModelsResponse {
     error: Option<String>,
 }
 
-/// `POST /api/providers/models` — fetch available models from a provider API.
+/// `POST /api/hub/providers/models` (and `/api/agents/{name}/providers/models`)
+/// — fetch available models from a provider API.
 ///
-/// Used by the setup wizard and settings page to populate model dropdowns.
-/// Takes provider type, optional API key, and optional base URL.
+/// Used by onboarding and the settings pages to populate model dropdowns.
+/// Takes provider type, optional API key, and optional base URL. Needs no
+/// agent: `secret:` keys resolve against the hub's secret store.
 pub(super) async fn api_provider_models(
-    State(state): State<ConfigApiState>,
+    State(HubDir(hub_dir)): State<HubDir>,
     Json(req): Json<ModelsRequest>,
 ) -> Json<ModelsResponse> {
     // Resolve secret: prefixed API keys via the encrypted store
@@ -53,10 +55,9 @@ pub(super) async fn api_provider_models(
         .as_deref()
         .and_then(|raw| raw.strip_prefix("secret:"))
     {
-        let dir = state.config_dir.clone();
         let name_owned = name.to_owned();
         tokio::task::spawn_blocking(move || -> Option<String> {
-            SecretStore::load(&dir)
+            SecretStore::load(&hub_dir)
                 .ok()
                 .and_then(|s| s.get(&name_owned).map(String::from))
         })
@@ -558,8 +559,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

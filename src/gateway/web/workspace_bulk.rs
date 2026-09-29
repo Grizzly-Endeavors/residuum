@@ -523,11 +523,7 @@ pub(super) async fn api_workspace_tree(
         located.existing().await?
     };
     // A walk of the whole workspace also covers the team directory.
-    let team_mount = state
-        .team
-        .as_ref()
-        .filter(|_| params.path.is_empty())
-        .map(|team| team.team_root().to_path_buf());
+    let team_mount = state.team_mount().filter(|_| params.path.is_empty());
 
     let root_metadata = tokio::fs::metadata(&root_disk).await.map_err(|e| {
         (
@@ -848,10 +844,7 @@ pub(super) async fn api_workspace_read(
     Json(req): Json<BatchReadRequest>,
 ) -> Result<Json<BatchReadResponse>, (StatusCode, String)> {
     let workspace_dir = state.workspace_dir.clone();
-    let team_root = state
-        .team
-        .as_ref()
-        .map(|team| team.team_root().to_path_buf());
+    let team_root = state.team_mount();
     let (files, content_truncated) = tokio::task::spawn_blocking(move || {
         batch_read(&workspace_dir, team_root.as_deref(), &req.paths)
     })
@@ -883,8 +876,7 @@ mod tests {
             workspace_dir: ws_dir,
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }

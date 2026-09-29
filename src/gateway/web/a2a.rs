@@ -27,8 +27,8 @@ use crate::config::{A2aConfig, A2aVisibility, DEFAULT_A2A_PORT};
 use crate::gateway::protocol::OutboundA2aTaskSummary;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::ConfigApiState;
 use super::config::ValidateResponse;
+use super::{ConfigApiState, HubApiState};
 
 /// Request body for `POST /api/a2a/keys`.
 #[derive(Deserialize)]
@@ -77,7 +77,7 @@ fn error_response(e: &A2aKeyError) -> (StatusCode, String) {
 
 /// `GET /api/a2a/keys` — list caller keys (metadata only, never tokens).
 pub(super) async fn api_a2a_keys_list(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
 ) -> Result<Json<ListA2aKeysResponse>, (StatusCode, String)> {
     let snapshot = A2aKeys::new(state.hub_dir)
         .snapshot()
@@ -90,7 +90,7 @@ pub(super) async fn api_a2a_keys_list(
 
 /// `POST /api/a2a/keys` — mint a caller key, returning the token once.
 pub(super) async fn api_a2a_keys_create(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Json(req): Json<CreateA2aKeyRequest>,
 ) -> Result<Json<CreateA2aKeyResponse>, (StatusCode, String)> {
     state
@@ -108,7 +108,7 @@ pub(super) async fn api_a2a_keys_create(
 
 /// `DELETE /api/a2a/keys/{name}` — revoke a caller key.
 pub(super) async fn api_a2a_keys_revoke(
-    State(state): State<ConfigApiState>,
+    State(state): State<HubApiState>,
     Path(name): Path<String>,
 ) -> Result<Json<RevokeA2aKeyResponse>, (StatusCode, String)> {
     let checkpoint_id = state
@@ -599,6 +599,10 @@ mod tests {
         }
     }
 
+    fn hub_state(dir: &std::path::Path) -> HubApiState {
+        HubApiState::for_test(dir)
+    }
+
     fn test_state(dir: &std::path::Path) -> ConfigApiState {
         ConfigApiState {
             team: None,
@@ -608,8 +612,7 @@ mod tests {
             workspace_dir: dir.join("workspace"),
             memory_dir: None,
             reload_tx: None,
-            setup_done: None,
-            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: crate::checkpoints::test_engine(),
         }
     }
@@ -618,7 +621,7 @@ mod tests {
     async fn create_list_revoke_roundtrip_returns_token_only_on_create() {
         let dir = tempfile::tempdir().unwrap();
         let created = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: Some("my other instance".to_string()),
@@ -629,7 +632,7 @@ mod tests {
         assert_eq!(created.name, "laptop");
         assert!(created.token.starts_with("rsdm_a2a_"));
 
-        let list = api_a2a_keys_list(State(test_state(dir.path())))
+        let list = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
         let body = serde_json::to_string(&list.0).unwrap();
@@ -639,12 +642,11 @@ mod tests {
             "listing must never carry the token"
         );
 
-        let revoked =
-            api_a2a_keys_revoke(State(test_state(dir.path())), Path("laptop".to_string()))
-                .await
-                .unwrap();
+        let revoked = api_a2a_keys_revoke(State(hub_state(dir.path())), Path("laptop".to_string()))
+            .await
+            .unwrap();
         assert!(revoked.revoked);
-        let after = api_a2a_keys_list(State(test_state(dir.path())))
+        let after = api_a2a_keys_list(State(hub_state(dir.path())))
             .await
             .unwrap();
         assert!(after.keys.is_empty());
@@ -653,7 +655,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_returns_the_checkpoint_taken_before_the_revoke() {
         let dir = tempfile::tempdir().unwrap();
-        let state = super::super::test_support::watching_state(dir.path());
+        let state = super::super::test_support::watching_hub_state(dir.path());
         let _created = api_a2a_keys_create(
             State(state.clone()),
             Json(CreateA2aKeyRequest {
@@ -700,7 +702,7 @@ mod tests {
     async fn invalid_name_is_bad_request_and_unknown_revoke_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let Err((status, _)) = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "Bad Name".to_string(),
                 description: None,
@@ -713,7 +715,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let Err((revoke_status, _)) =
-            api_a2a_keys_revoke(State(test_state(dir.path())), Path("nope".to_string())).await
+            api_a2a_keys_revoke(State(hub_state(dir.path())), Path("nope".to_string())).await
         else {
             panic!("unknown key revoke should fail");
         };
@@ -724,7 +726,7 @@ mod tests {
     async fn duplicate_name_is_conflict() {
         let dir = tempfile::tempdir().unwrap();
         let _first = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: None,
@@ -734,7 +736,7 @@ mod tests {
         .unwrap();
 
         let Err((status, _)) = api_a2a_keys_create(
-            State(test_state(dir.path())),
+            State(hub_state(dir.path())),
             Json(CreateA2aKeyRequest {
                 name: "laptop".to_string(),
                 description: None,

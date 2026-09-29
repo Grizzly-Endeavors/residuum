@@ -212,16 +212,7 @@ async fn run_gateway_from_parts(
         web::model::ModelCallResources::from_spawn_context(&parts.spawn_context),
     ));
 
-    let spawned = spawn_server_and_adapters(
-        &core,
-        &parts,
-        &cfg,
-        &update_status,
-        &restart_tx,
-        &gateway_shutdown_tx,
-        model_call_resources_rx,
-    )
-    .await?;
+    let spawned = spawn_server_and_adapters(&core, &parts, &cfg, model_call_resources_rx).await?;
 
     // The HTTP listener above is bound only after `startup::initialize`
     // finished, so reaching this point means providers, workspace, and the
@@ -320,8 +311,6 @@ async fn start_workbench_listener(
 /// `spawn_server_and_adapters` to keep it under the line-count lint.
 struct ApiStates {
     config: web::ConfigApiState,
-    update: web::update::UpdateApiState,
-    tracing: web::tracing_api::TracingApiState,
     memory: web::memory::MemoryApiState,
     model: web::model::ModelApiState,
 }
@@ -330,8 +319,6 @@ fn build_api_states(
     cfg: &Config,
     parts: &crate::gateway::startup::GatewayComponents,
     core: &GatewayCore,
-    update: web::update::UpdateApiState,
-    tracing_service: &Arc<crate::tracing_service::TracingService>,
     model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
 ) -> ApiStates {
     ApiStates {
@@ -342,16 +329,9 @@ fn build_api_states(
             workspace_dir: parts.layout.root().to_path_buf(),
             memory_dir: Some(parts.layout.memory_dir()),
             reload_tx: Some(core.reload_tx.clone()),
-            setup_done: None,
-            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+            scope: crate::gateway::web::WorkspaceScope::Agent,
             checkpoints: Arc::clone(&parts.checkpoints),
             team: Some(parts.team.view_for_user(parts.layout.root())),
-        },
-        update,
-        tracing: web::tracing_api::TracingApiState {
-            service: Arc::clone(tracing_service),
-            client_context: Arc::clone(&parts.tracing_client_context),
-            session_registry: Arc::clone(&parts.session_registry),
         },
         memory: web::memory::MemoryApiState {
             hybrid_searcher: Arc::clone(&parts.hybrid_searcher),
@@ -456,9 +436,6 @@ async fn spawn_server_and_adapters(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
     cfg: &Config,
-    update_status: &crate::update::SharedUpdateStatus,
-    restart_tx: &tokio::sync::mpsc::Sender<()>,
-    gateway_shutdown_tx: &tokio::sync::mpsc::Sender<()>,
     model_call_resources_rx: tokio::sync::watch::Receiver<Arc<web::model::ModelCallResources>>,
 ) -> Result<SpawnedHandles, FatalError> {
     let adapter_senders = AdapterSenders {
@@ -499,26 +476,10 @@ async fn spawn_server_and_adapters(
     let tracing_service = Arc::clone(&parts.tracing_service);
     let (workbench_serving, workbench_listener_shutdown_tx) =
         start_workbench_listener(cfg, &parts.layout.team().workbench_dir()).await;
-    let update_api_state = web::update::UpdateApiState {
-        update_status: Arc::clone(update_status),
-        restart_tx: restart_tx.clone(),
-        gateway_shutdown_tx: gateway_shutdown_tx.clone(),
-        hub_dir: core.hub_dir.clone(),
-    };
-    let api_states = build_api_states(
-        cfg,
-        parts,
-        core,
-        update_api_state,
-        &tracing_service,
-        model_call_resources_rx,
-    );
+    let api_states = build_api_states(cfg, parts, core, model_call_resources_rx);
     let app = build_gateway_app(
         state,
         api_states.config,
-        api_states.update,
-        api_states.tracing,
-        workbench_serving.clone(),
         super::http::ExtraApiStates {
             memory: api_states.memory,
             model: api_states.model,

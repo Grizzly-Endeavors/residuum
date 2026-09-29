@@ -69,8 +69,6 @@ pub(crate) struct GatewayComponents {
     /// against it during agent construction; downstream consumers (web
     /// API, sub-agents) clone the Arc.
     pub tracing_service: Arc<crate::tracing_service::TracingService>,
-    /// Snapshot of the runtime client context for bug-report submissions.
-    pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
     /// Remote A2A agents this instance's client can reach, loaded from
     /// `config/a2a.json`.
     pub a2a_hub: Arc<crate::a2a::A2aClientHub>,
@@ -1366,7 +1364,6 @@ pub(crate) async fn initialize(
         team: team.clone(),
         output_topic_override_tx,
         tracing_service: infra.tracing_service,
-        tracing_client_context: infra.tracing_client_context,
         a2a_hub: infra.a2a_hub,
         a2a_tracker: infra.a2a_tracker,
         checkpoints,
