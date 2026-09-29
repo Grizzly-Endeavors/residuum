@@ -441,6 +441,45 @@ pub(crate) enum ArtifactDeleteError {
     },
 }
 
+/// Every path deleting artifact `name` may remove: its page and folder
+/// (listed whether or not they exist), the files inside the folder, and the
+/// `<name>.*` data files. Used to lock them all before a delete.
+pub(crate) async fn artifact_paths(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let folder = dir.join(name);
+    let mut paths = vec![folder.clone(), dir.join(format!("{name}.html"))];
+
+    let mut pending = vec![folder];
+    while let Some(current) = pending.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&current).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let is_dir = entry.file_type().await.is_ok_and(|kind| kind.is_dir());
+            paths.push(entry.path());
+            if is_dir {
+                pending.push(entry.path());
+            }
+        }
+    }
+
+    let prefix = format!("{name}.");
+    if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let is_data_file = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|f| f.starts_with(&prefix))
+                && entry.file_type().await.is_ok_and(|kind| !kind.is_dir());
+            if is_data_file {
+                paths.push(entry.path());
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 /// Delete an artifact (its page, or its whole folder) and its data files (regular
 /// files named `<name>.*`). Returns the entries removed.
 ///

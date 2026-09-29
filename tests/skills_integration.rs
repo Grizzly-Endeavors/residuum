@@ -16,12 +16,20 @@ mod skills_integration {
     use residuum::tools::skills::{SkillActivateTool, SkillDeactivateTool};
     use residuum::workspace::bootstrap::ensure_workspace;
     use residuum::workspace::layout::WorkspaceLayout;
+    use residuum::workspace::team_files::TeamWriteCoordinator;
 
     /// Set up a workspace with skills directory and optional skill files.
     async fn setup_workspace() -> (tempfile::TempDir, WorkspaceLayout) {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         (dir, layout)
     }
 

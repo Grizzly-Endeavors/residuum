@@ -80,6 +80,28 @@ pub(crate) struct ConfigApiState {
 }
 
 impl ConfigApiState {
+    /// Bootstrap `layout`'s workspace and team directory under the running
+    /// gateway's team write coordinator, or a fresh one when this state has
+    /// no team (setup, before any gateway runs).
+    async fn bootstrap_workspace(
+        &self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+        user_name: Option<&str>,
+        timezone: &str,
+    ) -> Result<(), crate::util::FatalError> {
+        let coordinator = self.team.as_ref().map_or_else(
+            || crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            |team| team.coordinator().clone(),
+        );
+        crate::workspace::bootstrap::ensure_workspace(
+            layout,
+            &coordinator,
+            user_name,
+            Some(timezone),
+        )
+        .await
+    }
+
     /// Place a client-supplied path in the logical tree: `team/...` is the
     /// team directory, anything else is relative to the workspace.
     fn locate(&self, relative: &str) -> workspace::Located {
@@ -962,6 +984,7 @@ pub(super) mod test_support {
         let checkpoints = std::sync::Arc::new(
             crate::checkpoints::CheckpointEngine::new(
                 workspace_dir.clone(),
+                &crate::config::paths::TeamPaths::new(hub_dir.clone().join("team")),
                 config_dir.clone(),
                 hub_dir.clone(),
                 &hub_dir.join("checkpoints"),

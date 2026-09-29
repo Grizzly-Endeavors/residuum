@@ -117,7 +117,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         tokio::fs::remove_file(layout.bootstrap_md()).await.unwrap();
 
         let identity = IdentityFiles::load(&layout).await.unwrap();
@@ -132,7 +139,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None, None).await.unwrap();
+        ensure_workspace(
+            &layout,
+            &crate::workspace::team_files::TeamWriteCoordinator::new(layout.team()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         tokio::fs::create_dir_all(layout.team().wiki_dir())
             .await
             .unwrap();

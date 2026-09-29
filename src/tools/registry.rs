@@ -653,7 +653,7 @@ impl ToolRegistry {
             own_address.clone(),
             publisher.clone(),
             workspace_dir,
-            path_policy,
+            Arc::clone(&path_policy),
         );
 
         // Messaging tools
@@ -672,7 +672,7 @@ impl ToolRegistry {
         registry.register_web_fetch_tool();
 
         // Workspace checkpoint history (workspace repository only)
-        registry.register_workspace_checkpoint_tools(checkpoints);
+        registry.register_workspace_checkpoint_tools(checkpoints, path_policy);
 
         // Action scheduling tools
         registry.register_action_tools(action_store, action_notify, tz);
@@ -730,12 +730,14 @@ impl ToolRegistry {
     pub fn register_workspace_checkpoint_tools(
         &mut self,
         checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+        path_policy: SharedPathPolicy,
     ) {
         self.register(Box::new(workspace_checkpoints::WorkspaceHistoryTool::new(
             Arc::clone(&checkpoints),
         )));
         self.register(Box::new(workspace_checkpoints::WorkspaceRestoreTool::new(
             checkpoints,
+            path_policy,
         )));
     }
 

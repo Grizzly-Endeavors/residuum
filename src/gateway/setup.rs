@@ -60,6 +60,7 @@ pub async fn run_setup_server_at(residuum_root: PathBuf) -> Result<SetupExit, Fa
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             workspace_dir.clone(),
+            crate::workspace::layout::WorkspaceLayout::new(&placeholder_agent_dir).team(),
             config_dir.clone(),
             hub_dir.clone(),
             &hub.checkpoints_dir(),

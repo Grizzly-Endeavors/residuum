@@ -457,6 +457,7 @@ async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let checkpoints = Arc::new(
         crate::checkpoints::CheckpointEngine::new(
             layout.root().to_path_buf(),
+            &crate::config::paths::TeamPaths::new(workspace_dir.clone().join("team")),
             workspace_dir.join("config"),
             workspace_dir.clone(),
             &workspace_dir.join("checkpoints"),

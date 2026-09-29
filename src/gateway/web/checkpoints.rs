@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::checkpoints::{
     CheckpointContext, CheckpointEngine, CheckpointError, CheckpointTrigger, RepoKind,
 };
+use crate::workspace::team_files::TeamWriter;
 
 /// Shared state for the checkpoints API.
 #[derive(Clone)]
@@ -197,7 +198,7 @@ async fn api_checkpoints_restore(
     );
     state
         .checkpoints
-        .restore_path(req.repo, id, req.path, ctx)
+        .restore_path(req.repo, id, req.path, ctx, &TeamWriter::User)
         .await
         .map(Json)
         .map_err(|e| error_response(&e))
@@ -220,7 +221,7 @@ async fn api_checkpoints_undo(
     let ctx = CheckpointContext::system(CheckpointTrigger::Undo, format!("undid checkpoint {id}"));
     state
         .checkpoints
-        .undo_checkpoint(req.repo, id, ctx)
+        .undo_checkpoint(req.repo, id, ctx, &TeamWriter::User)
         .await
         .map(Json)
         .map_err(|e| error_response(&e))
