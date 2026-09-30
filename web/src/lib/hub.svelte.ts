@@ -13,7 +13,9 @@ import {
   createAgent as apiCreateAgent,
   deleteAgent as apiDeleteAgent,
   fetchAgents,
+  fetchDeletedAgents,
   restartAgent as apiRestartAgent,
+  restoreAgent as apiRestoreAgent,
   setAgentAutostart as apiSetAgentAutostart,
   setAgentVisibility as apiSetAgentVisibility,
   startAgent as apiStartAgent,
@@ -25,12 +27,14 @@ import type {
   AgentSummary,
   CreateAgentRequest,
   DeleteOutcome,
+  DeletedAgent,
   HubActor,
   HubClientMessage,
   HubNoticeLevel,
   HubServerMessage,
 } from "./hub-types";
 import type { WorkspaceChange } from "./types";
+import type { ToastAction } from "./toast.svelte";
 import { normalizeTeamWatchPrefix } from "./workspace-watch";
 
 /** How many notices the store keeps for recall. */
@@ -67,6 +71,16 @@ export class HubStore {
   activity = $state<Record<string, AgentActivity>>({});
   /** Notices received this session, newest first. */
   notices = $state<HubNotice[]>([]);
+  /**
+   * Deleted agents that can be restored, newest deletion first. Empty until
+   * `refreshDeleted` has run; kept current after that. Never lists an agent
+   * that exists.
+   */
+  deleted = $state<DeletedAgent[]>([]);
+  /** `refreshDeleted` has finished at least once. */
+  deletedLoaded = $state(false);
+  /** Why the last `refreshDeleted` failed, in plain words, or null. */
+  deletedError = $state<string | null>(null);
 
   readonly transport: WsTransport<HubServerMessage, HubClientMessage>;
 
@@ -115,6 +129,21 @@ export class HubStore {
     const agents = await fetchAgents();
     if (this.snapshotSeen && !force) return;
     this.setAgents(agents);
+  }
+
+  /**
+   * Fetch the deleted agents. A failure lands in `deletedError` for the view
+   * that shows the list, since a toast would give it nothing to retry.
+   */
+  async refreshDeleted(): Promise<void> {
+    try {
+      this.deleted = await fetchDeletedAgents();
+      this.deletedError = null;
+    } catch (err) {
+      this.deletedError = userErrorMessage(err, { action: "Couldn't load the deleted agents." });
+    } finally {
+      this.deletedLoaded = true;
+    }
   }
 
   // ── Reading ────────────────────────────────────────────────────────
@@ -191,9 +220,27 @@ export class HubStore {
     try {
       const result = await apiDeleteAgent(name);
       this.removeAgent(name);
+      this.deletedListChanged();
       return result;
     } catch (err) {
       this.reportFailure(err, `Couldn't delete ${name}.`);
+      return null;
+    }
+  }
+
+  /**
+   * Restore a deleted agent. `checkpointId` names the workspace checkpoint to
+   * restore its files from; without it the hub uses the last one taken before
+   * the deletion. Resolves to the restored agent, or null after telling the
+   * user why not.
+   */
+  async restoreAgent(name: string, checkpointId?: string): Promise<AgentSummary | null> {
+    try {
+      const agent = await apiRestoreAgent(name, checkpointId);
+      this.upsert(agent);
+      return agent;
+    } catch (err) {
+      this.reportFailure(err, `Couldn't restore ${name}.`, "There is nothing to restore for it.");
       return null;
     }
   }
@@ -240,11 +287,12 @@ export class HubStore {
     }
   }
 
-  private reportFailure(err: unknown, action: string): void {
-    notifications.surface(
-      "error",
-      userErrorMessage(err, { action, notFound: "That agent no longer exists." }),
-    );
+  private reportFailure(
+    err: unknown,
+    action: string,
+    notFound = "That agent no longer exists.",
+  ): void {
+    notifications.surface("error", userErrorMessage(err, { action, notFound }));
   }
 
   // ── Frames ─────────────────────────────────────────────────────────
@@ -264,9 +312,19 @@ export class HubStore {
         this.upsert(msg.agent);
         this.addNotice("info", `${actorLabel(msg.by)} created ${msg.agent.name}.`);
         break;
+      case "agent_restored":
+        this.upsert(msg.agent);
+        this.addNotice("info", `${actorLabel(msg.by)} restored ${msg.agent.name}.`);
+        break;
       case "agent_deleted":
         this.removeAgent(msg.name);
-        this.addNotice("info", `${actorLabel(msg.by)} deleted ${msg.name}.`);
+        this.deletedListChanged();
+        this.addNotice("info", `${actorLabel(msg.by)} deleted ${msg.name}.`, undefined, {
+          label: "Undo",
+          onClick: () => {
+            void this.restoreAgent(msg.name);
+          },
+        });
         break;
       case "agent_activity":
         this.activity = { ...this.activity, [msg.name]: { busy: msg.busy, unread: msg.unread } };
@@ -313,7 +371,13 @@ export class HubStore {
 
   private upsert(agent: AgentSummary): void {
     this.agents = [...this.agents.filter((a) => a.name !== agent.name), agent].sort(byName);
+    this.deleted = this.deleted.filter((d) => d.name !== agent.name);
     this.loaded = true;
+  }
+
+  /** The deleted list gained an entry; it is fetched again only once someone has asked for it. */
+  private deletedListChanged(): void {
+    if (this.deletedLoaded) void this.refreshDeleted();
   }
 
   private removeAgent(name: string): void {
@@ -321,7 +385,12 @@ export class HubStore {
     this.activity = Object.fromEntries(Object.entries(this.activity).filter(([n]) => n !== name));
   }
 
-  private addNotice(level: HubNoticeLevel, message: string, agent?: string): void {
+  private addNotice(
+    level: HubNoticeLevel,
+    message: string,
+    agent?: string,
+    action?: ToastAction,
+  ): void {
     // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a timestamp, never mutated
     const at = new Date();
     const notice: HubNotice = { id: ++this.noticeCounter, level, message, agent, at };
@@ -329,6 +398,8 @@ export class HubStore {
     notifications.surface(
       level === "error" ? "error" : "notice",
       agent && !message.startsWith(agent) ? `${agent}: ${message}` : message,
+      undefined,
+      action,
     );
   }
 }

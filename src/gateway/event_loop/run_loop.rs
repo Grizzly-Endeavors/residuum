@@ -65,49 +65,65 @@ pub(crate) struct AgentControl {
     pub session_registry: Arc<crate::background::registry::SessionRegistry>,
     /// The agent's bus publisher, for handing the agent a message.
     publisher: crate::bus::Publisher,
+    /// The agent's messenger, which delivers a creating agent's first
+    /// message through the same hop-bounded path as any teammate message.
+    messenger: Arc<crate::background::messaging::AgentMessenger>,
 }
 
 impl AgentControl {
     /// Deliver `content` to the agent's main conversation as a message from
-    /// `from`: the owner's own message for the user, or a message from the
-    /// creating agent's address. An idle main starts a turn on it.
+    /// `from`: the owner's own message for the user, or a teammate message
+    /// from the creating agent carrying `hop_count`, so a chain of agents
+    /// creating agents meets the same hop limit as any other message chain.
+    /// An idle main starts a turn on it.
     ///
     /// # Errors
     /// Returns a plain-language reason when the message could not be
-    /// published on the agent's bus.
+    /// delivered: the agent's bus is closed, or the hop limit was reached.
     pub(crate) async fn deliver_to_main(
         &self,
         from: &crate::hub::Actor,
         content: String,
         tz: chrono_tz::Tz,
+        hop_count: u32,
     ) -> Result<(), String> {
-        let event = match from {
-            crate::hub::Actor::User => crate::bus::MessageEvent {
-                id: format!("hub-{}", uuid::Uuid::new_v4()),
-                content,
-                origin: crate::interfaces::types::MessageOrigin {
-                    endpoint: "ws".to_string(),
-                    sender: None,
-                    conversation: None,
-                    agent_sender: None,
-                },
-                timestamp: crate::time::now_local(tz),
-                images: Vec::new(),
-                context: None,
-            },
-            crate::hub::Actor::Agent(creator) => {
-                crate::bus::MessageEvent::from_agent(&crate::bus::AgentMessageEvent {
-                    from: crate::bus::SessionAddress::from(format!("agent:{creator}")),
-                    from_category: "agent".to_string(),
+        let creator = match from {
+            crate::hub::Actor::User => {
+                let event = crate::bus::MessageEvent {
+                    id: format!("hub-{}", uuid::Uuid::new_v4()),
                     content,
-                    hop_count: 0,
-                })
+                    origin: crate::interfaces::types::MessageOrigin {
+                        endpoint: "ws".to_string(),
+                        sender: None,
+                        conversation: None,
+                        agent_sender: None,
+                    },
+                    timestamp: crate::time::now_local(tz),
+                    images: Vec::new(),
+                    context: None,
+                };
+                return self
+                    .publisher
+                    .publish(crate::bus::topics::UserMessage, event)
+                    .await
+                    .map_err(|e| format!("the agent's message channel is closed: {e}"));
             }
+            crate::hub::Actor::Agent(creator) => creator,
         };
-        self.publisher
-            .publish(crate::bus::topics::UserMessage, event)
+        self.messenger
+            .send(
+                crate::background::registry::MAIN_ADDRESS,
+                crate::bus::SessionAddress::from(format!(
+                    "{}{creator}",
+                    crate::background::registry::TEAMMATE_SENDER_PREFIX
+                )),
+                crate::background::registry::TEAMMATE_SENDER_CATEGORY.to_string(),
+                content,
+                hop_count,
+            )
             .await
-            .map_err(|e| format!("the agent's message channel is closed: {e}"))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -216,8 +232,11 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
         },
         session_registry: Arc::clone(&parts.session_registry),
         publisher: core.publisher.clone(),
+        messenger: Arc::clone(&parts.agent_messenger),
     };
     let sibling_fanout = Arc::clone(&services.sibling_fanout);
+    let team_router = Arc::clone(&services.team_router);
+    let team_messenger = Arc::clone(&parts.agent_messenger);
     let runtime = build_runtime(
         parts,
         core,
@@ -241,6 +260,8 @@ pub(crate) async fn start_agent(inputs: AgentStartInputs) -> Result<StartedAgent
     sibling_fanout
         .register(&runtime.name, Arc::clone(&runtime.a2a_hub))
         .await;
+    // From here teammates can message this agent, until it stops.
+    team_router.register(&runtime.name, team_messenger);
     Ok(StartedAgent { runtime, control })
 }
 
@@ -410,6 +431,7 @@ fn build_gateway_state(
 fn a2a_serving_deps(
     core: &GatewayCore,
     parts: &crate::gateway::startup::GatewayComponents,
+    services: &HubServices,
 ) -> (A2aServingDeps, tokio::sync::watch::Sender<bool>) {
     let (sessions_ready_tx, sessions_ready_rx) = tokio::sync::watch::channel(false);
     let deps = A2aServingDeps {
@@ -418,6 +440,7 @@ fn a2a_serving_deps(
         skill_state: Arc::clone(&parts.skill_state),
         bus_handle: core.bus_handle.clone(),
         sessions_ready: sessions_ready_rx,
+        tunnel_status_rx: services.tunnel_status_rx.clone(),
     };
     (deps, sessions_ready_tx)
 }
@@ -498,9 +521,10 @@ async fn spawn_agent_tasks(
                 hub: Arc::clone(&parts.a2a_hub),
                 tracker: Arc::clone(&parts.a2a_tracker),
             },
+            tunnel_status_rx: services.tunnel_status_rx.clone(),
         },
     );
-    let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts);
+    let (a2a_deps, sessions_ready_tx) = a2a_serving_deps(core, parts, services);
     let adapters = spawn_adapters(cfg, &adapter_senders, parts.tz, activity);
     let a2a = if cfg.a2a.enabled {
         build_agent_a2a(cfg, a2a_deps).await
@@ -704,6 +728,7 @@ async fn build_runtime(
             post_turn_result_tx,
         ),
         post_turn_result_rx,
+        deferred_inbound: std::collections::VecDeque::new(),
         hybrid_searcher: parts.hybrid_searcher,
         session_runtime: parts.session_runtime,
         session_registry: parts.session_registry,
@@ -830,10 +855,18 @@ async fn reload_channels_note(rt: &mut AgentRuntime) -> String {
 /// and, when this reload was agent-triggered, the agent — still need to
 /// know).
 async fn reload_agent_card_note(rt: &mut AgentRuntime) -> Option<String> {
-    let card_state = &rt.a2a.as_ref()?.card_state;
-    let card_runtime =
-        crate::a2a::CardRuntime::from_config(&rt.cfg.a2a, &rt.cfg.gateway.bind, &rt.cfg.agent_name);
-    let Err(e) = card_state.reload(&rt.layout.agent_card_json(), &card_runtime) else {
+    let a2a = rt.a2a.as_ref()?;
+    let relay_base = a2a.relay_base();
+    let card_runtime = crate::a2a::CardRuntime::from_config(
+        &rt.cfg.a2a,
+        &rt.cfg.gateway.bind,
+        &rt.cfg.agent_name,
+        relay_base.as_deref(),
+    );
+    let Err(e) = a2a
+        .card_state
+        .reload(&rt.layout.agent_card_json(), &card_runtime)
+    else {
         return None;
     };
     let message = format!("agent-card.json failed to reload, still serving the previous card: {e}");
@@ -972,6 +1005,20 @@ async fn graceful_shutdown(rt: &mut AgentRuntime) {
         bus_infra_handles = rt.bus_infra_handles.len(),
         "beginning graceful shutdown"
     );
+    // First, so a stopping agent takes no more teammate messages while its
+    // sessions wind down.
+    rt.services.team_router.unregister(&rt.name);
+    // Messages still waiting for their turn get none now; keep them in
+    // history so they are not lost.
+    let undelivered: Vec<_> = rt.deferred_inbound.drain(..).collect();
+    super::turns::inject_undelivered_messages(
+        &mut rt.agent,
+        &rt.agent_messenger,
+        &rt.layout,
+        rt.tz,
+        undelivered,
+    )
+    .await;
     // Before sessions: a post-turn cycle may itself be about to publish a
     // notice or spawn a learner, which still needs the bus infrastructure
     // (aborted further down) alive to land.
@@ -1289,6 +1336,22 @@ async fn run_agent_loop(mut rt: AgentRuntime) -> AgentExit {
     tracing::info!("agent ready, entering main loop");
 
     loop {
+        // Messages that arrived after the last turn's final checkpoint run
+        // first: their senders are waiting on a reply, and anything queued
+        // on the bus arrived after them.
+        if let Some(message) = rt.deferred_inbound.pop_front() {
+            if let Some(exit) = apply_bus_event(
+                Ok(Some(message)),
+                &mut rt,
+                &mut observe_deadline,
+                &mut idle_deadline,
+            )
+            .await
+            {
+                return exit;
+            }
+            continue;
+        }
         tokio::select! {
             _ = rt.agent_stop_rx.recv() => {
                 tracing::info!("stop requested, shutting down");

@@ -1,6 +1,6 @@
 # Multi-Agent Hub — HTTP Contract
 
-**Status:** Accepted, not built. This is the HTTP contract that goes with [design.md](design.md). Phase 3 builds the server side of it, and the web UI, CLI and Mac app are built against it in parallel.
+**Status:** Built and shipped; the current routes are in [Hub HTTP Surface](../../systems-usage/hub-http.md). This is the contract that went with [design.md](design.md).
 
 The backend serves everything under `/api/`. The only exceptions are the relay callback and webhooks, which keep root-level paths because external systems call them.
 
@@ -85,7 +85,8 @@ Config, providers, MCP, channels, workspace-file and checkpoint routes still wor
 | `POST` | `/api/hub/agents/{name}/stop` | none | `AgentSummary` |
 | `POST` | `/api/hub/agents/{name}/restart` | none | `AgentSummary` |
 | `PATCH` | `/api/hub/agents/{name}` | `{ "autostart"?: bool, "a2a_visibility"?: "public" \| "private" }` (at least one field) | `AgentSummary`. The server writes the agent's config file and reloads it, which re-announces its A2A entry to the relay. |
-| `GET` | `/api/hub/status` | none | `{ "version", "uptime_secs", "tunnel": <today's cloud status shape>, "agents": { "running", "stopped", "failed" } }` |
+| `GET` | `/api/hub/status` | none | `{ "version", "uptime_secs", "tunnel": <cloud status shape>, "agents": { "starting", "running", "stopped", "failed" } }` |
+| `POST` | `/api/hub/stop-all` | none | `{ "stopped", "failed" }`: `200` when every agent stopped, `500` with the same body otherwise. Not remote-control guarded. |
 
 The CLI `residuum agent list|create|delete|start|stop|restart` maps one-to-one onto these routes.
 

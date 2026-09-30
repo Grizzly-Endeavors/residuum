@@ -392,11 +392,12 @@ impl AgentResultEvent {
 #[derive(Debug, Clone)]
 pub struct AgentMessageEvent {
     /// Address of the sender: `"main"` or a session address for an agent,
-    /// [`crate::background::registry::OWNER_ADDRESS`] for the owner, or
-    /// `artifact:<name>` for a workbench artifact.
+    /// [`crate::background::registry::OWNER_ADDRESS`] for the owner,
+    /// `artifact:<name>` for a workbench artifact, or `agent:<name>` /
+    /// `agent:<name>/<session>` for a teammate.
     pub from: SessionAddress,
     /// The sender's category label (`"main"`, `"scheduled"`, `"external"`,
-    /// `"spawned"`, `"artifact"`, or `"owner"`).
+    /// `"spawned"`, `"artifact"`, `"owner"`, or `"teammate"`).
     pub from_category: String,
     /// The message body.
     pub content: String,
@@ -439,10 +440,31 @@ impl AgentMessageEvent {
                 self.content
             );
         }
+        if let Some(teammate) = self.teammate_sender() {
+            return format!(
+                "[Message from teammate {teammate}, not the user. Your response in this turn is \
+                 not shown to them; to reply, call message_agent with to=\"{teammate}\".]\n{}",
+                self.content
+            );
+        }
         format!(
             "[Agent Message from {} ({})]\n{}",
             self.from, self.from_category, self.content
         )
+    }
+
+    /// The teammate address (`agent:<name>` or `agent:<name>/<session>`) that
+    /// sent this message, or `None` when this agent's own main or a session,
+    /// the owner, an artifact or a remote agent sent it.
+    #[must_use]
+    pub fn teammate_sender(&self) -> Option<&str> {
+        if self.from_category != crate::background::registry::TEAMMATE_SENDER_CATEGORY {
+            return None;
+        }
+        let address = self.from.as_ref();
+        address
+            .starts_with(crate::background::registry::TEAMMATE_SENDER_PREFIX)
+            .then_some(address)
     }
 
     /// The name of the workbench artifact that sent this message, or `None`
@@ -1052,6 +1074,53 @@ mod tests {
         assert!(!text.contains("owner"), "got {text}");
         assert!(text.ends_with("\nrefresh the index"));
         assert_eq!(msg.to_history_message().agent_sender, None);
+    }
+
+    #[test]
+    fn teammate_message_is_labelled_as_a_teammate_with_its_reply_address() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("agent:writer/spawned-draft-3f9a"),
+            from_category: crate::background::registry::TEAMMATE_SENDER_CATEGORY.to_string(),
+            content: "chapter two is ready".to_string(),
+            hop_count: 2,
+        };
+        assert_eq!(
+            msg.teammate_sender(),
+            Some("agent:writer/spawned-draft-3f9a")
+        );
+        let text = msg.format_for_agent();
+        assert!(
+            text.starts_with(
+                "[Message from teammate agent:writer/spawned-draft-3f9a, not the user."
+            ),
+            "got {text}"
+        );
+        assert!(
+            text.contains("call message_agent with to=\"agent:writer/spawned-draft-3f9a\""),
+            "got {text}"
+        );
+        assert!(!text.contains("Agent Message from"), "got {text}");
+        assert!(text.ends_with("\nchapter two is ready"));
+        assert_eq!(
+            msg.to_history_message().agent_sender,
+            Some(crate::inference::AgentSender {
+                address: "agent:writer/spawned-draft-3f9a".to_string(),
+                category: "teammate".to_string(),
+            }),
+            "the history entry carries the structured sender"
+        );
+    }
+
+    #[test]
+    fn teammate_prefix_without_the_teammate_category_is_not_a_teammate_sender() {
+        let msg = AgentMessageEvent {
+            from: SessionAddress::from("agent:writer"),
+            from_category: "spawned".to_string(),
+            content: "hi".to_string(),
+            hop_count: 0,
+        };
+        assert_eq!(msg.teammate_sender(), None);
+        assert!(msg.format_for_agent().starts_with("[Agent Message from"));
     }
 
     #[test]

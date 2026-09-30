@@ -2,7 +2,7 @@
 //!
 //! [`hub_router`] takes the [`AgentDirectory`] and the hub-level handles in
 //! [`HubHttpState`] and returns the whole app, laid out as
-//! `docs/design/multi-agent-hub/http-contract.md` places it:
+//! `docs/systems-usage/hub-http.md` places it:
 //!
 //! - `/api/hub/...`: agent lifecycle and status ([`lifecycle`]), the hub
 //!   WebSocket ([`ws`]), and the routes that exist once per process: hub

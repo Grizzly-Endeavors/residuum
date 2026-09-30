@@ -18,6 +18,8 @@ The hub serves everything the backend offers from one router over its `AgentDire
 | `GET /api/hub/agents` | `{ "agents": [AgentSummary] }`, sorted by name. An empty list means the hub is not set up yet. |
 | `POST /api/hub/agents` | Creates and starts an agent from `{ name, description?, models_from?, providers_toml?, a2a_visibility? }`; `201` with its summary. `400` for an invalid name or request, `409` when the name exists. |
 | `DELETE /api/hub/agents/{name}` | `{ "deleted": true, "checkpoint_id": ... }`. |
+| `GET /api/hub/agents/deleted` | `{ "agents": [{ name, deleted_at, checkpoint_id }] }`: deleted agents that can be restored, newest deletion first. `deleted_at` is an RFC 3339 time and `checkpoint_id` the workspace checkpoint a restore uses by default. An agent that exists, or was restored, is not listed. |
+| `POST /api/hub/agents/restore` | Restores a deleted agent from `{ name, checkpoint_id? }` and starts it when its `autostart` is on; `201` with its summary. Without `checkpoint_id` the files come from the checkpoint the deletion took. `404` when the name has no checkpoint history, `409` when an agent by that name exists, `400` for an invalid name, an unreadable body, or a `checkpoint_id` the agent's history doesn't have. See [Agent Creation, Deletion and Restore](agent-lifecycle.md#restoring-a-deleted-agent). |
 | `POST /api/hub/agents/{name}/start`, `/stop`, `/restart` | The agent's new summary. |
 | `PATCH /api/hub/agents/{name}` | Sets `autostart` and/or `a2a_visibility` (at least one); the agent's new summary. |
 | `POST /api/hub/stop-all` | Stops every running or starting agent and leaves the hub running. `200` with `{ stopped, failed }` when all stopped, `500` with the same body when some did not. Reachable over the tunnel, since the hub keeps running and agents can be started again. |
@@ -79,9 +81,9 @@ A session runs on one agent, so an artifact names it (`residuum.sessions.start({
 |-------|-----------|
 | `agents_snapshot` `{ agents }` | On connect, and again whenever the connection fell behind the hub's event stream and events were lost. |
 | `agent_state` `{ agent }` | An agent's state, `autostart`, or visibility changed. |
-| `agent_created` `{ agent, by }`, `agent_deleted` `{ name, by }` | An agent was created or deleted. `by` is `user` or `agent:<name>`. |
+| `agent_created` `{ agent, by }`, `agent_restored` `{ agent, by }`, `agent_deleted` `{ name, by }` | An agent was created, restored from its checkpoint history, or deleted. `by` is `user` or `agent:<name>`. |
 | `agent_activity` `{ name, busy, unread }` | An agent's main-conversation activity changed. |
-| `notice` `{ level, message, agent? }` | A hub notice, or a warning about a message this connection sent that could not be used. Created, deleted, and failed events travel only in their own frames. |
+| `notice` `{ level, message, agent? }` | A hub notice, or a warning about a message this connection sent that could not be used. Created, restored, deleted, and failed events travel only in their own frames. |
 | `workspace_changed` `{ changes }`, `workspace_resync` `{ reason }`, `workspace_watch_unavailable` `{ message }` | Team change-feed frames, with the shapes of the agent WebSocket's, for the paths the connection watches. |
 
 `{ "type": "watch_team", "prefixes": [...] }` replaces the set of team paths the connection watches; `[]` stops watching. A prefix names `team` or a path under `team/`, the spelling the change feed uses (`team/wiki`), and matches whole path segments. A prefix outside `team/` or an unreadable message is refused with a warning `notice`, and the current watch stays in force. A connection that starts watching while the team watcher is off gets `workspace_watch_unavailable`.

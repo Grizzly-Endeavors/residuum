@@ -20,6 +20,10 @@ pub struct IdentityFiles {
     pub wiki_index: Option<String>,
     /// BOOTSTRAP.md -- first-run guidance (present only on first conversation).
     pub bootstrap: Option<String>,
+    /// The `TEAM` roster: the agent's teammates with state and role line.
+    /// Comes from the hub, not from a file; [`Self::load`] leaves it `None`
+    /// and [`Self::with_team_roster`] fills it.
+    pub team: Option<String>,
 }
 
 impl IdentityFiles {
@@ -48,7 +52,16 @@ impl IdentityFiles {
             user: user_result.into_option(),
             wiki_index: wiki_index_result.into_option(),
             bootstrap,
+            team: None,
         })
+    }
+
+    /// These files with the `TEAM` roster from `team`, as of now. An agent
+    /// with no teammates gets no `TEAM` block.
+    #[must_use]
+    pub fn with_team_roster(mut self, team: &crate::hub::team::TeamLink) -> Self {
+        self.team = team.prompt_block();
+        self
     }
 
     /// Log a warning for each absent required identity file.

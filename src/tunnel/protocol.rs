@@ -14,11 +14,27 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum Surface {
     /// The workbench artifacts listener, for `{user}.workbench.<relay>` hosts.
     Workbench,
-    /// The A2A listener, for `{relay}/a2a/{slug}/*` routes. Always answered in
+    /// The A2A listener, for `{relay}/a2a/{instance}/{agent}/*` routes. Always answered in
     /// streamed form (`HttpResponseStart`/`Chunk`/`End`), never a buffered
     /// `HttpResponse`.
     #[serde(rename = "a2a")]
     A2a,
+}
+
+/// One agent this hub advertises to the relay in a
+/// [`TunnelFrame::AgentsUpdate`] frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentInfo {
+    /// The agent's name: its identity and its A2A path segment.
+    pub name: String,
+    /// A human-readable label for the agent, shown in the relay's A2A
+    /// directory.
+    pub display_name: String,
+    /// Whether the agent answers A2A requests right now.
+    pub a2a_enabled: bool,
+    /// Whether the agent is gated by caller key or sibling attestation,
+    /// rather than open to anyone.
+    pub a2a_private: bool,
 }
 
 /// A single frame exchanged over the tunnel WebSocket connection.
@@ -44,6 +60,10 @@ pub(crate) enum TunnelFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         a2a_token: Option<String>,
     },
+    /// The hub's full agent list (client → relay). Sent after `Connected` and
+    /// again whenever the list changes. The relay replaces its stored list
+    /// for this instance, so resending an unchanged list is harmless.
+    AgentsUpdate { agents: Vec<AgentInfo> },
     /// Keepalive ping (relay → client).
     Ping,
     /// Keepalive pong (client → relay).
@@ -57,6 +77,10 @@ pub(crate) enum TunnelFrame {
         body: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         surface: Option<Surface>,
+        /// The agent an A2A-surface request is for, set by the relay on
+        /// `/a2a/{instance}/{agent}` requests. Absent otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// Proxied HTTP response (client → relay).
     HttpResponse {
@@ -107,6 +131,7 @@ impl TunnelFrame {
     pub(crate) fn type_name(&self) -> &'static str {
         match self {
             Self::Connected { .. } => "connected",
+            Self::AgentsUpdate { .. } => "agents_update",
             Self::Ping => "ping",
             Self::Pong => "pong",
             Self::HttpRequest { .. } => "http_request",
@@ -199,7 +224,7 @@ mod tests {
                 ..
             }
         ));
-        let a2a = r#"{"type":"http_request","request_id":"r","method":"GET","path":"/a2a/laptop/.well-known/agent-card.json","headers":{},"body":null,"surface":"a2a"}"#;
+        let a2a = r#"{"type":"http_request","request_id":"r","method":"GET","path":"/.well-known/agent-card.json","headers":{},"body":null,"surface":"a2a","agent":"scout"}"#;
         assert!(matches!(
             serde_json::from_str::<TunnelFrame>(a2a).unwrap(),
             TunnelFrame::HttpRequest {
@@ -217,6 +242,81 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn agents_update_serializes_to_the_relays_exact_json() {
+        let frame = TunnelFrame::AgentsUpdate {
+            agents: vec![
+                AgentInfo {
+                    name: "scout".to_string(),
+                    display_name: "Scout".to_string(),
+                    a2a_enabled: true,
+                    a2a_private: false,
+                },
+                AgentInfo {
+                    name: "archivist".to_string(),
+                    display_name: "Archivist".to_string(),
+                    a2a_enabled: false,
+                    a2a_private: true,
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&frame).unwrap(),
+            serde_json::json!({
+                "type": "agents_update",
+                "agents": [
+                    {"name": "scout", "display_name": "Scout", "a2a_enabled": true, "a2a_private": false},
+                    {"name": "archivist", "display_name": "Archivist", "a2a_enabled": false, "a2a_private": true},
+                ],
+            })
+        );
+        let parsed: TunnelFrame =
+            serde_json::from_str(&serde_json::to_string(&frame).unwrap()).unwrap();
+        let TunnelFrame::AgentsUpdate { agents } = parsed else {
+            panic!("expected AgentsUpdate, got {parsed:?}");
+        };
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents.first().map(|a| a.name.as_str()), Some("scout"));
+    }
+
+    #[test]
+    fn an_empty_agents_update_serializes_as_an_empty_list() {
+        let json = serde_json::to_string(&TunnelFrame::AgentsUpdate { agents: vec![] }).unwrap();
+        assert_eq!(json, r#"{"type":"agents_update","agents":[]}"#);
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(&json).unwrap(),
+            TunnelFrame::AgentsUpdate { agents } if agents.is_empty()
+        ));
+    }
+
+    #[test]
+    fn http_request_agent_field_is_optional_on_the_wire() {
+        let with = r#"{"type":"http_request","request_id":"r","method":"GET","path":"/.well-known/agent-card.json","headers":{},"body":null,"surface":"a2a","agent":"scout"}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(with).unwrap(),
+            TunnelFrame::HttpRequest { agent: Some(agent), surface: Some(Surface::A2a), .. } if agent == "scout"
+        ));
+        let without =
+            r#"{"type":"http_request","request_id":"r","method":"GET","path":"/","headers":{}}"#;
+        assert!(matches!(
+            serde_json::from_str::<TunnelFrame>(without).unwrap(),
+            TunnelFrame::HttpRequest { agent: None, .. }
+        ));
+        let frame = TunnelFrame::HttpRequest {
+            request_id: "r".to_string(),
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            headers: HashMap::new(),
+            body: None,
+            surface: None,
+            agent: None,
+        };
+        assert!(
+            !serde_json::to_string(&frame).unwrap().contains("agent"),
+            "an absent agent must not serialize"
+        );
     }
 
     #[test]
@@ -239,6 +339,7 @@ mod tests {
             headers,
             body: Some("eyJrZXkiOiJ2YWx1ZSJ9".to_string()),
             surface: None,
+            agent: None,
         };
         let json = serde_json::to_string(&frame).unwrap();
         let parsed: TunnelFrame = serde_json::from_str(&json).unwrap();
@@ -463,6 +564,10 @@ mod tests {
     #[test]
     fn type_name_matches_the_serialized_tag() {
         assert_eq!(TunnelFrame::Ping.type_name(), "ping");
+        assert_eq!(
+            TunnelFrame::AgentsUpdate { agents: vec![] }.type_name(),
+            "agents_update"
+        );
         assert_eq!(
             TunnelFrame::HttpCancel {
                 request_id: "r".to_string(),

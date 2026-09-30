@@ -165,6 +165,8 @@ pub struct SubAgentBuildConfig {
     /// Workspace and config checkpoint repositories, shared with main —
     /// backs `workspace_history`/`workspace_restore`.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// How the session's `agent_create`/`agent_delete` reach the hub.
+    pub lifecycle: crate::tools::LifecycleAccess,
 }
 
 #[cfg(test)]

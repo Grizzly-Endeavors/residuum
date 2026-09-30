@@ -38,7 +38,7 @@ An agent is any directory directly under `~/.residuum/` that holds `config/confi
 | `<agent>/config/config.toml` | Everything else: `autostart` (default `true`), `timeout_secs`, `max_tokens`, `temperature`, `thinking`, `[memory]`, `[pulse]`, `[subconscious]`, `[learning]`, `[retry]`, `[agent]`, `[idle]`, `[discord]`, `[telegram]`, `[teams]`, `[webhooks]`, `[skills]`, `[tools]`, `[web_search]`, `[a2a]` `visibility`, and `[background]` idle timeouts, `episode_skip_token_floor`, and `subagent_depth_cap` |
 | `<agent>/config/providers.toml` | `[providers.*]`, `[models]`, `[background.models]` |
 
-Each file is parsed strictly against its own schema: a hub-only key in an agent's `config.toml` (or the reverse) is an unknown key, dropped with a notice (see [Config Loading](config-loading.md)). There is no `name` or `workspace_dir` setting: the user's name lives in `USER.md`, and the agent's directory is its workspace.
+Each file is parsed strictly against its own schema: a hub-only key in an agent's `config.toml` (or the reverse) is an unknown key, dropped with a notice (see [Config Loading](config-loading.md)). There is no `name` or `workspace_dir` setting: the user's name lives in `team/USER.md`, and the agent's directory is its workspace.
 
 ## Environment overrides
 

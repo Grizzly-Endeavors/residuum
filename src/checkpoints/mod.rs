@@ -8,7 +8,7 @@ mod exclude;
 mod notice;
 mod types;
 
-pub use engine::{CheckpointEngine, SharedCheckpointRepos};
+pub use engine::{CheckpointEngine, SharedCheckpointRepos, agent_repos_dir, agents_with_history};
 pub use types::{
     ChangeKind, ChangedPath, CheckpointContext, CheckpointDetail, CheckpointError, CheckpointPage,
     CheckpointSummary, CheckpointTrigger, RepoKind, RepoStats, RestoreOutcome, UndoOutcome,

@@ -51,6 +51,16 @@ pub const ARTIFACT_SENDER_PREFIX: &str = "artifact:";
 /// sender's category.
 pub const ARTIFACT_SENDER_CATEGORY: &str = "artifact";
 
+/// Prefix of a teammate address: `agent:<name>` for a teammate's main,
+/// `agent:<name>/<session-address>` for one of its sessions. A message from
+/// a teammate carries its sender's address in this form, so replying is a
+/// `message_agent` call to it. Never present in this agent's registry:
+/// session addresses never contain `:`.
+pub const TEAMMATE_SENDER_PREFIX: &str = "agent:";
+
+/// Category label a teammate's message carries as its sender's category.
+pub const TEAMMATE_SENDER_CATEGORY: &str = "teammate";
+
 /// The sender address (and source label) naming the workbench artifact
 /// `name`.
 #[must_use]

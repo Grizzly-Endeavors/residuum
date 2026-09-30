@@ -12,6 +12,7 @@ use crate::agent::HopCounter;
 use crate::background::messaging::{AgentMessenger, DeliveryOutcome};
 use crate::background::registry::{MAIN_ADDRESS, SessionCategory};
 use crate::bus::SessionAddress;
+use crate::hub::team::{TeamTarget, parse_team_address};
 use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
@@ -23,8 +24,19 @@ const ARTIFACT_TO_MAIN_REFUSAL: &str = "artifact sessions can't reach the main c
      your responses are shown to the artifact that started you. To bring something to the \
      user's attention, file an inbox item with user_inbox_add instead.";
 
+/// The tool description the model sees.
+const MESSAGE_AGENT_DESCRIPTION: &str = "Send a text message to another agent. Address forms: \
+    \"main\" or a session address (yours; see list_agents); \"agent:<name>\" (a teammate's \
+    main); \"agent:<name>/<session-address>\" (a teammate's session; copy the exact address from \
+    its message); \"a2a:<name>\" (a remote agent). Fire-and-forget: a running recipient sees the \
+    message at its next tool-call boundary, an idle one starts a turn, a completed session \
+    resumes at the same address. Replies arrive later as separate messages addressed to you; a \
+    remote agent replies from \"a2a:<name>\". A stopped or failed teammate returns an error and \
+    nothing is queued. Use list_agents for addresses.";
+
 /// Tool for sending a message to another agent by address — main, any
-/// session (live or completed), or a remote A2A agent (`a2a:<name>`).
+/// session (live or completed), a teammate (`agent:<name>`), or a remote A2A
+/// agent (`a2a:<name>`).
 pub struct MessageAgentTool {
     /// This agent's own address (`"main"` for the main agent).
     self_address: SessionAddress,
@@ -59,6 +71,40 @@ impl MessageAgentTool {
             a2a_hub,
             a2a_tracker,
         }
+    }
+
+    async fn send_to_teammate(
+        &self,
+        target: &TeamTarget,
+        message: &str,
+    ) -> Result<ToolResult, ToolError> {
+        let outcome = self
+            .messenger
+            .team()
+            .send(
+                &self.self_address,
+                target,
+                message.to_string(),
+                self.hop_counter.outgoing(),
+            )
+            .await;
+        let address = target.address();
+        Ok(match outcome {
+            Ok(DeliveryOutcome::Main | DeliveryOutcome::Live(_)) => {
+                ToolResult::success(format!("Message delivered to {address}."))
+            }
+            Ok(DeliveryOutcome::Resumed(_)) => ToolResult::success(format!(
+                "Session {address} had completed; message delivered by resuming it as a new run."
+            )),
+            Ok(DeliveryOutcome::Queued(_)) => ToolResult::success(format!(
+                "Session {address} is completing; your message will be delivered once it \
+                 finishes, resuming it as a new run."
+            )),
+            Ok(DeliveryOutcome::Unknown) => ToolResult::error(format!(
+                "no session at {address}; use the exact address from the message it sent you."
+            )),
+            Err(e) => ToolResult::error(e.to_string()),
+        })
     }
 
     async fn send_to_remote_agent(
@@ -208,23 +254,13 @@ impl Tool for MessageAgentTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Send a text message to another agent by address — main, any session \
-                          (running, idle, or previously completed), or a remote agent reachable \
-                          over A2A (address \"a2a:<name>\"). A running session sees it as an \
-                          interrupt at its next tool-call boundary; an idle one starts a new turn \
-                          with it; a completed one is resumed as a new run at the same address. \
-                          A remote agent's reply does not arrive immediately — it comes back \
-                          later as an agent message from \"a2a:<name>\", once its task reaches a \
-                          state that needs your attention. Every delivered message names your \
-                          own address and category so the recipient can reply. Use list_agents to \
-                          find addresses and remote agents."
-                .to_string(),
+            description: MESSAGE_AGENT_DESCRIPTION.to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "to": {
                         "type": "string",
-                        "description": "Address to message: \"main\", a session address from list_agents, or \"a2a:<name>\" for a remote agent."
+                        "description": "Address to message: \"main\", a session address from list_agents, \"agent:<name>\" or \"agent:<name>/<session-address>\" for a teammate, or \"a2a:<name>\" for a remote agent."
                     },
                     "message": {
                         "type": "string",
@@ -255,6 +291,18 @@ impl Tool for MessageAgentTool {
         }
         if to == MAIN_ADDRESS && self.self_category == SessionCategory::Artifact.as_str() {
             return Ok(ToolResult::error(ARTIFACT_TO_MAIN_REFUSAL));
+        }
+
+        if let Some(parsed) = parse_team_address(to) {
+            let target = match parsed {
+                Ok(target) => target,
+                Err(e) => return Ok(ToolResult::error(e.to_string())),
+            };
+            if target.session.is_none() && self.self_category == SessionCategory::Artifact.as_str()
+            {
+                return Ok(ToolResult::error(ARTIFACT_TO_MAIN_REFUSAL));
+            }
+            return self.send_to_teammate(&target, message).await;
         }
 
         if let Some(agent_name) = to.strip_prefix("a2a:") {
@@ -434,6 +482,58 @@ mod tests {
         assert!(
             !result.output.contains("main conversation"),
             "only `main` is refused, got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_session_cannot_message_a_teammates_main_either() {
+        let (tool, _dir) = make_tool("artifact-wiki-0001", "artifact").await;
+        let result = tool
+            .execute(serde_json::json!({ "to": "agent:writer", "message": "look" }))
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(
+            result.output.contains("can't reach the main conversation"),
+            "got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_teammate_address_is_a_tool_error_naming_the_forms() {
+        let (tool, _dir) = make_tool("main", "main").await;
+        for bad in ["agent:", "agent:Bad Name", "agent:writer/"] {
+            let result = tool
+                .execute(serde_json::json!({ "to": bad, "message": "hello" }))
+                .await
+                .unwrap();
+            assert!(result.is_error, "{bad}");
+            assert!(
+                result.output.contains("agent:<name>"),
+                "{bad}: {}",
+                result.output
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_teammate_address_is_never_read_as_a_remote_or_local_one() {
+        let (tool, _dir) = make_tool("main", "main").await;
+        let result = tool
+            .execute(serde_json::json!({ "to": "agent:writer", "message": "hello" }))
+            .await
+            .unwrap();
+        assert!(result.is_error);
+        assert!(
+            result.output.contains("no teammate named 'writer'"),
+            "got: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("a2a") && !result.output.contains("no such agent"),
+            "got: {}",
             result.output
         );
     }

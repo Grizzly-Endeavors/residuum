@@ -33,6 +33,8 @@ pub struct ExtraApiStates {
     pub memory: web::memory::MemoryApiState,
     pub model: web::model::ModelApiState,
     pub a2a_agents: web::a2a::A2aAgentsStatusState,
+    /// The relay tunnel's status, for the A2A status route's relay address.
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
 }
 
 /// The agent-scoped routers [`build_gateway_app`] merges in, built once by
@@ -121,6 +123,7 @@ pub fn build_gateway_app(
 ) -> axum::Router {
     use axum::routing::get;
 
+    let state_tunnel_status_rx = extra.tunnel_status_rx.clone();
     let routers = build_feature_routers(&state, extra);
 
     axum::Router::new()
@@ -134,7 +137,10 @@ pub fn build_gateway_app(
         .merge(routers.memory)
         .merge(routers.model)
         .merge(routers.a2a_agents)
-        .merge(web::a2a::a2a_status_router(config_api_state.clone()))
+        .merge(web::a2a::a2a_status_router(web::a2a::A2aStatusState {
+            config: config_api_state.clone(),
+            tunnel_status_rx: state_tunnel_status_rx,
+        }))
         .merge(web::agent_data_api_router(config_api_state))
 }
 
@@ -243,6 +249,9 @@ pub(crate) struct A2aServingDeps {
     /// continuations wait on it: a session spawn published before then has
     /// no listener and would be lost.
     pub sessions_ready: tokio::sync::watch::Receiver<bool>,
+    /// The relay tunnel's status, so the agent's card advertises its relay
+    /// address while the tunnel is connected.
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
 }
 
 /// Build the agent's A2A server with [`crate::a2a::agent_a2a_router`]. The
@@ -268,6 +277,7 @@ pub(crate) async fn build_agent_a2a(
         bus_handle: deps.bus_handle,
         skill_state: deps.skill_state,
         sessions_ready: deps.sessions_ready,
+        tunnel_status_rx: deps.tunnel_status_rx,
     })
     .await
     {

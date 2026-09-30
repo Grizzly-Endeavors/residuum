@@ -16,8 +16,8 @@ use super::TunnelStatus;
 use super::forward_a2a;
 use super::forward_http;
 use super::forward_ws;
-use super::protocol::{Surface, TunnelFrame};
-use super::{ForwardRequest, ForwardTargets, TunnelA2a, TunnelSink, send_frame};
+use super::protocol::{AgentInfo, Surface, TunnelFrame};
+use super::{ForwardRequest, ForwardTargets, TunnelSink, send_frame};
 use crate::config::CloudConfig;
 
 /// The HTTP clients used to forward requests to local listeners: the
@@ -59,10 +59,13 @@ fn next_backoff(current: Duration) -> Duration {
 /// The tunnel forwards HTTP requests and WebSocket connections from the relay
 /// to the local residuum instance: the main listener on `cfg.local_port`,
 /// workbench artifact requests to `workbench_port` when that listener is
-/// running, and A2A requests to `a2a_port` when that listener is running.
-/// `a2a` controls whether the `a2a`/`a2a-private` capabilities are advertised
-/// on the upgrade at all, independent of whether `a2a_port` is currently
-/// serving.
+/// running, and A2A requests to `a2a_port` when the hub's A2A listener is
+/// enabled. The `a2a` capability is advertised on the upgrade exactly when
+/// `a2a_port` is `Some`.
+///
+/// `agents_rx` carries the hub's full agent list. It is sent to the relay
+/// after every (re)connect and again on every change; a failed send is
+/// logged and retried on the next change or reconnect.
 ///
 /// # Errors
 ///
@@ -73,7 +76,7 @@ pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     workbench_port: Option<u16>,
     a2a_port: Option<u16>,
-    a2a: Option<TunnelA2a>,
+    mut agents_rx: watch::Receiver<Vec<AgentInfo>>,
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
 ) {
@@ -110,7 +113,7 @@ pub(crate) async fn start_tunnel(
         debug!(url = %cfg.relay_url, "connecting to relay");
 
         let (write, mut read, user_id, keepalive_interval_secs, origins) =
-            match connect_and_handshake(&cfg, a2a).await {
+            match connect_and_handshake(&cfg, a2a_port.is_some()).await {
                 ConnectAttempt::Ready {
                     write,
                     read,
@@ -148,18 +151,22 @@ pub(crate) async fn start_tunnel(
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
 
-        let clients = TunnelClients {
-            client: &client,
-            a2a_client: &a2a_client,
-        };
+        send_agents_update(&write, &mut agents_rx).await;
+
         let action = run_tunnel_loop(
-            clients,
-            targets,
+            LoopContext {
+                clients: TunnelClients {
+                    client: &client,
+                    a2a_client: &a2a_client,
+                },
+                targets,
+                keepalive_timeout,
+                agents_rx: &mut agents_rx,
+            },
             &mut read,
             &write,
             &mut shutdown_rx,
             &status_tx,
-            keepalive_timeout,
         )
         .await;
 
@@ -191,8 +198,8 @@ enum ConnectAttempt {
 
 /// Open the WebSocket connection to the relay and wait for its `Connected`
 /// handshake frame.
-async fn connect_and_handshake(cfg: &CloudConfig, a2a: Option<TunnelA2a>) -> ConnectAttempt {
-    let request = match build_ws_request(cfg, a2a) {
+async fn connect_and_handshake(cfg: &CloudConfig, a2a_enabled: bool) -> ConnectAttempt {
+    let request = match build_ws_request(cfg, a2a_enabled) {
         Ok(r) => r,
         Err(e) => {
             error!(error = %e, "failed to build WebSocket request");
@@ -244,19 +251,54 @@ enum LoopExit {
     Reconnect(String, usize),
 }
 
+/// Send the hub's current agent list to the relay as an `AgentsUpdate`
+/// frame and mark that list as seen, so the loop's change arm fires only for
+/// later changes. A failure is logged and left for the next change or
+/// reconnect to retry: the list is always sent whole, so nothing is lost.
+async fn send_agents_update(
+    write: &Arc<Mutex<TunnelSink>>,
+    agents_rx: &mut watch::Receiver<Vec<AgentInfo>>,
+) {
+    let agents = agents_rx.borrow_and_update().clone();
+    let count = agents.len();
+    if let Err(e) = send_frame(write, &TunnelFrame::AgentsUpdate { agents }).await {
+        warn!(
+            error = %e,
+            agents = count,
+            "failed to send the agent list to the relay; it will be resent on the next change or reconnect"
+        );
+    } else {
+        debug!(agents = count, "sent the agent list to the relay");
+    }
+}
+
+/// What [`run_tunnel_loop`] needs beyond the socket halves: how to forward
+/// requests, where to, how long a silent relay is tolerated, and the agent
+/// list to keep the relay's copy of current.
+struct LoopContext<'a> {
+    clients: TunnelClients<'a>,
+    targets: ForwardTargets,
+    keepalive_timeout: Duration,
+    agents_rx: &'a mut watch::Receiver<Vec<AgentInfo>>,
+}
+
 /// Process tunnel frames until disconnection or shutdown.
 async fn run_tunnel_loop<S>(
-    clients: TunnelClients<'_>,
-    targets: ForwardTargets,
+    ctx: LoopContext<'_>,
     read: &mut S,
     write: &Arc<Mutex<TunnelSink>>,
     shutdown_rx: &mut watch::Receiver<bool>,
     status_tx: &watch::Sender<TunnelStatus>,
-    keepalive_timeout: Duration,
 ) -> LoopExit
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
+    let LoopContext {
+        clients,
+        targets,
+        keepalive_timeout,
+        agents_rx,
+    } = ctx;
     let mut local_ws_channels: HashMap<String, mpsc::Sender<String>> = HashMap::new();
     let mut last_frame = tokio::time::Instant::now();
 
@@ -315,6 +357,15 @@ where
             Some(request_id) = a2a_done_rx.recv() => {
                 a2a_streams.remove(&request_id);
             }
+            changed = agents_rx.changed() => {
+                if changed.is_ok() {
+                    send_agents_update(write, agents_rx).await;
+                } else {
+                    // The hub dropped its side: no further changes will
+                    // come, so stop polling a closed channel.
+                    std::future::pending::<()>().await;
+                }
+            }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     info!("tunnel shutting down");
@@ -345,7 +396,7 @@ where
 /// Build the HTTP request used to initiate the WebSocket connection with auth.
 fn build_ws_request(
     cfg: &CloudConfig,
-    a2a: Option<TunnelA2a>,
+    a2a_enabled: bool,
 ) -> Result<ws_http::Request<()>, ws_http::Error> {
     let host = url::Url::parse(&cfg.relay_url)
         .ok()
@@ -366,7 +417,7 @@ fn build_ws_request(
     );
     request.headers_mut().insert(
         super::CAPABILITIES_HEADER,
-        ws_http::HeaderValue::from_str(&super::build_capabilities_header(a2a))?,
+        ws_http::HeaderValue::from_str(&super::build_capabilities_header(a2a_enabled))?,
     );
     Ok(request)
 }
@@ -439,6 +490,83 @@ fn forward_port(targets: ForwardTargets, surface: Option<Surface>) -> Result<u16
             "The A2A endpoint isn't available on this Residuum instance right now: its A2A listener isn't running. Check Residuum's logs for why it couldn't start.",
         ),
     }
+}
+
+/// The path on the hub's A2A listener for a relay-forwarded A2A request:
+/// `/agents/{agent}` followed by the path the relay forwarded (which already
+/// carries any query string), or a plain-language reason the request can't be
+/// dispatched.
+///
+/// The hub's A2A listener has no root-level agent, so a request that names no
+/// agent has nowhere to go. The name is checked against the agent-name rules
+/// because it becomes a path segment on the local listener.
+fn a2a_listener_path(agent: Option<&str>, path: &str) -> Result<String, &'static str> {
+    let Some(agent) = agent else {
+        return Err(
+            "This A2A request didn't name an agent. Agents are reached at /a2a/{instance}/{agent}.",
+        );
+    };
+    if crate::config::paths::validate_agent_name(agent).is_err() {
+        return Err("No agent with that name is available on this Residuum instance.");
+    }
+    if path_escapes_agent(path) {
+        return Err("This A2A request's path isn't valid.");
+    }
+    let separator = if path.starts_with('/') { "" } else { "/" };
+    Ok(format!(
+        "{}/{agent}{separator}{path}",
+        crate::a2a::public_url::AGENTS_PATH_PREFIX
+    ))
+}
+
+/// Whether a relay-supplied path could climb out of `/agents/{agent}` once
+/// the HTTP client normalizes it: any `.` or `..` segment, in plain or
+/// percent-encoded form (`%2e`, `%2E`, mixed), or any backslash. The relay
+/// gates access per agent, so a path that reaches a different agent's routes
+/// would bypass that gating (`/a2a/inst/scout/../vault/...` normalizes to
+/// vault's routes). The query string is not part of the path.
+fn path_escapes_agent(path: &str) -> bool {
+    let path_only = path.split(['?', '#']).next().unwrap_or_default();
+    let decoded = percent_decode(path_only);
+    decoded.contains('\\')
+        || decoded
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+}
+
+/// Decode `%XX` escapes, leaving malformed ones as they are.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&byte) = bytes.get(i) {
+        let escaped = if byte == b'%' {
+            bytes
+                .get(i + 1..i + 3)
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        } else {
+            None
+        };
+        if let Some(decoded) = escaped {
+            out.push(decoded);
+            i += 3;
+        } else {
+            out.push(byte);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Answer an A2A-surface request the tunnel can't dispatch with a streamed
+/// `404`, since A2A responses are always streamed.
+fn spawn_a2a_rejection(write: &Arc<Mutex<TunnelSink>>, request_id: String, message: &'static str) {
+    let write = Arc::clone(write);
+    crate::util::spawn_in_span(async move {
+        warn!(request_id = %request_id, reason = message, "rejected an A2A request from the relay");
+        forward_a2a::stream_error(&write, &request_id, 404, message).await;
+    });
 }
 
 /// Spawn the streaming forward for an A2A-surface request and register it in
@@ -559,8 +687,9 @@ async fn handle_frame(
             headers,
             body,
             surface,
+            agent,
         } => {
-            let request = ForwardRequest {
+            let mut request = ForwardRequest {
                 request_id,
                 method,
                 path,
@@ -568,7 +697,13 @@ async fn handle_frame(
                 body,
             };
             if matches!(surface, Some(Surface::A2a)) {
-                spawn_a2a_forward(clients.a2a_client, targets, write, a2a_tracker, request);
+                match a2a_listener_path(agent.as_deref(), &request.path) {
+                    Ok(listener_path) => {
+                        request.path = listener_path;
+                        spawn_a2a_forward(clients.a2a_client, targets, write, a2a_tracker, request);
+                    }
+                    Err(message) => spawn_a2a_rejection(write, request.request_id, message),
+                }
             } else {
                 spawn_buffered_forward(clients.client, targets, write, surface, request);
             }
@@ -609,6 +744,7 @@ async fn handle_frame(
             }
         }
         TunnelFrame::Connected { .. }
+        | TunnelFrame::AgentsUpdate { .. }
         | TunnelFrame::Pong
         | TunnelFrame::HttpResponse { .. }
         | TunnelFrame::HttpResponseStart { .. }
@@ -622,7 +758,6 @@ async fn handle_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::super::A2aVisibility;
     use super::*;
 
     /// Bound on every test's individual waits, so a real regression (a
@@ -706,7 +841,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg, None).unwrap();
+        let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
     }
 
@@ -717,7 +852,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg, None).unwrap();
+        let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
     }
 
@@ -728,7 +863,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg, None).unwrap();
+        let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "relay.example.com");
     }
 
@@ -739,7 +874,7 @@ mod tests {
             token: "tok".to_string(),
             local_port: 8080,
         };
-        let req = build_ws_request(&cfg, None).unwrap();
+        let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(req.headers()["host"], "localhost");
     }
 
@@ -811,40 +946,34 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_request_advertises_capabilities_without_a2a_by_default() {
+    fn upgrade_request_declares_agents_without_a2a_when_a2a_is_off() {
         let cfg = CloudConfig {
             relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
             token: "rst_test".to_string(),
             local_port: 7700,
         };
-        let req = build_ws_request(&cfg, None).unwrap();
+        let req = build_ws_request(&cfg, false).unwrap();
         assert_eq!(
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface,http-streaming")
+            Some("workbench-surface,http-streaming,agents")
         );
     }
 
     #[test]
-    fn upgrade_request_advertises_a2a_when_configured() {
+    fn upgrade_request_declares_a2a_when_the_hub_serves_it() {
         let cfg = CloudConfig {
             relay_url: "wss://agent-residuum.com/tunnel/register".to_string(),
             token: "rst_test".to_string(),
             local_port: 7700,
         };
-        let req = build_ws_request(
-            &cfg,
-            Some(TunnelA2a {
-                visibility: A2aVisibility::Private,
-            }),
-        )
-        .unwrap();
+        let req = build_ws_request(&cfg, true).unwrap();
         assert_eq!(
             req.headers()
                 .get("x-residuum-capabilities")
                 .and_then(|v| v.to_str().ok()),
-            Some("workbench-surface,http-streaming,a2a,a2a-private")
+            Some("workbench-surface,http-streaming,agents,a2a")
         );
     }
 
@@ -966,10 +1095,11 @@ mod tests {
             TunnelFrame::HttpRequest {
                 request_id: "req-503".to_string(),
                 method: "GET".to_string(),
-                path: "/a2a/laptop/.well-known/agent-card.json".to_string(),
+                path: "/.well-known/agent-card.json".to_string(),
                 headers: HashMap::new(),
                 body: None,
                 surface: Some(Surface::A2a),
+                agent: Some("scout".to_string()),
             },
             &clients,
             targets,
@@ -1007,7 +1137,7 @@ mod tests {
         // assertions, so an unaborted stream could not possibly finish (or
         // report itself done) within the timeout below.
         let app = axum::Router::new().route(
-            "/slow",
+            "/agents/scout/slow",
             axum::routing::get(|| async {
                 let events = futures_util::stream::once(async {
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1052,6 +1182,7 @@ mod tests {
                 headers: HashMap::new(),
                 body: None,
                 surface: Some(Surface::A2a),
+                agent: Some("scout".to_string()),
             },
             &clients,
             targets,
@@ -1094,5 +1225,488 @@ mod tests {
             result.is_err(),
             "an aborted A2A forward must not report completion, got {result:?}"
         );
+    }
+
+    fn agent_info(name: &str, a2a_enabled: bool) -> AgentInfo {
+        AgentInfo {
+            name: name.to_string(),
+            display_name: name.to_string(),
+            a2a_enabled,
+            a2a_private: false,
+        }
+    }
+
+    fn agent_names(frame: &TunnelFrame) -> Vec<&str> {
+        let TunnelFrame::AgentsUpdate { agents } = frame else {
+            panic!("expected AgentsUpdate, got {frame:?}");
+        };
+        agents.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn the_agent_list_is_sent_right_after_connecting() {
+        let (write, mut relay) = loopback_ws().await;
+        let (_tx, mut rx) =
+            watch::channel(vec![agent_info("scout", true), agent_info("nova", false)]);
+
+        send_agents_update(&write, &mut rx).await;
+
+        let frame = recv_ws_frame(&mut relay).await;
+        assert_eq!(agent_names(&frame), ["scout", "nova"]);
+        assert!(!rx.has_changed().unwrap(), "the sent list counts as seen");
+    }
+
+    #[tokio::test]
+    async fn a_send_failure_is_survived_and_the_next_change_sends() {
+        let (write, relay) = loopback_ws().await;
+        let (tx, mut rx) = watch::channel(vec![agent_info("scout", true)]);
+        // The relay end is gone, so the send has nowhere to go.
+        drop(relay);
+        write
+            .lock()
+            .await
+            .close()
+            .await
+            .expect("closing the loopback sink");
+
+        send_agents_update(&write, &mut rx).await;
+
+        tx.send(vec![agent_info("scout", true), agent_info("nova", true)])
+            .unwrap();
+        assert!(
+            rx.has_changed().unwrap(),
+            "a failed send must leave later changes to trigger a resend"
+        );
+    }
+
+    /// Runs `run_tunnel_loop` over a read side that never yields, so a test
+    /// can watch what the loop's other arms send to the relay.
+    struct LoopHarness {
+        relay: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        agents_tx: watch::Sender<Vec<AgentInfo>>,
+        shutdown_tx: watch::Sender<bool>,
+        task: tokio::task::JoinHandle<LoopExit>,
+    }
+
+    async fn spawn_idle_loop(initial: Vec<AgentInfo>) -> LoopHarness {
+        let (write, relay) = loopback_ws().await;
+        let (agents_tx, mut agents_rx) = watch::channel(initial);
+        // The connect-time send has already marked the initial list as seen.
+        agents_rx.borrow_and_update();
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let task = crate::util::spawn_in_span(async move {
+            let client = forward_http::forwarding_client().unwrap();
+            let a2a_client = forward_a2a::forwarding_client().unwrap();
+            let (status_tx, _status_rx) = watch::channel(TunnelStatus::Disconnected);
+            let mut read = futures_util::stream::pending::<
+                Result<Message, tokio_tungstenite::tungstenite::Error>,
+            >();
+            run_tunnel_loop(
+                LoopContext {
+                    clients: TunnelClients {
+                        client: &client,
+                        a2a_client: &a2a_client,
+                    },
+                    targets: ForwardTargets {
+                        main: 7700,
+                        workbench: None,
+                        a2a: None,
+                    },
+                    keepalive_timeout: Duration::from_secs(60),
+                    agents_rx: &mut agents_rx,
+                },
+                &mut read,
+                &write,
+                &mut shutdown_rx,
+                &status_tx,
+            )
+            .await
+        });
+        LoopHarness {
+            relay,
+            agents_tx,
+            shutdown_tx,
+            task,
+        }
+    }
+
+    impl LoopHarness {
+        async fn stop(self) {
+            self.shutdown_tx.send(true).unwrap();
+            let exit = with_timeout(self.task).await.unwrap();
+            assert!(matches!(exit, LoopExit::Shutdown));
+        }
+    }
+
+    #[tokio::test]
+    async fn each_change_to_the_agent_list_is_sent_whole() {
+        let mut harness = spawn_idle_loop(vec![agent_info("scout", true)]).await;
+
+        harness
+            .agents_tx
+            .send(vec![agent_info("scout", true), agent_info("nova", true)])
+            .unwrap();
+        let grown = recv_ws_frame(&mut harness.relay).await;
+        assert_eq!(agent_names(&grown), ["scout", "nova"]);
+
+        harness
+            .agents_tx
+            .send(vec![agent_info("nova", false)])
+            .unwrap();
+        let shrunk = recv_ws_frame(&mut harness.relay).await;
+        assert_eq!(agent_names(&shrunk), ["nova"]);
+        let TunnelFrame::AgentsUpdate { agents } = shrunk else {
+            panic!("expected AgentsUpdate");
+        };
+        assert!(agents.iter().all(|a| !a.a2a_enabled));
+
+        harness.stop().await;
+    }
+
+    #[tokio::test]
+    async fn changes_made_together_reach_the_relay_as_the_latest_list() {
+        let mut harness = spawn_idle_loop(vec![agent_info("scout", true)]).await;
+
+        harness.agents_tx.send(vec![agent_info("a", true)]).unwrap();
+        harness.agents_tx.send(vec![agent_info("b", true)]).unwrap();
+        harness.agents_tx.send(vec![agent_info("c", true)]).unwrap();
+
+        let frame = recv_ws_frame(&mut harness.relay).await;
+        assert_eq!(agent_names(&frame), ["c"]);
+        let extra = tokio::time::timeout(Duration::from_millis(300), harness.relay.next()).await;
+        assert!(extra.is_err(), "changes made together must be one update");
+
+        harness.stop().await;
+    }
+
+    #[test]
+    fn a_relay_forwarded_agent_request_maps_onto_the_agents_prefix() {
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "/.well-known/agent-card.json").as_deref(),
+            Ok("/agents/scout/.well-known/agent-card.json")
+        );
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "/rest/message:send?x=1").as_deref(),
+            Ok("/agents/scout/rest/message:send?x=1")
+        );
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "/").as_deref(),
+            Ok("/agents/scout/")
+        );
+        assert_eq!(
+            a2a_listener_path(Some("scout"), "").as_deref(),
+            Ok("/agents/scout/")
+        );
+    }
+
+    #[test]
+    fn a_path_that_climbs_out_of_the_agent_is_refused() {
+        for bad in [
+            "/../vault/.well-known/agent-card.json",
+            "/./x",
+            "/..",
+            "/rest/../../vault/x",
+            "/%2e%2e/vault/x",
+            "/%2E%2E/vault/x",
+            "/%2e./vault/x",
+            "/.%2E/vault/x",
+            "/%2e/x",
+            "/..%2fvault/x",
+            "/%2e%2e%2fvault/x",
+            "/..\\vault/x",
+            "/%5cvault",
+            "/%5Cvault",
+            "/a\\b",
+            "..",
+            "/x/..?q=1",
+        ] {
+            assert!(
+                a2a_listener_path(Some("scout"), bad).is_err(),
+                "'{bad}' must not reach another agent's routes"
+            );
+        }
+    }
+
+    #[test]
+    fn dots_inside_names_and_the_query_string_are_not_traversal() {
+        for fine in [
+            "/.well-known/agent-card.json",
+            "/rest/a..b",
+            "/rest/message:send?next=../x",
+            "/v1/tasks/1.2.3",
+            "/%2e%2eabc/x",
+        ] {
+            assert!(
+                a2a_listener_path(Some("scout"), fine).is_ok(),
+                "'{fine}' is an ordinary path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_without_a_usable_agent_is_refused() {
+        assert!(a2a_listener_path(None, "/").is_err());
+        for bad in ["", "../hub", "Scout", "a/b", "-x", "x y"] {
+            assert!(
+                a2a_listener_path(Some(bad), "/").is_err(),
+                "'{bad}' must not become a listener path"
+            );
+        }
+    }
+
+    /// A live hub A2A listener over two agents whose routers each name
+    /// themselves, forwarded to through the tunnel's real dispatch.
+    struct A2aDispatchHarness {
+        write: Arc<Mutex<TunnelSink>>,
+        relay: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        targets: ForwardTargets,
+        /// Releases the second event of every agent's `/stream`.
+        gate: Arc<tokio::sync::Notify>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn agent_app(name: &'static str, gate: &Arc<tokio::sync::Notify>) -> axum::Router {
+        let gate = Arc::clone(gate);
+        axum::Router::new()
+            .route("/marker", axum::routing::get(move || async move { name }))
+            .route(
+                "/stream",
+                axum::routing::get(move || {
+                    let gate = Arc::clone(&gate);
+                    async move {
+                        let first = futures_util::stream::once(async move {
+                            Ok::<_, std::convert::Infallible>(
+                                axum::response::sse::Event::default().data(format!("{name}-one")),
+                            )
+                        });
+                        let second = futures_util::stream::once(async move {
+                            gate.notified().await;
+                            Ok::<_, std::convert::Infallible>(
+                                axum::response::sse::Event::default().data(format!("{name}-two")),
+                            )
+                        });
+                        axum::response::sse::Sse::new(futures_util::StreamExt::chain(first, second))
+                    }
+                }),
+            )
+    }
+
+    async fn a2a_dispatch_harness() -> A2aDispatchHarness {
+        use crate::hub::A2aVisibility as Visibility;
+
+        let dir = tempfile::tempdir().unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let directory = Arc::new(
+            crate::a2a::StaticAgentDirectory::new()
+                .with_agent("scout", Visibility::Public, agent_app("scout", &gate))
+                .with_agent("vault", Visibility::Private, agent_app("vault", &gate)),
+        );
+        let app = crate::a2a::hub_a2a_app(
+            directory,
+            crate::a2a::AuthState {
+                keys: crate::a2a::A2aKeys::new_shared(dir.path()),
+                tunnel_nonce: Arc::new(|| Some(Arc::<str>::from(super::super::tunnel_nonce()))),
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        crate::util::spawn_in_span(async move { axum::serve(listener, app).await.unwrap() });
+        let (write, relay) = loopback_ws().await;
+        A2aDispatchHarness {
+            write,
+            relay,
+            targets: ForwardTargets {
+                main: 7700,
+                workbench: None,
+                a2a: Some(port),
+            },
+            gate,
+            _dir: dir,
+        }
+    }
+
+    fn a2a_frame(request_id: &str, agent: Option<&str>, path: &str, sibling: bool) -> TunnelFrame {
+        let mut headers = HashMap::new();
+        if sibling {
+            headers.insert("x-residuum-sibling".to_string(), "laptop".to_string());
+        }
+        TunnelFrame::HttpRequest {
+            request_id: request_id.to_string(),
+            method: "GET".to_string(),
+            path: path.to_string(),
+            headers,
+            body: None,
+            surface: Some(Surface::A2a),
+            agent: agent.map(str::to_string),
+        }
+    }
+
+    impl A2aDispatchHarness {
+        async fn send(&self, frame: TunnelFrame) {
+            let client = forward_http::forwarding_client().unwrap();
+            let a2a_client = forward_a2a::forwarding_client().unwrap();
+            let clients = TunnelClients {
+                client: &client,
+                a2a_client: &a2a_client,
+            };
+            let mut local_ws_channels = HashMap::new();
+            let (ws_open_tx, _ws_open_rx) = mpsc::channel(1);
+            let mut streams = HashMap::new();
+            let (done_tx, _done_rx) = mpsc::channel(4);
+            let mut tracker = A2aStreamTracker {
+                streams: &mut streams,
+                done_tx: &done_tx,
+            };
+            with_timeout(handle_frame(
+                frame,
+                &clients,
+                self.targets,
+                &self.write,
+                &mut local_ws_channels,
+                &ws_open_tx,
+                &mut tracker,
+            ))
+            .await;
+        }
+
+        /// The status and full body of the next streamed response.
+        async fn response(&mut self) -> (u16, String) {
+            let start = recv_ws_frame(&mut self.relay).await;
+            let TunnelFrame::HttpResponseStart { status, .. } = start else {
+                panic!("expected HttpResponseStart, got {start:?}");
+            };
+            let mut body = Vec::new();
+            while let Some(chunk) = next_body_chunk(&mut self.relay).await {
+                body.extend(chunk);
+            }
+            (status, String::from_utf8(body).unwrap())
+        }
+    }
+
+    /// The next chunk of a streamed response body, or `None` at its clean
+    /// end.
+    async fn next_body_chunk(
+        relay: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) -> Option<Vec<u8>> {
+        match recv_ws_frame(relay).await {
+            TunnelFrame::HttpResponseChunk { data, .. } => Some(base64_decode(&data)),
+            TunnelFrame::HttpResponseEnd { error, .. } => {
+                assert_eq!(error, None);
+                None
+            }
+            other @ (TunnelFrame::Connected { .. }
+            | TunnelFrame::AgentsUpdate { .. }
+            | TunnelFrame::Ping
+            | TunnelFrame::Pong
+            | TunnelFrame::HttpRequest { .. }
+            | TunnelFrame::HttpResponse { .. }
+            | TunnelFrame::HttpResponseStart { .. }
+            | TunnelFrame::HttpCancel { .. }
+            | TunnelFrame::WsOpen { .. }
+            | TunnelFrame::WsOpenResult { .. }
+            | TunnelFrame::WsMessage { .. }
+            | TunnelFrame::WsClose { .. }) => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    fn base64_decode(data: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn relay_requests_reach_the_agent_they_name() {
+        let mut harness = a2a_dispatch_harness().await;
+
+        harness
+            .send(a2a_frame("r1", Some("scout"), "/marker", true))
+            .await;
+        assert_eq!(harness.response().await, (200, "scout".to_string()));
+
+        harness
+            .send(a2a_frame("r2", Some("vault"), "/marker", true))
+            .await;
+        assert_eq!(harness.response().await, (200, "vault".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_relay_request_without_an_agent_gets_a_404_and_reaches_no_agent() {
+        let mut harness = a2a_dispatch_harness().await;
+
+        harness.send(a2a_frame("r1", None, "/marker", true)).await;
+
+        let (status, body) = harness.response().await;
+        assert_eq!(status, 404);
+        assert!(body.contains("didn't name an agent"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_relay_request_naming_an_unknown_agent_gets_a_404() {
+        let mut harness = a2a_dispatch_harness().await;
+
+        harness
+            .send(a2a_frame("r1", Some("ghost"), "/marker", true))
+            .await;
+        assert_eq!(harness.response().await.0, 404);
+
+        harness
+            .send(a2a_frame("r2", Some("../scout"), "/marker", true))
+            .await;
+        assert_eq!(harness.response().await.0, 404);
+    }
+
+    #[tokio::test]
+    async fn a_private_agent_stays_hidden_from_a_caller_the_instance_does_not_know() {
+        let mut harness = a2a_dispatch_harness().await;
+
+        harness
+            .send(a2a_frame("r1", Some("vault"), "/marker", false))
+            .await;
+        assert_eq!(
+            harness.response().await.0,
+            404,
+            "the instance's own auth hides a private agent from an unknown caller"
+        );
+
+        harness
+            .send(a2a_frame("r2", Some("scout"), "/marker", false))
+            .await;
+        assert_eq!(
+            harness.response().await.0,
+            401,
+            "a public agent still needs a key or sibling for anything but its card"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_requests_keep_streaming_for_the_named_agent() {
+        let mut harness = a2a_dispatch_harness().await;
+
+        harness
+            .send(a2a_frame("r1", Some("vault"), "/stream", true))
+            .await;
+
+        let start = recv_ws_frame(&mut harness.relay).await;
+        assert!(matches!(
+            start,
+            TunnelFrame::HttpResponseStart { status: 200, .. }
+        ));
+        // The first event arrives while the response is still open.
+        let first = next_body_chunk(&mut harness.relay)
+            .await
+            .expect("a chunk before the stream ends");
+        assert!(
+            String::from_utf8(first).unwrap().contains("vault-one"),
+            "the first event must arrive while the response is still open"
+        );
+
+        harness.gate.notify_one();
+        let mut rest = String::new();
+        while let Some(chunk) = next_body_chunk(&mut harness.relay).await {
+            rest.push_str(&String::from_utf8(chunk).unwrap());
+        }
+        assert!(rest.contains("vault-two"), "{rest}");
     }
 }

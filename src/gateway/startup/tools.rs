@@ -50,6 +50,8 @@ pub(super) struct ToolRegistryDeps<'a> {
     /// The hub's directory (`~/.residuum/hub`), needed to resolve the hub
     /// config that `config.toml`/`providers.toml` diagnostics run against.
     pub hub_dir: &'a std::path::Path,
+    /// How `agent_create`/`agent_delete` reach the hub.
+    pub lifecycle: &'a crate::tools::LifecycleAccess,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -108,8 +110,8 @@ pub(super) fn init_tool_registry(
         Some(config_watch),
     );
     tools.register_agent_key_tools(Arc::clone(deps.agent_keys), Arc::clone(deps.checkpoints));
-    tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
-    tools.register_memory_get_tool(layout.episodes_dir(), layout.sessions_dir());
+    let (episodes_dir, sessions_dir) = (layout.episodes_dir(), layout.sessions_dir());
+    tools.register_memory_tools(Arc::clone(&mem.hybrid_searcher), episodes_dir, sessions_dir);
     tools.register_action_tools(
         Arc::clone(deps.action_store),
         Arc::clone(deps.action_notify),
@@ -128,6 +130,7 @@ pub(super) fn init_tool_registry(
         SessionAddress::from(MAIN_ADDRESS),
         Arc::clone(deps.a2a_hub),
         Arc::clone(deps.a2a_tracker),
+        deps.agent_messenger.team().clone(),
     );
     tools.register_spawn_tool(
         deps.publisher.clone(),
@@ -137,6 +140,8 @@ pub(super) fn init_tool_registry(
         cfg.background.subagent_depth_cap,
         deps.hop_counter.clone(),
     );
+
+    tools.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
 
     tools.register_send_message_tool(
         deps.endpoint_registry.clone(),
@@ -273,6 +278,7 @@ mod tests {
         MemoryConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig, SubconsciousSettings,
         ToolsConfig, TracingConfig, WebSearchConfig,
     };
+    use crate::hub::AgentDirectory as _;
     use crate::inference::retry::RetryConfig;
     use crate::memory::search::{HybridSearcher, MemoryIndex};
     use crate::skills::{SkillIndex, SkillState};
@@ -371,6 +377,7 @@ mod tests {
         checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
         config_reload_tracker: crate::tools::SharedConfigReloadTracker,
         hub_dir: std::path::PathBuf,
+        lifecycle: crate::tools::LifecycleAccess,
     }
 
     async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -458,6 +465,10 @@ mod tests {
             checkpoints,
             config_reload_tracker: crate::tools::SharedConfigReloadTracker::new_shared(),
             hub_dir: dir.join("hub"),
+            lifecycle: crate::tools::LifecycleAccess::new(
+                crate::hub::DirectoryHandle::unbound(),
+                "test",
+            ),
         }
     }
 
@@ -471,7 +482,7 @@ mod tests {
         category: &str,
         conversation_target: Option<crate::bus::ConversationTarget>,
     ) -> crate::tools::ToolRegistry {
-        crate::tools::ToolRegistry::build_subagent_registry(crate::tools::SubagentToolDeps {
+        crate::tools::ToolRegistry::build_subagent_registry(&crate::tools::SubagentToolDeps {
             tracker: FileTracker::new_shared(),
             path_policy: Arc::clone(&h.path_policy),
             tools_path: Arc::clone(&h.tools_path),
@@ -507,6 +518,7 @@ mod tests {
             a2a_hub: Arc::clone(&h.a2a_hub),
             a2a_tracker: Arc::clone(&h.a2a_tracker),
             checkpoints: Arc::clone(&h.checkpoints),
+            lifecycle: h.lifecycle.clone(),
         })
     }
 
@@ -550,6 +562,7 @@ mod tests {
             checkpoints: &h.checkpoints,
             config_reload_tracker: &h.config_reload_tracker,
             hub_dir: &h.hub_dir,
+            lifecycle: &h.lifecycle,
         };
         let (main_tools, _) = init_tool_registry(&h.cfg, &h.layout, &h.mem, chrono_tz::UTC, &deps);
         let mut main_names = main_tools.tool_names();
@@ -577,6 +590,45 @@ mod tests {
             "session registry must equal main minus the main-only allowlist \
              ({MAIN_ONLY_TOOLS:?}) plus the session-only allowlist ({SESSION_ONLY_TOOLS:?})"
         );
+    }
+
+    /// A spawned session's `agent_create` reaches the hub as the agent it
+    /// belongs to, so a session can create a teammate.
+    #[tokio::test]
+    async fn a_session_fork_can_create_a_teammate() {
+        use crate::hub::test_support::{mount_reply, write_agent};
+
+        let hub_root = tempfile::tempdir().expect("tempdir");
+        let hub_dir = hub_root.path().join("hub");
+        std::fs::create_dir_all(&hub_dir).expect("hub dir");
+        std::fs::write(hub_dir.join("config.toml"), "timezone = \"UTC\"\n").expect("hub config");
+        let model = wiremock::MockServer::start().await;
+        mount_reply(&model, "scout here", std::time::Duration::ZERO).await;
+        write_agent(hub_root.path(), "scout", &model.uri());
+        let hub_cfg = crate::config::HubConfig::load_at(&hub_dir).expect("hub config loads");
+        let services =
+            crate::hub::services::HubServices::for_tests(hub_root.path(), &hub_cfg).await;
+        let host = crate::hub::AgentHost::new(services.clone(), hub_cfg);
+        host.discover().expect("discovery");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut h = build_harness(dir.path()).await;
+        h.lifecycle = crate::tools::LifecycleAccess::new(services.directory.clone(), "scout");
+        let session = session_registry_for(&h, "spawned-test-0001", "spawned", None);
+
+        let result = session
+            .execute("agent_create", serde_json::json!({ "name": "nova" }))
+            .await
+            .expect("agent_create runs in a session");
+
+        assert!(!result.is_error, "got: {}", result.output);
+        assert!(
+            result.output.contains("agent:nova"),
+            "got: {}",
+            result.output
+        );
+        assert!(hub_root.path().join("nova").join("config").is_dir());
+        assert!(host.summary("nova").is_ok());
     }
 
     /// An `artifact` session gets the same tools as a spawned one; only its

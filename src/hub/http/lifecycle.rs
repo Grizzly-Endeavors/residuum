@@ -15,7 +15,8 @@ use serde_json::json;
 use super::error::{json_error, lifecycle_error_response};
 use crate::gateway::web::cloud::CloudStatusResponse;
 use crate::hub::{
-    Actor, AgentDirectory, AgentPatch, AgentState, AgentSummary, CreateAgentRequest, LifecycleError,
+    Actor, AgentDirectory, AgentPatch, AgentState, AgentSummary, CreateAgentRequest,
+    LifecycleError, RestoreAgentRequest,
 };
 
 /// What the lifecycle and status routes read.
@@ -31,6 +32,8 @@ pub(super) struct LifecycleState {
 pub(super) fn routes(state: LifecycleState) -> Router {
     Router::new()
         .route("/api/hub/agents", get(list_agents).post(create_agent))
+        .route("/api/hub/agents/deleted", get(list_deleted_agents))
+        .route("/api/hub/agents/restore", post(restore_agent))
         .route(
             "/api/hub/agents/{name}",
             patch(patch_agent).delete(delete_agent),
@@ -70,6 +73,26 @@ async fn create_agent(State(state): State<LifecycleState>, body: Bytes) -> Respo
         Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
     };
     match state.directory.create(request, Actor::User).await {
+        Ok(summary) => (StatusCode::CREATED, Json(summary)).into_response(),
+        Err(e) => lifecycle_error_response(&e),
+    }
+}
+
+/// `GET /api/hub/agents/deleted` — deleted agents that can be restored.
+async fn list_deleted_agents(State(state): State<LifecycleState>) -> Response {
+    match state.directory.list_deleted().await {
+        Ok(agents) => Json(json!({ "agents": agents })).into_response(),
+        Err(e) => lifecycle_error_response(&e),
+    }
+}
+
+/// `POST /api/hub/agents/restore` — restore a deleted agent.
+async fn restore_agent(State(state): State<LifecycleState>, body: Bytes) -> Response {
+    let request: RestoreAgentRequest = match parse_body(&body) {
+        Ok(request) => request,
+        Err(message) => return json_error(StatusCode::BAD_REQUEST, message),
+    };
+    match state.directory.restore(request, Actor::User).await {
         Ok(summary) => (StatusCode::CREATED, Json(summary)).into_response(),
         Err(e) => lifecycle_error_response(&e),
     }

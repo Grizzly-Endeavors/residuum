@@ -75,7 +75,7 @@ A run id, distinct from the address, identifies the specific run within the sess
 
 Agents message each other by address with the `message_agent` tool, available to the main agent and every session. Delivery depends on the target's current lifecycle state:
 
-- **`main`** — delivered as an interrupt at the next tool-call boundary if a main turn is running, otherwise it starts a main turn.
+- **`main`** — delivered as an interrupt at the next tool-call boundary if a main turn is running, otherwise it starts a main turn. A message that arrives after a turn's last tool-call boundary (during the model call that produces its final answer) starts a main turn of its own as soon as the running turn ends; see [Mid-Turn Interrupt Queue](turn-control.md#mid-turn-interrupt-queue).
 - **running session** — delivered as an interrupt at the session's next tool-call boundary, through the same interrupt channel `stop_agent` uses to end a turn. If that channel is saturated (vanishingly unlikely — 32 deep, drained continuously by a live run), the tool returns an error telling the sender to retry shortly, rather than silently falling back to a resume that would double-register the address.
 - **idle session** — starts another turn in the same run, with the message as that turn's input. The run's transcript and per-turn memory staging (see [Memory](#memory)) span every turn this way, not just the first.
 - **completing session** — the run is tearing down (its completion pipeline — memory merge, transcript write — may still be running) and no longer accepts input into itself. Delivery does not block on that pipeline: the tool call returns immediately reporting the message is queued, while a background task waits for the run to fully leave the registry (recording its resume point on the way out) and then re-checks the address before acting: if another queued message already resumed it in the meantime, this one is delivered straight into that live run instead; otherwise it resumes the session as a new run, the same as a completed session below. This is what lets two messages queued to the same completing session both reach it, as exactly one new run rather than a second one silently losing the race. A message still queued in a run's own interrupt channel at the moment its teardown drains it (e.g. one delivered just as a stop lands) is handled the same way, combined into the resumed run's opening prompt if more than one arrived.
@@ -86,9 +86,42 @@ An `artifact` session cannot message `main`: its `message_agent` call to `main` 
 
 Every delivered message names the sender's address and category, so the recipient knows who to reply to. If delivery requires publishing an event (a resume, or handoff to main) and that publish fails, the tool returns an error rather than reporting success — the sender should not assume the message arrived.
 
+### Addresses
+
+| Form | Means |
+|------|-------|
+| `main`, `<session-address>` | This agent's own main, or one of its own sessions. |
+| `agent:<name>` | Teammate `<name>`'s main. |
+| `agent:<name>/<session-address>` | A session belonging to teammate `<name>`. Used mainly to reply to a teammate's session that messaged you; `agent:<name>/main` is the teammate's main. |
+| `a2a:<name>` | A remote A2A agent (see [a2a.md](a2a.md#client-reaching-other-agents)). |
+
+`agent:` and `a2a:` are distinct prefixes. A teammate name is an agent-directory name (lowercase letters, digits and hyphens), so it never contains `:` or `/`, and an A2A agent name never contains `:` either. A session address never contains `:`, so no session can be mistaken for a teammate or a remote agent. A teammate is not a sibling: the hub's own agents are reached with `agent:`, and relay sibling discovery never lists them (see [a2a.md](a2a.md#teammates-and-siblings)).
+
+### Teammates
+
+A `message_agent` call to an `agent:` address goes to the hub's team router, which hands it to the target agent's messenger. The messenger delivers it exactly as it delivers a local message: an interrupt or a new turn for a teammate's main, an interrupt for a live session, a resume for a completed one. Delivery is fire-and-forget; the reply is a separate `message_agent` call.
+
+- **Attribution.** The receiver sees the sender's fully qualified address: `agent:<sender>` for a sender's main, `agent:<sender>/<session>` for a session. The message opens with a header saying it comes from a teammate, not the user, that the receiver's plain response is not shown to the sender, and which address to reply to with `message_agent`. The history entry carries the structured sender (`agent_sender`, address plus category `teammate`), which is what the web UI trusts.
+- **Hops.** The hop count travels with the message across agents. The hub-level limits below are checked on every delivery against the chain's count, so a loop between two agents is caught the same way a loop inside one agent is.
+- **Registration.** A running agent's messenger is registered with the router from the moment the agent starts serving until its stop begins. A stopping agent takes no new teammate messages.
+- **Failures are tool errors, and nothing queues.** A teammate that is `stopped`, `failed` or `starting` gives an error saying so and that the user can start it from the team view. An unknown name gives an error listing the teammates. A session that doesn't exist on a running teammate gives an error naming the session. Addressing yourself with `agent:<your name>` is an error pointing at `main` and session addresses. A malformed address (empty name, invalid name, empty session after the `/`) is an error naming the two valid forms.
+- **`artifact` sessions** can't message a teammate's main either, for the same reason they can't message their own.
+
+`list_agents` shows every teammate with its state and role line and marks your own entry. Each agent's system prompt carries a `TEAM` block, after `WIKI_INDEX`, built from the same roster:
+
+```
+<TEAM>
+You are "alpha". Teammates (message_agent to="agent:<name>"; only running ones receive):
+- beta (running): Reviews drafts
+- gamma (stopped): no role line yet
+</TEAM>
+```
+
+The block lists teammates only (not the agent itself) and is omitted when the agent has none. A role line is the `description` of the teammate's wiki role page. The main agent rebuilds the block at the start of every turn, so a state change or a new role line shows up on the next turn. A session gets it as of the moment it forks.
+
 ### Hop Counts
 
-Every agent message carries a hop count, used to bound message loops. Input that originates outside the agent system — a user message, a pulse or action firing, a webhook, a web sidebar message, a workbench artifact's start or message — is hop `0`. A message an agent sends during a turn carries one more than the highest hop count among the inputs that drove that turn: the turn's kickoff input, plus any agent messages drained as interrupts during it. A `subagent_spawn` task brief carries the same rule — one more than the spawning turn's highest input hop count — so the new session's first turn starts at that hop count; a resumed session's new run instead starts at the hop count of the message that triggered the resume (that message *is* its first turn's input). Result relays (see [Result Routing](#result-routing)) count as agent messages for this purpose. The main agent tracks its own current-turn hop count the same way a session does, including across a turn boundary: if a message arrives mid-turn but isn't consumed before the turn ends, its hop count carries forward into whichever turn picks it up next rather than being reset — otherwise a looping message that happened to arrive at the wrong moment could reset the loop guard to zero.
+Every agent message carries a hop count, used to bound message loops. Input that originates outside the agent system — a user message, a pulse or action firing, a webhook, a web sidebar message, a workbench artifact's start or message — is hop `0`. A message an agent sends during a turn carries one more than the highest hop count among the inputs that drove that turn: the turn's kickoff input, plus any agent messages drained as interrupts during it. A `subagent_spawn` task brief carries the same rule — one more than the spawning turn's highest input hop count — so the new session's first turn starts at that hop count; a resumed session's new run instead starts at the hop count of the message that triggered the resume (that message *is* its first turn's input). Result relays (see [Result Routing](#result-routing)) count as agent messages for this purpose. The main agent tracks its own current-turn hop count the same way a session does, including across a turn boundary: if a message arrives mid-turn but isn't consumed before the turn ends, its hop count carries forward into whichever turn picks it up next rather than being reset — otherwise a looping message that happened to arrive at the wrong moment could reset the loop guard to zero. Each such message keeps its own hop count, not the whole turn's combined count: a user message that arrives late after teammate traffic restarts at hop `0`. An agent that creates another with `agent_create` sends the new agent's first message at one more than its own turn's highest input hop count, so a chain of agents creating agents meets the same limits.
 
 Two limits, both configurable in the `[background]` section of `hub/config.toml` (one message chain can cross several agents, so the limit is hub-wide):
 
@@ -97,7 +130,7 @@ Two limits, both configurable in the `[background]` section of `hub/config.toml`
 | Soft | `hop_soft_limit` | 8 | The delivered message carries a note asking the receiver to reply only if a reply is actually needed. |
 | Hard | `hop_hard_limit` | 32 | Delivery is refused outright. The sender's tool call returns an error explaining the loop limit and naming the `hop_hard_limit` setting; the refusal is logged at `warn` with both addresses and the hop count; a best-effort note is recorded in the transcript of whichever side (sender, receiver) is a live, addressable session, and shown as an error on that session in the web UI. |
 
-A hard-limit refusal never reaches the target — the tool result is the only thing the sender sees.
+A hard-limit refusal never reaches the target — the tool result is the only thing the sender sees. For a message between agents (`agent:` addresses) the same holds: the sender's tool call gets the error, the target agent logs the refusal, and each side that is a live session gets the note in its own transcript.
 
 ## Conversation Routing
 
@@ -125,11 +158,11 @@ Depth is capped by `subagent_depth_cap` in `[background]` (default 3). Spawning 
 
 | Parameter | Type | Required | Notes |
 |-----------|------|----------|-------|
-| `to` | string | yes | `"main"`, a session address from `list_agents`, or `"a2a:<name>"` for a remote agent listed in `config/a2a.json`. |
+| `to` | string | yes | `"main"`, a session address from `list_agents`, `"agent:<name>"` or `"agent:<name>/<session-address>"` for a teammate, or `"a2a:<name>"` for a remote agent listed in `config/a2a.json`. |
 | `message` | string | yes | The message body. Must not be empty. |
 | `skill` | string | no | Only meaningful when `to` is `"a2a:<name>"`: the id of one of that agent's advertised skills, sent as `message.metadata.skill`. |
 
-Sends `message` to `to`, delivered per the rules in [Messaging](#messaging). Messaging yourself is rejected, and so is an `artifact` session messaging `main`. See [a2a.md](a2a.md#client-reaching-other-agents) for `to: "a2a:<name>"`: delivery isn't synchronous — the call returns once the remote agent has accepted the task, and its reply arrives later as an agent message from `a2a:<name>`.
+Sends `message` to `to`, delivered per the rules in [Messaging](#messaging) (teammates: [Teammates](#teammates)). Messaging yourself is rejected, and so is an `artifact` session messaging `main` or a teammate's main. See [a2a.md](a2a.md#client-reaching-other-agents) for `to: "a2a:<name>"`: delivery isn't synchronous — the call returns once the remote agent has accepted the task, and its reply arrives later as an agent message from `a2a:<name>`.
 
 ### `subagent_spawn`
 
@@ -143,7 +176,7 @@ Available to the main agent and to every session, subject to the depth cap above
 
 ### `list_agents`
 
-No parameters. Lists the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, tool calls executed, and purpose. Also lists every remote agent configured in `config/a2a.json`: its address (`a2a:<name>`), online/pending/error status, description and skills once its card resolves, and the caller's own open tasks with it.
+No parameters. Lists the main agent plus every live (running or idle) session: address, category, source, state, depth, spawner, elapsed time, tool calls executed, and purpose. Then every agent on the team (`[agent:<name>]`) with its state and role line, your own entry marked `(you)`; the count above the list excludes you. Also lists every remote agent configured in `config/a2a.json`: its address (`a2a:<name>`), online/pending/error status, description and skills once its card resolves, and the caller's own open tasks with it.
 
 ### `stop_agent`
 

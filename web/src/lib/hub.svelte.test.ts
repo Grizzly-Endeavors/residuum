@@ -3,7 +3,7 @@ import { FakeWebSocket } from "../test/fake-websocket";
 import { HubStore } from "./hub.svelte";
 import { notifications } from "./notifications.svelte";
 import { toast } from "./toast.svelte";
-import type { AgentSummary } from "./hub-types";
+import type { AgentSummary, DeletedAgent } from "./hub-types";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -503,5 +503,138 @@ describe("HubStore lifecycle actions", () => {
     expect(await hub.setVisibility("scout", "public")).toBe(false);
     expect(hub.agent("scout")?.a2a_visibility).toBe("private");
     expect(notifications.history[0]?.kind).toBe("error");
+  });
+});
+
+const gone = (name: string): DeletedAgent => ({
+  name,
+  deleted_at: "2026-09-29T10:00:00Z",
+  checkpoint_id: `ckpt-${name}`,
+});
+
+describe("HubStore deleted agents", () => {
+  it("loads the deleted list and reports a failed load where the view can show it", async () => {
+    const fetchMock = vi.fn((_url: string) =>
+      Promise.resolve(jsonResponse({ agents: [gone("nova")] })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const hub = new HubStore();
+
+    await hub.refreshDeleted();
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/hub/agents/deleted");
+    expect(hub.deleted.map((d) => d.name)).toEqual(["nova"]);
+    expect(hub.deletedLoaded).toBe(true);
+    expect(hub.deletedError).toBeNull();
+
+    vi.stubGlobal("fetch", () => Promise.resolve(jsonResponse({ error: "unreadable" }, 500)));
+    await hub.refreshDeleted();
+
+    expect(hub.deletedError).toContain("Couldn't load the deleted agents");
+    expect(hub.deleted.map((d) => d.name)).toEqual(["nova"]);
+    expect(notifications.history).toEqual([]);
+  });
+
+  it("refetches the list after a deletion only once the list has been asked for", async () => {
+    const fetchMock = vi.fn((_url: string) => Promise.resolve(jsonResponse({ agents: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const hub = new HubStore();
+    hub.handleFrame({ type: "agents_snapshot", agents: [agent("nova")] });
+
+    hub.handleFrame({ type: "agent_deleted", name: "nova", by: "user" });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await hub.refreshDeleted();
+    fetchMock.mockClear();
+    hub.handleFrame({ type: "agent_deleted", name: "nova", by: "agent:scout" });
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/hub/agents/deleted"]);
+    });
+  });
+
+  it("puts an Undo on the deleted toast that restores the agent by name", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(jsonResponse(agent("nova"), 201)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const hub = new HubStore();
+    hub.handleFrame({ type: "agents_snapshot", agents: [agent("nova")] });
+
+    hub.handleFrame({ type: "agent_deleted", name: "nova", by: "agent:scout" });
+
+    const deletedToast = [...toast.toasts.values()].find(
+      (t) => t.message === "scout deleted nova.",
+    );
+    expect(deletedToast?.action?.label).toBe("Undo");
+    toast.runAction(deletedToast?.id ?? -1);
+    await vi.waitFor(() => {
+      expect(hub.agent("nova")?.state).toBe("running");
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/hub/agents/restore");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ name: "nova" }));
+  });
+
+  it("restores an agent, sending the checkpoint when given one, and drops it from the deleted list", async () => {
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      Promise.resolve(jsonResponse(agent("nova"), 201)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const hub = new HubStore();
+    hub.deleted = [gone("nova"), gone("kit")];
+
+    const restored = await hub.restoreAgent("nova", "ckpt-nova");
+
+    expect(restored?.name).toBe("nova");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ name: "nova", checkpoint_id: "ckpt-nova" }),
+    );
+    expect(hub.agents.map((a) => a.name)).toEqual(["nova"]);
+    expect(hub.deleted.map((d) => d.name)).toEqual(["kit"]);
+  });
+
+  it("tells the user why a restore failed and leaves the lists alone", async () => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(jsonResponse({ error: "an agent named 'nova' already exists" }, 409)),
+    );
+    const hub = new HubStore();
+    hub.deleted = [gone("nova")];
+
+    expect(await hub.restoreAgent("nova")).toBeNull();
+
+    expect(hub.agents).toEqual([]);
+    expect(hub.deleted.map((d) => d.name)).toEqual(["nova"]);
+    expect(notifications.history[0]?.kind).toBe("error");
+    expect(notifications.history[0]?.message).toContain("Couldn't restore nova");
+    expect(notifications.history[0]?.message).toContain("already exists");
+  });
+
+  it("explains a 404 as nothing to restore", async () => {
+    vi.stubGlobal("fetch", () => Promise.resolve(jsonResponse({ error: "no deleted agent" }, 404)));
+    const hub = new HubStore();
+
+    expect(await hub.restoreAgent("ghost")).toBeNull();
+
+    expect(notifications.history[0]?.message).toContain("nothing to restore");
+  });
+
+  it("adds a restored agent from its frame, naming who restored it, and unlists it", () => {
+    const hub = new HubStore();
+    hub.deleted = [gone("nova"), gone("kit")];
+
+    hub.handleFrame({ type: "agent_restored", agent: agent("nova"), by: "agent:scout" });
+
+    expect(hub.agents.map((a) => a.name)).toEqual(["nova"]);
+    expect(hub.deleted.map((d) => d.name)).toEqual(["kit"]);
+    expect(hub.notices[0]?.message).toBe("scout restored nova.");
+  });
+
+  it("never lists an agent that was created again under a deleted name", () => {
+    const hub = new HubStore();
+    hub.deleted = [gone("nova")];
+
+    hub.handleFrame({ type: "agent_created", agent: agent("nova"), by: "user" });
+
+    expect(hub.deleted).toEqual([]);
   });
 });

@@ -3,7 +3,8 @@
 //! It answers what the A2A listener asks of a directory (`summary`,
 //! `agent_a2a_router`) and refuses everything else, so the listener can serve
 //! agents whose routers were built elsewhere, and be tested against agents
-//! with chosen visibility and state.
+//! with chosen visibility and state. Changing an agent's state or visibility,
+//! or adding or removing an agent, publishes the matching hub event.
 
 use std::collections::BTreeMap;
 use std::sync::RwLock;
@@ -15,7 +16,7 @@ use tokio::sync::broadcast;
 use crate::hub::AgentDirectory;
 use crate::hub::{
     A2aVisibility, Actor, AgentActivity, AgentPatch, AgentState, AgentSummary, CreateAgentRequest,
-    DeleteOutcome, HubEvent, LifecycleError,
+    DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
 
 struct Entry {
@@ -25,9 +26,18 @@ struct Entry {
 }
 
 /// A directory of agents whose A2A routers are supplied up front.
-#[derive(Default)]
 pub struct StaticAgentDirectory {
     agents: RwLock<BTreeMap<String, Entry>>,
+    events: broadcast::Sender<HubEvent>,
+}
+
+impl Default for StaticAgentDirectory {
+    fn default() -> Self {
+        Self {
+            agents: RwLock::new(BTreeMap::new()),
+            events: broadcast::channel(64).0,
+        }
+    }
 }
 
 impl StaticAgentDirectory {
@@ -59,17 +69,79 @@ impl StaticAgentDirectory {
         self
     }
 
-    /// Move an agent to `state`, as a stop or failure would.
+    /// Move an agent to `state`, as a stop or failure would, and publish the
+    /// change.
     #[cfg(test)]
     pub(crate) fn set_state(&self, name: &str, state: AgentState) {
-        if let Some(entry) = self
+        self.change(name, |entry| entry.state = state);
+    }
+
+    /// Change an agent's A2A visibility and publish the change.
+    #[cfg(test)]
+    pub(crate) fn set_visibility(&self, name: &str, visibility: A2aVisibility) {
+        self.change(name, |entry| entry.visibility = visibility);
+    }
+
+    /// Add a running agent after construction and publish its creation.
+    #[cfg(test)]
+    pub(crate) fn add_agent(&self, name: &str, visibility: A2aVisibility, router: Router) {
+        let summary = {
+            let mut agents = self
+                .agents
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = Entry {
+                visibility,
+                state: AgentState::Running,
+                router,
+            };
+            let summary = Self::summary_of(name, &entry);
+            agents.insert(name.to_string(), entry);
+            summary
+        };
+        self.events
+            .send(HubEvent::AgentCreated {
+                agent: summary,
+                by: Actor::User,
+            })
+            .ok();
+    }
+
+    /// Remove an agent and publish its deletion.
+    #[cfg(test)]
+    pub(crate) fn remove_agent(&self, name: &str) {
+        let removed = self
             .agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(name)
-        {
-            entry.state = state;
+            .remove(name)
+            .is_some();
+        if removed {
+            self.events
+                .send(HubEvent::AgentDeleted {
+                    name: name.to_string(),
+                    by: Actor::User,
+                })
+                .ok();
         }
+    }
+
+    #[cfg(test)]
+    fn change(&self, name: &str, apply: impl FnOnce(&mut Entry)) {
+        let summary = {
+            let mut agents = self
+                .agents
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(entry) = agents.get_mut(name) else {
+                return;
+            };
+            apply(entry);
+            Self::summary_of(name, entry)
+        };
+        self.events
+            .send(HubEvent::AgentState { agent: summary })
+            .ok();
     }
 
     fn summary_of(name: &str, entry: &Entry) -> AgentSummary {
@@ -150,6 +222,18 @@ impl AgentDirectory for StaticAgentDirectory {
         Err(unsupported("deleting an agent"))
     }
 
+    async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
+        Ok(Vec::new())
+    }
+
+    async fn restore(
+        &self,
+        _request: RestoreAgentRequest,
+        _by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        Err(unsupported("restoring an agent"))
+    }
+
     async fn start(&self, _name: &str) -> Result<AgentSummary, LifecycleError> {
         Err(unsupported("starting an agent"))
     }
@@ -167,6 +251,6 @@ impl AgentDirectory for StaticAgentDirectory {
     }
 
     fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
-        broadcast::channel(1).1
+        self.events.subscribe()
     }
 }

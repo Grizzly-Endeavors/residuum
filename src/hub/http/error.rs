@@ -13,13 +13,15 @@ pub(super) fn json_error(status: StatusCode, message: impl Into<String>) -> Resp
 
 /// The response for a failed lifecycle or lookup call.
 ///
-/// `NotFound` is `404`, `InvalidName` and `InvalidRequest` are `400`,
+/// `NotFound` and `NoDeletedAgent` are `404`, `InvalidName` and `InvalidRequest` are `400`,
 /// `AlreadyExists` is `409`, `NotRunning` is `409` with the agent's `state`
 /// beside the message, and `Failed` is `500`.
 pub(super) fn lifecycle_error_response(error: &LifecycleError) -> Response {
     let message = error.to_string();
     match error {
-        LifecycleError::NotFound(_) => json_error(StatusCode::NOT_FOUND, message),
+        LifecycleError::NotFound(_) | LifecycleError::NoDeletedAgent(_) => {
+            json_error(StatusCode::NOT_FOUND, message)
+        }
         LifecycleError::InvalidName(_) | LifecycleError::InvalidRequest(_) => {
             json_error(StatusCode::BAD_REQUEST, message)
         }

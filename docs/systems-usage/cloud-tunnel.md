@@ -1,6 +1,29 @@
 # Residuum Cloud Tunnel and Remote Control Safety
 
-Residuum Cloud (`[cloud]` in `hub/config.toml`, Settings → Residuum Cloud) opens a persistent WebSocket tunnel from this gateway to a relay, so the web UI and the workbench reach it from anywhere without port forwarding. The tunnel doesn't declare the `a2a` capability, so A2A requests don't arrive over it: the hub serves A2A per agent under `/agents/<name>/`, which the relay can't address. A2A is reachable locally and through the user's own tunnel (see [A2A](a2a.md)). The tunnel client (`tunnel::start_tunnel`) forwards each proxied HTTP request to the appropriate local listener with a real loopback HTTP call — from the gateway's own perspective, a tunnel-forwarded request looks like any other request arriving on its port.
+Residuum Cloud (`[cloud]` in `hub/config.toml`, Settings → Residuum Cloud) opens a persistent WebSocket tunnel from this gateway to a relay, so the web UI and the workbench reach it from anywhere without port forwarding. The tunnel client (`tunnel::start_tunnel`) forwards each proxied HTTP request to the appropriate local listener with a real loopback HTTP call — from the gateway's own perspective, a tunnel-forwarded request looks like any other request arriving on its port. The hub also carries each agent's A2A traffic through it, and tells the relay which agents exist (see below).
+
+## Capabilities
+
+The tunnel declares what it can handle in the `x-residuum-capabilities` header of its WebSocket upgrade: `workbench-surface`, `http-streaming` and `agents` always, plus `a2a` while the hub's A2A listener is enabled (`[a2a] enabled`). Each agent's A2A visibility isn't a capability; it travels with the agent list.
+
+## Agents on the relay
+
+One tunnel connection is one hub, and the hub can host several agents. The hub sends the relay its full agent list as an `agents_update` frame, `{ "agents": [{ "name", "display_name", "a2a_enabled", "a2a_private" }] }`:
+
+- right after the relay's `Connected` frame, on every (re)connect;
+- again whenever the list changes: an agent is created or deleted, starts or stops, or changes A2A visibility, or the hub's `[a2a] enabled` flips.
+
+The frame always carries the whole list and the relay replaces its stored copy, so resending is harmless. Changes that arrive together are sent as one update carrying the latest list: the hub gathers a burst for a quarter of a second before publishing, and the tunnel sends the newest list when it next writes. A frame that fails to send is logged at `warn`; the next change or reconnect sends the list again.
+
+- `name` is the agent's name, and `display_name` is the same.
+- `a2a_enabled` is true when the hub's A2A listener is enabled and the agent is running. A stopped or failed agent can't answer, so the relay hides it from its directory and answers `404` for it. Starting it again re-lists it.
+- `a2a_private` is true when the agent's A2A visibility is private. The relay lists a private agent only for your own installs (or a caller the agent's own auth-check accepts) and forwards every request to the hub, whose auth layer answers `404` to anyone it doesn't recognize.
+
+Until the relay has received the first list on a connection it answers `503` to A2A requests for the instance, and an instance that never sends one has no A2A entries.
+
+## A2A through the tunnel
+
+The relay forwards `/a2a/{instance}/{agent}/<rest>` as an HTTP request on the A2A surface with the frame's `agent` field set. The tunnel sends it to the hub's A2A listener as `/agents/<agent>/<rest>` and streams the response back frame by frame (`http_response_start`, `http_response_chunk`, `http_response_end`), so a long streaming call flows through unbuffered. A request on the A2A surface that names no agent, or a name that isn't a valid agent name, is answered `404` and reaches no agent. So is a request whose path contains a `.` or `..` segment (plain or percent-encoded, in any case) or a backslash, since after normalization it could reach a different agent's routes and skip the relay's per-agent gating. If the A2A listener isn't running, the answer is `503` saying so. See [A2A](a2a.md) for addresses and sibling discovery.
 
 ## Telling a Tunnel-Forwarded Request Apart From a Local One
 

@@ -7,6 +7,7 @@
 // export them (the hub WebSocket's frames).
 
 import type { AgentSummary } from "./generated/AgentSummary";
+import type { DeletedAgent } from "./generated/DeletedAgent";
 import type { ServerMessage, WorkspaceChange } from "./types";
 
 export type { A2aVisibility } from "./generated/A2aVisibility";
@@ -17,10 +18,17 @@ export type { AgentState } from "./generated/AgentState";
 export type { AgentSummary } from "./generated/AgentSummary";
 export type { CreateAgentRequest } from "./generated/CreateAgentRequest";
 export type { DeleteOutcome } from "./generated/DeleteOutcome";
+export type { DeletedAgent } from "./generated/DeletedAgent";
+export type { RestoreAgentRequest } from "./generated/RestoreAgentRequest";
 
 /** `GET /api/hub/agents`. */
 export interface AgentListResponse {
   agents: AgentSummary[];
+}
+
+/** `GET /api/hub/agents/deleted`: deleted agents that can be restored, newest deletion first. */
+export interface DeletedAgentListResponse {
+  agents: DeletedAgent[];
 }
 
 /** Who caused a hub event: the user (UI or CLI), or a teammate agent. */
@@ -55,6 +63,7 @@ export type HubServerMessage =
   | { type: "agents_snapshot"; agents: AgentSummary[] }
   | { type: "agent_state"; agent: AgentSummary }
   | { type: "agent_created"; agent: AgentSummary; by: HubActor }
+  | { type: "agent_restored"; agent: AgentSummary; by: HubActor }
   | { type: "agent_deleted"; name: string; by: HubActor }
   | { type: "agent_activity"; name: string; busy: boolean; unread: number }
   | { type: "notice"; level: HubNoticeLevel; message: string; agent?: string }

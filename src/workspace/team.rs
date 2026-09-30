@@ -124,6 +124,51 @@ pub async fn ensure_agent_role_page_as(
     name: &str,
     description: Option<&str>,
 ) -> Result<bool, FatalError> {
+    let role = description
+        .map(single_line)
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
+    let content = role_page_content(name, &role);
+    create_role_page(team, coordinator, writer, name, &role, &content).await
+}
+
+/// Recreate the role page of a restored agent from the text it had when the
+/// agent was deleted, with its roster entry and a log line. The roster entry
+/// carries the page's `description`, or the placeholder when the text has
+/// none. Does nothing when the page already exists. Returns whether the page
+/// was created.
+///
+/// # Errors
+/// Returns `FatalError::Workspace` if the page, the index, or the log
+/// cannot be written.
+pub async fn restore_agent_role_page(
+    team: &TeamPaths,
+    coordinator: &TeamWriteCoordinator,
+    writer: &TeamWriter,
+    name: &str,
+    page_text: &str,
+) -> Result<bool, FatalError> {
+    #[derive(serde::Deserialize)]
+    struct Frontmatter {
+        description: Option<String>,
+    }
+    let role = crate::util::parse_frontmatter_md::<Frontmatter>(page_text, "agent role page")
+        .ok()
+        .and_then(|(frontmatter, _body)| frontmatter.description)
+        .map(|description| single_line(&description))
+        .filter(|description| !description.is_empty())
+        .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
+    create_role_page(team, coordinator, writer, name, &role, page_text).await
+}
+
+async fn create_role_page(
+    team: &TeamPaths,
+    coordinator: &TeamWriteCoordinator,
+    writer: &TeamWriter,
+    name: &str,
+    role: &str,
+    content: &str,
+) -> Result<bool, FatalError> {
     let page_path = team.agent_role_page(name);
     let index_path = team.wiki_agents_index_md();
     let log_path = team.wiki_log_md();
@@ -155,17 +200,12 @@ pub async fn ensure_agent_role_page_as(
             ))
         })?;
 
-    let role = description
-        .map(single_line)
-        .filter(|d| !d.is_empty())
-        .unwrap_or_else(|| ROLE_PLACEHOLDER.to_string());
-
     // Index entry first, page second: a crash between the two leaves an
     // index entry that the retry skips (it checks for the link) before
     // writing the page.
-    add_index_entry(index_guard, writer, name, &role).await?;
+    add_index_entry(index_guard, writer, name, role).await?;
     page_guard
-        .commit(writer, role_page_content(name, &role).as_bytes())
+        .commit(writer, content.as_bytes())
         .await
         .map_err(|e| {
             FatalError::Workspace(format!("failed to write {}: {e:#}", page_path.display()))

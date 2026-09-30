@@ -35,10 +35,13 @@ use crate::bus::{
     SpawnRequestEvent, topics,
 };
 use crate::config::BackgroundModelTier;
+use crate::hub::team::TeamLink;
 use crate::inference::{ImageData, Message};
 
 use super::events::publish_session_event;
-use super::registry::{DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry};
+use super::registry::{
+    DeliverOutcome, MAIN_ADDRESS, ResumePoint, SessionRegistry, TEAMMATE_SENDER_CATEGORY,
+};
 use super::store::SessionStore;
 
 /// What happened when a message was sent to an address.
@@ -103,6 +106,10 @@ pub struct AgentMessenger {
     publisher: Publisher,
     store: Arc<SessionStore>,
     hop_limits: HopLimits,
+    /// This agent's handle on the hub's team router: how it reaches
+    /// teammates and reads the roster. A team of one until
+    /// [`Self::with_team`] links it to the hub.
+    team: TeamLink,
     /// Hop count of an agent message delivered to main, keyed by the
     /// `MessageEvent.id` it was published under. Main has no interrupt
     /// channel of its own the way a session does — delivery reuses the
@@ -114,6 +121,12 @@ pub struct AgentMessenger {
     /// consumed as a turn's kickoff or mid-turn interrupt) is harmless
     /// clutter, not a leak that grows unbounded in practice.
     pending_main_hops: Mutex<HashMap<String, u32>>,
+    /// Hop count each message carried when main's running turn took it in
+    /// mid-turn, keyed by `MessageEvent.id`. The turn's shared counter holds
+    /// the sum of every input, so a message that turns out to have arrived
+    /// after the turn's last checkpoint reads its own hop from here instead.
+    /// Cleared after every turn (see [`Self::clear_mid_turn_hops`]).
+    mid_turn_hops: Mutex<HashMap<String, u32>>,
 }
 
 impl AgentMessenger {
@@ -132,8 +145,24 @@ impl AgentMessenger {
             publisher,
             store,
             hop_limits,
+            team: TeamLink::alone("agent"),
             pending_main_hops: Mutex::new(HashMap::new()),
+            mid_turn_hops: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Link this messenger to the hub's team router, so `agent:` addresses
+    /// reach teammates and the roster is the hub's.
+    #[must_use]
+    pub(crate) fn with_team(mut self, team: TeamLink) -> Self {
+        self.team = team;
+        self
+    }
+
+    /// This agent's handle on the team router.
+    #[must_use]
+    pub fn team(&self) -> &TeamLink {
+        &self.team
     }
 
     /// The bus publisher this messenger sends agent-to-agent deliveries
@@ -159,6 +188,62 @@ impl AgentMessenger {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(message_id)
             .unwrap_or(0)
+    }
+
+    /// Record `hop_count` for a message main is about to receive again under
+    /// `message_id`, so the next [`Self::take_main_hop`] for it returns the
+    /// hop count it originally carried. A zero hop count records nothing:
+    /// `take_main_hop` already answers `0` for an id it has no entry for.
+    pub(crate) fn restore_main_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// Remember the hop count `message_id` carried when main's running turn
+    /// took it in mid-turn. A zero hop count records nothing.
+    pub(crate) fn note_mid_turn_hop(&self, message_id: &str, hop_count: u32) {
+        if hop_count == 0 {
+            return;
+        }
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message_id.to_string(), hop_count);
+    }
+
+    /// The hop count `message_id` carried when it was taken in mid-turn, or
+    /// `0` if it carried none.
+    #[must_use]
+    pub(crate) fn mid_turn_hop(&self, message_id: &str) -> u32 {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(message_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Forget every hop count noted by [`Self::note_mid_turn_hop`]; called
+    /// once a turn's leftovers have been sorted out.
+    pub(crate) fn clear_mid_turn_hops(&self) {
+        self.mid_turn_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    /// Discard the hop count recorded for `message_id`, for a message that
+    /// will not be looked up as a turn's kickoff.
+    pub(crate) fn forget_main_hop(&self, message_id: &str) {
+        self.pending_main_hops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(message_id);
     }
 
     /// Send `content` from `from` (identified by address and category) to
@@ -267,18 +352,35 @@ impl AgentMessenger {
             limit = self.hop_limits.hard,
             "refusing to deliver agent message: hop limit reached, likely a message loop"
         );
-        let note = format!(
+        let note = self.hop_refusal_note(from, to, hop_count);
+        let sinks = self.note_sinks();
+        record_note_if_live_session(sinks, from, &note).await;
+        record_note_if_live_session(sinks, &SessionAddress::from(to), &note).await;
+    }
+
+    fn hop_refusal_note(&self, from: &SessionAddress, to: &str, hop_count: u32) -> String {
+        format!(
             "[Message Loop Limit] a message from {from} to {to} reached the hop limit \
              ({hop_count} >= {}); it was not delivered.",
             self.hop_limits.hard
-        );
-        let sinks = NoteSinks {
+        )
+    }
+
+    fn note_sinks(&self) -> NoteSinks<'_> {
+        NoteSinks {
             registry: &self.registry,
             store: &self.store,
             publisher: &self.publisher,
-        };
-        record_note_if_live_session(sinks, from, &note).await;
-        record_note_if_live_session(sinks, &SessionAddress::from(to), &note).await;
+        }
+    }
+
+    /// Record, in the transcript of the live session `from`, that its message
+    /// to the teammate address `to` was refused at the hop limit. The
+    /// teammate's own messenger has already logged the refusal and noted it
+    /// on its side; this is the sender's half.
+    pub(crate) async fn note_refused_send(&self, from: &SessionAddress, to: &str, hop_count: u32) {
+        let note = self.hop_refusal_note(from, to, hop_count);
+        record_note_if_live_session(self.note_sinks(), from, &note).await;
     }
 
     /// Deliver to the main agent by publishing a `MessageEvent` on the
@@ -300,6 +402,7 @@ impl AgentMessenger {
         hop_count: u32,
     ) -> Result<(), SendError> {
         let sender = from.clone();
+        let sender_is_teammate = from_category == TEAMMATE_SENDER_CATEGORY;
         let body = content.clone();
         let msg = AgentMessageEvent {
             from,
@@ -327,7 +430,11 @@ impl AgentMessenger {
                 "failed to deliver message to main".to_string(),
             ));
         }
-        self.publish_message_to_main(&sender, body).await;
+        // A teammate's message has no run in this agent's registry to show it
+        // on; main's own history already carries it.
+        if !sender_is_teammate {
+            self.publish_message_to_main(&sender, body).await;
+        }
         Ok(())
     }
 

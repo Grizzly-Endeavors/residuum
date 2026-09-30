@@ -40,7 +40,8 @@ use super::services::HubServices;
 use super::team_embedding::EmbeddingSource;
 use super::types::{
     A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, HubEvent, LifecycleError, NoticeLevel,
+    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, NoticeLevel,
+    RestoreAgentRequest,
 };
 use crate::workspace::team_files::TeamWriter;
 
@@ -283,16 +284,23 @@ impl AgentHost {
     /// every agent resolves its own config against.
     pub(crate) fn new(services: HubServices, hub_cfg: HubConfig) -> Arc<Self> {
         let (events, _first_subscriber) = broadcast::channel(HUB_EVENT_CAPACITY);
-        Arc::new_cyclic(|me| Self {
-            me: Weak::clone(me),
-            services,
-            hub_cfg: RwLock::new(hub_cfg),
-            slots: RwLock::new(BTreeMap::new()),
-            events,
-            creation_lock: tokio::sync::Mutex::new(()),
-            stopping: AtomicBool::new(false),
-            teams_ports: Mutex::new(BTreeMap::new()),
-            team_embedding: tokio::sync::Mutex::new(None),
+        Arc::new_cyclic(|me| {
+            // Agent tools and the team router reach this host through the
+            // directory handle in the shared services.
+            services
+                .directory
+                .bind(Weak::clone(me) as Weak<dyn AgentDirectory>);
+            Self {
+                me: Weak::clone(me),
+                services,
+                hub_cfg: RwLock::new(hub_cfg),
+                slots: RwLock::new(BTreeMap::new()),
+                events,
+                creation_lock: tokio::sync::Mutex::new(()),
+                stopping: AtomicBool::new(false),
+                teams_ports: Mutex::new(BTreeMap::new()),
+                team_embedding: tokio::sync::Mutex::new(None),
+            }
         })
     }
 
@@ -891,6 +899,8 @@ impl AgentHost {
             .sibling_fanout
             .unregister(&run.slot.name)
             .await;
+        // Nor does it take teammate messages: nothing queues for a dead agent.
+        self.services.team_router.unregister(&run.slot.name);
 
         let current = run.slot.lock().generation == run.generation;
         if current {
@@ -930,6 +940,9 @@ impl AgentHost {
             return Ok(());
         };
         stop_requested.store(true, Ordering::SeqCst);
+        // From the stop request on, no teammate message reaches the agent;
+        // its event loop only unregisters once it sees the request.
+        self.services.team_router.unregister(&slot.name);
         // A closed channel means the event loop is already gone.
         stop_tx.send(()).await.ok();
         if tokio::time::timeout(STOP_TIMEOUT, done.wait_for(|finished| *finished))
@@ -982,6 +995,7 @@ impl AgentHost {
         };
         {
             let _creating = self.creation_lock.lock().await;
+            self.ensure_name_free(&request.name)?;
             super::provision::provision_agent(
                 &self.services.root,
                 &self.team_paths(),
@@ -990,6 +1004,7 @@ impl AgentHost {
                 &spec,
             )
             .await?;
+            super::deleted::clear_deletion(&self.checkpoints_dir(), &request.name).await;
             self.adopt(&request.name);
         }
 
@@ -999,9 +1014,15 @@ impl AgentHost {
             self.start_locked(&slot).await
         };
         // The agent exists either way; a failed start is its `failed` state.
+        self.note_start_outcome(&slot, &started);
         if started.is_ok() {
-            self.hand_over_role(&slot, &by, request.description.as_deref())
-                .await;
+            self.hand_over_role(
+                &slot,
+                &by,
+                request.description.as_deref(),
+                request.creator_hop,
+            )
+            .await;
         }
         let summary = self.summary_of(&slot);
         self.tell_acting_agent(
@@ -1018,6 +1039,20 @@ impl AgentHost {
             by,
         });
         Ok(summary)
+    }
+
+    /// Log why a start that create or restore asked for did not happen. The
+    /// agent stays in the state the summary reports (`failed` with its error,
+    /// or `stopped` when the start was refused before it began).
+    fn note_start_outcome(&self, slot: &AgentSlot, started: &Result<(), LifecycleError>) {
+        if let Err(reason) = started {
+            tracing::info!(
+                agent = %slot.name,
+                state = %self.summary_of(slot).state,
+                reason = %reason,
+                "agent was not started"
+            );
+        }
     }
 
     /// Leave a user inbox item for the agent that created or deleted another,
@@ -1045,7 +1080,13 @@ impl AgentHost {
     /// Deliver a new agent's role description to its main conversation, from
     /// its creator. A delivery failure is logged and told to the user; the
     /// agent is still created and can be given its role by hand.
-    async fn hand_over_role(&self, slot: &AgentSlot, by: &Actor, description: Option<&str>) {
+    async fn hand_over_role(
+        &self,
+        slot: &AgentSlot,
+        by: &Actor,
+        description: Option<&str>,
+        hop_count: u32,
+    ) {
         let Some(description) = description.map(str::trim).filter(|text| !text.is_empty()) else {
             return;
         };
@@ -1059,7 +1100,7 @@ impl AgentHost {
         };
         let message = super::provision::first_message(description);
         if let Err(reason) = control
-            .deliver_to_main(by, message, self.hub_config().timezone)
+            .deliver_to_main(by, message, self.hub_config().timezone, hop_count)
             .await
         {
             tracing::warn!(agent = %slot.name, error = %reason, "couldn't deliver the new agent's role description");
@@ -1081,6 +1122,14 @@ impl AgentHost {
         let checkpoint_id = {
             let _op = slot.op_lock.lock().await;
             self.stop_locked(&slot).await?;
+            // Read before the role page goes, so a restore can bring it back.
+            let mut record = super::deleted::DeletionRecord {
+                deleted_at: Utc::now(),
+                checkpoint_id: None,
+                role_page: tokio::fs::read_to_string(self.team_paths().agent_role_page(name))
+                    .await
+                    .ok(),
+            };
             let engine = self.checkpoint_engine(&slot).map_err(|e| {
                 tracing::error!(agent = %name, error = %e, "couldn't open the agent's checkpoint repositories to delete it");
                 LifecycleError::Failed(format!(
@@ -1096,6 +1145,8 @@ impl AgentHost {
                 &engine,
             )
             .await?;
+            record.checkpoint_id.clone_from(&id);
+            super::deleted::record_deletion(&self.checkpoints_dir(), name, &record).await;
             // Marked under the lock and before the slot is forgotten, so a
             // start or restart already holding this slot finds it gone
             // instead of starting the agent in a deleted directory.
@@ -1104,12 +1155,15 @@ impl AgentHost {
             id
         };
         self.spawn_team_embedding_refresh();
-        self.tell_acting_agent(
-            &by,
-            &format!("Deleted the agent {name}"),
-            &format!("You deleted the agent '{name}'. Its files were checkpointed first, so it can be restored."),
-        )
-        .await;
+        // An agent deleting itself has no inbox left to write to.
+        if !matches!(&by, Actor::Agent(actor) if actor == name) {
+            self.tell_acting_agent(
+                &by,
+                &format!("Deleted the agent {name}"),
+            &format!("You deleted the agent '{name}'. Its files were checkpointed first, so the user can restore it from the team view or with `residuum agent restore {name}`."),
+            )
+            .await;
+        }
         self.publish(HubEvent::AgentDeleted {
             name: name.to_string(),
             by,
@@ -1118,6 +1172,168 @@ impl AgentHost {
             deleted: true,
             checkpoint_id,
         })
+    }
+
+    /// Refuse a name the hub already holds. A slot outlives its directory
+    /// until a delete has finished, so this also stops a create or restore
+    /// from racing the delete of the same name. Called under `creation_lock`.
+    fn ensure_name_free(&self, name: &str) -> Result<(), LifecycleError> {
+        let held = self
+            .slots
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(name);
+        if held {
+            return Err(LifecycleError::AlreadyExists(name.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Restore a deleted agent from its checkpoint history, adopt it, and
+    /// start it when its settings say to.
+    async fn restore_agent(
+        &self,
+        request: RestoreAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        self.ensure_not_stopping()?;
+        let name = request.name;
+        crate::config::validate_agent_name(&name).map_err(LifecycleError::InvalidName)?;
+        {
+            // The same lock as create, so a restore and a create of one name
+            // can't both write the directory.
+            let _creating = self.creation_lock.lock().await;
+            self.ensure_name_free(&name)?;
+            let dir = crate::config::paths::agent_dir(&self.services.root, &name);
+            if tokio::fs::try_exists(dir.join("config").join("config.toml"))
+                .await
+                .unwrap_or(false)
+            {
+                return Err(LifecycleError::AlreadyExists(name));
+            }
+            if !crate::checkpoints::agents_with_history(&self.checkpoints_dir())
+                .map_err(|e| history_unreadable(&e))?
+                .contains(&name)
+            {
+                return Err(LifecycleError::NoDeletedAgent(name));
+            }
+            let engine = self.checkpoint_engine_for(&name, &dir).map_err(|e| {
+                tracing::error!(agent = %name, error = %e, "couldn't open the deleted agent's checkpoint repositories to restore it");
+                LifecycleError::Failed(format!(
+                    "couldn't open {name}'s checkpoint history, so it was not restored: {e}"
+                ))
+            })?;
+            let record = super::deleted::read_deletion(&self.checkpoints_dir(), &name).await;
+            let checkpoint_id = match request.checkpoint_id {
+                Some(id) => {
+                    engine
+                        .show_checkpoint(crate::checkpoints::RepoKind::Workspace, id.clone())
+                        .await
+                        .map_err(|e| {
+                            LifecycleError::InvalidRequest(format!(
+                                "{name} has no checkpoint '{id}' to restore from ({e})"
+                            ))
+                        })?;
+                    id
+                }
+                None => {
+                    pre_delete_checkpoint(&engine, &name, record.as_ref())
+                        .await?
+                        .ok_or_else(|| LifecycleError::NoDeletedAgent(name.clone()))?
+                        .id
+                }
+            };
+            super::provision::restore_agent(
+                &self.services.root,
+                &self.team_paths(),
+                &self.services.team,
+                &team_writer(&by),
+                &name,
+                &super::provision::RestoreSource {
+                    checkpoints: &engine,
+                    workspace_checkpoint: &checkpoint_id,
+                    role_page: record.as_ref().and_then(|r| r.role_page.as_deref()),
+                },
+            )
+            .await?;
+            super::deleted::clear_deletion(&self.checkpoints_dir(), &name).await;
+            self.adopt(&name);
+        }
+
+        let slot = self.slot(&name)?;
+        if self.summary_of(&slot).autostart {
+            let _op = slot.op_lock.lock().await;
+            // The agent is restored either way; a failed start is its
+            // `failed` state, which the user sees and can fix.
+            let started = self.start_locked(&slot).await;
+            self.note_start_outcome(&slot, &started);
+        }
+        self.spawn_team_embedding_refresh();
+        let summary = self.summary_of(&slot);
+        self.tell_acting_agent(
+            &by,
+            &format!("Restored the agent {name}"),
+            &format!("You restored the agent '{name}'. It is {}.", summary.state),
+        )
+        .await;
+        self.publish(HubEvent::AgentRestored {
+            agent: summary.clone(),
+            by,
+        });
+        Ok(summary)
+    }
+
+    /// The deleted agents, newest deletion first.
+    async fn deleted_agents(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
+        let checkpoints_dir = self.checkpoints_dir();
+        let names = crate::checkpoints::agents_with_history(&checkpoints_dir)
+            .map_err(|e| history_unreadable(&e))?;
+        let mut deleted = Vec::new();
+        for name in names {
+            if crate::config::validate_agent_name(&name).is_err() {
+                continue;
+            }
+            let dir = crate::config::paths::agent_dir(&self.services.root, &name);
+            let exists = tokio::fs::try_exists(dir.join("config").join("config.toml"))
+                .await
+                .unwrap_or(true);
+            let held = self
+                .slots
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&name);
+            if exists || held {
+                continue;
+            }
+            let engine = match self.checkpoint_engine_for(&name, &dir) {
+                Ok(engine) => engine,
+                Err(e) => {
+                    tracing::warn!(agent = %name, error = %e, "couldn't open a deleted agent's checkpoint repositories; leaving it out of the deleted list");
+                    continue;
+                }
+            };
+            let record = super::deleted::read_deletion(&checkpoints_dir, &name).await;
+            let latest = match pre_delete_checkpoint(&engine, &name, record.as_ref()).await {
+                Ok(Some(latest)) => latest,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(agent = %name, error = %e, "couldn't read a deleted agent's checkpoints; leaving it out of the deleted list");
+                    continue;
+                }
+            };
+            let deleted_at = record.map_or(latest.timestamp, |record| record.deleted_at);
+            deleted.push(DeletedAgent {
+                name,
+                deleted_at,
+                checkpoint_id: latest.id,
+            });
+        }
+        deleted.sort_by(|a, b| {
+            b.deleted_at
+                .cmp(&a.deleted_at)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(deleted)
     }
 
     // ─── Patch ────────────────────────────────────────────────────────
@@ -1222,17 +1438,30 @@ impl AgentHost {
         slot: &AgentSlot,
     ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, crate::checkpoints::CheckpointError>
     {
-        let checkpoints_dir =
-            crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir();
+        self.checkpoint_engine_for(&slot.name, &slot.dir)
+    }
+
+    /// [`Self::checkpoint_engine`] for an agent that has no slot, such as a
+    /// deleted one.
+    fn checkpoint_engine_for(
+        &self,
+        name: &str,
+        dir: &Path,
+    ) -> Result<Arc<crate::checkpoints::CheckpointEngine>, crate::checkpoints::CheckpointError>
+    {
         crate::checkpoints::CheckpointEngine::with_shared_repos(
             Arc::clone(&self.services.checkpoints),
-            &slot.name,
-            slot.dir.clone(),
-            slot.dir.join("config"),
-            &checkpoints_dir,
+            name,
+            dir.to_path_buf(),
+            dir.join("config"),
+            &self.checkpoints_dir(),
             None,
         )
         .map(|engine| Arc::new(engine.with_team_coordinator(self.services.team.clone())))
+    }
+
+    fn checkpoints_dir(&self) -> PathBuf {
+        crate::config::HubPaths::new(&self.services.hub_dir).checkpoints_dir()
     }
 
     // ─── Routers ──────────────────────────────────────────────────────
@@ -1279,6 +1508,64 @@ struct Supervised {
 }
 
 /// A log-ready description of why an agent's task ended.
+fn history_unreadable(error: &crate::checkpoints::CheckpointError) -> LifecycleError {
+    tracing::error!(error = %error, "couldn't read the deleted agents' checkpoint history");
+    LifecycleError::Failed(format!(
+        "couldn't read the checkpoint history of deleted agents: {error}"
+    ))
+}
+
+/// How many of a deleted agent's newest checkpoints are searched for the one
+/// its deletion took when no record names it.
+const DELETE_CHECKPOINT_SEARCH_DEPTH: usize = 50;
+
+/// The workspace checkpoint a deleted agent is restored from by default: the
+/// one its deletion recorded. Without a record (an agent deleted before
+/// records were kept, or a record that couldn't be written) the newest
+/// checkpoint the deletion itself took, else the newest one. The newest is
+/// not always the deletion's: a turn-end checkpoint still in flight when the
+/// agent stopped can land after it and see the directory already gone.
+async fn pre_delete_checkpoint(
+    engine: &crate::checkpoints::CheckpointEngine,
+    name: &str,
+    record: Option<&super::deleted::DeletionRecord>,
+) -> Result<Option<crate::checkpoints::CheckpointSummary>, LifecycleError> {
+    use crate::checkpoints::{CheckpointTrigger, RepoKind};
+    if let Some(id) = record.and_then(|r| r.checkpoint_id.clone()) {
+        match engine
+            .show_checkpoint(RepoKind::Workspace, id.clone())
+            .await
+        {
+            Ok(detail) => return Ok(Some(detail.summary)),
+            Err(e) => {
+                tracing::warn!(agent = %name, checkpoint = %id, error = %e, "the checkpoint recorded for the agent's deletion can't be read; using its newest checkpoints instead");
+            }
+        }
+    }
+    let page = engine
+        .list_checkpoints(
+            RepoKind::Workspace,
+            None,
+            None,
+            None,
+            Some(DELETE_CHECKPOINT_SEARCH_DEPTH),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(agent = %name, error = %e, "couldn't list a deleted agent's checkpoints");
+            LifecycleError::Failed(format!("couldn't read {name}'s checkpoint history: {e}"))
+        })?;
+    let deletion_summary = format!("delete agent {name}");
+    let mut items = page.items.into_iter();
+    let newest = items.next();
+    let deletion = newest
+        .iter()
+        .chain(items.as_slice())
+        .find(|c| c.trigger == CheckpointTrigger::PreAction && c.summary == deletion_summary)
+        .cloned();
+    Ok(deletion.or(newest))
+}
+
 fn describe_join_error(error: tokio::task::JoinError) -> String {
     if error.is_panic() {
         let payload = error.into_panic();
@@ -1369,7 +1656,32 @@ impl AgentDirectory for AgentHost {
     }
 
     async fn delete(&self, name: &str, by: Actor) -> Result<DeleteOutcome, LifecycleError> {
-        self.delete_agent(name, by).await
+        let result = self.delete_agent(name, by.clone()).await;
+        // An agent deleting itself is stopped by its own delete, so nothing is
+        // left to hear the error; the user has to.
+        if let (Err(e), Actor::Agent(actor)) = (&result, &by)
+            && actor == name
+        {
+            tracing::error!(agent = %name, error = %e, "an agent's request to delete itself failed");
+            self.notice(
+                NoticeLevel::Warn,
+                format!("{name} asked to be deleted, but that failed: {e}. It has been stopped; check its state in the team view."),
+                Some(name.to_string()),
+            );
+        }
+        result
+    }
+
+    async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
+        self.deleted_agents().await
+    }
+
+    async fn restore(
+        &self,
+        request: RestoreAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        self.restore_agent(request, by).await
     }
 
     async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError> {

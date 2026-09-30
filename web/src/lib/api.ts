@@ -49,6 +49,9 @@ import type {
   AgentSummary,
   CreateAgentRequest,
   DeleteOutcome,
+  DeletedAgent,
+  DeletedAgentListResponse,
+  RestoreAgentRequest,
   AgentPatch,
   HubStatusResponse,
   WorkspaceScope,
@@ -1039,6 +1042,27 @@ export async function createAgent(request: CreateAgentRequest): Promise<AgentSum
 export async function deleteAgent(name: string): Promise<DeleteOutcome> {
   return apiFetch<DeleteOutcome>(hubPath(`/agents/${encodeURIComponent(name)}`), {
     method: "DELETE",
+  });
+}
+
+/** Deleted agents that can be restored, newest deletion first. */
+export async function fetchDeletedAgents(): Promise<DeletedAgent[]> {
+  const data = await apiFetch<DeletedAgentListResponse>(hubPath("/agents/deleted"));
+  return data.agents;
+}
+
+/**
+ * Restore a deleted agent. Without `checkpointId` the hub uses the last
+ * checkpoint taken before the deletion. Throws `ApiError` (404 nothing to
+ * restore under that name, 409 the name exists, 400 an unknown checkpoint).
+ */
+export async function restoreAgent(name: string, checkpointId?: string): Promise<AgentSummary> {
+  const request: RestoreAgentRequest = { name, checkpoint_id: checkpointId ?? null };
+  return apiFetch<AgentSummary>(hubPath("/agents/restore"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // The generated type spells an absent checkpoint as `null`; the wire leaves it out.
+    body: JSON.stringify(request, (_key, value: unknown) => value ?? undefined),
   });
 }
 

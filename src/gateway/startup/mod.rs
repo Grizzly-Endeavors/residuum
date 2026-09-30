@@ -18,6 +18,7 @@ use crate::background::store::SessionStore;
 use crate::bus::EndpointRegistry;
 use crate::config::{Config, HubConfig};
 use crate::hub::services::HubServices;
+use crate::hub::team::TeamLink;
 use crate::inference::SharedHttpClient;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::merge_writer::MemoryMergeWriter;
@@ -340,6 +341,7 @@ struct StartupSpawnContextInputs<'a> {
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    lifecycle: &'a crate::tools::LifecycleAccess,
 }
 
 /// Build the `SpawnContext` every session forks from, at startup.
@@ -385,6 +387,7 @@ fn build_startup_spawn_context(inputs: StartupSpawnContextInputs<'_>) -> Arc<Spa
         a2a_hub: Arc::clone(inputs.a2a_hub),
         a2a_tracker: Arc::clone(inputs.a2a_tracker),
         checkpoints: Arc::clone(inputs.checkpoints),
+        lifecycle: inputs.lifecycle.clone(),
         bg_tier_active_index: crate::background::spawn_context::BackgroundTierActiveIndex::default(
         ),
     })
@@ -412,6 +415,7 @@ async fn init_session_registry_and_messenger(
     publisher: &crate::bus::Publisher,
     session_observer: &Observer,
     merge_writer: &MemoryMergeWriter,
+    team: TeamLink,
 ) -> (
     Arc<SessionRegistry>,
     Arc<SessionStore>,
@@ -436,12 +440,15 @@ async fn init_session_registry_and_messenger(
         );
     }
 
-    let messenger = Arc::new(AgentMessenger::new(
-        Arc::clone(&registry),
-        publisher.clone(),
-        Arc::clone(&store),
-        crate::background::HopLimits::from(&cfg.background),
-    ));
+    let messenger = Arc::new(
+        AgentMessenger::new(
+            Arc::clone(&registry),
+            publisher.clone(),
+            Arc::clone(&store),
+            crate::background::HopLimits::from(&cfg.background),
+        )
+        .with_team(team),
+    );
     let conversation_router = Arc::new(ConversationRouter::new(Arc::clone(&messenger)));
     (registry, store, messenger, conversation_router)
 }
@@ -800,7 +807,7 @@ async fn build_tools_and_agent(
         .await
         .set_reserved_tool_names(tools.tool_names());
 
-    let agent = tools::create_agent(
+    let mut agent = tools::create_agent(
         CreateAgentArgs {
             provider: inputs.provider,
             options: inputs.options,
@@ -816,6 +823,7 @@ async fn build_tools_and_agent(
         inputs.degradations,
     )
     .await;
+    agent.set_team(inputs.tool_deps.agent_messenger.team().clone());
 
     (agent, output_topic_override_tx)
 }
@@ -844,6 +852,7 @@ struct MainAgentInputs<'a> {
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    lifecycle: &'a crate::tools::LifecycleAccess,
     /// See `ToolsAndAgentInputs::degradations`.
     degradations: &'a mut Vec<String>,
     /// See `ToolRegistryDeps::config_reload_tracker`.
@@ -889,6 +898,7 @@ async fn build_main_agent(
             checkpoints: inputs.checkpoints,
             config_reload_tracker: inputs.config_reload_tracker,
             hub_dir: inputs.hub_dir,
+            lifecycle: inputs.lifecycle,
         },
         mcp_registry: &inputs.net.mcp_registry,
         provider: inputs.provider,
@@ -927,6 +937,7 @@ struct AgentInitInputs<'a> {
     a2a_hub: &'a Arc<crate::a2a::A2aClientHub>,
     a2a_tracker: &'a Arc<crate::a2a::RemoteTaskTracker>,
     checkpoints: &'a Arc<crate::checkpoints::CheckpointEngine>,
+    directory: &'a crate::hub::DirectoryHandle,
     identity: IdentityFiles,
     provider: Box<dyn crate::inference::InferenceProvider>,
     options: crate::inference::CompletionOptions,
@@ -945,6 +956,8 @@ async fn build_spawn_context_and_agent(
     Agent,
     tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
+    let lifecycle =
+        crate::tools::LifecycleAccess::new(inputs.directory.clone(), inputs.cfg.agent_name.clone());
     let spawn_context = build_startup_spawn_context(StartupSpawnContextInputs {
         cfg: inputs.cfg,
         hub_dir: inputs.hub_dir,
@@ -972,6 +985,7 @@ async fn build_spawn_context_and_agent(
         a2a_hub: inputs.a2a_hub,
         a2a_tracker: inputs.a2a_tracker,
         checkpoints: inputs.checkpoints,
+        lifecycle: &lifecycle,
     });
 
     let (agent, output_topic_override_tx) = build_main_agent(MainAgentInputs {
@@ -996,6 +1010,7 @@ async fn build_spawn_context_and_agent(
         a2a_hub: inputs.a2a_hub,
         a2a_tracker: inputs.a2a_tracker,
         checkpoints: inputs.checkpoints,
+        lifecycle: &lifecycle,
         degradations: inputs.degradations,
         config_reload_tracker: inputs.config_reload_tracker,
     })
@@ -1063,6 +1078,8 @@ async fn init_workspace_and_checkpoints(
 /// Inputs to [`init_session_subsystems`], gathered because it wraps four
 /// independent build steps that between them need this many pieces.
 struct SessionSubsystemInputs<'a> {
+    /// The agent's handle on the hub's team router.
+    team: TeamLink,
     cfg: &'a Config,
     layout: &'a WorkspaceLayout,
     tz: chrono_tz::Tz,
@@ -1120,6 +1137,7 @@ async fn init_session_subsystems(inputs: SessionSubsystemInputs<'_>) -> SessionS
             inputs.publisher,
             &session_observer,
             &merge_writer,
+            inputs.team,
         )
         .await;
 
@@ -1259,6 +1277,7 @@ pub(crate) async fn initialize(
 
     let sess = init_session_subsystems(SessionSubsystemInputs {
         cfg,
+        team: TeamLink::new(&cfg.agent_name, Arc::clone(&shared.team_router)),
         layout: &layout,
         tz,
         publisher,
@@ -1304,6 +1323,7 @@ pub(crate) async fn initialize(
             a2a_hub: &infra.a2a_hub,
             a2a_tracker: &infra.a2a_tracker,
             checkpoints: &checkpoints,
+            directory: &shared.directory,
             identity,
             provider: providers.provider,
             options: providers.options,

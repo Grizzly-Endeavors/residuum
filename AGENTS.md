@@ -8,6 +8,7 @@
 - [Systems Usage](./docs/systems-usage/) — authoritative reference for how systems work today
 - [Guides](./docs/guides/) — task-oriented walkthroughs
 - [Design](./docs/design/) — designs for work that is not built yet
+- [Hub](./docs/systems-usage/hub.md) — one process hosts every agent; `~/.residuum/` holds `hub/`, the shared `team/`, and one directory per agent
 
 Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
@@ -147,7 +148,7 @@ The failure this section exists to prevent is a guard built around a failure nob
 - Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
 
 ### Debugging & Tracing
-- Log level is configured in `config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
+- Log level is configured in `hub/config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
 - `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time; `residuum logs --agent <name>` to show one agent's lines
 - `residuum tracing status` — show current tracing config and streaming state
 - `residuum tracing otel add <url>` — add an OTEL endpoint for trace export

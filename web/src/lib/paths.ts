@@ -1,7 +1,7 @@
 // ── API base paths ───────────────────────────────────────────────────
 //
 // Every HTTP and WebSocket URL the app builds goes through here. The
-// backend serves three scopes (see docs/design/multi-agent-hub/http-contract.md):
+// backend serves three scopes (see docs/systems-usage/hub-http.md):
 //
 //   /api/agents/{name}/...   everything belonging to one agent
 //   /api/hub/...             one-per-process things: lifecycle, hub config, secrets

@@ -1,6 +1,6 @@
 //! Shapes shared by the agent host, the hub HTTP API, and the hub
 //! WebSocket. Field names and JSON forms follow
-//! `docs/design/multi-agent-hub/http-contract.md`.
+//! `docs/systems-usage/hub-http.md`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -116,6 +116,12 @@ pub struct CreateAgentRequest {
     /// A2A visibility; defaults to private for user-created agents.
     #[serde(default)]
     pub a2a_visibility: Option<A2aVisibility>,
+    /// The hop count the creating agent's message chain has reached, set by
+    /// `agent_create` from the caller's turn. Not part of the request body:
+    /// a user-created agent starts a chain at zero.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub creator_hop: u32,
 }
 
 /// Body of `PATCH /api/hub/agents/{name}`: at least one field is set.
@@ -149,6 +155,33 @@ pub struct DeleteOutcome {
     pub checkpoint_id: Option<String>,
 }
 
+/// Body of `POST /api/hub/agents/restore`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, TS)]
+#[ts(export)]
+pub struct RestoreAgentRequest {
+    /// The deleted agent's name.
+    pub name: String,
+    /// The workspace checkpoint to restore the agent's files from; the
+    /// latest one the deleted agent has when absent.
+    #[serde(default)]
+    pub checkpoint_id: Option<String>,
+}
+
+/// One deleted agent whose checkpoint history is still on disk, so it can be
+/// restored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct DeletedAgent {
+    /// The agent's name.
+    pub name: String,
+    /// When the agent was deleted.
+    #[ts(type = "string")]
+    pub deleted_at: DateTime<Utc>,
+    /// The workspace checkpoint a restore uses by default: the last one
+    /// taken before the deletion.
+    pub checkpoint_id: String,
+}
+
 /// Main-conversation activity for one agent, for the switcher.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]
@@ -168,6 +201,8 @@ pub enum HubEvent {
     AgentState { agent: AgentSummary },
     /// An agent was created.
     AgentCreated { agent: AgentSummary, by: Actor },
+    /// A deleted agent was restored.
+    AgentRestored { agent: AgentSummary, by: Actor },
     /// An agent was deleted.
     AgentDeleted { name: String, by: Actor },
     /// An agent's main-conversation activity changed.
@@ -196,7 +231,7 @@ pub enum NoticeLevel {
 }
 
 /// Why a lifecycle or lookup call failed. The HTTP layer maps these to
-/// status codes: `NotFound` 404, `InvalidName`/`InvalidRequest` 400,
+/// status codes: `NotFound` and `NoDeletedAgent` 404, `InvalidName`/`InvalidRequest` 400,
 /// `AlreadyExists`/`NotRunning` 409, `Failed` 500.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LifecycleError {
@@ -212,6 +247,9 @@ pub enum LifecycleError {
     /// An agent (or directory) with this name already exists.
     #[error("an agent named '{0}' already exists")]
     AlreadyExists(String),
+    /// No deleted agent with this name has checkpoint history to restore.
+    #[error("there is no deleted agent named '{0}' to restore")]
+    NoDeletedAgent(String),
     /// The agent exists but is not running.
     #[error("{name} is {state}")]
     NotRunning { name: String, state: AgentState },

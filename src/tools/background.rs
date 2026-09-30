@@ -12,6 +12,7 @@ use crate::agent::HopCounter;
 use crate::background::registry::{MAIN_ADDRESS, SessionRegistry, generate_address};
 use crate::bus::{EventTrigger, SessionAddress};
 use crate::config::BackgroundModelTier;
+use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
@@ -119,13 +120,14 @@ impl Tool for StopAgentTool {
 
 // ─── ListAgentsTool ──────────────────────────────────────────────────────────
 
-/// Tool for listing the main agent, every live session, and every remote A2A
-/// agent.
+/// Tool for listing the main agent, every live session, every teammate, and
+/// every remote A2A agent.
 pub struct ListAgentsTool {
     registry: Arc<SessionRegistry>,
     self_address: SessionAddress,
     a2a_hub: Arc<A2aClientHub>,
     a2a_tracker: Arc<RemoteTaskTracker>,
+    team: TeamLink,
 }
 
 impl ListAgentsTool {
@@ -136,12 +138,14 @@ impl ListAgentsTool {
         self_address: SessionAddress,
         a2a_hub: Arc<A2aClientHub>,
         a2a_tracker: Arc<RemoteTaskTracker>,
+        team: TeamLink,
     ) -> Self {
         Self {
             registry,
             self_address,
             a2a_hub,
             a2a_tracker,
+            team,
         }
     }
 }
@@ -155,12 +159,12 @@ impl Tool for ListAgentsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List the main agent, every live (running or idle) session, and every \
-                          remote agent reachable over A2A (address \"a2a:<name>\"): for sessions, \
-                          address, category, source, state, depth, spawner, elapsed time, tool \
-                          calls executed, and purpose; for remote agents, online status, \
-                          description, skills, and your own open tasks with them. Completed \
-                          sessions are not listed, but their addresses remain valid."
+            description: "List the main agent, live (running or idle) sessions, teammates \
+                          (\"agent:<name>\", with state and role; you are marked), and remote \
+                          agents (\"a2a:<name>\", with online status, description, skills, and \
+                          your open tasks with them). Sessions show address, category, source, \
+                          state, depth, spawner, elapsed time, tool calls, and purpose. Completed \
+                          sessions are not listed but their addresses stay valid."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -196,6 +200,27 @@ impl Tool for ListAgentsTool {
                 elapsed = elapsed_secs,
                 tool_calls = info.usage.tool_calls,
                 purpose = info.purpose,
+            ));
+        }
+
+        let members = self.team.members();
+        let teammate_count = members
+            .iter()
+            .filter(|member| member.name != self.team.name())
+            .count();
+        lines.push(String::new());
+        lines.push(format!("{teammate_count} teammate(s):"));
+        for member in &members {
+            let you = if member.name == self.team.name() {
+                " (you)"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  [agent:{name}]{you} {state} — {role}",
+                name = member.name,
+                state = member.state,
+                role = member.role.as_deref().unwrap_or("no role line yet"),
             ));
         }
 
@@ -781,7 +806,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = Arc::new(SessionRegistry::new());
         let (hub, tracker) = bare_a2a(dir.path()).await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
@@ -817,7 +848,13 @@ mod tests {
             .register(info, tokio_util::sync::CancellationToken::new())
             .unwrap();
         let (hub, tracker) = bare_a2a(dir.path()).await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
@@ -850,7 +887,13 @@ mod tests {
                 0,
             )
             .await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);
@@ -881,7 +924,13 @@ mod tests {
             AgentSource::Config,
         )
         .await;
-        let tool = ListAgentsTool::new(registry, SessionAddress::from(MAIN_ADDRESS), hub, tracker);
+        let tool = ListAgentsTool::new(
+            registry,
+            SessionAddress::from(MAIN_ADDRESS),
+            hub,
+            tracker,
+            TeamLink::alone("agent"),
+        );
 
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert!(!result.is_error);

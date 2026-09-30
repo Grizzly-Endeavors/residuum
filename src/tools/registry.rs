@@ -12,6 +12,7 @@ use crate::agent_keys::{Redactor, SharedAgentKeys};
 use crate::background::messaging::AgentMessenger;
 use crate::background::registry::SessionRegistry;
 use crate::bus::{ConversationTarget, EndpointRegistry, EventTrigger, Publisher, SessionAddress};
+use crate::hub::team::TeamLink;
 use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
 use crate::skills::SharedSkillState;
@@ -142,6 +143,8 @@ pub struct SubagentToolDeps {
     /// Workspace and config checkpoint repositories, shared with main —
     /// backs `workspace_history`/`workspace_restore`.
     pub checkpoints: Arc<crate::checkpoints::CheckpointEngine>,
+    /// How this session's `agent_create`/`agent_delete` reach the hub.
+    pub lifecycle: super::LifecycleAccess,
 }
 
 impl ToolRegistry {
@@ -377,14 +380,16 @@ impl ToolRegistry {
         self.register(Box::new(delete_tool));
     }
 
-    /// Register the `memory_search` tool with a shared hybrid searcher.
-    pub fn register_search_tool(&mut self, searcher: Arc<HybridSearcher>) {
-        self.register(Box::new(memory_search::MemorySearchTool::new(searcher)));
-    }
-
-    /// Register the `memory_get` tool for episode and session-run transcript
+    /// Register the memory tools: `memory_search` over a shared hybrid
+    /// searcher, and `memory_get` for episode and session-run transcript
     /// retrieval.
-    pub fn register_memory_get_tool(&mut self, episodes_dir: PathBuf, sessions_dir: PathBuf) {
+    pub fn register_memory_tools(
+        &mut self,
+        searcher: Arc<HybridSearcher>,
+        episodes_dir: PathBuf,
+        sessions_dir: PathBuf,
+    ) {
+        self.register(Box::new(memory_search::MemorySearchTool::new(searcher)));
         self.register(Box::new(memory_get::MemoryGetTool::new(
             episodes_dir,
             sessions_dir,
@@ -472,13 +477,15 @@ impl ToolRegistry {
 
     /// Register session management tools (`stop_agent`, `list_agents`),
     /// identifying this registry's owner as `self_address` for the remote
-    /// A2A task lookups both tools do (a caller's own open tasks).
+    /// A2A task lookups both tools do (a caller's own open tasks). `team`
+    /// is the roster `list_agents` shows.
     pub fn register_background_tools(
         &mut self,
         registry: Arc<SessionRegistry>,
         self_address: SessionAddress,
         a2a_hub: Arc<A2aClientHub>,
         a2a_tracker: Arc<RemoteTaskTracker>,
+        team: TeamLink,
     ) {
         self.register(Box::new(background::StopAgentTool::new(
             Arc::clone(&registry),
@@ -491,6 +498,7 @@ impl ToolRegistry {
             self_address,
             a2a_hub,
             a2a_tracker,
+            team,
         )));
     }
 
@@ -512,6 +520,22 @@ impl ToolRegistry {
             hop_counter,
             a2a_hub,
             a2a_tracker,
+        )));
+    }
+
+    /// Register `agent_create` and `agent_delete`, acting as the agent
+    /// `lifecycle` names.
+    pub fn register_agent_lifecycle_tools(
+        &mut self,
+        lifecycle: super::LifecycleAccess,
+        hop_counter: HopCounter,
+    ) {
+        self.register(Box::new(super::agent_lifecycle::AgentCreateTool::new(
+            lifecycle.clone(),
+            hop_counter,
+        )));
+        self.register(Box::new(super::agent_lifecycle::AgentDeleteTool::new(
+            lifecycle,
         )));
     }
 
@@ -552,134 +576,118 @@ impl ToolRegistry {
     ///
     /// See [`SubagentToolDeps`] for what each field means.
     #[must_use]
-    pub fn build_subagent_registry(deps: SubagentToolDeps) -> Self {
-        let SubagentToolDeps {
-            tracker,
-            path_policy,
-            tools_path,
-            agent_keys,
-            skill_state,
-            tz,
-            hybrid_searcher,
-            workspace_dir,
-            config_dir,
-            hub_dir,
-            episodes_dir,
-            sessions_dir,
-            agent_inbox_dir,
-            agent_inbox_archive_dir,
-            user_inbox_dir,
-            user_inbox_attachments_dir,
-            session_registry,
-            endpoint_registry,
-            publisher,
-            action_store,
-            action_notify,
-            own_address,
-            own_depth,
-            depth_cap,
-            session_category,
-            // Not read by any tool yet — reserved for one that needs it later
-            // (see `SubagentToolDeps::trigger`).
-            trigger: _trigger,
-            conversation_target,
-            messenger,
-            hop_counter,
-            tracing_service,
-            tracing_client_context,
-            web_search_backend,
-            a2a_hub,
-            a2a_tracker,
-            checkpoints,
-        } = deps;
-
+    pub fn build_subagent_registry(deps: &SubagentToolDeps) -> Self {
         let mut registry = Self::new();
-        registry.set_tools_path(tools_path);
-        registry.set_agent_keys(Arc::clone(&agent_keys));
-        registry.set_checkpoints(Arc::clone(&checkpoints));
-        registry.set_publisher(publisher.clone());
+        registry.set_tools_path(Arc::clone(&deps.tools_path));
+        registry.set_agent_keys(Arc::clone(&deps.agent_keys));
+        registry.set_checkpoints(Arc::clone(&deps.checkpoints));
+        registry.set_publisher(deps.publisher.clone());
 
+        registry.register_session_workspace_tools(deps);
+        registry.register_session_agent_tools(deps);
+        registry.register_session_messaging_tools(deps);
+        registry.register_session_service_tools(deps);
+        registry
+    }
+
+    /// A session's file, key, skill, memory, inbox, and checkpoint-history
+    /// tools.
+    fn register_session_workspace_tools(&mut self, deps: &SubagentToolDeps) {
         // Core I/O tools. `None`: a session never gets a `ConfigWriteWatch`
         // — see its doc comment.
         let diagnostics_paths = crate::diagnostics::DiagnosticsPaths {
-            config_dir,
-            workspace_dir: workspace_dir.clone(),
-            hub_dir,
+            config_dir: deps.config_dir.clone(),
+            workspace_dir: deps.workspace_dir.clone(),
+            hub_dir: deps.hub_dir.clone(),
         };
-        registry.register_defaults(tracker, Arc::clone(&path_policy), diagnostics_paths, None);
-        registry.register_agent_key_tools(agent_keys, Arc::clone(&checkpoints));
-
-        // Skill tools: activate, deactivate
-        registry.register_skill_tools(Arc::clone(&skill_state));
-
-        // Memory tools
-        registry.register_search_tool(hybrid_searcher);
-        registry.register_memory_get_tool(episodes_dir, sessions_dir);
-
-        // Inbox tools
-        registry.register_inbox_tools(
-            agent_inbox_dir,
-            agent_inbox_archive_dir,
-            user_inbox_dir,
-            user_inbox_attachments_dir,
-            tz,
+        self.register_defaults(
+            Arc::clone(&deps.tracker),
+            Arc::clone(&deps.path_policy),
+            diagnostics_paths,
+            None,
         );
-
-        // Feedback tools (file_bug_report, submit_feedback)
-        registry.register_feedback_tools(
-            tracing_service,
-            tracing_client_context,
-            Arc::clone(&session_registry),
+        self.register_agent_key_tools(Arc::clone(&deps.agent_keys), Arc::clone(&deps.checkpoints));
+        self.register_skill_tools(Arc::clone(&deps.skill_state));
+        self.register_memory_tools(
+            Arc::clone(&deps.hybrid_searcher),
+            deps.episodes_dir.clone(),
+            deps.sessions_dir.clone(),
         );
-
-        // Session management (stop_agent, list_agents, subagent_spawn)
-        registry.register_background_tools(
-            session_registry,
-            own_address.clone(),
-            Arc::clone(&a2a_hub),
-            Arc::clone(&a2a_tracker),
+        self.register_inbox_tools(
+            deps.agent_inbox_dir.clone(),
+            deps.agent_inbox_archive_dir.clone(),
+            deps.user_inbox_dir.clone(),
+            deps.user_inbox_attachments_dir.clone(),
+            deps.tz,
         );
-        registry.register_spawn_tool(
-            publisher.clone(),
-            skill_state,
-            own_address.clone(),
-            own_depth,
-            depth_cap,
-            hop_counter.clone(),
-        );
-
-        registry.register_a2a_task_update_tool(
-            conversation_target.as_ref(),
-            own_address.clone(),
-            publisher.clone(),
-            workspace_dir,
-            Arc::clone(&path_policy),
-        );
-
-        // Messaging tools
-        registry.register_send_message_tool(endpoint_registry.clone(), publisher, true);
-        registry.register_list_endpoints_tool(endpoint_registry);
-        registry.register_message_agent_tool(
-            own_address,
-            session_category,
-            messenger,
-            hop_counter,
-            a2a_hub,
-            a2a_tracker,
-        );
-
-        // Web fetch
-        registry.register_web_fetch_tool();
-
         // Workspace checkpoint history (workspace repository only)
-        registry.register_workspace_checkpoint_tools(checkpoints, path_policy);
+        self.register_workspace_checkpoint_tools(
+            Arc::clone(&deps.checkpoints),
+            Arc::clone(&deps.path_policy),
+        );
+    }
 
-        // Action scheduling tools
-        registry.register_action_tools(action_store, action_notify, tz);
+    /// A session's tools for managing other sessions and teammates:
+    /// `stop_agent`, `list_agents`, `subagent_spawn`, `a2a_task_update`, and
+    /// the teammate lifecycle tools.
+    fn register_session_agent_tools(&mut self, deps: &SubagentToolDeps) {
+        self.register_background_tools(
+            Arc::clone(&deps.session_registry),
+            deps.own_address.clone(),
+            Arc::clone(&deps.a2a_hub),
+            Arc::clone(&deps.a2a_tracker),
+            deps.messenger.team().clone(),
+        );
+        self.register_spawn_tool(
+            deps.publisher.clone(),
+            Arc::clone(&deps.skill_state),
+            deps.own_address.clone(),
+            deps.own_depth,
+            deps.depth_cap,
+            deps.hop_counter.clone(),
+        );
+        self.register_a2a_task_update_tool(
+            deps.conversation_target.as_ref(),
+            deps.own_address.clone(),
+            deps.publisher.clone(),
+            deps.workspace_dir.clone(),
+            Arc::clone(&deps.path_policy),
+        );
+        self.register_agent_lifecycle_tools(deps.lifecycle.clone(), deps.hop_counter.clone());
+    }
 
-        registry.register_ollama_web_search_tool_if_configured(web_search_backend.as_ref());
+    /// A session's messaging tools.
+    fn register_session_messaging_tools(&mut self, deps: &SubagentToolDeps) {
+        self.register_send_message_tool(
+            deps.endpoint_registry.clone(),
+            deps.publisher.clone(),
+            true,
+        );
+        self.register_list_endpoints_tool(deps.endpoint_registry.clone());
+        self.register_message_agent_tool(
+            deps.own_address.clone(),
+            deps.session_category.clone(),
+            Arc::clone(&deps.messenger),
+            deps.hop_counter.clone(),
+            Arc::clone(&deps.a2a_hub),
+            Arc::clone(&deps.a2a_tracker),
+        );
+    }
 
-        registry
+    /// A session's feedback, web, and action-scheduling tools.
+    fn register_session_service_tools(&mut self, deps: &SubagentToolDeps) {
+        self.register_feedback_tools(
+            Arc::clone(&deps.tracing_service),
+            Arc::clone(&deps.tracing_client_context),
+            Arc::clone(&deps.session_registry),
+        );
+        self.register_web_fetch_tool();
+        self.register_action_tools(
+            Arc::clone(&deps.action_store),
+            Arc::clone(&deps.action_notify),
+            deps.tz,
+        );
+        self.register_ollama_web_search_tool_if_configured(deps.web_search_backend.as_ref());
     }
 
     /// Register `a2a_task_update` when `conversation_target` names the

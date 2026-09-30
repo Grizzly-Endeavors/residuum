@@ -736,7 +736,7 @@ On error (the remote agent can't be reached to cancel, `is_error = true`): the h
 **Source:** `background.rs` · `ListAgentsTool`
 
 **Description sent to LLM:**
-> List the main agent, every live (running or idle) session, and every remote agent reachable over A2A (address "a2a:<name>"): for sessions, address, category, source, state, depth, spawner, elapsed time, and purpose; for remote agents, online status, description, skills, and your own open tasks with them. Completed sessions are not listed, but their addresses remain valid.
+> List the main agent, live (running or idle) sessions, teammates ("agent:<name>", with state and role; you are marked), and remote agents ("a2a:<name>", with online status, description, skills, and your open tasks with them). Sessions show address, category, source, state, depth, spawner, elapsed time, tool calls, and purpose. Completed sessions are not listed but their addresses stay valid.
 
 ### Input
 
@@ -749,12 +749,15 @@ main — always live
 {N} live session(s):
   [{address}] {source_label} — category: {scheduled|external|spawned} — state: {forking|running|idle|completing} — depth: {N} — spawner: {address|-} — running {elapsed}s — purpose: {prompt/task preview, up to 120 chars}
 
+{N} teammate(s):
+  [agent:{name}]{ (you)} {starting|running|stopped|failed} — {role line|no role line yet}
+
 {N} remote agent(s):
   [a2a:{name}]{ (your instance)} {resolving its agent card|online — {description}|error — {reachability message}} — skills: {name} ({id}), ...
     task {task_id} — {state} — {last_status_text|(no status yet)}
 ```
 
-`main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
+The teammate section lists every agent in the hub, sorted by name, from the hub's agent directory; the count `{N}` excludes the caller's own `(you)` entry. The role line is the `description` of the teammate's wiki role page (`team/wiki/agents/<name>.md`). `main` is always listed first, even when no sessions are live. `spawner` is `-` for `scheduled` and `external` sessions — only `spawned` sessions have one. Remote agents come from `config/a2a.json` and from relay-sibling discovery via the `A2aClientHub`; a sibling (one of the user's own other instances) carries the ` (your instance)` marker, a `config/a2a.json` entry doesn't. The skills line is omitted when the card hasn't resolved yet or declares none. Task lines list only the caller's own open (non-terminal) tasks with that agent, from the `RemoteTaskTracker`. See `docs/systems-usage/a2a.md`.
 
 ---
 
@@ -807,13 +810,13 @@ The session runs in the background via the session runtime. Every turn's outcome
 **Source:** `message_agent.rs` · `MessageAgentTool`
 
 **Description sent to LLM:**
-> Send a text message to another agent by address — main, any session (running, idle, or previously completed), or a remote agent reachable over A2A (address "a2a:<name>"). A running session sees it as an interrupt at its next tool-call boundary; an idle one starts a new turn with it; a completed one is resumed as a new run at the same address. A remote agent's reply does not arrive immediately — it comes back later as an agent message from "a2a:<name>", once its task reaches a state that needs your attention. Every delivered message names your own address and category so the recipient can reply. Use list_agents to find addresses and remote agents.
+> Send a text message to another agent. Address forms: "main" or a session address (yours; see list_agents); "agent:<name>" (a teammate's main); "agent:<name>/<session-address>" (a teammate's session; copy the exact address from its message); "a2a:<name>" (a remote agent). Fire-and-forget: a running recipient sees the message at its next tool-call boundary, an idle one starts a turn, a completed session resumes at the same address. Replies arrive later as separate messages addressed to you; a remote agent replies from "a2a:<name>". A stopped or failed teammate returns an error and nothing is queued. Use list_agents for addresses.
 
 ### Input
 
 | Parameter | Type   | Required | Description                                                  |
 |-----------|--------|----------|----------------------------------------------------------------|
-| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, or `"a2a:<name>"` for a remote agent. |
+| `to`      | string | yes      | Address to message: `"main"`, a session address from `list_agents`, `"agent:<name>"` or `"agent:<name>/<session-address>"` for a teammate, or `"a2a:<name>"` for a remote agent. |
 | `message` | string | yes      | The message body.                                             |
 | `skill`   | string | no       | Only meaningful when `to` is a remote agent: the id of one of its advertised skills, sent as `message.metadata.skill`. |
 
@@ -828,8 +831,14 @@ The session runs in the background via the session runtime. Every turn's outcome
 - Unknown remote agent (`is_error = true`): `"no remote agent named 'a2a:{name}'. Check config/a2a.json or list_agents for known remote agents."`
 - Remote agent not currently reachable (`is_error = true`): the hub's plain-language reachability error (e.g. its card hasn't resolved, or the last attempt failed).
 - Remote agent rejected the request (`is_error = true`): `"remote agent a2a:{name} couldn't complete the request: {error}"`
+- Delivered to a teammate: `"Message delivered to agent:{name}."` or `"...agent:{name}/{session}."`; a completed or completing teammate session gives the resumed/completing wording above with the `agent:` address.
+- Teammate not running (`is_error = true`): `"teammate '{name}' is {stopped|failed}; nothing was queued. Tell the user if this message matters; they can start it from the team view."`, or `"teammate '{name}' is starting; nothing was queued. Try again shortly."`
+- Unknown teammate (`is_error = true`): `"no teammate named '{name}'. Your teammates are: {a, b}. Use list_agents for their state."` (or `"... You have no teammates."`)
+- Teammate has no such session (`is_error = true`): `"teammate '{name}' has no session '{session}'. Use the exact address from a message it sent you."`
+- Malformed teammate address (`is_error = true`): a message naming the problem and the two valid forms (`agent:<name>`, `agent:<name>/<session-address>`).
+- Addressing your own name as a teammate (`is_error = true`): `"'agent:{you}' is you. Use \"main\" or a session address to reach your own agent."`
 - Messaging yourself (`is_error = true`): `"cannot message yourself"`
-- An `artifact` session messaging `main` (`is_error = true`): `"artifact sessions can't reach the main conversation: your responses are shown to the artifact that started you. To bring something to the user's attention, file an inbox item with user_inbox_add instead."` Nothing is delivered. Every other target works as usual for an artifact session.
+- An `artifact` session messaging `main` or a teammate's main (`is_error = true`): `"artifact sessions can't reach the main conversation: your responses are shown to the artifact that started you. To bring something to the user's attention, file an inbox item with user_inbox_add instead."` Nothing is delivered. Every other target works as usual for an artifact session.
 - Target's interrupt channel is saturated (`is_error = true`, vanishingly unlikely): `"agent {address} is busy, try again shortly"` — never falls back to a resume, which would double-register the address.
 - Hop count at or above the configured hard limit (`is_error = true`): a message explaining the loop limit was reached and delivery was refused. The message never reaches `to`; logged at `warn` with both addresses and the hop count, and a best-effort note is recorded in the transcript of whichever side is a live, addressable session.
 - A publish (to main, or as a resume spawn request) failed at the bus (`is_error = true`): a message naming what failed. The tool never reports success when delivery didn't actually happen.
@@ -837,6 +846,10 @@ The session runs in the background via the session runtime. Every turn's outcome
 ### Errors
 
 - Missing or empty `to`/`message` → `InvalidArguments`
+
+### Teammates (`to: "agent:<name>"` or `"agent:<name>/<session-address>"`)
+
+Routed through the hub's `TeamRouter` (`crate::hub::team`), reached from the tool through the agent's `AgentMessenger::team()` link. The router checks the target against the agent host (existence and state), takes the target's registered messenger, and calls its `send` with the sender's fully qualified address (`agent:<you>` for main, `agent:<you>/<session>` for a session) and category `"teammate"`, so delivery to main, a live session, or a completed session is the messenger's ordinary delivery. The receiver sees a header (`[Message from teammate agent:… , not the user. … to reply, call message_agent with to="agent:…".]`) and its history entry carries the structured `agent_sender`. The hop count passes through unchanged; the target's messenger applies the hub-level soft note and hard refusal, and on a refusal the sender's messenger notes it in the sender's transcript when the sender is a live session. Nothing queues for a teammate that isn't running.
 
 ### Remote agents (`to: "a2a:<name>"`)
 
@@ -851,6 +864,77 @@ Routed through `crate::a2a::client`'s `A2aClientHub` (resolves the agent's card 
 - **completed session** — publishes a fresh `SpawnRequestEvent` at the same address, carrying the previous run's model tier, the delivered message's own hop count as the new run's starting hop count, and a pointer to its episode id (or run id, retrievable with `memory_get`) in the new run's context. Goes through the ordinary spawn-listener path, exactly like any other session fork. `SessionRegistry::register` is a compare-and-swap: if a spawn/resume for this address raced another one that already registered it live, the loser delivers its own input into the winning run as a message instead of clobbering it. The listener applies the same fallback for a spawn/resume request that arrives for an address it can see is already running/idle/forking — the normal outcome of two messages resuming the same completing session, not an error case.
 
 **Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`, each instance identifying itself with its own address and category (`"main"` for the main agent), and holding a clone of that agent's current-turn `HopCounter`.
+
+---
+
+## `agent_create`
+
+**Source:** `agent_lifecycle.rs` · `AgentCreateTool`
+
+**Description sent to LLM:**
+> Create a new teammate: a long-lived agent with its own workspace, memory, and conversation. Use it when the work needs a durable specialist (a researcher, an inbox triager) that keeps its own notes and improves over time. For a one-off task whose result you need now, use subagent_spawn instead.
+>
+> It inherits your model settings and A2A visibility. Write a `description`: it is delivered as the teammate's first message and becomes its SOUL.md notes and team role page. State its purpose, how it should work, and what to hand it. Message the teammate afterwards at agent:<name>.
+>
+> Names are 1-24 characters of lowercase letters, digits, and hyphens, with no leading or trailing hyphen.
+
+### Input
+
+| Parameter     | Type   | Required | Description |
+|---------------|--------|----------|-------------|
+| `name`        | string | yes      | The new agent's name, for example `research-desk`. |
+| `description` | string | no       | What the agent is for and how it should work. Becomes its own SOUL.md notes and role page. |
+
+### Output
+
+- Created and started: `"Created agent '{name}' (running). Reach it with message_agent at agent:{name}."`
+- Created but it failed to start: `"Created agent '{name}', but it failed to start: {reason}"` followed by a line saying it exists on disk, received no first message, and can be fixed and started from the user's team view (`is_error = false`: the agent exists, so a retry would hit "already exists").
+- Invalid name, name taken, or any other refusal (`is_error = true`): `"can't create the agent: ..."` with the reason. An invalid name adds the naming rules; a taken name suggests messaging the existing agent.
+- The hub is shutting down (`is_error = true`): says agents can't be created right now.
+
+### Errors
+
+- Missing `name` → `InvalidArguments`
+
+### Side effects
+
+Calls `AgentDirectory::create` as `Actor::Agent(<caller>)` with `models_from` set to the caller and the caller's A2A visibility. The hub copies the caller's `providers.toml`, starts the agent, delivers the description as its first message when one was given, publishes `agent_created` naming the caller (a toast for the user), and files an item in the caller's user inbox. The creation runs on its own task, so cancelling the calling turn does not stop it half-way. See `docs/systems-usage/agent-lifecycle.md`.
+
+**Available to sessions:** registered in both the main agent's registry and `build_subagent_registry()`; a session acts as the agent it belongs to.
+
+---
+
+## `agent_delete`
+
+**Source:** `agent_lifecycle.rs` · `AgentDeleteTool`
+
+**Description sent to LLM:**
+> Stop a teammate and remove its directory, role page, and roster entry. Its files are checkpointed first; the result gives the checkpoint id. The user can restore the teammate from the team view's recently deleted list or with `residuum agent restore <name>`; you have no tool to restore one.
+>
+> You can delete yourself. That stops your turn the moment this call returns, so send your messages and save your files first, and call it last.
+
+### Input
+
+| Parameter | Type   | Required | Description |
+|-----------|--------|----------|-------------|
+| `name`    | string | yes      | The name of the agent to delete. |
+
+### Output
+
+- Deleted: `"Deleted agent '{name}'. Its files were checkpointed as {id}; the user can restore it from the team view or with `residuum agent restore {name}`."` When no checkpoint could be recorded the second sentence says it can't be restored.
+- Unknown agent or failure (`is_error = true`): `"can't delete the agent: ..."` with the reason.
+- Deleting yourself: `"Deleting yourself now. You are stopped as soon as this call returns; ..."`. The checkpoint id is not available yet.
+- The hub is shutting down (`is_error = true`): says agents can't be deleted right now.
+
+### Errors
+
+- Missing `name` → `InvalidArguments`
+
+### Side effects
+
+Calls `AgentDirectory::delete` as `Actor::Agent(<caller>)`: the agent is stopped, checkpointed, and removed, `agent_deleted` naming the caller is published (a toast), and an item is filed in the caller's user inbox. Deleting another agent runs on its own task, so cancelling the calling turn does not stop it half-way. Deleting yourself stops the turn running the call, so the delete runs on a detached task and the tool returns at once; if it fails, the hub publishes a warning notice naming the agent and the agent is left stopped.
+
+**Available to sessions:** registered in both registries, as for `agent_create`.
 
 ---
 

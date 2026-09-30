@@ -62,14 +62,15 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 /// 4. `BOOTSTRAP.md` (first-run only, deleted after first conversation)
 /// 5. `USER.md` (team)
 /// 6. `WIKI_INDEX` (the team wiki's root `index.md`)
-/// 7. `OBSERVATION_LOG` (if present)
-/// 8. `RECENT_CONTEXT` (if present)
-/// 9. `SKILLS_INDEX` (available skills listing)
-/// 10. `ACTIVE_SKILLS` (when skills are loaded)
+/// 7. `TEAM` (teammates with state and role line, when the agent has any)
+/// 8. `OBSERVATION_LOG` (if present)
+/// 9. `RECENT_CONTEXT` (if present)
+/// 10. `SKILLS_INDEX` (available skills listing)
+/// 11. `ACTIVE_SKILLS` (when skills are loaded)
 ///
 /// Static sections (1-5) form a stable cache prefix shared across all conversations.
-/// Dynamic sections (6-8) update as knowledge and memory change. The skills index (9)
-/// appears before the active section (10) to maximize cache reuse as skills change.
+/// Dynamic sections (6-9) update as knowledge, the team and memory change. The skills index (10)
+/// appears before the active section (11) to maximize cache reuse as skills change.
 pub(super) fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -97,6 +98,10 @@ pub(super) fn build_system_content(
 
     if let Some(wiki_index) = &identity.wiki_index {
         parts.push(section("WIKI_INDEX", wiki_index));
+    }
+
+    if let Some(team) = &identity.team {
+        parts.push(section("TEAM", team));
     }
 
     if let Some(obs) = memory_ctx.observations
@@ -278,6 +283,41 @@ mod tests {
             wiki_close < obs_open,
             "wiki index should close before observation log opens"
         );
+    }
+
+    #[test]
+    fn team_block_sits_between_the_wiki_index_and_the_observation_log() {
+        let identity = IdentityFiles {
+            wiki_index: Some("wiki".to_string()),
+            team: Some("You are \"a\".\n- b (running): Reviews".to_string()),
+            ..IdentityFiles::default()
+        };
+        let mem = MemoryContext {
+            observations: Some("obs"),
+            recent_context: None,
+        };
+        let content = build_system_content(&identity, &mem, &SkillsContext::default());
+
+        assert!(
+            content.contains("<TEAM>\nYou are \"a\".\n- b (running): Reviews\n</TEAM>"),
+            "the roster is wrapped in TEAM tags"
+        );
+        let positions = ["</WIKI_INDEX>", "<TEAM>", "</TEAM>", "<OBSERVATION_LOG>"]
+            .map(|needle| content.find(needle).unwrap());
+        assert!(
+            positions.is_sorted(),
+            "order must be WIKI_INDEX, TEAM, OBSERVATION_LOG: {positions:?}"
+        );
+    }
+
+    #[test]
+    fn no_team_block_without_a_roster() {
+        let content = build_system_content(
+            &IdentityFiles::default(),
+            &no_memory(),
+            &SkillsContext::default(),
+        );
+        assert!(!content.contains("<TEAM>"));
     }
 
     #[test]

@@ -1,0 +1,212 @@
+//! Lifecycle behaviour around creating, deleting and restoring agents that
+//! shows up in logs and in the messages agents hand each other.
+
+use super::*;
+use crate::tools::Tool as _;
+use crate::tools::agent_lifecycle::AgentCreateTool;
+
+/// One log event: its level and every field rendered as `name=value`.
+#[derive(Debug, Clone)]
+struct LoggedEvent {
+    level: tracing::Level,
+    text: String,
+}
+
+#[derive(Clone, Default)]
+struct EventLog {
+    events: Arc<std::sync::Mutex<Vec<LoggedEvent>>>,
+}
+
+#[derive(Default)]
+struct FieldText(Vec<String>);
+
+impl tracing::field::Visit for FieldText {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push(format!("{}={value:?}", field.name()));
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventLog {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut fields = FieldText::default();
+        event.record(&mut fields);
+        self.events.lock().unwrap().push(LoggedEvent {
+            level: *event.metadata().level(),
+            text: fields.0.join(" "),
+        });
+    }
+}
+
+impl EventLog {
+    /// Route this thread's log events here until the guard drops.
+    fn capture(&self) -> tracing::subscriber::DefaultGuard {
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone()))
+    }
+
+    fn matching(&self, needle: &str) -> Vec<LoggedEvent> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.text.contains(needle))
+            .cloned()
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn an_agent_deleting_itself_leaves_no_inbox_warning() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host
+        .create(create_request("nova", None), Actor::User)
+        .await
+        .unwrap();
+    let log = EventLog::default();
+    let _guard = log.capture();
+
+    hub.host
+        .delete("nova", Actor::Agent("nova".to_string()))
+        .await
+        .unwrap();
+
+    assert!(
+        log.matching("couldn't leave a hub notice").is_empty(),
+        "a deleted agent has no inbox to write to: {:?}",
+        log.events.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn an_agent_deleting_a_teammate_still_gets_the_inbox_notice() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    hub.host
+        .create(create_request("nova", None), Actor::User)
+        .await
+        .unwrap();
+
+    hub.host
+        .delete("nova", Actor::Agent("scout".to_string()))
+        .await
+        .unwrap();
+
+    let inbox = WorkspaceLayout::new(hub.root.path().join("scout")).user_inbox_dir();
+    assert!(
+        std::fs::read_dir(&inbox).is_ok_and(|mut entries| entries.next().is_some()),
+        "the deleting agent is told what it did"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_start_after_creation_or_restore_is_logged_with_its_reason() {
+    let hub = Fixture::new(&["scout"], "").await;
+    let slot = hub.host.slot("scout").unwrap();
+    let log = EventLog::default();
+    let _guard = log.capture();
+
+    hub.host.note_start_outcome(
+        &slot,
+        &Err(LifecycleError::Failed(
+            "the hub is shutting down".to_string(),
+        )),
+    );
+    hub.host.note_start_outcome(&slot, &Ok(()));
+
+    let logged = log.matching("agent was not started");
+    let [event] = logged.as_slice() else {
+        panic!("expected one info line for the refusal only, got {logged:?}");
+    };
+    assert_eq!(event.level, tracing::Level::INFO);
+    assert!(event.text.contains("agent=scout"), "{}", event.text);
+    assert!(event.text.contains("shutting down"), "{}", event.text);
+    assert!(event.text.contains("state=stopped"), "{}", event.text);
+    assert_eq!(
+        hub.host.summary("scout").unwrap().state,
+        AgentState::Stopped
+    );
+}
+
+#[tokio::test]
+async fn a_user_created_agent_gets_its_role_as_the_owners_own_message() {
+    let hub = Fixture::new(&["scout"], "").await;
+
+    hub.host
+        .create(
+            create_request("nova", Some("keeps the wiki tidy")),
+            Actor::User,
+        )
+        .await
+        .unwrap();
+
+    eventually("the description to reach the new agent", || async {
+        model_was_told(hub.mock("scout"), "keeps the wiki tidy")
+            .await
+            .then_some(())
+    })
+    .await;
+    assert!(
+        !model_was_told(hub.mock("scout"), "Message from teammate").await,
+        "the owner's message is not framed as a teammate's"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_created_by_an_agent_gets_its_role_as_a_teammate_message() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let access = crate::tools::LifecycleAccess::new(hub.services.directory.clone(), "scout");
+    let create = AgentCreateTool::new(access, crate::agent::HopCounter::new(2));
+
+    let result = create
+        .execute(json!({ "name": "nova", "description": "keeps the wiki tidy" }))
+        .await
+        .unwrap();
+
+    assert!(!result.is_error, "{}", result.output);
+    eventually(
+        "the role to arrive framed as a teammate message",
+        || async {
+            model_was_told(hub.mock("scout"), "Message from teammate agent:scout")
+                .await
+                .then_some(())
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_create_chain_stops_at_the_hop_limit() {
+    let hub = Fixture::new(&["scout"], "").await;
+    hub.host.start("scout").await.unwrap();
+    let access = crate::tools::LifecycleAccess::new(hub.services.directory.clone(), "scout");
+    let create = AgentCreateTool::new(access, crate::agent::HopCounter::new(10_000));
+    let mut events = hub.host.subscribe();
+
+    let result = create
+        .execute(json!({ "name": "nova", "description": "keeps the wiki tidy" }))
+        .await
+        .unwrap();
+
+    assert!(
+        !result.is_error,
+        "the agent is still created: {}",
+        result.output
+    );
+    assert!(hub.host.summary("nova").is_ok());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !model_was_told(hub.mock("scout"), "keeps the wiki tidy").await,
+        "a message past the hop limit is not delivered"
+    );
+    assert!(
+        drain_events(&mut events).iter().any(|event| matches!(
+            event,
+            HubEvent::Notice { message, .. } if message.contains("role description couldn't be delivered")
+        )),
+        "the refusal is shown to the user"
+    );
+}

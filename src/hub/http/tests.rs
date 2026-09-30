@@ -24,7 +24,7 @@ use crate::gateway::ReloadSignal;
 use crate::gateway::web::{ConfigApiState, WorkspaceScope};
 use crate::hub::{
     A2aVisibility, Actor, AgentActivity, AgentDirectory, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, HubEvent, LifecycleError,
+    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
 use crate::tunnel::{TUNNEL_NONCE_HEADER, TunnelStatus, tunnel_nonce};
 use crate::workspace::team_files::TeamWriteCoordinator;
@@ -52,17 +52,19 @@ struct FakeDirectory {
     /// with events already lost.
     primed: Mutex<Option<broadcast::Receiver<HubEvent>>>,
     calls: Mutex<Vec<String>>,
+    deleted: Mutex<Vec<DeletedAgent>>,
 }
 
 impl FakeDirectory {
     fn new(root: &Path, agents: Vec<AgentSummary>) -> Arc<Self> {
-        let (events, _rx) = broadcast::channel(4);
+        let (events, _rx) = broadcast::channel(8);
         Arc::new(Self {
             root: root.to_path_buf(),
             agents: Mutex::new(agents),
             events,
             primed: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
+            deleted: Mutex::new(Vec::new()),
         })
     }
 
@@ -255,6 +257,34 @@ impl AgentDirectory for FakeDirectory {
             deleted: true,
             checkpoint_id: Some("cp-1".to_string()),
         })
+    }
+
+    async fn list_deleted(&self) -> Result<Vec<DeletedAgent>, LifecycleError> {
+        Ok(self.deleted.lock().unwrap().clone())
+    }
+
+    async fn restore(
+        &self,
+        request: RestoreAgentRequest,
+        by: Actor,
+    ) -> Result<AgentSummary, LifecycleError> {
+        self.record(format!(
+            "restore {} from {:?} by {}",
+            request.name,
+            request.checkpoint_id,
+            by.wire()
+        ));
+        if self.find(&request.name).is_ok() {
+            return Err(LifecycleError::AlreadyExists(request.name));
+        }
+        let mut deleted = self.deleted.lock().unwrap();
+        let Some(position) = deleted.iter().position(|d| d.name == request.name) else {
+            return Err(LifecycleError::NoDeletedAgent(request.name));
+        };
+        deleted.remove(position);
+        let restored = summary(&request.name, AgentState::Running);
+        self.agents.lock().unwrap().push(restored.clone());
+        Ok(restored)
     }
 
     async fn start(&self, name: &str) -> Result<AgentSummary, LifecycleError> {
@@ -596,6 +626,104 @@ async fn delete_reports_the_checkpoint_and_404s_for_an_unknown_agent() {
         )
         .await;
     assert_eq!(missing, json!({ "error": "no agent named 'ghost'" }));
+}
+
+#[tokio::test]
+async fn the_deleted_list_names_each_agent_with_its_deletion_time_and_checkpoint() {
+    let h = Harness::new();
+    let empty = h
+        .get_expect("/api/hub/agents/deleted", StatusCode::OK)
+        .await;
+    assert_eq!(empty, json!({ "agents": [] }));
+
+    h.directory.deleted.lock().unwrap().push(DeletedAgent {
+        name: "nova".to_string(),
+        deleted_at: "2026-09-01T12:00:00Z".parse().unwrap(),
+        checkpoint_id: "cp-9".to_string(),
+    });
+    let listed = h
+        .get_expect("/api/hub/agents/deleted", StatusCode::OK)
+        .await;
+    assert_eq!(
+        listed,
+        json!({ "agents": [{
+            "name": "nova",
+            "deleted_at": "2026-09-01T12:00:00Z",
+            "checkpoint_id": "cp-9",
+        }] })
+    );
+}
+
+#[tokio::test]
+async fn restore_answers_201_with_the_summary_and_attributes_the_user() {
+    let h = Harness::new();
+    h.directory.deleted.lock().unwrap().push(DeletedAgent {
+        name: "nova".to_string(),
+        deleted_at: "2026-09-01T12:00:00Z".parse().unwrap(),
+        checkpoint_id: "cp-9".to_string(),
+    });
+
+    let restored = h
+        .expect(
+            Method::POST,
+            "/api/hub/agents/restore",
+            Some(json!({ "name": "nova", "checkpoint_id": "cp-9" })),
+            StatusCode::CREATED,
+        )
+        .await;
+
+    assert_eq!(restored["name"], "nova");
+    assert_eq!(restored["state"], "running");
+    assert_eq!(
+        h.directory.calls(),
+        ["restore nova from Some(\"cp-9\") by user"]
+    );
+    let listed = h
+        .get_expect("/api/hub/agents/deleted", StatusCode::OK)
+        .await;
+    assert_eq!(listed, json!({ "agents": [] }));
+}
+
+#[tokio::test]
+async fn restore_answers_404_without_history_409_for_a_taken_name_and_400_for_a_bad_body() {
+    let h = Harness::new();
+    let unknown = h
+        .expect(
+            Method::POST,
+            "/api/hub/agents/restore",
+            Some(json!({ "name": "ghost" })),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    assert_eq!(
+        unknown,
+        json!({ "error": "there is no deleted agent named 'ghost' to restore" })
+    );
+
+    let taken = h
+        .expect(
+            Method::POST,
+            "/api/hub/agents/restore",
+            Some(json!({ "name": "scout" })),
+            StatusCode::CONFLICT,
+        )
+        .await;
+    assert_eq!(taken["error"], "an agent named 'scout' already exists");
+
+    let malformed = h
+        .expect(
+            Method::POST,
+            "/api/hub/agents/restore",
+            Some(json!({ "checkpoint_id": "cp-9" })),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    assert!(
+        malformed["error"]
+            .as_str()
+            .unwrap()
+            .contains("request body")
+    );
 }
 
 #[tokio::test]
@@ -1314,6 +1442,10 @@ async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
         },
         HubEvent::AgentDeleted {
             name: "nova".to_string(),
+            by: Actor::User,
+        },
+        HubEvent::AgentRestored {
+            agent: summary("nova", AgentState::Running),
             by: Actor::User,
         },
     ];

@@ -1,6 +1,6 @@
 # Multi-Agent Hub — Implementation Phases
 
-**Status:** Accepted, not built. Read with [design.md](design.md).
+**Status:** Built and shipped. Read with [design.md](design.md).
 
 > Module level only. Each phase is self-contained, depends only on phases before it, and leaves `main` in a working, releasable state. Each phase is implemented in its own session, on its own branch, with its own PR.
 

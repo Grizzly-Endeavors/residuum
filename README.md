@@ -48,7 +48,7 @@ Hand something to your agent and walk away. It'll be done when you get back. You
 
 ## Build a Team
 
-Start with one agent. Shape it through conversation — tell it what you care about, how you work, what to keep track of. Over time, build a team of agents, each one shaped for a different part of your life. They learn as you go. Residuum coordinates them all.
+Start with one agent. Shape it through conversation — tell it what you care about, how you work, what to keep track of. Over time, build a team of agents, each one shaped for a different part of your life. They learn as you go. Residuum coordinates them all. See [Work with more than one agent](docs/guides/multiple-agents.md).
 
 ## Residuum Cloud
 

@@ -25,6 +25,10 @@ pub(super) enum AgentCommand {
         /// Name of the agent to delete
         name: String,
     },
+    /// List deleted agents that can be restored
+    Deleted,
+    /// Restore a deleted agent from its checkpoint history
+    Restore(RestoreArgs),
     /// Start a stopped or failed agent
     Start {
         /// Name of the agent to start
@@ -65,6 +69,16 @@ pub(super) struct CreateArgs {
     public: bool,
 }
 
+#[derive(clap::Args)]
+pub(super) struct RestoreArgs {
+    /// Name of the deleted agent to restore
+    name: String,
+    /// Restore the agent's files from this checkpoint instead of the last one
+    /// taken before it was deleted
+    #[arg(long, value_name = "ID")]
+    checkpoint: Option<String>,
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum AutostartSetting {
     On,
@@ -97,6 +111,19 @@ struct AgentList {
     agents: Vec<AgentSummary>,
 }
 
+/// Mirrors one entry of `GET /api/hub/agents/deleted`.
+#[derive(Deserialize)]
+struct DeletedAgent {
+    name: String,
+    deleted_at: String,
+    checkpoint_id: String,
+}
+
+#[derive(Deserialize)]
+struct DeletedList {
+    agents: Vec<DeletedAgent>,
+}
+
 #[derive(Deserialize)]
 struct DeleteResponse {
     #[serde(default)]
@@ -125,6 +152,8 @@ async fn execute(command: &AgentCommand, gateway_addr: &str) -> Result<String, F
         AgentCommand::List => list(&client).await,
         AgentCommand::Create(args) => create(&client, args).await,
         AgentCommand::Delete { name } => delete(&client, name).await,
+        AgentCommand::Deleted => deleted(&client).await,
+        AgentCommand::Restore(args) => restore(&client, args).await,
         AgentCommand::Start { name } => transition(&client, name, "start").await,
         AgentCommand::Stop { name } => transition(&client, name, "stop").await,
         AgentCommand::Restart { name } => transition(&client, name, "restart").await,
@@ -206,10 +235,69 @@ async fn delete(client: &HubClient, name: &str) -> Result<String, FatalError> {
     tracing::info!(agent = name, checkpoint_id = ?response.checkpoint_id, "deleted agent");
     Ok(match response.checkpoint_id {
         Some(id) => format!(
-            "Deleted agent '{name}'.\nCheckpoint id: {id}\nThe agent's files are kept in the hub's checkpoint history and can be restored from it. The CLI has no restore command; use the checkpoint history in the web UI or the `workspace_restore` tool."
+            "Deleted agent '{name}'.\nCheckpoint id: {id}\nThe agent's files are kept in the hub's checkpoint history. Bring it back with `residuum agent restore {name}`."
         ),
-        None => format!("Deleted agent '{name}'. The server reported no checkpoint for it."),
+        None => format!(
+            "Deleted agent '{name}'. The server reported no checkpoint for it, so `residuum agent restore {name}` may have nothing to restore from."
+        ),
     })
+}
+
+async fn deleted(client: &HubClient) -> Result<String, FatalError> {
+    let list: DeletedList = client
+        .send(Method::GET, "/api/hub/agents/deleted", None)
+        .await?;
+    Ok(render_deleted(&list.agents))
+}
+
+async fn restore(client: &HubClient, args: &RestoreArgs) -> Result<String, FatalError> {
+    check_name(&args.name)?;
+    let mut fields = serde_json::Map::new();
+    fields.insert("name".into(), json!(args.name));
+    if let Some(checkpoint) = &args.checkpoint {
+        fields.insert("checkpoint_id".into(), json!(checkpoint));
+    }
+    let body = serde_json::Value::Object(fields);
+    let restored: AgentSummary = client
+        .send(Method::POST, "/api/hub/agents/restore", Some(&body))
+        .await?;
+    tracing::info!(agent = %restored.name, state = %restored.state, "restored agent");
+    let mut out = format!("Restored agent '{}' ({}).", restored.name, restored.state);
+    if let Some(error) = &restored.last_error {
+        _ = write!(out, "\nLast error: {}", error.message);
+    }
+    Ok(out)
+}
+
+fn render_deleted(agents: &[DeletedAgent]) -> String {
+    if agents.is_empty() {
+        return "No deleted agents to restore.".to_string();
+    }
+    let name_width = agents
+        .iter()
+        .map(|a| a.name.len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+    let deleted_width = agents
+        .iter()
+        .map(|a| a.deleted_at.len())
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let mut out = format!(
+        "{:<name_width$}  {:<deleted_width$}  CHECKPOINT",
+        "NAME", "DELETED"
+    );
+    for agent in agents {
+        _ = write!(
+            out,
+            "\n{:<name_width$}  {:<deleted_width$}  {}",
+            agent.name, agent.deleted_at, agent.checkpoint_id
+        );
+    }
+    _ = write!(out, "\nRestore one with `residuum agent restore <name>`.");
+    out
 }
 
 async fn transition(client: &HubClient, name: &str, action: &str) -> Result<String, FatalError> {
@@ -437,6 +525,32 @@ mod tests {
         error(StatusCode::BAD_REQUEST, "invalid agent name")
     }
 
+    async fn list_deleted_agents(State(s): State<Shared>) -> Json<Value> {
+        record(&s, "GET", "/api/hub/agents/deleted".into(), Value::Null);
+        Json(json!({ "agents": [
+            { "name": "nova", "deleted_at": "2026-09-29T10:00:00Z", "checkpoint_id": "abc123" },
+            { "name": "kit", "deleted_at": "2026-09-28T09:30:00Z", "checkpoint_id": "def456" },
+        ] }))
+    }
+
+    async fn restore_agent(
+        State(s): State<Shared>,
+        Json(body): Json<Value>,
+    ) -> (StatusCode, Json<Value>) {
+        record(&s, "POST", "/api/hub/agents/restore".into(), body.clone());
+        match body["name"].as_str().unwrap_or_default() {
+            "ghost" => error(
+                StatusCode::NOT_FOUND,
+                "there is no deleted agent named 'ghost' to restore",
+            ),
+            "scout" => error(
+                StatusCode::CONFLICT,
+                "an agent named 'scout' already exists",
+            ),
+            name => (StatusCode::CREATED, Json(summary(name, "running"))),
+        }
+    }
+
     /// Start a mock hub implementing the contract's lifecycle routes.
     async fn mock_hub(agents: Vec<Value>) -> (String, Shared) {
         let shared: Shared = Arc::new(Mutex::new(Mock {
@@ -445,6 +559,8 @@ mod tests {
         }));
         let app = Router::new()
             .route("/api/hub/agents", get(list_agents).post(create_agent))
+            .route("/api/hub/agents/deleted", get(list_deleted_agents))
+            .route("/api/hub/agents/restore", post(restore_agent))
             .route(
                 "/api/hub/agents/{name}",
                 axum::routing::delete(delete_agent).patch(patch_agent),
@@ -612,7 +728,10 @@ mod tests {
         .unwrap();
         assert!(out.contains("Deleted agent 'scout'"));
         assert!(out.contains("Checkpoint id: abc123"));
-        assert!(out.contains("restore"));
+        assert!(
+            out.contains("`residuum agent restore scout`"),
+            "the output names the command that undoes it: {out}"
+        );
         let requests = mock.lock().unwrap().requests.clone();
         assert_eq!(requests[0].0, "DELETE");
         assert_eq!(requests[0].1, "/api/hub/agents/scout");
@@ -641,6 +760,95 @@ mod tests {
             .await,
         );
         assert_eq!(unknown, "No agent named 'ghost'.");
+    }
+
+    #[tokio::test]
+    async fn deleted_lists_the_agents_that_can_be_restored() {
+        let (addr, mock) = mock_hub(vec![]).await;
+
+        let out = execute(&AgentCommand::Deleted, &addr).await.unwrap();
+
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "NAME  DELETED               CHECKPOINT");
+        assert_eq!(lines[1], "nova  2026-09-29T10:00:00Z  abc123");
+        assert_eq!(lines[2], "kit   2026-09-28T09:30:00Z  def456");
+        assert!(lines[3].contains("residuum agent restore <name>"));
+        let requests = mock.lock().unwrap().requests.clone();
+        assert_eq!(requests[0].1, "/api/hub/agents/deleted");
+    }
+
+    #[test]
+    fn an_empty_deleted_list_says_so() {
+        assert_eq!(render_deleted(&[]), "No deleted agents to restore.");
+    }
+
+    #[tokio::test]
+    async fn restore_posts_the_name_and_reports_the_new_state() {
+        let (addr, mock) = mock_hub(vec![]).await;
+
+        let out = execute(
+            &AgentCommand::Restore(RestoreArgs {
+                name: "nova".into(),
+                checkpoint: None,
+            }),
+            &addr,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(out, "Restored agent 'nova' (running).");
+        let requests = mock.lock().unwrap().requests.clone();
+        assert_eq!(requests[0].0, "POST");
+        assert_eq!(requests[0].1, "/api/hub/agents/restore");
+        assert_eq!(requests[0].2, json!({ "name": "nova" }));
+    }
+
+    #[tokio::test]
+    async fn restore_with_a_checkpoint_sends_its_id() {
+        let (addr, mock) = mock_hub(vec![]).await;
+
+        execute(
+            &AgentCommand::Restore(RestoreArgs {
+                name: "nova".into(),
+                checkpoint: Some("abc123".into()),
+            }),
+            &addr,
+        )
+        .await
+        .unwrap();
+
+        let requests = mock.lock().unwrap().requests.clone();
+        assert_eq!(
+            requests[0].2,
+            json!({ "name": "nova", "checkpoint_id": "abc123" })
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_reports_the_servers_refusals_and_checks_the_name_locally() {
+        let (addr, mock) = mock_hub(vec![]).await;
+        let restore_of = |name: &str| {
+            AgentCommand::Restore(RestoreArgs {
+                name: name.into(),
+                checkpoint: None,
+            })
+        };
+
+        let unknown = message(execute(&restore_of("ghost"), &addr).await);
+        let taken = message(execute(&restore_of("scout"), &addr).await);
+        let invalid = message(execute(&restore_of("Bad Name"), &addr).await);
+
+        assert_eq!(
+            unknown,
+            "There is no deleted agent named 'ghost' to restore."
+        );
+        assert_eq!(taken, "An agent named 'scout' already exists.");
+        assert!(invalid.contains("agent name"), "{invalid}");
+        assert_eq!(
+            mock.lock().unwrap().requests.len(),
+            2,
+            "a bad name never reaches the hub"
+        );
     }
 
     #[tokio::test]

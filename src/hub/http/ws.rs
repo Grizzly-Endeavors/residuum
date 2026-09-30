@@ -1,7 +1,7 @@
 //! The hub WebSocket, `/api/hub/ws`.
 //!
 //! Server to client: an `agents_snapshot` on connect, then every hub event
-//! (`agent_state`, `agent_created`, `agent_deleted`, `agent_activity`,
+//! (`agent_state`, `agent_created`, `agent_restored`, `agent_deleted`, `agent_activity`,
 //! `notice`), then `workspace_changed` frames for the team paths the client
 //! watches. Client to server: `watch_team`, the only message.
 //!
