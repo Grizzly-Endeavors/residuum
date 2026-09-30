@@ -37,4 +37,17 @@ An unknown agent is reported as not found. Checkpoints are never pruned, so the 
 
 `restore_agent` brings an agent back from the id `deprovision_agent` returned, using the agent's own checkpoint engine. It restores the whole workspace tree from the workspace repository, then `providers.toml` and `config.toml` from the latest checkpoint of the agent-config repository, `config.toml` last, so the agent is discoverable only once it is complete. It recreates the role page with the placeholder role; the agent fills it in again. It refuses when the agent exists again, and can be retried after a failure. The restored agent is stopped until it is started.
 
+## Agent tools
+
+Every agent, and every session it forks, has two tools that call the hub as that agent. There is no approval step: the user sees the result as a toast and can delete or restore the agent.
+
+- `agent_create` takes `name` and an optional `description`. The new agent copies the creator's `providers.toml` and takes the creator's A2A visibility. The result gives the new agent's name and state and says to reach it at `agent:<name>`. A creation whose start-up fails still creates the agent: the result says it failed to start, gives the reason, and points at the user's team view, where the user can fix and start it. A name that breaks the rules or is taken comes back as a tool error saying so.
+- `agent_delete` takes `name`. The result gives the checkpoint id and says the user can restore the agent from checkpoints. An unknown name comes back as a tool error.
+
+The hub publishes `agent_created` or `agent_deleted` naming the acting agent, which the web UI shows as a toast, and files an item in the acting agent's user inbox.
+
+The creation or deletion runs to completion even if the calling turn is cancelled part-way.
+
+An agent can delete itself. Deleting an agent stops it, and stopping an agent cancels the turn that is running, so a delete awaited inside that turn would be cut off between the stop and the removal. The tool therefore starts the delete on its own task and returns at once; the agent is stopped moments later, its directory is checkpointed and removed, and the hub publishes `agent_deleted` naming the agent as the actor. The turn ends when the agent stops, so the agent should do everything else first. If the delete fails, the user gets a warning notice naming the agent and the reason; the agent is left stopped.
+
 See [Checkpoints](checkpoints.md) for what each repository holds and [Team Directory](team-directory.md) for role pages.

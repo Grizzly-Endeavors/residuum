@@ -25,7 +25,7 @@ This skill provides reference documentation for every major workspace system. Ac
 | Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/hub/bin` | [tools](references/tools.md) |
 | MCP | *(none — surfaced as regular tools)* | `config/mcp.json` | [mcp](references/mcp.md) |
 | Notifications | `list_endpoints`, `list_conversations`, `switch_endpoint`, `send_message` | `config/channels.toml` | [notifications](references/notifications.md) |
-| Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent` | `[background]` in config.toml (idle timeouts, depth cap; the shared budget and hop limits are in the hub config) | [background-tasks](references/background-tasks.md) |
+| Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent`, `message_agent`, `agent_create`, `agent_delete` | `[background]` in config.toml (idle timeouts, depth cap; the shared budget and hop limits are in the hub config) | [background-tasks](references/background-tasks.md) |
 | Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
 | A2A | `list_agents`, `message_agent`, `stop_agent` (address `a2a:<name>`); `a2a_task_update` (session-only, in `a2a` conversation sessions) | `config/agent-card.json`, `config/a2a.json`, `[a2a]` in config.toml | [a2a](references/a2a.md) |
 
