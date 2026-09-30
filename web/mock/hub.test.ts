@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MOCK_BRITTLE_ERROR } from "./constants";
+import { MOCK_BRITTLE_ERROR, MOCK_BRITTLE_REASON } from "./constants";
 import {
   fetchJson,
+  fetchText,
   startMockServer,
   type Frame,
   type MockServerHarness,
@@ -61,15 +62,37 @@ describe("hub", () => {
       });
     });
 
-    it("carries the failure only for a failed agent", async () => {
+    it("carries the failure only for a failed agent, with its kind and underlying reason", async () => {
       const agents = (await request("GET", "/agents")).body.agents as {
         name: string;
-        last_error: { message: string } | null;
+        last_error: { message: string; kind: string; reason: string } | null;
       }[];
-      expect(agents.find((a) => a.name === "brittle")?.last_error?.message).toBe(
-        MOCK_BRITTLE_ERROR,
-      );
+      expect(agents.find((a) => a.name === "brittle")?.last_error).toMatchObject({
+        message: MOCK_BRITTLE_ERROR,
+        kind: "config",
+        reason: MOCK_BRITTLE_REASON,
+      });
       expect(agents.filter((a) => a.last_error !== null).map((a) => a.name)).toEqual(["brittle"]);
+    });
+
+    it("carries each agent's activity and the agents being stopped beside the list", async () => {
+      const { body } = await request("GET", "/agents");
+      const idle = { busy: false, busy_since: null, unread: 0 };
+      expect(body.activity).toEqual({ atlas: idle, brittle: idle, drifter: idle, scout: idle });
+      expect(body.stopping).toEqual([]);
+
+      const scout = harness.hub.agents.get("scout");
+      if (!scout) throw new Error("the seeded agents are missing");
+      harness.hub.setBusy(scout, true);
+      harness.hub.addUnread(scout);
+      harness.hub.markStopping(scout);
+      const busy = (await request("GET", "/agents")).body;
+      expect(busy.activity).toMatchObject({
+        scout: { busy: true, busy_since: scout.busySince, unread: 1 },
+        atlas: idle,
+      });
+      expect(scout.busySince).toEqual(expect.any(String));
+      expect(busy.stopping).toEqual(["scout"]);
     });
 
     it("reports the version, uptime, tunnel and how many agents are in each state", async () => {
@@ -190,10 +213,51 @@ describe("hub", () => {
       });
     });
 
-    it("restarts a running agent through starting", async () => {
+    it("announces a stop and lists the agent as stopping until it has stopped", async () => {
+      const stop = request("POST", "/agents/scout/stop");
+      expect(await hubSocket.nextOfType("agent_stopping")).toEqual({
+        type: "agent_stopping",
+        name: "scout",
+      });
+      const during = (await request("GET", "/agents")).body;
+      expect(during.stopping).toEqual(["scout"]);
+      expect(names(during.agents)).toContain("scout");
+      expect(
+        (during.agents as { name: string; state: string }[]).find((a) => a.name === "scout"),
+      ).toMatchObject({ state: "running" });
+
+      expect((await stop).body).toMatchObject({ state: "stopped" });
+      expect((await request("GET", "/agents")).body.stopping).toEqual([]);
+      expect(hubSocket.frames.map((f) => f.type).filter((t) => t !== "agents_snapshot")).toEqual([
+        "hub_boot",
+        "agent_stopping",
+        "agent_state",
+      ]);
+    });
+
+    it("ends a turn in progress when its agent stops", async () => {
+      const scout = harness.hub.agents.get("scout");
+      if (!scout) throw new Error("the seeded agents are missing");
+      harness.hub.setBusy(scout, true);
+      await hubSocket.nextOfType("agent_activity");
+
+      await request("POST", "/agents/scout/stop");
+
+      expect(await hubSocket.nextOfType("agent_activity")).toEqual({
+        type: "agent_activity",
+        name: "scout",
+        busy: false,
+        busy_since: null,
+        unread: 0,
+      });
+      expect(scout.busySince).toBeNull();
+    });
+
+    it("restarts a running agent by stopping it, then starting it", async () => {
       const { body } = await request("POST", "/agents/atlas/restart");
       expect(body).toMatchObject({ name: "atlas", state: "running" });
-      expect(await statesUntil("running")).toEqual(["starting", "running"]);
+      expect(await statesUntil("running")).toEqual(["stopped", "starting", "running"]);
+      expect(hubSocket.frames.map((f) => f.type)).toContain("agent_stopping");
     });
 
     it("fails again whenever brittle is started", async () => {
@@ -202,7 +266,7 @@ describe("hub", () => {
       expect(body).toMatchObject({
         name: "brittle",
         state: "failed",
-        last_error: { message: MOCK_BRITTLE_ERROR },
+        last_error: { message: MOCK_BRITTLE_ERROR, kind: "config", reason: MOCK_BRITTLE_REASON },
       });
       expect(await statesUntil("failed")).toEqual(["starting", "failed"]);
     });
@@ -308,9 +372,21 @@ describe("hub socket", () => {
     await harness.close();
   });
 
-  it("sends the agents by name first, as a snapshot", async () => {
+  it("sends hub_boot first on every connection, the same id each time", async () => {
+    harness = await startMockServer();
+    const first = await harness.openSocket("/api/hub/ws");
+    const second = await harness.openSocket("/api/hub/ws");
+    const boot = await first.next();
+    expect(boot).toEqual({ type: "hub_boot", boot_id: expect.any(String) as unknown });
+    expect(boot.boot_id).not.toBe("");
+    expect(await second.next()).toEqual(boot);
+    expect((await first.next()).type).toBe("agents_snapshot");
+  });
+
+  it("follows hub_boot with the agents by name, as a snapshot", async () => {
     harness = await startMockServer();
     const socket = await harness.openSocket("/api/hub/ws");
+    await socket.nextOfType("hub_boot");
     const snapshot = await socket.next();
     expect(snapshot.type).toBe("agents_snapshot");
     expect((snapshot.agents as { name: string; state: string }[]).map((a) => a.name)).toEqual([
@@ -322,39 +398,50 @@ describe("hub socket", () => {
     expect(snapshot.agents).toContainEqual({
       name: "brittle",
       state: "failed",
-      last_error: { message: MOCK_BRITTLE_ERROR, at: expect.any(String) as unknown },
+      last_error: {
+        message: MOCK_BRITTLE_ERROR,
+        kind: "config",
+        reason: MOCK_BRITTLE_REASON,
+        at: expect.any(String) as unknown,
+      },
       autostart: true,
       role: "Has a broken model config",
       a2a_visibility: "private",
     });
   });
 
-  it("follows the snapshot with the activity of each agent that is busy or has unread messages", async () => {
+  it("carries the activity of every agent and the stopping set in the snapshot, with nothing after it", async () => {
     harness = await startMockServer();
     const atlas = harness.hub.agents.get("atlas");
     const scout = harness.hub.agents.get("scout");
     if (!atlas || !scout) throw new Error("the seeded agents are missing");
     harness.hub.addUnread(atlas);
     harness.hub.setBusy(scout, true);
+    harness.hub.markStopping(atlas);
     const socket = await harness.openSocket("/api/hub/ws");
-    await socket.next((f) => f.type === "agent_activity" && f.name === "scout");
+    const snapshot = await socket.nextOfType("agents_snapshot");
+    const idle = { busy: false, busy_since: null, unread: 0 };
+    expect(snapshot.activity).toEqual({
+      atlas: { ...idle, unread: 1 },
+      brittle: idle,
+      drifter: idle,
+      scout: { busy: true, busy_since: scout.busySince, unread: 0 },
+    });
+    expect(snapshot.stopping).toEqual(["atlas"]);
     expect(await socket.quietFrames()).toEqual([]);
-    expect(socket.frames.map((f) => f.type)).toEqual([
-      "agents_snapshot",
-      "agent_activity",
-      "agent_activity",
-    ]);
-    // In the order the agents were created: scout, then atlas.
-    expect(socket.frames.slice(1)).toEqual([
-      { type: "agent_activity", name: "scout", busy: true, unread: 0 },
-      { type: "agent_activity", name: "atlas", busy: false, unread: 1 },
-    ]);
+    expect(socket.frames.map((f) => f.type)).toEqual(["hub_boot", "agents_snapshot"]);
   });
 
   it("starts empty before setup has created an agent", async () => {
     harness = await startMockServer({ seed: false });
     const socket = await harness.openSocket("/api/hub/ws");
-    expect(await socket.next()).toEqual({ type: "agents_snapshot", agents: [] });
+    await socket.nextOfType("hub_boot");
+    expect(await socket.next()).toEqual({
+      type: "agents_snapshot",
+      agents: [],
+      activity: {},
+      stopping: [],
+    });
   });
 
   it("tells every page when an agent's activity changes", async () => {
@@ -366,7 +453,13 @@ describe("hub socket", () => {
     await first.nextOfType("agents_snapshot");
     await second.nextOfType("agents_snapshot");
     harness.hub.setBusy(atlas, true);
-    const expected = { type: "agent_activity", name: "atlas", busy: true, unread: 0 };
+    const expected = {
+      type: "agent_activity",
+      name: "atlas",
+      busy: true,
+      busy_since: expect.any(String) as unknown,
+      unread: 0,
+    };
     expect(await first.nextOfType("agent_activity")).toEqual(expected);
     expect(await second.nextOfType("agent_activity")).toEqual(expected);
   });
@@ -377,12 +470,14 @@ describe("hub socket", () => {
     if (!atlas) throw new Error("the seeded agents are missing");
     harness.hub.addUnread(atlas);
     const socket = await harness.openSocket("/api/hub/ws");
-    await socket.next((f) => f.type === "agent_activity" && f.unread === 1);
+    const snapshot = await socket.nextOfType("agents_snapshot");
+    expect(snapshot.activity).toMatchObject({ atlas: { unread: 1 } });
     await harness.openSocket("/api/agents/atlas/ws");
     expect(await socket.next((f) => f.type === "agent_activity" && f.unread === 0)).toEqual({
       type: "agent_activity",
       name: "atlas",
       busy: false,
+      busy_since: null,
       unread: 0,
     });
     expect(atlas.unread).toBe(0);
@@ -447,6 +542,117 @@ describe("hub socket", () => {
         message:
           "Residuum couldn't read a message from this page. Reload the page if team files stop updating.",
       });
+    });
+  });
+});
+
+describe("hub config reload", () => {
+  let harness: MockServerHarness;
+  let socket: TestSocket;
+
+  async function open(options: { seed?: boolean } = {}): Promise<void> {
+    harness = await startMockServer(options);
+    socket = await harness.openSocket("/api/hub/ws");
+    await socket.nextOfType("agents_snapshot");
+  }
+
+  beforeEach(async () => {
+    await open();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  const configUrl = (path: string): string => `${harness.baseUrl}/api/hub/config${path}`;
+
+  async function currentConfig(): Promise<string> {
+    return (await fetchText(configUrl("/raw"))).body;
+  }
+
+  async function writeConfig(toml: string): Promise<void> {
+    await fetch(configUrl("/raw"), { method: "PUT", body: toml });
+  }
+
+  const notices = (): Frame[] => socket.frames.filter((f) => f.type === "notice");
+
+  it("reports what changed, beside the notice that says so", async () => {
+    const before = await currentConfig();
+    await writeConfig(before.replace("port = 7700", "port = 7701"));
+
+    const message = "hub configuration reloaded: gateway";
+    expect(await socket.nextOfType("hub_config_reloaded")).toEqual({
+      type: "hub_config_reloaded",
+      ok: true,
+      changed: true,
+      message,
+    });
+    expect(notices()).toEqual([{ type: "notice", level: "info", message }]);
+  });
+
+  it("says nothing changed when the file differs only in how it is written", async () => {
+    await writeConfig(`${await currentConfig()}\n# a note to self\n`);
+
+    expect(await socket.nextOfType("hub_config_reloaded")).toEqual({
+      type: "hub_config_reloaded",
+      ok: true,
+      changed: false,
+      message: null,
+    });
+    expect(notices()).toEqual([]);
+  });
+
+  it("keeps the running config when the file can't be read, and compares the next write with it", async () => {
+    const working = await currentConfig();
+    await writeConfig("not valid toml [[[");
+
+    const failed = await socket.nextOfType("hub_config_reloaded");
+    expect(failed).toMatchObject({ type: "hub_config_reloaded", ok: false, changed: false });
+    const message = failed.message as string;
+    expect(message).toMatch(/^hub config reload failed \(keeping current hub config\): \S/);
+    expect(notices()).toEqual([{ type: "notice", level: "warn", message }]);
+
+    await writeConfig(working);
+    expect(await socket.nextOfType("hub_config_reloaded")).toEqual({
+      type: "hub_config_reloaded",
+      ok: true,
+      changed: false,
+      message: null,
+    });
+  });
+
+  it("reloads after a patch of the hub config too", async () => {
+    await fetch(configUrl("/patch"), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gateway: { port: 7702 } }),
+    });
+
+    expect(await socket.nextOfType("hub_config_reloaded")).toMatchObject({
+      ok: true,
+      changed: true,
+      message: "hub configuration reloaded: gateway",
+    });
+  });
+
+  it("reloads once setup has written the hub config", async () => {
+    await harness.close();
+    await open({ seed: false });
+
+    await fetch(configUrl("/complete-setup"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agent_name: "nova",
+        hub_config: 'timezone = "UTC"\n',
+        config: "",
+        providers: "",
+      }),
+    });
+
+    expect(await socket.nextOfType("hub_config_reloaded")).toMatchObject({
+      ok: true,
+      changed: true,
     });
   });
 });

@@ -23,3 +23,18 @@ export function createInboxItems(): UserInboxItem[] {
     },
   ];
 }
+
+/** The sample archive: one item the user archived a week ago. */
+export function createArchivedInboxItems(): UserInboxItem[] {
+  return [
+    {
+      id: "mock_archived_1",
+      title: "Last week's digest",
+      body: "Here was last week's summary.",
+      source: "agent:digest",
+      timestamp: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+      read: true,
+      attachments: [],
+    },
+  ];
+}

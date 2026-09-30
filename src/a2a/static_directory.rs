@@ -15,8 +15,8 @@ use tokio::sync::broadcast;
 
 use crate::hub::AgentDirectory;
 use crate::hub::{
-    A2aVisibility, Actor, AgentActivity, AgentPatch, AgentState, AgentSummary, CreateAgentRequest,
-    DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
+    A2aVisibility, Actor, AgentActivity, AgentFiles, AgentPatch, AgentState, AgentSummary,
+    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
 
 struct Entry {
@@ -224,6 +224,10 @@ impl AgentDirectory for StaticAgentDirectory {
 
     fn agent_file_router(&self, _name: &str) -> Result<Router, LifecycleError> {
         Err(unsupported("the agent file router"))
+    }
+
+    fn agent_files(&self, _name: &str) -> Result<AgentFiles, LifecycleError> {
+        Err(unsupported("the agent's files"))
     }
 
     fn agent_a2a_router(&self, name: &str) -> Result<Router, LifecycleError> {

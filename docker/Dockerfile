@@ -1,3 +1,13 @@
+#----- Web Build Stage -----
+# Node 24 is Active LTS; satisfies web/package.json's engines.node
+# (^22.13.0 || ^24.0.0 || >=26.0.0) which apt's Node 20 on trixie does not.
+FROM node:24-bookworm-slim AS web-builder
+
+WORKDIR /app/web
+
+COPY web/ .
+RUN npm install && npm run build
+
 #----- Build Stage -----
 
 FROM debian:trixie-slim AS builder
@@ -11,8 +21,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     build-essential \
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # install rust
@@ -20,13 +28,9 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 COPY . .
-
-# build frontend
-WORKDIR /app/web
-RUN npm install && npm run build
+COPY --from=web-builder /app/web/dist /app/web/dist
 
 # build backend
-WORKDIR /app
 RUN cargo build --release
 
 #----- Runtime Stage -----

@@ -23,15 +23,15 @@ import {
 } from "./api";
 import type {
   A2aVisibility,
+  Actor,
   AgentActivity,
   AgentSummary,
   CreateAgentRequest,
   DeleteOutcome,
   DeletedAgent,
-  HubActor,
   HubClientMessage,
-  HubNoticeLevel,
   HubServerMessage,
+  NoticeLevel,
 } from "./hub-types";
 import type { ToastAction } from "./toast.svelte";
 import { normalizeTeamWatchPrefix } from "./workspace-watch";
@@ -43,7 +43,7 @@ const MAX_NOTICES = 50;
 /** A hub notice, kept after its toast is gone. */
 export interface HubNotice {
   id: number;
-  level: HubNoticeLevel;
+  level: NoticeLevel;
   message: string;
   /** The agent it concerns, if any. */
   agent?: string;
@@ -51,11 +51,11 @@ export interface HubNotice {
 }
 
 /** Who acted, as a sentence subject: "You" for the user, else the teammate's name. */
-function actorLabel(by: HubActor): string {
+function actorLabel(by: Actor): string {
   return by === "user" ? "You" : by.slice("agent:".length);
 }
 
-const IDLE: AgentActivity = { busy: false, unread: 0 };
+const IDLE: AgentActivity = { busy: false, busy_since: null, unread: 0 };
 
 function byName(a: AgentSummary, b: AgentSummary): number {
   if (a.name === b.name) return 0;
@@ -67,7 +67,7 @@ export class HubStore {
   agents = $state<AgentSummary[]>([]);
   /** The agent list has arrived, from the hub socket or a fetch. */
   loaded = $state(false);
-  /** Busy and unread per agent name. Agents with no report are idle. */
+  /** Busy (and since when) and unread per agent name. Agents with no report are idle. */
   activity = $state<Record<string, AgentActivity>>({});
   /** Notices received this session, newest first. */
   notices = $state<HubNotice[]>([]);
@@ -281,6 +281,7 @@ export class HubStore {
       case "agents_snapshot":
         this.snapshotSeen = true;
         this.setAgents(msg.agents);
+        this.activity = { ...msg.activity };
         break;
       case "agent_state":
         this.noteFailure(msg.agent);
@@ -305,13 +306,21 @@ export class HubStore {
         });
         break;
       case "agent_activity":
-        this.activity = { ...this.activity, [msg.name]: { busy: msg.busy, unread: msg.unread } };
+        this.activity = {
+          ...this.activity,
+          [msg.name]: { busy: msg.busy, busy_since: msg.busy_since, unread: msg.unread },
+        };
         break;
       case "notice":
         this.addNotice(msg.level, msg.message, msg.agent);
         break;
       case "workspace_watch_unavailable":
         this.addNotice("warn", msg.message);
+        break;
+      case "hub_boot":
+      case "agent_stopping":
+      case "hub_config_reloaded":
+        // Frame listeners act on these, below.
         break;
       case "workspace_changed":
       case "workspace_resync":
@@ -364,7 +373,7 @@ export class HubStore {
   }
 
   private addNotice(
-    level: HubNoticeLevel,
+    level: NoticeLevel,
     message: string,
     agent?: string,
     action?: ToastAction,

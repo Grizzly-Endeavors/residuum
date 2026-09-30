@@ -183,8 +183,16 @@ const systemRoutes: readonly Route[] = [
 
 type TomlDocument = "configToml" | "hubConfigToml" | "providersToml";
 
-/** Read, replace, patch and validate one TOML document kept in the state. */
-function tomlDocumentRoutes(prefix: string, field: TomlDocument): readonly Route[] {
+/**
+ * Read, replace, patch and validate one TOML document kept in the state.
+ * `afterWrite` runs once a write has been answered, as the hub reloads after
+ * its own config changes.
+ */
+function tomlDocumentRoutes(
+  prefix: string,
+  field: TomlDocument,
+  afterWrite: (ctx: RouteContext) => void = () => {},
+): readonly Route[] {
   return [
     {
       method: "GET",
@@ -196,20 +204,23 @@ function tomlDocumentRoutes(prefix: string, field: TomlDocument): readonly Route
     {
       method: "PUT",
       pattern: `${prefix}/raw`,
-      handler: async ({ req, res, state }) => {
-        state[field] = await readBody(req);
-        json(res, 200, VALID);
+      handler: async (ctx) => {
+        ctx.state[field] = await readBody(ctx.req);
+        json(ctx.res, 200, VALID);
+        afterWrite(ctx);
       },
     },
     {
       method: "PATCH",
       pattern: `${prefix}/patch`,
-      handler: async ({ req, res, state }) => {
-        const diff = await readJsonObject(req);
+      handler: async (ctx) => {
+        const { state } = ctx;
+        const diff = await readJsonObject(ctx.req);
         const doc = state[field].trim() ? parseToml(state[field]) : {};
         applyJsonPatch(doc, diff);
         state[field] = stringifyToml(doc);
-        json(res, 200, VALID);
+        json(ctx.res, 200, VALID);
+        afterWrite(ctx);
       },
     },
     {
@@ -319,6 +330,7 @@ async function completeSetup({ req, res, hub, state }: RouteContext): Promise<vo
     return;
   }
   state.hubConfigToml = stringField(body, "hub_config") ?? state.hubConfigToml;
+  hub.reloadHubConfig();
   const agent = hub.createAgent(name, { role: null });
   agent.state.configToml = stringField(body, "config") ?? agent.state.configToml;
   agent.state.providersToml = stringField(body, "providers") ?? agent.state.providersToml;
@@ -596,7 +608,9 @@ const secretRoutes: readonly Route[] = [
 export const configRoutes: readonly Route[] = [
   ...systemRoutes,
   ...tomlDocumentRoutes("/api/config", "configToml"),
-  ...tomlDocumentRoutes("/api/hub/config", "hubConfigToml"),
+  ...tomlDocumentRoutes("/api/hub/config", "hubConfigToml", ({ hub }) => {
+    hub.reloadHubConfig();
+  }),
   { method: "POST", pattern: "/api/hub/config/complete-setup", handler: completeSetup },
   ...providerRoutes,
   ...mcpRoutes,

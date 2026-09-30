@@ -14,6 +14,7 @@ use serde_json::json;
 
 use super::error::{json_error, lifecycle_error_response};
 use crate::gateway::web::cloud::CloudStatusResponse;
+use crate::hub::types::{AgentListResponse, DeletedAgentListResponse};
 use crate::hub::{
     Actor, AgentDirectory, AgentPatch, AgentState, AgentSummary, CreateAgentRequest,
     LifecycleError, RestoreAgentRequest,
@@ -59,11 +60,10 @@ fn summary_response(result: Result<AgentSummary, LifecycleError>) -> Response {
     }
 }
 
-/// `GET /api/hub/agents` — every agent, sorted by name.
-async fn list_agents(State(state): State<LifecycleState>) -> Json<serde_json::Value> {
-    let mut agents = state.directory.list();
-    agents.sort_by(|a, b| a.name.cmp(&b.name));
-    Json(json!({ "agents": agents }))
+/// `GET /api/hub/agents` — every agent, sorted by name, with their activity
+/// and the names whose stop has begun.
+async fn list_agents(State(state): State<LifecycleState>) -> Json<AgentListResponse> {
+    Json(AgentListResponse::of(state.directory.as_ref()))
 }
 
 /// `POST /api/hub/agents` — create and start an agent.
@@ -81,7 +81,7 @@ async fn create_agent(State(state): State<LifecycleState>, body: Bytes) -> Respo
 /// `GET /api/hub/agents/deleted` — deleted agents that can be restored.
 async fn list_deleted_agents(State(state): State<LifecycleState>) -> Response {
     match state.directory.list_deleted().await {
-        Ok(agents) => Json(json!({ "agents": agents })).into_response(),
+        Ok(agents) => Json(DeletedAgentListResponse { agents }).into_response(),
         Err(e) => lifecycle_error_response(&e),
     }
 }

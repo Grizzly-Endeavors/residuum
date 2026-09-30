@@ -3,7 +3,8 @@ import { FakeWebSocket } from "../test/fake-websocket";
 import { HubStore } from "./hub.svelte";
 import { notifications } from "./notifications.svelte";
 import { toast } from "./toast.svelte";
-import type { AgentSummary, DeletedAgent } from "./hub-types";
+import { activityFrame, snapshot } from "../test/hub-frames";
+import type { AgentActivity, AgentSummary, DeletedAgent } from "./hub-types";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -16,6 +17,8 @@ function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummar
     ...overrides,
   };
 }
+
+const IDLE: AgentActivity = { busy: false, busy_since: null, unread: 0 };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -47,7 +50,7 @@ const newAgent = {
 describe("HubStore frames", () => {
   it("replaces the agent list from a snapshot, sorted by name", () => {
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout"), agent("atlas")] });
+    hub.handleFrame(snapshot([agent("scout"), agent("atlas")]));
     expect(hub.agents.map((a) => a.name)).toEqual(["atlas", "scout"]);
     expect(hub.loaded).toBe(true);
   });
@@ -56,9 +59,14 @@ describe("HubStore frames", () => {
     const hub = new HubStore();
     const failed = agent("atlas", {
       state: "failed",
-      last_error: { message: "bad providers.toml", at: "2026-01-01T00:00:00Z" },
+      last_error: {
+        message: "bad providers.toml",
+        kind: "config",
+        reason: "config error: bad providers.toml",
+        at: "2026-01-01T00:00:00Z",
+      },
     });
-    hub.handleFrame({ type: "agents_snapshot", agents: [failed] });
+    hub.handleFrame(snapshot([failed]));
     expect(hub.notices).toEqual([]);
 
     hub.handleFrame({ type: "agent_state", agent: agent("atlas", { state: "stopped" }) });
@@ -71,20 +79,70 @@ describe("HubStore frames", () => {
 
   it("drops the activity of agents a later snapshot no longer lists", () => {
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("atlas"), agent("scout")] });
-    hub.handleFrame({ type: "agent_activity", name: "atlas", busy: true, unread: 2 });
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
-    expect(hub.activityOf("atlas")).toEqual({ busy: false, unread: 0 });
+    hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));
+    hub.handleFrame(activityFrame("atlas", true, 2));
+    hub.handleFrame(snapshot([agent("scout")]));
+    expect(hub.activityOf("atlas")).toEqual(IDLE);
+  });
+
+  it("takes every agent's activity, busy_since included, from a snapshot", () => {
+    const hub = new HubStore();
+    const since = "2026-09-30T12:00:00Z";
+    hub.handleFrame(
+      snapshot([agent("atlas"), agent("scout")], {
+        activity: {
+          atlas: { busy: true, busy_since: since, unread: 0 },
+          scout: { busy: false, busy_since: null, unread: 4 },
+        },
+      }),
+    );
+    expect(hub.activityOf("atlas")).toEqual({ busy: true, busy_since: since, unread: 0 });
+    expect(hub.activityOf("scout")).toEqual({ busy: false, busy_since: null, unread: 4 });
+
+    hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));
+    expect(hub.activityOf("atlas")).toEqual(IDLE);
+  });
+
+  it("keeps when a turn began from an activity frame", () => {
+    const hub = new HubStore();
+    hub.handleFrame(activityFrame("scout", true, 0, "2026-09-30T12:00:00Z"));
+    expect(hub.activityOf("scout")).toEqual({
+      busy: true,
+      busy_since: "2026-09-30T12:00:00Z",
+      unread: 0,
+    });
+    hub.handleFrame(activityFrame("scout", false, 0));
+    expect(hub.activityOf("scout")).toEqual(IDLE);
+  });
+
+  it("passes the boot, stopping and config reload frames to listeners without changing the agent list", () => {
+    const hub = new HubStore();
+    hub.handleFrame(snapshot([agent("scout")]));
+    const seen: string[] = [];
+    hub.onFrame((frame) => seen.push(frame.type));
+
+    hub.handleFrame({ type: "hub_boot", boot_id: "boot-1" });
+    hub.handleFrame({ type: "agent_stopping", name: "scout" });
+    hub.handleFrame({ type: "hub_config_reloaded", ok: true, changed: false, message: null });
+
+    expect(seen).toEqual(["hub_boot", "agent_stopping", "hub_config_reloaded"]);
+    expect(hub.agents.map((a) => [a.name, a.state])).toEqual([["scout", "running"]]);
+    expect(hub.notices).toEqual([]);
   });
 
   it("updates an agent's state in place", () => {
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("atlas"), agent("scout")] });
+    hub.handleFrame(snapshot([agent("atlas"), agent("scout")]));
     hub.handleFrame({
       type: "agent_state",
       agent: agent("scout", {
         state: "failed",
-        last_error: { message: "bad config", at: "2026-09-29T12:00:00Z" },
+        last_error: {
+          message: "bad config",
+          kind: "config",
+          reason: "config error: bad config",
+          at: "2026-09-29T12:00:00Z",
+        },
       }),
     });
     expect(hub.agents.map((a) => a.name)).toEqual(["atlas", "scout"]);
@@ -94,24 +152,24 @@ describe("HubStore frames", () => {
 
   it("adds a created agent and removes a deleted one with its activity", () => {
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
     hub.handleFrame({ type: "agent_created", agent: agent("atlas"), by: "agent:scout" });
-    hub.handleFrame({ type: "agent_activity", name: "atlas", busy: true, unread: 1 });
+    hub.handleFrame(activityFrame("atlas", true, 1));
     expect(hub.agents.map((a) => a.name)).toEqual(["atlas", "scout"]);
 
     hub.handleFrame({ type: "agent_deleted", name: "atlas", by: "user" });
     expect(hub.agents.map((a) => a.name)).toEqual(["scout"]);
-    expect(hub.activityOf("atlas")).toEqual({ busy: false, unread: 0 });
+    expect(hub.activityOf("atlas")).toEqual(IDLE);
   });
 
   it("tracks busy and unread per agent", () => {
     const hub = new HubStore();
-    hub.handleFrame({ type: "agent_activity", name: "scout", busy: true, unread: 0 });
-    hub.handleFrame({ type: "agent_activity", name: "atlas", busy: false, unread: 3 });
-    hub.handleFrame({ type: "agent_activity", name: "scout", busy: false, unread: 1 });
-    expect(hub.activityOf("scout")).toEqual({ busy: false, unread: 1 });
-    expect(hub.activityOf("atlas")).toEqual({ busy: false, unread: 3 });
-    expect(hub.activityOf("nobody")).toEqual({ busy: false, unread: 0 });
+    hub.handleFrame(activityFrame("scout", true, 0));
+    hub.handleFrame(activityFrame("atlas", false, 3));
+    hub.handleFrame(activityFrame("scout", false, 1));
+    expect(hub.activityOf("scout")).toEqual({ busy: false, busy_since: null, unread: 1 });
+    expect(hub.activityOf("atlas")).toEqual({ busy: false, busy_since: null, unread: 3 });
+    expect(hub.activityOf("nobody")).toEqual(IDLE);
   });
 
   it("keeps notices and shows each as a toast, naming the agent it concerns", () => {
@@ -185,7 +243,7 @@ describe("HubStore frames", () => {
       vi.fn(() => Promise.resolve(jsonResponse({ agents: [] }))),
     );
     FakeWebSocket.last.simulateOpen();
-    FakeWebSocket.last.simulateMessage({ type: "agents_snapshot", agents: [agent("scout")] });
+    FakeWebSocket.last.simulateMessage(snapshot([agent("scout")]));
     expect(hub.agents.map((a) => a.name)).toEqual(["scout"]);
     hub.disconnect();
   });
@@ -269,16 +327,13 @@ describe("HubStore connection", () => {
     const hub = new HubStore();
     hub.connect();
     FakeWebSocket.last.simulateOpen();
-    FakeWebSocket.last.simulateMessage({ type: "agents_snapshot", agents: [agent("scout")] });
+    FakeWebSocket.last.simulateMessage(snapshot([agent("scout")]));
     FakeWebSocket.last.simulateClose();
     expect(hub.agents.map((a) => a.name)).toEqual(["scout"]);
 
     vi.advanceTimersByTime(1000);
     FakeWebSocket.last.simulateOpen();
-    FakeWebSocket.last.simulateMessage({
-      type: "agents_snapshot",
-      agents: [agent("atlas"), agent("scout")],
-    });
+    FakeWebSocket.last.simulateMessage(snapshot([agent("atlas"), agent("scout")]));
     expect(hub.agents.map((a) => a.name)).toEqual(["atlas", "scout"]);
     hub.disconnect();
   });
@@ -433,7 +488,7 @@ describe("HubStore list fetch", () => {
       vi.fn(() => Promise.resolve(jsonResponse({ agents: [agent("stale")] }))),
     );
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
 
     await hub.refresh();
     expect(hub.agents.map((a) => a.name)).toEqual(["scout"]);
@@ -450,7 +505,7 @@ describe("HubStore lifecycle actions", () => {
       vi.fn(() => Promise.resolve(jsonResponse(agent("scout", { state: "stopped" })))),
     );
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
 
     expect(await hub.stopAgent("scout")).toBe(true);
     expect(hub.agent("scout")?.state).toBe("stopped");
@@ -473,7 +528,7 @@ describe("HubStore lifecycle actions", () => {
       vi.fn(() => Promise.resolve(jsonResponse({ deleted: true, checkpoint_id: "c1" }))),
     );
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
     expect((await hub.deleteAgent("scout"))?.checkpoint_id).toBe("c1");
     expect(hub.agents).toEqual([]);
   });
@@ -484,7 +539,7 @@ describe("HubStore lifecycle actions", () => {
       vi.fn(() => Promise.resolve(jsonResponse({ error: "an agent named 'atlas' exists" }, 409))),
     );
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
 
     expect(await hub.createAgent(newAgent)).toBeNull();
     expect(hub.agents.map((a) => a.name)).toEqual(["scout"]);
@@ -498,7 +553,7 @@ describe("HubStore lifecycle actions", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
 
     await hub.setAutostart("scout", false);
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ autostart: false }));
@@ -511,7 +566,7 @@ describe("HubStore lifecycle actions", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
 
     expect(await hub.setVisibility("scout", "public")).toBe(true);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/hub/agents/scout");
@@ -523,7 +578,7 @@ describe("HubStore lifecycle actions", () => {
   it("reports a failed visibility change and leaves the agent as it was", async () => {
     vi.stubGlobal("fetch", () => Promise.resolve(jsonResponse({ error: "nope" }, 500)));
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("scout")] });
+    hub.handleFrame(snapshot([agent("scout")]));
 
     expect(await hub.setVisibility("scout", "public")).toBe(false);
     expect(hub.agent("scout")?.a2a_visibility).toBe("private");
@@ -564,7 +619,7 @@ describe("HubStore deleted agents", () => {
     const fetchMock = vi.fn((_url: string) => Promise.resolve(jsonResponse({ agents: [] })));
     vi.stubGlobal("fetch", fetchMock);
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("nova")] });
+    hub.handleFrame(snapshot([agent("nova")]));
 
     hub.handleFrame({ type: "agent_deleted", name: "nova", by: "user" });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -583,7 +638,7 @@ describe("HubStore deleted agents", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const hub = new HubStore();
-    hub.handleFrame({ type: "agents_snapshot", agents: [agent("nova")] });
+    hub.handleFrame(snapshot([agent("nova")]));
 
     hub.handleFrame({ type: "agent_deleted", name: "nova", by: "agent:scout" });
 

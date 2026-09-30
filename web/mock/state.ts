@@ -1,22 +1,19 @@
 import type {
   A2aVisibility,
   AgentLastError,
+  AgentListResponse,
   AgentState,
   AgentSummary,
   OutboundA2aTaskSummary,
   ServerMessage,
 } from "../src/lib/generated/protocol";
 import type { HubServerMessage } from "../src/lib/hub-types";
-import type { RecentMessage, UserInboxItem } from "../src/lib/types";
+import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
 import { loadAsset } from "./assets";
-import { createInboxItems } from "./data/inbox";
+import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkbenchArtifacts, type MockArtifact } from "./data/workbench";
-import {
-  createWorkspaceFileContents,
-  createWorkspaceFiles,
-  type MockWorkspaceEntry,
-} from "./data/workspace";
+import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
 
 /** An agent key as the mock stores it, value included. */
 export interface MockAgentKey {
@@ -43,9 +40,13 @@ export interface MockState {
   hubConfigToml: string;
   providersToml: string;
   mcpJson: string;
-  workspaceFiles: Record<string, MockWorkspaceEntry[]>;
+  /** Directory path to its listing. Changed only through `workspace-tree.ts`, which keeps it agreeing with the contents. */
+  workspaceFiles: Record<string, WorkspaceEntry[]>;
+  /** File path to its content. */
   workspaceFileContents: Record<string, string>;
   inboxItems: UserInboxItem[];
+  /** The items the user archived, which `restore` brings back to `inboxItems`. */
+  inboxArchive: UserInboxItem[];
   /**
    * Whether the agent has a conversation: the sample history and episodes
    * sit behind `extraRecent`. An agent has one once it has run.
@@ -88,8 +89,10 @@ export interface MockAgent {
   autostart: boolean;
   role: string | null;
   visibility: A2aVisibility;
-  /** A main turn is in progress. */
-  busy: boolean;
+  /** When the current main turn began, or `null` while none is running. */
+  busySince: string | null;
+  /** The agent's stop has begun and isn't finished: its state is still `running`. */
+  stopping: boolean;
   /** Main-conversation messages the web UI hasn't shown. */
   unread: number;
   state: MockState;
@@ -113,12 +116,25 @@ export interface MockHub {
   /** Register an agent and open its WebSocket route. */
   createAgent: (
     name: string,
-    options?: { role?: string | null; runState?: AgentState; lastError?: string },
+    options?: {
+      role?: string | null;
+      runState?: AgentState;
+      lastError?: Omit<AgentLastError, "at">;
+    },
   ) => MockAgent;
   summary: (agent: MockAgent) => AgentSummary;
+  /** Every agent by name with its activity and stopping set: `GET /api/hub/agents` and the hub snapshot. */
+  listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
   setBusy: (agent: MockAgent, busy: boolean) => void;
+  /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
+  markStopping: (agent: MockAgent) => void;
+  /**
+   * Reload the hub config from the state's `hubConfigToml` the way the hub
+   * does after the file changes, and tell hub clients how it went.
+   */
+  reloadHubConfig: () => void;
   addUnread: (agent: MockAgent) => void;
   clearUnread: (agent: MockAgent) => void;
   /** Move an agent to a run state and tell hub clients. */
@@ -138,12 +154,13 @@ const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 
 /**
  * Give an agent the data it has once it has run: a conversation, the sample
- * inbox and its A2A client settings. An agent that has never run has none of
- * it, and its file-only routes answer with empty data.
+ * inbox and archive, and its A2A client settings. An agent that has never run
+ * has none of it, and its file-only routes answer with empty data.
  */
 export function seedAgentData(state: MockState): void {
   state.hasConversation = true;
   state.inboxItems = createInboxItems();
+  state.inboxArchive = createArchivedInboxItems();
   state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
 }
 
@@ -152,6 +169,7 @@ export function seedAgentData(state: MockState): void {
  * of it when `hasRun` is false.
  */
 export function createState(agentName: string, hasRun = true): MockState {
+  const workspaceFileContents = createWorkspaceFileContents();
   const state: MockState = {
     agentName,
     mode: process.env.VITE_MOCK_SETUP === "1" ? "setup" : "running",
@@ -193,8 +211,8 @@ export function createState(agentName: string, hasRun = true): MockState {
     hubConfigToml: loadAsset("hub-config.example.toml"),
     providersToml: loadAsset("providers.example.toml"),
     mcpJson: loadAsset("mcp.example.json"),
-    workspaceFiles: createWorkspaceFiles(),
-    workspaceFileContents: createWorkspaceFileContents(),
+    workspaceFiles: createWorkspaceFiles(workspaceFileContents),
+    workspaceFileContents,
     sessions: createSessions(),
     outboundTasks: [
       {
@@ -223,6 +241,7 @@ export function createState(agentName: string, hasRun = true): MockState {
     broadcast: () => {},
     compressedAt: null,
     inboxItems: [],
+    inboxArchive: [],
     hasConversation: false,
   };
   if (hasRun) seedAgentData(state);

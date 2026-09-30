@@ -66,8 +66,9 @@ export interface ScopeRefusal {
  * - `/api/agents/{name}/...` runs against that agent's state, as `/api/...`.
  *   A stopped or failed agent serves only the repair and file-only routes;
  *   any other route answers `409`. An unknown agent answers `404`.
- * - Hub routes run against the shared state. Lifecycle, status and hub config
- *   routes and team files keep their path; any other becomes `/api/...`.
+ * - Hub routes run against the shared state. Lifecycle, status, hub config
+ *   and cross-agent inbox routes and team files keep their path; any other
+ *   becomes `/api/...`.
  * - `/api/team/...` likewise, except team files.
  * - `/api/mock/...` test controls run against the `?agent=` agent, or the
  *   first running one.
@@ -106,7 +107,9 @@ export function scopeRequest(
     path === "/api/hub/status" ||
     path === "/api/hub/stop-all" ||
     path === "/api/hub/agents" ||
-    path.startsWith("/api/hub/agents/")
+    path.startsWith("/api/hub/agents/") ||
+    path === "/api/hub/inbox" ||
+    path.startsWith("/api/hub/inbox/")
   ) {
     return { state: hub.hubState, path };
   }

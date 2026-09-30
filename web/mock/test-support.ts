@@ -3,9 +3,9 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import type { ServerMessage } from "../src/lib/generated/protocol";
 import { apiRoutes } from "./api-routes";
-import { createHub } from "./hub";
+import { createHub, mockListing } from "./hub";
 import { json } from "./http";
-import { createApiHandler, type ApiHandlerOptions } from "./middleware";
+import { createApiHandler } from "./middleware";
 import { dispatchRoute, type Route } from "./routes";
 import { seedAgents } from "./scenario";
 import { frameText } from "./sockets";
@@ -27,7 +27,8 @@ export function createStubHub(): MockHub {
         autostart: true,
         role: options.role ?? null,
         visibility: "private",
-        busy: false,
+        busySince: null,
+        stopping: false,
         unread: 0,
         state: createState(name, (options.runState ?? "running") === "running"),
         connectedClients: () => 0,
@@ -43,8 +44,11 @@ export function createStubHub(): MockHub {
       role: agent.role,
       a2a_visibility: agent.visibility,
     }),
+    listing: () => mockListing(agents.values()),
     broadcast: () => {},
     setBusy: () => {},
+    markStopping: () => {},
+    reloadHubConfig: () => {},
     addUnread: () => {},
     clearUnread: () => {},
     transition: () => {},
@@ -239,8 +243,8 @@ export class TestSocket {
 export interface MockServerOptions {
   /** Create the mock's agents: scout, atlas, drifter and brittle. On by default. */
   seed?: boolean;
-  /** Answers the requests no route table takes. */
-  fallback?: ApiHandlerOptions["fallback"];
+  /** The route tables to serve in place of the mock's own (`apiRoutes`). */
+  routes?: readonly Route[];
 }
 
 export interface MockServerHarness {
@@ -262,7 +266,7 @@ export async function startMockServer(options: MockServerOptions = {}): Promise<
   const server = createServer();
   const hub = createHub(server);
   if (options.seed ?? true) seedAgents(hub);
-  const handle = createApiHandler({ hub, routes: apiRoutes, fallback: options.fallback });
+  const handle = createApiHandler({ hub, routes: options.routes ?? apiRoutes });
   server.on("request", (req, res) => {
     void handle(req, res).then((handled) => {
       if (!handled) {

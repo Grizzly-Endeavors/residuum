@@ -4,6 +4,7 @@
 //! A2A listener, and agent tools that create or delete teammates use it, so
 //! each can be built and tested against a fake.
 
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
@@ -13,6 +14,18 @@ use super::types::{
     Actor, AgentActivity, AgentPatch, AgentSummary, CreateAgentRequest, DeleteOutcome,
     DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
 };
+
+/// Where one agent's files are, and the timezone the hub reads the naive local
+/// times stored in them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentFiles {
+    /// The agent's directory (`~/.residuum/<name>`), whatever its state.
+    pub dir: PathBuf,
+    /// The hub's configured timezone now. Times the agent's files keep carry
+    /// no offset, so this is what makes them instants (see
+    /// [`crate::time::local_to_instant`]).
+    pub timezone: chrono_tz::Tz,
+}
 
 /// The hub's hosted agents: lookup, per-agent routing, and lifecycle.
 #[async_trait]
@@ -53,6 +66,13 @@ pub trait AgentDirectory: Send + Sync {
     /// # Errors
     /// [`LifecycleError::NotFound`] for an unknown agent.
     fn agent_file_router(&self, name: &str) -> Result<axum::Router, LifecycleError>;
+
+    /// Where the agent's files are, for what the hub reads across agents
+    /// without going through an agent's own routes (the user inboxes).
+    ///
+    /// # Errors
+    /// [`LifecycleError::NotFound`] for an unknown agent.
+    fn agent_files(&self, name: &str) -> Result<AgentFiles, LifecycleError>;
 
     /// The agent's A2A server router (card, JSON-RPC, REST), rooted at `/`.
     /// The A2A listener serves it under `/agents/{name}/`.
