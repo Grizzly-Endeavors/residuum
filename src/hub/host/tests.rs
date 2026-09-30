@@ -1177,7 +1177,7 @@ async fn deleting_an_agent_stops_it_and_keeps_its_history_for_a_restore() {
 #[tokio::test]
 async fn two_agents_cannot_hold_the_same_teams_port() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let port = free_port().await;
+    let port = free_port();
     for name in ["atlas", "scout"] {
         std::fs::write(
             hub.root
@@ -1526,7 +1526,7 @@ async fn once_the_hub_is_shutting_down_nothing_starts_and_running_agents_still_s
 async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
     let names = ["a", "b", "c", "d"];
     let hub = Fixture::new(&names, "").await;
-    let port = free_port().await;
+    let port = free_port();
     for name in names {
         std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
     }
@@ -1561,7 +1561,7 @@ async fn agents_starting_at_once_cannot_both_take_a_teams_port() {
 #[tokio::test]
 async fn deleting_an_agent_frees_its_teams_port() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let port = free_port().await;
+    let port = free_port();
     for name in ["atlas", "scout"] {
         std::fs::write(config_path(&hub, name), teams_config(port)).unwrap();
     }
@@ -1576,7 +1576,7 @@ async fn deleting_an_agent_frees_its_teams_port() {
 #[tokio::test]
 async fn a_reload_that_changes_the_teams_port_moves_the_reservation() {
     let hub = Fixture::new(&["atlas", "scout"], "").await;
-    let (first, second) = (free_port().await, free_port().await);
+    let (first, second) = (free_port(), free_port());
     std::fs::write(config_path(&hub, "atlas"), teams_config(first)).unwrap();
     std::fs::write(config_path(&hub, "scout"), teams_config(first)).unwrap();
     hub.host.start("atlas").await.unwrap();

@@ -835,7 +835,7 @@ mod tests {
         /// A hub over the agents `names`, which may be none.
         async fn start_with(names: &[&str]) -> Self {
             let root = tempfile::tempdir().unwrap();
-            let (gateway_port, a2a_port) = (free_port().await, free_port().await);
+            let (gateway_port, a2a_port) = (free_port(), free_port());
             let hub_dir = root.path().join("hub");
             std::fs::create_dir_all(&hub_dir).unwrap();
             std::fs::write(
@@ -954,7 +954,7 @@ mod tests {
         let hub = RunningHub::start().await;
         hub.eventually_status(hub.gateway_port, "/api/agents/scout/status", Some(200))
             .await;
-        let new_port = free_port().await;
+        let new_port = free_port();
 
         std::fs::write(
             hub.hub_config_path(),

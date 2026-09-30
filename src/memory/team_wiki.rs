@@ -222,9 +222,10 @@ async fn open_vectors(
             new_model = model.as_str(),
             "embedding model changed, clearing team wiki vector store"
         );
-        drop(store);
-        remove_vector_files(&db_path);
-        store = open(&db_path)?;
+        if let Err(e) = store.reset(dim) {
+            tracing::warn!(error = %format!("{e:#}"), "failed to clear team wiki vector store; wiki search is text only");
+            return None;
+        }
     }
     if let Err(e) = store.set_embedding_model(&model) {
         tracing::warn!(error = %format!("{e:#}"), "failed to record team wiki embedding model; wiki search is text only");
@@ -235,19 +236,6 @@ async fn open_vectors(
         store: Arc::new(store),
         embedder,
     })
-}
-
-/// Remove a `SQLite` database and its WAL sidecar files.
-fn remove_vector_files(db_path: &Path) {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut name = db_path.as_os_str().to_os_string();
-        name.push(suffix);
-        if let Err(e) = std::fs::remove_file(&name)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(error = %e, path = ?name, "failed to remove old team wiki vector store file");
-        }
-    }
 }
 
 #[cfg(test)]

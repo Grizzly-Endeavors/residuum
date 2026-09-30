@@ -9,6 +9,8 @@ pub mod log_format;
 pub mod secret_compare;
 mod spawn;
 pub mod telemetry;
+#[cfg(test)]
+pub(crate) mod test_ports;
 pub mod tracing_init;
 mod xml;
 

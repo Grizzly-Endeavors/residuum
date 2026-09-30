@@ -6,6 +6,7 @@
 //! Declared as `#[cfg(test)] mod server_e2e_tests;` from `mod.rs`, so this
 //! whole file (harness and tests alike) only exists in test builds.
 
+use crate::util::test_ports::free_port;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -229,15 +230,6 @@ async fn wait_until_listening(port: u16) {
     .unwrap_or_else(|_| panic!("timed out waiting for the listener on port {port}"));
 }
 
-async fn free_port() -> u16 {
-    tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 /// Set up the tempdir-backed workspace a harness runs against: required
 /// directories, an optional workspace skill (for the skill-mapping test),
 /// and the workspace agent-card file.
@@ -449,7 +441,7 @@ fn build_harness_runtime(
 async fn spawn_harness(opts: HarnessOptions) -> Harness {
     let (tempdir, workspace_dir, layout, skill_state) = setup_workspace(&opts).await;
 
-    let port = free_port().await;
+    let port = free_port();
     let card_runtime = CardRuntime::from_config(
         &A2aConfig {
             enabled: true,
@@ -1253,6 +1245,77 @@ async fn run_completes_with_last_final_text_when_no_signal_is_sent() {
     harness.shutdown_tx.send(true).ok();
 }
 
+/// Register a running spawned child of `spawner` that never finishes on its
+/// own, returning its address.
+fn register_fake_live_child(harness: &Harness, spawner: &SessionAddress) -> SessionAddress {
+    let child_address = SessionAddress::from("spawned-fake-child-0001");
+    let child_info = crate::background::registry::SessionInfo {
+        address: child_address.clone(),
+        run_id: "run-fake-child".to_string(),
+        category: crate::background::registry::SessionCategory::Spawned,
+        trigger: crate::bus::EventTrigger::Agent,
+        source_label: "agent:fake-child".to_string(),
+        state: crate::background::registry::SessionState::Running,
+        spawner: Some(spawner.clone()),
+        depth: 2,
+        purpose: "pretending to work".to_string(),
+        agent_skill: None,
+        model_tier: BackgroundModelTier::Medium,
+        conversation_target: None,
+        started_at: chrono::Utc::now(),
+        usage: crate::agent::usage::SessionUsageTotals::default(),
+        overlap: None,
+    };
+    harness
+        .session_registry
+        .register(child_info, tokio_util::sync::CancellationToken::new())
+        .unwrap();
+    child_address
+}
+
+/// Wait for the parent run at `address` to complete, then push a marker
+/// through the session-event stream the executor reads. The marker surfaces on
+/// the A2A stream only after the executor has handled that completion, so
+/// what the test changes afterwards cannot race the executor's decision.
+async fn wait_for_first_run_completion_handled(
+    session_events: &mut crate::bus::Subscriber<crate::bus::SessionEvent>,
+    bus_handle: &BusHandle,
+    address: &SessionAddress,
+) {
+    let mut first_turn = None;
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        loop {
+            let event = session_events.recv().await.unwrap().unwrap();
+            if event.address != *address {
+                continue;
+            }
+            if let crate::bus::SessionEventKind::TurnStarted { turn_id } = event.kind {
+                first_turn.get_or_insert(turn_id);
+            } else if matches!(event.kind, crate::bus::SessionEventKind::Completed { .. }) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the parent's first run completes");
+    let first_turn = first_turn.expect("the first run started a turn");
+    bus_handle
+        .publisher()
+        .publish(
+            topics::Sessions,
+            crate::bus::SessionEvent {
+                address: address.clone(),
+                run_id: "run-marker".to_string(),
+                kind: crate::bus::SessionEventKind::Response {
+                    turn_id: first_turn,
+                    content: "completion handled".to_string(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn run_stays_working_while_a_live_spawned_child_exists() {
     let harness = spawn_harness(HarnessOptions {
@@ -1270,6 +1333,13 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
         // completes for real.
         queue.push_back(InferenceResponse::new("actually done".to_string(), vec![]));
     }
+
+    // Opened before the request so the parent run's own events are all seen.
+    let mut session_events: crate::bus::Subscriber<crate::bus::SessionEvent> = harness
+        .bus_handle
+        .subscribe(topics::Sessions)
+        .await
+        .unwrap();
 
     let client = client_for(&harness, &token).await;
     let stream = tokio::time::timeout(
@@ -1291,28 +1361,12 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
 
     // Register a fake live child while the parent's turn is still resolving
     // (the 200ms response delay gives us the window).
-    let child_address = SessionAddress::from("spawned-fake-child-0001");
-    let child_info = crate::background::registry::SessionInfo {
-        address: child_address.clone(),
-        run_id: "run-fake-child".to_string(),
-        category: crate::background::registry::SessionCategory::Spawned,
-        trigger: crate::bus::EventTrigger::Agent,
-        source_label: "agent:fake-child".to_string(),
-        state: crate::background::registry::SessionState::Running,
-        spawner: Some(address.clone()),
-        depth: 2,
-        purpose: "pretending to work".to_string(),
-        agent_skill: None,
-        model_tier: BackgroundModelTier::Medium,
-        conversation_target: None,
-        started_at: chrono::Utc::now(),
-        usage: crate::agent::usage::SessionUsageTotals::default(),
-        overlap: None,
-    };
-    harness
-        .session_registry
-        .register(child_info, tokio_util::sync::CancellationToken::new())
-        .unwrap();
+    let child_address = register_fake_live_child(&harness, &address);
+
+    // The executor only keeps the task working if the child is still
+    // registered when it handles the parent's first-run completion, so the
+    // child must stay registered until that has happened.
+    wait_for_first_run_completion_handled(&mut session_events, &harness.bus_handle, &address).await;
 
     // The session's own turn still reports its final text as a `WORKING`
     // status update (per docs/systems-usage/a2a.md) even though the run
@@ -1322,11 +1376,23 @@ async fn run_stays_working_while_a_live_spawned_child_exists() {
     // whatever arrives for a bounded window and confirm none of it is
     // terminal.
     let mut events = vec![first];
-    // Stops when the stream ends or nothing arrives within the window —
-    // either way, expected: stop collecting.
-    while let Ok(Some(item)) = tokio::time::timeout(Duration::from_millis(500), stream.next()).await
-    {
-        events.push(item.unwrap());
+    // Reads until the marker arrives, which means the executor has already
+    // handled the first run's completion.
+    loop {
+        let item = tokio::time::timeout(TEST_TIMEOUT, stream.next())
+            .await
+            .expect("the marker reaches the stream")
+            .expect("the stream stays open")
+            .unwrap();
+        let is_marker = matches!(
+            &item,
+            a2a::StreamResponse::StatusUpdate(u)
+                if u.status.message.as_ref().and_then(|m| m.text()) == Some("completion handled")
+        );
+        events.push(item);
+        if is_marker {
+            break;
+        }
     }
     let saw_terminal = events.iter().any(|e| {
         matches!(
