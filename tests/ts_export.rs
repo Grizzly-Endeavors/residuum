@@ -19,8 +19,10 @@ mod ts_export {
     };
     use residuum::hub::inbox::{HubInboxItem, HubInboxPage, HubInboxUnread, InboxStatus};
     use residuum::hub::types::{
-        A2aVisibility, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-        CreateAgentRequest, DeleteOutcome, DeletedAgent, RestoreAgentRequest,
+        A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentListResponse,
+        AgentPatch, AgentState, AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent,
+        DeletedAgentListResponse, HubClientMessage, HubEvent, HubSocketFrame, NoticeLevel,
+        RestoreAgentRequest,
     };
     use residuum::inbox::InboxAttachment;
     use residuum::inference::ImageData;
@@ -67,7 +69,8 @@ mod ts_export {
         // /api/hub/agents/{name}`; `DeleteOutcome` answers the `DELETE`;
         // `DeletedAgent` is the item of `GET /api/hub/agents/deleted` and
         // `RestoreAgentRequest` the body of `POST /api/hub/agents/restore`;
-        // `AgentActivity` is the `busy`/`unread` pair of `agent_activity`.
+        // `AgentActivity` is the `busy`/`busy_since`/`unread` set of
+        // `agent_activity` and the snapshot's `activity` map.
         AgentSummary::export_all(&cfg).unwrap();
         AgentState::export_all(&cfg).unwrap();
         AgentLastError::export_all(&cfg).unwrap();
@@ -78,6 +81,23 @@ mod ts_export {
         DeletedAgent::export_all(&cfg).unwrap();
         RestoreAgentRequest::export_all(&cfg).unwrap();
         AgentActivity::export_all(&cfg).unwrap();
+        AgentErrorKind::export_all(&cfg).unwrap();
+        // The hub's list envelopes: `GET /api/hub/agents` and `GET
+        // /api/hub/agents/deleted`.
+        AgentListResponse::export_all(&cfg).unwrap();
+        DeletedAgentListResponse::export_all(&cfg).unwrap();
+        // The hub WebSocket: `HubEvent` is every frame the hub forwards from
+        // its bus (with `Actor` and `NoticeLevel`), `HubSocketFrame` the two it
+        // sends on its own (`hub_boot` and `agents_snapshot`), and
+        // `HubClientMessage` the one message a client sends. The team change
+        // frames are the agent protocol's `ServerMessage` variants. The client
+        // message is exported under this name so it doesn't collide with the
+        // agent protocol's `ClientMessage`.
+        HubEvent::export_all(&cfg).unwrap();
+        HubSocketFrame::export_all(&cfg).unwrap();
+        HubClientMessage::export_all(&cfg).unwrap();
+        Actor::export_all(&cfg).unwrap();
+        NoticeLevel::export_all(&cfg).unwrap();
 
         // The cross-agent inbox: `HubInboxPage` (with its `HubInboxItem` and
         // `InboxAttachment` items) answers `GET /api/hub/inbox`,

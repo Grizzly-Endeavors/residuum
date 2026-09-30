@@ -1,4 +1,4 @@
-import { MOCK_BRITTLE_ERROR } from "./constants";
+import { MOCK_BRITTLE_FAILURE } from "./constants";
 import type { MockHub } from "./state";
 
 /**
@@ -13,6 +13,6 @@ export function seedAgents(hub: MockHub): void {
   hub.createAgent("brittle", {
     runState: "failed",
     role: "Has a broken model config",
-    lastError: MOCK_BRITTLE_ERROR,
+    lastError: MOCK_BRITTLE_FAILURE,
   });
 }

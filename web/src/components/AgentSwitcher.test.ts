@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "../test/component";
 import AgentSwitcher from "./AgentSwitcher.svelte";
 import { hub } from "../lib/hub.svelte";
 import { router } from "../lib/router.svelte";
+import { activityFrame, snapshot } from "../test/hub-frames";
 import type { AgentSummary } from "../lib/hub-types";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -18,25 +19,29 @@ function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummar
 }
 
 beforeEach(() => {
-  hub.handleFrame({
-    type: "agents_snapshot",
-    agents: [
+  hub.handleFrame(
+    snapshot([
       agent("atlas"),
       agent("brittle", {
         state: "failed",
-        last_error: { message: "providers.toml is missing", at: "2026-09-29T10:00:00Z" },
+        last_error: {
+          message: "providers.toml is missing",
+          kind: "config",
+          reason: "config error: providers.toml is missing",
+          at: "2026-09-29T10:00:00Z",
+        },
       }),
       agent("drifter", { state: "stopped" }),
       agent("scout"),
       agent("warm", { state: "starting" }),
-    ],
-  });
+    ]),
+  );
   router.agent = "scout";
   router.team = null;
 });
 
 afterEach(() => {
-  hub.handleFrame({ type: "agents_snapshot", agents: [] });
+  hub.handleFrame(snapshot([]));
   router.agent = null;
 });
 
@@ -57,14 +62,14 @@ describe("AgentSwitcher", () => {
   });
 
   it("says when an agent is working and how many messages are unread", () => {
-    hub.handleFrame({ type: "agent_activity", name: "atlas", busy: true, unread: 3 });
+    hub.handleFrame(activityFrame("atlas", true, 3));
     render(AgentSwitcher);
     expect(screen.getByRole("button", { name: "atlas, running, working, 3 unread" })).toBeTruthy();
     expect(screen.getByText("3")).toBeTruthy();
   });
 
   it("caps a large unread count in the badge but not in the spoken label", () => {
-    hub.handleFrame({ type: "agent_activity", name: "atlas", busy: false, unread: 150 });
+    hub.handleFrame(activityFrame("atlas", false, 150));
     render(AgentSwitcher);
     expect(screen.getByText("99+")).toBeTruthy();
     expect(screen.getByRole("button", { name: "atlas, running, 150 unread" })).toBeTruthy();

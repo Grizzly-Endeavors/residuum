@@ -104,7 +104,7 @@ describe("the mock server plugin", () => {
     const dev = await start();
     expect(await fetchJson(`${dev.baseUrl}/api/hub/agents`)).toEqual({
       status: 200,
-      body: { agents: [] },
+      body: { agents: [], activity: {}, stopping: [] },
     });
     expect(dev.logged).toContain("  [mock] Mode: setup (set VITE_MOCK_SETUP=1 for setup wizard)");
   });

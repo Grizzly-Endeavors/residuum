@@ -60,6 +60,7 @@ pub fn hub_router(directory: Arc<dyn AgentDirectory>, hub: HubHttpState) -> Rout
         directory: Arc::clone(&directory),
         team_bus: hub.team_bus.clone(),
         team_watch_health: hub.team_watch_health.clone(),
+        boot_id: hub.boot_id.clone(),
     };
 
     let app = Router::new()

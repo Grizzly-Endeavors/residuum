@@ -1,38 +1,34 @@
 // ── Hub types ────────────────────────────────────────────────────────
 //
-// Shapes for the hub API and `/api/hub/ws`. The agent shapes the backend
-// exports through ts-rs (`src/hub/types.rs`) are re-exported from
-// `generated/`; the rest are hand-written here because the backend builds
-// them inline (list and status envelopes, the stop-all body) or does not
-// export them (the hub WebSocket's frames).
+// Shapes for the hub API and `/api/hub/ws`. The backend exports the agent
+// shapes, the list envelopes and every hub WebSocket frame through ts-rs
+// (`src/hub/types.rs`); they are re-exported from `generated/`. Only the
+// status and stop-all bodies, which the backend builds inline, are
+// hand-written here, and `HubServerMessage` joins the generated frame types.
 
+import type { ServerMessage } from "./generated/ServerMessage";
 import type { AgentSummary } from "./generated/AgentSummary";
-import type { DeletedAgent } from "./generated/DeletedAgent";
-import type { ServerMessage, WorkspaceChange } from "./types";
+import type { HubEvent } from "./generated/HubEvent";
+import type { HubSocketFrame } from "./generated/HubSocketFrame";
 
 export type { A2aVisibility } from "./generated/A2aVisibility";
+export type { Actor } from "./generated/Actor";
 export type { AgentActivity } from "./generated/AgentActivity";
+export type { AgentErrorKind } from "./generated/AgentErrorKind";
 export type { AgentLastError } from "./generated/AgentLastError";
+export type { AgentListResponse } from "./generated/AgentListResponse";
 export type { AgentPatch } from "./generated/AgentPatch";
 export type { AgentState } from "./generated/AgentState";
 export type { AgentSummary } from "./generated/AgentSummary";
 export type { CreateAgentRequest } from "./generated/CreateAgentRequest";
 export type { DeleteOutcome } from "./generated/DeleteOutcome";
 export type { DeletedAgent } from "./generated/DeletedAgent";
+export type { DeletedAgentListResponse } from "./generated/DeletedAgentListResponse";
+export type { HubClientMessage } from "./generated/HubClientMessage";
+export type { HubEvent } from "./generated/HubEvent";
+export type { HubSocketFrame } from "./generated/HubSocketFrame";
+export type { NoticeLevel } from "./generated/NoticeLevel";
 export type { RestoreAgentRequest } from "./generated/RestoreAgentRequest";
-
-/** `GET /api/hub/agents`. */
-export interface AgentListResponse {
-  agents: AgentSummary[];
-}
-
-/** `GET /api/hub/agents/deleted`: deleted agents that can be restored, newest deletion first. */
-export interface DeletedAgentListResponse {
-  agents: DeletedAgent[];
-}
-
-/** Who caused a hub event: the user (UI or CLI), or a teammate agent. */
-export type HubActor = "user" | `agent:${string}`;
 
 /** `GET /api/hub/status`. */
 export interface HubStatusResponse {
@@ -56,25 +52,14 @@ export interface StopAllResponse {
   failed: StopAllFailure[];
 }
 
-export type HubNoticeLevel = "info" | "warn" | "error";
+/** The team change frames, which the hub sends with the agent protocol's shapes. */
+export type HubWorkspaceFrame = Extract<
+  ServerMessage,
+  { type: "workspace_changed" | "workspace_resync" | "workspace_watch_unavailable" }
+>;
 
 /** Server-to-client frames on `/api/hub/ws`. */
-export type HubServerMessage =
-  | { type: "agents_snapshot"; agents: AgentSummary[] }
-  | { type: "agent_state"; agent: AgentSummary }
-  | { type: "agent_created"; agent: AgentSummary; by: HubActor }
-  | { type: "agent_restored"; agent: AgentSummary; by: HubActor }
-  | { type: "agent_deleted"; name: string; by: HubActor }
-  | { type: "agent_activity"; name: string; busy: boolean; unread: number }
-  | { type: "notice"; level: HubNoticeLevel; message: string; agent?: string }
-  | { type: "workspace_changed"; changes: WorkspaceChange[] }
-  | Extract<ServerMessage, { type: "workspace_resync" | "workspace_watch_unavailable" }>;
-
-/**
- * The one client-to-server frame on `/api/hub/ws`. A prefix is `team` or a
- * path under `team/`, the spelling the hub's change feed uses.
- */
-export type HubClientMessage = { type: "watch_team"; prefixes: string[] };
+export type HubServerMessage = HubSocketFrame | HubEvent | HubWorkspaceFrame;
 
 /** Which file tree a workspace call addresses: the current agent's, or the shared team's. */
 export type WorkspaceScope = "agent" | "team";

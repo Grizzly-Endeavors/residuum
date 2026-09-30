@@ -75,4 +75,8 @@ pub struct HubHttpState {
     pub team_watch_health: watch::Receiver<WatchHealth>,
     /// When the hub started, for `uptime_secs` in `GET /api/hub/status`.
     pub started_at: Instant,
+    /// A random id this hub process generated at startup. The hub WebSocket
+    /// sends it first on every connection, so a client can tell a restarted
+    /// hub from a dropped connection to the same one.
+    pub boot_id: String,
 }
