@@ -172,9 +172,9 @@ export function sectionFromOldName(old: string, urlScope: LegacyScope): SectionT
   return urlScope === "hub" ? (fromHub ?? fromAgent) : (fromAgent ?? fromHub);
 }
 
-// ── Hosting the current Settings page ────────────────────────────────
+// ── Hosting legacy Settings content ──────────────────────────────────
 
-/** The old section that shows a new agent section's content, while the old page hosts it. */
+/** The legacy Settings section that shows a new agent section's content. */
 const HOST_AGENT_SECTIONS: Readonly<Record<AgentSectionId, LegacyAgentSection>> = {
   model: "providers",
   connections: "channels",
@@ -188,7 +188,7 @@ const HOST_AGENT_SECTIONS: Readonly<Record<AgentSectionId, LegacyAgentSection>> 
   history: "history",
 };
 
-/** The old section that shows a new install-wide section's content, while the old page hosts it. */
+/** The legacy Settings section that shows a new install-wide section's content. */
 const HOST_ALL_SECTIONS: Readonly<Record<AllSectionId, LegacyHubSection>> = {
   general: "general",
   notifications: "general",
@@ -203,9 +203,9 @@ const HOST_ALL_SECTIONS: Readonly<Record<AllSectionId, LegacyHubSection>> = {
 };
 
 /**
- * The old page and section that host a new section's content. Sections the old
- * page has no equivalent for (`notifications`, `raw`) open the scope's first
- * old section.
+ * The legacy Settings page and section that show a new section's content.
+ * Sections the legacy page has no equivalent for (`notifications`, `raw`) open
+ * the scope's first legacy section.
  */
 export function legacyHostSection(
   kind: ScopeKind,
@@ -213,15 +213,9 @@ export function legacyHostSection(
 ): { scope: LegacyScope; section: LegacySection } {
   const id = isSectionOf(kind, section) ? section : defaultSection(kind);
   if (kind === "all") {
-    const hub = Object.hasOwn(HOST_ALL_SECTIONS, id)
-      ? HOST_ALL_SECTIONS[id as AllSectionId]
-      : "general";
-    return { scope: "hub", section: hub };
+    return { scope: "hub", section: HOST_ALL_SECTIONS[id as AllSectionId] };
   }
-  const agent = Object.hasOwn(HOST_AGENT_SECTIONS, id)
-    ? HOST_AGENT_SECTIONS[id as AgentSectionId]
-    : "runtime";
-  return { scope: "agent", section: agent };
+  return { scope: "agent", section: HOST_AGENT_SECTIONS[id as AgentSectionId] };
 }
 
 // ── Config keys ──────────────────────────────────────────────────────

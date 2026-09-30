@@ -92,13 +92,19 @@ web/
 │   └── lib/
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
-│       ├── viewed-agent.ts       # The agent the URL names: the router publishes it, the WebSocket coordinator binds to it
+│       ├── viewed-agent.ts       # The bound agent: the router publishes it, the WebSocket coordinator binds to it
 │       ├── ws.svelte.ts          # WebSocket coordinator: routes frames to the feed and sessions stores
 │       ├── feed.svelte.ts        # Main chat feed state
 │       ├── feed-items.ts         # History-to-feed conversion shared by chat and session views
 │       ├── sessions.svelte.ts    # Agent sessions: listing, live frames, session view, commands
-│       ├── routes.ts             # URL <-> location: session, workspace flag, settings section, workbench artifact
-│       ├── router.svelte.ts      # Current location; push/replace history, back/forward
+│       ├── routes.ts             # URL <-> location: places, the panel and settings parameters, redirects from old URLs, corrections
+│       ├── router.svelte.ts      # Current location; push/replace, closing by going back, overlay entries, the unsaved-edit guard
+│       ├── history-entry.ts      # The marks the router keeps in history.state
+│       ├── navigation-guard.ts   # Checks views register for unsaved work, and how the user is asked
+│       ├── settings-sections.ts  # Settings section registry: ids, scopes, labels, groups, old names, config keys
+│       ├── legacy-router.svelte.ts # The current views' navigation, on the router
+│       ├── legacy-settings-sections.ts # The current Settings page's sections
+│       ├── session-address.ts    # Opens a session from where it is mentioned
 │       ├── relay.ts              # Recognizes agent-message headers in transcripts
 │       ├── workbench-bridge.ts   # What workbench artifacts may call, relayed from their frames on the artifacts origin
 │       ├── workbench.ts          # Where artifacts are served: relay origin or this host on the artifacts port
@@ -138,26 +144,40 @@ web/
 
 ## Routing
 
-The URL is the source of truth for where the user is:
+The URL is the source of truth for where the user is. A location is a place, an optional context panel, and an optional Settings modal:
 
-| URL | Shows |
+| URL | Place |
 |-----|-------|
-| `/` | Redirects to the last-used agent (or the first) |
-| `/agent/:name` | That agent's main chat |
-| `/agent/:name/sessions/:runId` | A session's run in the main pane |
-| `/agent/:name/workspace` (or `?workspace`) | Workspace panel open beside the main pane |
-| `/agent/:name/scheduled` | Pulses and scheduled actions |
-| `/agent/:name/settings/:section` | Agent settings: runtime, providers, channels, pulses, memory, skills, mcp, a2a, webhooks, history |
-| `/team` | Team view: every agent with lifecycle controls and the create form |
-| `/team/files` | Shared team files |
-| `/team/workbench[/:artifact[?full]]` | The workbench's artifact list, one artifact, or one filling the window |
-| `/team/settings/:section` | Hub settings: general, cloud, a2a, sessions, tracing, update, secrets, agent-keys, history |
+| `/` | Redirects to `/home` |
+| `/home` | Home |
+| `/inbox` | Inbox. `?agent=<name>` filters, `?tab=archived` shows the archive, `?item=<agent>:<id>` opens an item |
+| `/agent/:name` | That agent's Chat |
+| `/agent/:name/activity` | Its Activity |
+| `/agent/:name/schedule` | Its Schedule |
+| `/agent/:name/files` | Its Files |
+| `/team/workbench[/:artifact]` | The Workbench list, with an artifact's row selected |
+| `/team/files` | Shared files |
 
-The agent switcher under the header is on every page. Older unprefixed links (`/settings/...`, `/workbench/...`, `/scheduled`, `/sessions/:runId`) redirect to the agent or team page they belong to, and a settings section named under the wrong scope redirects to the scope that has it (`/settings/agent-keys` goes to `/team/settings/agent-keys`, `/settings/integrations` to the agent's `channels`).
+Any place takes two more parameters:
 
-`App.svelte` derives its layout state from `router` instead of mounting a component per route, so the chat, session view, and workspace stay mounted and every transition is the same CSS transition whether it came from a click or the back button. Navigate through `router` (or `sessions.openRun`), never by setting layout state directly.
+- `panel=session:<agent>:<runId>`, `panel=file:<path>` or `panel=size` is the context panel. A session shows on the viewed agent's places (for that agent) and on the Workbench, a file on agent places and Shared files, and the conversation size on agent places. Anywhere else the router removes it.
+- `settings=<agent | _all>[/<section>]` is the Settings modal. `_all` is the install-wide scope. Without a section, the frame opens the scope's default section, or on phones its section list. Section ids are in `lib/settings-sections.ts`.
 
-History records places, not panel states. Opening a session, returning to the main chat, and opening or switching settings push an entry. Toggling the workspace replaces the current one, and so does a session view following its session into a new run. Back therefore moves between places the user visited. A settings URL says nothing about the chat side, so leaving settings returns to the session and workspace state that was showing before. Overlays (help, feedback, inbox) and the narrow-screen sessions drawer are not in the URL.
+Old URLs redirect by replace: `/team`, `/agent/:name/sessions/:runId`, `/agent/:name/workspace`, `/agent/:name/scheduled`, `/agent/:name/settings[/:section]`, `/team/settings[/:section]`, `/workbench[/…]`, and the unprefixed `/settings`, `/scheduled`, `/sessions/:runId` and `/notification/<id>`, which resolve under the last-used agent once the agent list is known. Old settings section names map to the new scope and section (`lib/settings-sections.ts`). A URL the router can't read, an agent or artifact that doesn't exist, and a panel a place can't show are corrected by replace, with a toast where the user should know.
+
+`routes.ts` reads and formats URLs and knows nothing of the browser. `router.svelte.ts` holds the location. Stores never import it: they expose data and commands, and views navigate (ESLint enforces this under `src/lib/`).
+
+**Navigation.** `openPlace`, `openPanel`, `openSettings` and `openSettingsSection` (a section opened from the phone's section list) push. `replacePlace`, `replacePanel`, `switchSettingsSection` and `switchSettingsScope` replace, and so does every correction and redirect. Each returns whether the navigation happened.
+
+**Closing.** `closePanel` and `closeSettings` go back in the history when this page pushed the entry that opened what is closing, and replace the URL with one that omits the parameter otherwise (a deep link, a reload into the modal). Back therefore closes the panel or modal before it leaves a place.
+
+**Overlays.** A modal overlay calls `router.openOverlay(onDismiss)` when it opens. That pushes an entry with the same URL, so Back closes the overlay. The overlay closes itself through the returned handle (`handle.close()`), which pops that entry. `onDismiss` runs when the entry is left any other way: Back, or a navigation that takes the overlay's entry.
+
+**Unsaved work.** A view that holds work the user would lose registers a check with `router.guard.register(check)`. The check returns a line saying what navigating to the given location would lose, or null. In-app navigation asks first, through the function the app gives `router.guard.setConfirm`, and does not navigate until the user confirms; with no such function it refuses. On Back or Forward the router puts the location back on top of the history, asks, and goes where the user was headed only if they confirm. On reload or tab close the browser's own prompt appears.
+
+**The bound agent** is the viewed agent on an agent place, and on the other places the agent most recently viewed. The last-used agent is remembered in local storage, and `router.setKnownAgents` settles on agents that exist once the agent list is known.
+
+The current views (the header menu, the Settings page, the workbench, the scheduled view, the team pages, the inbox drawer) navigate through `legacyRouter` in `lib/legacy-router.svelte.ts`. It turns their commands into router navigations, and reads off the router's location which old view fills the window and which old Settings section hosts the new one. The workbench's full view is a mode of that page and isn't in the URL. Overlays other than the inbox (help, feedback) and the narrow-screen sessions drawer aren't in the URL.
 
 ### Agents in API calls
 

@@ -96,7 +96,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Activity panel: the artifact's live sessions (open, stop) — **Changed:** in the Workbench row and detail, for sessions on any agent (#292); opening one shows it in the context panel
 - [ ] In-flight model call count and Cancel calls — **Dropped:** a page manages its own calls
 - [ ] Live reload on agent edits — **Changed:** the SDK reloads the page itself, unless the page handles `artifact_updated`
-- [ ] Unknown artifact — **Fix:** the route redirects to the list with a toast
+- [x] Unknown artifact — **Fix:** the route redirects to the list with a toast
 - [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, `features`, `artifact`, `version` — **Changed:** direct access from the page's own origin; no implicit agent (agent-specific calls name their agent, with `agent(name)` added); `embedded`, `ready` and Esc forwarding removed; **Fix:** session frames arrive for sessions on any agent (#292); no reply crosses documents, because the bridge is gone (#307). Artifacts never shipped in a release, so no migration applies.
 - [ ] Unscoped fetch paths: hub prefixes to the hub, `/api/workbench/` to team — **Changed:** agent paths must name the agent; one that doesn't gets a 400 with a clear error
 - [ ] `watch` of `team/` prefixes, resync on reconnect — **Changed:** agent-workspace watches go through `agent(name).watch`
@@ -195,7 +195,7 @@ Agent scope:
 - [ ] Gateway reloading toast and cache invalidation
 - [ ] Plain-language error messages for unreachable, 404, 401/403, 5xx and server messages; error frames as toasts with details; notices as info
 - [ ] Time-of-day vein intensity — **Dropped:** see design §1
-- [ ] Deep links and back/forward — **Changed:** route model in design §3 with redirects from every current URL
-- [ ] macOS notification "Open" link lands on the last-used agent's Files, as today
+- [x] Deep links and back/forward — **Changed:** route model in design §3 with redirects from every current URL
+- [x] macOS notification "Open" link lands on the last-used agent's Files, as today
 - [ ] Persisted preferences: last agent, API cache, setup draft — sidebar open state, settings mode and verbose are **Dropped** with the features they served
 - [ ] Reduced motion respected
