@@ -14,9 +14,11 @@ Each agent loads its own config against the hub config, and keeps its own last-k
 
 ## Start-up and shutdown
 
-`residuum serve` loads the hub config, starts the servers, builds the shared services, and scans `~/.residuum/` for agents (any directory holding `config/config.toml`). Every agent whose `autostart` is on (the default) then starts, concurrently. The readiness marker `hub/residuum.ready` is written once the servers are bound and every autostart agent has either started or been recorded as failed. With no agent on disk, `serve` runs onboarding first.
+`residuum serve` loads the hub config, starts the servers, builds the shared services, and scans `~/.residuum/` for agents (any directory holding `config/config.toml`). Every agent whose `autostart` is on (the default) then starts, concurrently. The readiness marker `hub/residuum.ready` is written once the servers are bound and every autostart agent has either started or been recorded as failed. 
 
-Stopping the hub (SIGTERM, `POST /api/shutdown`, or a restart for an update) stops every agent gracefully before the servers.
+With no agent on disk the hub still starts and serves the web app, which runs onboarding. When `POST /api/hub/config/complete-setup` has written the first agent, the hub applies the hub config it wrote, rescans, and starts the agent, with no process restart. `residuum serve --setup` runs the same hub on an empty temporary root. `residuum setup` writes the same files from the command line, before or without a running hub.
+
+Stopping the hub (SIGTERM, `POST /api/hub/shutdown`, or a restart for an update) stops every agent gracefully before the servers.
 
 ## Agent states
 
@@ -46,14 +48,17 @@ Two agents can't run with the same Teams adapter port: the second one to start i
 - **Session budget**: one semaphore sized by the hub's `[background] max_concurrent`, taken by every agent's session turns. Main turns don't take a permit. A session waiting for a permit shows as `queued` in its agent's session list. Changing `max_concurrent` takes effect on the next restart.
 - **Checkpoints**: the team and hub-config repositories are shared; each agent has its own workspace and config repositories. See [Checkpoints](checkpoints.md).
 - **Tunnel status, secrets, key stores, tracing**: one of each, passed to every agent.
+- **Team change feed**: one watcher over the team directory, publishing `team/...` paths on its own bus. The hub WebSocket, every agent's `/ws` (for clients that watch `team/...` prefixes), and every agent's artifact reload watcher read it, so a change to a team file is watched once however many agents run. Each agent also has a feed over its own directory.
 
 ## Hub config reloads
 
 `hub/config.toml` is watched. A change is applied where the hub owns it: a new `[gateway]` address rebinds the HTTP server (a failed bind keeps the current server), `[cloud]` restarts the tunnel, `[tracing]` updates the tracing service and the log level, and `[a2a]` restarts the A2A listener. Every running agent then reloads against the new hub config for what it reads from it (the timezone, its A2A card, and the hop limits).
 
+The hub's reload queue carries two signals. `Hub` (from the config watcher, hub config writes, key stores, and the cloud settings) reloads the hub config as above. `Workspace`, sent when an edit through `/api/team/workspace/...` changes the team's `AGENTS.md` or `USER.md`, makes every running agent reload its workspace so it picks up the new identity files.
+
 ## Activity
 
-The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. Changes are published on the hub bus as `agent_activity` events.
+The host tracks two things per agent for the switcher: `busy`, true while a main turn runs, and `unread`, the number of main-conversation replies published while no web client was connected to that agent's `/ws`. Connecting a client resets `unread` to zero. Changes are published on the hub bus as `agent_activity` events, which the hub WebSocket (`/api/hub/ws`) forwards to the web UI's agent switcher.
 
 ## Hub bus events
 
@@ -61,7 +66,7 @@ Every change to an agent's state, autostart, or visibility is published in order
 
 ## HTTP
 
-Agent routes are served under `/api/agents/{name}/`, resolved per request. An unknown agent answers `404 { "error": "no agent named '<name>'" }`. An agent that isn't running answers `409 { "error": "<name> is <state>", "state": "<state>" }`, except for its config, providers, MCP, channels, workspace-file, and checkpoint routes, which answer on a stopped or failed agent so it can be repaired. Other paths are served by the first running agent, so the hub-level routes and the app shell answer at the root.
+One router serves everything the hub offers: the hub, team and per-agent routes, the hub WebSocket, and the web app. Agent routes are resolved per request under `/api/agents/{name}/`; an unknown agent answers `404` and an agent that isn't running answers `409`, except for its repair routes. No agent's router serves a root path. The routes, their layout and the request guards are in [Hub HTTP Surface](hub-http.md).
 
 ## Logging
 
