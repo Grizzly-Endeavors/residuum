@@ -1,9 +1,13 @@
 import type { WorkspaceEntry } from "../../src/lib/types";
 import type { MockClock } from "../env";
-import { dirEntryVersion, fileVersion } from "../workspace-tree";
+import { byteLength, dirEntryVersion, fileVersion } from "../workspace-tree";
+import { MOCK_WORKBENCH_ARTIFACT, MOCK_WORKBENCH_ARTIFACT_NAME } from "./workbench";
 
 /** A directory entry as the sample tree declares it: its modification time and version are added when the tree is built. */
 type SampleEntry = Pick<WorkspaceEntry, "name" | "entry_type" | "size">;
+
+/** The sample artifact's page, in the team workbench folder. */
+const SAMPLE_ARTIFACT_FILE = `${MOCK_WORKBENCH_ARTIFACT_NAME}.html`;
 
 const SAMPLE_TREE: Record<string, SampleEntry[]> = {
   "": [
@@ -39,7 +43,9 @@ const SAMPLE_TREE: Record<string, SampleEntry[]> = {
     { name: "wiki", entry_type: "directory", size: null },
     { name: "workbench", entry_type: "directory", size: null },
   ],
-  "team/workbench": [],
+  "team/workbench": [
+    { name: SAMPLE_ARTIFACT_FILE, entry_type: "file", size: byteLength(MOCK_WORKBENCH_ARTIFACT) },
+  ],
   "team/wiki": [
     { name: "index.md", entry_type: "file", size: 512 },
     { name: "log.md", entry_type: "file", size: 340 },
@@ -123,6 +129,7 @@ export function createWorkspaceFileContents(): Record<string, string> {
       null,
       2,
     ),
+    [`team/workbench/${SAMPLE_ARTIFACT_FILE}`]: MOCK_WORKBENCH_ARTIFACT,
     "team/wiki/index.md":
       '---\nokf_version: "0.1"\n---\n\n# Wiki Index\n\n- [projects](projects/index.md) — active projects and their status\n',
     "team/wiki/log.md":

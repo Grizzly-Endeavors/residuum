@@ -4,10 +4,14 @@ import { parseJsonObject } from "./http";
 import {
   frameText,
   HUB_SOCKET_PATH,
+  isWorkspaceFrame,
+  normalizeWatchPrefix,
   routeUpgrades,
   sendFrame,
+  watchedFrame,
   watchPrefixProblem,
   type UpgradeHost,
+  type WatchSet,
 } from "./sockets";
 
 /** What the hub says to a page that sent a frame it couldn't read. */
@@ -16,41 +20,46 @@ const UNREADABLE_MESSAGE =
 
 /** The hub WebSocket, `/api/hub/ws`: server to client frames only, plus `watch_team`. */
 export interface HubSocket {
-  /** Send a frame to every connected page. */
+  /** Send a frame to every connected page; a change feed frame goes to the pages that watch what it touches. */
   broadcast: (frame: HubServerMessage) => void;
   /** Drop every connected page, as a restart of the hub would. */
   dropClients: () => void;
 }
 
 /**
- * Why the hub refuses a `watch_team` frame, in words for the user, or `null`
- * when it accepts it. Like the backend's `handle_client_frame`, a frame it
+ * What a `watch_team` frame asks the hub to watch, or why the hub refuses it,
+ * in words for the user. Like the backend's `handle_client_frame`, a frame it
  * can't read, or a prefix outside `team`, is refused with a warning.
  */
-function watchTeamRefusal(raw: string): string | null {
+function readWatchTeam(raw: string): { prefixes: WatchSet } | { refusal: string } {
   let prefixes: unknown;
   try {
     const body = parseJsonObject(raw);
     prefixes = body.type === "watch_team" ? body.prefixes : undefined;
   } catch {
-    return UNREADABLE_MESSAGE;
+    return { refusal: UNREADABLE_MESSAGE };
   }
   if (!Array.isArray(prefixes) || prefixes.some((p) => typeof p !== "string")) {
-    return UNREADABLE_MESSAGE;
+    return { refusal: UNREADABLE_MESSAGE };
   }
   const watched = prefixes as string[];
   const outsideTeam = watched.find((p) => p !== "team" && !p.startsWith("team/"));
   if (outsideTeam !== undefined) {
-    return `Couldn't watch ${JSON.stringify(outsideTeam)}: team watch paths start with team/, like "team/wiki".`;
+    return {
+      refusal: `Couldn't watch ${JSON.stringify(outsideTeam)}: team watch paths start with team/, like "team/wiki".`,
+    };
   }
   const problem = watched.map((p) => watchPrefixProblem(p)).find((p): p is string => p !== null);
-  return problem === undefined ? null : `Couldn't watch the team files: ${problem}.`;
+  return problem === undefined
+    ? { prefixes: [...new Set(watched.map(normalizeWatchPrefix))] }
+    : { refusal: `Couldn't watch the team files: ${problem}.` };
 }
 
 /**
  * Open the hub WebSocket on the HTTP server. A page that connects first gets
- * `hub_boot` with `bootId`, then an `agents_snapshot` of `listing()`. The
- * mock has no team files changing, so no change frames follow a `watch_team`.
+ * `hub_boot` with `bootId`, then an `agents_snapshot` of `listing()`. Change
+ * feed frames that are broadcast reach only the pages whose `watch_team`
+ * prefixes they touch.
  */
 export function openHubSocket(
   host: UpgradeHost | null,
@@ -59,25 +68,34 @@ export function openHubSocket(
 ): HubSocket {
   const wss = new WebSocketServer({ noServer: true });
   routeUpgrades(host, wss, HUB_SOCKET_PATH);
+  /** What each page watches (`watch_team`); a page that never asked watches nothing. */
+  const watching = new WeakMap<WebSocket, WatchSet>();
 
   wss.on("connection", (ws: WebSocket) => {
     sendFrame(ws, { type: "hub_boot", boot_id: bootId } satisfies HubServerMessage);
     sendFrame(ws, { type: "agents_snapshot", ...listing() } satisfies HubServerMessage);
     ws.on("message", (raw) => {
-      const refusal = watchTeamRefusal(frameText(raw));
-      if (refusal !== null) {
-        sendFrame(ws, {
-          type: "notice",
-          level: "warn",
-          message: refusal,
-        } satisfies HubServerMessage);
+      const read = readWatchTeam(frameText(raw));
+      if ("prefixes" in read) {
+        watching.set(ws, read.prefixes);
+        return;
       }
+      sendFrame(ws, {
+        type: "notice",
+        level: "warn",
+        message: read.refusal,
+      } satisfies HubServerMessage);
     });
   });
 
   return {
     broadcast: (frame) => {
-      for (const client of wss.clients) sendFrame(client, frame);
+      for (const client of wss.clients) {
+        const sent = isWorkspaceFrame(frame)
+          ? watchedFrame(watching.get(client) ?? [], frame)
+          : frame;
+        if (sent !== null) sendFrame(client, sent);
+      }
     },
     dropClients: () => {
       for (const client of wss.clients) client.terminate();

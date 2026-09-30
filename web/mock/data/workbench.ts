@@ -1,10 +1,8 @@
-import type { MockClock } from "../env";
+/** The sample artifact's name, which is its file's name in the team workbench folder. */
+export const MOCK_WORKBENCH_ARTIFACT_NAME = "tip-splitter";
 
-/** A workbench artifact the mock serves: its page and when it last changed. */
-export interface MockArtifact {
-  html: string;
-  modifiedAt: string;
-}
+/** The agent the sample artifact's model calls and sessions run on. */
+const ARTIFACT_AGENT = "atlas";
 
 /** The sample artifact: a tip splitter that exercises `residuum.ask` and `residuum.sessions.start`. */
 export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
@@ -25,6 +23,8 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
   <button id="burst">Fire 3 calls at once</button>
   <button id="spawn">Start a background session</button>
   <script>
+    // Model calls and sessions run on one agent's models, so each names it.
+    const agent = ${JSON.stringify(ARTIFACT_AGENT)};
     const each = document.getElementById("each");
     const update = () => {
       const bill = Number(document.getElementById("bill").value);
@@ -35,7 +35,7 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
     update();
     document.getElementById("ask").addEventListener("click", () =>
       residuum
-        .ask("Is " + each.textContent + " right? Answer in one short sentence.")
+        .ask("Is " + each.textContent + " right? Answer in one short sentence.", { agent })
         .then((r) => alert(r.content))
         .catch((e) => alert(e.message)),
     );
@@ -43,19 +43,19 @@ export const MOCK_WORKBENCH_ARTIFACT = `<!doctype html>
     // flight at once, long enough to see and cancel before they resolve.
     document.getElementById("burst").addEventListener("click", () => {
       for (let i = 0; i < 3; i++) {
-        residuum.ask("Sanity check #" + (i + 1) + " on " + each.textContent).catch(() => {});
+        residuum
+          .ask("Sanity check #" + (i + 1) + " on " + each.textContent, { agent })
+          .catch(() => {});
       }
     });
     // For exercising the activity panel's session list and stop buttons.
     document.getElementById("spawn").addEventListener("click", () =>
       residuum.sessions
-        .start({ prompt: "Double check this tip split against last month's dinner out." })
+        .start({
+          agent,
+          prompt: "Double check this tip split against last month's dinner out.",
+        })
         .catch((e) => alert(e.message)),
     );
   </script>
 </body></html>`;
-
-/** The mock workbench: artifact name to its page. */
-export function createWorkbenchArtifacts(clock: MockClock): Map<string, MockArtifact> {
-  return new Map([["tip-splitter", { html: MOCK_WORKBENCH_ARTIFACT, modifiedAt: clock.iso() }]]);
-}
