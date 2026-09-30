@@ -1,6 +1,7 @@
 /* ── Residuum Web UI — Stone + Vein Theme ─────────────────────────────── */
 
-@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Literata:ital,opsz,wght@0,7..72,300..700;1,7..72,300..700&display=swap");
+/* Legacy variables, read by legacy styles only. Fonts come from fonts.css:
+   Literata is not bundled, so --font-body renders in Georgia. */
 
 :root {
   /* Dark native controls: select menus, scrollbars, date pickers. */

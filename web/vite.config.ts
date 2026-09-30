@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
@@ -14,13 +17,35 @@ const isTest = Boolean(process.env.VITEST);
 // or ^24.15.0.
 const componentTests = ["src/components/**/*.test.ts", "src/**/*.component.test.ts"];
 
+/** The bundled fonts' OFL licenses, which must accompany every copy of the font files. */
+function fontLicenses(): Plugin {
+  const require = createRequire(import.meta.url);
+  return {
+    name: "font-licenses",
+    apply: "build",
+    generateBundle() {
+      for (const font of ["onest", "jetbrains-mono", "cinzel"]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `licenses/${font}-OFL.txt`,
+          source: readFileSync(require.resolve(`@fontsource/${font}/LICENSE`), "utf8"),
+        });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     svelte(isTest ? { compilerOptions: { hmr: false } } : {}),
+    fontLicenses(),
     ...(isMock ? [mockServerPlugin()] : []),
   ],
   build: {
     outDir: "dist",
+    // Font subsets stay separate files: inlined into the CSS, every subset would
+    // download on load instead of when its unicode-range is first rendered.
+    assetsInlineLimit: (file) => (file.endsWith(".woff2") ? false : undefined),
   },
   server: {
     ...(!isMock && {
