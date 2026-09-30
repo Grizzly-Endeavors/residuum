@@ -86,18 +86,25 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] File history: checkpoints (≤ 100), relative time, trigger, summary, auto-select newest, diff, view full content, restore
 - [ ] Team files have live updates — **Fix:** today the team view never subscribes to team change frames
 
-## Workbench → Workbench place (unchanged behavior; W32)
+## Workbench → Workbench place (design §5, §9.8, §9.9; W04b, W32a, W32b)
 
-- [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now"
-- [ ] Open; modifier-click or middle-click opens a new tab
+- [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now" — **Fix:** one path format (`/team/workbench/<name>`) in the list and the bar; **Changed:** refreshes on hub artifact events, so it works with no agent running
+- [ ] Open; modifier-click or middle-click opens a new tab of the app
 - [ ] Delete with Undo (page and data files)
-- [ ] Live list updates; reload on reconnect; artifacts-origin-unavailable warning
-- [ ] Artifact bar: back, title, path, activity toggle ("N sessions · M calls") with sessions (open, stop) and in-flight calls (Cancel calls); Esc and click-outside close
-- [ ] Stop page with Restart notice
-- [ ] Full view by button or F; Esc or collapse to exit; artifact can forward Esc
-- [ ] Reload; live reload on agent edits without flashing
-- [ ] Deleted and unavailable notices
-- [ ] Sandboxed iframe on the artifacts origin; bridge concurrency, retries, deny list, workspace watch, connection events — unchanged
+- [ ] Live list updates; reload on reconnect; artifacts-unavailable warning — **Fix:** the warning shows even when the list is empty
+- [ ] Artifact bar: back, title (focused on open), path, activity toggle ("N sessions · M calls"), Stop page, Full view, Reload — **Changed:** on phones everything past back and title moves to an overflow menu
+- [ ] Activity panel: live sessions this artifact started (open, stop), in-flight calls with Cancel calls; Esc and click-outside close — **Fix:** lists sessions on any agent, not only the bound agent's (#292); opening one shows it in the context panel instead of navigating away and unloading the artifact; Cancel calls says it stopped waiting (#310)
+- [ ] Stop page with Restart notice; sessions keep running
+- [ ] Full view by button or F; Esc or the exit control to exit; the page can forward Esc — **Changed:** hides the whole shell, including the phone bottom bar, and the exit control honors safe areas
+- [ ] Reload; live reload on agent edits without flashing, keeping full view
+- [ ] Deleted and unavailable notices — **Fix:** an unknown artifact redirects to the list with a toast instead of showing the listener's 404 in the frame
+- [ ] Sandboxed iframe on the artifacts origin with today's sandbox and permissions; one frame node, never moved (no reload when the panel opens or full view toggles)
+- [ ] Artifacts origin selection — **Fix:** no unreachable origin when the UI is on HTTPS without a relay artifacts origin (#308)
+- [ ] SDK: `fetch`, `ask`, `on`, `watch`, `state.get`/`set`, `sessions.start` with handle `on`/`send`/`stop`, connection events, Esc forwarding, `ready`, `features` — unchanged — **Fix:** session frames arrive for sessions on any agent (#292); replies never cross documents after a live reload (#307)
+- [ ] Unscoped `residuum.fetch` agent paths resolve to the bound agent; hub-prefixed paths map to the hub; `/api/workbench/` maps to team
+- [ ] `watch` of agent-workspace and `team/` prefixes, resync on reconnect — **Changed:** through the watch registry; `team/` via the hub socket's team watch
+- [ ] Bridge lanes: 8 ordinary, 4 model calls; retry on the relay's "agent overloaded" 503
+- [ ] Request policy — **Fix:** also refuses config patches, MCP config writes, checkpoint restore and undo, artifact deletion, and other artifacts' sessions; the backend enforces it too; the listener sends `frame-ancestors` and stops serving dot-files
 
 ## Scheduled → Schedule place (design §5; W30)
 

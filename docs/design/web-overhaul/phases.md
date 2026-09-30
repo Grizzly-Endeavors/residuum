@@ -67,7 +67,7 @@ It does not merge, and does not contact the owner.
 
 ## Phase 1 — Harness and guardrails (target: main)
 
-W01, then W02 and W04 together, then W03 after W02.
+W01 first. Then W02 and W04 together. Then W03 and W02b after W02, and W04b after W02b.
 
 ### W01 — Mock server as typed modules (L)
 
@@ -101,6 +101,24 @@ W01, then W02 and W04 together, then W03 after W02.
   - The parity test passes, and fails when a mock route is removed.
   - Two identical sequences separated by a reset give identical responses.
   - Preview mode serves the built app and the mock API.
+
+### W02b — Workbench mock fidelity (S)
+
+- **Modules:** the mock server's workbench area and artifacts listener.
+- **Preconditions:** W02.
+- **Shape when done:** the mock matches design §10's workbench fidelity rules:
+  - a fixed artifacts port in deterministic mode, and the listener included in preview mode
+  - the sample artifact names its agent in `ask` and `sessions.start`
+  - deletes return a checkpoint id
+  - folder artifacts, the `/name` → `/name/` redirect and `nosniff`, as the real listener has
+  - `artifact_updated` and `artifact_removed` and `workspace_changed` sent when mock files change (through a test-control endpoint)
+- **Verification:**
+  - Route parity passes.
+  - A manual run of the sample artifact:
+    - starting a session delivers its frames
+    - Fire 3 calls shows three calls in flight, and Cancel calls clears them
+    - delete then Undo restores it
+    - a test-control edit live-reloads the open artifact
 
 ### W03 — End-to-end, accessibility and visual harness (M)
 
@@ -143,6 +161,28 @@ W01, then W02 and W04 together, then W03 after W02.
   - An unregenerated Rust type change fails CI.
   - Coverage appears in the summary.
 
+### W04b — Artifact request policy and workbench fixes (M)
+
+- **Modules:**
+  - the artifact bridge: the policy table, per-document request tracking, origin resolution
+  - backend enforcement for requests carrying the artifact header
+  - the artifacts listener: `frame-ancestors`, no dot-files
+  - `workbench.md`, and the bundled workbench skill and its API reference
+- **Preconditions:** W02b.
+- **Shape when done:** on today's UI:
+  - Design §9.9 holds in the bridge and the backend.
+  - The bridge tracks requests per document (#307).
+  - The artifacts origin follows the design §5 rule (#308).
+  - The workbench docs match the code (#309).
+- **Verification:**
+  - Unit tests: every refused and allowed route in the policy table; a reply for a previous document dropped; the origin rule's three cases.
+  - Rust tests:
+    - header-carrying requests refused on the policy routes
+    - a session stop refused for another artifact's session and allowed for its own
+    - `frame-ancestors` present
+    - a dot-file answering 404
+  - End-to-end on the current UI: the sample artifact's session and calls still work.
+
 ---
 
 ## Phase 2 — Backend contracts (target: main)
@@ -151,7 +191,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 **Order, after W02:**
 - W05, W06, W07 and W12 together.
-- W08 after W05, then W09, then W10 (which also needs W07), then W11.
+- W08 after W05, then W09, then W10 (which also needs W07), then W11, then W11b.
 - These share hub runtime, WebSocket and host modules, so they run in sequence.
 
 ### W05 — Hub snapshot, error kind and hub frames (L)
@@ -243,7 +283,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 - **Modules:** hub overview (new); stream and turn hook consumers; disk readers for stopped agents; hub HTTP and WebSocket.
 - **Preconditions:** W07, W09.
 - **Shape when done:**
-  - `GET /api/hub/overview` and `agent_overview` per design §9.3, for `last_message`, `live_sessions` and `inbox_unread`.
+  - `GET /api/hub/overview` and `agent_overview` per design §9.3, for `last_message`, `live_sessions` (with `source_label`) and `inbox_unread`.
   - `upcoming` and `outbound_problems` are present but empty until W11.
   - Coalescing is trailing-edge, at most one frame per agent per second.
   - The hub's inbox actions update counts.
@@ -271,6 +311,21 @@ Each unit implements its part of design §9, and updates the mock, the generated
   - an outbound problem appearing at the threshold and clearing
   - empty outbound problems for a stopped agent
 
+### W11b — Hub artifact events and session relay (M)
+
+- **Modules:** hub workbench watcher (new, on the team change feed); hub socket subscriptions and `session_frame` forwarding from the per-agent watcher; mock server; hub HTTP and `workbench.md` docs, and the bundled workbench API reference.
+- **Preconditions:** W11.
+- **Shape when done:**
+  - Design §9.8 in full: hub-socket artifact events, and the four subscription frames with `session_frame` delivery.
+  - Existing per-agent artifact frames remain.
+- **Verification:** Rust tests:
+  - artifact events with no agent running
+  - a subscribed session's full event stream arriving on the hub socket
+  - artifact subscriptions matching sessions started later on two different agents
+  - unsubscribe stopping delivery
+  - a notice for an unknown agent
+  - subscriptions ending with the connection
+
 ### W12 — Asset caching and compression (S)
 
 - **Modules:** embedded asset handler; HTTP middleware.
@@ -288,7 +343,7 @@ Each unit implements its part of design §9, and updates the mock, the generated
 
 ## Phase 3 — Foundations (target: integration)
 
-W13 and W16 together. W14 after W13. W17 after W16. W15 after W13 and W17. W18 after W16, once W05 is merged.
+W13 and W16 together. W14 after W13. W17 and W17b after W16. W15 after W13 and W17. W18 after W17b, once W05 is merged.
 
 ### W13 — Tokens, fonts, base styles and icons (M)
 
@@ -370,10 +425,23 @@ W13 and W16 together. W14 after W13. W17 after W16. W15 after W13 and W17. W18 a
     - the guard on navigation and on `popstate`
   - Smoke specs pass.
 
+### W17b — Watch registry (S)
+
+- **Modules:** watch registry (new) for the agent socket and the hub socket's team watch; the existing workspace-watch sync, the Files view, and the artifact bridge, switched to it.
+- **Preconditions:** W16.
+- **Shape when done:**
+  - Design §12's registry: owners register and unregister prefixes.
+  - The union is sent, and re-sent on reconnect and on a bound-agent switch.
+  - Each owner gets only its matching changes.
+  - No owner can replace another's watches.
+- **Verification:**
+  - Unit tests: two owners' prefixes merged and delivered separately; one owner unregistering leaves the other's watches; re-send on reconnect.
+  - Smoke specs pass, and the sample artifact's watch still works.
+
 ### W18 — Config write coordinator (M)
 
 - **Modules:** config write coordinator (new, replacing the lock); the composer's model and thinking controls and the legacy settings save path, switched to it.
-- **Preconditions:** W16; W05 merged.
+- **Preconditions:** W17b; W05 merged.
 - **Shape when done:**
   - Every config write goes through the coordinator per design §8:
     - serialized per file
@@ -467,7 +535,7 @@ W19, then W20 and W21 together.
 ## Phase 5 — Surfaces (target: integration)
 
 **Groups:**
-- Once W20 and W21 are in: W22, W30, W31 and W32 together.
+- Once W20 and W21 are in: W22, W30, W31 and W32a together. W32b after W32a, once W11b is merged.
 - W23 after W22, then W24, then W25. W26 after W22.
 - Once W09–W11 are merged: W27, then W28.
 - W29 once W06, W07 and W10 are merged.
@@ -625,8 +693,8 @@ W19, then W20 and W21 together.
 
 ### W31 — Files, Shared files and the file panel (L)
 
-- **Modules:** Files and Shared files places (new); file tree; editor (shared with the panel); file history dialog; unsaved-edit guard wiring; team change subscription. The legacy workspace and file history modal are deleted.
-- **Preconditions:** W20, W21.
+- **Modules:** Files and Shared files places (new); file tree; editor (shared with the panel); file history dialog; unsaved-edit guard wiring; team change subscription through the watch registry. The legacy workspace and file history modal are deleted.
+- **Preconditions:** W20, W21, W17b.
 - **Shape when done:**
   - Both places meet design §5 and parity.
   - `panel=file:` uses the same editor, including the missing-file state.
@@ -645,15 +713,46 @@ W19, then W20 and W21 together.
   - axe scans and baselines.
   - Parity: Workspace.
 
-### W32 — Workbench place and artifact host (M)
+### W32a — Workbench place and artifact view (M)
 
-- **Modules:** Workbench list and artifact host views. The bridge is unchanged.
+- **Modules:** Workbench list and artifact view (new); the list's refresh on hub artifact events once available (agent-socket events until then). The legacy Workbench components are deleted.
 - **Preconditions:** W20, W21.
-- **Shape when done:** the views meet parity on the new primitives. Full view hides the whole shell, including the bottom bar.
+- **Shape when done:** design §5's Workbench list and artifact view:
+  - the bar and its phone overflow
+  - notices, including the always-shown unavailable banner
+  - one frame that never moves, with full view hiding the whole shell (bottom bar included)
+  - live reload
+  - the unknown-artifact redirect
+  - consistent paths
+  - Stop page and Restart
 - **Verification:**
-  - End-to-end: open Tip Splitter, start a background session from it, cancel calls, enter and leave full view, and delete then Undo.
+  - End-to-end on both projects:
+    - open the sample artifact
+    - full view in and out (F, Esc, the exit control), with the frame not reloading
+    - a mock edit live-reloading it
+    - delete then Undo
+    - an unknown name redirecting
+    - the unavailable banner with an empty list
   - axe scans and baselines.
   - Parity: Workbench.
+
+### W32b — Artifact bridge on the hub (M)
+
+- **Modules:** artifact bridge (hub session relay, hub artifact events, watch registry, bound-agent source for unscoped paths); activity panel across agents from the overview; session panel on the Workbench route.
+- **Preconditions:** W32a, W17b; W11b merged.
+- **Shape when done:**
+  - Design §5's bridge behavior and activity panel.
+  - An artifact's sessions deliver frames on any agent, with no duplicates.
+  - Opening one shows it in the context panel without unloading the artifact.
+  - The bundled workbench API reference notes that session frames arrive for any agent (closes #292).
+- **Verification:**
+  - End-to-end:
+    - with atlas bound, the sample artifact starts a session on scout and receives its frames
+    - the activity panel lists it
+    - opening it shows the panel while the artifact stays loaded (no frame reload)
+    - Stop works
+    - on phones the sheet covers the artifact, and closing it returns without a reload
+  - Unit tests for the frame dedupe and the unscoped-path agent.
 
 ### W33 — Settings model (M)
 
@@ -814,7 +913,7 @@ W43 and W45 together. W44 after W43. W46 after W45. W47 after W44 and W46.
 ### W43 — Installability and code splitting (M, target: integration)
 
 - **Modules:** manifest; document head; safe-area audit across the shell; the install capability for the registry; route-level code splitting.
-- **Preconditions:** W21, W31, W32, W34, W42; W12 merged.
+- **Preconditions:** W21, W31, W32a, W34, W42; W12 merged.
 - **Shape when done:**
   - The manifest, metas, install entry and secure-context hiding follow design §11.
   - The listed splits load on demand.
