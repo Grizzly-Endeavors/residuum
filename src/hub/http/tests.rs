@@ -1425,6 +1425,11 @@ async fn only_the_embedded_app_is_cached_and_compressed() {
         !shell_headers.contains_key("content-encoding"),
         "the app shell is never compressed"
     );
+    assert_eq!(shell_headers["cache-control"], "no-cache");
+    assert!(
+        !shell_headers.contains_key("etag"),
+        "the app shell has no validator, so it is never answered with a 304"
+    );
 
     let (api_status, api_headers, api_body) = h.send(accepting("/api/hub/agents")).await;
     assert_eq!(api_status, StatusCode::OK);

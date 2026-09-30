@@ -6,9 +6,12 @@
 //!
 //! - Files under `assets/` are named by content hash, so a browser keeps them
 //!   for a year without asking again.
-//! - Every other file (`index.html`, the service worker, the manifest, icons)
-//!   keeps its name across releases, so a browser revalidates it on every use
-//!   against a content-hash `ETag` and gets a bodyless 304 when nothing changed.
+//! - HTML documents (`index.html`, also as the answer for a client route) are
+//!   fetched whole on every load: `no-cache` and no validator, so they never get
+//!   a 304.
+//! - Every other file (the service worker, the manifest, icons) keeps its name
+//!   across releases, so a browser revalidates it on every use against a
+//!   content-hash `ETag` and gets a bodyless 304 when nothing changed.
 //! - Scripts, styles, JSON, SVG and the manifest are compressed when the client
 //!   accepts it. HTML and images are not.
 
@@ -32,8 +35,8 @@ const HASHED_ASSET_DIR: &str = "assets/";
 /// A hashed file never changes under its name, so it is kept for a year.
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 
-/// `no-cache` lets a browser keep the file but makes it revalidate before
-/// each use.
+/// `no-cache` lets a browser keep the file but makes it check before each use.
+/// With an `ETag` that check is a 304; without one it is a full fetch.
 const REVALIDATE_CACHE_CONTROL: &str = "no-cache";
 
 /// Brotli quality and gzip level for compressing on the fly. The encoder's
@@ -84,8 +87,9 @@ fn is_client_route(path: &str) -> bool {
 
 /// Serve an embedded file by path, returning `None` if it doesn't exist.
 ///
-/// Carries the cache headers for the file's class and answers a matching
-/// `If-None-Match` with a bodyless 304.
+/// Carries the cache headers for the file's class. A file that is neither
+/// hashed nor HTML has an `ETag`, and a matching `If-None-Match` gets a
+/// bodyless 304.
 fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> Option<Response> {
     let asset = WebAssets::get(path)?;
     let mime = mime_guess::from_path(path).first_or_octet_stream();
@@ -97,16 +101,23 @@ fn serve_embedded(path: &str, method: &Method, request_headers: &HeaderMap) -> O
         headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
     }
 
-    if path.starts_with(HASHED_ASSET_DIR) {
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static(IMMUTABLE_CACHE_CONTROL),
-        );
+    let hashed = path.starts_with(HASHED_ASSET_DIR);
+    let cache_control = if hashed {
+        IMMUTABLE_CACHE_CONTROL
     } else {
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static(REVALIDATE_CACHE_CONTROL),
-        );
+        REVALIDATE_CACHE_CONTROL
+    };
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+
+    // An HTML document has no `ETag`, so a browser's revalidation is a full
+    // fetch, never a 304. Residuum Cloud's relay rewrites top-level HTML on
+    // the way out, adding an instance switcher that shows which instances are
+    // connected at that moment, and the browser caches the rewritten body. A
+    // 304 would keep showing that switcher's old state.
+    if !hashed && !is_html(mime.essence_str()) {
         let etag = format!(
             "\"{}\"",
             URL_SAFE_NO_PAD.encode(asset.metadata.sha256_hash())
@@ -155,6 +166,11 @@ fn set_header(headers: &mut HeaderMap, name: HeaderName, value: &str) {
             warn!(header = %name, error = %error, "dropping an invalid static file header");
         }
     }
+}
+
+/// Whether this media type (no parameters) is an HTML document.
+fn is_html(essence: &str) -> bool {
+    essence == "text/html"
 }
 
 /// Whether a response with this media type (no parameters) is worth
@@ -282,9 +298,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_other_embedded_file_revalidates_against_a_strong_etag() {
+    async fn non_html_embedded_files_revalidate_against_a_strong_etag() {
         for path in [
-            "/index.html",
             "/manifest.webmanifest",
             "/favicon.svg",
             "/mcp-catalog.json",
@@ -307,28 +322,27 @@ mod tests {
 
     #[tokio::test]
     async fn etag_identifies_the_content() {
-        let index = get("/index.html", &[]).await;
-        let again = get("/index.html", &[]).await;
         let manifest = get("/manifest.webmanifest", &[]).await;
+        let again = get("/manifest.webmanifest", &[]).await;
+        let catalog = get("/mcp-catalog.json", &[]).await;
         assert_eq!(
-            header_of(&index, "etag"),
+            header_of(&manifest, "etag"),
             header_of(&again, "etag"),
             "the same content has the same etag"
         );
         assert_ne!(
-            header_of(&index, "etag"),
             header_of(&manifest, "etag"),
+            header_of(&catalog, "etag"),
             "different content has a different etag"
         );
     }
 
     #[tokio::test]
-    async fn client_routes_get_the_app_shell_with_its_headers() {
-        let index = get("/index.html", &[]).await;
-        let index_etag = header_of(&index, "etag").unwrap().to_string();
+    async fn html_documents_are_always_fetched_whole() {
         let index_body = embedded_bytes("index.html");
 
         for path in [
+            "/index.html",
             "/",
             "/agent/atlas/files",
             "/sessions/run-1790000000000-0a1b2c3d",
@@ -346,24 +360,26 @@ mod tests {
                 Some("no-cache"),
                 "{path}"
             );
-            assert_eq!(
-                header_of(&resp, "etag"),
-                Some(index_etag.as_str()),
-                "{path} carries index.html's etag"
-            );
+            assert!(resp.headers().get("etag").is_none(), "{path} has no etag");
             assert_eq!(body_of(resp).await, index_body, "{path} is index.html");
         }
     }
 
     #[tokio::test]
-    async fn the_app_shell_fallback_answers_if_none_match_with_304() {
-        let etag = header_of(&get("/index.html", &[]).await, "etag")
-            .unwrap()
-            .to_string();
-        let resp = get("/agent/atlas/files", &[("if-none-match", &etag)]).await;
-        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
-        assert_eq!(header_of(&resp, "etag"), Some(etag.as_str()));
-        assert_eq!(header_of(&resp, "cache-control"), Some("no-cache"));
+    async fn html_documents_never_answer_304() {
+        let index_body = embedded_bytes("index.html");
+
+        for path in ["/index.html", "/", "/agent/atlas/files"] {
+            for validator in ["*", "\"anything\"", "W/\"anything\""] {
+                let resp = get(path, &[("if-none-match", validator)]).await;
+                assert_eq!(
+                    resp.status(),
+                    StatusCode::OK,
+                    "{path} with If-None-Match {validator}"
+                );
+                assert_eq!(body_of(resp).await, index_body, "{path}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -388,11 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn matching_if_none_match_gets_a_bodyless_304() {
-        for path in [
-            "/index.html",
-            "/manifest.webmanifest",
-            "/icons/icon-192.png",
-        ] {
+        for path in ["/manifest.webmanifest", "/icons/icon-192.png"] {
             let etag = header_of(&get(path, &[]).await, "etag")
                 .unwrap()
                 .to_string();
@@ -609,18 +621,40 @@ mod tests {
         let body = script.bytes().await.unwrap();
         assert_eq!(body.get(..2), Some([0x1f, 0x8b].as_slice()));
 
-        let page_url = format!("http://{addr}/");
-        let page = client.get(&page_url).send().await.unwrap();
-        let etag = page.headers()["etag"].to_str().unwrap().to_string();
-        assert_eq!(page.bytes().await.unwrap(), embedded_bytes("index.html"));
+        let manifest_url = format!("http://{addr}/manifest.webmanifest");
+        let manifest = client.get(&manifest_url).send().await.unwrap();
+        let etag = manifest.headers()["etag"].to_str().unwrap().to_string();
         let revalidated = client
-            .get(&page_url)
+            .get(&manifest_url)
             .header("if-none-match", &etag)
             .send()
             .await
             .unwrap();
         assert_eq!(revalidated.status(), reqwest::StatusCode::NOT_MODIFIED);
         assert!(revalidated.bytes().await.unwrap().is_empty());
+
+        let page_url = format!("http://{addr}/");
+        let page = client
+            .get(&page_url)
+            .header("if-none-match", "*")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), reqwest::StatusCode::OK);
+        assert_eq!(page.bytes().await.unwrap(), embedded_bytes("index.html"));
+    }
+
+    #[test]
+    fn only_text_html_is_an_html_document() {
+        assert!(is_html("text/html"));
+        for essence in [
+            "application/json",
+            "image/svg+xml",
+            "text/css",
+            "text/plain",
+        ] {
+            assert!(!is_html(essence), "{essence}");
+        }
     }
 
     #[test]
