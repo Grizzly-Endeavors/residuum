@@ -57,12 +57,25 @@ describe("inbox routes", () => {
       expect(ids((await fetchJson(url(""))).body)).toEqual(["mock_1", "mock_2"]);
     });
 
-    it("lists no archive until an item is archived", async () => {
-      expect(await fetchJson(url("/archive"))).toEqual({ status: 200, body: [] });
+    it("lists the sample archive, with the same shape as the inbox", async () => {
+      const { status, body } = await fetchJson(url("/archive"));
+      expect(status).toBe(200);
+      expect(body).toEqual([
+        {
+          id: "mock_archived_1",
+          title: "Last week's digest",
+          body: "Here was last week's summary.",
+          source: "agent:digest",
+          timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/) as unknown,
+          read: true,
+          attachments: [],
+        },
+      ]);
     });
 
     it("lists an agent that has never run as empty, inbox and archive alike", async () => {
       harness.state.inboxItems = [];
+      harness.state.inboxArchive = [];
       expect(await fetchJson(url(""))).toEqual({ status: 200, body: [] });
       expect(await fetchJson(url("/archive"))).toEqual({ status: 200, body: [] });
     });
@@ -93,7 +106,7 @@ describe("inbox routes", () => {
     it("moves an item to the archive and answers null", async () => {
       expect(await post("/mock_1/archive")).toEqual({ status: 200, body: null });
       expect(ids((await fetchJson(url(""))).body)).toEqual(["mock_2"]);
-      expect(ids((await fetchJson(url("/archive"))).body)).toEqual(["mock_1"]);
+      expect(ids((await fetchJson(url("/archive"))).body)).toEqual(["mock_1", "mock_archived_1"]);
     });
 
     it("brings an archived item back as it was", async () => {
@@ -102,13 +115,17 @@ describe("inbox routes", () => {
       const restored = (await fetchJson(url(""))).body as UserInboxItem[];
       expect(restored.map((item) => item.id)).toEqual(["mock_1", "mock_2"]);
       expect(restored[0]).toMatchObject({ read: false, title: "Deploy tomorrow" });
-      expect((await fetchJson(url("/archive"))).body).toEqual([]);
+      expect(ids((await fetchJson(url("/archive"))).body)).toEqual(["mock_archived_1"]);
     });
 
     it("lists the archive newest first", async () => {
       await post("/mock_2/archive");
       await post("/mock_1/archive");
-      expect(ids((await fetchJson(url("/archive"))).body)).toEqual(["mock_1", "mock_2"]);
+      expect(ids((await fetchJson(url("/archive"))).body)).toEqual([
+        "mock_1",
+        "mock_2",
+        "mock_archived_1",
+      ]);
     });
 
     it("answers 500 for an item that isn't there, as the backend does", async () => {
@@ -198,8 +215,9 @@ describe("inbox routes over the whole mock", () => {
     expect(atlas.map((item) => item.id)).toEqual(["mock_2"]);
     expect(scout.map((item) => item.id)).toEqual(["mock_1", "mock_2"]);
     const archive = (await fetchJson(at("atlas", "/archive"))).body as UserInboxItem[];
-    expect(archive.map((item) => item.id)).toEqual(["mock_1"]);
-    expect(await fetchJson(at("scout", "/archive"))).toEqual({ status: 200, body: [] });
+    expect(archive.map((item) => item.id)).toEqual(["mock_1", "mock_archived_1"]);
+    const scoutArchive = (await fetchJson(at("scout", "/archive"))).body as UserInboxItem[];
+    expect(scoutArchive.map((item) => item.id)).toEqual(["mock_archived_1"]);
   });
 
   it.each(["drifter", "brittle"])(
@@ -219,7 +237,7 @@ describe("inbox routes over the whole mock", () => {
       status: 200,
       body: null,
     });
-    expect(((await fetchJson(at("atlas", "/archive"))).body as unknown[]).length).toBe(1);
+    expect(((await fetchJson(at("atlas", "/archive"))).body as unknown[]).length).toBe(2);
     expect(await fetchJson(at("atlas", "/mock_1/restore"), { method: "POST" })).toEqual({
       status: 200,
       body: null,

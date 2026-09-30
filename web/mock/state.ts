@@ -9,7 +9,7 @@ import type {
 import type { HubServerMessage } from "../src/lib/hub-types";
 import type { RecentMessage, UserInboxItem, WorkspaceEntry } from "../src/lib/types";
 import { loadAsset } from "./assets";
-import { createInboxItems } from "./data/inbox";
+import { createArchivedInboxItems, createInboxItems } from "./data/inbox";
 import { createSessions, type MockSessions } from "./data/sessions";
 import { createWorkbenchArtifacts, type MockArtifact } from "./data/workbench";
 import { createWorkspaceFileContents, createWorkspaceFiles } from "./data/workspace";
@@ -138,12 +138,13 @@ const EMPTY_A2A_AGENTS_JSON = '{"agents":{}}';
 
 /**
  * Give an agent the data it has once it has run: a conversation, the sample
- * inbox and its A2A client settings. An agent that has never run has none of
- * it, and its file-only routes answer with empty data.
+ * inbox and archive, and its A2A client settings. An agent that has never run
+ * has none of it, and its file-only routes answer with empty data.
  */
 export function seedAgentData(state: MockState): void {
   state.hasConversation = true;
   state.inboxItems = createInboxItems();
+  state.inboxArchive = createArchivedInboxItems();
   state.a2aAgentsJson = SAMPLE_A2A_AGENTS_JSON;
 }
 
