@@ -67,6 +67,39 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     }
 }
 
+/// Generate a filename for an inbox item, the same as [`generate_filename`],
+/// but appending `_2`, `_3`, ... before `.json` when that stem already exists
+/// in `inbox_dir`.
+///
+/// `generate_filename` stays pure and deterministic — the same title on the
+/// same day always produces the same stem. This is the one place that checks
+/// disk, so two items with the same title on the same day get distinct ids
+/// instead of the second one silently overwriting the first through
+/// `save_item`'s atomic rename.
+#[must_use]
+pub async fn unique_filename(inbox_dir: &Path, title: &str, now: NaiveDateTime) -> String {
+    let base = generate_filename(title, now);
+    if !file_exists(inbox_dir, &base).await {
+        return base;
+    }
+
+    let stem = base.trim_end_matches(".json");
+    let mut suffix: u32 = 2;
+    loop {
+        let candidate = format!("{stem}_{suffix}.json");
+        if !file_exists(inbox_dir, &candidate).await {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+async fn file_exists(dir: &Path, filename: &str) -> bool {
+    tokio::fs::try_exists(dir.join(filename))
+        .await
+        .unwrap_or(false)
+}
+
 /// Default an inbox item's title from its body: the first line, in full.
 /// Shared by every caller that lets a title be omitted — the WS `/inbox`
 /// command, chat-interface inbox commands, and the `POST /api/agents/{name}/agent-inbox`
@@ -93,7 +126,7 @@ pub async fn quick_add(
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<String> {
     let now = crate::time::now_local(tz);
-    let filename = generate_filename(title, now);
+    let filename = unique_filename(inbox_dir, title, now).await;
     let item = InboxItem {
         title: title.to_string(),
         body: body.to_string(),
@@ -132,7 +165,7 @@ pub async fn quick_add_with_attachments(
     attachment_paths: &[PathBuf],
 ) -> anyhow::Result<(String, Vec<String>)> {
     let now = crate::time::now_local(tz);
-    let filename = generate_filename(title, now);
+    let filename = unique_filename(inbox_dir, title, now).await;
     let item_id = filename.trim_end_matches(".json");
 
     let (attachments, failures) =
@@ -664,6 +697,148 @@ mod tests {
             "title part should be at most 60 chars: {} (len={})",
             title_part,
             title_part.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_filename_no_collision_matches_generate_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = test_now();
+        assert_eq!(
+            unique_filename(dir.path(), "hello world", now).await,
+            generate_filename("hello world", now),
+            "existing ids must keep resolving the same way when there is no collision"
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_filename_appends_suffix_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = test_now();
+        let base = generate_filename("daily report", now);
+        save_item(dir.path(), &base, &make_item("daily report", 8, false))
+            .await
+            .unwrap();
+
+        let second = unique_filename(dir.path(), "daily report", now).await;
+        assert_ne!(second, base, "colliding stem must get a distinct filename");
+        assert_eq!(second, base.replace(".json", "_2.json"));
+    }
+
+    #[tokio::test]
+    async fn unique_filename_skips_multiple_existing_suffixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = test_now();
+        let base = generate_filename("daily report", now);
+        let suffix_2 = base.replace(".json", "_2.json");
+        save_item(dir.path(), &base, &make_item("daily report", 8, false))
+            .await
+            .unwrap();
+        save_item(dir.path(), &suffix_2, &make_item("daily report", 9, false))
+            .await
+            .unwrap();
+
+        let third = unique_filename(dir.path(), "daily report", now).await;
+        assert_eq!(third, base.replace(".json", "_3.json"));
+    }
+
+    #[tokio::test]
+    async fn quick_add_same_title_same_day_does_not_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let first = quick_add(
+            dir.path(),
+            "daily report",
+            "first body",
+            "cli",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+        let second = quick_add(
+            dir.path(),
+            "daily report",
+            "second body",
+            "cli",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(first, second, "second save must get a distinct filename");
+
+        let first_item = load_item(&dir.path().join(&first)).await.unwrap();
+        let second_item = load_item(&dir.path().join(&second)).await.unwrap();
+        assert_eq!(
+            first_item.body, "first body",
+            "the first item must survive the second save"
+        );
+        assert_eq!(second_item.body, "second body");
+    }
+
+    #[tokio::test]
+    async fn quick_add_with_attachments_same_title_same_day_uses_distinct_attachment_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        let attachments_dir = dir.path().join("attachments");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let source_a = dir.path().join("a.txt");
+        let source_b = dir.path().join("b.txt");
+        tokio::fs::write(&source_a, b"first").await.unwrap();
+        tokio::fs::write(&source_b, b"second").await.unwrap();
+
+        let (first, first_failures) = quick_add_with_attachments(
+            &inbox_dir,
+            &attachments_dir,
+            "daily report",
+            "first body",
+            "agent",
+            chrono_tz::UTC,
+            &[source_a],
+        )
+        .await
+        .unwrap();
+        let (second, second_failures) = quick_add_with_attachments(
+            &inbox_dir,
+            &attachments_dir,
+            "daily report",
+            "second body",
+            "agent",
+            chrono_tz::UTC,
+            &[source_b],
+        )
+        .await
+        .unwrap();
+
+        assert!(first_failures.is_empty());
+        assert!(second_failures.is_empty());
+        assert_ne!(first, second, "second save must get a distinct filename");
+
+        let first_id = first.trim_end_matches(".json");
+        let second_id = second.trim_end_matches(".json");
+        assert_ne!(
+            first_id, second_id,
+            "attachment directories must follow distinct item ids"
+        );
+
+        let first_item = load_item(&inbox_dir.join(&first)).await.unwrap();
+        let second_item = load_item(&inbox_dir.join(&second)).await.unwrap();
+        assert_eq!(first_item.body, "first body");
+        assert_eq!(second_item.body, "second body");
+
+        assert_eq!(
+            tokio::fs::read(attachments_dir.join(first_id).join("a.txt"))
+                .await
+                .unwrap(),
+            b"first",
+            "first item's attachment must not be mixed with the second"
+        );
+        assert_eq!(
+            tokio::fs::read(attachments_dir.join(second_id).join("b.txt"))
+                .await
+                .unwrap(),
+            b"second"
         );
     }
 

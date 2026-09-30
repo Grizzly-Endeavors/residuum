@@ -19,7 +19,7 @@ mod inbox_integration {
 
     use residuum::inbox::{
         self, InboxItem, archive_item, count_unread, generate_filename, list_items, load_item,
-        mark_read, save_item,
+        mark_read, quick_add, save_item,
     };
 
     fn make_item(title: &str, read: bool) -> InboxItem {
@@ -219,6 +219,42 @@ mod inbox_integration {
             !name.contains("__"),
             "consecutive underscores should be collapsed"
         );
+    }
+
+    // ── Same title, same day collisions ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn quick_add_same_title_same_day_keeps_both_items_and_both_stay_usable() {
+        let dir = tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        let archive_dir = dir.path().join("archive/inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let first = quick_add(&inbox_dir, "daily report", "first", "cli", chrono_tz::UTC)
+            .await
+            .unwrap();
+        let second = quick_add(&inbox_dir, "daily report", "second", "cli", chrono_tz::UTC)
+            .await
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "same title/day saves must produce distinct filenames"
+        );
+
+        let items = list_items(&inbox_dir).await.unwrap();
+        assert_eq!(items.len(), 2, "neither item should have been overwritten");
+
+        // Both ids keep working through the rest of the pipeline: mark-read,
+        // archive, and restore all still accept them.
+        let first_id = first.trim_end_matches(".json");
+        let second_id = second.trim_end_matches(".json");
+        mark_read(&inbox_dir, first_id).await.unwrap();
+        archive_item(&inbox_dir, &archive_dir, second_id)
+            .await
+            .unwrap();
+
+        assert!(inbox_dir.join(&first).exists());
+        assert!(archive_dir.join(&second).exists());
     }
 
     // ── Multiple items sorted correctly ──────────────────────────────────────
