@@ -3,6 +3,7 @@ import type { AgentListResponse, HubServerMessage } from "../src/lib/hub-types";
 import { parseJsonObject } from "./http";
 import {
   frameText,
+  HUB_SOCKET_PATH,
   routeUpgrades,
   sendFrame,
   watchPrefixProblem,
@@ -17,6 +18,8 @@ const UNREADABLE_MESSAGE =
 export interface HubSocket {
   /** Send a frame to every connected page. */
   broadcast: (frame: HubServerMessage) => void;
+  /** Drop every connected page, as a restart of the hub would. */
+  dropClients: () => void;
 }
 
 /**
@@ -55,7 +58,7 @@ export function openHubSocket(
   listing: () => AgentListResponse,
 ): HubSocket {
   const wss = new WebSocketServer({ noServer: true });
-  routeUpgrades(host, wss, "/api/hub/ws");
+  routeUpgrades(host, wss, HUB_SOCKET_PATH);
 
   wss.on("connection", (ws: WebSocket) => {
     sendFrame(ws, { type: "hub_boot", boot_id: bootId } satisfies HubServerMessage);
@@ -75,6 +78,9 @@ export function openHubSocket(
   return {
     broadcast: (frame) => {
       for (const client of wss.clients) sendFrame(client, frame);
+    },
+    dropClients: () => {
+      for (const client of wss.clients) client.terminate();
     },
   };
 }

@@ -110,9 +110,9 @@ describe("scopeRequest", () => {
       state: hub.hubState,
       path: "/api/secrets",
     });
-    expect(scopeRequest(hub, "/api/team/wiki", query)).toEqual({
+    expect(scopeRequest(hub, "/api/team/workbench/info", query)).toEqual({
       state: hub.hubState,
-      path: "/api/wiki",
+      path: "/api/workbench/info",
     });
   });
 
@@ -130,6 +130,114 @@ describe("scopeRequest", () => {
   it("refuses an /api path the contract doesn't scope", () => {
     const scoped = scopeRequest(setup(), "/api/status", query);
     expect(isRefusal(scoped) && scoped.status).toBe(404);
+  });
+});
+
+describe("what each scope owns", () => {
+  const query = new URLSearchParams();
+  const hub = createStubHub();
+  hub.createAgent("atlas");
+  hub.createAgent("drifter", { runState: "stopped" });
+
+  it.each([
+    "status",
+    "config/raw",
+    "providers/models",
+    "mcp/patch",
+    "workspace/tree",
+    "checkpoints/stats",
+    "chat/history",
+    "usage",
+    "inbox/archive",
+    "agent-inbox",
+    "sessions/runs/x/transcript",
+    "scheduled/pulses",
+    "model/complete",
+    "a2a/status",
+    "a2a/card",
+    "a2a/agents/raw",
+    "a2a/outbound/t/stop",
+  ])("gives an agent /%s", (route) => {
+    const scoped = scopeRequest(hub, `/api/agents/atlas/${route}`, query);
+    expect(isRefusal(scoped)).toBe(false);
+  });
+
+  it.each([
+    "workbench/artifacts",
+    "workbench/info",
+    "secrets",
+    "agent-keys",
+    "a2a/keys",
+    "cloud/status",
+    "update/status",
+    "tracing/feedback",
+    "system/timezone",
+    "mcp-catalog",
+    "agents",
+    "inbox-not-really",
+  ])("answers 404 for an agent's /%s, which isn't its own", (route) => {
+    const scoped = scopeRequest(hub, `/api/agents/atlas/${route}`, query);
+    expect(isRefusal(scoped) && scoped.status).toBe(404);
+  });
+
+  it.each([
+    "secrets",
+    "agent-keys",
+    "a2a/keys",
+    "cloud/status",
+    "update/check",
+    "tracing/status",
+    "system/timezone",
+    "mcp-catalog",
+    "providers/models",
+    "checkpoints/stats",
+  ])("gives the hub /%s", (route) => {
+    expect(scopeRequest(hub, `/api/hub/${route}`, query)).toEqual({
+      state: hub.hubState,
+      path: `/api/${route}`,
+    });
+  });
+
+  it.each([
+    "workbench/artifacts",
+    "workspace/files",
+    "sessions",
+    "chat/history",
+    "status/x",
+    "inbox-not-really",
+  ])("answers 404 for the hub's /%s", (route) => {
+    const scoped = scopeRequest(hub, `/api/hub/${route}`, query);
+    expect(isRefusal(scoped) && scoped.status).toBe(404);
+  });
+
+  it.each(["workbench/artifacts", "workbench/info", "workbench/artifacts/x"])(
+    "gives the team /%s",
+    (route) => {
+      expect(scopeRequest(hub, `/api/team/${route}`, query)).toEqual({
+        state: hub.hubState,
+        path: `/api/${route}`,
+      });
+    },
+  );
+
+  it.each(["secrets", "sessions", "checkpoints", "status", "wiki"])(
+    "answers 404 for the team's /%s",
+    (route) => {
+      const scoped = scopeRequest(hub, `/api/team/${route}`, query);
+      expect(isRefusal(scoped) && scoped.status).toBe(404);
+    },
+  );
+
+  it("names the scope that doesn't own the route", () => {
+    const scoped = scopeRequest(hub, "/api/agents/atlas/workbench/artifacts", query);
+    expect(isRefusal(scoped) && scoped.body.error).toBe(
+      "mock: /api/agents/atlas/workbench/artifacts is not a route of an agent",
+    );
+  });
+
+  it("answers a stopped agent's route it doesn't own with 409, as the backend does before its router runs", () => {
+    const scoped = scopeRequest(hub, "/api/agents/drifter/workbench/artifacts", query);
+    expect(isRefusal(scoped) && scoped.status).toBe(409);
   });
 });
 

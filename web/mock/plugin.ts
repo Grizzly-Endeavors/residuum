@@ -1,16 +1,14 @@
 import type { Plugin } from "vite";
-import { apiRoutes } from "./api-routes";
-import { startArtifactsListener } from "./artifacts-listener";
-import { createHub } from "./hub";
-import { apiMiddleware, createApiHandler } from "./middleware";
-import { seedAgents } from "./scenario";
+import { readMockOptions, startMock, type MockHost } from "./mock";
 
 /**
  * Vite plugin that mocks all Residuum REST endpoints and WebSocket connections.
- * Activated when VITE_MOCK=1 is set (via `npm run dev:mock`).
+ * Activated when VITE_MOCK=1 is set (via `npm run dev:mock`, or
+ * `npm run preview:mock` for a production build).
  *
- * State is held in-memory for the duration of the dev server session.
- * Nothing persists across restarts.
+ * State is held in-memory for the duration of the server session.
+ * Nothing persists across restarts, and `POST /api/mock/reset` restores the
+ * initial scenario without one.
  *
  * The mock serves the multi-agent hub HTTP contract
  * (docs/systems-usage/hub-http.md): `/api/agents/{name}/...`,
@@ -19,37 +17,25 @@ import { seedAgents } from "./scenario";
  * hub-level and team-level data (secrets, hub config, team files, workbench)
  * live in one shared state.
  *
- * This is the glue: it creates the hub and its agents, serves the route tables
- * (`mock/api-routes.ts`) on the dev server, and starts the artifacts listener.
+ * This is the glue: both Vite servers, dev and preview, start the mock
+ * (`mock/mock.ts`) on their HTTP server and middleware. `MOCK_DETERMINISTIC=1`
+ * makes it repeatable (see `readMockOptions`).
  */
 export function mockServerPlugin(): Plugin {
+  const start = (
+    host: MockHost & { config: { logger: { info: (message: string) => void } } },
+  ): void => {
+    startMock(host, readMockOptions(), (message) => {
+      host.config.logger.info(message);
+    });
+  };
   return {
     name: "residuum-mock-server",
     configureServer(server) {
-      const log = (message: string): void => {
-        server.config.logger.info(message);
-      };
-      const hub = createHub(server.httpServer);
-      const setup = process.env.VITE_MOCK_SETUP === "1";
-
-      // With no agents the web UI shows the setup wizard, and finishing it
-      // creates the first one.
-      if (!setup) seedAgents(hub);
-
-      server.middlewares.use(apiMiddleware(createApiHandler({ hub, routes: apiRoutes })));
-      const listener = startArtifactsListener(hub.hubState, log);
-      server.httpServer?.once("close", () => {
-        listener.close();
-        listener.closeAllConnections();
-      });
-
-      const modeLabel = setup ? "setup" : "running";
-      log("");
-      log("  [mock] API mock server active");
-      log(`  [mock] Mode: ${modeLabel} (set VITE_MOCK_SETUP=1 for setup wizard)`);
-      log("  [mock] Agents: scout, atlas (running), drifter (stopped), brittle (failed)");
-      log("  [mock] Hub WebSocket on /api/hub/ws, agent WebSockets on /api/agents/{name}/ws");
-      log("");
+      start(server);
+    },
+    configurePreviewServer(server) {
+      start(server);
     },
   };
 }

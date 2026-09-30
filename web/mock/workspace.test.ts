@@ -134,7 +134,11 @@ describe("workspace routes", () => {
       const put = await send(agent("/file"), "PUT", { path: "notes/today.md", content: "héllo" });
       expect(put).toEqual({
         status: 200,
-        body: { saved: true, version: await etag(agent("/file?path=notes/today.md")) },
+        body: {
+          saved: true,
+          version: await etag(agent("/file?path=notes/today.md")),
+          diagnostics: [],
+        },
       });
       const entries = await listing(agent("/files?path=notes"));
       expect(entries).toEqual([
