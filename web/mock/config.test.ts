@@ -37,15 +37,22 @@ describe("config routes", () => {
   }
 
   describe("status and system", () => {
-    it("reports the scoped agent, its mode, the version and the features", async () => {
+    it("reports the mode, the version, the features and each checkpoint repository", async () => {
       const { status, body } = await request("GET", "/api/status");
       expect(status).toBe(200);
-      expect(body).toEqual({
-        agent: "atlas",
+      expect(Object.keys(body).sort()).toEqual(["checkpoints", "features", "mode", "version"]);
+      expect(body).toMatchObject({
         mode: "running",
         version: "0.0.0-mock",
         features: ["model-complete", "artifact-sessions", "artifact-state"],
       });
+      const { checkpoints } = body as { checkpoints: Record<string, Record<string, unknown>> };
+      expect(Object.keys(checkpoints).sort()).toEqual(["agent_config", "hub", "team", "workspace"]);
+      for (const stats of Object.values(checkpoints)) {
+        expect(stats.on_disk_bytes).toEqual(expect.any(Number));
+        expect(stats.checkpoint_count).toEqual(expect.any(Number));
+        expect(Date.parse(String(stats.oldest))).not.toBeNaN();
+      }
     });
 
     it("answers the timezone, cloud status and feedback submissions", async () => {
@@ -207,6 +214,22 @@ describe("config routes", () => {
   });
 
   describe("A2A", () => {
+    it("reports how the scoped agent is reached: locally, with no relay and no address of its own", async () => {
+      const { status, body } = await request("GET", "/api/a2a/status");
+      expect(status).toBe(200);
+      expect(body).toEqual({
+        enabled: true,
+        port: 7702,
+        visibility: "public",
+        public_url: null,
+        local_url: "http://127.0.0.1:7702/agents/atlas",
+        relay_access: false,
+        relay_access_note: expect.stringMatching(/^Reachable locally\./) as unknown,
+        listener_running: true,
+        card_error: null,
+      });
+    });
+
     it("describes the card from the workspace file", async () => {
       const { body } = await request("GET", "/api/a2a/card");
       expect(body).toMatchObject({ name: "Residuum agent" });
@@ -240,7 +263,9 @@ describe("config routes", () => {
       const { body } = await fetchJson(url("/api/a2a/agents"));
       expect((body as Body[]).map((a) => a.name)).toEqual(["research-buddy", "laptop"]);
       await putRaw("/api/a2a/agents/raw", '{"agents":{}}');
-      expect((await fetchText(url("/api/a2a/agents/raw"))).body).toBe('{"agents":{}}');
+      const raw = await fetch(url("/api/a2a/agents/raw"));
+      expect(raw.headers.get("content-type")).toBe("application/json");
+      expect(await raw.text()).toBe('{"agents":{}}');
     });
 
     it("stops a reachable outbound task and announces it closed", async () => {
