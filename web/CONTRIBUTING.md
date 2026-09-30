@@ -74,7 +74,7 @@ web/
 │   ├── Chat.svelte           # Main chat view
 │   ├── Setup.svelte          # Setup wizard
 │   ├── Settings.svelte       # Settings panel
-│   ├── styles/               # Global styles (tokens in variables.css)
+│   ├── styles/               # Design tokens, bundled fonts, base styles, legacy global styles
 │   ├── components/
 │   │   ├── ChatFeed.svelte         # Main chat message list (lazy-loads older episodes)
 │   │   ├── ChatInput.svelte        # Input box with slash commands
@@ -190,7 +190,7 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 
 **TypeScript lint.** Every `.ts` module under `src/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
 
-**Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token file (`src/styles/variables.css`) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Stylesheets and components that still carry literal values are listed in `stylelint.config.js` and exempt from these rules; remove an entry when its file is rewritten or deleted, and never add new styles to the list.
+**Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token files (`src/styles/tokens.css`, the design token set described in [AESTHETIC.md](./AESTHETIC.md), and `src/styles/variables.css`, the legacy variables) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Viewport media queries may use only the shell breakpoints, written as `min-width`/`max-width`; a component that needs its own responsive rule uses a container query. Stylesheets and components that still carry literal values are listed in `stylelint.config.js` and exempt from these rules; remove an entry when its file is rewritten or deleted, and never add new styles to the list.
 
 **svelte-check.** It runs with `--fail-on-warnings`. The one accepted warning, a label without an associated control, is filtered in `svelte.config.js`.
 

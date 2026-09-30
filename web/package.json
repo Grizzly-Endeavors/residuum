@@ -50,6 +50,9 @@
     "ws": "^8.18.1"
   },
   "dependencies": {
+    "@fontsource/cinzel": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/onest": "^5.3.1",
     "dompurify": "^3.3.3",
     "marked": "^18.0.0",
     "smol-toml": "^1.6.0"
