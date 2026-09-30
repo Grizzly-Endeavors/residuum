@@ -956,6 +956,7 @@ W43 and W45 together. W44 after W43. W46 after W45. W47 after W44 and W46.
 - **Preconditions:** W21, W31, W32a, W34, W42; W12 merged.
 - **Shape when done:**
   - The manifest, metas, install entry and secure-context hiding follow design §11.
+  - The manifest link carries `crossorigin="use-credentials"`. A browser fetches the manifest without cookies otherwise, and the relay's login check redirects a request with no session cookie to the login page, so the manifest would never load through the relay.
   - The listed splits load on demand.
   - The initial-route size is reported in CI.
 - **Verification:**
