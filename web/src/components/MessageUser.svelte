@@ -1,5 +1,6 @@
 <script lang="ts">
   import { turnChangedWorkspace, undoTurn } from "../lib/turn-undo";
+  import { ws } from "../lib/ws.svelte";
   import { userErrorMessage } from "../lib/errors";
   import { toast } from "../lib/toast.svelte";
   import type { ImageAttachment, MessageSender, TurnRef } from "../lib/types";
@@ -28,7 +29,7 @@
   $effect(() => {
     if (turn?.changed !== null) return;
     const ref = turn;
-    void turnChangedWorkspace(ref.turnId)
+    void turnChangedWorkspace(ws.agent, ref.turnId)
       .then((changed) => {
         ref.changed = changed;
       })
@@ -43,7 +44,7 @@
     if (!turn) return;
     undoing = true;
     try {
-      const outcome = await undoTurn(turn.turnId);
+      const outcome = await undoTurn(ws.agent, turn.turnId);
       if (!outcome) {
         toast.error("Couldn't undo this turn — no checkpoint was found for it.");
         return;

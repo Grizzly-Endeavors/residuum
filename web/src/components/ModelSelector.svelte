@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { fetchProvidersRaw, patchProviders } from "../lib/api";
+  import { requireAgent } from "../lib/paths";
   import { parseProvidersToml, modelRoleJson } from "../lib/settings-toml";
   import { fetchModels, type ModelEntry } from "../lib/models";
   import { withConfigLock } from "../lib/config-lock";
@@ -31,7 +32,8 @@
 
   async function loadCurrentModel(): Promise<void> {
     try {
-      const raw = await fetchProvidersRaw();
+      const agent = requireAgent(ws.agent);
+      const raw = await fetchProvidersRaw(agent);
       const parsed = parseProvidersToml(raw);
       const mainValue = parsed.models.main;
       if (!mainValue) return;
@@ -47,7 +49,7 @@
       // Find provider config to fetch model list
       const provEntry = parsed.providers.find((p) => p.name === currentProvider);
       if (provEntry) {
-        const result = await fetchModels(provEntry.type, provEntry.apiKey, provEntry.url);
+        const result = await fetchModels(agent, provEntry.type, provEntry.apiKey, provEntry.url);
         models = result.models;
       }
     } catch {
@@ -62,11 +64,12 @@
 
     await withConfigLock(async () => {
       try {
-        const raw = await fetchProvidersRaw();
+        const agent = requireAgent(ws.agent);
+        const raw = await fetchProvidersRaw(agent);
         const parsed = parseProvidersToml(raw);
         const newMain = currentProvider + "/" + modelId;
         const value = modelRoleJson(newMain, parsed.models.overrides.main);
-        const result = await patchProviders({ models: { main: value } });
+        const result = await patchProviders(agent, { models: { main: value } });
         if (!result.valid) throw new Error(result.error ?? "unknown error");
         ws.send({ type: "reload" });
         currentModel = modelId;

@@ -15,6 +15,7 @@ import {
 } from "./api";
 import { userErrorMessage } from "./errors";
 import { notifications } from "./notifications.svelte";
+import { requireAgent } from "./paths";
 import type { ActionInfo, PulseInfo, ServerMessage } from "./types";
 
 const WATCHED_PATHS = new Set(["HEARTBEAT.yml", "scheduled_actions.json"]);
@@ -48,6 +49,8 @@ class ScheduledStore {
   private watchers = 0;
   /** Bumped on a reset, so a load begun for the previous agent can tell it is stale. */
   private generation = 0;
+  /** The agent whose pulses and actions these are, `null` before one is bound. */
+  private agent: string | null = null;
 
   /**
    * Start watching for refetch signals. Call once per mounted view; pairs
@@ -75,11 +78,12 @@ class ScheduledStore {
   }
 
   /**
-   * Forget the current agent's pulses and actions, for a switch to another
-   * agent. A view that is open reloads for the new one.
+   * Forget the bound agent's pulses and actions and take `agent` as the new
+   * one (`null` for none). A view that is open reloads for it.
    */
-  reset(): void {
+  reset(agent: string | null): void {
     this.generation++;
+    this.agent = agent;
     this.pulses = [];
     this.actions = [];
     this.loaded = false;
@@ -92,9 +96,10 @@ class ScheduledStore {
     const generation = this.generation;
     this.loading = true;
     try {
+      const agent = requireAgent(this.agent);
       const [pulses, actions] = await Promise.all([
-        fetchScheduledPulses(),
-        fetchScheduledActions(),
+        fetchScheduledPulses(agent),
+        fetchScheduledActions(agent),
       ]);
       if (generation !== this.generation) return;
       this.pulses = pulses;
@@ -117,7 +122,7 @@ class ScheduledStore {
     this.pending = new Set(this.pending);
     const next = !pulse.enabled;
     try {
-      await apiSetPulseEnabled(pulse.name, next);
+      await apiSetPulseEnabled(requireAgent(this.agent), pulse.name, next);
       const index = this.pulses.findIndex((p) => p.name === pulse.name);
       const current = this.pulses[index];
       if (current) {
@@ -141,7 +146,7 @@ class ScheduledStore {
     this.pending.add(action.id);
     this.pending = new Set(this.pending);
     try {
-      await apiCancelScheduledAction(action.id);
+      await apiCancelScheduledAction(requireAgent(this.agent), action.id);
       this.actions = this.actions.filter((a) => a.id !== action.id);
     } catch (err) {
       notifications.surface(

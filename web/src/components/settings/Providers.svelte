@@ -22,11 +22,14 @@
   let {
     providers = $bindable(),
     models = $bindable(),
+    agent,
     pendingSave,
     onReload,
   }: {
     providers: SettingsProviderEntry[];
     models: SettingsModelAssignments;
+    /** The agent whose providers these are. */
+    agent: string | null;
     pendingSave: PendingSaveTracker;
     onReload: () => Promise<void>;
   } = $props();
@@ -141,7 +144,7 @@
     const url = entry.url !== "" ? entry.url : undefined;
 
     modelLoading[role] = true;
-    const result = await fetchModels(entry.type, apiKey, url);
+    const result = await fetchModels(agent, entry.type, apiKey, url);
     modelLists[role] = result.models;
     modelLoading[role] = false;
     modelErrors[role] = result.error;
@@ -166,6 +169,7 @@
     const [removed] = providers.splice(idx, 1);
     if (!removed) return;
     notifyFormUndo(
+      agent,
       `Removed ${removed.name || "provider"}.`,
       pendingSave,
       () => {

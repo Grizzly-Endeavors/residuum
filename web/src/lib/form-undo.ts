@@ -28,13 +28,14 @@ import type { RepoKind } from "./types";
  * Show a success toast for removing an entry from an autosaving form
  * array/field, with an Undo that's safe either way the save landed.
  *
- * Call it right after the removal. `revertLocally` puts the entry back in
- * the form's local state (called only when no save has written the
- * removal). `repo`/`path` name the file this array's changes are saved to,
- * as recorded with `PendingSaveTracker.recordWrite`, for the checkpoint
- * restore when one did.
+ * Call it right after the removal. `agent` is the agent whose file the
+ * array saves to. `revertLocally` puts the entry back in the form's local
+ * state (called only when no save has written the removal). `repo`/`path`
+ * name the file this array's changes are saved to, as recorded with
+ * `PendingSaveTracker.recordWrite`, for the checkpoint restore when one did.
  */
 export function notifyFormUndo(
+  agent: string | null,
   message: string,
   pendingSave: PendingSaveTracker,
   revertLocally: () => void,
@@ -50,12 +51,13 @@ export function notifyFormUndo(
         revertLocally();
         return;
       }
-      void undoAfterSettle(pendingSave, removedAt, revertLocally, repo, path, onRestored);
+      void undoAfterSettle(agent, pendingSave, removedAt, revertLocally, repo, path, onRestored);
     },
   });
 }
 
 async function undoAfterSettle(
+  agent: string | null,
   pendingSave: PendingSaveTracker,
   removedAt: number,
   revertLocally: () => void,
@@ -79,7 +81,7 @@ async function undoAfterSettle(
     return;
   }
   try {
-    await undoLastAction(write.checkpointId, repo, path);
+    await undoLastAction(agent, write.checkpointId, repo, path);
     toast.success("Restored.");
     await onRestored?.();
   } catch (err: unknown) {

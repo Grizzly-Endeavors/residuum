@@ -7,10 +7,13 @@
 
   let {
     servers = $bindable(),
+    agent,
     pendingSave,
     onReload,
   }: {
     servers: McpServerEntry[];
+    /** The agent whose MCP servers these are. */
+    agent: string | null;
     pendingSave: PendingSaveTracker;
     onReload: () => Promise<void>;
   } = $props();
@@ -47,6 +50,7 @@
     const [removed] = servers.splice(idx, 1);
     if (!removed) return;
     notifyFormUndo(
+      agent,
       `Removed ${removed.name}.`,
       pendingSave,
       () => {

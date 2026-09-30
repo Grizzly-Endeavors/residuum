@@ -7,8 +7,8 @@
 // pushes an entry, toggling the workspace replaces the current one, so back
 // moves between places the user visited.
 //
-// The router also owns which agent is current. Changing it points API calls
-// at the new agent and rebinds the agent connection (see `paths.ts`).
+// The router also owns which agent is viewed. Changing it rebinds the agent
+// connection (see `viewed-agent.ts`).
 
 import {
   formatLocation,
@@ -21,8 +21,9 @@ import {
   type TeamPage,
   type WorkbenchLocation,
 } from "./routes";
-import { readLastAgent, rememberLastAgent, setCurrentAgent } from "./paths";
+import { readLastAgent, rememberLastAgent } from "./paths";
 import { defaultSection, isSectionOf, type SettingsSection } from "./settings-sections";
+import { setViewedAgent } from "./viewed-agent";
 
 type HistoryMode = "push" | "replace";
 
@@ -219,7 +220,7 @@ class Router {
     this.workbench = location.workbench;
     this.scheduled = location.scheduled;
     this.team = location.team;
-    setCurrentAgent(location.agent);
+    setViewedAgent(location.agent);
   }
 
   private go(location: AppLocation, mode: HistoryMode): void {

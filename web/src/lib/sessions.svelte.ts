@@ -20,6 +20,7 @@ import { userErrorMessage } from "./errors";
 import { nextFeedId } from "./feed-id";
 import { appendToolCall, applyToolResult, convertHistoryMessages } from "./feed-items";
 import { notifications } from "./notifications.svelte";
+import { requireAgent } from "./paths";
 import { router } from "./router.svelte";
 import { SESSION_CATEGORIES, deliveryOutcomeText, runOutcomeText } from "./session-format";
 import type {
@@ -89,7 +90,12 @@ export class SessionView {
    * chat's `FeedStore.turnStart`. */
   private turnStart: number | null = null;
 
-  constructor(runId: string, summary: SessionSummary | null) {
+  constructor(
+    runId: string,
+    summary: SessionSummary | null,
+    /** The agent the run belongs to, `null` for a store with no agent bound. */
+    private readonly agent: string | null,
+  ) {
     this.runId = runId;
     this.summary = summary;
   }
@@ -105,7 +111,7 @@ export class SessionView {
     this.buffered = this.buffered.filter((frame) => frame.run_id === runId);
     let transcript;
     try {
-      transcript = await fetchSessionTranscript(runId);
+      transcript = await fetchSessionTranscript(requireAgent(this.agent), runId);
     } catch (err) {
       if (token !== this.loadToken) return;
       this.loadError = userErrorMessage(err, {
@@ -259,7 +265,11 @@ export class CompletedRuns {
   nextCursor = $state<string | null>(null);
   loadingMore = $state(false);
 
-  constructor(readonly category: SessionCategory) {}
+  constructor(
+    readonly category: SessionCategory,
+    /** The agent whose runs these are, `null` for a store with no agent bound. */
+    private readonly agent: string | null,
+  ) {}
 
   /** Load the next page of this category's completed runs. */
   async loadMore(): Promise<void> {
@@ -267,7 +277,7 @@ export class CompletedRuns {
     if (!cursor || this.loadingMore) return;
     this.loadingMore = true;
     try {
-      const page = await fetchSessions({
+      const page = await fetchSessions(requireAgent(this.agent), {
         category: this.category,
         before: cursor,
         limit: PAGE_SIZE,
@@ -323,6 +333,8 @@ interface PendingCommand {
 }
 
 export interface SessionsStoreDeps {
+  /** The agent these sessions belong to, `null` before one is bound. */
+  agent: string | null;
   /** Send a client frame over the WebSocket. */
   send: (msg: ClientMessage) => void;
   /** Show a session's message to the main agent in the main chat. */
@@ -333,12 +345,7 @@ export class SessionsStore {
   /** Live runs (forking, running, idle, completing), newest first. */
   live = $state<SessionSummary[]>([]);
   /** Completed runs loaded so far, per category. */
-  readonly completed: Record<SessionCategory, CompletedRuns> = {
-    external: new CompletedRuns("external"),
-    scheduled: new CompletedRuns("scheduled"),
-    spawned: new CompletedRuns("spawned"),
-    artifact: new CompletedRuns("artifact"),
-  };
+  readonly completed: Record<SessionCategory, CompletedRuns>;
   /** The listing has loaded at least once. */
   loaded = $state(false);
   listError = $state<string | null>(null);
@@ -378,7 +385,14 @@ export class SessionsStore {
   private refreshAgain = false;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly deps: SessionsStoreDeps) {}
+  constructor(private readonly deps: SessionsStoreDeps) {
+    this.completed = {
+      external: new CompletedRuns("external", deps.agent),
+      scheduled: new CompletedRuns("scheduled", deps.agent),
+      spawned: new CompletedRuns("spawned", deps.agent),
+      artifact: new CompletedRuns("artifact", deps.agent),
+    };
+  }
 
   // ── Listing ──────────────────────────────────────────────────────
 
@@ -398,7 +412,9 @@ export class SessionsStore {
       // One request per category, so each category's finished runs page on
       // their own; together the pages' live lists cover every live session.
       const pages = await Promise.all(
-        SESSION_CATEGORIES.map((category) => fetchSessions({ category, limit: PAGE_SIZE })),
+        SESSION_CATEGORIES.map((category) =>
+          fetchSessions(requireAgent(this.deps.agent), { category, limit: PAGE_SIZE }),
+        ),
       );
       this.live = pages.flatMap((page) => page.live).sort(compareRunsNewestFirst);
       SESSION_CATEGORIES.forEach((category, i) => {
@@ -422,7 +438,7 @@ export class SessionsStore {
   /** Reload the tasks sent to remote agents. Failure only affects that list. */
   async refreshOutbound(): Promise<void> {
     try {
-      this.outbound = await fetchOutboundA2aTasks();
+      this.outbound = await fetchOutboundA2aTasks(requireAgent(this.deps.agent));
       this.outboundError = null;
     } catch (err) {
       this.outboundError = userErrorMessage(err, {
@@ -468,7 +484,7 @@ export class SessionsStore {
    */
   showRun(runId: string): void {
     if (this.view?.runId === runId) return;
-    const view = new SessionView(runId, this.findRun(runId) ?? null);
+    const view = new SessionView(runId, this.findRun(runId) ?? null, this.deps.agent);
     this.view = view;
     void view.load();
   }
@@ -488,7 +504,7 @@ export class SessionsStore {
       return;
     }
     try {
-      const page = await fetchSessions({ address, limit: 1 });
+      const page = await fetchSessions(requireAgent(this.deps.agent), { address, limit: 1 });
       const run = page.live[0] ?? page.completed[0];
       if (run) {
         this.openRun(run.run_id);
@@ -534,7 +550,7 @@ export class SessionsStore {
     if (this.outboundStopping.has(taskId)) return;
     this.outboundStopping.add(taskId);
     try {
-      this.upsertOutbound(await stopOutboundA2aTask(taskId));
+      this.upsertOutbound(await stopOutboundA2aTask(requireAgent(this.deps.agent), taskId));
       this.outboundUnreachable.delete(taskId);
     } catch (err) {
       const unreachable = unreachableAgentMessage(err);
@@ -557,7 +573,7 @@ export class SessionsStore {
     if (this.outboundStopping.has(taskId)) return;
     this.outboundStopping.add(taskId);
     try {
-      this.upsertOutbound(await stopWatchingOutboundA2aTask(taskId));
+      this.upsertOutbound(await stopWatchingOutboundA2aTask(requireAgent(this.deps.agent), taskId));
     } catch (err) {
       notifications.surface(
         "error",

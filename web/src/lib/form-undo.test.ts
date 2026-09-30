@@ -28,7 +28,14 @@ describe("notifyFormUndo", () => {
     const pendingSave = new PendingSaveTracker();
     const revertLocally = vi.fn();
 
-    notifyFormUndo("Removed acme.", pendingSave, revertLocally, "agent_config", "providers.toml");
+    notifyFormUndo(
+      "scout",
+      "Removed acme.",
+      pendingSave,
+      revertLocally,
+      "agent_config",
+      "providers.toml",
+    );
     const timer = setTimeout(() => {}, 800);
     pendingSave.markScheduled(timer);
     lastToastAction()?.onClick();
@@ -45,6 +52,7 @@ describe("notifyFormUndo", () => {
     const onRestored = vi.fn();
 
     notifyFormUndo(
+      "scout",
       "Removed acme.",
       pendingSave,
       revertLocally,
@@ -65,7 +73,12 @@ describe("notifyFormUndo", () => {
       expect(onRestored).toHaveBeenCalledTimes(1);
     });
     expect(revertLocally).not.toHaveBeenCalled();
-    expect(undoLastAction).toHaveBeenCalledWith("cp-removal", "agent_config", "providers.toml");
+    expect(undoLastAction).toHaveBeenCalledWith(
+      "scout",
+      "cp-removal",
+      "agent_config",
+      "providers.toml",
+    );
   });
 
   it("ignores a save that was already in flight when the entry was removed", async () => {
@@ -73,7 +86,14 @@ describe("notifyFormUndo", () => {
     pendingSave.markSaving();
     const revertLocally = vi.fn();
 
-    notifyFormUndo("Removed a server.", pendingSave, revertLocally, "workspace", "config/mcp.json");
+    notifyFormUndo(
+      "scout",
+      "Removed a server.",
+      pendingSave,
+      revertLocally,
+      "workspace",
+      "config/mcp.json",
+    );
     pendingSave.recordWrite("config/mcp.json", "cp-before-removal");
     pendingSave.markSettled();
     lastToastAction()?.onClick();
@@ -88,7 +108,14 @@ describe("notifyFormUndo", () => {
     const pendingSave = new PendingSaveTracker();
     undoLastAction.mockResolvedValue({ checkpoint_id: "cp2", restored_paths: [] });
 
-    notifyFormUndo("Removed a server.", pendingSave, vi.fn(), "workspace", "config/mcp.json");
+    notifyFormUndo(
+      "scout",
+      "Removed a server.",
+      pendingSave,
+      vi.fn(),
+      "workspace",
+      "config/mcp.json",
+    );
     pendingSave.markSaving();
     lastToastAction()?.onClick();
 
@@ -99,7 +126,7 @@ describe("notifyFormUndo", () => {
     pendingSave.recordWrite("config/mcp.json", "cp1");
     pendingSave.markSettled();
     await vi.waitFor(() => {
-      expect(undoLastAction).toHaveBeenCalledWith("cp1", "workspace", "config/mcp.json");
+      expect(undoLastAction).toHaveBeenCalledWith("scout", "cp1", "workspace", "config/mcp.json");
     });
   });
 
@@ -107,7 +134,14 @@ describe("notifyFormUndo", () => {
     const pendingSave = new PendingSaveTracker();
     const revertLocally = vi.fn();
 
-    notifyFormUndo("Removed acme.", pendingSave, revertLocally, "agent_config", "providers.toml");
+    notifyFormUndo(
+      "scout",
+      "Removed acme.",
+      pendingSave,
+      revertLocally,
+      "agent_config",
+      "providers.toml",
+    );
     pendingSave.markSaving();
     pendingSave.markSettled();
     lastToastAction()?.onClick();
@@ -121,7 +155,14 @@ describe("notifyFormUndo", () => {
   it("reports plainly when the save's checkpoint failed", async () => {
     const pendingSave = new PendingSaveTracker();
 
-    notifyFormUndo("Removed acme.", pendingSave, vi.fn(), "agent_config", "providers.toml");
+    notifyFormUndo(
+      "scout",
+      "Removed acme.",
+      pendingSave,
+      vi.fn(),
+      "agent_config",
+      "providers.toml",
+    );
     pendingSave.markSaving();
     pendingSave.recordWrite("providers.toml", null);
     pendingSave.markSettled();

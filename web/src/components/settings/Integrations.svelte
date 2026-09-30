@@ -13,6 +13,7 @@
     fields = $bindable(),
     simple = false,
     part,
+    agent,
     pendingSave,
     onReload,
   }: {
@@ -20,6 +21,8 @@
     simple?: boolean;
     /** Which of this file's groups to show. */
     part: "channels" | "cloud" | "webhooks" | "tools";
+    /** The agent whose config holds the webhooks. */
+    agent: string | null;
     pendingSave: PendingSaveTracker;
     onReload: () => Promise<void>;
   } = $props();
@@ -94,6 +97,7 @@
     if (!removed) return;
     fields.webhooks = fields.webhooks.filter((_, i) => i !== idx);
     notifyFormUndo(
+      agent,
       `Removed ${removed.name || "webhook"}.`,
       pendingSave,
       () => {

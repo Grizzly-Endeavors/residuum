@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { ws } from "../lib/ws.svelte";
   import { fetchProvidersRaw, patchProviders } from "../lib/api";
+  import { requireAgent } from "../lib/paths";
   import { parseProvidersToml, modelRoleJson } from "../lib/settings-toml";
   import { withConfigLock } from "../lib/config-lock";
   import { toast } from "../lib/toast.svelte";
@@ -22,7 +23,7 @@
 
   onMount(async () => {
     try {
-      const raw = await fetchProvidersRaw();
+      const raw = await fetchProvidersRaw(requireAgent(ws.agent));
       const parsed = parseProvidersToml(raw);
       currentLevel = parsed.models.overrides.main?.thinking ?? "";
     } catch {
@@ -39,7 +40,8 @@
 
     await withConfigLock(async () => {
       try {
-        const raw = await fetchProvidersRaw();
+        const agent = requireAgent(ws.agent);
+        const raw = await fetchProvidersRaw(agent);
         const parsed = parseProvidersToml(raw);
         const mainModel = parsed.models.main;
         const overrides = {
@@ -47,7 +49,7 @@
           thinking: newLevel,
         };
         const value = modelRoleJson(mainModel, overrides);
-        const result = await patchProviders({ models: { main: value } });
+        const result = await patchProviders(agent, { models: { main: value } });
         if (!result.valid) throw new Error(result.error ?? "unknown error");
         ws.send({ type: "reload" });
         currentLevel = newLevel;

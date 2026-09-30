@@ -7,38 +7,10 @@
 //   /api/hub/...             one-per-process things: lifecycle, hub config, secrets
 //   /api/team/...            the shared team layer: team files, workbench
 //
-// The agent scope names the current agent, which the router sets whenever
-// the location changes.
+// An agent-scoped path names its agent: every caller says which one. Nothing
+// here remembers an agent between calls.
 
 const AGENT_STORAGE_KEY = "residuum-last-agent";
-
-let currentAgent: string | null = null;
-
-/** The agent agent-scoped calls address now, or `null` before one is chosen. */
-export function getCurrentAgent(): string | null {
-  return currentAgent;
-}
-
-type AgentListener = (agent: string | null) => void;
-
-const agentListeners = new Set<AgentListener>();
-
-/**
- * Point agent-scoped calls at `name`. Listeners run before this returns, so
- * whatever holds the previous agent's state is torn down before any call can
- * address the new one.
- */
-export function setCurrentAgent(name: string | null): void {
-  if (name === currentAgent) return;
-  currentAgent = name;
-  for (const listener of agentListeners) listener(name);
-}
-
-/** Observe the current agent changing. Returns a function that stops observing. */
-export function onCurrentAgentChange(listener: AgentListener): () => void {
-  agentListeners.add(listener);
-  return () => agentListeners.delete(listener);
-}
 
 /** The agent last opened, kept across reloads. */
 export function readLastAgent(): string | null {
@@ -59,7 +31,7 @@ export function rememberLastAgent(name: string): void {
   }
 }
 
-/** Thrown when an agent-scoped call is made with no agent chosen. */
+/** Thrown when a call needs an agent and none was given. */
 export class NoAgentSelectedError extends Error {
   constructor() {
     super("no agent is selected");
@@ -67,14 +39,23 @@ export class NoAgentSelectedError extends Error {
   }
 }
 
-/** `/api/agents/{name}` for `agent`, or the current agent. */
-export function agentBase(agent: string | null = currentAgent): string {
+/**
+ * `agent` itself, or `NoAgentSelectedError` when there is none. For a caller
+ * that holds a nullable agent (the bound agent before one is chosen) and
+ * reaches an agent-scoped call that needs one.
+ */
+export function requireAgent(agent: string | null): string {
   if (agent === null) throw new NoAgentSelectedError();
+  return agent;
+}
+
+/** `/api/agents/{name}` for `agent`. */
+export function agentBase(agent: string): string {
   return `/api/agents/${encodeURIComponent(agent)}`;
 }
 
-/** An agent-scoped API path: `agentPath("/status")` is `/api/agents/{current}/status`. */
-export function agentPath(sub: string, agent: string | null = currentAgent): string {
+/** An agent-scoped API path: `agentPath("atlas", "/status")` is `/api/agents/atlas/status`. */
+export function agentPath(agent: string, sub: string): string {
   return `${agentBase(agent)}${sub}`;
 }
 
@@ -142,9 +123,10 @@ function isHubCheckpointRepo(path: string): boolean {
 
 /**
  * Map an unscoped `/api/...` path (with optional query) to its scoped
- * contract path. Already-scoped paths pass through.
+ * contract path. Already-scoped paths pass through. A path that belongs to an
+ * agent resolves to `agent`, and throws `NoAgentSelectedError` when there is none.
  */
-export function scopeApiPath(path: string, agent: string | null = currentAgent): string {
+export function scopeApiPath(path: string, agent: string | null): string {
   if (SCOPED_PREFIXES.some((p) => path.startsWith(p))) return path;
   if (HUB_PREFIXES.some((p) => startsWithSegment(path, p))) {
     return hubPath(path.slice("/api".length));
@@ -155,5 +137,5 @@ export function scopeApiPath(path: string, agent: string | null = currentAgent):
   if (TEAM_PREFIXES.some((p) => startsWithSegment(path, p))) {
     return teamPath(path.slice("/api".length));
   }
-  return agentPath(path.slice("/api".length), agent);
+  return agentPath(requireAgent(agent), path.slice("/api".length));
 }

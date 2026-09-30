@@ -76,5 +76,5 @@ export type HubServerMessage =
  */
 export type HubClientMessage = { type: "watch_team"; prefixes: string[] };
 
-/** Which file tree a workspace call addresses: the current agent's, or the shared team's. */
+/** Which file tree a workspace call addresses: an agent's, or the shared team's. */
 export type WorkspaceScope = "agent" | "team";

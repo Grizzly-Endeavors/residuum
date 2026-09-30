@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, jsonResponse, mockFetch, render, screen, settle } from "../test/component";
-import { setCurrentAgent } from "../lib/paths";
 import type { WorkspaceScope } from "../lib/hub-types";
 import FileHistoryModal from "./FileHistoryModal.svelte";
 
@@ -20,13 +19,8 @@ const PAGE = {
   next_cursor: null,
 };
 
-beforeEach(() => {
-  setCurrentAgent("scout");
-});
-
 afterEach(() => {
   vi.unstubAllGlobals();
-  setCurrentAgent(null);
 });
 
 async function openAndRestore(
@@ -44,7 +38,13 @@ async function openAndRestore(
     if (url.includes("/diff")) return jsonResponse({ diff: "+hello" });
     return jsonResponse(PAGE);
   });
-  render(FileHistoryModal, { path, scope, onClose: () => {}, onRestored: () => {} });
+  render(FileHistoryModal, {
+    path,
+    agent: "scout",
+    scope,
+    onClose: () => {},
+    onRestored: () => {},
+  });
   await settle();
   await fireEvent.click(await screen.findByText("Restore this version"));
   await settle();

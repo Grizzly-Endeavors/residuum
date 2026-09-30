@@ -92,7 +92,7 @@
     try {
       const { paths, checkpointId } = await deleteWorkbenchArtifact(item.name);
       artifacts = artifacts.filter((a) => a.name !== item.name);
-      notifyWithUndo(`Deleted "${item.title}".`, "team", paths, checkpointId, load);
+      notifyWithUndo(null, `Deleted "${item.title}".`, "team", paths, checkpointId, load);
     } catch (err) {
       notifications.surface(
         "error",

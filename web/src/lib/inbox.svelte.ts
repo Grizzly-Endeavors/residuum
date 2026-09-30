@@ -5,7 +5,7 @@ import {
   restoreUserInboxItem,
 } from "./api";
 import { userErrorMessage } from "./errors";
-import { agentPath, getCurrentAgent } from "./paths";
+import { agentPath, requireAgent } from "./paths";
 import { notifications } from "./notifications.svelte";
 import type { UserInboxItem } from "./types";
 
@@ -22,6 +22,8 @@ class UserInboxState {
   unreadCount = $derived(this.items.filter((item) => !item.read).length);
 
   private intervalId: number | null = null;
+  /** The agent whose inbox this is, `null` before one is bound. */
+  private agent: string | null = null;
 
   startPolling(): void {
     this.stopPolling();
@@ -39,23 +41,24 @@ class UserInboxState {
   }
 
   /**
-   * Forget the current agent's items, for a switch to another agent. Polling
-   * carries on for the new agent when it was running.
+   * Forget the bound agent's items and take `agent` as the new one (`null` for
+   * none). Polling carries on for it when it was running.
    */
-  reset(): void {
+  reset(agent: string | null): void {
+    this.agent = agent;
     this.items = [];
     this.archivedItems = [];
     if (this.intervalId !== null) this.startPolling();
   }
 
   async refresh(): Promise<void> {
-    const agent = getCurrentAgent();
+    const agent = this.agent;
     if (agent === null) return;
     try {
-      const response = await fetch(agentPath("/inbox", agent));
+      const response = await fetch(agentPath(agent, "/inbox"));
       if (response.ok) {
         const data = (await response.json()) as UserInboxItem[];
-        if (agent === getCurrentAgent()) this.items = data;
+        if (agent === this.agent) this.items = data;
       }
     } catch {
       // Silently ignore fetch failures — next poll cycle will retry
@@ -64,7 +67,7 @@ class UserInboxState {
 
   async markRead(id: string): Promise<void> {
     try {
-      const updatedItem = await markUserInboxItemRead(id);
+      const updatedItem = await markUserInboxItemRead(requireAgent(this.agent), id);
       const index = this.items.findIndex((item) => item.id === id);
       if (index !== -1) {
         this.items[index] = updatedItem;
@@ -76,7 +79,7 @@ class UserInboxState {
 
   async archive(id: string): Promise<void> {
     try {
-      await archiveUserInboxItem(id);
+      await archiveUserInboxItem(requireAgent(this.agent), id);
       this.items = this.items.filter((item) => item.id !== id);
     } catch (err) {
       reportFailure(err, "Couldn't archive that item.");
@@ -85,7 +88,7 @@ class UserInboxState {
 
   async refreshArchive(): Promise<void> {
     try {
-      this.archivedItems = await fetchArchivedUserInbox();
+      this.archivedItems = await fetchArchivedUserInbox(requireAgent(this.agent));
     } catch (err) {
       reportFailure(err, "Couldn't load archived items.");
     }
@@ -93,7 +96,7 @@ class UserInboxState {
 
   async restore(id: string): Promise<void> {
     try {
-      await restoreUserInboxItem(id);
+      await restoreUserInboxItem(requireAgent(this.agent), id);
       this.archivedItems = this.archivedItems.filter((item) => item.id !== id);
       await this.refresh();
     } catch (err) {

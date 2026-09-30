@@ -3,7 +3,7 @@
 import type { ClientMessage, ServerMessage, ConnectionStatus } from "./types";
 
 export interface TransportOptions {
-  /** The socket URL, read on every (re)connect so it can follow the current agent. */
+  /** The socket URL, read on every (re)connect so it can follow the bound agent. */
   url: () => string;
   /** Send a `ping` every 30 seconds. Off for sockets that take no client frames. */
   keepalive?: boolean;

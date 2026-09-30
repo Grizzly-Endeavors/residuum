@@ -4,7 +4,7 @@ import { SessionView } from "./sessions.svelte";
 /** A view with `load()` bypassed, so `applyFrame` applies frames directly
  * instead of buffering them for a transcript fetch this test never makes. */
 function readyView(): SessionView {
-  const view = new SessionView("run-1", null);
+  const view = new SessionView("run-1", null, "scout");
   view.loading = false;
   return view;
 }

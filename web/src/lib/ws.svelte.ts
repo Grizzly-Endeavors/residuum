@@ -6,7 +6,8 @@
 // opens a new connection, so nothing from one agent shows under another.
 
 import { WsTransport } from "./transport.svelte";
-import { agentWsUrl, onCurrentAgentChange } from "./paths";
+import { agentWsUrl } from "./paths";
+import { onViewedAgentChange } from "./viewed-agent";
 import { userInbox } from "./inbox.svelte";
 import { scheduled } from "./scheduled.svelte";
 import { FeedStore } from "./feed.svelte";
@@ -29,16 +30,16 @@ import {
 import type { ClientMessage, ImageAttachment, ServerMessage } from "./types";
 
 class WsCoordinator {
-  /** The agent this connection and its stores belong to, or `null` before one is chosen. */
+  /** The bound agent: the one this connection and its stores belong to, or `null` before one is chosen. */
   agent = $state<string | null>(null);
   transport = new WsTransport({
     url: () => agentWsUrl(this.agent ?? ""),
     keepalive: true,
   });
-  /** The main chat's feed for the current agent. Replaced on an agent switch. */
+  /** The main chat's feed for the bound agent. Replaced on an agent switch. */
   store = $state<FeedStore>(new FeedStore());
-  /** The current agent's sessions. Replaced on an agent switch. */
-  sessions = $state<SessionsStore>(this.createSessions(this.store));
+  /** The bound agent's sessions. Replaced on an agent switch. */
+  sessions = $state<SessionsStore>(this.createSessions(null, this.store));
   private msgCounter = 0;
   private hasConnected = false;
   private frameListeners = new Set<(msg: ServerMessage, agent: string | null) => void>();
@@ -53,7 +54,7 @@ class WsCoordinator {
   verbose = $state(false);
 
   constructor() {
-    onCurrentAgentChange((name) => {
+    onViewedAgentChange((name) => {
       this.useAgent(name);
     });
     try {
@@ -92,12 +93,14 @@ class WsCoordinator {
         // Gateway is reloading config from disk — anything we cached about
         // server-side state may be stale. Episode history is immutable and
         // intentionally stays cached.
-        invalidate(cacheKeyStatus());
         invalidate(CACHE_KEY_TIMEZONE);
         invalidate(CACHE_KEY_MCP_CATALOG);
-        invalidate(cacheKeyConfigRaw());
-        invalidate(cacheKeyProvidersRaw());
-        invalidate(cacheKeyMcpRaw());
+        if (this.agent !== null) {
+          invalidate(cacheKeyStatus(this.agent));
+          invalidate(cacheKeyConfigRaw(this.agent));
+          invalidate(cacheKeyProvidersRaw(this.agent));
+          invalidate(cacheKeyMcpRaw(this.agent));
+        }
       }
       this.store.handleMessage(msg);
     };
@@ -137,8 +140,9 @@ class WsCoordinator {
    * agent: anything still in flight for the old one (a fetch, a queued
    * command) lands on a store nobody reads, or is dropped.
    */
-  private createSessions(store: FeedStore): SessionsStore {
+  private createSessions(agent: string | null, store: FeedStore): SessionsStore {
     const sessions: SessionsStore = new SessionsStore({
+      agent,
       send: (msg) => {
         if (this.sessions === sessions) this.transport.send(msg);
       },
@@ -150,21 +154,21 @@ class WsCoordinator {
   }
 
   /**
-   * Bind to `name`, which the router sets as the current agent: close the current agent's connection, discard its state,
-   * and open the new agent's. `null` unbinds. Calling it with the agent
-   * already bound does nothing.
+   * Bind to `name`, the viewed agent: close the bound agent's connection,
+   * discard its state, and open the new agent's. `null` unbinds. Calling it
+   * with the agent already bound does nothing.
    */
   useAgent(name: string | null): void {
     if (name === this.agent) return;
     this.transport.reset();
     const store = new FeedStore();
     this.store = store;
-    this.sessions = this.createSessions(store);
+    this.sessions = this.createSessions(name, store);
     this.hasConnected = false;
     this.liveUpdatesOffShown = false;
     this.workspaceWatch.clear();
-    scheduled.reset();
-    userInbox.reset();
+    scheduled.reset(name);
+    userInbox.reset(name);
     this.agent = name;
     if (name === null) return;
     this.transport.connect();
@@ -179,11 +183,12 @@ class WsCoordinator {
    * history and the "compressed history" marker shows from the start.
    */
   async loadMainHistory(): Promise<void> {
-    if (this.agent === null) return;
+    const agent = this.agent;
+    if (agent === null) return;
     const store = this.store;
     let recent;
     try {
-      recent = await fetchChatHistory();
+      recent = await fetchChatHistory(agent);
     } catch (err) {
       if (store !== this.store) return;
       notifications.surface(
@@ -203,12 +208,13 @@ class WsCoordinator {
    * Returns whether an episode was added.
    */
   async loadOlderHistory(): Promise<boolean> {
+    const agent = this.agent;
     const store = this.store;
     const cursor = store.oldestEpisodeCursor;
-    if (!store.hasMoreHistory || store.isLoadingOlder || !cursor) return false;
+    if (agent === null || !store.hasMoreHistory || store.isLoadingOlder || !cursor) return false;
     store.isLoadingOlder = true;
     try {
-      store.prependEpisode(await fetchChatSegment(cursor));
+      store.prependEpisode(await fetchChatSegment(agent, cursor));
       return true;
     } catch (err) {
       notifications.surface(
@@ -226,11 +232,12 @@ class WsCoordinator {
 
   /** Catch the main chat up on messages recorded while disconnected. */
   private async reconcileMainHistory(): Promise<void> {
+    const agent = this.agent;
     const store = this.store;
-    if (!store.historyLoaded) return;
+    if (agent === null || !store.historyLoaded) return;
     let recent;
     try {
-      recent = await fetchChatHistory();
+      recent = await fetchChatHistory(agent);
     } catch (err) {
       if (store !== this.store) return;
       notifications.surface(
@@ -254,9 +261,11 @@ class WsCoordinator {
    * `turn_usage` frame arrives.
    */
   private async loadUsageTotals(): Promise<void> {
+    const agent = this.agent;
+    if (agent === null) return;
     const store = this.store;
     try {
-      store.setInitialUsage(await fetchUsageTotals());
+      store.setInitialUsage(await fetchUsageTotals(agent));
     } catch {
       // quiet degradation, by design — see doc comment above
     }
@@ -294,7 +303,7 @@ class WsCoordinator {
 
   // ── Delegated methods ─────────────────────────────────────────────
 
-  /** Close the connection and unbind from the current agent. */
+  /** Close the connection and unbind from the bound agent. */
   disconnect(): void {
     this.useAgent(null);
   }

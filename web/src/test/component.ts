@@ -60,7 +60,7 @@ export async function advance(ms: number): Promise<void> {
 
 /**
  * Replace `WebSocket` with one that never connects. Choosing an agent
- * (`setCurrentAgent`) opens the agent connection, and a component test has
+ * (`setViewedAgent`) opens the agent connection, and a component test has
  * no server to answer it.
  */
 export function stubWebSocket(): void {

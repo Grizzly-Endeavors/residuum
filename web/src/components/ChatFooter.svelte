@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fetchProvidersRaw } from "../lib/api";
+  import { requireAgent } from "../lib/paths";
+  import { ws } from "../lib/ws.svelte";
   import { parseProvidersToml } from "../lib/settings-toml";
   import { formatTokenCount } from "../lib/format-usage";
   import type { SessionUsageTotals } from "../lib/types";
@@ -40,7 +42,7 @@
   onMount(async () => {
     if (model !== undefined) return;
     try {
-      const raw = await fetchProvidersRaw();
+      const raw = await fetchProvidersRaw(requireAgent(ws.agent));
       const main = parseProvidersToml(raw).models.main;
       if (!main) return;
       const slashIdx = main.indexOf("/");

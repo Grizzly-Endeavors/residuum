@@ -21,6 +21,7 @@
   import { userErrorMessage } from "../../lib/errors";
   import { Icon } from "../../lib/icons";
   import { router } from "../../lib/router.svelte";
+  import { requireAgent } from "../../lib/paths";
   import { notifyWithUndo } from "../../lib/undo";
 
   const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
@@ -31,7 +32,14 @@
     fields = $bindable(),
     simple = false,
     scope,
-  }: { fields: ConfigFields; simple?: boolean; scope: "hub" | "agent" } = $props();
+    agent: settingsAgent,
+  }: {
+    fields: ConfigFields;
+    simple?: boolean;
+    scope: "hub" | "agent";
+    /** The agent these settings are for; the agent scope's calls go to it. */
+    agent: string | null;
+  } = $props();
 
   // ── Status ────────────────────────────────────────────────────────────
 
@@ -44,7 +52,7 @@
   async function loadStatus() {
     statusLoading = true;
     try {
-      status = await fetchA2aStatus();
+      status = await fetchA2aStatus(requireAgent(settingsAgent));
       statusError = "";
     } catch (err: unknown) {
       statusError = userErrorMessage(err, { action: "Couldn't check the A2A connection." });
@@ -139,6 +147,7 @@
     try {
       const checkpointId = await revokeA2aKey(name);
       notifyWithUndo(
+        null,
         `Revoked ${name}. It can no longer reach this agent.`,
         "hub",
         "a2a-keys.toml",
@@ -166,7 +175,7 @@
   async function loadAgents() {
     agentsLoading = true;
     try {
-      agents = await fetchA2aAgents();
+      agents = await fetchA2aAgents(requireAgent(settingsAgent));
       agentsError = "";
     } catch (err: unknown) {
       agentsError = userErrorMessage(err, {
@@ -180,7 +189,7 @@
 
   async function enterRawMode() {
     try {
-      rawAgents = await fetchA2aAgentsRaw();
+      rawAgents = await fetchA2aAgentsRaw(requireAgent(settingsAgent));
       rawAgentsEdit = rawAgents;
       rawAgentsError = "";
       rawMode = true;
@@ -212,7 +221,7 @@
     rawAgentsSaving = true;
     rawAgentsError = "";
     try {
-      const result = await putA2aAgentsRaw(rawAgentsEdit);
+      const result = await putA2aAgentsRaw(requireAgent(settingsAgent), rawAgentsEdit);
       rawAgents = rawAgentsEdit;
       await loadAgents();
       if (!result.valid) {
@@ -248,7 +257,7 @@
   async function loadCard() {
     cardLoading = true;
     try {
-      card = await fetchA2aCard();
+      card = await fetchA2aCard(requireAgent(settingsAgent));
       cardError = "";
     } catch (err: unknown) {
       cardError = userErrorMessage(err, { action: "Couldn't load the agent card." });
