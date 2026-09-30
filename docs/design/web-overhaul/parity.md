@@ -124,7 +124,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Create agent: live-validated name, description, copy model settings from, visibility; "Created X" — **Changed:** Create agent dialog
 - [ ] Hub-wide toasts for created / restored / deleted (with Undo), failures and notices (team events never add toasts)
 
-## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7; W15, W19, W21, W29)
+## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7; W15b, W19, W21, W29)
 
 - [ ] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
 - [ ] Connection status text — **Changed:** shown only when degraded
@@ -187,7 +187,7 @@ Agent scope:
 - [ ] Welcome, Providers, Assign models, MCP servers, Integrations, Save & Start — contents unchanged
 - [ ] Back and Next on every step
 
-## Global (W15 toasts, W17 routing, W19 connection and errors, W21 keyboard)
+## Global (W15b toasts, W17 routing, W19 connection and errors, W21 keyboard)
 
 - [ ] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures — **Dropped:** F for artifact full view (artifacts open in their own tab)
 - [ ] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
