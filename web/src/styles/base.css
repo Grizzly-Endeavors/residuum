@@ -42,8 +42,9 @@ samp:where(:not([data-ui], [data-ui] *), [data-legacy-view] *),
 /* ── Grain texture overlay ─────────────────────────────────────────────── */
 /* Slow drift (90s cycle) — imperceptible as motion at 2.5% alpha, but the */
 /* grain stops being statically frozen. Disabled by prefers-reduced-motion. */
+/* Only on pages without the new shell root: the grain never covers it. */
 
-body::before {
+body:not(:has([data-ui]))::before {
   content: "";
   position: fixed;
   inset: -8px;
