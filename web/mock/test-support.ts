@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import type { ServerMessage } from "../src/lib/generated/protocol";
 import { apiRoutes } from "./api-routes";
-import { createHub } from "./hub";
+import { createHub, mockListing } from "./hub";
 import { json } from "./http";
 import { createApiHandler } from "./middleware";
 import { dispatchRoute, type Route } from "./routes";
@@ -27,7 +27,8 @@ export function createStubHub(): MockHub {
         autostart: true,
         role: options.role ?? null,
         visibility: "private",
-        busy: false,
+        busySince: null,
+        stopping: false,
         unread: 0,
         state: createState(name, (options.runState ?? "running") === "running"),
         connectedClients: () => 0,
@@ -43,8 +44,11 @@ export function createStubHub(): MockHub {
       role: agent.role,
       a2a_visibility: agent.visibility,
     }),
+    listing: () => mockListing(agents.values()),
     broadcast: () => {},
     setBusy: () => {},
+    markStopping: () => {},
+    reloadHubConfig: () => {},
     addUnread: () => {},
     clearUnread: () => {},
     transition: () => {},

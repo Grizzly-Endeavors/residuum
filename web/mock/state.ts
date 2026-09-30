@@ -1,6 +1,7 @@
 import type {
   A2aVisibility,
   AgentLastError,
+  AgentListResponse,
   AgentState,
   AgentSummary,
   OutboundA2aTaskSummary,
@@ -88,8 +89,10 @@ export interface MockAgent {
   autostart: boolean;
   role: string | null;
   visibility: A2aVisibility;
-  /** A main turn is in progress. */
-  busy: boolean;
+  /** When the current main turn began, or `null` while none is running. */
+  busySince: string | null;
+  /** The agent's stop has begun and isn't finished: its state is still `running`. */
+  stopping: boolean;
   /** Main-conversation messages the web UI hasn't shown. */
   unread: number;
   state: MockState;
@@ -113,12 +116,25 @@ export interface MockHub {
   /** Register an agent and open its WebSocket route. */
   createAgent: (
     name: string,
-    options?: { role?: string | null; runState?: AgentState; lastError?: string },
+    options?: {
+      role?: string | null;
+      runState?: AgentState;
+      lastError?: Omit<AgentLastError, "at">;
+    },
   ) => MockAgent;
   summary: (agent: MockAgent) => AgentSummary;
+  /** Every agent by name with its activity and stopping set: `GET /api/hub/agents` and the hub snapshot. */
+  listing: () => AgentListResponse;
   /** Send a frame to every hub WebSocket client. */
   broadcast: (frame: HubServerMessage) => void;
   setBusy: (agent: MockAgent, busy: boolean) => void;
+  /** Tell hub clients the agent's stop has begun. Its state changes when `transition` moves it on. */
+  markStopping: (agent: MockAgent) => void;
+  /**
+   * Reload the hub config from the state's `hubConfigToml` the way the hub
+   * does after the file changes, and tell hub clients how it went.
+   */
+  reloadHubConfig: () => void;
   addUnread: (agent: MockAgent) => void;
   clearUnread: (agent: MockAgent) => void;
   /** Move an agent to a run state and tell hub clients. */
