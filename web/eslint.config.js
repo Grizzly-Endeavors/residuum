@@ -10,8 +10,9 @@ import globals from "globals";
 export default tseslint.config(
   // ── Global ignores ──────────────────────────────────────────────────
   {
-    // `mock-server.ts` is the mock plugin entry, and also holds the hub, agent sockets, chat,
-    // files, workbench, inbox and test controls. Everything under `mock/` is linted like `src/`.
+    // `mock-server.ts` is the mock plugin entry, and also holds the artifacts listener and the
+    // files, workbench, inbox and test-control handlers. Everything under `mock/` is linted like
+    // `src/`.
     ignores: ["dist/**", "node_modules/**", "*.config.js", "*.config.ts", "mock-server.ts"],
   },
   // The coverage report ships its own scripts.

@@ -7,7 +7,9 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
  * What a route handler is given. `path` and every route pattern use the
  * unscoped `/api/...` spelling: scoped requests (`/api/agents/{name}/...`,
  * `/api/hub/...`, `/api/team/...`) are rewritten to it, with `state` set to
- * the agent's or the hub's.
+ * the agent's or the hub's. The hub's own routes keep their spelling: agent
+ * lifecycle and status (`/api/hub/agents...`, `/api/hub/status`), hub config
+ * (`/api/hub/config/...`) and team files (`/api/team/workspace/...`).
  */
 export interface RouteContext {
   req: IncomingMessage;
@@ -22,6 +24,9 @@ export interface RouteContext {
   params: readonly string[];
 }
 
+/** A request before a route matches it: what a route handler is given, without `params`. */
+export type RouteRequest = Omit<RouteContext, "params">;
+
 /** One endpoint: an exact path, or a pattern whose capture groups become `params`. */
 export interface Route {
   method: HttpMethod;
@@ -32,7 +37,7 @@ export interface Route {
 /** Run the first route matching the request, and report whether one did. */
 export async function dispatchRoute(
   routes: readonly Route[],
-  request: Omit<RouteContext, "params">,
+  request: RouteRequest,
 ): Promise<boolean> {
   for (const route of routes) {
     if (route.method !== request.method) continue;
