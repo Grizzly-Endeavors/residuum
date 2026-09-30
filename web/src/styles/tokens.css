@@ -75,6 +75,9 @@
   --font-size-title: 20px;
   /* Code inside running text, relative to the text around it. */
   --font-size-code: 0.86em;
+  /* Text fields at phone width. iOS zooms into a focused field whose text
+     is under 16px. */
+  --font-size-field-phone: 16px;
 
   /* The only weights fonts.css loads. Any other weight is synthesized. */
   --font-weight-regular: 400;
