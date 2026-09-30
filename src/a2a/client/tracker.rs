@@ -502,8 +502,9 @@ impl RemoteTaskTracker {
     /// (polling never gives up; it retries with backoff until it recovers or
     /// the task is cancelled). After the streak passes
     /// [`UNREACHABLE_NOTICE_AFTER`], tells the sending agent (a transcript
-    /// note) and publishes a user-facing notice, once per streak;
-    /// [`Self::update_state`] sends a matching notice to both on recovery.
+    /// note), publishes a user-facing notice, and publishes the task's change
+    /// event, once per streak; [`Self::update_state`] sends a matching notice
+    /// to both on recovery.
     async fn note_unreachable(&self, task_id: &str, reason: &str) {
         let outcome = {
             let mut store = self.store.write().await;
@@ -529,7 +530,12 @@ impl RemoteTaskTracker {
         };
         let (is_streak_start, should_notify, sender, agent, hop_count, snapshot) = outcome;
         self.persist(&snapshot).await;
-        if is_streak_start && let Some(task) = snapshot.tasks.get(task_id) {
+        // The threshold crossing is announced with the same event as the
+        // streak's start, so the hub learns a task is now a problem without
+        // running a timer of its own.
+        if (is_streak_start || should_notify)
+            && let Some(task) = snapshot.tasks.get(task_id)
+        {
             self.publish_task_change(task).await;
         }
         if is_streak_start {
@@ -1514,6 +1520,71 @@ mod tests {
         let finished = events.recv().await.unwrap().unwrap();
         assert_eq!(finished.task.state, "completed");
         assert!(!finished.task.is_open());
+    }
+
+    /// The task events queued on `events` right now, waiting briefly for
+    /// the broker to route any that were just published.
+    async fn task_events_now(
+        events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
+    ) -> Vec<TrackedTask> {
+        let mut seen = Vec::new();
+        while let Ok(Ok(Some(event))) =
+            tokio::time::timeout(Duration::from_millis(50), events.recv()).await
+        {
+            seen.push(event.task);
+        }
+        seen
+    }
+
+    /// The one task event queued on `events` right now.
+    async fn the_task_event(
+        events: &mut crate::bus::Subscriber<OutboundA2aTaskEvent>,
+        what: &str,
+    ) -> TrackedTask {
+        let mut seen = task_events_now(events).await;
+        assert_eq!(seen.len(), 1, "{what}: {seen:?}");
+        seen.pop().unwrap()
+    }
+
+    #[tokio::test]
+    async fn each_unreachable_streak_publishes_one_event_at_its_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let (messenger, bus) = messenger();
+        let mut events = bus
+            .subscribe::<_, OutboundA2aTaskEvent>(topics::Notification(NotifyName::from(
+                SYSTEM_CHANNEL,
+            )))
+            .await
+            .unwrap();
+        let tracker = tracker_with_task(dir.path(), A2aClientHub::new_shared(), messenger).await;
+        task_events_now(&mut events).await;
+
+        for streak in 1..=2 {
+            // The streak's start is announced, and later failures under the
+            // threshold are not.
+            tracker.note_unreachable("t1", "connection refused").await;
+            tracker.note_unreachable("t1", "connection refused").await;
+            let started = the_task_event(&mut events, &format!("streak {streak} start")).await;
+            assert!(started.first_unreachable_at.is_some());
+            assert!(!started.unreachable_notified);
+
+            // Crossing the threshold is announced once, carrying the flag
+            // the overview reads.
+            {
+                let mut store = tracker.store.write().await;
+                let entry = store.tasks.get_mut("t1").unwrap();
+                entry.first_unreachable_at = Some(Utc::now() - chrono::Duration::minutes(11));
+            }
+            tracker.note_unreachable("t1", "connection refused").await;
+            tracker.note_unreachable("t1", "connection refused").await;
+            let crossed = the_task_event(&mut events, &format!("streak {streak} threshold")).await;
+            assert!(crossed.unreachable_notified);
+
+            // Contact ends the streak, and that is announced too.
+            tracker.update_state("t1", "working", None, false).await;
+            let cleared = the_task_event(&mut events, &format!("streak {streak} end")).await;
+            assert!(cleared.first_unreachable_at.is_none());
+        }
     }
 
     #[tokio::test]

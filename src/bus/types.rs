@@ -75,6 +75,8 @@ pub enum TopicId {
     Notification(NotifyName),
     /// The user inbox for incoming notifications.
     Inbox,
+    /// Items agents add to the user inbox.
+    UserInbox,
     /// Workbench artifact file changes.
     Workbench,
     /// Debounced workspace file changes (the change feed).
@@ -92,6 +94,7 @@ impl fmt::Display for TopicId {
             Self::UserMessage => f.write_str("user:message"),
             Self::Notification(name) => write!(f, "notification:{name}"),
             Self::Inbox => f.write_str("inbox"),
+            Self::UserInbox => f.write_str("user:inbox"),
             Self::Workbench => f.write_str("workbench"),
             Self::Workspace => f.write_str("workspace"),
             Self::A2aTaskSignal => f.write_str("a2a:task-signal"),
@@ -207,6 +210,7 @@ mod tests {
     fn topic_id_display() {
         assert_eq!(TopicId::UserMessage.to_string(), "user:message");
         assert_eq!(TopicId::Inbox.to_string(), "inbox");
+        assert_eq!(TopicId::UserInbox.to_string(), "user:inbox");
         assert_eq!(TopicId::Background.to_string(), "background");
         assert_eq!(
             TopicId::Endpoint(EndpointName::from("ws")).to_string(),

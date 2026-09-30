@@ -15,6 +15,7 @@ use crate::bus::{
 
 use crate::config::Config;
 use crate::gateway::types::{AgentRuntime, StopRequest};
+use crate::hub::activity::ActivityTracker;
 use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::memory::types::Visibility;
@@ -690,6 +691,54 @@ async fn publish_turn_outcome(
     }
 }
 
+/// What a turn's result says about its replies, read before
+/// [`publish_turn_outcome`] consumes the result.
+struct TurnReplies {
+    /// How many replies went to an endpoint: main-conversation messages the
+    /// web UI may not have shown yet.
+    published: usize,
+    /// The last reply that has text.
+    last_text: Option<String>,
+}
+
+impl TurnReplies {
+    fn of(result: &anyhow::Result<Vec<String>>, output_endpoint: Option<&EndpointName>) -> Self {
+        let Ok(texts) = result else {
+            return Self {
+                published: 0,
+                last_text: None,
+            };
+        };
+        Self {
+            published: if output_endpoint.is_some() {
+                texts.len()
+            } else {
+                0
+            },
+            last_text: texts
+                .iter()
+                .rev()
+                .find(|text| !text.trim().is_empty())
+                .cloned(),
+        }
+    }
+}
+
+/// Tell the activity tracker a main turn is over: each published reply counts
+/// as unread while no client is connected, then the turn hook runs. Called
+/// exactly once per main turn, whatever its outcome.
+fn report_turn_end(
+    activity: &ActivityTracker,
+    replies: TurnReplies,
+    user_message: Option<String>,
+    visibility: Visibility,
+) {
+    for _ in 0..replies.published {
+        activity.main_message_published();
+    }
+    activity.main_turn_ended(user_message, replies.last_text, visibility);
+}
+
 /// Where a background turn's output goes: the `switch_endpoint` override if
 /// the agent set one since the user last spoke, else the user's last endpoint.
 fn background_output_endpoint(
@@ -807,13 +856,7 @@ pub async fn handle_inbound_message(
 
     spawn_main_turn_end_checkpoint(rt, &reply_id, &turn_result);
 
-    // Replies published to an endpoint are main-conversation messages the
-    // web UI may not have shown yet.
-    let published_replies = match (&turn_result, output_endpoint.as_ref()) {
-        (Ok(texts), Some(_)) => texts.len(),
-        _ => 0,
-    };
-
+    let replies = TurnReplies::of(&turn_result, output_endpoint.as_ref());
     publish_turn_outcome(
         turn_result,
         &rt.publisher,
@@ -824,15 +867,15 @@ pub async fn handle_inbound_message(
         &rt.cfg,
     )
     .await;
-    for _ in 0..published_replies {
-        rt.activity.main_message_published();
-    }
 
     let visibility = if is_background {
         Visibility::Background
     } else {
         Visibility::User
     };
+    // A background turn was started by no user message.
+    let user_message = (!is_background).then(|| message.content.clone());
+    report_turn_end(&rt.activity, replies, user_message, visibility.clone());
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(
         rt,
