@@ -35,7 +35,12 @@ function fontLicenses(): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // The primitives gallery (`/dev/gallery`) is served by the dev server and
+  // built into mock builds. Production builds compile it out.
+  define: {
+    __UI_GALLERY__: JSON.stringify(command === "serve" || isMock),
+  },
   plugins: [
     svelte(isTest ? { compilerOptions: { hmr: false } } : {}),
     fontLicenses(),
@@ -89,4 +94,4 @@ export default defineConfig({
       },
     ],
   },
-});
+}));
