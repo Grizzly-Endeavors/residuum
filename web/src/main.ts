@@ -4,6 +4,7 @@ import "./styles/index.css";
 import "./styles/ui-base.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import { startConfigSync } from "./lib/config-sync";
 
 // Time-aware vein intensity: vein glows are slightly brighter at night,
 // dimmer at midday. ±10% range, computed once on mount. The shift is too
@@ -15,4 +16,6 @@ document.documentElement.style.setProperty("--vein-intensity", veinIntensity.toF
 
 const target = document.getElementById("app");
 if (!target) throw new Error("missing #app element");
+// Config changes made outside this page reach the views that show them.
+startConfigSync();
 mount(App, { target });
