@@ -2341,8 +2341,17 @@ interface MockAgent {
   connectedClients: () => number;
 }
 
+/** An agent removed by `DELETE`, kept whole so a restore brings back its conversation and settings. */
+interface MockDeletedAgent {
+  agent: MockAgent;
+  deletedAt: string;
+  checkpointId: string;
+}
+
 interface MockHub {
   agents: Map<string, MockAgent>;
+  /** Deleted agents that can be restored, by name. */
+  deleted: Map<string, MockDeletedAgent>;
   /** Hub-level and team-level state: secrets, hub config, team files, the workbench. */
   hubState: MockState;
   /** Register an agent and open its WebSocket route. */
@@ -2428,6 +2437,7 @@ function createHub(server: ViteDevServer): MockHub {
 
   const hub: MockHub = {
     agents,
+    deleted: new Map(),
     hubState,
     broadcast,
     summary: mockAgentSummary,
@@ -2564,6 +2574,59 @@ async function handleLifecycle(
     return;
   }
 
+  // GET /api/hub/agents/deleted — newest deletion first, like the backend.
+  if (path === "/api/hub/agents/deleted" && method === "GET") {
+    const list = [...hub.deleted.values()]
+      .sort((a, b) => byName(b.deletedAt, a.deletedAt) || byName(a.agent.name, b.agent.name))
+      .map((gone) => ({
+        name: gone.agent.name,
+        deleted_at: gone.deletedAt,
+        checkpoint_id: gone.checkpointId,
+      }));
+    json(res, 200, { agents: list });
+    return;
+  }
+
+  // POST /api/hub/agents/restore — `{ name, checkpoint_id? }`; answers 201 with the summary.
+  if (path === "/api/hub/agents/restore" && method === "POST") {
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(await readBody(req));
+      if (typeof body.name !== "string") throw new Error("missing field `name`");
+    } catch (err) {
+      json(res, 400, { error: mockBadBody(err) });
+      return;
+    }
+    const name = String(body.name);
+    const nameProblem = mockAgentNameProblem(name);
+    if (nameProblem !== null) {
+      json(res, 400, { error: nameProblem });
+      return;
+    }
+    if (hub.agents.has(name)) {
+      json(res, 409, { error: `an agent named '${name}' already exists` });
+      return;
+    }
+    const gone = hub.deleted.get(name);
+    if (!gone) {
+      json(res, 404, { error: `there is no deleted agent named '${name}' to restore` });
+      return;
+    }
+    if (typeof body.checkpoint_id === "string" && body.checkpoint_id !== gone.checkpointId) {
+      json(res, 400, {
+        error: `${name} has no checkpoint '${body.checkpoint_id}' to restore from`,
+      });
+      return;
+    }
+    hub.deleted.delete(name);
+    const agent = gone.agent;
+    agent.runState = agent.autostart ? "running" : "stopped";
+    hub.agents.set(name, agent);
+    hub.broadcast({ type: "agent_restored", agent: hub.summary(agent), by: "user" });
+    json(res, 201, hub.summary(agent));
+    return;
+  }
+
   if (path === "/api/hub/agents" && method === "POST") {
     // `CreateAgentRequest`: `name` is required; the rest may be absent or null.
     let body: Record<string, unknown>;
@@ -2593,6 +2656,7 @@ async function handleLifecycle(
       json(res, 400, { error: "give models_from or providers_toml" });
       return;
     }
+    hub.deleted.delete(name);
     const agent = hub.createAgent(name, {
       role: typeof body.description === "string" ? body.description : null,
     });
@@ -2641,9 +2705,17 @@ async function handleLifecycle(
 
   if (!action && method === "DELETE") {
     agent.state.dropSockets();
+    agent.runState = "stopped";
+    agent.busy = false;
     hub.agents.delete(agent.name);
+    const checkpointId = `ckpt-${agent.name}-${Date.now()}`;
+    hub.deleted.set(agent.name, {
+      agent,
+      deletedAt: new Date().toISOString(),
+      checkpointId,
+    });
     hub.broadcast({ type: "agent_deleted", name: agent.name, by: "user" });
-    json(res, 200, { deleted: true, checkpoint_id: `ckpt-${agent.name}-${Date.now()}` });
+    json(res, 200, { deleted: true, checkpoint_id: checkpointId });
     return;
   }
 

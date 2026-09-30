@@ -5,7 +5,7 @@ import { hub } from "../lib/hub.svelte";
 import { router } from "../lib/router.svelte";
 import { toast } from "../lib/toast.svelte";
 import { notifications } from "../lib/notifications.svelte";
-import type { AgentSummary } from "../lib/hub-types";
+import type { AgentSummary, DeletedAgent } from "../lib/hub-types";
 
 function agent(name: string, overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -27,11 +27,28 @@ interface Call {
 
 let calls: Call[] = [];
 
+/** What `GET /api/hub/agents/deleted` answers; the view asks for it on mount, so it is not in `calls`. */
+let deletedAgents: DeletedAgent[] = [];
+let deletedListFails = false;
+
+function deletedAgent(name: string, hoursAgo = 3): DeletedAgent {
+  return {
+    name,
+    deleted_at: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+    checkpoint_id: `ckpt-${name}`,
+  };
+}
+
 /** Answer the hub lifecycle routes; `respond` can override any of them. */
 function serveHub(respond?: (call: Call) => Response | undefined): void {
   calls = [];
   mockFetch((url, init) => {
     const method = init?.method ?? "GET";
+    if (url === "/api/hub/agents/deleted" && method === "GET") {
+      return deletedListFails
+        ? jsonResponse({ error: "history unreadable" }, 500)
+        : jsonResponse({ agents: deletedAgents });
+    }
     const call: Call = {
       method,
       url,
@@ -48,6 +65,9 @@ function serveHub(respond?: (call: Call) => Response | undefined): void {
     if (url === "/api/hub/agents" && method === "POST") {
       return jsonResponse(agent((call.body as { name: string }).name), 201);
     }
+    if (url === "/api/hub/agents/restore" && method === "POST") {
+      return jsonResponse(agent((call.body as { name: string }).name), 201);
+    }
     const one = /^\/api\/hub\/agents\/([^/]+)$/.exec(url);
     if (one && method === "DELETE") return jsonResponse({ deleted: true, checkpoint_id: "ckpt-9" });
     if (one && method === "PATCH") {
@@ -58,6 +78,8 @@ function serveHub(respond?: (call: Call) => Response | undefined): void {
 }
 
 beforeEach(() => {
+  deletedAgents = [];
+  deletedListFails = false;
   hub.handleFrame({
     type: "agents_snapshot",
     agents: [
@@ -76,6 +98,9 @@ beforeEach(() => {
 afterEach(() => {
   hub.handleFrame({ type: "agents_snapshot", agents: [] });
   hub.notices = [];
+  hub.deleted = [];
+  hub.deletedLoaded = false;
+  hub.deletedError = null;
   notifications.history = [];
   for (const id of [...toast.toasts.keys()]) toast.dismiss(id);
 });
@@ -304,7 +329,7 @@ describe("TeamView delete", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveTextContent("removes");
     expect(dialog).toHaveTextContent("directory");
-    expect(dialog).toHaveTextContent("restored from checkpoints");
+    expect(dialog).toHaveTextContent("undo this and restore it");
     expect(calls).toEqual([]);
   });
 
@@ -325,7 +350,7 @@ describe("TeamView delete", () => {
     expect(screen.queryByRole("button", { name: "Delete drifter" })).toBeNull();
   });
 
-  it("says plainly when no checkpoint was taken", async () => {
+  it("says plainly when no checkpoint was taken, with nothing to undo", async () => {
     serveHub((call) =>
       call.method === "DELETE" ? jsonResponse({ deleted: true, checkpoint_id: null }) : undefined,
     );
@@ -333,6 +358,154 @@ describe("TeamView delete", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
     await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
     expect(await screen.findByText(/No checkpoint was taken/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Undo deleting drifter" })).toBeNull();
+  });
+
+  it("offers Undo on the deletion note, which restores the agent from its checkpoint", async () => {
+    render(TeamView, { onClose: () => {} });
+    await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
+    await screen.findByText("ckpt-9");
+    expect(screen.queryByRole("button", { name: "drifter" })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Undo deleting drifter" }));
+
+    await vi.waitFor(() => {
+      expect(screen.getByRole("button", { name: "drifter" })).toBeTruthy();
+    });
+    expect(calls.at(-1)).toEqual({
+      method: "POST",
+      url: "/api/hub/agents/restore",
+      body: { name: "drifter", checkpoint_id: "ckpt-9" },
+    });
+    expect(screen.queryByText("ckpt-9")).toBeNull();
+  });
+
+  it("shows Undo as pending and keeps the note when the restore fails", async () => {
+    let release: (r: Response) => void = () => {};
+    render(TeamView, { onClose: () => {} });
+    await fireEvent.click(screen.getByRole("button", { name: "Delete drifter" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Delete agent" }));
+    await screen.findByText("ckpt-9");
+    mockFetch(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Undo deleting drifter" }));
+
+    const undo = screen.getByRole("button", { name: "Undo deleting drifter" });
+    expect(undo).toBeDisabled();
+    expect(undo).toHaveTextContent("Restoring");
+    release(jsonResponse({ error: "an agent named 'drifter' already exists" }, 409));
+    await vi.waitFor(() => {
+      expect(screen.getByRole("button", { name: "Undo deleting drifter" })).toBeEnabled();
+    });
+    expect([...toast.toasts.values()].some((t) => t.kind === "error")).toBe(true);
+    expect(screen.getByText("ckpt-9")).toBeTruthy();
+  });
+});
+
+describe("TeamView recently deleted", () => {
+  const restoreButton = (name: string): HTMLElement =>
+    screen.getByRole("button", { name: `Restore ${name}` });
+
+  it("has no section when nothing is deleted", async () => {
+    render(TeamView, { onClose: () => {} });
+    await vi.waitFor(() => {
+      expect(hub.deletedLoaded).toBe(true);
+    });
+    expect(screen.queryByText("Recently deleted")).toBeNull();
+  });
+
+  it("lists each deleted agent with when it was deleted", async () => {
+    deletedAgents = [deletedAgent("nova", 3), deletedAgent("kit", 48)];
+    render(TeamView, { onClose: () => {} });
+
+    expect(await screen.findByText("Recently deleted")).toBeTruthy();
+    const nova = restoreButton("nova").closest("li");
+    const kit = restoreButton("kit").closest("li");
+    expect(nova).toHaveTextContent("nova");
+    expect(nova).toHaveTextContent("deleted 3h ago");
+    expect(kit).toHaveTextContent("deleted 2d ago");
+  });
+
+  it("restores from the deletion's checkpoint, shows progress, and moves the agent into the list", async () => {
+    deletedAgents = [deletedAgent("nova")];
+    render(TeamView, { onClose: () => {} });
+    await screen.findByText("Recently deleted");
+    let release: (r: Response) => void = () => {};
+    mockFetch(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    await fireEvent.click(restoreButton("nova"));
+
+    expect(restoreButton("nova")).toBeDisabled();
+    expect(restoreButton("nova")).toHaveTextContent("Restoring");
+    release(jsonResponse(agent("nova"), 201));
+    await vi.waitFor(() => {
+      expect(screen.getByRole("button", { name: "nova" })).toBeTruthy();
+    });
+    expect(screen.queryByText("Recently deleted")).toBeNull();
+    expect(hub.deleted).toEqual([]);
+  });
+
+  it("sends the checkpoint id of the row", async () => {
+    deletedAgents = [deletedAgent("nova")];
+    render(TeamView, { onClose: () => {} });
+    await screen.findByText("Recently deleted");
+
+    await fireEvent.click(restoreButton("nova"));
+
+    await vi.waitFor(() => {
+      expect(calls).toEqual([
+        {
+          method: "POST",
+          url: "/api/hub/agents/restore",
+          body: { name: "nova", checkpoint_id: "ckpt-nova" },
+        },
+      ]);
+    });
+  });
+
+  it("keeps the row and surfaces the reason when the restore is refused", async () => {
+    deletedAgents = [deletedAgent("nova")];
+    serveHub((call) =>
+      call.url === "/api/hub/agents/restore"
+        ? jsonResponse({ error: "an agent named 'nova' already exists" }, 409)
+        : undefined,
+    );
+    render(TeamView, { onClose: () => {} });
+    await screen.findByText("Recently deleted");
+
+    await fireEvent.click(restoreButton("nova"));
+
+    await vi.waitFor(() => {
+      expect(restoreButton("nova")).toBeEnabled();
+    });
+    const errors = [...toast.toasts.values()].filter((t) => t.kind === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("Couldn't restore nova");
+    expect(errors[0]?.message).toContain("already exists");
+  });
+
+  it("says when the list can't be loaded and loads it on Try again", async () => {
+    deletedAgents = [deletedAgent("nova")];
+    deletedListFails = true;
+    render(TeamView, { onClose: () => {} });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load the deleted agents");
+
+    deletedListFails = false;
+    await fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("button", { name: "Restore nova" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 

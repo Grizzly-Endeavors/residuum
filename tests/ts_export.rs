@@ -19,7 +19,7 @@ mod ts_export {
     };
     use residuum::hub::types::{
         A2aVisibility, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-        CreateAgentRequest, DeleteOutcome,
+        CreateAgentRequest, DeleteOutcome, DeletedAgent, RestoreAgentRequest,
     };
     use residuum::inference::ImageData;
 
@@ -63,6 +63,8 @@ mod ts_export {
         // `agent` of the hub WebSocket's frames; `CreateAgentRequest` and
         // `AgentPatch` are the bodies of `POST /api/hub/agents` and `PATCH
         // /api/hub/agents/{name}`; `DeleteOutcome` answers the `DELETE`;
+        // `DeletedAgent` is the item of `GET /api/hub/agents/deleted` and
+        // `RestoreAgentRequest` the body of `POST /api/hub/agents/restore`;
         // `AgentActivity` is the `busy`/`unread` pair of `agent_activity`.
         AgentSummary::export_all(&cfg).unwrap();
         AgentState::export_all(&cfg).unwrap();
@@ -71,6 +73,8 @@ mod ts_export {
         CreateAgentRequest::export_all(&cfg).unwrap();
         AgentPatch::export_all(&cfg).unwrap();
         DeleteOutcome::export_all(&cfg).unwrap();
+        DeletedAgent::export_all(&cfg).unwrap();
+        RestoreAgentRequest::export_all(&cfg).unwrap();
         AgentActivity::export_all(&cfg).unwrap();
 
         // Verify the generated files exist

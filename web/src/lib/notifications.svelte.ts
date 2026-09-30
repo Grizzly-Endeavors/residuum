@@ -10,7 +10,7 @@
 // History is in-memory only and holds every notification for the session; it
 // does not persist across a page reload.
 
-import { toast } from "./toast.svelte";
+import { toast, type ToastAction } from "./toast.svelte";
 
 export type NotificationKind = "error" | "notice" | "system";
 
@@ -30,13 +30,14 @@ class NotificationStore {
   /**
    * Show as a transient toast AND record in history. `details`, when
    * given, is never shown in the toast itself — only behind the recall
-   * list's expandable toggle.
+   * list's expandable toggle. `action` is a one-click follow-up the toast
+   * offers (such as "Undo"); the recall list keeps only the message.
    */
-  surface(kind: NotificationKind, message: string, details?: string): void {
+  surface(kind: NotificationKind, message: string, details?: string, action?: ToastAction): void {
     if (kind === "error") {
       toast.error(message);
     } else {
-      toast.info(message);
+      toast.show(message, "info", action);
     }
     const entry: Notification = {
       id: this.nextId++,

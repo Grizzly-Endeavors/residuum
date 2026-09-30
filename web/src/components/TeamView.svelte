@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { hub } from "../lib/hub.svelte";
   import { router } from "../lib/router.svelte";
   import { agentNameProblem } from "../lib/agent-name";
@@ -10,7 +11,7 @@
 
   let { onClose }: { onClose: () => void } = $props();
 
-  type Action = "start" | "stop" | "restart" | "autostart" | "visibility" | "delete";
+  type Action = "start" | "stop" | "restart" | "autostart" | "visibility" | "delete" | "restore";
 
   // What each agent is waiting on right now, so its buttons show progress.
   let pending = $state<Record<string, Action | undefined>>({});
@@ -91,11 +92,26 @@
     });
   }
 
-  // ── Delete ──────────────────────────────────────────────────────────
+  onMount(() => {
+    void hub.refreshDeleted();
+  });
+
+  // ── Delete and restore ──────────────────────────────────────────────
 
   let confirmDelete = $state<string | null>(null);
   /** Deletions from this visit, with the checkpoint that holds each one's files. */
   let deleted = $state<{ name: string; checkpointId: string | null }[]>([]);
+
+  /** Deleted agents not already shown in a note above with its own Undo. */
+  let recent = $derived(hub.deleted.filter((d) => !deleted.some((note) => note.name === d.name)));
+
+  /** Restore a deleted agent; `checkpointId` is the one its deletion took, else the hub picks. */
+  async function restore(name: string, checkpointId: string | null): Promise<void> {
+    await run(name, "restore", async () => {
+      const agent = await hub.restoreAgent(name, checkpointId ?? undefined);
+      if (agent) deleted = deleted.filter((d) => d.name !== name);
+    });
+  }
 
   async function deleteConfirmed(): Promise<void> {
     const name = confirmDelete;
@@ -194,14 +210,27 @@
           {:else}
             <strong>{note.name}</strong> was deleted. No checkpoint was taken, so its files can't be restored.
           {/if}
-          <button
-            type="button"
-            class="btn btn-secondary btn-sm"
-            aria-label="Dismiss note about {note.name}"
-            onclick={() => {
-              deleted = deleted.filter((d) => d.name !== note.name);
-            }}>Dismiss</button
-          >
+          <span class="team-deleted-actions">
+            {#if note.checkpointId}
+              <button
+                type="button"
+                class="btn btn-primary btn-sm"
+                class:is-pending={pending[note.name] === "restore"}
+                disabled={pending[note.name] !== undefined}
+                aria-label="Undo deleting {note.name}"
+                onclick={() => void restore(note.name, note.checkpointId)}
+                >{pending[note.name] === "restore" ? "Restoring" : "Undo"}</button
+              >
+            {/if}
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              aria-label="Dismiss note about {note.name}"
+              onclick={() => {
+                deleted = deleted.filter((d) => d.name !== note.name);
+              }}>Dismiss</button
+            >
+          </span>
         </li>
       {/each}
     </ul>
@@ -308,6 +337,48 @@
     </ul>
   {/if}
 
+  {#if hub.deletedError !== null}
+    <section class="team-recent" aria-labelledby="recent-title">
+      <h3 id="recent-title" class="team-recent-title">Recently deleted</h3>
+      <p class="team-error" role="alert">
+        {hub.deletedError}
+        <button
+          type="button"
+          class="btn btn-secondary btn-sm"
+          onclick={() => void hub.refreshDeleted()}>Try again</button
+        >
+      </p>
+    </section>
+  {:else if recent.length > 0}
+    <section class="team-recent" aria-labelledby="recent-title">
+      <h3 id="recent-title" class="team-recent-title">Recently deleted</h3>
+      <p class="team-recent-hint">
+        A deleted agent's files stay in the checkpoint history. Restoring brings back its notes,
+        memory, settings and role page.
+      </p>
+      <ul class="team-recent-list">
+        {#each recent as gone (gone.name)}
+          {@const busyAction = pending[gone.name]}
+          <li class="team-recent-row" aria-busy={busyAction !== undefined}>
+            <div class="team-recent-main">
+              <span class="team-recent-name">{gone.name}</span>
+              <span class="team-recent-when">deleted {relativeTime(gone.deleted_at)}</span>
+            </div>
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              class:is-pending={busyAction === "restore"}
+              disabled={busyAction !== undefined}
+              aria-label="Restore {gone.name}"
+              onclick={() => void restore(gone.name, gone.checkpoint_id)}
+              >{busyAction === "restore" ? "Restoring" : "Restore"}</button
+            >
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
   <form class="team-create" onsubmit={create} novalidate aria-labelledby="create-title">
     <h3 id="create-title" class="team-create-title">Create an agent</h3>
 
@@ -411,7 +482,7 @@
   }}
 >
   This removes <strong>{confirmDelete}</strong>'s directory: its notes, memory and settings. A
-  checkpoint is taken first, so it can be restored from checkpoints afterwards.
+  checkpoint is taken first, so you can undo this and restore it afterwards.
 
   {#snippet actions()}
     <button
@@ -485,6 +556,81 @@
     border-left: 2px solid var(--moss);
     border-radius: var(--radius);
     font-size: var(--fs-md);
+  }
+
+  .team-deleted-actions {
+    display: inline-flex;
+    gap: var(--s-2);
+    flex: none;
+  }
+
+  .team-recent {
+    margin: 0 0 var(--s-6);
+    padding: var(--s-4);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+  }
+
+  .team-recent-title {
+    font-family: var(--font-display);
+    font-size: var(--fs-lg);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    margin: 0 0 var(--s-2);
+  }
+
+  .team-recent-hint {
+    margin: 0 0 var(--s-3);
+    max-width: 62ch;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+
+  .team-recent-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+
+  .team-recent-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+  }
+
+  .team-recent-main {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    min-width: 0;
+  }
+
+  .team-recent-name {
+    font-family: var(--font-mono);
+    font-size: var(--fs-base);
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+
+  .team-recent-when {
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+  }
+
+  .team-recent-row .btn.is-pending:disabled {
+    border-color: var(--vein-dim);
+    color: var(--vein-bright);
+    animation: team-pending 1.6s var(--ease-out-stone) infinite;
   }
 
   .team-list {
@@ -778,6 +924,15 @@
     .team-deleted li {
       flex-direction: column;
       align-items: flex-start;
+    }
+
+    .team-recent-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .team-recent-row .btn {
+      min-height: 40px;
     }
   }
 </style>
