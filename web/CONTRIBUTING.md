@@ -4,7 +4,7 @@ Welcome! This guide will get you up and running with the frontend without needin
 
 ## Prerequisites
 
-- **Node.js 18+** — check with `node --version`
+- **Node.js** `^22.13.0 || ^24.0.0 || >=26.0.0` (the `engines` range in `package.json`, set by the test tooling) — check with `node --version`
 - **npm** — comes with Node.js
 
 ## Getting Started
@@ -143,11 +143,20 @@ History records places, not panel states. Opening a session, returning to the ma
 Before submitting changes, run:
 
 ```bash
-npm run lint          # ESLint check
+npm run lint          # ESLint, then the style lint
 npm run format        # Prettier auto-format
-npm run check         # TypeScript / Svelte type check
+npm run check         # TypeScript / Svelte type check; warnings fail it
 npm test              # Vitest: lib unit tests and Svelte component tests
+npm run test:coverage # The same tests with a coverage summary (HTML report in coverage/)
 ```
+
+**TypeScript lint.** Every `.ts` module under `src/`, including the rune store modules (`*.svelte.ts`), gets the strict type-aware ESLint rules. Only `.svelte` files get the relaxed set that fits runes. When a rule is wrong for one line, use a scoped `// eslint-disable-next-line <rule> -- <reason>`, never a blanket disable.
+
+**Style lint.** `npm run lint` also runs Stylelint over `src/**/*.css` and the `<style>` blocks of `.svelte` files. Outside the token file (`src/styles/variables.css`) it forbids literal colors (hex, named, `rgb()` and the like), raw `font-size` and `font` values, raw `z-index` values, literal durations and easing curves in `transition` and `animation`, and `transition: all`. Reference a token with `var(--…)` instead. Stylesheets and components that still carry literal values are listed in `stylelint.config.js` and exempt from these rules; remove an entry when its file is rewritten or deleted, and never add new styles to the list.
+
+**svelte-check.** It runs with `--fail-on-warnings`. The one accepted warning, a label without an associated control, is filtered in `svelte.config.js`.
+
+**Generated types.** `src/lib/generated/` comes from the Rust types. After changing an exported Rust type, run `just types` and commit the result; `just types-check` (and CI) fails when the committed files are out of date.
 
 Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
 

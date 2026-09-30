@@ -11,10 +11,9 @@
 const TOKEN_FILES = ["src/styles/variables.css"];
 
 /**
- * Stylesheets and components written before the token rules, which still
- * carry literal values. A unit that rewrites or deletes one removes its entry,
- * and the list is empty when the legacy UI is gone. Do not add new files here:
- * give new styles tokens instead.
+ * Stylesheets and components that still carry literal values, exempt from the
+ * rules below. Remove an entry when its file is rewritten or deleted. Do not
+ * add new files here: give new styles tokens instead.
  */
 const LEGACY_FILES = [
   "src/styles/base.css",
