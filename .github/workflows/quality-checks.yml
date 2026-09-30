@@ -36,9 +36,11 @@ jobs:
         id: web_typecheck
         run: cd web && npm run check
 
+      # The same tests as `npm test`, with a coverage report. Reported in the
+      # job summary below, with no threshold.
       - name: Web unit tests
         id: web_test
-        run: cd web && npm test
+        run: cd web && npm run test:coverage
 
       - name: Build web assets
         id: web_build
@@ -57,6 +59,14 @@ jobs:
             echo "| Types | ${{ steps.web_typecheck.outcome }} |"
             echo "| Tests | ${{ steps.web_test.outcome }} |"
             echo "| Build | ${{ steps.web_build.outcome }} |"
+            if [ -f web/coverage/summary.txt ]; then
+              echo ''
+              echo '### Web test coverage'
+              echo ''
+              echo '```'
+              sed '/^$/d' web/coverage/summary.txt
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   rust:
@@ -88,6 +98,12 @@ jobs:
         id: test
         run: cargo test --quiet
 
+      # Regenerates web/src/lib/generated from the Rust protocol types and
+      # fails on any difference from what is committed.
+      - name: Generated types are up to date
+        id: types
+        run: scripts/check-generated-types.sh
+
       - name: Dependency audit
         id: deny
         run: cargo deny check
@@ -103,5 +119,6 @@ jobs:
             echo "| Format | ${{ steps.fmt.outcome }} |"
             echo "| Clippy | ${{ steps.clippy.outcome }} |"
             echo "| Tests | ${{ steps.test.outcome }} |"
+            echo "| Generated types | ${{ steps.types.outcome }} |"
             echo "| Deny | ${{ steps.deny.outcome }} |"
           } >> "$GITHUB_STEP_SUMMARY"
