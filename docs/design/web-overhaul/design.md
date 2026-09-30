@@ -2,485 +2,780 @@
 
 > **Status:** draft, pending owner sign-off. Work units: [`phases.md`](./phases.md). Capability checklist: [`parity.md`](./parity.md). Visual reference: [`mockup.html`](./mockup.html) (open it in a browser).
 
-> Systems level only. No file or line references. This document must stand on its own: it is implemented by subagents that have only this doc, `phases.md`, `parity.md`, the mockup, and the codebase — not the conversation that produced it.
+> Systems level only. No file or line references. This document must stand on its own: it is implemented by subagents that have only this doc, `phases.md`, `parity.md`, the mockup and the codebase, not the conversation that produced it. Where this document and the mockup disagree, this document wins. The mockup's sample data, and the parts it labels "not in this mockup", are not requirements.
 
 ## Goal & context
 
-The web UI has most of the capability Residuum needs, but reaching it is hard, and it looks flat and dated. Concretely:
+The web UI has most of the capability Residuum needs, but reaching it is hard, and it looks flat and dated.
 
-- **There is no single way to get around.** Eight main destinations are hidden behind a hamburger menu, even on a wide screen. Beside it there are an agent chip row, a Team button, a sessions-sidebar toggle, header icons, a close button on every page, and slash commands. Pages for one agent and pages for the whole install are mixed together.
-- **The defaults are backwards.** The sessions sidebar, open by default, shows the runtime's internal categories and ids. Meanwhile what an agent is doing in the conversation (its tool calls) is hidden unless the user types `/verbose`.
-- **Failure states contradict themselves.** A failed agent's chat shows "disconnected", "Reconnecting — messages will go out once back online", two different empty states, and a toast. The real error and the Restart button live only on the Team page. When a list fails to load it shows its empty state, so an error reads as "nothing here".
-- **Settings mirror the config files.** Sections map one-to-one to TOML files, and field names are internal ("Observer Force Threshold (tokens)"). A Simple/Advanced/Raw toggle sits on top. Terms like MCP, A2A and tokens appear on primary surfaces.
-- **The visual system does not scale.** Every element is an outlined box. Small-caps display type is used for UI labels. About 5,700 lines of global CSS with weak token use, breakpoints scattered between 400 and 1100px, and no shared component layer.
+- **There is no single way to get around.** Eight destinations hide behind a hamburger menu, even on a wide screen. Beside it sit an agent chip row, a Team button, a sessions-sidebar toggle, header icons, a close button on every page, and slash commands. Pages for one agent and pages for the whole install are mixed together.
+- **The defaults are backwards.** The sessions sidebar, open by default, shows the runtime's internal categories and ids. What an agent is doing in the conversation (its tool calls) is hidden unless the user types `/verbose`.
+- **Failure states contradict themselves.** A failed agent's chat shows "disconnected", then "Reconnecting — messages will go out once back online", then two empty states and a toast. The real error and the Restart button live only on the Team page. A list that fails to load shows its empty state.
+- **Settings mirror the config files.** Section names and field names are internal ("Observer Force Threshold (tokens)"). A Simple/Advanced/Raw toggle sits on top. MCP, A2A and tokens appear on primary surfaces.
+- **The visual system does not scale.** Every element is an outlined box, and display type is used for small UI labels. There are about 5,700 lines of global CSS, with weak token use and breakpoints scattered between 400 and 1100px. There is no shared component layer.
 - **It is not a real PWA.** A manifest exists, but there is no service worker, no offline shell, no push, and no iOS standalone support.
-- **Testing covers the logic but not the UI.** Store and helper logic is well unit-tested. Most surfaces have no component tests, and there are no end-to-end, accessibility or visual tests. The mock server, which is the only integration harness, is not type-checked.
+- **Testing covers logic, not the UI.** Store logic is well unit-tested. Most surfaces have no component tests, and there are no end-to-end, accessibility or visual tests. The mock server, the only integration harness, is not type-checked.
 
 The owner reviewed three clickable directions and chose a combination, captured in `mockup.html` ("D · Combined"):
-
 - Rail's agent-first sidebar and compact density.
 - Control Room's team overview as the Home page.
-- Conversation's large settings panel, with an agent picker.
-- A phone bottom bar: ☰, Inbox, Home, Search, Settings.
+- Conversation's large settings modal, with an agent picker.
+- A phone bottom bar.
 
-The palette is the one fixed brand element. Everything else in the old visual language is open. The UI must be fully supported on phones, and it must work as a proper installable PWA.
+The palette is the only fixed element of the old visual language. The UI must be fully supported on phones and work as an installable PWA.
 
-This design covers the whole overhaul: the new visual system and components, the shell and navigation, every surface, the backend contracts the new surfaces need, the PWA, and a rebuilt frontend test setup.
+This design covers the new visual system and components, the shell and navigation, every surface, the backend contracts the new surfaces need, the PWA, and a rebuilt frontend test setup.
 
 ## Terms
 
-- **Shell** — the persistent frame: rail (desktop) or bottom bar plus drawer (phone), the main region, the context panel, and the overlay layer.
-- **Rail** — the left sidebar on desktop and medium widths. On phones the same component opens as the **drawer**.
-- **Place** — a destination in the main region: Home, Inbox, an agent's Chat, Activity, Schedule or Files, the Workbench, or Shared files. Places are URL routes.
-- **Agent places** — Chat, Activity, Schedule and Files, listed under an agent in the rail's accordion.
-- **Context panel** — a right-side panel beside the main region that shows a session transcript, a file, or a conversation-size breakdown. It is resizable on wide screens, floats over the main region at medium widths, and is a full-screen sheet on phones.
-- **Settings modal** — the large overlay holding all settings, with a **scope picker** at the top: "All agents" (install-wide settings) or one agent.
-- **Scope** — either "All agents" or a single agent. Every setting belongs to exactly one scope.
-- **Overview** — the new hub-level per-agent summary that feeds Home: run state, activity, last message, live sessions, next scheduled run, unread inbox count, and outbound problems.
-- **Team event** — a timestamped entry in the new hub-level event log that feeds Home's "Across the team" column.
-- **Needs-you item** — a Home entry for something the user should act on: an agent that can't start, an unread inbox item, or an outbound task that can't reach its agent.
-- **Activity line** — the one-line summary of a turn's tool use that heads each agent reply. It expands to steps, and each step expands to its details.
-- **State card** — the panel an agent's Chat shows in place of the conversation controls when the agent is not running (failed, stopped, starting, stopping).
-- **Action registry** — the single list of named actions (navigate, run a command, lifecycle, create agent, feedback…). The command palette and the composer's `/` menu both draw from it.
-- **Legacy view** — an existing component hosted inside the new shell until the work unit that replaces it lands.
-- **Integration branch** — the long-lived branch where frontend work lands before cutover to `main`.
+- **Shell** — the persistent frame: the rail (or, on phones, the bottom bar and drawer), the main region, the context panel and the overlay layer.
+- **Rail** — the left sidebar at medium and wide widths. On phones the same component opens as the **drawer**.
+- **Place** — a destination in the main region, and a URL route: Home, Inbox, an agent's Chat, Activity, Schedule or Files, the Workbench, or Shared files.
+- **Agent places** — Chat, Activity, Schedule and Files. They are listed under an agent in the rail's accordion.
+- **Viewed agent** — the agent named in the current URL on an agent place. On Home, Inbox, Workbench and Shared files there is no viewed agent.
+- **Bound agent** — the agent whose WebSocket the client keeps open. This is the viewed agent, or, when there is none, the most recently viewed one. The client holds at most one agent socket.
+- **Context panel** — a right-side panel beside the main region that shows a session run, a file, or a conversation-size view. It is resizable at wide widths, floats over the main region at medium widths, and is a full-screen sheet on phones.
+- **Settings modal** — the overlay that holds every setting, with a scope picker.
+- **Scope** — either "All agents" (install-wide settings, which live in the hub's config) or one agent (settings that live in that agent's config files). Every setting belongs to exactly one scope.
+- **Staged change** — a settings form edit held in memory until the user presses Save changes.
+- **Immediate action** — a settings control with its own endpoint. It acts when used and reports its own result.
+- **Overview** — the hub-level per-agent summary that feeds Home and the rail's badges (§9.3).
+- **Team event** — an entry in the hub's in-memory event log (§9.4). The log feeds Home's "Across the team".
+- **Boot id** — a random id the hub generates at startup, used to tell a restarted hub's event ids from old ones.
+- **Chat unread** — the hub's existing per-agent count of main-conversation replies published while no web client had that agent's socket open. It is reset when a web client connects to that agent's socket. It is not persisted.
+- **Inbox unread** — the number of unread items in an agent's user inbox (`inbox/user/`), counted from disk. The agent inbox (`inbox/agent/`), where background results are filed, is a separate folder, reachable through Files.
+- **Needs-you item** — a Home entry for something the user should act on (§6).
+- **Activity line** — the one-line summary of a turn's tool use that heads the agent's output for that turn. It expands to steps, and each step expands to its details.
+- **Tool frames** — the agent socket's `tool_call` and `tool_result` frames. The server sends them only to connections that have set the verbose flag.
+- **State card** — what an agent's Chat shows in place of the composer when the agent is not running.
+- **Action registry** — the single list of named actions (navigate, chat commands, lifecycle, create agent, feedback…). The command palette and the composer's `/` menu both draw from it.
+- **Overlay entry** — a history entry pushed when a modal overlay opens (§3), so that Back closes it.
+- **Hub banner** — the notice at the top of the main region shown while the hub socket is disconnected.
+- **Reload from disk** — re-reading a scope's config files and discarding staged changes for that scope.
+- **Identity files** — SOUL.md, HEARTBEAT.yml, CHANNELS.yml, team/AGENTS.md and team/USER.md. The file tree tints them.
+- **Legacy view** — an existing component hosted inside the new shell until the unit that replaces it lands.
+- **Integration branch** — `feat/web-overhaul`, where frontend work collects before cutover to `main`.
 - **Work unit** — one subagent-sized piece of implementation, defined in `phases.md`.
 
 ## Shape
 
 ### 1. Visual system
 
-**Palette (fixed).** The owner is attached to the colors. Every value below is a design constant; the rest of the design derives tints and alphas from them and adds no new hues.
+**Palette (fixed).** The rest of the design derives tints and alphas from these values and adds no new hues.
 
-| Role | Values |
+| Token role | Value |
 |---|---|
-| Stone surfaces | `#0e0e10` base, `#131315`, `#161618`, `#1c1c1f`, `#26262a`; input `#141416` |
-| Lines | `#2a2a2e`, `#222225` |
-| Text | primary `#e8e8ea`, secondary `#9a9a9f`, dimmest allowed `#85858b` |
-| Vein (accent, focus, primary actions) | `#3b8bdb`, bright `#5aa3f0`, dim `#2a6cb5`, hover `#3175c2`, plus tints at 14%, 7% and 35% alpha |
-| Moss (user messages, positive state) | `#6b7a4a`, text `#8a9e62`, tint 20% alpha |
-| Error | fill `#c0392b`, text `#e0675a`, tint 13% alpha |
-| Overlay | scrim `rgba(6,6,8,.62)`; floating shadow for menus, sheets, palette and dialogs only |
+| Stone surfaces | `stone-0` `#0e0e10` (base), `stone-1` `#131315`, `stone-2` `#161618`, `stone-3` `#1c1c1f`, `stone-4` `#26262a` (hover and selected fills) |
+| Input fill | `#141416` |
+| Lines | `line` `#2a2a2e` (region separators), `line-soft` `#222225` |
+| Control border | `#6a6a6f` (input and toggle boundaries; meets 3:1 against `stone-0` to `stone-3`) |
+| Text | `text` `#e8e8ea`, `text-2` `#9a9a9f`, `text-3` `#85858b` (dimmest allowed) |
+| Vein | `vein` `#3b8bdb` (accent, focus, links), `vein-bright` `#5aa3f0`, `vein-dim` `#2a6cb5` (primary button fill), `vein-hover` `#3175c2` (primary button hover); tints at 14%, 7% and 35% alpha |
+| Moss | `moss` `#6b7a4a`, `moss-text` `#8a9e62`, `moss-tint` at 20% alpha (user message bubbles, positive states) |
+| Error | `err` `#c0392b` (fills and marks), `err-text` `#e0675a`, `err-tint` at 13% alpha |
+| On accent | `#ffffff` (text on `vein-dim` and `vein-hover` only) |
+| Overlay | scrim `rgba(6,6,8,.62)`; floating shadow for menus, popovers, sheets, dialogs, palette and toasts only |
 
-The two text adjustments (`#85858b` instead of `#6a6a6f`, and the lighter error text) exist to meet contrast. Every text/background pair must reach WCAG AA (4.5:1 for body text, 3:1 for large text and UI glyphs).
+**Contrast rules.** The token set declares its allowed text/surface pairs, and a test checks each against WCAG AA (4.5:1 for text, 3:1 for large text, glyphs and control boundaries).
 
-**Type.** The product face for all UI and message text is Onest (weights 400, 500, 600). JetBrains Mono (400, 500) is used only for code, file paths and ids. Cinzel appears only in the wordmark. The type scale is 12, 13, 14 (UI), 15 (messages), 17 (headings) and 20px (page titles). Fonts are self-hosted and bundled with the app: no request goes to a font CDN. This is needed for offline launch and removes a render-blocking third-party request.
+- `text` and `text-2` may sit on any stone surface.
+- `text-3`, `vein` used as text, `moss-text` and `err-text` may sit only on `stone-0` to `stone-3`, never on `stone-4`. On `stone-4`, use `text` or `text-2`.
+- White text sits only on `vein-dim` or `vein-hover`. Primary buttons therefore use `vein-dim` as their fill, not `vein`.
+- Input, select and toggle boundaries use the control border.
 
-**Shape, density and motion.**
+**Type.**
+- Onest (400, 500, 600) for all UI and message text.
+- JetBrains Mono (400, 500) only for code, file paths and ids.
+- Cinzel (500) only in the wordmark.
+- Scale: 12, 13, 14 (UI), 15 (messages), 17 (section headings) and 20px (page titles).
+- Fonts are bundled and self-hosted: no request goes to a font CDN.
+
+**Shape and motion.**
 - Radii are 6, 8 and 12px. Density is compact.
-- Grouping comes from surface tone and spacing, not outlines. Borders are reserved for inputs and the few places where a hairline separates regions.
-- Floating layers (menus, popovers, sheets, dialogs, palette, toasts) carry the floating shadow. Nothing else does.
-- UI transitions run 150–200ms with an ease-out curve, and every animation is disabled under `prefers-reduced-motion`.
+- Grouping comes from surface tone and spacing. Borders appear only on controls and on the hairlines that separate regions.
+- Only floating layers carry the shadow.
+- UI transitions run 150–200ms with an ease-out curve. All motion is disabled under `prefers-reduced-motion`.
 - The grain overlay and the time-of-day vein intensity are dropped.
 
-**Layout constants.**
+**Layout.**
 - Rail width 248px.
-- Default context panel width 440px, resizable between 360px and 50% of the viewport.
+- Context panel default 440px, resizable from 360px to 50% of the viewport.
 - Reading column max 720px.
+- Home container max 1200px, centered.
 - Phone bottom bar 60px plus the bottom safe-area inset.
-- Breakpoints:
+- Shell breakpoints:
   - phone ≤ 760px
-  - medium 761–1180px, where the context panel floats over the main region
-  - wide > 1180px, where the context panel sits beside it
+  - medium 761–1180px (the context panel floats over the main region)
+  - wide > 1180px (the panel sits beside it)
 
-  These are the only breakpoints.
-- A z-index scale covers base, sticky, panel, drawer, overlay, palette and toast.
+  Components that need their own responsive rules use container queries, not new viewport breakpoints. For example, the Home board hides its "Next up" column when the board is narrower than 720px.
+- A z-index scale: base, sticky, panel, drawer, overlay, palette, toast.
 
-All of the above live in one token set. Components use tokens only: no literal colors, font sizes, z-indexes, durations or easing curves. A lint guardrail enforces this (see §10).
+All of the above live in one token set. Component styles use tokens only: no literal colors, font sizes, z-indexes, durations or easing curves. A style linter enforces this (§10).
 
-**Components.** A shared primitive layer, built on native elements where they fit (`<dialog>`, the Popover API, `inert`):
-- Buttons: Button (primary / secondary / quiet / danger) and IconButton.
-- Form fields: text, number, select, toggle, segmented control, and a secret field that shows the stored / from-environment / replace states.
-- Status and structure: Badge, status dot, Disclosure, Tabs, EmptyState, Skeleton, Banner, Kbd.
-- Floating layers: Menu, Popover, Tooltip, Dialog, Sheet (phone bottom sheet), Drawer.
-- Toast region.
+**Components.** A primitive layer built on native elements where they fit (`<dialog>`, the Popover API, `inert`):
+- Button (primary / secondary / quiet / danger) and IconButton.
+- Fields:
+  - text and number
+  - select, toggle and segmented control
+  - secret field, with the stored, from-environment-variable and replace states
+- Badge, status dot, Disclosure, Tabs, EmptyState, Skeleton, Banner, Kbd.
+- Menu, Popover, Tooltip, Dialog, Sheet (phone bottom sheet), Drawer.
+- A toast region, and a Recent notifications dialog.
 
-Floating layers share one focus-management model: they trap focus while modal, restore it on close, close on Esc and scrim click, lock scrolling behind a modal, and make the background `inert`. Every surface is built from these primitives.
+All floating layers share one model:
+- Focus is trapped while modal and restored on close.
+- Esc and a scrim click close.
+- Scrolling is locked and the background made `inert` behind a modal.
+- Nested overlays stack.
+- Modal overlays (Dialog, Sheet, Drawer, palette) push an overlay entry (§3).
 
-### 2. Shell and navigation
+Every surface is built from these primitives.
 
-**Desktop and medium widths.** The rail, top to bottom:
-- The wordmark, and "Search or jump to" (opens the command palette; shows the shortcut).
-- **Home**, with a count of needs-you items.
-- **Inbox**, with the unread count across all agents.
-- **Agents**:
-  - The heading carries a "+" that opens Create agent.
-  - Each agent row shows its state dot, name, unread badge, and a state word when it isn't running.
-  - Clicking an agent row only expands or collapses its places (Chat, Activity, Schedule, Files). It never navigates. Only one agent is expanded at a time, and clicking the expanded agent collapses it.
-  - The agent being viewed keeps its highlight even when collapsed, and starts expanded on load.
-  - Rows expose `aria-expanded` and toggle with Enter and Space.
+### 2. Shell
+
+**Medium and wide widths — the rail, top to bottom:**
+- The wordmark, and "Search or jump to" (opens the palette; shows ⌘K or Ctrl+K).
+- **Home**, with the count of needs-you items (one per item as listed in §6).
+- **Inbox**, with the inbox unread total across agents.
+- **Agents**, with a "+" that opens Create agent (§6).
+  - Each agent row shows its state dot and name. It adds a working indicator while busy, a chat-unread badge capped at "99+", and a state word when not running.
+  - Clicking a row only expands or collapses that agent's places; it never navigates.
+  - Only one agent is expanded at a time, and clicking the expanded agent collapses it.
+  - The viewed agent keeps its highlight when collapsed, and starts expanded on load.
+  - Rows expose `aria-expanded`. Enter and Space toggle a row; Up and Down move between rows.
 - **Team**: Workbench and Shared files.
-- Footer:
-  - a settings gear, which opens the Settings modal scoped to the agent being viewed, or to "All agents" when no agent is being viewed
-  - a help menu with Keyboard shortcuts, Send feedback, Report a bug, and "Install app" when available
+- **Footer**:
+  - A settings gear. It opens the Settings modal on the viewed agent's scope, or on "All agents" when there is no viewed agent.
+  - A help menu: Keyboard shortcuts, Recent notifications, Send feedback, Report a bug, and Install app when available (§11).
 
-**Phones (≤ 760px).** A bottom bar with, left to right:
-1. ☰ — opens the rail as a left drawer: scrim, closes on scrim tap, swipe left or Esc.
-2. Inbox, with unread badge.
-3. Home, centered, same weight as the others.
-4. Search — opens the command palette full-screen.
-5. Settings — opens the settings list for the current scope.
+**Phones (≤ 760px):**
+- A bottom bar with, left to right:
+  1. ☰ (opens the rail as a left drawer)
+  2. Inbox, with its badge
+  3. Home, centered, at the same weight as the others
+  4. Search (opens the palette full-screen)
+  5. Settings (opens the settings list for the viewed agent's scope, or for All agents)
+- The bar stays visible on every place, including Chat, with the composer above it.
+- The drawer, palette, sheets and dialogs cover the bar with a scrim.
+- The drawer closes on scrim tap, swipe left, Esc or Back.
+- There is no separate agent switcher.
+- Every place has a compact title bar naming the place and, on agent places, the agent.
 
-The bar stays visible on every page, including Chat, with the composer sitting above it. The drawer, the palette and bottom sheets cover the bar with a scrim. There is no separate agent switcher; the drawer lists agents. Every page has a compact title bar naming the place and, inside an agent, the agent.
-
-**Main region per place.** Each place has a header with its title and place-specific actions. Agent Chat's header shows:
-- the agent name and role
+**Main region.** Each place has a header with its title and place-specific actions. The agent Chat header shows:
+- the agent's name and role line
 - a running-sessions pill that opens Activity
-- a gear that opens Settings for that agent
+- a gear that opens Settings on that agent's scope
+- an overflow menu with Show conversation size, Restart and Stop
 
-**Connection state is only shown when degraded.**
-- If the hub socket is down, a banner at the top of the main region says so and offers Retry.
-- If an agent's socket is down while that agent is *running*, the composer shows "Reconnecting — N messages will send once back online".
-- A non-running agent never shows reconnecting (see §4).
+**Connection state is shown only when degraded.**
+- While the hub socket is down, the hub banner says so and offers Retry.
+- While the bound agent's socket is down and that agent is running, the composer says "Reconnecting — N messages will send once back online".
+- A non-running agent never shows reconnecting (§4).
 
-### 3. Routes
+### 3. Routes and history
 
-The URL records the place, the context-panel content and whether the Settings modal is open. Client routes contain no dots and never start with `/api` or `/ws`; the server's SPA fallback depends on this.
+Client routes contain no dots and never start with `/api` or `/ws`, because the server's SPA fallback depends on this. Query values may contain dots.
 
-| URL | Shows |
+| URL | Place |
 |---|---|
 | `/` | Redirects to `/home` |
 | `/home` | Home |
-| `/inbox` | Inbox (all agents); `?agent=<name>` filters |
-| `/agent/:name` | That agent's Chat |
+| `/inbox` | Inbox. `?agent=<name>` filters; `?tab=archived` shows the archive; `?item=<agent>:<id>` opens an item |
+| `/agent/:name` | Chat |
 | `/agent/:name/activity` | Activity |
 | `/agent/:name/schedule` | Schedule |
-| `/agent/:name/files` | Files (agent workspace) |
+| `/agent/:name/files` | Files |
 | `/team/workbench` | Workbench list |
 | `/team/workbench/:artifact` | An artifact; `?full` fills the window |
 | `/team/files` | Shared files |
 
-**Query parameters on any route:**
-- **Context panel:** `panel=session:<runId>`, `panel=file:<path>` or `panel=size`. Values are URL-encoded.
-- **Settings modal:** `settings=<scope>/<section>`. `<scope>` is an agent name or `all`; section ids are listed in §8. Example: `/agent/brittle?settings=brittle/model`.
+**Context panel parameter** — `panel=<kind>:<value>`, URL-encoded:
 
-**History:**
-- Opening a place, opening a session in the panel, and opening the Settings modal push an entry. Back therefore closes the modal and the panel, which matches the Android back gesture in the installed app.
-- Switching settings sections, switching scope inside the modal, toggling the panel's file, and correcting a malformed URL replace the current entry.
-- The drawer, palette, menus, sheets and Create agent are not in the URL.
+| Kind | Valid on | Value |
+|---|---|---|
+| `session:<runId>` | agent places | A run of that agent |
+| `file:<path>` | agent places and `/team/files` | On agent places, a path in the agent's workspace namespace (`team/…` paths reach team files). On `/team/files`, a path relative to the team folder. |
+| `size` | agent places | The conversation-size view |
 
-**Redirects from existing URLs** (all via replace):
+On any other place, the parameter is removed by a replace.
 
-| Existing URL | Redirects to |
+**Settings parameter** — `settings=<scope>[/<section>]`.
+- `<scope>` is an agent name or `_all`. Agent names can never contain an underscore, so `_all` cannot collide with one.
+- Without a section:
+  - at medium and wide widths, the scope's default section opens: `model` for an agent, `general` for `_all`;
+  - on phones, the scope's section list opens.
+- Section ids are listed in §8.
+- An unknown agent in the scope becomes `_all/general`, with a toast naming the missing agent.
+- An unknown section becomes the scope's default.
+
+**Corrections** (by replace, with a toast where noted):
+- An unknown agent on an agent place goes to `/home`, with a toast.
+- An unknown artifact goes to `/team/workbench`, with a toast.
+- A `panel` with an unknown kind or a malformed value is removed.
+
+**History rules.**
+- **Push:** opening a place; opening a session or file in the panel from elsewhere; opening the Settings modal; opening a settings section from the phone list; opening a modal overlay (an overlay entry: same URL, marked in the history state).
+- **Replace:** switching sections at medium and wide widths; switching scope inside the modal; switching which file the panel shows from inside the panel; every correction and redirect.
+- **Closing** the Settings modal, the panel or a modal overlay through the UI (close button, Esc, scrim):
+  - If this page pushed the entry that opened it, closing is `history.back()`.
+  - Otherwise, for example when the page was deep-linked, closing replaces the URL with one that omits the parameter.
+  - Back therefore always closes the topmost modal, the modal, or the panel before it leaves a place. This matches the Android back gesture in the installed app.
+- **Unsaved-edit guard.** When unsaved file edits (§5) or staged settings changes (§8) would be lost:
+  - On in-app navigation, the router asks first and does not navigate until the user confirms.
+  - On Back or Forward (a `popstate` the router cannot cancel), the router immediately re-pushes the location it was showing, asks, and navigates only if the user confirms.
+  - On reload or tab close, the browser's `beforeunload` prompt is used.
+
+**Redirects from existing URLs** (all by replace):
+
+| From | To |
 |---|---|
 | `/team` | `/home` |
-| `/agent/:name/sessions/:runId` | `/agent/:name?panel=session:<runId>` |
-| `/agent/:name/workspace`, `?workspace` | `/agent/:name/files` |
+| `/agent/:name/sessions/:runId`, with or without `?workspace` | `/agent/:name?panel=session:<runId>`. The workspace flag is dropped. |
+| `/agent/:name/workspace`, `/agent/:name?workspace` | `/agent/:name/files` |
 | `/agent/:name/scheduled` | `/agent/:name/schedule` |
-| `/agent/:name/settings/:old` | `/agent/:name?settings=<name>/<mapped>` |
-| `/team/settings/:old` | `/home?settings=all/<mapped>` |
-| `/settings/…`, `/workbench/…`, `/scheduled`, `/sessions/:runId` | Resolved under the last-used agent as today, then mapped as above |
-| `/notification/<id>` (the macOS notification "Open" action) | The Inbox |
+| `/agent/:name/settings[/:old]` | `/agent/:name?settings=<name>/<new>`, or `settings=_all/<new>` when the old section belongs to the install-wide scope. Mapping in §8. |
+| `/team/settings[/:old]` | `/home?settings=_all/<new>` |
+| `/settings[/:old]`, `/scheduled`, `/sessions/:runId` | Resolved under the last-used agent, then as above |
+| `/workbench[/…]` | `/team/workbench[/…]` |
+| `/notification/<id>` (the macOS notification "Open" action) | `/agent/<last-used agent>/files`. The item is in that agent's agent inbox, as today. |
 
-The old-to-new settings section mapping is in §8.
+The last-used agent is the most recently viewed agent, remembered in local storage. When there is none, or it no longer exists, it is the first agent by name. With no agents at all, the setup wizard shows.
 
 ### 4. Agent Chat
 
 **Feed.**
-- Agent replies render as unboxed prose in the reading column, as sanitized Markdown with code blocks.
-- User messages are moss-tinted bubbles, right-aligned. A sender line appears when the message came from another interface or an artifact.
-- Messages from sessions and teammates render as compact cards: sender, kind, clamped body with "Show all", and "Open session" for sessions only.
-- Day dividers, episode dividers and the compressed-history marker remain. The marker is explained in plain words: "Older messages are summarized. <agent> remembers what was said, not the exact wording."
-- The chat has one empty state.
-- All existing feed behaviors in `parity.md` are kept: lazy-loaded older episodes with a stable scroll anchor, follow-at-bottom with a Jump-to-latest pill, reconnect reconciliation, and turn undo on user messages. Each code block gains a copy button.
+- Agent replies render as unboxed prose in the reading column: sanitized Markdown with GFM, line breaks and code blocks, each with a copy button.
+- User messages are moss-tinted, right-aligned bubbles. A sender line appears for messages from another interface or a workbench artifact.
+- Messages from sessions and teammates render as compact cards with sender, kind, and a clamped body with "Show all". Sender addresses of sessions (not teammates) also get "Open session".
+- Day dividers, episode dividers and the compressed-history marker remain. The marker reads: "Older messages are summarized. <agent> remembers what was said, not the exact wording."
+- One empty state.
+- Every existing feed behavior in `parity.md` is kept.
+- **Path links.** Inline code whose whole text is a workspace path becomes a link that opens that file in the context panel. A workspace path means optional `team/`, then one or more `/`-separated segments of letters, digits, `.`, `_` or `-`, the last containing a `.`. Activity-line step targets that are paths link the same way.
 
-**Activity line.** Every agent reply that used tools starts with one line.
-- **The summary line.** It combines friendly step labels, for example "Searched memory, read 2 files, started a research session".
-  - It shows the turn's duration when the turn was observed live.
-  - It flags failures ("1 step failed").
-  - It is collapsed by default.
-- **Expanded,** it lists the steps in order, each with a friendly label and its target: a file path, a query, or a session.
-- **Expanded again,** a step shows its arguments and formatted result, using the existing per-tool argument summaries and result formatters.
-- **Friendly labels** come from one table keyed by tool name. It covers every built-in tool the chat currently summarizes, and falls back to "Used <tool>" (with the server name for MCP tools).
-- **History:** tool calls are present in chat history and session transcripts, so the line renders for past turns as well. Durations are not available for past turns, so none is shown.
-- **The client always requests tool frames** (it sets the per-connection verbose flag on every connect). The `/verbose` toggle is removed. The native macOS client uses its own connection, so this does not affect it.
+**Turn grouping.** A turn's output is everything after a user message (or, for turns without one, after the previous turn) up to the next user message:
+- one activity line built from every tool call in the turn, placed first;
+- any intermediate agent texts, in order;
+- the final reply.
+
+The same grouping applies to live turns, recent history and episodes. It doesn't need turn ids, which episodes lack.
+
+**Activity line.**
+- **Summary.** Friendly step labels joined in order, with repeats merged and counted, for example "Searched memory, read 2 files, started a research session".
+  - For turns observed live, it adds the duration ("· 14s") and flags failures ("1 step failed").
+  - Persisted history records neither timing nor tool errors, so past turns show neither.
+- **Expanded.** The steps in order, each with its label, its target (path, query or session, linked where §4 allows), and, for live turns, its status.
+- **Expanded again.** A step shows its arguments and formatted result, using the existing per-tool argument summaries and result formatters.
+- **Labels** come from one table keyed by tool name. It covers every built-in tool the current UI summarizes. Other tools fall back to "Used <tool>", and MCP tools to "Used <server>: <tool>".
+- **Tool frames.** The client sends `set_verbose {enabled: true}` as its first frame on every agent socket connect. Tool frames for a turn already in progress before that frame are missed, and the turn's line is completed from history when the turn ends.
+- The `/verbose` command is removed.
+- The feed store gains per-turn aggregation of steps, live timings and failure state. Its existing frame handling is otherwise unchanged.
 
 **Live turn.** While a turn runs:
-- The activity line is expanded and appends steps as tool frames arrive.
+- The line is expanded and appends steps as tool frames arrive.
 - It shows an elapsed timer and a Stop control. Esc stops the turn while the composer has focus.
-- Intermediate `broadcast_response` texts appear as they arrive, and the final response replaces the live state.
-- There is no simulated typing. The backend delivers whole responses.
+- Intermediate texts (`broadcast_response`) appear as they arrive.
+- There is no simulated typing, because the backend sends whole responses.
 - When the turn ends, the line collapses to its summary.
-- Post-turn memory work ("updating memory", "reviewing turn") appears as a quiet status line under the last reply until it finishes.
+- Post-turn memory work appears as a quiet status line under the last reply until it finishes: "Noting what matters from this conversation" (memory) and "Reviewing the last reply" (subconscious).
 
 **Composer.**
-- Auto-growing text area; Enter sends, Shift+Enter adds a new line.
-- Images attach by button, paste or drop, with the existing type and size limits.
-- A `/` button, and `/` typed as the first character, open the chat-scoped actions from the action registry.
-- A compact model + thinking control opens a popover (a sheet on phones). It shows the main model and thinking level, writes through the config write coordinator (§8), and updates whenever settings change.
-- Send becomes Stop while a turn runs and the composer is empty; typing brings Send back, so a steering message can go mid-turn.
-- The draft is kept per agent across navigation and reloads, in local storage. It is cleared on send.
+- Auto-growing text area: Enter sends, Shift+Enter adds a new line.
+- Images attach by button, paste or drop: JPEG, PNG, GIF or WebP up to 5 MB each.
+- A `/` button, and `/` typed as the first character, open the chat-scoped actions from the registry.
+- A model and thinking control opens a popover (a sheet on phones). It shows the main model and thinking level and writes through the config write coordinator (§8), so it updates whenever settings change.
+- Send becomes Stop while a turn runs and the composer is empty. Typing brings Send back, for a mid-turn steering message.
+- The draft is kept per agent in local storage and cleared on send.
 
-**State cards.** When the agent's `AgentSummary.state` is not `running`, the composer is replaced by a state card:
-- **Failed:**
-  - "<agent> couldn't start" and the error in plain words, with the raw message behind a disclosure.
-  - Restart.
-  - A settings link to the most relevant section: a `providers.toml` error opens Model, `mcp.json` opens Tool servers, `channels`-related errors open Connections, and anything else opens Raw config, where the diagnostics show.
-- **Stopped:** "<agent> is stopped", Start, and a "Start automatically" toggle.
-- **Starting / stopping:** a progress line with no actions.
+**State cards.** Display state comes from the hub:
+- **Stopping:** the agent is running but in the hub's stopping set, or an `agent_stopping` frame has arrived and no `agent_state` has followed yet.
+- **Starting, Running, Stopped, Failed:** from `AgentSummary.state`.
 
-Restart and Start failures surface in the card with the new error. The conversation above the card stays readable: the chat history endpoint serves non-running agents (§9).
+While not running, the composer is replaced:
 
-**Conversation size.** The session token and context figures move out of the always-visible footer. The palette action "Show conversation size" and the chat header's overflow menu open them in the context panel as plain-language figures. Raw token counts appear in a details disclosure.
+| State | Card |
+|---|---|
+| **Failed** | "<agent> couldn't start" and `last_error.reason` in plain words, with `last_error.message` behind a Details disclosure. Actions: **Restart**, and a settings link chosen by `last_error.file`: `providers.toml` opens Model, `mcp.json` opens Tool servers, `config.toml` opens Raw config (where the diagnostics show), `channels.toml` opens that file in the context panel. Any other value, or none, opens the agent's settings at its default section. |
+| **Stopped** | "<agent> is stopped", **Start**, and a Start automatically toggle. |
+| **Starting / Stopping** | A progress line with no actions. |
+
+- If Restart or Start fails, the new error shows in the card.
+- The conversation above the card stays readable: chat history is served for non-running agents (§9.2).
+- Actions that need a running agent are disabled, with the reason "Start <agent> first": the composer, Show conversation size, and session and schedule controls.
+
+**Conversation size.** The session token and context figures leave the always-visible footer. "Show conversation size" (overflow menu and palette) opens them in the context panel as plain-language figures, with raw token counts in a Details disclosure.
 
 ### 5. Activity, Schedule, Files
 
-**Activity** (per agent) replaces the sessions sidebar and the session page.
+**Activity** (agent place) replaces the sessions sidebar and the session page.
+- **Running now** lists every live run and every open outbound task. Kinds are shown in plain language:
 
-- **Running now** lists every live run and every open outbound task, with plain-language kinds:
-  - "From another app" for external
-  - "Scheduled" for scheduled
-  - "Started by <spawner>" for spawned
-  - "From a workbench page" for artifact
-  - "Sent to <agent>" for outbound tasks
-- Each row shows purpose, how long it has run, state, and Stop. Outbound tasks that can't be reached keep the "Stop watching" fallback.
+  | Kind | Label |
+  |---|---|
+  | external | From another app |
+  | scheduled | Scheduled |
+  | spawned | Started by <spawner> |
+  | artifact | From a workbench page |
+  | outbound tasks | Sent to <remote agent> |
+
+  Each row shows purpose, running time, state and Stop.
+  - For an outbound task, **Stop task** asks the remote agent to cancel.
+  - **Stop watching** stops tracking the task locally; it is offered when Stop task can't reach the agent.
 - **Finished** is one paged list with a kind filter, showing outcomes.
-- Opening a run shows it in the context panel:
-  - details (kind, started by, depth, remembered-as episode, run id)
-  - notes (interrupted, failed with details, overlap)
-  - the transcript, rendered with the same feed components as Chat
-  - a message box that sends to the session, or resumes it if finished
+- **Opening a run** shows it in the context panel:
+  - details: kind, started by, depth, remembered-as episode, run id
+  - notes: interrupted, failed with details, overlap
+  - the transcript, rendered with the Chat feed components
+  - a message box, which messages the session or resumes it if finished
   - Stop
-- The panel follows a resumed session into its new run.
 
-**Schedule** (per agent) replaces the Scheduled page, with the same content:
-- Pulses: enable toggle, schedule, active hours, next run, last result, problems, running and overlap badges.
+  The panel follows a resumed session into its new run.
+
+**Schedule** (agent place) replaces the Scheduled page with the same content:
+- Pulses: toggle, schedule, active hours, next run, last result, problems, and the running and overlap badges.
 - Scheduled actions: due time and Cancel.
+- Load failures show the error with Try again, never the empty state.
 
-When loading fails, it shows the error and "Try again"; it never shows the empty state.
-
-**Files** (per agent) and **Shared files** (team) keep the workspace capabilities:
-- lazy tree
-- identity-file tint (also in the team tree)
-- editor with live validation, diagnostics, Save and Discard
+**Files** (agent place) and **Shared files** (team place) keep every workspace capability:
+- the lazy tree, with identity-file tint (in the team tree too)
+- the editor, with live validation, diagnostics, Save and Discard
 - rename and move
 - delete with Undo
-- file history with diff and restore
+- file history, with diff and restore
 - the save-conflict dialog
 
-Two things are added:
-- Leaving the place, closing the panel, or reloading with unsaved edits asks first.
-- Files open in the context panel from links elsewhere (for example a path in a chat reply), using the same editor.
-
-On phones the editor is a full-screen view with a back control.
+In addition:
+- The unsaved-edit guard (§3) covers leaving the place, closing the panel, changing agent and reloading.
+- The team tree subscribes to team change frames and updates live.
+- On phones, the editor is full-screen with Back.
+- The same editor serves `panel=file:` links.
 
 ### 6. Home
 
-Home is the landing page (`/`). Its content sits in a centered container, max 1200px, beside the rail.
+**Header:** "Home" and counts: N running, N stopped, N can't start.
 
-**Header.** "Home", counts (N running, N stopped, N can't start).
+**Needs you.** Ordered by severity (error, then warn, then info), newest first within a severity. Each item carries its fix and disappears as soon as its condition clears.
 
-**Needs you.** Sorted by severity then time. Each item carries its fix inline, and disappears as soon as its condition clears.
+| Item | Severity | Condition | Actions |
+|---|---|---|---|
+| Agent couldn't start | error | the agent's state is failed | Restart; settings link chosen as in §4 |
+| Can't reach a remote agent | warn | an overview `outbound_problems` entry | Stop task; Stop watching |
+| Inbox item | info | an unread user-inbox item; the five newest are shown, then "N more in Inbox" | Open → `/inbox?item=<agent>:<id>` |
 
-| Condition | Shows | Actions |
-|---|---|---|
-| Agent failed | Plain-language error | Restart; settings link chosen as in §4 |
-| Unread inbox item | The newest unread items, up to five, then "N more in Inbox" | Open (opens the item in Inbox) |
-| Outbound task can't reach its agent | The task and how long it has been unreachable | Stop task; Stop watching |
+The rail's Home count is the number of needs-you items. Inbox items beyond the five shown don't count toward it.
 
-**Agents board.** An aligned table (cards on phones).
+**Agents board.** An aligned table at medium and wide widths, cards on phones. One row per agent:
 
-**Columns:**
-- **Agent:** name, role and unread badge.
-- **State:** a dot and a word.
-- **Now, and its last message:**
-  - While busy: "Working on a reply" plus how long.
-  - Otherwise: the purpose of the most recent live session, or "Idle".
-  - Under it: the last message's time and preview.
-- **Running:** the live session count.
-- **Next up:** the next pulse or action with its time, or "Won't run while stopped".
-- A "…" menu:
-  - Open chat
-  - Start / Stop / Restart
-  - Start automatically
-  - Settings
-  - Delete, with the existing confirm-then-undo flow
+| Column | Content |
+|---|---|
+| Agent | Name, role line, chat-unread badge |
+| State | Dot and word (Running, Stopped, Can't start, Starting, Stopping) |
+| Now, and its last message | While busy: "Working on a reply" and how long, from `busy_since`. Otherwise: the purpose of the newest live session, or "Idle". Under it: the last message's time and preview. |
+| Running | Live session count |
+| Next up | The next upcoming run and its time. "Won't run while stopped" for a non-running agent that has one. "Nothing scheduled" otherwise. |
+| "…" menu | Open chat; Start, Stop or Restart; Start automatically; Settings; Delete (with the existing confirm, then Undo) |
 
-**Create and restore.**
-- **New agent:** a button on the Agents heading row opens the Create agent dialog (a sheet on phones). The rail "+" and the palette open the same dialog.
-- **Dialog fields:**
-  - name, with live validation
-  - "What should it help with?", which becomes the description
-  - under "More options": "Copy model settings from" and who can find it
-- **Reserved names:** `home`, `inbox`, `all`, `team`, `settings`, `workbench` and `shared-files` are rejected alongside the backend's own rules.
-- **On create:** the dialog closes, the agent appears in the rail and on the board, a toast confirms it, and the user stays where they were.
+**New agent.**
+- A button on the Agents heading row opens the Create agent dialog (a sheet on phones). The rail "+" and the palette open the same dialog.
+- Fields:
+  - name, validated live against the backend's rules (1–24 characters, lowercase letters, digits and hyphens, no leading or trailing hyphen, not `hub`, `team` or `agents`, not taken)
+  - "What should it help with?" (the description)
+  - under More options: "Copy model settings from" and "Who can find it" (visibility, default private)
+- On create:
+  - the dialog closes
+  - the agent appears in the rail and on the board
+  - a toast confirms it
+  - the user stays where they were, with focus on the new agent's rail row
 - **Recently deleted** is a collapsed disclosure under the board, with Restore.
 
 **Right column** (below the board under 1180px):
-- **Across the team:** the newest team events, with time and agent.
-- **Coming up:** the next scheduled pulses and actions across agents, soonest first.
+- **Across the team:** the newest team events, with time, agent and a link to their target.
+- **Coming up:** the soonest upcoming runs across agents, up to eight.
 
 ### 7. Inbox
 
-- One Inbox across all agents, with an agent filter and an Archived tab.
-- Items show title, agent, source and time, plus an unread marker.
-- Opening an item marks it read and shows the body as sanitized Markdown, with attachment downloads.
+- One list across all agents' user inboxes.
+- Controls: an agent filter and an Archived tab.
+- Each item shows title, agent, source, time and an unread marker.
+- Opening an item:
+  - marks it read
+  - shows its body as sanitized Markdown
+  - lists its attachments as downloads
 - Items can be archived and restored.
-- The unread total drives the rail badge, the bottom-bar badge, the Home needs-you items and, when installed, the app icon badge (Badging API where supported).
-- "Add a note to <agent>'s inbox" (the old `/inbox` command) is an action in the registry.
+- Load failures show the error with Try again.
+- The inbox unread total drives the rail and bottom-bar badges, the Home needs-you items and, when installed, the app icon badge (the Badging API, where supported).
+- "Add a note to <agent>'s inbox" (the former `/inbox` command, which writes the agent inbox) is a registry action.
 
 ### 8. Settings
 
 **Frame.**
-- A large modal (full-screen on phones).
-- At the top, a scope picker: "All agents" first, then each agent with its state dot. A line under it says what the scope affects: "Applies to every agent" or "Only affects atlas".
-- **Section list.** Left on desktop. On phones the list is its own screen and a section opens full-screen with Back; the scope picker appears only on the list screen.
-- **What it opens on:**
-  - The scope of the agent being viewed.
-  - "All agents" when opened from Home, Inbox, Workbench or Shared files.
-  - Whatever a deep link names.
-- Switching sections or scope swaps only the content pane: no re-mount or re-animation of the modal, and at most a 120ms fade on the content.
-- When the new scope has the current section, switching scope keeps it.
+- A large modal: full-screen on phones.
+- At the top, the scope picker. "All agents" comes first, then each agent with its state dot, and under it "Applies to every agent" or "Only affects <agent>".
+- Beside it (on phones, as its own screen) the section list, with an Advanced group labeled as a non-interactive heading.
+- **Default scope when opened:**
+  - the viewed agent
+  - "All agents" when there is no viewed agent
+  - whatever a deep link names
+- Switching sections or scope swaps only the content pane: no remount or re-animation of the modal, and at most a 120ms fade on the content.
+- Switching scope keeps the current section when the new scope has it.
 
-**Saving.**
-- Each scope has explicit **Save changes** and **Discard** in a save bar that appears only when that scope has unsaved changes.
-- Unsaved changes are kept per scope while the modal is closed or another scope is selected, and the save bar reappears on return. They are lost on reload, which asks first when there are any.
-- A save sends only the diff for each file in that scope, through the config write coordinator:
-  - A PATCH validates before writing.
-  - Field-level errors show inline next to the field when a diagnostic carries a path location. Otherwise they show at the top of the section.
-  - A partial failure says which files saved and which didn't.
-- A successful save that returns a checkpoint offers Undo.
-- Secret fields exchange a typed value for a stored secret on save, as today.
-- An agent scope never edits install-wide files, and an All-agents scope never edits an agent's files. Install-wide values that affect an agent are shown on the agent page read-only, with a link to change them for all agents.
+**What saves how.**
+- **Staged changes.** Every form edit to a scope's config files is staged and saved together by Save changes.
+  - An agent scope's files are its `config.toml`, `providers.toml` and `mcp.json`. The All-agents scope's file is the hub's `config.toml`.
+  - Removing a provider, MCP server, webhook, skill folder or tool folder is a staged change; Discard brings it back.
+- **Immediate actions.** Controls with their own endpoints act at once and report their own result:
+  - secrets and agent keys (add, remove)
+  - agent-to-agent caller keys (create, revoke)
+  - Residuum Cloud connect, cancel, reconnect and disconnect
+  - update check and install
+  - agent visibility and autostart
+  - the remote-agents editor
+  - raw config saves
+  - History restore and undo
+- **Save bar.** A scope with staged changes shows a save bar with Save changes and Discard.
+  - Staged changes are kept per scope while the modal is closed or another scope is selected, and the bar reappears on return.
+  - They are lost on reload, which asks first (§3).
+- **Save.** Save sends, for each file in the scope with staged changes, the diff through the config write coordinator:
+  - providers first, then config, then MCP servers, because config validation reads providers from disk
+  - each PATCH validates before writing
+  - diagnostics whose location is a key path show inline on the field mapped to that key (the settings model holds one field-to-key-path map, used for both diffing and error placement); other diagnostics show at the top of the section
+  - a partial failure names which files saved and which didn't
+  - a successful save that returns a checkpoint offers Undo, which restores that checkpoint
+- **Secret fields** exchange a typed value for a stored secret during Save, as today.
+- **Raw config** editors have their own Save, and always write, as today. While the form has staged changes to a file, that file's raw editor is read-only with "Save or discard your form changes first", and the reverse.
+- **Scope isolation.** An agent scope never writes install-wide files, and the All-agents scope never writes an agent's files. Install-wide values that matter to an agent page (for example, whether the agent-to-agent listener is on) show read-only there, with a link to the All-agents section.
+- **Non-running agents.** Everything backed by a config file stays editable. Parts that need a running agent (agent-to-agent status, card and remote-agent reachability) show "Start <agent> to see this" with Start.
 
-**Config write coordinator.** A single client-side service through which every config write goes: settings saves, and the composer's model and thinking control.
+**Config write coordinator.** A client-side service; every config write goes through it: settings saves, raw saves, the composer's model and thinking control, and History restore and undo.
 - It serializes writes per file.
-- It re-reads the file when another writer changed it.
-- It notifies subscribers after every successful write or reload, so every view showing a config value refreshes.
-- It replaces the current lock, which only the composer used.
-- A reload from disk, or a checkpoint restore from History, goes through it too, so open forms refresh.
+- **Before a save,** it re-reads the file's raw text:
+  - If the text differs from the baseline the form loaded, and the changed keys overlap the staged diff, the user chooses "Keep my changes" or "Use what's on disk".
+  - If they don't overlap, the save proceeds: PATCH diffs apply to the current file, so external changes to other keys survive.
+- **After a write, reload or restore,** it notifies subscribers, so every view that shows a config value refreshes.
+- **External changes** are picked up from:
+  - `workspace_changed` frames on the bound agent's socket that touch its config files
+  - the hub's `hub_config_reloaded` frame (§9.1)
+- It replaces the current client-side lock, which only the composer used.
 
-**Sections.** Section ids are shown in brackets.
+**Sections.** Ids are in brackets.
 
 *Agent scope:*
 
-| Section | What it holds |
+| Section | Holds |
 |---|---|
-| **Model** (`model`) | Provider connections: add or remove a provider, type, API key, base URL, Ollama keep-alive. Main provider and model, thinking level and temperature. "Use different models for specific jobs" disclosure with each role named for what it does: Summarizing older messages (observer), Condensing memories (reflector), Regular checks (pulse), Reviewing turns (subconscious), Background sessions small/medium/large, Search index (embedding). Failover model lists are preserved; the form never collapses a list to one entry. |
-| **Connections** (`connections`) | Discord, Telegram, Teams: connected state, token or IDs, "Let others talk to this agent", context messages; Teams listener port. Incoming webhooks: name, secret, routing, format, content fields, route preview. |
-| **Tools & skills** (`tools`) | Skill folders, tool PATH folders, web search backend and key, provider-native search options. |
-| **Memory** (`memory`) | When to summarize and condense: the observer and reflector thresholds, expressed in plain words with the numbers shown. Cooldown and force threshold. Learning from conversations and reviewing turns (the subconscious settings). Search tuning under "More options". |
-| **Schedule** (`schedule`) | Regular checks on or off (pulse enabled). How long idle background sessions stay open, per kind. Episode skip floor. Nesting depth cap. |
-| **Advanced → Runtime** (`runtime`) | Reply time limit, reply length, retries, agent abilities (allowed changes, tool-call caps, repeat-call guard, steer and stop thresholds), idle timeout and idle channel. |
-| **Advanced → Tool servers** (`servers`) | MCP servers: list, remove with Undo, add (stdio or http), catalog. |
-| **Advanced → Agent-to-agent** (`a2a`) | Who can find this agent (the only place this is set), status, public or local URL, remote agents with the raw editor, card preview. |
-| **Advanced → Raw config** (`raw`) | Editors for `config.toml`, `providers.toml` and `mcp.json` with live diagnostics. A raw save always writes, as today. |
-| **Advanced → History** (`history`) | Checkpoint browser for the workspace and agent-config repos. |
+| **Model** `[model]` | Provider connections: add or remove, type, API key, base URL, Ollama keep-alive. Main provider and model, thinking level, temperature. The default model (`models.default`). "Use different models for specific jobs", naming each role by what it does: Summarizing older messages (observer), Condensing memories (reflector), Regular checks (pulse), Reviewing replies (subconscious), Background sessions small / medium / large, Search index (embedding). Failover model lists are kept; the form never collapses a list to one entry. |
+| **Connections** `[connections]` | Discord, Telegram, Teams (connected state, token or IDs, "Let others talk to this agent", context messages, Teams listener port). Incoming webhooks (name, secret, routing, format, content fields, route preview). |
+| **Tools & skills** `[tools]` | Skill folders, tool PATH folders, web search backend and key, provider-native search options. |
+| **Memory** `[memory]` | When to summarize and condense (observer and reflector thresholds, cooldown, force threshold), in plain words with the numbers shown. Learning from conversations and reviewing replies (the subconscious and learning settings). Search tuning under More options. |
+| **Schedule** `[schedule]` | Regular checks on or off (pulse enabled). How long idle background sessions stay open, per kind. Episode skip floor. Nesting depth cap. |
+| **Advanced → Runtime** `[runtime]` | Reply time limit, reply length, retries, agent abilities (allowed changes, tool-call caps, repeat-call guard, steer and stop thresholds), idle timeout and idle channel. |
+| **Advanced → Tool servers** `[servers]` | MCP servers: list, remove, add (stdio or http), catalog. |
+| **Advanced → Agent-to-agent** `[a2a]` | "Who can find this agent" (the only place visibility is set), status, public or local URL, remote agents with their raw editor, card preview. |
+| **Advanced → Raw config** `[raw]` | Editors for `config.toml`, `providers.toml` and `mcp.json`, with live diagnostics. |
+| **Advanced → History** `[history]` | Checkpoint browser for the workspace and agent-config repos. |
 
 *All agents scope:*
 
-| Section | What it holds |
+| Section | Holds |
 |---|---|
-| **General** (`general`) | Timezone. Gateway bind address and port under "More options". |
-| **Notifications** (`notifications`) | This device's push subscription and per-event toggles, and the other devices list (§11). |
-| **Residuum Cloud** (`cloud`) | Every existing connection state and action. Relay URL and local port under "More options". |
-| **Saved keys** (`keys`) | Two lists: keys agents can use as environment variables (agent keys) and stored secrets referenced by settings. Add, remove, and Undo where the backend returns a checkpoint. |
-| **Updates** (`updates`) | Status, check, update and restart, as today. |
-| **Session limits** (`limits`) | Concurrent background turns, hop soft and hard limits. |
-| **Advanced → Agent-to-agent** (`listener`) | The listener toggle, port, own address, and caller keys. |
-| **Advanced → Diagnostics** (`diagnostics`) | Log detail, redaction, automatic error reports. |
-| **Advanced → Raw config** (`raw`) | Install-wide `config.toml`. |
-| **Advanced → History** (`history`) | Team and hub repos. |
+| **General** `[general]` | Timezone. Gateway bind address and port under More options. |
+| **Notifications** `[notifications]` | Push on this device, per-event toggles, other devices (§11). |
+| **Residuum Cloud** `[cloud]` | Every existing connection state and action. Relay URL and local port under More options. |
+| **Saved keys** `[keys]` | Two lists. Keys agents use as environment variables (agent keys). Stored secrets referenced by settings. |
+| **Updates** `[updates]` | Status, check, update and restart. |
+| **Session limits** `[limits]` | Concurrent background turns, hop soft and hard limits. |
+| **Advanced → Agent-to-agent** `[listener]` | Listener toggle, port, own address, caller keys. |
+| **Advanced → Diagnostics** `[diagnostics]` | Log detail, redaction, automatic error reports. |
+| **Advanced → Raw config** `[raw]` | The hub's `config.toml`. |
+| **Advanced → History** `[history]` | Team and hub repos. |
 
 **Old section mapping** (for redirects):
 
-| Old section | New section |
+| Old section | New scope and section |
 |---|---|
-| agent `runtime` | `runtime` |
-| `providers` | `model` |
-| `channels`, `webhooks` | `connections` |
-| `pulses` | `schedule` |
-| `memory` | `memory` |
-| `skills` | `tools` |
-| `mcp` | `servers` |
-| agent `a2a` | `a2a` |
-| agent `history` | `history` |
-| hub `general` | `general` |
-| `cloud` | `cloud` |
-| hub `a2a` | `listener` |
-| `sessions` | `limits` |
-| `tracing` | `diagnostics` |
-| `update` | `updates` |
-| `secrets`, `agent-keys` | `keys` |
-| hub `history` | `history` |
+| agent `runtime` | agent `runtime` |
+| `providers` | agent `model` |
+| `channels`, `integrations`, `webhooks` | agent `connections` |
+| `pulses` | agent `schedule` |
+| `memory` | agent `memory` |
+| `skills` | agent `tools` |
+| `mcp` | agent `servers` |
+| agent `a2a` | agent `a2a` |
+| agent `history` | agent `history` |
+| hub `general` | `_all` `general` |
+| `cloud` | `_all` `cloud` |
+| hub `a2a` | `_all` `listener` |
+| `sessions` | `_all` `limits` |
+| `tracing` | `_all` `diagnostics` |
+| `update` | `_all` `updates` |
+| `secrets`, `agent-keys` | `_all` `keys` |
+| hub `history` | `_all` `history` |
 
-The Simple/Advanced/Raw mode toggle is removed. Advanced sections and "More options" disclosures replace it.
+A section named under the wrong scope moves to the scope that has it.
 
-**Destructive actions keep the existing model.** A single click, then Undo where the backend returns a checkpoint. Deleting an agent and removing a secret keep their confirmations. No new confirmation gates are added.
+- The Simple/Advanced/Raw toggle is removed.
+- Destructive immediate actions keep today's model: a single click, then Undo where the backend returns a checkpoint. Deleting an agent and removing a secret keep their confirmations. No new confirmation gates are added.
 
-### 9. Backend contracts (additive)
+### 9. Backend contracts
 
-The new surfaces need data the hub doesn't expose today. All changes are additive. Existing endpoints and frames keep their shape, because the macOS client and older web builds consume them. New timestamps are RFC 3339 UTC. New hub frame and envelope types are exported to TypeScript by the existing generator, so the web client stops hand-writing hub types.
+All changes are additive. Existing endpoints and frames keep their shapes, because the macOS client and older web builds use them.
 
-1. **Activity in the snapshot.** `agents_snapshot` and `GET /api/hub/agents` include each agent's activity (`busy`, `unread`, and a new `busy_since`), so a fresh page shows correct badges. The `agent_stopping` frame is added to the exported types and to the hub HTTP doc.
-2. **Chat history for non-running agents.** `GET /api/agents/{name}/chat/history` is served for stopped and failed agents from persisted history, like the existing repair routes. It returns the same shape.
-3. **Overview.**
-   - `GET /api/hub/overview` returns, per agent:
-     - the summary and activity
-     - `last_message {role, preview (≤ 200 chars, plain text), at}`
-     - `live_sessions [{address, run_id, category, purpose, state, started_at}]`
-     - `next_scheduled {kind: pulse|action, name, at} | null`
-     - `inbox_unread`
-     - `outbound_problems [{task_id, agent, status_text, unreachable_since}]`
-   - Stopped and failed agents are included: their last message and inbox count come from disk, and they have no live sessions or next run.
-   - The hub WebSocket sends `agent_overview {name, overview}` whenever any of those fields change for an agent, coalesced to at most one frame per agent per second.
-   - The `next_scheduled` time respects each pulse's active hours.
-4. **Team events.**
-   - The hub keeps a bounded in-memory log of the most recent team events: 500 entries, reset on hub restart. Each event has:
-     - `id` (monotonic)
-     - `at`
-     - `agent?`
-     - `kind`
-     - `level: info|warn|error`
-     - `summary`, a plain-language sentence
-     - `target?`, a place to open: an agent place, a session run, or an inbox item
-   - **Kinds:**
-     - agent started, stopped, failed (with reason), created, deleted, restored
-     - agent replied (a main turn ended with a reply)
-     - session started and finished (with purpose and outcome)
-     - inbox item added
-     - scheduled run finished
-     - hub notice (the existing notices, which today are never shown after their toast)
-   - `GET /api/hub/events?before=<id>&limit=<n>` pages backwards.
-   - The hub WebSocket sends `team_event {event}` for each new entry.
-5. **Cross-agent inbox.**
-   - Hub endpoints list inbox and archive items across all agents, including stopped and failed ones. Each item carries its agent name.
-   - Hub endpoints mark an item read, archive it and restore it, addressed by agent and item id.
-   - Adding, reading, archiving or restoring an item updates the overview's `inbox_unread` and emits a team event when an item is added.
-   - Errors are JSON `{error}`.
-   - Inbox timestamps in these responses are RFC 3339 UTC.
-   - The existing per-agent inbox endpoints remain.
-6. **Serving.** The embedded SPA is served with:
-   - `Cache-Control: public, max-age=31536000, immutable` for hashed build assets
-   - `no-cache` for `index.html`, the service worker and the manifest
-   - gzip or brotli compression for text assets
-7. **Web Push** (§11): VAPID keys, device subscriptions, and delivery.
+- **Timestamps.** New fields are RFC 3339 with an offset. Data stored as naive local minute times is converted using the hub's configured timezone at read time:
+  - an ambiguous time during a DST fall-back takes the earlier offset
+  - a nonexistent time in a spring-forward gap moves forward by the gap
+- **Errors.** New endpoints return JSON `{error}` on failure, with 400 (bad request), 404 (unknown agent or item), 409 (conflict), 500 and 503 (hub shutting down).
+- **Types.** New types are exported to TypeScript by the existing generator. The hub's client-message type is exported as `HubClientMessage` so it doesn't collide with the agent protocol's `ClientMessage`.
+
+**How the hub learns about agents.** The hub already owns each agent's activity tracker and passes it into the agent runtime. The runtime calls it directly for busy, unread and client connections. The hub also needs to watch each running agent:
+
+- When an agent starts, the hub attaches a **per-agent watcher**, which subscribes to that agent's event bus through a subscription handle added to the agent's control handle. It listens to:
+  - the Sessions topic: session started, state changed, completed
+  - the system Notification topic: outbound A2A task changes
+  - the Workspace topic, filtered to:
+    - `inbox/user/`
+    - `scheduled_actions.json`
+    - `HEARTBEAT.yml`
+    - `pulse_state.json`
+    - the agent's config files
+  - A Workspace `Resync` (the topic is lossy) makes the watcher recompute everything for that agent.
+- The watcher drains its subscriptions continuously. It stops when the agent stops.
+- The activity tracker's reply hook is extended to carry the reply's text and time, so the hub knows each agent's last message without re-reading files.
+- For stopped and failed agents, the hub computes the same data from disk on request and when the hub itself changes it (hub inbox actions).
+- Every user-inbox write passes through the inbox module's single save path. The overview's inbox counts are driven by the Workspace watch for running agents, and by the hub's own inbox actions. A file dropped into a stopped agent's inbox by hand is picked up on the next overview request.
+
+#### 9.1 Hub snapshot and frames
+
+- **`agents_snapshot`** gains:
+  - `activity: {<name>: AgentActivity}`
+  - `stopping: string[]` (the names in the hub's stopping set)
+- **`GET /api/hub/agents`** gains the same two fields beside `agents`.
+- **`AgentActivity`** gains `busy_since: string | null`, the start of the current main turn. The `agent_activity` frame carries it too.
+- **`AgentSummary` is unchanged.** Busy changes never produce `agent_state` frames.
+- **`AgentLastError`** gains:
+  - `reason: string`: the underlying error, without the "<agent> couldn't start: … Fix its settings…" wrapper that `message` keeps
+  - `file: "config.toml" | "providers.toml" | "mcp.json" | "channels.toml" | "a2a.json" | null`: set when the failure came from loading or validating that file
+
+  The start path keeps this information structured until the last error is recorded, instead of flattening it to a string first.
+- **New frames:**
+  - `hub_config_reloaded {ok: boolean, message: string | null}`, sent after each hub config reload attempt (alongside the existing notice)
+  - `hub_boot {boot_id}`, sent first on every hub socket connection
+- **`agent_stopping`** is exported and documented.
+- **On a lagged hub socket,** the hub sends `agents_snapshot` as today. The client then refetches the overview and the events since its newest id (§9.4).
+
+#### 9.2 Routes for non-running agents
+
+These per-agent routes are file-only, and move to the router that serves stopped and failed agents:
+- `chat/history` (recent and episodes)
+- `usage`
+- the user-inbox routes: list, archive list, read, archive, restore, attachments
+- `a2a/agents/raw` (GET and PUT)
+
+Their shapes are unchanged. The per-agent `status` route stays running-only.
+
+#### 9.3 Overview
+
+**`GET /api/hub/overview`** → `{boot_id, agents: AgentOverview[]}`, sorted by name.
+
+```
+AgentOverview {
+  name,
+  last_message: { role: "user" | "assistant", preview, at, at_precision: "minute" | "day" } | null,
+  live_sessions: [{ address, run_id, category, purpose, state, started_at }],
+  upcoming: [{ kind: "pulse" | "action", name, at }],     // soonest first, at most 3
+  inbox_unread: number,
+  outbound_problems: [{ task_id, remote_agent, status_text, unreachable_since }]
+}
+```
+
+- **Run state, activity and summary are not repeated here.** They come from the snapshot and the `agent_state` and `agent_activity` frames.
+- **`last_message`.** The newest main-conversation message with user visibility and non-empty text content, from the user or the agent. Assistant messages with only tool calls are skipped.
+  - `preview` is the text as plain text: Markdown syntax removed, whitespace collapsed, cut to 200 characters with "…".
+  - For a running agent it comes from the reply hook, or from recent history at startup.
+  - For a stopped agent it comes from recent history on disk. When recent history is empty, it comes from the newest episode containing a main-conversation message, with `at` set to that episode's date and `at_precision: "day"`.
+  - It is `null` when there is none.
+- **`live_sessions`.** Empty for a non-running agent.
+- **`upcoming`.**
+  - Pulses: from HEARTBEAT.yml, pulse state and the agent's `pulse_enabled`.
+  - Actions: from the scheduled actions file.
+  - A pulse's time is the first moment at or after `max(now, last_run + interval)` that falls inside its active hours. A never-run pulse counts from now.
+  - Disabled pulses, or all pulses when `pulse_enabled` is off, are excluded.
+  - The same calculation replaces the existing `next_fire_at` on the per-agent scheduled pulses endpoint.
+  - Computed for non-running agents too, so Home can say "won't run while stopped".
+- **`outbound_problems`.** Open tracked tasks with `unreachable_since` set. For a stopped agent they come from its persisted task file, frozen as of when it stopped.
+
+**Frames.**
+- `agent_overview {overview: AgentOverview}` replaces the client's copy for that agent whenever any field changes.
+- Coalescing: trailing edge, at most one frame per agent per second. The last state is always sent.
+- Agent creation, deletion and restore send one immediately. A deleted agent gets no further frames; `agent_deleted` removes it.
+
+**Recovery.** On hub socket connect or reconnect, or after an `agents_snapshot` caused by lag, the client refetches the overview.
+
+#### 9.4 Team events
+
+**The log.** In memory, holding up to 500 entries, reset on hub restart.
+- When full, the oldest `info` entry is evicted first. `warn` and `error` entries are evicted only when no `info` entry remains.
+- Ids are monotonic within a boot.
+
+```
+TeamEvent {
+  id: number,
+  at,
+  agent: string | null,
+  kind,
+  level: "info" | "warn" | "error",
+  summary,        // plain language, brand voice: "atlas finished a research session"
+  target: TeamEventTarget | null
+}
+
+TeamEventTarget =
+  | { kind: "agent_place", agent, place: "chat" | "activity" | "schedule" | "files" }
+  | { kind: "session", agent, run_id }
+  | { kind: "inbox_item", agent, item_id }
+  | { kind: "settings", scope, section }
+```
+
+**Kinds and levels:**
+
+| Kind | Level | Target |
+|---|---|---|
+| `hub_started` | info | none |
+| `agent_started` | info | agent_place chat |
+| `agent_stopped` | info | agent_place chat |
+| `agent_failed` | error | settings, per `last_error.file` as in §4 |
+| `agent_created` | info | agent_place chat |
+| `agent_deleted` | info | none |
+| `agent_restored` | info | agent_place chat |
+| `agent_replied` | info | agent_place chat; a main turn ended with a reply |
+| `session_started` | info | session |
+| `session_finished` | info if completed, warn if cancelled, error if failed | session |
+| `inbox_item_added` | info | inbox_item |
+| `scheduled_run_finished` | info, or error if it failed | session |
+| `hub_notice` | the notice's level | none; every existing hub notice |
+
+**Endpoints and frames.**
+- `GET /api/hub/events?before=<id>&after=<id>&limit=<n>` → `{boot_id, events: TeamEvent[], next_before: number | null}`:
+  - events newest first
+  - `before` pages older and `after` returns newer
+  - `limit` defaults to 50, maximum 200
+- `team_event {boot_id, event}` is sent for each new entry.
+- A client that sees a different `boot_id` discards its events and refetches.
+
+**Toasts.** Team events never produce toasts. The client keeps its existing toasts for the user's own actions and for failures.
+
+#### 9.5 Cross-agent inbox
+
+| Method and path | Result |
+|---|---|
+| `GET /api/hub/inbox?status=active\|archived&agent=<name>&before=<cursor>&limit=<n>` | `{items: HubInboxItem[], next_cursor: string \| null}`, newest first by time then id. `limit` defaults to 50, maximum 200. `agent` is optional. |
+| `GET /api/hub/inbox/unread` | `{total, by_agent: {<name>: number}}` |
+| `PUT /api/hub/inbox/{agent}/{id}/read` | `{item: HubInboxItem}` |
+| `POST /api/hub/inbox/{agent}/{id}/archive` | `{item: HubInboxItem}` |
+| `POST /api/hub/inbox/{agent}/{id}/restore` | `{item: HubInboxItem}` |
+
+```
+HubInboxItem { agent, id, title, body, source, at, read, attachments: [{ filename, mime_type, size, url }] }
+```
+
+- `url` points at the per-agent attachment route, which serves non-running agents (§9.2).
+- All agents are included, whatever their state.
+- A change made through these endpoints updates that agent's overview.
+
+**Failure notes.**
+- The hub no longer writes its own notes into user inboxes:
+  - "<agent> failed" when an agent fails to start
+  - "Created the agent X" (and deleted, restored) into the acting agent's inbox
+- Failures and lifecycle outcomes are shown by the state card, the needs-you item, team events and push. The user inbox holds only what agents choose to send.
+
+#### 9.6 Serving
+
+**Cache headers:**
+- **Hashed assets** (files under `/assets/`, which the build names by content hash): `Cache-Control: public, max-age=31536000, immutable`.
+- **Every other embedded file** (`index.html`, `/sw.js`, `/manifest.webmanifest`, icons, `favicon.svg`, `mcp-catalog.json`): `Cache-Control: no-cache` and a strong `ETag` from a content hash, answering `If-None-Match` with 304.
+
+**Compression.** Text assets (HTML, JS, CSS, JSON, SVG, webmanifest) are compressed with brotli or gzip when the request accepts it, with `Vary: Accept-Encoding`.
+
+The SPA fallback rules are unchanged.
+
+#### 9.7 Web Push
+
+**Storage.** Two hub-owned files beside the existing untracked state files in the hub directory.
+- **Key file:** the VAPID key pair. Mode 0600. Created on first use and never regenerated automatically.
+- **Devices file:** subscriptions and preferences.
+
+Neither is in the hub checkpoint allowlist, so restores never roll them back. Both are added to the paths agents are always blocked from writing.
+
+The VAPID `sub` claim is the `[push] contact` value in the hub config (a `mailto:` or `https:` URL) when set, otherwise `https://github.com/Grizzly-Endeavors/residuum`.
+
+**Endpoints:**
+
+| Method and path | Result |
+|---|---|
+| `GET /api/hub/push/key` | `{public_key}` (base64url) |
+| `GET /api/hub/push/devices` | `{devices: PushDevice[]}` |
+| `PUT /api/hub/push/devices` | Body `{subscription, label, preferences}`, where `subscription` is the browser's subscription JSON. Upserts by the subscription endpoint URL (idempotent). Returns `{device: PushDevice}`. |
+| `PATCH /api/hub/push/devices/{id}` | Body `{label?, preferences?}`. Returns `{device}`. |
+| `DELETE /api/hub/push/devices/{id}` | 204 |
+| `POST /api/hub/push/devices/{id}/test` | `{delivered: boolean, error: string \| null}` |
+
+```
+PushDevice {
+  id, label, created_at, last_success_at: string | null,
+  last_failure: { at, status: number | null, message } | null,
+  preferences: { inbox_item: bool, agent_failed: bool, outbound_unreachable: bool, reply_while_away: bool }
+}
+```
+
+Defaults for a new device: `inbox_item` and `agent_failed` on, the other two off.
+
+**Triggers:**
+
+| Preference | Fires when | Target | Urgency | TTL |
+|---|---|---|---|---|
+| `inbox_item` | A user-inbox item is added | `/inbox?item=<agent>:<id>` | normal | 24h |
+| `agent_failed` | An agent enters the failed state | That agent's Chat | high | 24h |
+| `outbound_unreachable` | Once per task, when an outbound task's `unreachable_since` becomes more than 15 minutes old | That agent's Activity | normal | 6h |
+| `reply_while_away` | An agent publishes a main-conversation reply while no web client has that agent's socket open (the condition that counts chat unread) | That agent's Chat | normal | 1h |
+
+**Delivery.**
+- Standard Web Push encryption and VAPID authentication, sent from the host to the subscription's endpoint.
+- Responses:
+  - **404 or 410:** removes the device.
+  - **429, 5xx or a network error:** retried once after 30 seconds, then recorded.
+  - **Any other failure:** recorded without retry.
+- Recording sets the device's `last_failure` and logs at warn level with the device label. The Notifications section shows the last failure, so failures are visible to the user.
+- Delivery never blocks or fails the operation that triggered it.
 
 ### 10. Frontend test and quality setup
 
-The test layers:
-
-| Layer | Environment | What it covers |
+| Layer | Environment | Covers |
 |---|---|---|
-| Unit | Node | Stores, routing, formatters, settings model, action registry, activity-line labeling. Unchanged tooling. |
-| Component | jsdom + Testing Library | Every primitive and every surface's key states (empty, loading, error, populated, live). Shared fixtures build hub, agent and feed state without a socket. |
-| End-to-end | Playwright against the mock server | Real navigation and flows on two projects: desktop 1440×900 and phone 390×844 with touch. Both run in Chromium in CI. A WebKit phone project is available locally for iOS-like checks. |
-| Accessibility | axe-core inside the end-to-end suite | Every place and overlay is scanned. Serious and critical violations fail the run. `svelte-check` fails on accessibility warnings. |
-| Visual | Playwright screenshots | A small set of baseline screenshots per surface at both sizes. Times and animations are frozen, and dynamic regions are masked. Baselines are updated deliberately with a dedicated command. |
+| Unit | Node | Stores, routing, formatters, the settings model, the action registry, activity-line labeling. |
+| Component | jsdom and Testing Library | Every primitive, and every surface's empty, loading, error, populated and live states. Shared fixtures build hub, agent and feed state without a socket. |
+| End-to-end | Playwright against the mock server | Navigation and flows in two Chromium projects, desktop 1440×900 and phone 390×844 with touch, both in CI. A WebKit phone project runs locally only. |
+| Accessibility | axe-core inside end-to-end | Every place and overlay. Serious and critical violations fail. |
+| Visual | Playwright screenshots | A small set of baselines per surface at both sizes, with frozen time and animation and masked dynamic regions. They run inside the official Playwright container image, pinned to the Playwright version, locally and in CI, so rendering matches. `just web-e2e-update` regenerates baselines in that container. |
 
-**Mock server as a first-class harness.**
-- It is split into modules and type-checked, linted and formatted like the app.
-- It has a deterministic mode (fixed clock, configurable delays with zero as the test default) and a reset endpoint, so each test starts from the same scenario.
-- It implements every endpoint the app calls, including the new contracts in §9.
-- A test compares the routes the API client calls against the routes the mock implements, so they cannot drift.
+**Mock server as a harness.**
+- Split into modules; type-checked, linted and formatted like the app.
+- Response shapes typed with the generated protocol types, so mock and backend drift shows up as a type error.
+- **Deterministic mode:**
+  - fixed clock
+  - configurable delays, zero by default in tests
+  - a stable scenario
+- A reset endpoint.
+- Two ways to run:
+  - with the Vite dev server
+  - a preview mode that serves a production build alongside the mock, for service worker and installability tests
+- It implements every endpoint the app calls, including §9. A test records every request the API client can make and checks each against the mock's route table.
 
 **Guardrails.**
-- **Token lint:** a style linter checks global and component styles for token use (colors, font sizes, z-index, durations, easing). Legacy styles sit on an ignore list that must be empty at cutover.
-- **Strict typing:** rune store modules get the same strict TypeScript lint rules as other modules.
-- **Generated types:** CI regenerates the TypeScript types from Rust and fails on any difference.
-- **Pre-commit:** runs on any change under the web app, including the mock server and config. It runs format, lint, type check, and unit and component tests. End-to-end, accessibility and visual tests run in CI and on demand through a `just` recipe.
-- **Coverage** is reported in CI without a threshold.
-- **Bundle size:** the initial-route size is reported in CI. A budget is set from the measured size after code splitting (§11) and enforced from then on.
+- A style linter checks global and component styles for token use. Legacy styles are on an ignore list that must be empty at cutover.
+- Rune store modules get the same strict TypeScript lint rules as other modules.
+- `svelte-check` fails on warnings. The one existing suppressed accessibility warning (labels without an associated control) stays suppressed until cutover removes the suppression.
+- **Generated types.** The Rust job in CI regenerates the TypeScript types and fails on any difference.
+- **Pre-commit** runs on any change under the web app, including the mock server and config: format, lint, type check, unit and component tests. End-to-end, accessibility and visual tests run in CI, and on demand through `just web-e2e`.
+- Coverage is reported in CI, with no threshold.
+- The initial-route bundle size is reported in CI. At cutover a budget is set from the measured size and enforced from then on.
 
 ### 11. PWA
 
@@ -488,201 +783,220 @@ The test layers:
 - **Manifest:**
   - `id` and `start_url` of `/home`
   - `display: standalone`
-  - background and theme color `#0e0e10`
-  - maskable icons, verified
+  - background and theme color `#0e0e10`, so the status bar matches the base surface (today's theme color is the vein blue)
+  - the existing icons, with the maskable icon's content inside the 80% safe zone (replaced if not)
   - shortcuts to Home and Inbox
-- **iOS:** the standalone metas, a black-translucent status bar, and `viewport-fit=cover`. The shell honors the safe-area insets everywhere, including the bottom bar and full-screen sheets.
-- **Install prompt:** where the browser supports one, "Install app" appears in the help menu and the palette. On iOS, the same entry explains Add to Home Screen.
+- **iOS:** the standalone and status-bar metas (black-translucent) and `viewport-fit=cover`. The shell honors all four safe-area insets.
+- **Install app:** appears in the help menu and palette when the browser offers an install prompt. On iOS it opens an explanation of Add to Home Screen.
+- **Without a secure context** (plain-HTTP LAN access), install and notification options are hidden.
 
-**Service worker.** A small hand-written worker at the site root:
+**Service worker (`/sw.js`).**
+- **Build:** a step writes the precache list (`index.html`, hashed assets, fonts, icons) and a version derived from that list into the worker. Every build with changed assets produces a byte-different worker.
 - **Caching:**
-  - It precaches the app shell: `index.html`, hashed assets, fonts, icons.
-  - It uses a build-generated asset list and a versioned cache name, and deletes old caches on activate.
-  - Navigations are network-first, falling back to the cached shell.
-  - `/api` and WebSocket traffic are never cached or intercepted.
-- **Offline:** the app launches to the shell. The hub banner explains that Residuum can't be reached, and offers Retry. No data is cached for offline reading.
-- **Updates:** a new worker waits. The app shows "Update ready" with a Reload action, and reload activates it.
-- **Push:** the same worker handles push events and notification clicks (below).
+  - It precaches the shell into a versioned cache and deletes other versions on activate.
+  - Navigations are network-first, falling back to the cached `index.html`.
+  - `/api` and WebSocket traffic are never intercepted.
+- **Offline:** the app launches to the shell, and the hub banner explains that Residuum can't be reached. No data is cached for offline reading.
+- **Updates:** a new worker waits. The app shows "Update ready" with Reload, and Reload activates it.
+- **Push:** the same worker handles push and notification-click events. A click focuses an open app window and navigates it to the target, or opens one.
+- **Registration** happens only in production builds, including the mock's preview mode, never in the dev server.
 
-**Code splitting.** Settings, the file editor, the workbench artifact host and the command palette load on demand. Home, Chat and the shell are in the initial bundle.
+**Code splitting.** Settings, the file editor, the workbench artifact host, the command palette and the setup wizard load on demand. The shell, Home and Chat are in the initial bundle.
 
-**Web Push.**
-- **Keys:** the hub generates and stores a VAPID key pair once, in its existing secret store.
-- **Endpoints:**
-  - return the public key
-  - register a subscription for this device, with a device label and per-event preferences
-  - list the registered devices
-  - update a device's preferences
-  - remove a device
-  - send a test notification
-- **Events a device can opt into:**
-  - a new inbox item (default on)
-  - an agent that can't start (default on)
-  - an outbound task unreachable for more than 15 minutes (default off)
-  - a reply that arrived while no web client was open (default off)
-- **Delivery:**
-  - The hub sends pushes directly to the browser's push service over HTTPS, with standard Web Push encryption.
-  - A subscription the push service reports as gone (404 or 410) is removed.
-  - Delivery failures are logged at warn level with the device label, and never block the triggering operation.
-- **Notification content:** plain-language title and body, plus a target URL. Clicking opens or focuses the app at that URL.
-- **Settings → All agents → Notifications** manages everything:
-  - this device's permission and subscription
-  - its per-event toggles
-  - a test button
-  - the list of other devices, with Remove
-  - on iOS, a note that notifications need the installed app
-- This, together with the cross-agent unread count, resolves issue #105.
+**Notifications section (All agents).**
+- This device:
+  - permission state
+  - enable or disable, which subscribes or unsubscribes
+  - label
+  - per-event toggles
+  - Send test
+  - last delivery result
+- Other devices, with their labels, last results and Remove.
+- On iOS, a note that notifications need the installed app.
+- Together with the cross-agent inbox count, this resolves issue #105.
 
 ### 12. Stores and services
 
-The data layer stays. Each existing module keeps its responsibility, with these changes:
+The data layer stays. Changes:
 
-- **Routing** implements the route model in §3.
-  - Session and settings state move into the URL.
-  - Stores never import the router. They expose data and commands, and views navigate.
-- **The agent socket coordinator** no longer resets unrelated stores on an agent switch. Each store subscribes to the agent-change signal itself.
-- **A new overview store** is fed by the hub socket's snapshot, `agent_overview` and `team_event` frames plus the overview and events endpoints. It is the only source for Home, the rail's badges and the needs-you items.
-- **The inbox store** becomes cross-agent.
-  - It uses the API client and surfaces errors instead of swallowing them.
-  - It relies on the overview for counts, and fetches items when the Inbox opens or a count changes.
-- **The settings model** is split per file and scope in place of one flat field object, and gains the save-bar state per scope. The config write coordinator replaces the current lock.
-- **The action registry** is new (§2, §4).
-- **Two duplications are removed:**
-  - Turn counters duplicated between the main feed and session views become one shared helper.
-  - The near-duplicate restore helpers in undo become one.
+- **API client.** Every agent-scoped function takes the agent name explicitly. No request depends on a module-level current agent. Cache keys include the agent.
+- **Routing.** Implements §3. Settings, panel and inbox-item state live in the URL. Stores never import the router: they expose data and commands, and views navigate.
+- **Agent socket coordinator.**
+  - Binds to the bound agent.
+  - No longer resets unrelated stores on an agent switch; each store subscribes to the agent-change signal itself.
+  - Sends `set_verbose` first on connect.
+- **Overview store (new).**
+  - Holds the hub snapshot's activity and stopping set, the overview, and team events.
+  - Is fed by the frames in §9 and the overview and events endpoints, with the recovery rules in §9.1, §9.3 and §9.4.
+  - Is the only source for Home, the rail's badges and needs-you items.
+- **Inbox store.** Becomes cross-agent on the hub endpoints. It uses the API client, surfaces errors, takes counts from the overview, and fetches items when Inbox opens or a count changes.
+- **Settings model.** Split per scope and file. It holds baselines, staged changes, the field-to-key-path map, and save-bar state per scope. The config write coordinator (§8) replaces the current lock.
+- **Action registry (new).**
+- **Two consolidations:**
+  - turn counters, today duplicated between the main feed and session views, become one shared helper
+  - the near-duplicate restore helpers in undo become one
+- **Notification history.** Kept as today, and shown in the Recent notifications dialog. Team events do not feed it.
 
 ## Reasoning & alternatives
 
-**Direction.** Three directions were built as clickable mockups and compared by the owner:
-- Rail: agent-first sidebar, compact.
-- Conversation: chat-first, roomy, serif replies, settings modal.
-- Control Room: overview-first, three panes.
+**Direction.** The owner compared three clickable mockups:
+- Rail: agent-first sidebar.
+- Conversation: chat-first, with a settings modal.
+- Control Room: overview-first.
 
-The combination was chosen because:
-- Multi-agent work is what Residuum does that single-assistant apps don't, so agents belong in the primary navigation (Rail).
-- A team overview answers "what needs me" at a glance (Control Room).
-- A modal keeps settings out of the navigation while making every section reachable (Conversation).
+They chose a combination:
+- Multi-agent work is what Residuum does that single-assistant apps don't, so agents belong in the primary navigation.
+- A team overview answers "what needs me" at a glance.
+- A modal keeps settings out of the navigation while making every section reachable.
 
 **View-layer rewrite on the existing data layer.**
-- The stores, socket handling, routing, undo and API client are well-tested and sound.
-- The problems are in layout, components and styling. Rewriting those and keeping the data layer is less risky than a full rewrite, and faster than restyling in place.
-- Restyling in place was rejected: the outline-box look, CSS sprawl and navigation model are structural, not cosmetic.
+- The stores, socket handling, undo helpers and API client are sound and tested.
+- The problems are layout, components and styling. Rewriting those while keeping the data layer is less risky than a full rewrite.
+- Restyling in place was rejected: the outline-box look, CSS sprawl and navigation model are structural.
 
-**Primitives built in-house on native elements** rather than adopting a component library.
-- `<dialog>`, the Popover API and `inert` now cover the hard accessibility parts.
-- The component count is small, and a library would add a dependency to track, plus styling overrides against the fixed palette.
+**In-house primitives on native elements.**
+- `<dialog>`, the Popover API and `inert` cover the hard accessibility parts.
+- The component set is small. A library would add a dependency to track, and styling overrides against the fixed palette.
 
-**Home data from the hub rather than client fan-out.**
-- Fanning out per-agent requests from the browser fails for stopped agents: their non-repair routes return 409.
-- It also costs one request per agent per field, and gets no live updates without a socket per agent.
-- The hub already owns agent state. An overview contract with change frames is one request plus one socket, and it also gives push and the app badge a single source.
+**Home data from the hub, not browser fan-out.**
+- Per-agent requests from the browser fail for stopped agents, and cost a request per agent per field.
+- They also need a socket per agent for live updates.
+- The hub already owns agent state and the activity tracker. A per-agent watcher plus one overview contract gives Home, the badges and push a single source.
 
-**Team event log kept in memory.**
-- "Across the team" needs timestamped history, and nothing records one today.
-- A bounded in-memory log is enough for "what happened recently", and costs no storage format.
-- It is reset on hub restart, and the restart itself is the first event after it.
-- Persisting it would add a file format and retention rules for little gain.
+**Bus subscription for the watcher, and the activity tracker for replies.**
+- Sessions, outbound tasks and workspace changes are already published on each agent's bus, so subscribing needs no new publishers.
+- The last message comes through the activity tracker's reply hook. It already fires for each reply, and the recent-messages file is written only after a turn and loses messages to episode rotation.
 
-**Cross-agent inbox at the hub.** The inbox is per agent on disk, and the per-agent routes need a running agent. A hub-level view is the only way to show one inbox that includes stopped agents.
+**Team event log in memory.**
+- "Across the team" needs recent timestamped history, and nothing records one today.
+- A bounded in-memory log costs no storage format or retention policy.
+- It restarts with the hub, and `hub_started` marks the break.
+- Level-aware eviction keeps failures from being pushed out by routine replies.
 
-**Explicit save in settings, not autosave.**
-- Autosave validated half-typed values mid-edit, and raced the composer's model chip.
-- Its failure feedback was a toast after the fact.
-- An explicit save with per-scope unsaved state matches the mockup the owner approved. It lets a fix-then-restart flow (a failed agent's model) read naturally, and lets validation errors appear inline before anything is written.
+**Hub-level cross-agent inbox.**
+- The inbox is per agent on disk.
+- One hub list gives one request, consistent UTC timestamps, and counts for push and the app badge.
+- The per-agent routes remain for compatibility.
 
-**A hand-written service worker** rather than a PWA plugin.
-- The worker has three jobs: precache the shell, fall back on navigation, and handle push. It stays small.
+**The hub stops writing notes into user inboxes.**
+- Those notes duplicated what the state card, Home, team events and push now show. A failed agent would appear twice in needs-you and send two pushes.
+- They made the user inbox hold system chatter instead of what agents chose to send.
+- Repeated same-day failures also overwrote each other (#305).
+
+**Explicit save in settings.**
+- Autosave validated half-typed values, raced the composer's model control, and reported failures only after the fact.
+- The owner approved the mockup's save bar.
+- It makes a fix-then-restart flow read naturally, and puts validation errors inline before anything is written.
+
+**`_all` as the install-wide scope token.** Agent names can't contain underscores, so no agent name needs reserving and existing agents are unaffected.
+
+**Overlay entries in history.** In the installed app, Android's Back gesture should close what's on top before leaving the place. Pushing an entry per modal overlay is the only way the browser offers.
+
+**A hand-written service worker.**
+- It has three small jobs: precache the shell, fall back on navigation, and handle push.
 - Owning it avoids a build-plugin dependency and keeps push handling in the same file.
-- The build step emits the asset list.
 
-**Always-on tool frames with a collapsed summary** rather than a verbose toggle. Tool activity is the main thing a user wants to see about a turn. The summary line keeps it quiet, and the toggle only hid information behind a command most users would never find.
+**Always-on tool frames with a collapsed summary.**
+- Tool activity is what a user most wants to see about a turn.
+- The summary keeps it quiet, whereas the toggle hid it behind a command few would find.
 
-**Chromium-only end-to-end tests in CI.** The CI runners' ability to host WebKit's system dependencies is unverified. A WebKit phone project exists for local runs. Adding it to CI is a follow-up issue once the runner is confirmed.
+**Visual tests in a pinned container.** Screenshots differ between machines. Running both baseline creation and comparison in the same pinned image makes them reproducible.
+
+**Chromium-only end-to-end tests in CI.** It is unverified whether the CI runners can host WebKit's system dependencies. A local WebKit project covers iOS-like checks. Adding it to CI is a follow-up once the runner is confirmed.
 
 **Integration branch for frontend work, `main` for backend contracts.**
-- A half-converted UI must never ship to users, so frontend work collects on one branch and cuts over in one merge.
-- The backend changes in §9 are additive, and harmless to the current UI, so they land on `main` as they are built. That avoids a long-lived backend divergence.
-- The integration branch merges `main` regularly.
+- A half-converted UI must never ship, so frontend work collects on one branch and cuts over in one merge.
+- The backend changes are additive and harmless to the current UI, so they land on `main` as built. That avoids a long-lived backend divergence.
+- The integration branch merges `main` after each backend unit lands.
 
 ## External touchpoints
 
-- **Hub HTTP and WebSocket.** The existing contracts are unchanged. The additions are in §9.
-  - New frames are ignored by current clients: both the web client and the macOS client switch on the frame type.
-  - New endpoints return JSON `{error}` on failure, with the status codes the hub lifecycle routes already use (400, 404, 409, 500, 503).
-- **Agent HTTP and WebSocket.** No shape changes.
-  - The web client sets the verbose flag on every connect.
-  - Chat history gains non-running service (§9.2).
-  - The native macOS client connects to the same socket, so the protocol must stay backward compatible.
-- **Generated TypeScript types.** Produced from Rust by the existing export test into the web app's generated-types directory. CI regenerates them and fails on any difference.
-- **Embedded asset serving.** The binary embeds the built web app.
-  - The SPA fallback serves `index.html` for paths without a dot that don't start with `/api` or `/ws`.
-  - The service worker and manifest are root-level files with dotted names, so they are served directly with correct MIME types.
-  - Cache headers and compression are added (§9.6).
-- **Residuum Cloud relay and tunnel.** Remote use goes through an HTTPS origin. That gives the secure context that service workers and push require.
-  - The tunnel forwards HTTP with a 25-second timeout and a 10MB response cap. App-shell assets are well under that.
-  - Whether the relay passes the service worker and the manifest through unmodified, with their headers and without an auth redirect on the worker script, must be verified against the relay project before the PWA work ships. If it doesn't, the relay needs a change in its own repository.
-  - Plain-HTTP LAN access to the gateway has no secure context. The PWA and push features are unavailable there, and the app must degrade by hiding install and notification options.
-- **Workbench artifacts origin and bridge.** Unchanged. The artifact host is restyled; the bridge's allow and deny rules and the artifacts origin stay as they are.
+- **Hub HTTP and WebSocket.** Existing contracts are unchanged; additions are in §9. Unknown frame types are ignored by the current web client, which switches on the frame type. The macOS client uses only `GET /api/hub/agents` and the agent socket, and both keep their shapes.
+- **Agent HTTP and WebSocket.** No shape changes. The web client sets the verbose flag on every connect. Some file-only routes gain service for non-running agents (§9.2).
+- **Agent event bus.** The hub subscribes per running agent (§9). Lossless topics use unbounded channels, so the watcher must drain continuously.
+- **Generated TypeScript types.** Produced from Rust by the existing export test. CI regenerates and diffs them.
+- **Embedded asset serving.** The SPA fallback serves `index.html` for paths without a dot that don't start with `/api` or `/ws`. `/sw.js` and `/manifest.webmanifest` are dotted root files served directly with correct MIME types. Cache headers and compression are in §9.6.
+- **Residuum Cloud relay and tunnel.**
+  - Remote use goes through an HTTPS origin, which gives service workers and push the secure context they need.
+  - The tunnel forwards HTTP with a 25-second timeout and a 10MB response cap.
+  - The relay (a separate project) must pass through, unmodified and without an auth redirect:
+    - the worker script
+    - the manifest
+    - `Cache-Control`, `ETag` and `Content-Encoding`
+
+    This is verified against the relay's code. Any needed relay change is made in that project.
+  - Plain-HTTP LAN access has no secure context, so install and push are hidden (§11).
+- **Workbench artifacts origin and bridge.** Unchanged. The artifact host is restyled; the bridge's rules and the artifacts origin stay as they are.
 - **Web Push services.**
-  - Outbound HTTPS from the host to the browser vendor's push endpoint, authenticated with VAPID and encrypted per the Web Push standards.
-  - The push endpoint URL comes from the browser's subscription.
-  - Failure modes: 404 and 410 remove the subscription, 429 and 5xx are logged, and a push is never retried more than once.
-- **macOS notification bridge.** Its "Open" action opens `/notification/<id>`, which redirects to the Inbox (§3).
-- **Fonts.** Onest, JetBrains Mono and Cinzel are bundled under their OFL licenses. No font CDN is contacted.
+  - Outbound HTTPS from the host to each subscription's endpoint, with VAPID authentication and Web Push encryption.
+  - Failure handling is in §9.7.
+  - Apple's service requires a valid VAPID `sub` claim.
+- **macOS notification bridge.** Its "Open" action opens `/notification/<id>`, which redirects to the last-used agent's Files, as today (§3).
+- **Fonts.** Onest, JetBrains Mono and Cinzel are bundled under their OFL licenses.
 
 ## Integration with existing system
 
-- **Branches.**
-  - Frontend work lands on the integration branch `feat/web-overhaul`, one PR per work unit.
-  - `main` continues to ship the current UI until cutover.
-  - Backend units (§9, Web Push) branch from `main`, merge to `main`, and reach the integration branch through its regular merges from `main`. The mock server changes that accompany a backend unit land with it.
-- **Coexistence on the integration branch.** The new shell lands early and hosts legacy views for places not yet rebuilt. Examples:
-  - The existing sessions sidebar content serves as the Activity place.
-  - The existing settings page opens inside the Settings modal.
+**Branches.**
+- Frontend work lands on `feat/web-overhaul`, one PR per work unit.
+- `main` keeps shipping the current UI until cutover.
+- Backend units branch from `main`, merge to `main`, and reach the integration branch through its merges from `main`. The mock server changes that accompany a backend unit land with it.
+- The test harness and guardrail units land on `main` first, so both branches share them.
 
-  Each surface unit replaces its legacy view and deletes the legacy components and styles it no longer needs. New tokens use names that don't collide with the legacy variables, so both style sets work side by side until cutover removes the legacy ones.
-- **Unchanged:**
-  - the data layer's socket transport
-  - the feed and session stores' frame handling
-  - the workbench bridge
-  - the undo, checkpoint and pending-save helpers
-  - the API client, extended with the new endpoints
-  - the setup wizard's flow, which is restyled onto the new primitives; its steps and what it collects don't change
-- **Replaced:**
-  - the header and hamburger menu
-  - the agent chip row
-  - the sessions sidebar and session page
-  - the Team page
-  - the Scheduled page
-  - the inbox drawer
-  - the notification corner: toasts move to the toast region, and notice history to "Across the team"
-  - the Settings page and its mode toggle
-  - the help overlay, restyled as a dialog
-  - the feedback modal, restyled on the Dialog primitive
-  - the global stylesheet set
-- **Documentation updated at cutover:**
-  - the web app's contributing guide (routes, structure, testing)
-  - its aesthetic guide, rewritten to describe this visual system
-  - the systems-usage pages that describe the web UI or the new hub contracts (hub HTTP, inbox, notifications, heartbeats' Scheduled view reference, workbench), and their mirrors in the bundled `residuum-system` skill references
-- **Cutover.**
-  - One PR merges `feat/web-overhaul` into `main` once:
-    - no legacy views remain
-    - the style ignore list is empty
-    - every item in `parity.md` is checked or listed as intentionally changed
-    - all test layers pass
-  - The design documents then move to `docs/archive/`.
+**Coexistence on the integration branch.**
+- The new shell lands early and hosts legacy views for places not yet rebuilt.
+- New tokens use names that don't collide with the legacy variables.
+- New base styles are scoped to new components; the legacy global reset stays until cutover.
+- The shell unit adjusts legacy layout rules that assumed the old header and sidebar, so hosted legacy views fill the main region.
+- Each surface unit deletes the legacy components and styles it replaces.
+
+**Unchanged:**
+- the socket transport
+- the feed and session stores' frame handling, apart from the activity-line aggregation (§4)
+- the workbench bridge
+- the undo, checkpoint and pending-save helpers
+- the setup wizard's flow, which is restyled only
+
+**Replaced:**
+- the header and hamburger menu
+- the agent chip row
+- the sessions sidebar and session page
+- the Team page
+- the Scheduled page
+- the inbox drawer
+- the notification corner: its toasts move to the toast region, and its history to the Recent notifications dialog
+- the Settings page and its mode toggle
+- the help overlay (now the Keyboard shortcuts dialog)
+- the feedback modal, rebuilt on Dialog
+- the global stylesheets
+
+**Documentation.**
+- Backend units update the matching systems-usage pages (hub HTTP, hub, inbox, notifications, heartbeats), and the bundled `residuum-system` reference where one exists for that page (`inbox`, `notifications`, `heartbeats`).
+- At cutover:
+  - the web contributing guide (structure, routes, testing)
+  - the web aesthetic guide, rewritten for this visual system
+  - the systems-usage pages that describe the web UI
+
+**Cutover.**
+- One PR merges `feat/web-overhaul` into `main` once:
+  - no legacy views remain
+  - the style ignore list is empty
+  - every `parity.md` item is checked or marked Changed or Dropped
+  - all test layers pass
+- The design documents then move to `docs/archive/`.
 
 ## Open questions
 
-Decisions made in this draft that the owner has not yet confirmed. Each is written into the design above as the recommended option.
+Choices written into this design that the owner has not yet confirmed:
 
-1. Home's data comes from a new hub overview contract (§9.3), not browser fan-out.
-2. "Across the team" is backed by an in-memory event log of 500 entries, reset on restart (§9.4), and it absorbs notice history.
-3. The Inbox becomes one cross-agent list backed by new hub endpoints (§9.5).
-4. Settings uses explicit Save and Discard per scope instead of autosave (§8).
-5. The service worker is hand-written, not generated by a plugin (§11).
-6. Web Push is in scope, with the four opt-in events and the defaults listed in §11.
-7. Visual screenshot tests are in CI for a small set of screens (§10). CI end-to-end tests run on Chromium only.
-8. Backend contract units merge to `main` directly; frontend units go to the integration branch (Integration).
-9. The grain overlay and time-of-day vein intensity are dropped (§1).
-10. The macOS notification "Open" link lands on the Inbox instead of the agent's files (§3).
+1. **Home's data** comes from a hub overview contract fed by a per-agent bus watcher (§9, §9.3), not browser fan-out.
+2. **"Across the team"** is an in-memory event log of 500 entries with level-aware eviction, reset on restart (§9.4).
+3. **The Inbox** is one cross-agent list backed by hub endpoints (§9.5).
+4. **The hub stops writing** its failure and lifecycle notes into user inboxes (§9.5).
+5. **Settings** use explicit Save and Discard per scope, with the staged/immediate split in §8.
+6. **The service worker** is hand-written (§11).
+7. **Web Push** is in scope: the four events and defaults in §9.7, keys and devices in untracked hub files, and a `[push] contact` hub setting for the VAPID contact.
+8. **Visual screenshot tests** are in CI, inside a pinned Playwright container. CI end-to-end runs Chromium only (§10).
+9. **Backend units** merge to `main` directly; frontend units go to the integration branch.
+10. **The grain overlay and time-of-day vein intensity** are dropped (§1).
+11. **Modal overlays push history entries** so that Back closes them (§3).
+12. **Input borders** use `#6a6a6f`, the old dim text tone, to meet the 3:1 control-boundary contrast. They will read slightly more visible than the mockup's (§1).

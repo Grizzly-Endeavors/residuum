@@ -4,7 +4,7 @@
 
 Every capability the current web UI offers, grouped by the surface that has it today, with where it lives after the overhaul. A work unit that replaces a surface checks off that surface's items. Cutover requires every item to be checked or marked **Changed** / **Dropped** with the reason given here. **Fix** marks a known defect in the current UI that the replacement must not carry over.
 
-## Chat feed → Agent Chat (design §4)
+## Chat feed → Agent Chat (design §4; W21, W22)
 
 - [ ] User message text with inline image thumbnails
 - [ ] Sender line for messages from another interface ("name · interface · location") and from a workbench artifact
@@ -27,7 +27,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Live turn indicator: elapsed, output, tool-call count, stop hint — **Changed:** part of the live activity line; token figures move to the conversation-size view
 - [ ] Main history hides background turns unless they started with an agent message
 
-## Composer → Agent Chat composer (design §4)
+## Composer → Agent Chat composer (design §4; W23, with the action registry from W20)
 
 - [ ] Auto-growing input; Enter sends, Shift+Enter new line
 - [ ] Slash autocomplete when `/` is the first character: arrow keys, Tab completes, Enter runs, Esc closes; toolbar button toggles the full list; click outside closes — **Changed:** draws from the action registry
@@ -47,7 +47,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Offline composing: messages queue with "Reconnecting — N messages will send once back online" (running agents only)
 - [ ] Drafts — **Fix:** kept per agent across navigation and reload
 
-## Chat footer and thinking indicator → Agent Chat (design §4)
+## Chat footer and thinking indicator → Agent Chat (design §4; W22, W23)
 
 - [ ] Main model label — **Changed:** shown in the composer's model control
 - [ ] Session input/output tokens, tool calls, context size — **Changed:** conversation-size view in the context panel
@@ -55,7 +55,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Usage seeded on connect and updated per turn
 - [ ] Live elapsed timer, output tokens, tool calls, stop hint (main chat only)
 
-## Sessions sidebar and session view → Activity + context panel (design §5)
+## Sessions sidebar and session view → Activity + context panel (design §5; W24)
 
 - [ ] Live count badge — **Changed:** running-sessions pill in the chat header and the Activity place
 - [ ] Narrow-screen drawer behaviors (focus trap, inert page, Esc) — **Changed:** Activity is a place; the panel is a sheet on phones
@@ -72,7 +72,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Results as toasts when the session isn't open
 - [ ] Open session from an agent message by address (live first, else looked up)
 
-## Workspace → Files, Shared files, context panel (design §5)
+## Workspace → Files, Shared files, context panel (design §5; W29)
 
 - [ ] Agent workspace and team files
 - [ ] Lazy tree with expand/collapse and empty directories
@@ -86,7 +86,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] File history: checkpoints (≤ 100), relative time, trigger, summary, auto-select newest, diff, view full content, restore
 - [ ] Team files have live updates — **Fix:** today the team view never subscribes to team change frames
 
-## Workbench → Workbench place (design §5, unchanged behavior)
+## Workbench → Workbench place (unchanged behavior; W30)
 
 - [ ] List with loading, error with Try again, empty explanation; title, path, edited time (refreshes every 30 s); agent-edit glow "updating now"
 - [ ] Open; modifier-click or middle-click opens a new tab
@@ -99,7 +99,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Deleted and unavailable notices
 - [ ] Sandboxed iframe on the artifacts origin; bridge concurrency, retries, deny list, workspace watch, connection events — unchanged
 
-## Scheduled → Schedule place (design §5)
+## Scheduled → Schedule place (design §5; W28)
 
 - [ ] Reload
 - [ ] Pulses: enable toggle (disabled while pending or unscheduled), running and overlap badges, schedule, active hours, skill, next run, last result with error, problems
@@ -108,7 +108,7 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Refetch on schedule-file changes and scheduled-session frames
 - [ ] **Fix:** a failed load shows the error and Try again, never the empty state
 
-## Team page → Home + Settings (design §6, §8)
+## Team page → Home + Settings (design §6, §8; W25, W26, W36)
 
 - [ ] Agent state glyph, name link, state label, working chip, unread chip, role line or "No role page yet", last error with time
 - [ ] A2A card visibility per agent — **Changed:** set only in Settings → agent → Advanced → Agent-to-agent (today it is in two places with different defaults)
@@ -117,34 +117,34 @@ Every capability the current web UI offers, grouped by the surface that has it t
 - [ ] Delete with confirmation, then checkpoint note with Undo and Dismiss
 - [ ] Recently deleted with Restore, load error with Try again — **Changed:** collapsed disclosure on Home
 - [ ] Create agent: live-validated name, description, copy model settings from, visibility; "Created X" — **Changed:** Create agent dialog
-- [ ] Hub-wide toasts for created / restored / deleted (with Undo), failures and notices
+- [ ] Hub-wide toasts for created / restored / deleted (with Undo), failures and notices (team events never add toasts)
 
-## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7)
+## Header, agent switcher, notifications, inbox, feedback, help → Shell (design §2, §7; W15, W19, W20, W27)
 
 - [ ] Menu destinations (Chat, Workspace, Workbench, Scheduled, Agent settings, Team, Team files, Hub settings) — **Changed:** rail and bottom bar
 - [ ] Connection status text — **Changed:** shown only when degraded
 - [ ] Inbox button with unread badge — **Changed:** rail and bottom bar, across agents
 - [ ] Bug report entry — **Changed:** help menu and palette
-- [ ] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, unknown agent from URL shown as stopped, arrow-key movement — **Changed:** rail agent rows (accordion); the error shows in Home and the state card
+- [ ] Agent chips: state, busy dots, unread (99+), failed-agent error tooltip, current highlight, arrow-key movement — **Changed:** rail agent rows (accordion) with a working indicator and a 99+ chat-unread badge; Up/Down move between rows; the error shows on Home and in the state card; an unknown agent in the URL redirects to Home with a toast
 - [ ] Switching agents keeps the kind of page — **Changed:** agent places are explicit routes; the rail accordion links to them
 - [ ] Hub offline note — **Changed:** hub banner
 - [ ] Toasts: info/success auto-dismiss (4 s, 10 s with action), errors sticky, dismiss, action button
-- [ ] Recent notifications history with clear and Undo — **Changed:** notices are team events in Home's "Across the team"
-- [ ] User inbox: per agent, 30 s polling, unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts; bodies render as Markdown
+- [ ] Recent notifications history with details, clear and Undo — **Changed:** a Recent notifications dialog from the help menu and palette
+- [ ] User inbox: unread count, tabs, read on open, body and attachment downloads, archive, restore, empty states — **Changed:** one cross-agent Inbox place with live counts from the overview (no polling); bodies render as Markdown; load errors are shown, not swallowed
 - [ ] Feedback dialog: bug and feedback tabs with drafts kept, required fields, severity, receipt with public id and Copy, friendly errors
 - [ ] Help overlay with shortcuts and commands — **Fix:** lists "Esc stops a running reply" and describes `/` accurately
 
-## Settings → Settings modal (design §8)
+## Settings → Settings modal (design §8; W31–W38)
 
 - [ ] Title and scope note — **Changed:** scope picker with "Applies to…" line
 - [ ] Saving / saved / saved-with-problems / reloaded status — **Changed:** save bar and results
 - [ ] Reload from disk with discard confirmation when there are unsaved changes
 - [ ] Simple / Advanced / Raw — **Dropped:** Advanced sections, "More options" disclosures, and a Raw config section replace it
 - [ ] Section navigation and old-URL redirects — **Changed:** new section ids and mapping
-- [ ] Autosave — **Changed:** explicit Save changes / Discard per scope
+- [ ] Autosave — **Changed:** explicit Save changes / Discard per scope; items with their own endpoints stay immediate (design §8)
 - [ ] Partial-failure message naming saved and failed files
 - [ ] Secret fields: store on save; Stored securely with Change; from environment variable with Replace
-- [ ] Undo after removing providers, webhooks, MCP servers (checkpoint-aware), skills/tools folders (form-only), cloud account (form-only)
+- [ ] Undo after removing providers, webhooks, MCP servers, skills/tools folders, cloud account — **Changed:** removals are staged (Discard brings them back); after Save, Undo restores the returned checkpoint
 - [ ] Scope isolation: an agent page never shows editable install-wide fields, and a save writes only its own scope's files (today the agent-page save computes and ignores an install-wide diff, which is empty only because no agent section renders install-wide fields)
 - [ ] **Fix:** History restore and undo refresh the open form
 - [ ] **Fix:** field-level validation errors inline where the server gives a path
@@ -176,13 +176,13 @@ Agent scope:
 - [ ] History: workspace and agent-config repos
 - [ ] History browser (both scopes): repo toggle, path filter, stats, paged list, detail, undo checkpoint with reverted/skipped report, changed paths with diff, view file, restore, encrypted-store hint
 
-## Setup wizard → restyled, same flow
+## Setup wizard → restyled, same flow (W39)
 
 - [ ] Six steps with draft autosave (without secrets), restore on reload, cleared on completion
 - [ ] Welcome, Providers, Assign models, MCP servers, Integrations, Save & Start — contents unchanged
 - [ ] Back and Next on every step
 
-## Global
+## Global (W15 toasts, W17 routing, W19 connection and errors, W20 keyboard)
 
 - [ ] Keyboard: `?` help, Enter/Shift+Enter, slash-menu keys, Esc (stop reply, close overlays), F (artifact full view), rail keyboard navigation, focus trapping in overlays, Enter/Space on disclosures
 - [ ] Agent socket reconnect with backoff, ping, queued sends; resync of sessions, history, usage, workspace watch and workbench on reconnect
@@ -191,6 +191,6 @@ Agent scope:
 - [ ] Plain-language error messages for unreachable, 404, 401/403, 5xx and server messages; error frames as toasts with details; notices as info
 - [ ] Time-of-day vein intensity — **Dropped:** see design §1
 - [ ] Deep links and back/forward — **Changed:** route model in design §3 with redirects from every current URL
-- [ ] macOS notification "Open" link — **Changed:** lands on the Inbox
+- [ ] macOS notification "Open" link lands on the last-used agent's Files, as today
 - [ ] Persisted preferences: last agent, API cache, setup draft — sidebar open state, settings mode and verbose are **Dropped** with the features they served
 - [ ] Reduced motion respected
