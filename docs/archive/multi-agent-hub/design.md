@@ -1,6 +1,6 @@
 # Multi-Agent Hub — Design
 
-**Status:** Accepted, not built. Tracks issue #205. The implementation phases are in [phases.md](phases.md).
+**Status:** Built and shipped; this record matches the implementation. Tracks issue #205. The implementation phases are in [phases.md](phases.md). Current behavior is described in `docs/systems-usage/`, starting with [Hub](../../systems-usage/hub.md).
 
 > Systems level only. This document stands on its own: it is implemented in fresh sessions that have only this doc, `phases.md`, and the codebase.
 
@@ -89,7 +89,7 @@ Each agent's file tools, the web file browser and the change feed see one logica
   - An agent-created agent copies its creator's visibility.
   - A user-created agent gets the visibility the user picks, defaulting to `private`.
   - The onboarded first agent defaults to `public`, as today.
-  - Either way the only unauthenticated thing a public agent exposes is its Agent Card. Every other A2A route requires a caller key or a sibling attestation.
+  - Either way the only unauthenticated thing a public agent exposes is its Agent Card. Every other A2A route requires a caller key or a sibling attestation, and a private agent answers `404` to a caller with neither.
 
 **Other agent files:** each agent's `providers.toml` (providers and model assignments, including background tiers) lives in its `config/` directory. `channels.toml`, `mcp.json`, `agent-card.json` and `a2a.json` stay there too.
 
@@ -154,7 +154,7 @@ Hub (process)
 | `agent:<name>/<session-address>` | A session belonging to teammate `<name>`. Used mainly to reply to a teammate's session that messaged you. |
 | `a2a:<name>` | A remote A2A agent. Unchanged, but see A2A below for how sibling names change. |
 
-**Cross-agent delivery.** `message_agent` with an `agent:` address goes to the hub's team router. The router hands the message to the target agent's messenger, which delivers it exactly as today:
+**Cross-agent delivery.** `message_agent` with an `agent:` address goes to the hub's team router. The team router registers each running agent's messenger at start and unregisters it when the agent's stop begins. It checks the target's state against the agent host and hands the message to the target agent's messenger, which delivers it exactly as today:
 - to main: a mid-turn interrupt or a new turn;
 - to a live session: an interrupt;
 - to a completed session: a resume.
@@ -179,7 +179,15 @@ Nothing queues for a stopped agent.
 
 **`stop_agent`** is unchanged. It covers the agent's own sessions and its A2A tasks. Teammates are stopped through the lifecycle controls.
 
-**Team roster in the prompt.** Each agent's prompt includes a short `TEAM` block: every teammate's name, state and role line. That lets an agent know who to hand work to without spending a tool call. The block is built from the same data as `list_agents`.
+**Team roster in the prompt.** Each agent's prompt includes a short `TEAM` block: every teammate's name, state and role line. That lets an agent know who to hand work to without spending a tool call. The block is built from the same data as `list_agents`, lists teammates only, and is omitted when the agent has none:
+
+```
+<TEAM>
+You are "alpha". Teammates (message_agent to="agent:<name>"; only running ones receive):
+- beta (running): Reviews drafts
+- gamma (stopped): no role line yet
+</TEAM>
+```
 
 ### Agent lifecycle and creation
 
@@ -199,26 +207,28 @@ Everything else starts from the blank agent template.
 1. Validate the name. Refuse if a directory with that name already exists.
 2. Write the agent directory from the blank template:
    - a default `SOUL.md` that names the agent;
-   - default `HEARTBEAT.yml` and `SUBCONSCIOUS.md`;
+   - default `HEARTBEAT.yml` (without `wiki_lint`) and `SUBCONSCIOUS.md`;
    - empty memory and inbox;
    - config with `autostart = true`.
 
+   The model config is validated first, and the directory is assembled under a hidden staging directory (`.provision-<name>/`) and renamed into place only when complete, so a failed creation never leaves a discoverable half-agent.
+
    No `BOOTSTRAP.md` is written, and the bootstrapped marker is set. New agents never run the first-run interview.
 3. Write the agent's role page `team/wiki/agents/<name>.md` (see Wiki). If a description was given, it becomes the page's `description`, otherwise a placeholder. Add the page's entry to `team/wiki/agents/index.md`, and append a line to the wiki log.
-4. Start the agent.
+4. Start the agent. If it can't start, it is still created and reported `failed` with the reason.
 5. If a description was given, deliver it to the new agent's main as its first message, attributed to the creator (`agent:<creator>` or the owner). The message asks the agent to:
    - turn the description into its own notes in `SOUL.md`;
    - fill in its role page with its role and responsibilities.
-6. Publish a "created" notice to the user: which agent, created by whom. The agent appears in the switcher.
+6. Publish an `agent_created` event naming who created it. The web UI shows it as a toast and the agent appears in the switcher. When another agent created it, that agent also gets an item in its user inbox.
 
 **Deletion.** The user (UI or CLI) or any agent (`agent_delete` tool) can delete an agent. There is no approval gate. Deletion:
 1. stops the agent;
-2. takes a checkpoint of its directory;
-3. removes the directory;
+2. takes a checkpoint of its directory and of its two config files;
+3. renames the directory to a hidden `.deleting-<name>/` (which takes it out of discovery in one step) and removes it;
 4. removes its role page and index entry, and logs it to the wiki log;
-5. publishes a "deleted" notice.
+5. publishes an `agent_deleted` event naming who deleted it.
 
-The agent's checkpoint history stays in `hub/checkpoints/`, and checkpoints are never pruned, so a deleted agent can always be restored from it.
+The agent's checkpoint history stays in `hub/checkpoints/agents/<name>/`, and checkpoints are never pruned. An agent that deletes itself starts the delete on its own task and returns at once, because stopping the agent cancels the running turn. Recreating an agent with the same name reuses the same checkpoint history.
 
 **Start and stop.** Starting and stopping are runtime operations, available from the UI, the CLI and the hub API. Stopping an agent:
 - ends its adapters and event loop;
@@ -237,7 +247,7 @@ Whether an agent starts with the hub is controlled by its `autostart` flag.
 | 3 | HARNESS | constant |
 | 4 | USER.md | team |
 | 5 | WIKI_INDEX | team |
-| 6 | TEAM roster | hub, new |
+| 6 | TEAM roster | hub |
 | 7 | OBSERVATION_LOG, RECENT_CONTEXT | the agent |
 | 8 | SKILLS_INDEX, ACTIVE_SKILLS | layered, see Skills |
 
@@ -288,7 +298,7 @@ Everything the backend serves lives under `/api/`. The SPA fallback serves every
 | `/api/agents/<name>/...` | Everything agent-scoped from today's API: agent config, providers, MCP, channels, sessions, scheduled actions, inbox, memory search, the agent's A2A settings, its workspace files. It also carries the agent's WebSocket (`/api/agents/<name>/ws`), which carries today's WS protocol unchanged. |
 
 - Agents are created and deleted at runtime, so `/api/agents/<name>/` is resolved per request against the agent host. A request for an unknown agent gets `404`. A request for an agent that isn't running gets `409` with its state, except for the config and file routes, which work on a stopped agent so the user can fix a `failed` agent's config.
-- The cross-site guard and the remote-control guard apply exactly as today. Hub shutdown and cloud disconnect are guarded, and a new remote-control-guarded operation is stopping *all* agents.
+- The cross-site guard and the remote-control guard apply as before. Hub shutdown and cloud disconnect are remote-control guarded. Stopping *all* agents (`POST /api/hub/stop-all`) is not: the hub keeps running and every agent can be started again through the tunnel.
 
 ### Web UI
 
@@ -371,13 +381,13 @@ Compatibility: no released Residuum client has used A2A, so the relay's A2A rout
 
 - **Handshake.** A hub declares the `agents` capability in `x-residuum-capabilities`, next to the existing ones.
 - **New frame, client to relay: `AgentsUpdate`.** It carries `agents: [{ name, display_name, a2a_enabled, a2a_private }]`, with the full list each time.
-  - Sent after `Connected`, and again whenever an agent is created or deleted, or changes A2A visibility or enablement.
+  - Sent after `Connected`, and again whenever an agent is created, deleted, started or stopped, or changes A2A visibility, or the hub's `[a2a] enabled` flips. `a2a_enabled` is true only while the agent is running and the hub's A2A listener is enabled.
   - The relay replaces its stored list for that instance in one transaction.
   - It is idempotent, so resending after a reconnect is always safe.
 - **Storage.** A per-instance agent table (instance, name, display name, A2A enabled, A2A private), unique on instance plus name.
 - **A2A routing.**
   - `ANY /a2a/{instance}/{agent}[/{rest}]` replaces the per-instance `/a2a/{slug}` route and routes to that instance's tunnel. The `HttpRequest` frame gains an optional `agent` field, set by the relay for this route, and the hub's A2A listener dispatches on it.
-  - An agent that isn't in the stored list, or has A2A disabled, gets `404`. Private-agent semantics mirror today's private instances: `404` to anyone who is not a sibling.
+  - An agent that isn't in the stored list, or has A2A disabled, gets `404`. A private agent is listed only for the user's own installs (or a caller its own auth-check accepts), and the relay forwards every request to the hub, whose auth layer answers `404` to a caller with neither a key nor a sibling attestation.
 - **Directory (`GET /a2a/agents`).**
   - It lists one entry per agent: `{ slug: "<instance>/<agent>", instance, agent, display_name, card_url, online }`, applying each agent's privacy the way instance privacy is applied today.
 - **Sibling attestation.** It stays per connection, meaning per hub. `x-residuum-sibling` names the calling *instance*, and callers are attributed as "your own other Residuum instance," as today.
@@ -396,7 +406,7 @@ Compatibility: no released Residuum client has used A2A, so the relay's A2A rout
   - `public_url` plus `/agents/<name>`, if `public_url` is set;
   - otherwise `{origin}/a2a/{instance}/{name}` when the tunnel is connected;
   - otherwise the local fallback plus `/agents/<name>`.
-- **Caller keys and the tunnel.** Caller keys stay in one hub-level store, and a valid key can reach every non-private agent. The tunnel nonce stays per process.
+- **Caller keys and the tunnel.** Caller keys stay in one hub-level store, and a valid key reaches every agent, private ones included. A private agent is hidden only from callers with no key and no sibling attestation. The tunnel nonce stays per process.
 - **Remote tasks.** An inbound A2A task becomes a conversation session on the target agent.
 - **Siblings.** Discovery runs once per hub, and every agent's A2A client registry gets the result. Discovery filters out the hub's own agents, since those are teammates and reachable directly. Remote siblings are named `<instance>/<agent>` in `a2a:` addresses.
 - **Root paths.** The listener has no root-level agent. Anything outside `/agents/<name>/` gets `404`.
@@ -422,11 +432,11 @@ Compatibility: no released Residuum client has used A2A, so the relay's A2A rout
 **Wrapped or reused unchanged:**
 - session runtime, messenger delivery, conversation routing;
 - adapters, pulses, subconscious, memory, observer and reflector;
-- checkpoints, which keep today's split between a workspace-style repo and a local-only config repo:
-  - **hub config repo** (local-only): hub config, the secrets store, the agent-key store, A2A keys;
-  - **team repo** (workspace-style): `team/`;
-  - per agent, a **workspace repo** (workspace-style), which is the agent directory minus its `config/config.toml` and `config/providers.toml`;
-  - per agent, a **config repo** (local-only), which is exactly those two files.
+- checkpoints, which keep the split between a workspace-style repo and a local-only config repo, all under `hub/checkpoints/`:
+  - **hub config repo** (`hub-config.git`, local-only): hub config, the secrets store, the agent-key store, A2A keys;
+  - **team repo** (`team.git`, workspace-style): `team/`;
+  - per agent, under `agents/<name>/`, a **workspace repo** (`workspace.git`, workspace-style), which is the agent directory minus its `config/config.toml` and `config/providers.toml`;
+  - per agent, under `agents/<name>/`, a **config repo** (`agent-config.git`, local-only), which is exactly those two files.
 
   A remote can never be added to the local-only repos, because config files can hold plaintext keys.
 - last-known-good;
