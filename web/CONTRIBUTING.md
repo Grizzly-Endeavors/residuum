@@ -19,6 +19,8 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. That's it �
 
 With [`just`](https://github.com/casey/just), `just web-mock` from the repo root does the same (installing dependencies first if they are missing or out of date), and `just web-mock-setup` starts in setup wizard mode. Extra arguments go to Vite: `just web-mock --port 5199`.
 
+[http://localhost:5173/dev/gallery](http://localhost:5173/dev/gallery) shows every primitive control in every state. The dev server serves it, and so does a mock build; a production build leaves it out.
+
 ## Mock Mode
 
 `npm run dev:mock` starts the Vite dev server with a built-in mock server that fakes all API endpoints and WebSocket connections. You'll see this in the terminal:
@@ -93,7 +95,10 @@ web/
 │   │   ├── WorkbenchArtifact.svelte # One artifact in its sandboxed frame; full view
 │   │   ├── settings/               # Settings sub-panels
 │   │   └── setup/                  # Setup wizard steps
+│   ├── test/                 # Component-test helpers and harnesses
 │   └── lib/
+│       ├── ui/                   # Primitive controls (buttons, fields, badges, tabs, banners…); gallery at /dev/gallery (see AESTHETIC.md)
+│       ├── icons/                # The Icon component and icon set
 │       ├── api.ts                # REST API client (typed fetch wrappers); every agent-scoped call takes the agent name first
 │       ├── paths.ts              # API and WebSocket URL builders for the agent, hub and team scopes
 │       ├── viewed-agent.ts       # The agent the URL names: the router publishes it, the WebSocket coordinator binds to it
@@ -198,7 +203,7 @@ npm run test:coverage # The same tests with a coverage summary (HTML report in c
 
 **Mock modules.** Everything under `mock/` is formatted, linted and type-checked with the same rules as `src/`, and its tests (`mock/**/*.test.ts`) run in Node through the same `npm test`. Route handlers live in route tables (`Route` in `mock/routes.ts`), and response bodies are checked against the generated protocol types in `src/lib/generated/` wherever one exists. The Vite plugin entry is `mock/plugin.ts`, and nothing in the mock is left out of these checks. `mock/test-support.ts` has two harnesses: one serves route tables over HTTP against a stub hub, and `startMockServer` runs the whole mock (hub, agents, sockets, scoped routing) on a real HTTP server, with a WebSocket client that keeps the frames it receives.
 
-Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`.
+Component tests live next to the component as `src/components/**/*.test.ts` (or `*.component.test.ts` anywhere under `src/`). They run in jsdom, through the same `npm test` command as the Node unit tests under `src/lib/`. Mount with `render` and mock `fetch` using `src/test/component.ts`. Drive keyboard and pointer input with `@testing-library/user-event`, which presses keys the way a browser does (Space and Enter activate buttons). `src/test/snippets.ts` turns markup into a snippet for a component's `children`, and `src/test/ui/` holds small harnesses for components that need a parent, such as a context provider or a live snippet.
 
 ## Running Against the Real Backend
 
