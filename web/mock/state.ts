@@ -86,6 +86,8 @@ export interface MockState {
    * frame reaches the sidebar. Set by the agent socket; the REST handlers
    * for the artifact session endpoints use it to announce sessions they
    * start, stop, or message the same way the WebSocket command handlers do.
+   * A change feed frame (`workspace_changed` and the like) goes only to the
+   * clients whose `watch_workspace` prefixes it touches.
    */
   broadcast: (frame: ServerMessage) => void;
   /**
