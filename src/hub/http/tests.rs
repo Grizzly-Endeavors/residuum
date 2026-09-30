@@ -961,13 +961,9 @@ async fn the_cross_site_guard_covers_the_whole_app() {
 }
 
 #[tokio::test]
-async fn the_remote_control_guard_refuses_shutdown_disconnect_and_stop_all_over_the_tunnel() {
+async fn the_remote_control_guard_refuses_shutdown_and_disconnect_over_the_tunnel() {
     let mut h = Harness::new();
-    for uri in [
-        "/api/hub/shutdown",
-        "/api/hub/cloud/disconnect",
-        "/api/hub/stop-all",
-    ] {
+    for uri in ["/api/hub/shutdown", "/api/hub/cloud/disconnect"] {
         let guarded_status = h.status(through_the_tunnel(Method::POST, uri)).await;
         assert_eq!(guarded_status, StatusCode::FORBIDDEN, "{uri}");
     }
@@ -982,6 +978,16 @@ async fn the_remote_control_guard_refuses_shutdown_disconnect_and_stop_all_over_
         ))
         .await;
     assert_eq!(open_status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn stop_all_is_reachable_over_the_tunnel() {
+    let h = Harness::new();
+    let status = h
+        .status(through_the_tunnel(Method::POST, "/api/hub/stop-all"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(h.directory.calls(), ["stop scout"]);
 }
 
 #[tokio::test]

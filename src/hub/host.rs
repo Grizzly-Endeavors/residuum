@@ -1004,7 +1004,7 @@ impl AgentHost {
             memory_dir: Some(layout.memory_dir()),
             reload_tx,
             checkpoints,
-            team: Some(self.services.team.view_for_agent(&slot.name, &slot.dir)),
+            team: Some(self.services.team.view_for_user(&slot.dir)),
             scope: crate::gateway::web::WorkspaceScope::Agent,
         };
         Ok(crate::gateway::web::agent_repair_api_router(state))

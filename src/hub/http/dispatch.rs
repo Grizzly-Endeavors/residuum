@@ -15,6 +15,7 @@ use axum::extract::Request;
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 use tower::ServiceExt;
+use tracing::Instrument;
 
 use super::error::{json_error, lifecycle_error_response};
 use crate::hub::{AgentDirectory, LifecycleError};
@@ -90,7 +91,7 @@ async fn agent_request(directory: &dyn AgentDirectory, req: Request) -> Response
         AgentRouterKind::Repair => directory.agent_repair_router(name),
         AgentRouterKind::Running => directory.agent_router(name),
     };
-    forward(router, req, &inner).await
+    forward(name, router, req, &inner).await
 }
 
 /// `/webhook/{agent}/{name}`: the agent's own `/webhook/{name}` route. The
@@ -103,7 +104,7 @@ async fn webhook_request(directory: &dyn AgentDirectory, req: Request) -> Respon
         return json_error(StatusCode::NOT_FOUND, "not found");
     };
     let inner = format!("/webhook/{webhook}");
-    forward(directory.agent_router(agent), req, &inner).await
+    forward(agent, directory.agent_router(agent), req, &inner).await
 }
 
 /// Split `/{name}{rest}` into the raw name and `rest` (empty, or starting
@@ -118,7 +119,12 @@ fn split_agent_path(path: &str) -> Option<(&str, &str)> {
 
 /// Hand `req` to the agent's router with its path replaced by `inner_path`,
 /// or answer with the reason the agent can't take it.
+///
+/// The request runs inside `agent`'s span whichever of its routers serves it,
+/// so handler logs and the tasks handlers spawn with `spawn_in_span` carry the
+/// `agent` field even for the repair and webhook routes.
 async fn forward(
+    agent: &str,
     router: Result<Router, LifecycleError>,
     mut req: Request,
     inner_path: &str,
@@ -139,7 +145,11 @@ async fn forward(
         }
     };
     *req.uri_mut() = uri;
-    match router.oneshot(req).await {
+    match router
+        .oneshot(req)
+        .instrument(crate::gateway::event_loop::agent_span(agent))
+        .await
+    {
         Ok(response) => response,
         Err(never) => match never {},
     }

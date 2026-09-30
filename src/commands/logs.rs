@@ -82,7 +82,7 @@ impl LogFilter {
         }
 
         let Some(entry) = parse_line(trimmed) else {
-            // Non-JSON line (old format or partial write) — print raw as fallback,
+            // A line that isn't a JSON log entry (a partial write, or text from another source) is printed raw,
             // unless filtering by agent: an unparsed line can't be attributed.
             return self.agent.is_none().then(|| trimmed.to_string());
         };
