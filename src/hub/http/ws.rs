@@ -1,10 +1,10 @@
 //! The hub WebSocket, `/api/hub/ws`.
 //!
-//! Server to client: an `agents_snapshot` on connect, then every hub event
-//! (`agent_state`, `agent_stopping`, `agent_created`, `agent_restored`,
-//! `agent_deleted`, `agent_activity`, `notice`), then `workspace_changed`
-//! frames for the team paths the client watches. Client to server:
-//! `watch_team`, the only message.
+//! Server to client: `hub_boot` and then an `agents_snapshot` on connect, then
+//! every hub event (`agent_state`, `agent_stopping`, `agent_created`,
+//! `agent_restored`, `agent_deleted`, `agent_activity`, `notice`,
+//! `hub_config_reloaded`), then `workspace_changed` frames for the team paths
+//! the client watches. Client to server: `watch_team`, the only message.
 //!
 //! A connection that falls behind the hub's event stream can't know what it
 //! missed, so it gets a fresh `agents_snapshot` in place of the lost events.
@@ -18,12 +18,13 @@ use axum::response::Response;
 use axum::routing::get;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{broadcast, watch};
 
 use crate::bus::{BusHandle, Subscriber, WorkspaceEvent, topics};
 use crate::gateway::protocol::ServerMessage;
+use crate::hub::types::{AgentListResponse, HubClientMessage, HubSocketFrame};
 use crate::hub::{AgentDirectory, HubEvent};
 use crate::interfaces::websocket::subscriber::workspace_frame;
 use crate::workspace::watch::{LIVE_UPDATES_OFF_MESSAGE, WatchHealth, WatchSet};
@@ -37,6 +38,7 @@ pub(super) struct HubWsState {
     pub directory: Arc<dyn AgentDirectory>,
     pub team_bus: BusHandle,
     pub team_watch_health: watch::Receiver<WatchHealth>,
+    pub boot_id: String,
 }
 
 /// The route that upgrades to the hub WebSocket.
@@ -48,14 +50,6 @@ pub(super) fn routes(state: HubWsState) -> Router {
 
 async fn upgrade(ws: WebSocketUpgrade, State(state): State<HubWsState>) -> Response {
     ws.on_upgrade(move |socket| serve(socket, state))
-}
-
-/// The one client-to-server message.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMessage {
-    /// Replace the set of team paths this connection watches.
-    WatchTeam { prefixes: Vec<String> },
 }
 
 type Outbound = SplitSink<WebSocket, Message>;
@@ -71,6 +65,12 @@ async fn serve(socket: WebSocket, state: HubWsState) {
     let mut team_feed = subscribe_team_feed(&state.team_bus).await;
     let mut watch_set = WatchSet::default();
 
+    let boot = HubSocketFrame::HubBoot {
+        boot_id: state.boot_id.clone(),
+    };
+    if !send_frame(&mut outbound, &boot).await {
+        return;
+    }
     if !send_snapshot(&mut outbound, state.directory.as_ref()).await {
         return;
     }
@@ -129,13 +129,8 @@ async fn send_frame(outbound: &mut Outbound, frame: &impl Serialize) -> bool {
 }
 
 async fn send_snapshot(outbound: &mut Outbound, directory: &dyn AgentDirectory) -> bool {
-    let mut agents = directory.list();
-    agents.sort_by(|a, b| a.name.cmp(&b.name));
-    send_frame(
-        outbound,
-        &json!({ "type": "agents_snapshot", "agents": agents }),
-    )
-    .await
+    let snapshot = HubSocketFrame::AgentsSnapshot(AgentListResponse::of(directory));
+    send_frame(outbound, &snapshot).await
 }
 
 fn notice_frame(level: &str, message: &str) -> serde_json::Value {
@@ -198,7 +193,7 @@ async fn handle_client_frame(
         Some(Ok(Message::Close(_)) | Err(_)) | None => return false,
         Some(Ok(_)) => return true,
     };
-    let request: ClientMessage = match serde_json::from_str(&text) {
+    let request: HubClientMessage = match serde_json::from_str(&text) {
         Ok(request) => request,
         Err(e) => {
             tracing::warn!(error = %e, "malformed hub websocket message from a client");
@@ -212,7 +207,7 @@ async fn handle_client_frame(
             .await;
         }
     };
-    let ClientMessage::WatchTeam { prefixes } = request;
+    let HubClientMessage::WatchTeam { prefixes } = request;
     match parse_team_prefixes(prefixes) {
         Ok(set) => {
             let watching = !set.is_empty();

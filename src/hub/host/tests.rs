@@ -227,6 +227,32 @@ impl Fixture {
             .expect("the fixture has a mock model for every agent")
     }
 
+    /// `GET /api/hub/agents`, parsed.
+    async fn listing(&self) -> Value {
+        let (status, body) = self.get("/api/hub/agents").await;
+        assert_eq!(status, 200, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    /// Send "ping" to the agent over a WebSocket that stays open, so the turn
+    /// it starts has a client to show its reply to.
+    async fn start_a_turn(
+        &self,
+        name: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{}/api/agents/{name}/ws", self.addr))
+                .await
+                .unwrap();
+        ws.send(WsMessage::text(
+            json!({ "type": "send_message", "id": "m1", "content": "ping" }).to_string(),
+        ))
+        .await
+        .unwrap();
+        ws
+    }
+
     fn activity_of(&self, name: &str) -> AgentActivity {
         self.host
             .activity()
@@ -275,7 +301,8 @@ fn state_changes(events: &[HubEvent]) -> Vec<(String, AgentState)> {
             | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
             | HubEvent::AgentActivity { .. }
-            | HubEvent::Notice { .. } => None,
+            | HubEvent::Notice { .. }
+            | HubEvent::HubConfigReloaded { .. } => None,
         })
         .collect()
 }
@@ -545,7 +572,8 @@ async fn stopping_an_agent_publishes_agent_stopping_before_its_state_changes() {
             | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
             | HubEvent::AgentActivity { .. }
-            | HubEvent::Notice { .. } => None,
+            | HubEvent::Notice { .. }
+            | HubEvent::HubConfigReloaded { .. } => None,
         })
         .collect();
     assert_eq!(
@@ -633,6 +661,17 @@ async fn a_panic_in_one_agents_loop_fails_only_that_agent() {
         last_error.message.contains("crashed"),
         "the message is plain language: {}",
         last_error.message
+    );
+    assert_eq!(last_error.kind, AgentErrorKind::Crash);
+    assert!(
+        last_error.reason.starts_with("panicked: "),
+        "the reason is the panic itself: {}",
+        last_error.reason
+    );
+    assert!(
+        !last_error.reason.contains("crashed"),
+        "the reason leaves out the message's wrapper: {}",
+        last_error.reason
     );
     assert_eq!(hub.state_of("atlas"), AgentState::Running);
     assert_eq!(hub.chat("atlas", "you ok?").await, "atlas here");
@@ -843,7 +882,8 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
             | HubEvent::AgentCreated { .. }
             | HubEvent::AgentRestored { .. }
             | HubEvent::AgentDeleted { .. }
-            | HubEvent::Notice { .. } => None,
+            | HubEvent::Notice { .. }
+            | HubEvent::HubConfigReloaded { .. } => None,
         })
         .collect();
     let busy_at = activities.iter().position(|a| a.busy).unwrap();
@@ -853,6 +893,96 @@ async fn unread_counts_messages_while_no_client_is_connected_and_resets_on_conne
         busy_at < unread_at && unread_at < reset_at,
         "{activities:?}"
     );
+}
+
+#[tokio::test]
+async fn the_listing_and_the_hub_snapshot_show_a_turn_in_progress_and_then_its_end() {
+    let hub = Fixture::new(&["scout"], "").await;
+    // A slow model, so the turn is still running when the listing is read.
+    hub.mock("scout").reset().await;
+    mount_reply(hub.mock("scout"), "scout here", Duration::from_millis(1500)).await;
+    hub.host.start("scout").await.unwrap();
+    let idle = json!({ "busy": false, "busy_since": null, "unread": 0 });
+    assert_eq!(hub.listing().await.pointer("/activity/scout"), Some(&idle));
+
+    let before = Utc::now();
+    let _ws = hub.start_a_turn("scout").await;
+    eventually("scout to be busy", || async {
+        hub.activity_of("scout").busy.then_some(())
+    })
+    .await;
+    let after = Utc::now();
+
+    let during = hub.listing().await;
+    let scout = during.pointer("/activity/scout").unwrap();
+    assert_eq!(scout.get("busy"), Some(&json!(true)));
+    let since = chrono::DateTime::parse_from_rfc3339(str_at(scout, "busy_since"))
+        .unwrap()
+        .with_timezone(&Utc);
+    assert!(
+        before <= since && since <= after,
+        "the turn began between {before} and {after}, not at {since}"
+    );
+    let (mut hub_ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/hub/ws", hub.addr))
+        .await
+        .unwrap();
+    let snapshot = frame_where(&mut hub_ws, "agents_snapshot", |_| true).await;
+    assert_eq!(snapshot.pointer("/activity/scout"), Some(scout));
+
+    eventually("the turn to end", || async {
+        (!hub.activity_of("scout").busy).then_some(())
+    })
+    .await;
+    assert_eq!(hub.listing().await.pointer("/activity/scout"), Some(&idle));
+}
+
+#[tokio::test]
+async fn the_listing_and_snapshot_show_an_agent_as_stopping_from_the_stop_request_until_it_has_stopped()
+ {
+    let hub = Fixture::new(&["atlas", "scout"], "").await;
+    hub.host.start_autostart().await;
+    assert_eq!(hub.listing().await.get("stopping"), Some(&json!([])));
+
+    // A real stop over a running agent is over in a few milliseconds, too soon
+    // to read the listing in the middle of. Raise the flag the stop raises
+    // first, and leave it raised, to look at the agent for as long as a slow
+    // stop would take.
+    let stop_requested = hub
+        .host
+        .slot("scout")
+        .unwrap()
+        .lock()
+        .running
+        .as_ref()
+        .map(|running| Arc::clone(&running.stop_requested))
+        .unwrap();
+    stop_requested.store(true, Ordering::SeqCst);
+
+    let during = hub.listing().await;
+    assert_eq!(during.get("stopping"), Some(&json!(["scout"])));
+    let states: Vec<(&str, &str)> = array_at(&during, "agents")
+        .iter()
+        .map(|agent| (str_at(agent, "name"), str_at(agent, "state")))
+        .collect();
+    assert_eq!(
+        states,
+        [("atlas", "running"), ("scout", "running")],
+        "an agent being stopped is still listed running, and only it is stopping"
+    );
+    let (mut hub_ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/hub/ws", hub.addr))
+        .await
+        .unwrap();
+    let snapshot = frame_where(&mut hub_ws, "agents_snapshot", |_| true).await;
+    assert_eq!(snapshot.get("stopping"), Some(&json!(["scout"])));
+
+    hub.host.stop("scout").await.unwrap();
+    let after = hub.listing().await;
+    assert_eq!(
+        after.get("stopping"),
+        Some(&json!([])),
+        "a finished stop is not stopping"
+    );
+    assert_eq!(after.pointer("/agents/1/state"), Some(&json!("stopped")));
 }
 
 #[tokio::test]
@@ -1409,6 +1539,14 @@ async fn two_agents_cannot_hold_the_same_teams_port() {
     assert!(message.contains("'atlas'"), "{message}");
     assert_eq!(hub.state_of("atlas"), AgentState::Running);
     assert_eq!(hub.state_of("scout"), AgentState::Failed);
+
+    let last_error = hub.host.summary("scout").unwrap().last_error.unwrap();
+    assert_eq!(last_error.kind, AgentErrorKind::PortConflict);
+    assert_eq!(last_error.message, message);
+    assert_eq!(
+        last_error.reason,
+        format!("Teams port {port} is already used by the agent 'atlas'")
+    );
 }
 
 #[tokio::test]
@@ -1429,9 +1567,22 @@ async fn an_agent_with_a_broken_config_fails_alone_with_a_plain_message() {
     assert_eq!(hub.state_of("atlas"), AgentState::Running);
     let scout = hub.host.summary("scout").unwrap();
     assert_eq!(scout.state, AgentState::Failed);
-    let message = scout.last_error.unwrap().message;
+    let last_error = scout.last_error.unwrap();
+    let message = last_error.message;
     assert!(message.contains("scout couldn't start"), "{message}");
     assert!(message.contains("start it again"), "{message}");
+    assert_eq!(last_error.kind, AgentErrorKind::Config);
+    assert!(
+        message.contains(&last_error.reason),
+        "the message wraps the reason: {message} / {}",
+        last_error.reason
+    );
+    assert!(
+        !last_error.reason.contains("couldn't start")
+            && !last_error.reason.contains("start it again"),
+        "the reason is the underlying error alone: {}",
+        last_error.reason
+    );
 }
 
 /// Read frames from `ws` until one of type `frame_type` satisfies `matches`.
@@ -1825,7 +1976,8 @@ async fn a_teams_bind_failure_is_a_hub_notice_naming_the_agent_and_port() {
                 | HubEvent::AgentCreated { .. }
                 | HubEvent::AgentRestored { .. }
                 | HubEvent::AgentDeleted { .. }
-                | HubEvent::AgentActivity { .. } => None,
+                | HubEvent::AgentActivity { .. }
+                | HubEvent::HubConfigReloaded { .. } => None,
             });
         std::future::ready(found)
     })

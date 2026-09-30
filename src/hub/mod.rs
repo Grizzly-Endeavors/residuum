@@ -33,6 +33,7 @@ pub use team::{
     TeamAddressError, TeamLink, TeamRouter, TeamSendError, TeamTarget, parse_team_address,
 };
 pub use types::{
-    A2aVisibility, Actor, AgentActivity, AgentLastError, AgentPatch, AgentState, AgentSummary,
-    CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError, RestoreAgentRequest,
+    A2aVisibility, Actor, AgentActivity, AgentErrorKind, AgentLastError, AgentPatch, AgentState,
+    AgentSummary, CreateAgentRequest, DeleteOutcome, DeletedAgent, HubEvent, LifecycleError,
+    RestoreAgentRequest,
 };

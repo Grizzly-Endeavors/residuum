@@ -12,6 +12,7 @@ use axum::body::Body;
 use axum::extract::ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::{any, get, post};
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, watch};
@@ -38,6 +39,9 @@ use crate::workspace::team_files::TeamWriteCoordinator;
 use crate::workspace::watch::{WatchHealth, WorkspaceChange, WorkspaceChangeKind};
 
 mod inbox;
+
+/// The boot id every harness hub reports.
+const TEST_BOOT_ID: &str = "boot-under-test";
 
 fn summary(name: &str, state: AgentState) -> AgentSummary {
     AgentSummary {
@@ -71,6 +75,10 @@ struct FakeDirectory {
     checkpoints_unopenable: Arc<AtomicBool>,
     /// The hub timezone the directory reports, UTC until a test sets one.
     timezone: Mutex<chrono_tz::Tz>,
+    /// What `activity()` reports.
+    activity: Mutex<Vec<(String, AgentActivity)>>,
+    /// What `stopping()` reports.
+    stopping: Mutex<Vec<String>>,
 }
 
 impl FakeDirectory {
@@ -87,6 +95,8 @@ impl FakeDirectory {
             checkpoint_opens: Arc::new(AtomicUsize::new(0)),
             checkpoints_unopenable: Arc::new(AtomicBool::new(false)),
             timezone: Mutex::new(chrono_tz::UTC),
+            activity: Mutex::new(Vec::new()),
+            stopping: Mutex::new(Vec::new()),
         })
     }
 
@@ -128,6 +138,7 @@ impl FakeDirectory {
                     name: "scout".to_string(),
                     activity: AgentActivity {
                         busy: i % 2 == 0,
+                        busy_since: None,
                         unread: i,
                     },
                 })
@@ -283,7 +294,11 @@ impl AgentDirectory for FakeDirectory {
     }
 
     fn activity(&self) -> Vec<(String, AgentActivity)> {
-        Vec::new()
+        self.activity.lock().unwrap().clone()
+    }
+
+    fn stopping(&self) -> Vec<String> {
+        self.stopping.lock().unwrap().clone()
     }
 
     async fn create(
@@ -453,6 +468,7 @@ impl Harness {
             team_bus: team_bus.clone(),
             team_watch_health: health_rx,
             started_at: std::time::Instant::now(),
+            boot_id: TEST_BOOT_ID.to_string(),
         };
         let shared: Arc<dyn AgentDirectory> = Arc::<FakeDirectory>::clone(&directory);
         let app = hub_router(shared, hub);
@@ -585,6 +601,14 @@ async fn connect(addr: SocketAddr, path: &str) -> ClientSocket {
     socket
 }
 
+/// Open the hub socket and read its `hub_boot` frame, which comes first.
+async fn connect_hub(addr: SocketAddr) -> ClientSocket {
+    let mut socket = connect(addr, "/api/hub/ws").await;
+    let boot = next_frame(&mut socket).await;
+    assert_eq!(boot["type"], "hub_boot");
+    socket
+}
+
 async fn next_frame(socket: &mut ClientSocket) -> Value {
     let message = tokio::time::timeout(Duration::from_secs(5), socket.next())
         .await
@@ -629,11 +653,44 @@ async fn agent_list_is_sorted_by_name() {
 }
 
 #[tokio::test]
+async fn agent_list_carries_every_agents_activity_and_the_stopping_set() {
+    let h = Harness::new();
+    let since = Utc::now();
+    *h.directory.activity.lock().unwrap() = vec![
+        (
+            "scout".to_string(),
+            AgentActivity {
+                busy: true,
+                busy_since: Some(since),
+                unread: 1,
+            },
+        ),
+        ("quiet".to_string(), AgentActivity::default()),
+    ];
+    *h.directory.stopping.lock().unwrap() = vec!["scout".to_string()];
+
+    let list = h.get_expect("/api/hub/agents", StatusCode::OK).await;
+
+    assert_eq!(agent_names(&list), ["quiet", "scout"]);
+    assert_eq!(
+        list["activity"],
+        json!({
+            "quiet": { "busy": false, "busy_since": null, "unread": 0 },
+            "scout": { "busy": true, "busy_since": since, "unread": 1 },
+        })
+    );
+    assert_eq!(list["stopping"], json!(["scout"]));
+}
+
+#[tokio::test]
 async fn an_empty_hub_lists_no_agents() {
     let h = Harness::new();
     h.directory.agents.lock().unwrap().clear();
     let list = h.get_expect("/api/hub/agents", StatusCode::OK).await;
-    assert_eq!(list, json!({ "agents": [] }));
+    assert_eq!(
+        list,
+        json!({ "agents": [], "activity": {}, "stopping": [] })
+    );
 }
 
 #[tokio::test]
@@ -1992,7 +2049,7 @@ async fn the_cloud_callback_stays_at_the_root() {
 async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
     let h = Harness::new();
     let addr = h.serve().await;
-    let mut socket = connect(addr, "/api/hub/ws").await;
+    let mut socket = connect_hub(addr).await;
 
     let snapshot = next_frame(&mut socket).await;
     assert_eq!(snapshot["type"], "agents_snapshot");
@@ -2010,6 +2067,7 @@ async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
             name: "scout".to_string(),
             activity: AgentActivity {
                 busy: true,
+                busy_since: Some(Utc::now()),
                 unread: 3,
             },
         },
@@ -2047,14 +2105,112 @@ async fn the_hub_socket_opens_with_a_snapshot_then_forwards_events() {
 }
 
 #[tokio::test]
+async fn the_hub_socket_sends_hub_boot_first_on_every_connection() {
+    let h = Harness::new();
+    let addr = h.serve().await;
+    for _connection in 0..2 {
+        let mut socket = connect(addr, "/api/hub/ws").await;
+        assert_eq!(
+            next_frame(&mut socket).await,
+            json!({ "type": "hub_boot", "boot_id": TEST_BOOT_ID })
+        );
+        assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
+    }
+}
+
+#[tokio::test]
+async fn the_snapshot_carries_every_agents_activity_and_the_stopping_set() {
+    let h = Harness::new();
+    let since = Utc::now();
+    *h.directory.activity.lock().unwrap() = vec![
+        (
+            "scout".to_string(),
+            AgentActivity {
+                busy: true,
+                busy_since: Some(since),
+                unread: 2,
+            },
+        ),
+        ("quiet".to_string(), AgentActivity::default()),
+    ];
+    *h.directory.stopping.lock().unwrap() = vec!["scout".to_string()];
+    let addr = h.serve().await;
+    let mut socket = connect_hub(addr).await;
+
+    let snapshot = next_frame(&mut socket).await;
+
+    assert_eq!(snapshot["type"], "agents_snapshot");
+    assert_eq!(
+        snapshot["activity"],
+        json!({
+            "quiet": { "busy": false, "busy_since": null, "unread": 0 },
+            "scout": { "busy": true, "busy_since": since, "unread": 2 },
+        })
+    );
+    assert_eq!(snapshot["stopping"], json!(["scout"]));
+}
+
+#[tokio::test]
+async fn a_config_reload_frame_reaches_the_socket_beside_the_events() {
+    let h = Harness::new();
+    let addr = h.serve().await;
+    let mut socket = connect_hub(addr).await;
+    assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
+
+    for (ok, changed, message) in [
+        (true, true, Some("hub configuration reloaded: timezone")),
+        (true, false, None),
+        (
+            false,
+            false,
+            Some("hub config reload failed (keeping current hub config): bad toml"),
+        ),
+    ] {
+        h.directory
+            .events
+            .send(HubEvent::HubConfigReloaded {
+                ok,
+                changed,
+                message: message.map(str::to_string),
+            })
+            .unwrap();
+        assert_eq!(
+            next_frame(&mut socket).await,
+            json!({ "type": "hub_config_reloaded", "ok": ok, "changed": changed, "message": message })
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_agent_that_is_stopping_reaches_the_socket_as_its_own_frame() {
+    let h = Harness::new();
+    let addr = h.serve().await;
+    let mut socket = connect_hub(addr).await;
+    assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
+
+    h.directory
+        .events
+        .send(HubEvent::AgentStopping {
+            name: "scout".to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        next_frame(&mut socket).await,
+        json!({ "type": "agent_stopping", "name": "scout" })
+    );
+}
+
+#[tokio::test]
 async fn a_lagging_hub_socket_gets_a_fresh_snapshot_instead_of_silence() {
     let h = Harness::new();
     h.directory.prime_a_lagged_receiver();
     let addr = h.serve().await;
     let mut socket = connect(addr, "/api/hub/ws").await;
 
-    // The connect snapshot, then a second one because events were lost, then
-    // the events that were still buffered.
+    // The boot id, the connect snapshot, then a second one because events
+    // were lost, then the events that were still buffered.
+    assert_eq!(next_frame(&mut socket).await["type"], "hub_boot");
     let connect_snapshot = next_frame(&mut socket).await;
     assert_eq!(connect_snapshot["type"], "agents_snapshot");
     let resnapshot = next_frame(&mut socket).await;
@@ -2098,7 +2254,7 @@ async fn publish_until_a_frame_arrives(
 async fn watched_team_paths_are_forwarded_and_others_are_not() {
     let h = Harness::new();
     let addr = h.serve().await;
-    let mut socket = connect(addr, "/api/hub/ws").await;
+    let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
 
     send_client(
@@ -2145,7 +2301,7 @@ async fn watched_team_paths_are_forwarded_and_others_are_not() {
 async fn a_watch_outside_team_is_refused_visibly() {
     let h = Harness::new();
     let addr = h.serve().await;
-    let mut socket = connect(addr, "/api/hub/ws").await;
+    let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
 
     send_client(
@@ -2168,7 +2324,7 @@ async fn watching_while_live_updates_are_off_says_so() {
     let h = Harness::new();
     h.health_tx.send_replace(WatchHealth::Off);
     let addr = h.serve().await;
-    let mut socket = connect(addr, "/api/hub/ws").await;
+    let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
 
     send_client(
@@ -2184,7 +2340,7 @@ async fn watching_while_live_updates_are_off_says_so() {
 async fn a_resync_reaches_a_watching_client() {
     let h = Harness::new();
     let addr = h.serve().await;
-    let mut socket = connect(addr, "/api/hub/ws").await;
+    let mut socket = connect_hub(addr).await;
     assert_eq!(next_frame(&mut socket).await["type"], "agents_snapshot");
     send_client(
         &mut socket,
