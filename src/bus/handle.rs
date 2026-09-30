@@ -307,7 +307,24 @@ impl<E: 'static> Drop for Subscriber<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{EndpointName, IntermediateEvent, topics};
+    use crate::bus::{EndpointName, IntermediateEvent, MessageEvent, spawn_broker, topics};
+    use crate::interfaces::types::MessageOrigin;
+
+    fn test_message(id: &str, content: &str) -> MessageEvent {
+        MessageEvent {
+            id: id.to_string(),
+            content: content.to_string(),
+            origin: MessageOrigin {
+                endpoint: "test".to_string(),
+                sender: None,
+                conversation: None,
+                agent_sender: None,
+            },
+            timestamp: chrono::Utc::now().naive_utc(),
+            images: vec![],
+            context: None,
+        }
+    }
 
     fn _assert_publisher_traits()
     where
@@ -339,6 +356,60 @@ mod tests {
         assert!(
             matches!(result, Err(BusError::BrokerShutdown)),
             "noop publisher should return BrokerShutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_is_empty_with_nothing_queued() {
+        let handle = spawn_broker();
+        let mut sub: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
+        assert!(sub.drain().is_empty());
+    }
+
+    #[tokio::test]
+    async fn drain_returns_queued_events_in_order_then_empties() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let mut sub: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+
+        for i in 0..3 {
+            pub_.publish(
+                topics::UserMessage,
+                test_message(&i.to_string(), &format!("msg-{i}")),
+            )
+            .await
+            .unwrap();
+        }
+        // The broker handles commands one at a time in order, so once this
+        // second subscriber has seen the marker published just after the
+        // three events above, the broker has already finished offering all
+        // three to `sub` as well.
+        let mut barrier: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
+        pub_.publish(topics::UserMessage, test_message("marker", "marker"))
+            .await
+            .unwrap();
+        loop {
+            let seen = barrier.recv().await.unwrap().unwrap();
+            if seen.id == "marker" {
+                break;
+            }
+        }
+
+        let drained = sub.drain();
+        let ids: Vec<_> = drained.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["0", "1", "2", "marker"],
+            "events must come out in publish order"
+        );
+
+        assert!(
+            sub.drain().is_empty(),
+            "a second drain after everything was taken must return nothing"
         );
     }
 }
